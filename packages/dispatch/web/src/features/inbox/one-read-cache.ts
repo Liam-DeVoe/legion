@@ -20,6 +20,7 @@ import {
   meInboxKey,
   meInboxQuery,
 } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type { InboxRow, MeInboxEntry, MeInboxResponse, MyReplyRow } from "../../api/types";
 
 /** Every cached read of the one read as it stood before a write moved it, for the rollback. */
@@ -143,30 +144,34 @@ export function patchMeInboxAsks(
   });
 }
 
-/** Edits the Reply and Agent rows of every cached read of the one read, and the unread count by
- *  `count` where one is given: `edit` leaves each row, or takes its entry out with undefined. */
+/**
+ * Edits the Reply and Agent rows of every cached read of the one read, and the unread count by
+ * `count` where one is given: `edit` leaves each row, or takes its entry out with undefined. Each
+ * read is written over a read of it still out (`replaceQueryData`): that read was asked before the
+ * edit, and its answer would put the rows back as they stood. Mark all read, the one caller, gives
+ * up its reads of the Inbox's threads and their count the same way.
+ */
 export function patchMeInboxThreads(
   queryClient: QueryClient,
   edit: (thread: MyReplyRow) => MyReplyRow | undefined,
   count?: (count: number) => number
 ): void {
-  patchMeInbox(
-    queryClient,
-    (entry) => {
-      if (entry.thread !== undefined && entry.thread !== null) {
-        const thread = edit(entry.thread);
-        if (thread === undefined) return undefined;
-        return thread === entry.thread ? entry : { ...entry, thread };
-      }
-      if (entry.agent !== undefined && entry.agent !== null) {
-        const agent = edit(entry.agent as MyReplyRow);
-        if (agent === undefined) return undefined;
-        return agent === entry.agent ? entry : { ...entry, agent: agent as typeof entry.agent };
-      }
-      return entry;
-    },
-    count
-  );
+  const threadEdit: MeInboxEntryEdit = (entry) => {
+    if (entry.thread !== undefined && entry.thread !== null) {
+      const thread = edit(entry.thread);
+      if (thread === undefined) return undefined;
+      return thread === entry.thread ? entry : { ...entry, thread };
+    }
+    if (entry.agent !== undefined && entry.agent !== null) {
+      const agent = edit(entry.agent as MyReplyRow);
+      if (agent === undefined) return undefined;
+      return agent === entry.agent ? entry : { ...entry, agent: agent as typeof entry.agent };
+    }
+    return entry;
+  };
+  for (const [queryKey] of meInboxSnapshot(queryClient)) {
+    replaceQueryData(queryClient, queryKey, (data: unknown) => editRead(data, threadEdit, count));
+  }
 }
 
 /** The Reply and Agent rows the reader's own Inbox answer of the one read holds, or of its

@@ -1031,8 +1031,8 @@ async function uploadPicture(key: string, name: string): Promise<string> {
  * picture; an open question with two options waiting on the reader, an answered one, and the
  * long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
  *
- * Dispatch refuses a `decisions.md` (409 `DECISIONS_ARE_NODES`): a decision is a `decision`
- * block, which the seed names by the id it writes on it.
+ * A decision is a `decision` block of the document that holds it, which the seed names by the
+ * id it writes on it: Dispatch refuses a document of decisions (409 `DECISIONS_ARE_NODES`).
  */
 export async function seedRows(): Promise<RowSeed> {
   await createProject({ key: PROJECT, name: "Rows" });

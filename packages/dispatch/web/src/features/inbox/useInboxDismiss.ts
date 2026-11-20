@@ -28,6 +28,9 @@ import { inboxDismissRequest } from "../../api/client";
 import {
   dismissedThreadsQuery,
   inboxThreadsQuery,
+  meInboxCountQuery,
+  meInboxDismissedQuery,
+  meInboxQuery,
   myRepliesCountQuery,
   myRepliesKey,
   userAgentStateQuery,
@@ -39,6 +42,7 @@ import type {
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { inboxThreadsWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
@@ -277,6 +281,12 @@ export function useInboxDismiss({
   const inboxKey = inboxThreadsQuery().queryKey;
   const dismissedKey = dismissedThreadsQuery().queryKey;
   const countKey = myRepliesCountQuery().queryKey;
+  // Behind the Inbox's opt-in the two views and the count are the one read's, held as these are.
+  const oneReadKeys = [
+    meInboxQuery().queryKey,
+    meInboxDismissedQuery().queryKey,
+    meInboxCountQuery().queryKey,
+  ];
 
   const live = (rows: readonly string[], out: boolean) => {
     setPending((current) => {
@@ -290,6 +300,13 @@ export function useInboxDismiss({
   };
 
   const write = useKeyedWrite<InboxDismissResponse, InboxDismissInput, DismissRollback>({
+    // A read of either view or the count, or behind the opt-in of the one read's, asked while the
+    // press is out waits until Dispatch has taken it (its answer or its thread-state event):
+    // Dispatch can answer it before, with the rows it took out still in.
+    holds: () => ({
+      endsOn: inboxThreadsWritten,
+      keys: [inboxKey, dismissedKey, countKey, ...oneReadKeys],
+    }),
     inline: true,
     label: (input) => (input.restore === true ? "Threads moved to the Inbox" : "Threads dismissed"),
     onError: (error, input, rollback) => {

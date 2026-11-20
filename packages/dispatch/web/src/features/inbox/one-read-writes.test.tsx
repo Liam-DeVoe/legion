@@ -10,9 +10,10 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useRef } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { settle } from "../../__tests__/fake-clock";
 import {
   answerInboxDismisses,
   answerInboxReads,
@@ -20,8 +21,21 @@ import {
   answerRoute,
 } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import { inboxQuery, meInboxCountQuery, meInboxQuery, whoAmIQuery } from "../../api/queries";
-import type { InboxRow, MeInboxEntry, MeInboxResponse, MyReplyRow } from "../../api/types";
+import {
+  inboxQuery,
+  meInboxCountQuery,
+  meInboxKey,
+  meInboxQuery,
+  whoAmIQuery,
+} from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
+import type {
+  InboxReadResponse,
+  InboxRow,
+  MeInboxEntry,
+  MeInboxResponse,
+  MyReplyRow,
+} from "../../api/types";
 import { issuePriority } from "../issue/issue-priority";
 import { useIssueAssignee } from "../issue/useIssueAssignee";
 import { useIssuePriority } from "../issue/useIssuePriority";
@@ -32,7 +46,9 @@ import { useInboxAsks } from "./one-read";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { useAskHandOn } from "./useAskHandOn";
 import { useAskSnooze, useAskSnoozeMany } from "./useAskSnooze";
+import { useUnreadThreadCount } from "./useInboxCount";
 import { dismissThreadRow, useInboxDismiss } from "./useInboxDismiss";
+import { useInboxThreadRows } from "./useInboxThreadRows";
 
 const AS_OF = "2026-10-12T02:00:00Z";
 
@@ -75,15 +91,23 @@ function oneRead(asks: readonly InboxRow[], threads: readonly MyReplyRow[] = [])
   };
 }
 
-/** A client signed in as alice holding the Inbox read `inbox`, and the one read's Inbox answer
- *  and unread count. */
-function seeded(inbox: readonly InboxRow[], answer: MeInboxResponse, unread = 0): QueryClient {
-  const client = new QueryClient({
-    defaultOptions: {
-      mutations: { retry: false },
-      queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
-    },
-  });
+/** What every client of this file is made with: a read the row seeds is never stale, so nothing
+ *  reads the server but what the row asks for. */
+const CLIENT_OPTIONS = {
+  defaultOptions: {
+    mutations: { retry: false },
+    queries: { retry: false, staleTime: Number.POSITIVE_INFINITY },
+  },
+};
+
+/** `client`, signed in as alice and holding the Inbox read `inbox`, and the one read's Inbox
+ *  answer and unread count. */
+function seeded(
+  inbox: readonly InboxRow[],
+  answer: MeInboxResponse,
+  unread = 0,
+  client: QueryClient = new QueryClient(CLIENT_OPTIONS)
+): QueryClient {
   client.setQueryData(whoAmIQuery().queryKey, { event_head: "0", kind: "user", login: "alice" });
   client.setQueryData(inboxQuery().queryKey, [...inbox]);
   client.setQueryData(meInboxQuery().queryKey, answer);
@@ -327,4 +351,200 @@ test("a dismissal takes the row out of the one read and lowers its count, and a 
   expect(unreadCount(client)).toBe(1);
   expect(screen.queryByRole("alert")).toBeNull();
   expect(settled).toEqual([["reply:c1"]]);
+});
+
+/** What `GET /api/v1/me/inbox` answers while Dispatch holds `threads`: the `inbox` state's
+ *  answer, or for the count's one-entry page of the `unread` state (`meInboxCountQuery`) how many
+ *  of them are unread. */
+function threadsAnswer(
+  query: { readonly state?: string } | undefined,
+  threads: readonly MyReplyRow[]
+): MeInboxResponse {
+  if (query?.state !== "unread") return oneRead([], threads);
+  return { ...oneRead([]), limit: 1, total: threads.filter((thread) => thread.unread).length };
+}
+
+/** The reader's Reply rows and the Inbox count behind the opt-in, as the page draws them
+ *  (`useInboxThreadRows`, `useUnreadThreadCount`), under their Mark all read. */
+function OneReadThreads(): ReactNode {
+  const listRef = useRef<HTMLUListElement>(null);
+  const threads = useInboxThreadRows({ asksOnly: false, listRef, show: "inbox" });
+  const count = useUnreadThreadCount();
+  const markAll = useMarkAllRead({ asOf: AS_OF, filters: {}, rows: threads.rows });
+  return (
+    <>
+      <output data-testid="count">{count}</output>
+      <ul ref={listRef}>
+        {threads.rows.map((row) =>
+          row.kind === "thread" ? (
+            <li
+              data-thread={row.thread.thread_id}
+              data-unread={String(row.thread.unread)}
+              key={row.thread.thread_id}
+            />
+          ) : null
+        )}
+      </ul>
+      <button onClick={markAll.markAll} type="button">
+        Mark all read
+      </button>
+    </>
+  );
+}
+
+/** Whether the row of thread `id` is drawn unread: "true", "false", or null where none is drawn. */
+function drawnUnread(id: string): string | null {
+  return document.querySelector(`[data-thread="${id}"]`)?.getAttribute("data-unread") ?? null;
+}
+
+function drawnCount(): string {
+  return screen.getByTestId("count").textContent ?? "";
+}
+
+// Behind the opt-in the reader's Reply rows and the Inbox count are the one read's. A read of it
+// asked while Mark all read is out - an event's refresh of the reader's threads, say - would
+// reach Dispatch before the press marks anything, and draw the row unread and the count back at
+// one while the press is still going through. It waits for the press's answer, as the Inbox's own
+// reads of the threads and their count do, and then reads what Dispatch holds after it.
+test("a read of the one read asked while Mark all read is out waits for its answer, so the rows stay drawn read", async () => {
+  const before = [replyRow("c1")];
+  // What Dispatch holds once the press is in: the row read, and a reply written since.
+  const after = [replyRow("c1", { unread: false }), replyRow("c2")];
+  let served = before;
+  const getMeInbox = spyOn(api, "getMeInbox").mockImplementation(async (query) =>
+    threadsAnswer(query, served)
+  );
+  restores.push(getMeInbox);
+  const answer = deferred<InboxReadResponse>();
+  answerInboxReads().mockReturnValue(answer.promise);
+  const client = seeded([], oneRead([], before), 1, new DispatchQueryClient(CLIENT_OPTIONS));
+  render(<OneReadThreads />, { wrapper: wrapper(client) });
+  await waitFor(() => expect(drawnUnread("c1")).toBe("true"));
+  expect(drawnCount()).toBe("1");
+
+  act(() => screen.getByRole("button", { name: "Mark all read" }).click());
+  await waitFor(() => expect(drawnUnread("c1")).toBe("false"));
+  expect(drawnCount()).toBe("0");
+
+  // Dispatch still holds the row unread, and a read that reached it now would answer so.
+  await act(async () => {
+    void client.invalidateQueries({ queryKey: meInboxKey });
+    await settle();
+  });
+  // The page still draws what the press wrote: neither read has asked Dispatch anything, though
+  // both have started.
+  expect(drawnUnread("c1")).toBe("false");
+  expect(drawnCount()).toBe("0");
+  expect(getMeInbox).not.toHaveBeenCalled();
+  expect(client.getQueryState(meInboxQuery().queryKey)?.fetchStatus).toBe("fetching");
+  expect(client.getQueryState(meInboxCountQuery().queryKey)?.fetchStatus).toBe("fetching");
+
+  served = after;
+  await act(async () => answer.resolve({ marked: 1 }));
+  await waitFor(() => expect(drawnUnread("c2")).toBe("true"));
+  expect(getMeInbox).toHaveBeenCalled();
+  await waitFor(() => expect(client.isFetching()).toBe(0));
+  expect(drawnUnread("c1")).toBe("false");
+  expect(drawnCount()).toBe("1");
+});
+
+// A read of the one read asked before Mark all read answers the rows as they stood. Landing
+// after the press, it would draw the row unread and the count back at one. The press gives it up
+// and asks for the one read again, as it does the Inbox's own reads of the threads and their
+// count, and on Dispatch's own client that read waits for the press's answer.
+test("a read of the one read asked before Mark all read does not put back the rows the press drew read", async () => {
+  const before = [replyRow("c1")];
+  const after = [replyRow("c1", { unread: false })];
+  const asked = Promise.withResolvers<MeInboxResponse>();
+  const getMeInbox = spyOn(api, "getMeInbox")
+    .mockImplementationOnce(() => asked.promise)
+    .mockImplementation(async (query) => threadsAnswer(query, after));
+  restores.push(getMeInbox);
+  const answer = deferred<InboxReadResponse>();
+  answerInboxReads().mockReturnValue(answer.promise);
+  const client = seeded([], oneRead([], before), 1, new DispatchQueryClient(CLIENT_OPTIONS));
+  render(<OneReadThreads />, { wrapper: wrapper(client) });
+  await waitFor(() => expect(drawnUnread("c1")).toBe("true"));
+  let read = Promise.resolve();
+  await act(async () => {
+    read = client.refetchQueries({ queryKey: meInboxQuery().queryKey });
+  });
+  expect(getMeInbox).toHaveBeenCalledTimes(1);
+
+  act(() => screen.getByRole("button", { name: "Mark all read" }).click());
+  await waitFor(() => expect(drawnUnread("c1")).toBe("false"));
+  // The read answers as Dispatch held the row when it was asked: unread.
+  await act(async () => {
+    asked.resolve(threadsAnswer(undefined, before));
+    await read;
+  });
+  expect(drawnUnread("c1")).toBe("false");
+  expect(drawnCount()).toBe("0");
+  // The one read the press asked for again waits for its answer, and has asked Dispatch nothing.
+  expect(getMeInbox).toHaveBeenCalledTimes(1);
+
+  await act(async () => answer.resolve({ marked: 1 }));
+  await waitFor(() => expect(getMeInbox.mock.calls.length).toBeGreaterThan(1));
+  await waitFor(() => expect(client.isFetching()).toBe(0));
+  expect(drawnUnread("c1")).toBe("false");
+  expect(drawnCount()).toBe("0");
+});
+
+/** The reader's own asks behind the opt-in as the page lists them (`useInboxAsks`), beside a
+ *  snooze of `ask`. */
+function OneReadAsks({ ask, until }: { ask: InboxRow; until: string }): ReactNode {
+  const inbox = useQuery({ queryFn: async () => [ask], queryKey: inboxQuery().queryKey });
+  const listed = useInboxAsks(inbox.data);
+  const snooze = useAskSnooze(ask.id);
+  return (
+    <>
+      <ul>
+        {(listed.asks ?? []).map((row) => (
+          <li data-ask={row.id} data-snoozed={row.snoozed_until ?? "none"} key={row.id} />
+        ))}
+      </ul>
+      <button onClick={() => snooze.submit(until)} type="button">
+        Snooze
+      </button>
+    </>
+  );
+}
+
+function drawnSnooze(id: string): string | null {
+  return document.querySelector(`[data-ask="${id}"]`)?.getAttribute("data-snoozed") ?? null;
+}
+
+// The reader's own asks behind the opt-in are the one read's. A read of it asked while a snooze
+// is out would reach Dispatch before the snooze, and draw the row back out of Later while the
+// snooze is still going through. It waits for the snooze's answer, as the Inbox read does.
+test("a read of the one read asked while a snooze is out waits for its answer, so the row stays snoozed", async () => {
+  const until = "2026-10-20T09:00:00Z";
+  const ask = issueAsk({ id: "ask-a" });
+  let served = oneRead([ask]);
+  const getMeInbox = spyOn(api, "getMeInbox").mockImplementation(async () => served);
+  restores.push(getMeInbox);
+  const answer = deferred<unknown>();
+  answerRoute("PUT", "/api/v1/me/asks/*/snooze").mockReturnValue(answer.promise);
+  const client = seeded([ask], oneRead([ask]), 0, new DispatchQueryClient(CLIENT_OPTIONS));
+  render(<OneReadAsks ask={ask} until={until} />, { wrapper: wrapper(client) });
+  await waitFor(() => expect(drawnSnooze("ask-a")).toBe("none"));
+
+  act(() => screen.getByRole("button", { name: "Snooze" }).click());
+  await waitFor(() => expect(drawnSnooze("ask-a")).toBe(until));
+
+  // Dispatch has not snoozed the ask yet, and a read that reached it now would answer so.
+  await act(async () => {
+    void client.invalidateQueries({ queryKey: meInboxKey });
+    await settle();
+  });
+  // The page still draws the snooze: the read has started and asked Dispatch nothing.
+  expect(drawnSnooze("ask-a")).toBe(until);
+  expect(getMeInbox).not.toHaveBeenCalled();
+  expect(client.getQueryState(meInboxQuery().queryKey)?.fetchStatus).toBe("fetching");
+
+  served = oneRead([{ ...ask, snoozed_until: until }]);
+  await act(async () => answer.resolve(undefined));
+  await waitFor(() => expect(getMeInbox).toHaveBeenCalled());
+  await waitFor(() => expect(client.isFetching()).toBe(0));
+  expect(drawnSnooze("ask-a")).toBe(until);
 });

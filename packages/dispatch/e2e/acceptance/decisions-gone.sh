@@ -318,6 +318,10 @@ step_admission() {
         printf 'the decisions member of the decisions read, kept for one release (compat-objects)' ;;
     packages/dispatch/web/src/features/issue-page/useIssueTree.ts)
       [[ "$text" != *"[${quoted_word}, key]"* ]] || printf 'the query key of the Decisions read' ;;
+    # Main's conversation rows (#4192): the decision node's actions name the Decisions read's query
+    # key they read from, admitted by its text as #4196's are.
+    packages/dispatch/web/src/features/issue-page/DecisionActions.tsx)
+      [[ "$text" != *"[${quoted_word}, <key>]"* ]] || printf 'the query key of the Decisions read' ;;
     # Main's new issue page frame (#4189): its keymap's Decisions tab, and the e2e rows that press
     # the Decisions preset, read its address and list the views and shortcuts that name it. Each is
     # admitted by its text, as #4196's are, so any other line of these files that spells the word

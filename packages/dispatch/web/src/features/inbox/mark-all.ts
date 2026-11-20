@@ -19,16 +19,20 @@ import { useQueryClient } from "@tanstack/react-query";
 import { markInboxReadRequest } from "../../api/client";
 import {
   inboxThreadsQuery,
+  meInboxCountQuery,
+  meInboxQuery,
   myRepliesCountQuery,
   myRepliesKey,
   userAgentStateQuery,
 } from "../../api/queries";
+import { replaceQueryData } from "../../api/query-client";
 import type {
   InboxReadRequest,
   InboxReadResponse,
   MyRepliesResponse,
   MyReplyRow,
 } from "../../api/types";
+import { inboxThreadsWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
@@ -128,11 +132,14 @@ export interface MarkAllRead {
  *
  * The press writes two reads at once - the Inbox's own list and the unread count every badge
  * shares - so the rows are drawn as read and the Type filter's counts, the sidebar's Inbox count
- * and the compact header's Inbox link are all at zero before the server answers. Behind the
+ * and the compact header's Inbox link are all at zero before the server answers. A read of
+ * either already out at the press is given up, and one asked while the press is out waits until
+ * Dispatch has taken it (`holds`: its answer or its thread-state event, and at most
+ * `SEND_DEADLINE_MS`): Dispatch can answer it before, with the rows still unread. Behind the
  * Inbox's opt-in those two are the one read's Inbox answer and its unread count
- * (`one-read-cache.ts`), which the press writes the same way. The Agents page's **New replies**
- * badge is the server's own count of unread agent replies, so it drops when the answer lands and
- * the viewer's agent state is read again.
+ * (`one-read-cache.ts`), which the press writes, and whose reads it gives up and holds, the same
+ * way. The Agents page's **New replies** badge is the server's own count of unread agent
+ * replies, so it drops when the answer lands and the viewer's agent state is read again.
  *
  * The Dismissed view has no press of its own: it holds what the reader has already dealt with, so
  * the Inbox passes no read mark there and nothing is offered (`asOf`).
@@ -154,6 +161,8 @@ export function useMarkAllRead({
   const queryClient = useQueryClient();
   const threadsKey = inboxThreadsQuery().queryKey;
   const countKey = myRepliesCountQuery().queryKey;
+  // Behind the opt-in the list and the count are the one read's, and are held as these are.
+  const oneReadKeys = [meInboxQuery().queryKey, meInboxCountQuery().queryKey];
   const scope = inboxWriteScope(filters);
   const body = asOf === undefined ? undefined : markAllReadBody(filters, asOf);
   // What a press may have marked is read again from the server: the list, its counts, and the
@@ -169,6 +178,7 @@ export function useMarkAllRead({
     rows.some((row) => row.kind === "thread" && marksThread(row.thread, body));
 
   const write = useKeyedWrite<InboxReadResponse, InboxReadRequest, MarkAllRollback>({
+    holds: () => ({ endsOn: inboxThreadsWritten, keys: [threadsKey, countKey, ...oneReadKeys] }),
     inline: true,
     label: () => "Inbox marked read",
     onError: (error, _input, rollback) => {
@@ -194,15 +204,16 @@ export function useMarkAllRead({
       );
       const through = input.read_through;
       if (threads !== undefined && through !== undefined && through !== null) {
-        queryClient.setQueryData(threadsKey, applyMarkAll(threads, marked, through));
+        replaceQueryData(queryClient, threadsKey, applyMarkAll(threads, marked, through));
       }
       // The count every badge shares drops by what this press marks, clamped at zero: an
       // unfiltered press marks every unread row and reads zero, and a filtered one takes away
       // only its own rows rather than counting the rest of the Inbox away.
       if (count !== undefined) {
-        queryClient.setQueryData(countKey, Math.max(0, count - marked.size));
+        replaceQueryData(queryClient, countKey, Math.max(0, count - marked.size));
       }
-      // Behind the opt-in the list and the count are the one read's, written by the same rule.
+      // Behind the opt-in the list and the count are the one read's, written by the same rule
+      // and over a read of them still out, as the two above are (`patchMeInboxThreads`).
       if (through !== undefined && through !== null) {
         const oneMarked = meInboxThreadRows(queryClient).filter((thread) =>
           marksThread(thread, input)
