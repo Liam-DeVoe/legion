@@ -642,6 +642,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
         startSignal: stopping.signal,
         stateDirectory,
         title,
+        userAgent: CODEX_ENVOY_USER_AGENT,
         ...(dispatch.enabled ? { stampTitle } : {}),
       }).catch((error: unknown) => {
         // A stop asked for while the session was still starting ends the start, and is no

@@ -22,6 +22,7 @@ import type { ModCallArguments, ModCallName, ModCallResults } from "../hooks/mod
 import pkg from "../package.json" with { type: "json" }
 import { CODEX_ENVOY_USER_AGENT, codexDispatchClient } from "../src/codex/codex-server"
 import {
+  CLAUDE_ENVOY_USER_AGENT,
   type ChannelNotifier,
   type ChannelSession,
   createChannelDelivery,
@@ -85,6 +86,7 @@ test("writes each Envoy envelope into the session as the rendered card that name
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    userAgent: CLAUDE_ENVOY_USER_AGENT,
   })
 
   await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })
@@ -238,6 +240,7 @@ test("a card Envoy sends again is handed over again, under the one event id", as
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    userAgent: CLAUDE_ENVOY_USER_AGENT,
   })
 
   expect(await delivery.enqueue({ subject: directSubject, raw: deliveryRaw })).toBe(true)
@@ -336,6 +339,7 @@ test("retains only the latest fifty inbound envelope summaries", async () => {
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    userAgent: CLAUDE_ENVOY_USER_AGENT,
   })
 
   for (let index = 0; index < 51; index += 1) {
@@ -376,6 +380,7 @@ test("every frame with no event id is listed, since none of them names a copy", 
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    userAgent: CLAUDE_ENVOY_USER_AGENT,
   })
   const unnamed = (summary: string): string =>
     JSON.stringify({
@@ -670,6 +675,7 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      userAgent: CLAUDE_ENVOY_USER_AGENT,
     })
 
     // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
@@ -713,6 +719,7 @@ test("names itself to Dispatch as claude-envoy and its release", async () => {
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier: new FakeNotifier(),
       configFile: sessionConfigFile("claude", process.env),
+      userAgent: CLAUDE_ENVOY_USER_AGENT,
     })
 
     await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })
@@ -778,6 +785,54 @@ test("the Codex server names itself to Dispatch as codex-envoy and its release",
       },
     ])
   } finally {
+    server?.stop(true)
+  }
+})
+
+// The Codex server starts its session with its own User-Agent (codex-server.ts), so a rejected
+// frame of a Codex session is answered as codex-envoy, and a session started with none as this
+// server.
+test("a session answers a rejected targeted frame under the User-Agent it was started with", async () => {
+  let server: Server<undefined> | undefined
+  const sessions: ChannelSession[] = []
+  try {
+    const sent: Array<{ readonly path: string; readonly userAgent: string | null }> = []
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        sent.push({
+          path: new URL(request.url).pathname,
+          userAgent: request.headers.get("user-agent"),
+        })
+        return Response.json({})
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
+    for (const [userAgent, want] of [
+      [CODEX_ENVOY_USER_AGENT, `codex-envoy/${codexPkg.version}`],
+      [undefined, `claude-envoy/${pkg.version}`],
+    ] as const) {
+      sent.length = 0
+      const nats = new FakeNats()
+      const session = await startChannelSession({
+        ...sessionOptions(new SessionIdentity("ses_claude", process.cwd()), scratchState(), {
+          connection: nats,
+          notifier: new FakeNotifier(),
+        }),
+        ...(userAgent === undefined ? {} : { userAgent }),
+      })
+      sessions.push(session)
+
+      relayed(nats, 1, rejectedFrameRaw)
+      await waitFor(async () => nats.repliesOn("_INBOX.1").includes("done"), "the answer")
+
+      expect(sent).toEqual([
+        { path: "/api/v1/messages/44444444-4444-4444-8444-444444444444/reply", userAgent: want },
+      ])
+    }
+  } finally {
+    for (const session of sessions) await session.shutdown()
     server?.stop(true)
   }
 })
@@ -869,6 +924,7 @@ test("answers a malformed targeted comment through its supplied comment reply ad
       identity: new SessionIdentity("ses_claude", process.cwd()),
       notifier,
       configFile: sessionConfigFile("claude", process.env),
+      userAgent: CLAUDE_ENVOY_USER_AGENT,
     })
 
     await delivery.enqueue({ subject: directSubject, raw: rejectedCommentFrameRaw })
@@ -897,6 +953,7 @@ test("drops a malformed targeted frame that has no reply address", async () => {
     identity: new SessionIdentity("ses_claude", "/tmp"),
     notifier,
     configFile: sessionConfigFile("claude", process.env),
+    userAgent: CLAUDE_ENVOY_USER_AGENT,
   })
 
   await delivery.enqueue({

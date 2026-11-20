@@ -1821,6 +1821,8 @@ describe("the dispatch entry as its own process", () => {
 
   // The bundle a host plugin ships, built as both hosts build it, under a manifest of its own: the
   // name it sends is the plugin's beside the bundle, never envoy-client's, which it was built from.
+  // A record's dry run (`dispatch result --dry-run`) runs through a call of its own, so it is
+  // checked beside the record's.
   test("a host plugin's bundle names the plugin and its release in every request's User-Agent", async () => {
     const plugin = makeDirectory();
     writeFileSync(
@@ -1832,15 +1834,21 @@ describe("the dispatch entry as its own process", () => {
       join(plugin, "dist"),
     ]);
     expect(build.exitCode, build.stderr.toString()).toBe(0);
+    const bundle = join(plugin, "dist", "dispatch.js");
 
-    const { code, stdout } = await spawnDispatch(
+    for (const argv of [
       ["message", "--issue", "DSP-1", "--body", "hi"],
-      join(plugin, "dist", "dispatch.js")
-    );
+      [...RESULT_ARGV, "--dry-run"],
+    ]) {
+      userAgents.length = 0;
+      const { code, stdout } = await spawnDispatch(argv, bundle);
 
-    expect(code, stdout).toBe(0);
-    expect(userAgents.length).toBeGreaterThan(0);
-    expect(new Set(userAgents)).toEqual(new Set(["dispatch/9.8.7 (@example/host-plugin)"]));
+      expect(code, `${argv[0]}: ${stdout}`).toBe(0);
+      expect(userAgents.length, argv[0]).toBeGreaterThan(0);
+      expect(new Set(userAgents), argv.join(" ")).toEqual(
+        new Set(["dispatch/9.8.7 (@example/host-plugin)"])
+      );
+    }
   }, 30_000);
 });
 

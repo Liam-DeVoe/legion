@@ -218,7 +218,7 @@ export const MCP_SERVER_INFO = { name: "envoy", version: packageVersion } as con
 
 /** What every Dispatch request of this server names it as: the program and the package's release.
  *  The hooks and the `dispatch` command name themselves apart. */
-const CLAUDE_ENVOY_USER_AGENT = `claude-envoy/${packageVersion}`
+export const CLAUDE_ENVOY_USER_AGENT = `claude-envoy/${packageVersion}`
 
 /**
  * What a session takes, which Dispatch checks every targeted delivery against.
@@ -396,6 +396,12 @@ export interface ChannelSessionOptions {
   /** Ends a start still waiting for its connection to come back (`flushThroughRedials`): the
    *  process is stopping. */
   readonly startSignal?: AbortSignal
+  /**
+   * The program that answers a rejected Dispatch frame on Dispatch, as its `User-Agent`
+   * (`postDispatchReply`): the Codex server's session names its own (`CODEX_ENVOY_USER_AGENT`);
+   * omitted, the session is this server's and names `claude-envoy/<version>`.
+   */
+  readonly userAgent?: string
   /** How long a deregistration waits for a registration already on the wire (default
    *  `REGISTRATION_SETTLE_MS`), past which the DELETE goes out anyway. The shutdown path spends
    *  at most `SHUTDOWN_SETTLE_MS` of it, over both of its waits. */
@@ -504,15 +510,15 @@ class UnsupportedEnvoyToolError extends Error {
  * or the error that stopped it, so the sender sees the attempt fail instead of waiting on a reply
  * that never comes. `followUp` asks Dispatch to post an answer to an attempt its first reply
  * already settled, which every answer after the first needs (`postDeliveryReply`). `userAgent`
- * names the program that answers: this server by default, the Codex server for its own
- * (`CODEX_ENVOY_USER_AGENT`).
+ * names the program that answers, which every caller gives: this server's own, or the Codex
+ * server's (`CODEX_ENVOY_USER_AGENT`).
  */
 export async function postDispatchReply(
   identity: SessionIdentity,
   configFile: SessionConfigFile,
   delivery: DispatchDelivery,
   result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
-  userAgent: string = CLAUDE_ENVOY_USER_AGENT,
+  userAgent: string,
 ): Promise<void> {
   const config = sessionDispatchSettings(configFile, process.env, {
     cwd: identity.directory,
@@ -541,6 +547,8 @@ export function createChannelDelivery(input: {
   readonly notifier: ChannelNotifier
   /** The session's envoy.json, which a rejected Dispatch frame's reply reads. */
   readonly configFile: SessionConfigFile
+  /** The program that answers a rejected Dispatch frame on Dispatch (`postDispatchReply`). */
+  readonly userAgent: string
   /** What a person's own message, command, pick or BTW becomes; omitted, every frame is a card. */
   readonly router?: () => UserTurnRouter | undefined
 }): ChannelDeliveryPath {
@@ -613,9 +621,13 @@ export function createChannelDelivery(input: {
         process.stderr.write(
           `envoy-channel: rejecting malformed Dispatch targeted delivery ${rejected.id}\n`,
         )
-        return postDispatchReply(input.identity, input.configFile, rejected, {
-          error: "Invalid Dispatch targeted delivery frame",
-        }).then(
+        return postDispatchReply(
+          input.identity,
+          input.configFile,
+          rejected,
+          { error: "Invalid Dispatch targeted delivery frame" },
+          input.userAgent,
+        ).then(
           () => false,
           (error: unknown) => {
             process.stderr.write(
@@ -822,6 +834,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     identity,
     notifier: options.notifier,
     configFile: options.configFile,
+    userAgent: options.userAgent ?? CLAUDE_ENVOY_USER_AGENT,
     router: () => router,
   })
   const userTopics = new Set<string>()
@@ -2763,7 +2776,8 @@ export async function runEnvoyChannelServer(): Promise<void> {
       },
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),
-      reply: (delivery, result) => postDispatchReply(identity, configFile, delivery, result),
+      reply: (delivery, result) =>
+        postDispatchReply(identity, configFile, delivery, result, CLAUDE_ENVOY_USER_AGENT),
       session: claude,
       sessionId: () => identity.id,
       state,

@@ -455,6 +455,7 @@ export async function runDispatchCli(
         config,
         env,
         ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
+        ...(io.userAgent === undefined ? {} : { userAgent: io.userAgent }),
         dryRun: true,
       });
       print(`${JSON.stringify(parsed.args, null, 2)}\n\n${result.text}`);
