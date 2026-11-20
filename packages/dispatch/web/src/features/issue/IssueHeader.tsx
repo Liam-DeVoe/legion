@@ -68,7 +68,7 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { refusedNote, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
@@ -78,6 +78,12 @@ import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
+import { ParentStatusDialog } from "./parent-status/ParentStatusDialog";
+import {
+  isParentStatusConflict,
+  issueHasParentOrOpenChild,
+  useParentStatusMove,
+} from "./parent-status/useParentStatusMove";
 import { stateForIssue } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
@@ -183,6 +189,11 @@ export function IssueHeader({
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
     },
   });
+  // Every status write of the header - the select, Close, Reopen and the palette's rows - goes
+  // through the rule's question (`useParentStatusMove`): a dry run first for an issue with a
+  // parent or an open child, then the write below as before, or the question where Dispatch's
+  // rule would refuse it.
+  const parentStatus = useParentStatusMove();
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
   // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
@@ -193,6 +204,14 @@ export function IssueHeader({
     label: (input) => issueUpdateLabel(issue.key, input),
     target: () => `issue:${issue.key}`,
     request: (input: IssueUpdateInput) => issuePatchRequest(issue.key, input),
+    onError: (error, input) => {
+      // A status the page took for one the rule could not refuse, which Dispatch refused under
+      // it all the same: the page read the parent or the children before they changed. It asks
+      // as a refused dry run does.
+      if (statusPickOnly(input) && input.status !== undefined && isParentStatusConflict(error)) {
+        void parentStatus.ask({ key: issue.key, status: input.status }, error);
+      }
+    },
     onSettled: (_data, error) => {
       drafts.onIssueSettled(error);
     },
@@ -216,6 +235,17 @@ export function IssueHeader({
     },
   });
   const drafts = useIssueDrafts(issue, updateIssue);
+  const requestStatus = (status: string) => {
+    void parentStatus.move({
+      key: issue.key,
+      patch: () => drafts.requestStatusSubmit(status),
+      related: issueHasParentOrOpenChild(issue),
+      status,
+    });
+  };
+  // A status write is out, or the rule's question is checking or asking about one: no second
+  // status write can start.
+  const statusBusy = updateIssue.isPending || parentStatus.pending !== undefined;
   // Palette-only: closing and reopening an issue are too consequential for a single key, so they
   // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
   // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.
@@ -224,17 +254,17 @@ export function IssueHeader({
       id: "close",
       keys: [],
       label: "Close issue",
-      run: () => drafts.requestStatusSubmit("done"),
-      // `disabled={updateIssue.isPending}` on the button, and `isClosed` decides whether it is
-      // rendered at all; a row offered while the write is in flight would submit a second one.
-      when: () => !isClosed && !updateIssue.isPending,
+      run: () => requestStatus("done"),
+      // `disabled={statusBusy}` on the button, and `isClosed` decides whether it is rendered at
+      // all; a row offered while a status write is in flight would submit a second one.
+      when: () => !isClosed && !statusBusy,
     },
     {
       id: "reopen",
       keys: [],
       label: "Reopen issue",
-      run: () => drafts.requestStatusSubmit("backlog"),
-      when: () => isClosed && !updateIssue.isPending,
+      run: () => requestStatus("backlog"),
+      when: () => isClosed && !statusBusy,
     },
     ...([0, 1, 2, 3] as const).map((level) => ({
       id: `set-p${level}`,
@@ -245,8 +275,14 @@ export function IssueHeader({
       when: () => !(isClosed || updateIssue.isPending),
     })),
   ]);
-  const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
-  const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
+  // The status the select and the closed line show while it is out: the one the rule's question
+  // is checking or asking about, else the one the write is saving.
+  const checkingStatus = parentStatus.pending?.status;
+  const statusSaving =
+    checkingStatus !== undefined ||
+    (updateIssue.isPending && updateIssue.variables?.status !== undefined);
+  const pendingStatus =
+    checkingStatus ?? (statusSaving ? updateIssue.variables?.status : undefined);
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
@@ -406,8 +442,8 @@ export function IssueHeader({
           <button
             aria-label="Reopen issue"
             className={`min-h-11 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-            disabled={updateIssue.isPending}
-            onClick={() => drafts.requestStatusSubmit("backlog")}
+            disabled={statusBusy}
+            onClick={() => requestStatus("backlog")}
             title="Reopen into Backlog"
             type="button"
           >
@@ -500,8 +536,8 @@ export function IssueHeader({
             <select
               aria-label="Status"
               className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
-              disabled={isClosed || updateIssue.isPending}
-              onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
+              disabled={isClosed || statusBusy}
+              onChange={(event) => requestStatus(event.target.value)}
               value={pendingStatus ?? issue.status}
             >
               {selectableStatuses.map((status) => (
@@ -586,8 +622,8 @@ export function IssueHeader({
             <button
               aria-label="Close issue"
               className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-              disabled={updateIssue.isPending}
-              onClick={() => drafts.requestStatusSubmit("done")}
+              disabled={statusBusy}
+              onClick={() => requestStatus("done")}
               type="button"
             >
               {pendingStatus === "done" ? (
@@ -840,6 +876,16 @@ export function IssueHeader({
               : "Saving…"}
         </span>
       ) : null}
+      {parentStatus.refusal === undefined ? null : (
+        // The dry run of a status pick was refused, so the pick went back: the header says why,
+        // as it says why for a write it shows refused itself.
+        <p className={`mt-1 text-sm ${dangerText}`} role="alert">
+          {refusedNote(`change the status of ${issue.key}`, parentStatus.refusal)}
+        </p>
+      )}
+      {parentStatus.question === undefined ? null : (
+        <ParentStatusDialog question={parentStatus.question} />
+      )}
       {subscribersOpen ? (
         <SubscribedAgents
           onUnsubscribe={(sessionId) => unsubscribe.mutate(sessionId)}

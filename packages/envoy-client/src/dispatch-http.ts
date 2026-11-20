@@ -72,6 +72,8 @@ import type {
   ResolveAskInput,
   SearchResponse,
   SessionAnswersResponse,
+  StatusChangeAnswer,
+  StatusChangeInput,
   Suggestions,
   UpdateIssueInput,
   Version,
@@ -136,7 +138,11 @@ export class DispatchServiceError extends Error {
     message: string,
     readonly candidates?: DispatchServiceErrorShape["candidates"],
     readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
+    /** A `409 PARENT_STATUS_CONFLICT`'s issues: each one the write would leave out of line. */
+    readonly issues?: DispatchServiceErrorShape["issues"],
+    /** A status change's refusal: the entry of each step that wrote before it. */
+    readonly changed?: DispatchServiceErrorShape["changed"]
   ) {
     super(message);
   }
@@ -379,6 +385,23 @@ function resultDryRunNoRouteRefusal(baseUrl: string, route: string): DispatchSer
     `Dispatch at ${urlForText(baseUrl, DISPATCH_URL_SETTING)} answered no route for ${route} each ` +
       "time the dry run was sent: this build is older than a result's dry run, so it cannot show " +
       "the pull-request body line before the record. Nothing was recorded."
+  );
+}
+
+/**
+ * What `changeIssueStatus` throws once the Dispatch at `baseUrl` answered no route for `route` each
+ * time the write was sent: a build older than the status change route. The code and status are
+ * that answer's. The PATCH is never sent in its place, since a PATCH takes no option and would
+ * write the status without what the option asks for, so the message says that nothing changed.
+ */
+function statusChangeNoRouteRefusal(baseUrl: string, route: string): DispatchServiceError {
+  return new DispatchServiceError(
+    "NOT_FOUND",
+    404,
+    `Dispatch at ${urlForText(baseUrl, DISPATCH_URL_SETTING)} answered no route for ${route} each ` +
+      "time the status change was sent. This build is older than that route, so it takes no " +
+      "include_children, unlink_children or include_parent, and nothing changed. No PATCH was " +
+      "sent in its place, since a PATCH would write the status without the option."
   );
 }
 
@@ -1245,6 +1268,28 @@ export class DispatchClient {
   /** `PATCH /api/v1/issues/{key}`: the server replaces every field the body names. */
   async updateIssue(issue: string, input: UpdateIssueInput): Promise<Advised<Issue>> {
     return this.#json("PATCH", ["api", "v1", "issues", await this.#resolveIssue(issue)], input);
+  }
+
+  /**
+   * `POST /api/v1/issues/{key}/status-change`: writes the issue's status and, with an option, what
+   * happens to the open issues under it or to the issues above it, so each parent's status stays
+   * in line with its children's. The answer is the issue and one `changed` entry for each issue
+   * whose status or parent the call changed, in the order the steps ran. A refusal carries
+   * `changed` too: the entries of the steps that wrote before it (`DispatchServiceError`).
+   *
+   * A build without the route answers no route each time the write is sent (`#write` asks again
+   * as for every write), and this then throws `statusChangeNoRouteRefusal`'s refusal. No PATCH is
+   * sent in its place, since a PATCH would write the status without the option.
+   */
+  async changeIssueStatus(issue: string, input: StatusChangeInput): Promise<StatusChangeAnswer> {
+    const path = ["api", "v1", "issues", await this.#resolveIssue(issue), "status-change"];
+    try {
+      return await this.#json("POST", path, input);
+    } catch (error) {
+      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
+      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
+      throw statusChangeNoRouteRefusal(this.#baseUrl, route);
+    }
   }
 
   /** `POST /api/v1/issues/{key}/claim`: this session takes the issue. 409 ISSUE_CLAIMED when a
@@ -2813,7 +2858,9 @@ export class DispatchClient {
           error.error,
           error.candidates,
           error.current,
-          error.mismatches
+          error.mismatches,
+          error.issues,
+          error.changed
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

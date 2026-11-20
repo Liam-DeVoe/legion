@@ -170,6 +170,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 	return slices.Concat(dispatchSandboxTailnetGroup, dispatchSandboxSignInGroup, []dispatchInput{
 		{"outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = dispatchOutsideOrigin }},
 		{"signInOutside", func(a *gcp.DispatchArgs) { a.SignInOutside = true }},
+		{"parentStatusRule", func(a *gcp.DispatchArgs) { a.ParentStatusRule = true }},
 		{"publicOrigin", func(a *gcp.DispatchArgs) { a.PublicOrigin = dispatchPublicOrigin }},
 		{"iapAudience", func(a *gcp.DispatchArgs) { a.IapAudience = pulumi.String(dispatchIAPAudience) }},
 		{"loadBalancerSourceRanges", func(a *gcp.DispatchArgs) { a.LoadBalancerSourceRanges = dispatchLoadBalancerRanges }},

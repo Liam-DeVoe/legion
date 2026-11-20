@@ -340,12 +340,68 @@ const ISSUE_UPDATE_FIELDS_RULE =
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
-const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}.`;
+
+/** The options of dispatch_issue_update that say what happens to the issues under the issue or
+ *  above it when its status changes. A call that sets one to true sends the status change route
+ *  (`POST /api/v1/issues/{key}/status-change`) in place of the PATCH, and that route takes the
+ *  status and no other field of the PATCH. */
+export const ISSUE_STATUS_OPTIONS = [
+  "include_children",
+  "unlink_children",
+  "include_parent",
+] as const;
+
+/** The fields of dispatch_issue_update the status change route does not take, so no option goes
+ *  with one of them. */
+const ISSUE_UPDATE_PATCH_FIELDS = [
+  "title",
+  "labels",
+  "priority",
+  "assignee",
+  "external_links",
+  "route",
+  "parent",
+  "blocked_by",
+  "advances",
+  "advances_revision",
+  "components",
+  "repo",
+  "before",
+  "after",
+] as const;
+
+const ISSUE_UPDATE_OPTIONS_RULE =
+  "include_children, unlink_children and include_parent go with status, and with reason when the status is done, and with no other field. include_children does not go with unlink_children.";
+const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}. ${ISSUE_UPDATE_OPTIONS_RULE}`;
+
+/** The refusal of the parts of the options' rule `input` breaks, or undefined when it keeps it or
+ *  sets no option to true. An option set to false asks for nothing, so the rule does not read it. */
+function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): string | undefined {
+  const options = ISSUE_STATUS_OPTIONS.filter((option) => input[option] === true);
+  if (options.length === 0) return undefined;
+  const named = options.join(", ").replace(/, ([^,]*)$/, " and $1");
+  const others = ISSUE_UPDATE_PATCH_FIELDS.filter((field) => input[field] !== undefined);
+  return brokenParts([
+    [
+      !(input["include_children"] === true && input["unlink_children"] === true),
+      "include_children does not go with unlink_children. The open children move with the issue or leave it, so name one of the two.",
+    ],
+    [
+      typeof input["status"] === "string",
+      `status is required with ${named}. Add status, or drop ${named}.`,
+    ],
+    [
+      others.length === 0,
+      `With ${named}, give status alone, and reason when the status is done. This call also names ${others.join(", ")}. Send those fields in a call of their own.`,
+    ],
+  ]);
+}
 
 /** The refusal of the part of dispatch_issue_update's rule `value` breaks, or undefined when it
  *  keeps the rule: reason is the close's note, so it goes with status done and with nothing else,
- *  and the update names at least one field to change. `check` and `refusal` both read this one
- *  function, so the refusal never names a part the call kept. */
+ *  an option of the status change goes with status alone, and the update names at least one field
+ *  to change. `check` and `refusal` both read this one function, so the refusal never names a
+ *  part the call kept. */
 function issueUpdateProblem(value: unknown): string | undefined {
   const input = value as {
     readonly status?: unknown;
@@ -373,6 +429,8 @@ function issueUpdateProblem(value: unknown): string | undefined {
       typeof input.status === "string" ? `status ${input.status}` : "an update without status done";
     return `${ISSUE_UPDATE_REASON_RULE}: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
   }
+  const optionsProblem = issueStatusOptionsProblem(value as Readonly<Record<string, unknown>>);
+  if (optionsProblem !== undefined) return optionsProblem;
   const changesAField =
     typeof input.status === "string" ||
     typeof input.title === "string" ||
@@ -912,6 +970,13 @@ export const dispatchToolSpecs = [
       "with status done. Closing an issue withdraws every open ask " +
       "it holds (resolution kind withdrawn, naming the closer), and reopening it brings exactly " +
       "those asks back. " +
+      "Dispatch puts the statuses in three groups: not started (triage, icebox, backlog), in work " +
+      "(todo, in_progress, testing, needs_review, retro) and done. A parent is done only when each " +
+      "child is done, and while a child is in work its parent is in work. Where Dispatch keeps " +
+      "this rule, it refuses a status or parent change that breaks it with 409 " +
+      "PARENT_STATUS_CONFLICT, which names each issue that holds it. include_children, " +
+      "unlink_children and include_parent tell Dispatch what to do with those issues. Each goes " +
+      "with status alone, and with reason when the status is done. " +
       "A closed issue still takes messages and comments, though not asks or artifacts; of this " +
       "tool's fields it takes only a board move " +
       "(before, after), components, " +
@@ -937,6 +1002,24 @@ export const dispatchToolSpecs = [
         .string()
         .describe(
           `Required with status done, and only with it: why the issue is closing. Posted on the issue as a message before it closes. ${BODY_BLOCK_RULE}`
+        )
+        .optional(),
+      include_children: z
+        .boolean()
+        .describe(
+          "With status, also write that status on each open issue under this issue, at any depth, whose status is in another group. Dispatch refuses it with status done from a token (403 BROWSER_SIGN_IN_REQUIRED): only a person signed in at a browser closes the open issues under an issue together with it."
+        )
+        .optional(),
+      unlink_children: z
+        .boolean()
+        .describe(
+          "With status, also remove each open child from this issue, so that it has no parent. Each child keeps its status, and a done child stays."
+        )
+        .optional(),
+      include_parent: z
+        .boolean()
+        .describe(
+          "With status, also move each issue above this issue that is not in work to in_progress, a done one included."
         )
         .optional(),
       title: z
@@ -2169,7 +2252,8 @@ export const dispatchToolSpecs = [
       "pages shifts rows across a page boundary, so one issue can come back twice and another never. " +
       "all takes the whole filtered list in one read instead, for a caller that must not miss or " +
       "repeat a row while other writers change the list, and especially for one whose own writes " +
-      "move issues out of what it filtered on.",
+      "move issues out of what it filtered on. json prints the listing as one JSON object, for a " +
+      "program such as jq to read.",
     arguments: (z) => ({
       project: z.string().describe("Project key to list issues from."),
       status: z.enum(ISSUE_STATUSES).describe("Optional lifecycle status filter.").optional(),
@@ -2209,6 +2293,14 @@ export const dispatchToolSpecs = [
         .describe(
           "Take every matching issue in one unpaged read, so no row is missed or repeated while " +
             "the list changes. Refused with limit or offset."
+        )
+        .optional(),
+      json: z
+        .boolean()
+        .describe(
+          "Print the listing as one JSON object and nothing else: {issues, total, offset, limit}, " +
+            "each issue with its status, parent and labels. The dispatch command prints it whole, " +
+            "also on a host that cuts long output."
         )
         .optional(),
     }),

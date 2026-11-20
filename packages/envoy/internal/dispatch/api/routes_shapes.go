@@ -694,6 +694,14 @@ var routeShapes = map[string]routeShape{
 	"PATCH /api/v1/issues/{key}": {
 		Status: http.StatusOK, Response: model.Issue{}, Request: updateIssueInput{}, Advice: writeAdvice{},
 	},
+	"POST /api/v1/issues/{key}/status-change": {
+		Status: http.StatusOK, Response: statusChangeAnswer{}, Request: statusChangeInput{},
+		Refusals: []routeAnswer{
+			{Status: http.StatusConflict, Body: statusChangeConflict{}},
+			{Status: http.StatusConflict, Body: statusChangeRefusal{}},
+			{Status: http.StatusForbidden, Body: statusChangeRefusal{}},
+		},
+	},
 	"POST /api/v1/issues/{key}/claim": {
 		Status: http.StatusOK, Response: claimAnswer{}, Request: claimIssueInput{},
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},

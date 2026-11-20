@@ -213,6 +213,10 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
+	// a parent's status out of line with its children's (R24) is refused 409
+	// PARENT_STATUS_CONFLICT. The zero value is off.
+	ParentStatusRule ParentStatusRule
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -305,6 +309,8 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE; see Deps.ParentStatusRule.
+	ParentStatusRule ParentStatusRule
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -396,6 +402,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Metrics:                input.Metrics,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		ParentStatusRule:       input.ParentStatusRule,
 	}, nil
 }
 
@@ -571,6 +578,11 @@ type server struct {
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
 	// body it held back once the repeat is waiting on it.
 	repeatFoundInFlight func()
+	// statusChangeAfterStep is called after each step of a status change commits, with the
+	// step's index in the call's plan (status_change.go); nil, which every server the deployment
+	// builds leaves it, calls nothing. Only a test sets it, to make another writer's write between
+	// two steps of one call.
+	statusChangeAfterStep func(ctx context.Context, step int)
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
@@ -844,9 +856,9 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
 	s.routeIndex = routeIndexEntries(routes)
-	replays := s.keyedReplays()
+	keyed := s.keyedReplays()
 	for _, route := range routes {
-		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, replays[route.Method+" "+route.Pattern]))
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, keyed[route.Method+" "+route.Pattern]))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -864,12 +876,12 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // routeHandler is the chain register mounts one row of the table behind: the row's own handler
 // inside every layer the row runs, in the one order every row runs them. It is the one place that
 // order is written, so register and a test that walks the table with each row's handler replaced
-// (read_only_token_test.go) build the same chain. replay is the row's keyed replay
-// (keyedReplays), nil for a row that has none.
-func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
+// (read_only_token_test.go) build the same chain. keyed is the row's entry of keyedReplays, the
+// zero value for a row that has none.
+func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc {
 	handler := route.Handler
 	if keyedMethod(route.Method) {
-		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
+		handler = s.keyedWrites(route.Method, route.Pattern, handler, keyed)
 	}
 	if route.Method+" "+route.Pattern == issueUploadRoute {
 		handler = s.refuseUploadToAClosedIssue(handler)
@@ -1273,12 +1285,20 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 	if err != nil {
 		return model.Actor{}, err
 	}
+	return recordedActor(r, actor, present, supplied)
+}
+
+// recordedActor is actorFrom for a caller that optionalActor already resolved: the caller, when
+// present says the caller is a person at a browser, else the session that bearerSessionActor
+// resolves, with no credential.
+func recordedActor(r *http.Request, caller model.Actor, present bool, supplied *model.Actor) (model.Actor, error) {
 	if !present {
-		if actor, err = bearerSessionActor(r, actor, supplied); err != nil {
+		var err error
+		if caller, err = bearerSessionActor(r, caller, supplied); err != nil {
 			return model.Actor{}, err
 		}
 	}
-	return actor.Recorded(), nil
+	return caller.Recorded(), nil
 }
 
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own
