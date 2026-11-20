@@ -493,7 +493,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       {
         claimToken: "legion-legion-legion-208-implementer",
         sessionId: "ses_implementer",
-        secret: "secret-208",
+        secret: CLAIM_SECRET,
         waitingOn: "the review of LEGION-207's pull request",
         wakeAt: "2026-11-14T08:00:00Z",
       },
@@ -505,7 +505,7 @@ test("posts every Stage 3 workflow request through its matching route", async ()
       {
         claimToken: "legion-legion-legion-208-implementer",
         sessionId: "ses_implementer",
-        secret: "secret-208",
+        secret: CLAIM_SECRET,
         waitId: "3f6c2a9e-8b14-4d7a-9e25-1c0b7f4d2a68",
       },
       "wait-news.json",
