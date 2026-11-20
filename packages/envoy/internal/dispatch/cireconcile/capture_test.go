@@ -243,7 +243,7 @@ func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t 
 // publish no settlement: the pass writes the observations the webhooks already wrote, and
 // cistore applies an unchanged observation as no change. It is k5 end to end.
 func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(capturedRepository)
 	h.github.setRepository(capturedRepository, capturedRepository, 555)
 	// The one open pull request the captured page answers, and the captured page itself as the

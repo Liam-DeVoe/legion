@@ -39,7 +39,12 @@
       "args": ["_", "lead-reviewer"],
       "want": "notifications.role._.lead-reviewer"
     },
-    { "fn": "legionWakeSubject", "args": ["priv"], "want": "notifications.legion.priv.wake" }
+    { "fn": "legionWakeSubject", "args": ["priv"], "want": "notifications.legion.priv.wake" },
+    {
+      "fn": "githubMergeGroupSubject",
+      "args": ["acme", "site.io"],
+      "want": "notifications.github.acme.site_io.merge_group"
+    }
   ],
   "issueProject": [
     { "key": "INFRA-12", "project": "INFRA", "ok": true },
@@ -141,6 +146,12 @@
       "subject": "notifications.github.sjawhar._github.push.branch.main",
       "project": "",
       "repo": "sjawhar/_github",
+      "ok": true
+    },
+    {
+      "subject": "notifications.github.acme.widgets.merge_group",
+      "project": "",
+      "repo": "acme/widgets",
       "ok": true
     },
     { "subject": "notifications.slack.T1.C1.message", "project": "_", "repo": "", "ok": true },

@@ -83,7 +83,7 @@ func readSubjectProjectFixture(t *testing.T) subjectProjectFixture {
 	// Each section held at least this many rows when this was written: a read that answers a
 	// handful of them, or none, passes while covering nothing.
 	for section, count := range map[string][2]int{
-		"builders":       {len(fixture.Builders), 7},
+		"builders":       {len(fixture.Builders), 8},
 		"issueProject":   {len(fixture.IssueProject), 8},
 		"roleProject":    {len(fixture.RoleProject), 10},
 		"subjectProject": {len(fixture.SubjectProject), 38},
@@ -104,11 +104,12 @@ func readSubjectProjectFixture(t *testing.T) subjectProjectFixture {
 
 func TestTheGeneratedBuildersWriteTheSharedFixturesNames(t *testing.T) {
 	builders := map[string]func(args []string) string{
-		"dispatchIssueSubject": func(args []string) string { return DispatchIssueSubject(args[0], args[1], args[2]) },
-		"agentSubject":         func(args []string) string { return AgentSubject(args[0], args[1]) },
-		"legacyAgentSubject":   func(args []string) string { return LegacyAgentSubject(args[0]) },
-		"roleSubject":          func(args []string) string { return RoleSubject(args[0], args[1]) },
-		"legionWakeSubject":    func(args []string) string { return LegionWakeSubject(args[0]) },
+		"dispatchIssueSubject":    func(args []string) string { return DispatchIssueSubject(args[0], args[1], args[2]) },
+		"agentSubject":            func(args []string) string { return AgentSubject(args[0], args[1]) },
+		"legacyAgentSubject":      func(args []string) string { return LegacyAgentSubject(args[0]) },
+		"roleSubject":             func(args []string) string { return RoleSubject(args[0], args[1]) },
+		"legionWakeSubject":       func(args []string) string { return LegionWakeSubject(args[0]) },
+		"githubMergeGroupSubject": func(args []string) string { return GithubMergeGroupSubject(args[0], args[1]) },
 	}
 	for _, row := range readSubjectProjectFixture(t).Builders {
 		build, ok := builders[row.Fn]

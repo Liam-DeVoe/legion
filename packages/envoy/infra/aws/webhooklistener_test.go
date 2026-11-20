@@ -49,7 +49,7 @@ func exampleListenerArgs() *envoyaws.WebhookListenerArgs {
 		Webhooks:                []string{"github", "slack"},
 		GitHubWebhookSecretArn:  pulumi.String(listenerSecretArn + "github-webhook"),
 		SlackSigningSecretArn:   pulumi.String(listenerSecretArn + "slack-signing"),
-		ReviewerAppId:           pulumi.StringRef("1234567"),
+		VerdictAppId:            pulumi.StringRef("1234567"),
 
 		ClusterArn:        pulumi.String("example-cluster-arn"),
 		ExecutionRoleArn:  pulumi.String("example-execution-role-arn"),
@@ -86,7 +86,7 @@ func exampleListenerArgs() *envoyaws.WebhookListenerArgs {
 // listener-no-webhooks-seed.golden, the reference's own render of the empty list.
 func noWebhooks(a *envoyaws.WebhookListenerArgs) {
 	a.Webhooks = []string{}
-	a.GitHubWebhookSecretArn, a.SlackSigningSecretArn, a.ReviewerAppId, a.MentionTrigger = nil, nil, nil, nil
+	a.GitHubWebhookSecretArn, a.SlackSigningSecretArn, a.VerdictAppId, a.MentionTrigger = nil, nil, nil, nil
 }
 
 // exampleListenerOutputs are the outputs exampleListenerArgs give, under their schema names: in a
@@ -378,7 +378,7 @@ func TestWebhookListenerAdoptAliasesEachChildToItsRootLevelName(t *testing.T) {
 
 // A listener that serves no webhook carries none of a webhook's settings or secrets: no
 // ENVOY_WEBHOOKS, which the listener reads as no route to mount, no ENVOY_GITHUB_MENTION_TRIGGER
-// or ENVOY_REVIEWER_APP_ID, and neither signing secret. Its API token and seed stay.
+// or ENVOY_VERDICT_APP_ID, and neither signing secret. Its API token and seed stay.
 func TestWebhookListenerWithNoWebhooksWritesNoWebhookSetting(t *testing.T) {
 	args := exampleListenerArgs()
 	noWebhooks(args)
@@ -500,7 +500,7 @@ func TestWebhookListenerValidate(t *testing.T) {
 		{
 			name: "a github secret with github unlisted",
 			mutate: func(a *envoyaws.WebhookListenerArgs) {
-				a.Webhooks, a.ReviewerAppId, a.MentionTrigger = []string{"slack"}, nil, nil
+				a.Webhooks, a.VerdictAppId, a.MentionTrigger = []string{"slack"}, nil, nil
 			},
 			err: `githubWebhookSecretArn is given for webhook "github", which webhooks does not list`,
 		},
@@ -639,7 +639,7 @@ func TestListenerContainerDefinitionsWriteEachWebhookOnlyWhenListed(t *testing.T
 	golden := readGolden(t, "listener-github-slack-no-seed.golden")
 	const (
 		webhooks      = `{"name": "ENVOY_WEBHOOKS", "value": "github,slack"}`
-		gitHubEnv     = `, {"name": "ENVOY_GITHUB_MENTION_TRIGGER", "value": "@legion"}, {"name": "ENVOY_REVIEWER_APP_ID", "value": "1234567"}`
+		gitHubEnv     = `, {"name": "ENVOY_GITHUB_MENTION_TRIGGER", "value": "@legion"}, {"name": "ENVOY_VERDICT_APP_ID", "value": "1234567"}`
 		gitHubSecret  = `{"name": "ENVOY_GITHUB_WEBHOOK_SECRET", "valueFrom": "` + listenerSecretArn + `github-webhook"}, `
 		slackSecret   = `{"name": "ENVOY_SLACK_SIGNING_SECRET", "valueFrom": "` + listenerSecretArn + `slack-signing"}, `
 		gitHubOnlyVar = `{"name": "ENVOY_WEBHOOKS", "value": "github"}`
@@ -655,7 +655,7 @@ func TestListenerContainerDefinitionsWriteEachWebhookOnlyWhenListed(t *testing.T
 				ListenHost:     "0.0.0.0",
 				NatsReplicas:   1,
 				Webhooks:       webhooks,
-				ReviewerAppId:  &appID,
+				VerdictAppId:   &appID,
 				MentionTrigger: &trigger,
 			},
 			WebhookSecretArns: arns,
@@ -804,7 +804,7 @@ func TestWebhookListenerConstructTakesSecretArnsWithNoDependency(t *testing.T) {
 func TestWebhookListenerConstructTakesAnEmptyWebhooksListButNotAnOmittedOne(t *testing.T) {
 	withoutWebhookInputs := func() map[string]property.Value {
 		in := listenerInputs(t, fromUpstream)
-		for _, name := range []string{"githubWebhookSecretArn", "slackSigningSecretArn", "reviewerAppId", "mentionTrigger"} {
+		for _, name := range []string{"githubWebhookSecretArn", "slackSigningSecretArn", "verdictAppId", "mentionTrigger"} {
 			delete(in, name)
 		}
 		return in

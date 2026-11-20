@@ -51,7 +51,7 @@ type ListenerEnv struct {
 	ListenHost     string
 	NatsReplicas   int
 	Webhooks       []string
-	ReviewerAppId  *string // written only with github
+	VerdictAppId   *string // written only with github
 	MentionTrigger *string // written only with github
 	// The sender limit as the component's inputs give it, nil for an input left unset; Check
 	// refuses it by core.CheckSenderLimit.
@@ -70,7 +70,7 @@ func (e ListenerEnv) Check() error {
 	github := WebhookOwner(e.Webhooks, "github")
 	if err := CheckOwnedInputs([]OwnedInput{
 		// The listener refuses to start without it.
-		{Owner: github, Field: "reviewerAppId", Given: e.ReviewerAppId != nil, Set: set(e.ReviewerAppId)},
+		{Owner: github, Field: "verdictAppId", Given: e.VerdictAppId != nil, Set: set(e.VerdictAppId)},
 		// The listener would fall back to a trigger of its own without it.
 		{Owner: github, Field: "mentionTrigger", Given: e.MentionTrigger != nil, Set: set(e.MentionTrigger)},
 	}); err != nil {
@@ -130,7 +130,7 @@ func (e ListenerEnv) Variables() ([]string, error) {
 	if slices.Contains(e.Webhooks, "github") {
 		variables = append(variables,
 			"ENVOY_GITHUB_MENTION_TRIGGER="+*e.MentionTrigger,
-			"ENVOY_REVIEWER_APP_ID="+*e.ReviewerAppId,
+			"ENVOY_VERDICT_APP_ID="+*e.VerdictAppId,
 		)
 	}
 	return variables, nil

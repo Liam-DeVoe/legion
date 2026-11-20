@@ -145,10 +145,11 @@ type Reconciler struct {
 	// not made the bucket; a pass it fails for reads GitHub nothing and leaves the binding to a
 	// later one.
 	Open func() (Writer, error)
-	// ReviewerAppID is the review App's id, Dispatch's DISPATCH_REVIEWER_APP_ID. A verdict check
-	// (`tester`, `architect`) is recorded only when that App created it
-	// (contracts.ReviewerVerdictDecision); unset, no verdict check is recorded at all.
-	ReviewerAppID string
+	// VerdictAppID is the verdict App's id, Dispatch's DISPATCH_VERDICT_APP_ID. A verdict check
+	// (`legion-verdict`, `tester`, `architect`) is recorded only when that App created it
+	// (contracts.ReviewerVerdictDecision), and that App's own check suites and legion-verdict runs
+	// not at all (contracts.VerdictAppsOwn); unset, no verdict check is recorded at all.
+	VerdictAppID string
 	// Logger takes the one INFO line each pass writes and the WARN lines of what it skipped. It is
 	// required.
 	Logger *slog.Logger

@@ -17,7 +17,7 @@ import (
 // line report more heads open than the repository has, which is the number an operator reads
 // the pass's progress against.
 func TestAPageTwoPassesShareCountsItsHeadsOnce(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// Twenty-five heads are two pages, and every one of them is read over REST, so the pass can
 	// be cut short in the middle of the second page.
@@ -69,7 +69,7 @@ func TestAPageTwoPassesShareCountsItsHeadsOnce(t *testing.T) {
 // taking it up to the listing for every page left, so refusing the first page would leave no
 // page of the cycle read by a query at all.
 func TestACycleThatReadsARepositoryBothWaysCountsEachPageOnce(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
@@ -143,7 +143,7 @@ func TestACycleThatReadsARepositoryBothWaysCountsEachPageOnce(t *testing.T) {
 // is enough for that, and a number names the same place in the listing however many have closed
 // below it.
 func TestARepositoryReadOverRESTIsTakenUpAtTheNumberTheCursorNames(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// Forty-five heads are three windows of the REST listing.
 	all := heads(45)
@@ -214,7 +214,7 @@ const pullsPath = "/repos/" + gitHubRepository + "/pulls"
 // every position after it down, and the heads between would be read by no pass of this cycle
 // while the pass that closed the cycle recorded that it had covered them.
 func TestAPageAQueryWasRefusedForIsTakenUpAtItsNumber(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
@@ -290,7 +290,7 @@ func TestAPageAQueryWasRefusedForIsTakenUpAtItsNumber(t *testing.T) {
 // and nothing but its number still finds it. The pages of a query are read one after another,
 // and GitHub answers each of them from the pull requests open at the moment it is asked.
 func TestARefusedPageIsReadFromItsNumberWithinOnePass(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
@@ -345,7 +345,7 @@ func TestARefusedPageIsReadFromItsNumberWithinOnePass(t *testing.T) {
 // repository by query alone, with five pull requests below the second page merged between the
 // query that answered the first page and the query that asks for the second.
 func TestAMergeBelowAQueryCursorMovesNoPageOfTheQuery(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// Forty-five heads are three pages of a query.
 	all := heads(45)

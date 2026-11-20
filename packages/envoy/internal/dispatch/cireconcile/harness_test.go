@@ -43,9 +43,9 @@ const (
 	pullNumber = "7"
 	headSHA    = "abcdef1234567890abcdef1234567890abcdef12"
 
-	// The review App's id, and another App's, as GitHub's own JSON carries them: a number.
-	reviewerApp = 15368
-	otherApp    = 98765
+	// The verdict App's id, and another App's, as GitHub's own JSON carries them: a number.
+	verdictApp = 5341240
+	otherApp   = 98765
 
 	webhookSecret = "cireconcile-secret"
 )
@@ -61,9 +61,9 @@ const (
 	checkSuitesPath = "/repos/" + gitHubRepository + "/commits/" + headSHA + "/check-suites"
 )
 
-// reviewerAppID is the review App's id as a Reconciler and the listener's webhook take it: the
+// verdictAppID is the verdict App's id as a Reconciler and the listener's webhook take it: the
 // text of the number GitHub's own objects carry.
-var reviewerAppID = strconv.Itoa(reviewerApp)
+var verdictAppID = strconv.Itoa(verdictApp)
 
 // harness is one test's whole stack: the GitHub stand-in, a Postgres of this test's own with no
 // delivery_settings row, a NATS of its own carrying the listener's real CI store and its real
@@ -78,9 +78,9 @@ type harness struct {
 	webhook    http.HandlerFunc
 	logs       *syncBuffer
 	reconciler *Reconciler
-	// reviewer is the review App's id this test's listener and pass were built with, which
+	// verdictApp is the verdict App's id this test's listener and pass were built with, which
 	// startListener needs for the webhook handler it mounts.
-	reviewer string
+	verdictApp string
 	// issues counts the issues issueInRepository has recorded, so each one it records has a key
 	// and a number of its own without its caller passing them.
 	issues int
@@ -88,9 +88,9 @@ type harness struct {
 
 // newHarness is the whole stack with the listener already running, which every test wants but
 // the one about a pass that runs before the listener has made the CI bucket.
-func newHarness(t *testing.T, reviewer string) *harness {
+func newHarness(t *testing.T, verdictApp string) *harness {
 	t.Helper()
-	h := newHarnessBeforeTheListener(t, reviewer)
+	h := newHarnessBeforeTheListener(t, verdictApp)
 	h.startListener()
 	return h
 }
@@ -98,7 +98,7 @@ func newHarness(t *testing.T, reviewer string) *harness {
 // newHarnessBeforeTheListener is the stack with no CI bucket: NATS is up, so a pass runs, but
 // nothing has made envoy_ci_state yet, which is where a Dispatch process booted ahead of the
 // listener stands. startListener then makes the bucket, as the listener itself does.
-func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
+func newHarnessBeforeTheListener(t *testing.T, verdictApp string) *harness {
 	t.Helper()
 	ctx := t.Context()
 	database := storetest.Open(t)
@@ -113,22 +113,22 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 	limits := ratelimit.New(database.Pool)
 	github := newFakeGitHub(t)
 	return &harness{
-		t:        t,
-		ctx:      ctx,
-		github:   github,
-		pool:     database.Pool,
-		bus:      client,
-		logs:     logs,
-		reviewer: reviewer,
+		t:          t,
+		ctx:        ctx,
+		github:     github,
+		pool:       database.Pool,
+		bus:        client,
+		logs:       logs,
+		verdictApp: verdictApp,
 		reconciler: &Reconciler{
 			Pool:   database.Pool,
 			GitHub: github.client(limits),
 			Limits: limits,
 			// The writer is bound by the first pass that finds NATS connected and the bucket
 			// made, as the running pass binds it, rather than here.
-			Open:          openWriter(client),
-			ReviewerAppID: reviewer,
-			Logger:        slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+			Open:         openWriter(client),
+			VerdictAppID: verdictApp,
+			Logger:       slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 			// A test waits for no pace.
 			Pace: 0,
 		},
@@ -202,7 +202,7 @@ func (h *harness) startListener() {
 	cistore.StartSummaryLoop(loop, listener, h.bus, 100*time.Millisecond, 20*time.Millisecond,
 		metrics.New().NewGauge("held", ""), logging.New("loop"))
 	h.listener = listener
-	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.reviewer, h.bus, listener)
+	h.webhook = webhook.GitHubHandler(webhookSecret, "@legion", h.verdictApp, h.bus, listener)
 }
 
 // replica is a second Reconciler standing for the other Dispatch process of a deployment: a
@@ -212,13 +212,13 @@ func (h *harness) replica() *Reconciler {
 	h.t.Helper()
 	limits := ratelimit.New(h.pool)
 	return &Reconciler{
-		Pool:          h.pool,
-		GitHub:        h.github.client(limits),
-		Limits:        limits,
-		Open:          openWriter(h.bus),
-		ReviewerAppID: h.reviewer,
-		Logger:        slog.New(slog.NewJSONHandler(&syncBuffer{}, &slog.HandlerOptions{Level: slog.LevelDebug})),
-		Pace:          0,
+		Pool:         h.pool,
+		GitHub:       h.github.client(limits),
+		Limits:       limits,
+		Open:         openWriter(h.bus),
+		VerdictAppID: h.verdictApp,
+		Logger:       slog.New(slog.NewJSONHandler(&syncBuffer{}, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Pace:         0,
 	}
 }
 

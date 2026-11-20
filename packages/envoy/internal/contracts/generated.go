@@ -575,6 +575,16 @@ func GithubJobSubject(owner, repo, runID, action string) string {
 	return GithubRepositoryPrefix(owner, repo) + ".job." + SanitizeSubjectSegment(runID) + "." + action
 }
 
+// GithubMergeGroupKind is the kind a merge queue's merge_group event is published under, after its
+// repository. Generated from GITHUB_MERGE_GROUP_KIND in packages/contracts.
+const GithubMergeGroupKind = "merge_group"
+
+// GithubMergeGroupSubject names one repository's merge queue groups. Mirrored on the TS side as
+// `githubMergeGroupSubject`.
+func GithubMergeGroupSubject(owner, repo string) string {
+	return GithubSubject(owner, repo, GithubMergeGroupKind)
+}
+
 func GithubResourceSubject(owner string, repo string, resourceType string, resourceNumber string) string {
 	return GithubRepositoryPrefix(owner, repo) + "." + resourceType + "." + resourceNumber
 }

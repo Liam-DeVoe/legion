@@ -18,13 +18,13 @@ func listenerEnv() rendering.ListenerEnv {
 		ListenHost:     "0.0.0.0",
 		NatsReplicas:   1,
 		Webhooks:       []string{"github", "slack"},
-		ReviewerAppId:  &appID,
+		VerdictAppId:   &appID,
 		MentionTrigger: &trigger,
 	}
 }
 
 // withoutGitHub drops github's own inputs, as a listener that does not list github gives none.
-func withoutGitHub(e *rendering.ListenerEnv) { e.ReviewerAppId, e.MentionTrigger = nil, nil }
+func withoutGitHub(e *rendering.ListenerEnv) { e.VerdictAppId, e.MentionTrigger = nil, nil }
 
 // Check refuses each value the listener cannot run on, naming its input. This is the one table of
 // these refusals: aws:WebhookListener tests that its validate runs Check, and `envoy-infra render
@@ -64,14 +64,14 @@ func TestListenerEnvCheck(t *testing.T) {
 		},
 		// github's inputs while github is listed.
 		{
-			name:   "github without reviewerAppId",
-			mutate: func(e *rendering.ListenerEnv) { e.ReviewerAppId = nil },
-			input:  "reviewerAppId", err: `reviewerAppId is required with webhook "github"`,
+			name:   "github without verdictAppId",
+			mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = nil },
+			input:  "verdictAppId", err: `verdictAppId is required with webhook "github"`,
 		},
 		{
-			name:   "github with a blank reviewerAppId",
-			mutate: func(e *rendering.ListenerEnv) { e.ReviewerAppId = appID(" ") },
-			input:  "reviewerAppId", err: `reviewerAppId is required with webhook "github"`,
+			name:   "github with a blank verdictAppId",
+			mutate: func(e *rendering.ListenerEnv) { e.VerdictAppId = appID(" ") },
+			input:  "verdictAppId", err: `verdictAppId is required with webhook "github"`,
 		},
 		{
 			name:   "github without mentionTrigger",
@@ -80,23 +80,23 @@ func TestListenerEnvCheck(t *testing.T) {
 		},
 		// github's inputs while github is not listed, which would otherwise be dropped silently.
 		{
-			name:   "a reviewerAppId with github unlisted",
+			name:   "a verdictAppId with github unlisted",
 			mutate: func(e *rendering.ListenerEnv) { e.Webhooks, e.MentionTrigger = []string{"slack"}, nil },
-			input:  "reviewerAppId", err: `reviewerAppId is given for webhook "github", which webhooks does not list`,
+			input:  "verdictAppId", err: `verdictAppId is given for webhook "github", which webhooks does not list`,
 		},
 		{
 			name:   "a mentionTrigger with github unlisted",
-			mutate: func(e *rendering.ListenerEnv) { e.Webhooks, e.ReviewerAppId = []string{"slack"}, nil },
+			mutate: func(e *rendering.ListenerEnv) { e.Webhooks, e.VerdictAppId = []string{"slack"}, nil },
 			input:  "mentionTrigger", err: `mentionTrigger is given for webhook "github", which webhooks does not list`,
 		},
 		{
-			name:   "a reviewerAppId with no webhook",
+			name:   "a verdictAppId with no webhook",
 			mutate: func(e *rendering.ListenerEnv) { e.Webhooks, e.MentionTrigger = []string{}, nil },
-			input:  "reviewerAppId", err: `reviewerAppId is given for webhook "github", which webhooks does not list`,
+			input:  "verdictAppId", err: `verdictAppId is given for webhook "github", which webhooks does not list`,
 		},
 		{
 			name:   "a mentionTrigger with no webhook",
-			mutate: func(e *rendering.ListenerEnv) { e.Webhooks, e.ReviewerAppId = []string{}, nil },
+			mutate: func(e *rendering.ListenerEnv) { e.Webhooks, e.VerdictAppId = []string{}, nil },
 			input:  "mentionTrigger", err: `mentionTrigger is given for webhook "github", which webhooks does not list`,
 		},
 		// The rest of the environment.

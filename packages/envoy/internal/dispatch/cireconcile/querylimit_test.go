@@ -13,7 +13,7 @@ import (
 // recorded in github_rate_limits under the GraphQL scope, and no request of either Dispatch
 // process reaches GitHub before the reset. It is k7.
 func TestAGraphQLRateLimitStopsEveryProcess(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
@@ -79,7 +79,7 @@ func TestAPrimaryGraphQLRateLimitLeavesRESTReadsAlone(t *testing.T) {
 		"at 403": limitForbiddenByErrorEntry,
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, reviewerAppID)
+			h := newHarness(t, verdictAppID)
 			h.mapRepository(rowRepository)
 			h.listHead()
 			other := h.replica()
@@ -137,7 +137,7 @@ func TestASecondaryQueryLimitHoldsTheInstallationsRESTReads(t *testing.T) {
 		"the wording alone, at 403": limitForbiddenBySecondaryMessage,
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, reviewerAppID)
+			h := newHarness(t, verdictAppID)
 			h.mapRepository(rowRepository)
 			h.listHead()
 			other := h.replica()
@@ -194,7 +194,7 @@ func TestASecondaryQueryLimitHoldsTheInstallationsRESTReads(t *testing.T) {
 // out a minute it was never asked for. The limit is read from GitHub's own envelope and headers
 // (githubapp.GraphQLRateLimit).
 func TestACheckRunNamedForTheLimitIsNotALimit(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,

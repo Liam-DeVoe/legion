@@ -37,7 +37,7 @@ type WebhookListenerArgs struct {
 	Webhooks               []string              `pulumi:"webhooks"`
 	GitHubWebhookSecretArn pulumi.StringPtrInput `pulumi:"githubWebhookSecretArn,optional"`
 	SlackSigningSecretArn  pulumi.StringPtrInput `pulumi:"slackSigningSecretArn,optional"`
-	ReviewerAppId          *string               `pulumi:"reviewerAppId,optional"` // ENVOY_REVIEWER_APP_ID, with github
+	VerdictAppId           *string               `pulumi:"verdictAppId,optional"` // ENVOY_VERDICT_APP_ID, with github
 
 	ClusterArn        pulumi.StringInput   `pulumi:"clusterArn"`
 	ExecutionRoleArn  pulumi.StringInput   `pulumi:"executionRoleArn"`
@@ -340,7 +340,7 @@ func (args *WebhookListenerArgs) environment(natsUrls []string) rendering.Listen
 		ListenHost:              args.ListenHost,
 		NatsReplicas:            args.NatsReplicas,
 		Webhooks:                args.Webhooks,
-		ReviewerAppId:           args.ReviewerAppId,
+		VerdictAppId:            args.VerdictAppId,
 		MentionTrigger:          args.MentionTrigger,
 		SenderMessagesPerMinute: args.SenderMessagesPerMinute,
 		SenderMessageBurst:      args.SenderMessageBurst,

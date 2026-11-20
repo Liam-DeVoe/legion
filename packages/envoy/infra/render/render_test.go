@@ -186,7 +186,7 @@ func listenerArgs() *envoyaws.WebhookListenerArgs {
 		Webhooks:                []string{"github", "slack"},
 		GitHubWebhookSecretArn:  pulumi.String(placeholderArn + "github-webhook"),
 		SlackSigningSecretArn:   pulumi.String(placeholderArn + "slack-signing"),
-		ReviewerAppId:           pulumi.StringRef("1234567"),
+		VerdictAppId:            pulumi.StringRef("1234567"),
 
 		ClusterArn:        pulumi.String("example-cluster-arn"),
 		ExecutionRoleArn:  pulumi.String("example-execution-role-arn"),
@@ -309,7 +309,7 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 				"ENVOY_NATS_REPLICAS=1\n" +
 				"ENVOY_WEBHOOKS=github,slack\n" +
 				"ENVOY_GITHUB_MENTION_TRIGGER=@legion\n" +
-				"ENVOY_REVIEWER_APP_ID=1234567\n",
+				"ENVOY_VERDICT_APP_ID=1234567\n",
 		},
 		{
 			name:       "two loopback NATS servers",
@@ -323,7 +323,7 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 				"ENVOY_NATS_REPLICAS=3\n" +
 				"ENVOY_WEBHOOKS=github,slack\n" +
 				"ENVOY_GITHUB_MENTION_TRIGGER=@example-bot\n" +
-				"ENVOY_REVIEWER_APP_ID=7654321\n",
+				"ENVOY_VERDICT_APP_ID=7654321\n",
 		},
 		{
 			name:       "no webhook",
@@ -343,7 +343,7 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 			args := append([]string{"webhook-listener-env", "--machine-id", "example-machine"}, flags("nats-url", c.natsUrls...)...)
 			args = append(args, flags("webhook", c.webhooks...)...)
 			if github {
-				args = append(args, "--reviewer-app-id", c.appID, "--mention-trigger", c.trigger)
+				args = append(args, "--verdict-app-id", c.appID, "--mention-trigger", c.trigger)
 			}
 			args = append(args, "--listen-host", c.listenHost,
 				"--nats-replicas", strconv.Itoa(c.replicas))
@@ -356,9 +356,9 @@ func TestWebhookListenerEnvIsTheEnvironmentWebhookListenerRegisters(t *testing.T
 			in.NatsUrls = pulumi.ToStringArray(c.natsUrls)
 			in.ListenHost, in.NatsReplicas = c.listenHost, c.replicas
 			in.Webhooks = c.webhooks
-			in.MentionTrigger, in.ReviewerAppId = pulumi.StringRef(c.trigger), pulumi.StringRef(c.appID)
+			in.MentionTrigger, in.VerdictAppId = pulumi.StringRef(c.trigger), pulumi.StringRef(c.appID)
 			if !github {
-				in.GitHubWebhookSecretArn, in.MentionTrigger, in.ReviewerAppId = nil, nil, nil
+				in.GitHubWebhookSecretArn, in.MentionTrigger, in.VerdictAppId = nil, nil, nil
 			}
 			if !slices.Contains(c.webhooks, "slack") {
 				in.SlackSigningSecretArn = nil
@@ -631,13 +631,13 @@ func listenerFlags(drop []string, set ...string) []string {
 		"machine-id":      {"example-machine"},
 		"nats-url":        {"nats://example-bus.example-namespace.internal.example:4222"},
 		"webhook":         {"github", "slack"},
-		"reviewer-app-id": {"1234567"},
+		"verdict-app-id":  {"1234567"},
 		"mention-trigger": {"@legion"},
 		"listen-host":     {"0.0.0.0"},
 		"nats-replicas":   {"1"},
 	}
 	args := []string{"webhook-listener-env"}
-	for _, name := range []string{"machine-id", "nats-url", "webhook", "reviewer-app-id", "mention-trigger", "listen-host", "nats-replicas"} {
+	for _, name := range []string{"machine-id", "nats-url", "webhook", "verdict-app-id", "mention-trigger", "listen-host", "nats-replicas"} {
 		if !slices.Contains(drop, name) {
 			args = append(args, flags(name, given[name]...)...)
 		}
@@ -656,9 +656,9 @@ func TestWebhookListenerEnvRefusals(t *testing.T) {
 			want: `refused: --webhook: webhooks ["github"] is not supported: this version takes [] or ["github" "slack"]`,
 		},
 		{
-			name: "--webhook github without --reviewer-app-id",
-			args: listenerFlags([]string{"reviewer-app-id"}),
-			want: `refused: --reviewer-app-id: reviewerAppId is required with webhook "github"`,
+			name: "--webhook github without --verdict-app-id",
+			args: listenerFlags([]string{"verdict-app-id"}),
+			want: `refused: --verdict-app-id: verdictAppId is required with webhook "github"`,
 		},
 		{
 			name: "--webhook github without --mention-trigger",
@@ -702,9 +702,9 @@ func TestWebhookListenerEnvRefusals(t *testing.T) {
 			want: "refused: --mention-trigger: holds a line break, which a KEY=value line cannot carry",
 		},
 		{
-			name: "a line break in --reviewer-app-id",
-			args: listenerFlags([]string{"reviewer-app-id"}, "--reviewer-app-id", "123\n4567"),
-			want: "refused: --reviewer-app-id: holds a line break, which a KEY=value line cannot carry",
+			name: "a line break in --verdict-app-id",
+			args: listenerFlags([]string{"verdict-app-id"}, "--verdict-app-id", "123\n4567"),
+			want: "refused: --verdict-app-id: holds a line break, which a KEY=value line cannot carry",
 		},
 		// Usage errors.
 		{
@@ -834,7 +834,7 @@ func TestRenderNeverEchoesASeed(t *testing.T) {
 			args: listenerFlags([]string{"nats-url"}, "--nats-url", "nats://hub.internal.example:4222/"+percentEncoded(testSeed)),
 			want: "refused: --nats-url" + seedFlag,
 		},
-		{name: "--reviewer-app-id", args: listenerFlags([]string{"reviewer-app-id"}, "--reviewer-app-id", testSeed), want: "refused: --reviewer-app-id" + seedFlag},
+		{name: "--verdict-app-id", args: listenerFlags([]string{"verdict-app-id"}, "--verdict-app-id", testSeed), want: "refused: --verdict-app-id" + seedFlag},
 		{name: "--mention-trigger", args: listenerFlags([]string{"mention-trigger"}, "--mention-trigger", "@"+testSeed), want: "refused: --mention-trigger" + seedFlag},
 		{name: "--listen-host", args: listenerFlags([]string{"listen-host"}, "--listen-host", testSeed), want: "refused: --listen-host" + seedFlag},
 		{name: "--machine-id, lowercase", args: listenerFlags([]string{"machine-id"}, "--machine-id", lower), want: "refused: --machine-id" + seedFlag},

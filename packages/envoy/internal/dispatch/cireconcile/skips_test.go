@@ -32,7 +32,7 @@ func installationPath(repository string) string {
 // the repositories after it: one repository GitHub has stopped answering about must not cost
 // every other repository its pass.
 func TestAMappingGitHubDoesNotAnswerIsSkipped(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(absentRow)
 	h.mapRepository(rowRepository)
 	h.listHead()
@@ -72,7 +72,7 @@ func TestAMappingGitHubDoesNotAnswerIsSkipped(t *testing.T) {
 // design. The mapping that names no rename is reconciled exactly as it was: its head settles on
 // the checks GitHub holds.
 func TestARenamedMappingIsReconciledUnderTheNameItHasNow(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.mapRenamedRepository(renamedAwayRow, rowRepository)
 	h.listHead()
@@ -115,7 +115,7 @@ func TestARenamedMappingIsReconciledUnderTheNameItHasNow(t *testing.T) {
 // GitHub is asked about it once rather than once a pass: githubapp keeps only an installation
 // it found, so the pass holds this answer itself.
 func TestAnIssuesRepositoryWithoutTheAppIsNoSkippedMappingAndIsAskedAboutOnce(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.issueInRepository(uninstalledRow)
 	h.listHead()
@@ -165,7 +165,7 @@ func TestAnIssuesRepositoryWithoutTheAppIsNoSkippedMappingAndIsAskedAboutOnce(t 
 // issue names it too, and it is no part of the count of repositories only an issue names.
 // GitHub is asked about it once all the same: the answer is held whoever names the repository.
 func TestAMappedRepositoryWithoutTheAppIsSkippedAtEveryPassAndAskedAboutOnce(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(uninstalledRow)
 	h.issueInRepository(uninstalledRow)
 	h.mapRepository(rowRepository)
@@ -219,7 +219,7 @@ func TestAMappedRepositoryWithoutTheAppIsSkippedAtEveryPassAndAskedAboutOnce(t *
 // a connection, and a writer held from an earlier pass would write through the connection it
 // gave up on, so every later pass would read GitHub in full and record nothing until a restart.
 func TestNoBucketYetNoPass(t *testing.T) {
-	h := newHarnessBeforeTheListener(t, reviewerAppID)
+	h := newHarnessBeforeTheListener(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
