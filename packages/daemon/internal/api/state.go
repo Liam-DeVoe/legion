@@ -81,6 +81,15 @@ type State struct {
 	// number stands at what that lane cannot act on, beside the Error line such a daemon writes
 	// for each of those claims (supervise.NoPluginSourceMessage).
 	ClaimsToRefresh int `json:"claimsToRefresh"`
+	// Paused is the project's open pause while the project is paused (dispatch://INFRA-3759,
+	// decision 25): who paused, since when and why, the claims whose stop it still waits on, and
+	// every row it holds (PausedView, PauseStateTx). Absent while the project runs, and from a body
+	// served a caller below pauseContract (server's withoutPause).
+	Paused *PausedView `json:"paused,omitempty"`
+	// LastPause is the project's newest ended pause while the project runs, with who ended it and
+	// when; absent while the project is paused, before any pause has ended, and from a body served
+	// a caller below pauseContract.
+	LastPause *PauseView `json:"lastPause,omitempty"`
 	// ControllerLocator is the project's controller, absent until a session registers as it: with
 	// the capability `legion controller start` fetched, or, under `controller: daemon`, with the boot
 	// token of the daemon's own controller launch.
@@ -112,7 +121,7 @@ type State struct {
 	// QuestionsForController is every question to a stopped agent that the daemon's answer loop
 	// passed to the controller in the last QuestionsForControllerWindow, newest first and at most
 	// QuestionsForControllerLimit of them: the agent-question notice is a live wake only, so a
-	// controller that starts later reads here what it missed. Never null (contract 171), and left
+	// controller that starts later reads here what it missed. Never null (contract 183), and left
 	// off only the body served a caller below that contract (questionsForControllerHidden).
 	QuestionsForController []QuestionForController `json:"questionsForController"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
@@ -415,7 +424,10 @@ type AgentSecretsLoginView struct {
 // `claimsToRefresh` and `questionsForController`: such a body carries no key of that name at all,
 // and is marshaled through a value whose own field of that name shadows the embedded one.
 // Admission.MarshalJSON hides `trees` and `held`, the two keys of its own block a downgrade hides,
-// with `omitzero` on those fields instead.
+// with `omitzero` on those fields instead. The optional keys need none of this:
+// `controllerLocator`, `agentSecretsLogin`, `paused` and `lastPause` are pointers with
+// `omitempty`, absent wherever the state holds none, which is how a band hides them too
+// (withoutPause).
 //
 // One shadow type carries the three keys, and each of its fields is a pointer. `omitempty` leaves
 // out a nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the
@@ -424,7 +436,7 @@ type AgentSecretsLoginView struct {
 // empty slice is what `omitempty` drops, so the pointer is what lets one type serve every key —
 // each field set when its key is not hidden and left nil when it is — rather than a struct per
 // combination of flags. The bands compose, so a caller below wakesWaitingContract (53) is below
-// claimsToRefreshContract (73) and questionsForControllerContract (171) as well and is served
+// claimsToRefreshContract (73) and questionsForControllerContract (183) as well and is served
 // none of the three; a fourth banded key is one more field here, not more shapes.
 //
 // A body that hides no key is marshaled through the embedded value alone. The shadow's own

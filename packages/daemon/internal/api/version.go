@@ -2420,28 +2420,62 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 171: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 183: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
 // question to a stopped agent that the daemon's answer loop passed to the controller in the last
 // seven days (id, issue, role, session, asker, ref, reason, passedAt, and writes, each gh call
 // that writes which the loop ran for it), newest first and at most 100: the controller's
 // `agent-question` notice is a live wake only, so a controller that starts later reads what it
 // missed here. A body this contract writes carries it on every state, never
-// null, and a caller from a pod whose claims record a contract under 171 is served the state
+// null, and a caller from a pod whose claims record a contract under 183 is served the state
 // without the key (stateNarrowings, questionsForControllerContract), since the strict reader
-// before 171 refuses it. The 171 reader takes it as optional for that body alone, as it takes
-// `wakesWaiting`; a daemon below 171 is not what serves it a body without the key, since the boot
-// gate and `legion probe-image` refuse that mixed pair. (This branch
+// before 183 refuses it. The bands compose with the pause's: a caller below 178 is served neither
+// the pause's keys nor this one, and a caller from 178 to 182 the pause's alone. The 183 reader
+// takes it as optional for that body alone, as it takes `wakesWaiting`; a daemon below 183 is not
+// what serves it a body without the key, since the boot gate and `legion probe-image` refuse that
+// mixed pair. (This branch
 // took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main
 // stood at 57, then 59 while main stood at 58, then 60 while main stood at 59, then 61 while main
 // stood at 59 and #2539 and #2731 also declared 60, then 122 while main stood at 111, then 126
 // while main stood at 123, then 149 while main stood at 144 and kept it while main stood at 146,
 // then 157 while main stood at 151, then 162 while main stood at 152, then 168 while main stood
-// at 160, then 170 while main stood at 160, then 171 while main stood at 168. It takes 171
-// because open pull requests, drafts included, declared 169 (#3831 and #4065), 170 (#4030,
-// #4173, #4180 and #4193, beside this one), 172 (#3659), 173 (#4493), 174 (#3993 and #4273) and
-// 175 (#3712, #4115, #4392, #4432, #4485 and #4495) at 2026-11-19T18:27Z, read with the
-// `declared_by_open_pull_requests` of main's .github/scripts/check-daemon-api-contract.sh, so 171
-// is the lowest number above main's that no open pull request declares. main held 168 at the
-// forward merge that last read this number, main's b2cf98a0; read main's own number and every
+// at 160, then 170 while main stood at 160, then 171 while main stood at 168, then 183 while main
+// stood at 178. It takes 183 because open pull requests declared 179 (#4392, #4540), 180 (#4049,
+// #4175), 181 (#4273, #4553) and 182 (#4495) at 2026-11-20T01:15Z, read with the
+// `declared_by_open_pull_requests` of main's .github/scripts/check-daemon-api-contract.sh, so 183
+// is the lowest number above main's that no open pull request declares. main held 178 at the
+// forward merge that last read this number, main's c7e1cbd5; read main's own number and every
 // open pull request's again at the next merge rather than from this line.)
-const DaemonAPIVersion = 171
+const DaemonAPIVersion = 183
