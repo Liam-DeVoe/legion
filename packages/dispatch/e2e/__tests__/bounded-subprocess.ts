@@ -386,7 +386,10 @@ function processTable(deadline: number): readonly Listed[] | string {
 
 /** The pids one child's kill takes from `table`: every process whose environment carries `token`,
  *  the child itself where `root` names it, and every descendant of those by parent pid. This
- *  process is never among them. */
+ *  process is never among them, and neither is a process the walk reaches only through this
+ *  process: every child this process started descends from it, the other bounded children
+ *  among them, and where this process is pid 1 of its PID namespace (a test runner in a
+ *  container) every orphan of the namespace does too. */
 function treeOf(table: readonly Listed[], token: string, root: number | undefined): Set<number> {
   const children = new Map<number, number[]>();
   for (const { pid, ppid } of table) children.set(ppid, [...(children.get(ppid) ?? []), pid]);
@@ -395,11 +398,10 @@ function treeOf(table: readonly Listed[], token: string, root: number | undefine
   if (root !== undefined) seeds.push(root);
   while (seeds.length > 0) {
     const pid = seeds.pop() as number;
-    if (found.has(pid)) continue;
+    if (found.has(pid) || pid === process.pid) continue;
     found.add(pid);
     seeds.push(...(children.get(pid) ?? []));
   }
-  found.delete(process.pid);
   return found;
 }
 

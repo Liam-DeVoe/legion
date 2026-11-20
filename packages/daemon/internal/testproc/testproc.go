@@ -5,10 +5,12 @@
 // leads to the one asked about, as for an orphan whose parent has gone, Matching walks every
 // process, held to its caller's context.
 //
-// A process has ended when /proc has no entry for it or its state is Z (a zombie) or X (dead):
-// never by whether something reaped it, since where a test's runner is PID 1 of its namespace (a
-// `go test` in a container with no init) nothing but that runner reaps an orphan, and an orphan
-// that has exited stays a zombie.
+// A process has ended when /proc has no entry for it, its state is X (dead), or its state is Z
+// and its task directory lists no thread but the main one: never by whether something reaped it,
+// since where a test's runner is PID 1 of its namespace (a `go test` in a container with no init)
+// nothing but that runner reaps an orphan, and an orphan that has exited stays a zombie. A process
+// whose main thread exited while another thread runs on reads Z too, and is still there: it still
+// holds its files, its ports and its locks.
 package testproc
 
 import (
@@ -97,7 +99,10 @@ func Descendants(pid int) ([]int, error) {
 	return found, nil
 }
 
-// Ended answers whether pid has ended, by its own stat: no entry, or state Z or X.
+// Ended answers whether pid has ended, by its own entry: no entry, state X, or state Z with no
+// thread but the main one in its task directory. The kernel lists a task directory from the
+// process's own thread list, taking no lock another process can hold, so that read cannot be held
+// the way a read of a process's stat or environ can.
 func Ended(pid int) (bool, error) {
 	path := filepath.Join(root, strconv.Itoa(pid), "stat")
 	stat, err := os.ReadFile(path)
@@ -113,8 +118,25 @@ func Ended(pid int) (bool, error) {
 	if len(fields) == 0 {
 		return false, fmt.Errorf("%s holds %q, with no state", path, stat)
 	}
-	state := string(fields[0])
-	return state == "Z" || state == "X", nil
+	switch string(fields[0]) {
+	case "X":
+		return true, nil
+	case "Z":
+		threads, err := os.ReadDir(filepath.Join(root, strconv.Itoa(pid), "task"))
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		for _, thread := range threads {
+			if thread.Name() != strconv.Itoa(pid) {
+				return false, nil
+			}
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // Process is one process Matching read: its pid and the words of its command line.

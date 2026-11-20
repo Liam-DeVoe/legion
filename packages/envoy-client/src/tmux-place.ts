@@ -69,9 +69,15 @@ function tmuxIndex(value: string): number | undefined {
  * Where this session sits in tmux, from `TMUX` and `TMUX_PANE` and one
  * `tmux -u -S <socket> display-message -p -t <pane>`. Outside tmux nothing is run at all.
  * `-u` because the format is tab-separated and tmux prints a tab as `_` to a client that has
- * neither `TMUX` nor a UTF-8 locale in its environment.
+ * neither `TMUX` nor a UTF-8 locale in its environment. `ofThisSession` says whether the pane's
+ * first process is this process or one of its ancestors (`isAncestor`); a test hands it a chain of
+ * its own, which holds wherever the test runner itself stands, pid 1 of a container included.
  */
-export async function readTmuxPlace(env: TmuxEnvironment, exec: ExecFn): Promise<TmuxPlaceReading> {
+export async function readTmuxPlace(
+  env: TmuxEnvironment,
+  exec: ExecFn,
+  ofThisSession: (panePid: string) => boolean = (panePid) => isAncestor(panePid)
+): Promise<TmuxPlaceReading> {
   const { serverPid, socket } = tmuxServer(env.TMUX);
   const pane = env.TMUX_PANE?.trim() ?? "";
   if (socket === "" || serverPid === "" || pane === "") return { kind: "refused" };
@@ -104,7 +110,7 @@ export async function readTmuxPlace(env: TmuxEnvironment, exec: ExecFn): Promise
     layout = "",
     zoomedFlag = "",
   ] = fields;
-  if (pid !== serverPid || paneId === "" || !isAncestor(panePid)) return { kind: "refused" };
+  if (pid !== serverPid || paneId === "" || !ofThisSession(panePid)) return { kind: "refused" };
   const window = tmuxIndex(windowIndex);
   const index = tmuxIndex(paneIndex);
   if (window === undefined || index === undefined) return { kind: "refused" };

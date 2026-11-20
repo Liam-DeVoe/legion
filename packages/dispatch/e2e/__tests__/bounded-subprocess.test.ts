@@ -600,6 +600,10 @@ test.skipIf(!existsSync("/proc/self/stat"))(
   rowLimit("short", "short")
 );
 
+// This process is never signalled, and neither is a process the kill would reach only through it:
+// a child of this process that carries no token of the child's (another bounded child's, here) is
+// none of the child's. Where this process is pid 1 of its namespace, every process whose parent
+// ended is such a child too, as the sibling is there.
 test("a kill never signals this process, even where its table reads it as one of the child's", () => {
   const self: Listed = {
     pid: process.pid,
@@ -608,7 +612,14 @@ test("a kill never signals this process, even where its table reads it as one of
     tokens: [outerToken, scriptedChild.token],
     unknown: false,
   };
-  expect(scriptedKill([[self, init, sibling]])).toEqual(["read"]);
+  const ownChild: Listed = {
+    pid: process.pid + 7,
+    ppid: process.pid,
+    start: scriptedChild.start + 1,
+    tokens: [outerToken, siblingToken],
+    unknown: false,
+  };
+  expect(scriptedKill([[self, init, sibling, ownChild]])).toEqual(["read"]);
 });
 
 test("a kill with its own signal and pause sends SIGKILL through process.kill and waits execPause", () => {

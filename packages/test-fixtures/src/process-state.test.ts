@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -92,6 +100,33 @@ test(
   3 * WAIT_MS
 );
 
+// A process whose main thread exited while a second thread runs on reads `Z` in its stat, as a
+// zombie does, and it is still there: it holds its files, its ports and its locks. Its task
+// directory lists the second thread, so it has not ended; once its parent, this test process,
+// has reaped it after a SIGKILL, it has. The main thread leaves through pthread_exit, which ends
+// that thread alone.
+const mainThreadExits = `import ctypes, os, sys, threading, time
+threading.Thread(target=time.sleep, args=(60,), daemon=True).start()
+with open(sys.argv[1] + ".new", "w") as f: f.write(f"{os.getpid()}\\n")
+os.rename(sys.argv[1] + ".new", sys.argv[1])
+ctypes.CDLL(None).pthread_exit(None)`;
+test.skipIf(Bun.which("python3") === null)(
+  "a process whose main thread exited while another thread runs has not ended",
+  async () => {
+    const pidFile = join(scratch(), "threads.pid");
+    const threads = Bun.spawn(["python3", "-c", mainThreadExits, pidFile]);
+    started.push(threads);
+    const pid = await pidIn(pidFile);
+    await until(`the main thread of ${pid} to exit`, () => processState(pid) === "Z");
+    expect(readdirSync(`/proc/${pid}/task`).length, "the second thread is listed").toBe(2);
+    expect(processEnded(pid)).toBe(false);
+    threads.kill("SIGKILL");
+    await threads.exited;
+    expect(processEnded(pid)).toBe(true);
+  },
+  3 * WAIT_MS
+);
+
 // Field 3 is read after the command name's last `)`: a name that holds `) R (` would read as
 // running, state `R`, to a reader that took the first `)`, while the sleep is asleep, `S`.
 test(
@@ -120,6 +155,30 @@ test(
   },
   WAIT_MS
 );
+
+// Where no python3 is, the same rule by stand-ins: a zombie main thread is read by the threads its
+// task directory lists. Another thread listed is a process still there; none, or the main one
+// alone, is one that ended, and a dead task (X) has ended whatever is listed.
+test("a zombie main thread is read by the threads its task directory lists", () => {
+  const zombie = () => "Z";
+  expect(processEnded(4242, zombie, () => ["4242", "4243"])).toBe(false);
+  expect(processEnded(4242, zombie, () => ["4242"])).toBe(true);
+  expect(processEnded(4242, zombie, () => undefined)).toBe(true);
+  expect(
+    processEnded(
+      4242,
+      () => "X",
+      () => ["4242", "4243"]
+    )
+  ).toBe(true);
+  expect(
+    processEnded(
+      4242,
+      () => "S",
+      () => ["4242"]
+    )
+  ).toBe(false);
+});
 
 test("a pid that is no positive integer is refused, not read as a process", () => {
   for (const pid of [0, -1, 1.5, Number.NaN]) {

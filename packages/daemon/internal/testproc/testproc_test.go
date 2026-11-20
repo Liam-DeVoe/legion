@@ -86,21 +86,27 @@ func TestDescendantsWalksTheWholeTreeBelowTheProcess(t *testing.T) {
 	}
 }
 
-// A process has ended when /proc has no entry for it or its state is Z or X, whatever its command
-// name holds; any other state is a process that runs.
+// A process has ended when /proc has no entry for it, its state is X, or its state is Z and its
+// task directory lists no thread but the main one, whatever its command name holds; any other
+// state, and a Z main thread with another thread listed, is a process that runs.
 func TestEndedJudgesAProcessByItsState(t *testing.T) {
 	plant(t, map[string]string{
-		"10/stat": "10 (a) Z (b) S 1 10 10",
-		"11/stat": "11 (sh) Z 1 11 11",
-		"12/stat": "12 (sh) X 1 12 12",
-		"13/stat": "13 (sh) S 1 13 13",
-		"14/stat": "14 (sh) R 1 14 14",
-		"15/stat": "15 (sh) D 1 15 15",
-		"16/stat": "16 (a) Z) S 1 16 16",
+		"10/stat":         "10 (a) Z (b) S 1 10 10",
+		"11/stat":         "11 (sh) Z 1 11 11",
+		"12/stat":         "12 (sh) X 1 12 12",
+		"13/stat":         "13 (sh) S 1 13 13",
+		"14/stat":         "14 (sh) R 1 14 14",
+		"15/stat":         "15 (sh) D 1 15 15",
+		"16/stat":         "16 (a) Z) S 1 16 16",
+		"18/stat":         "18 (py) Z 1 18 18",
+		"18/task/18/stat": "18 (py) Z 1 18 18",
+		"18/task/19/stat": "19 (py) S 1 18 18",
+		"20/stat":         "20 (sh) Z 1 20 20",
+		"20/task/20/stat": "20 (sh) Z 1 20 20",
 	})
-	for pid, want := range map[int]bool{10: false, 11: true, 12: true, 13: false, 14: false, 15: false, 16: false, 17: true} {
+	for pid, want := range map[int]bool{10: false, 11: true, 12: true, 13: false, 14: false, 15: false, 16: false, 17: true, 18: false, 20: true} {
 		if got, err := Ended(pid); err != nil || got != want {
-			t.Errorf("Ended(%d) = %t, %v; want %t (a zombie or a dead process has ended, a reaped one has no entry, any other state runs, and the state follows the last ')')", pid, got, err, want)
+			t.Errorf("Ended(%d) = %t, %v; want %t (a zombie with no other thread or a dead process has ended, a reaped one has no entry, a zombie main thread with another thread listed and any other state runs, and the state follows the last ')')", pid, got, err, want)
 		}
 	}
 }
@@ -244,6 +250,39 @@ func TestTheHelpersOnTheRealProc(t *testing.T) {
 		t.Cleanup(func() { _ = live.Process.Kill(); _ = live.Wait() })
 		if ended, err := Ended(live.Process.Pid); err != nil || ended {
 			t.Fatalf("Ended of a live sleep = %t, %v; want false", ended, err)
+		}
+	})
+	// A process whose main thread exited while a second thread runs on reads Z in its stat, and is
+	// still there: it holds its files, its ports and its locks. Its main thread leaves through
+	// pthread_exit, which ends that thread alone.
+	t.Run("a process whose main thread exited while another thread runs", func(t *testing.T) {
+		if _, err := exec.LookPath("python3"); err != nil {
+			t.Skip("no python3 on PATH to start a process whose main thread exits alone")
+		}
+		pidFile := filepath.Join(t.TempDir(), "threads.pid")
+		threads := exec.Command("python3", "-c", `import ctypes, os, sys, threading, time
+threading.Thread(target=time.sleep, args=(60,), daemon=True).start()
+with open(sys.argv[1] + ".new", "w") as f: f.write(str(os.getpid()))
+os.rename(sys.argv[1] + ".new", sys.argv[1])
+ctypes.CDLL(None).pthread_exit(None)`, pidFile)
+		if err := threads.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = threads.Process.Kill(); _ = threads.Wait() })
+		pid := threads.Process.Pid
+		testwait.Eventually(t, "the main thread of the python3 to exit", func() bool {
+			stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+			_, written := os.Stat(pidFile)
+			text := string(stat)
+			return err == nil && written == nil && strings.HasPrefix(text[strings.LastIndex(text, ")")+1:], " Z ")
+		})
+		if ended, err := Ended(pid); err != nil || ended {
+			t.Fatalf("Ended of a process whose main thread is a zombie while another thread runs = %t, %v; want false", ended, err)
+		}
+		_ = threads.Process.Kill()
+		_ = threads.Wait()
+		if ended, err := Ended(pid); err != nil || !ended {
+			t.Fatalf("Ended of the killed and reaped python3 = %t, %v; want true", ended, err)
 		}
 	})
 }

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 
 /**
  * Whether a process a test started has ended, judged by the process's own state rather than by
@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
  * waits for signal 0 to fail waits for ever there. The state letter of its `/proc/<pid>/stat`
  * says it has ended all the same.
  *
- * Each reads one process's own file, never the whole process table, so no other process of the
+ * Each reads one process's own entry, never the whole process table, so no other process of the
  * machine can hold the read.
  */
 
@@ -29,25 +29,42 @@ export function processState(pid: number): string | undefined {
   return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0];
 }
 
-/** Whether process `pid` has ended: `/proc` lists it dead (`Z`, a zombie nothing has reaped yet,
- *  or `X`), or lists it not at all and signal 0 answers that no such process exists (`ESRCH`),
- *  which also answers on a machine with no `/proc`. A signal 0 refused for any other reason, as
- *  `EPERM` for another user's process, reaches a process that runs. `stateOf` reads the state
- *  letter: `processState` by default, and a stand-in in this module's own rows, which hold the
- *  signal 0 answer where `/proc` lists nothing.
+/** The threads of process `pid` its `/proc/<pid>/task` directory lists, by thread id. Undefined
+ *  where `/proc` lists no such process. The kernel lists a task directory from the process's own
+ *  thread list, taking no lock another process can hold, so the read cannot be held the way a read
+ *  of a process's `stat` or `environ` can. */
+export function processThreads(pid: number): string[] | undefined {
+  try {
+    return readdirSync(`/proc/${pid}/task`);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether process `pid` has ended: `/proc` lists it dead (`X`), or a zombie (`Z`) whose task
+ *  directory lists no thread but its main one, or lists it not at all and signal 0 answers that no
+ *  such process exists (`ESRCH`), which also answers on a machine with no `/proc`. A process whose
+ *  main thread exited while another thread runs on reads `Z` too, and is still there: it still
+ *  holds its files, its ports and its locks. A signal 0 refused for any other reason, as `EPERM`
+ *  for another user's process, reaches a process that runs. `stateOf` reads the state letter and
+ *  `threadsOf` the task directory: `processState` and `processThreads` by default, and stand-ins in
+ *  this module's own rows, which hold the signal 0 answer where `/proc` lists nothing.
  *
  *  `pid` is a positive integer, or this throws: `process.kill(0, 0)` signals the caller's own
  *  process group and `process.kill(NaN, 0)` throws, so a pid file read wrong would otherwise read
  *  as a process that runs, or as one that ended. */
 export function processEnded(
   pid: number,
-  stateOf: (pid: number) => string | undefined = processState
+  stateOf: (pid: number) => string | undefined = processState,
+  threadsOf: (pid: number) => string[] | undefined = processThreads
 ): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) {
     throw new RangeError(`${pid} is no process id: a pid is a positive integer`);
   }
   const state = stateOf(pid);
-  if (state !== undefined) return state === "Z" || state === "X";
+  if (state === "X") return true;
+  if (state === "Z") return (threadsOf(pid) ?? []).every((thread) => thread === String(pid));
+  if (state !== undefined) return false;
   try {
     process.kill(pid, 0);
     return false;
