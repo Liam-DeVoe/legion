@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"reflect"
@@ -52,23 +51,14 @@ func (rig goingRunsRig) age(t *testing.T, id string, age time.Duration) {
 	}
 }
 
-// write records one write on the author's run, which holds no claim of it, so it is appended.
-func (rig goingRunsRig) write(t *testing.T, id, login string, write goingRunWrite, issue string) {
+// touched adds issue to the run's issues, as a request of the run that landed on it does
+// (goingRunLanding.step).
+func (rig goingRunsRig) touched(t *testing.T, id, issue string) {
 	t.Helper()
-	if err := rig.server.recordGoingRunWrite(context.Background(), id, login, write, issue); err != nil {
-		t.Fatalf("append write %s: %v", write.ID, err)
-	}
-}
-
-// undo records one undo on the author's run, which holds no claim of it, so it is appended.
-func (rig goingRunsRig) undo(t *testing.T, id, login, writeID string, ok bool) {
-	t.Helper()
-	undo := goingRunUndo{WriteID: writeID, Outcome: goingWriteOutcome{OK: ok, Status: http.StatusOK}, At: time.Now().UTC()}
-	if !ok {
-		undo.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: "CHANGED_SINCE", Message: "the field changed since"}
-	}
-	if err := rig.server.recordGoingRunUndo(context.Background(), id, login, undo, ""); err != nil {
-		t.Fatalf("append undo of %s: %v", writeID, err)
+	if _, err := rig.database.Pool.Exec(context.Background(), `
+		update going_runs set issues = array_append(issues, $2) where id = $1::uuid
+	`, id, issue); err != nil {
+		t.Fatalf("add %s to the run's issues: %v", issue, err)
 	}
 }
 
@@ -88,16 +78,6 @@ func goingRunIDs(page goingRunsPage) []string {
 		ids = append(ids, run.ID)
 	}
 	return ids
-}
-
-// statusWrite is a write of an issue's status that went through.
-func statusWrite(id, issue string) goingRunWrite {
-	return goingRunWrite{
-		ID: id, Action: "dispatch_issue_update", Target: issue, Fields: []string{"status"},
-		Before: json.RawMessage(`"todo"`), After: json.RawMessage(`"in_progress"`),
-		Outcome:  goingWriteOutcome{OK: true, Status: http.StatusOK},
-		Approved: "auto", At: time.Now().UTC().Truncate(time.Microsecond), Undo: goingUndoWriteBack,
-	}
 }
 
 // A run is stored under its caller and read back by that caller alone, newest first; a second
@@ -126,18 +106,15 @@ func TestGoingRunsAreReadByTheirCallerAloneNewestFirst(t *testing.T) {
 	if _, err := rig.server.readGoingRun(context.Background(), newer, "bob"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("bob reading alice's run by id: %v, want pgx.ErrNoRows", err)
 	}
-	if err := rig.server.recordGoingRunWrite(context.Background(), newer, "bob", statusWrite("w-bob", "DEMO-12"), "DEMO-12"); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("bob appending a write to alice's run: %v, want pgx.ErrNoRows", err)
-	}
 }
 
-// ?issue= keeps the caller's runs whose writes or hits touched the issue, and a second person
-// who has no such run reads nothing over the same issue.
+// ?issue= keeps the caller's runs whose landed requests or hits touched the issue, and a second
+// person who has no such run reads nothing over the same issue.
 func TestGoingRunsIssueFilterReadsThePersonsRunAlone(t *testing.T) {
 	rig := newGoingRunsRig(t)
 	ctx := context.Background()
 	wrote := rig.run(t, "alice", "start DEMO-12")
-	rig.write(t, wrote, "alice", statusWrite("w-1", "DEMO-12"), "DEMO-12")
+	rig.touched(t, wrote, "DEMO-12")
 	found := rig.run(t, "alice", "what blocks DEMO-7?")
 	if err := rig.server.fillGoingRun(ctx, found, goingRunParts{Hits: []going.Hit{
 		{Kind: "issue", ID: "DEMO-7", Title: "Seven", Href: "/issues/DEMO-7"},
@@ -147,7 +124,7 @@ func TestGoingRunsIssueFilterReadsThePersonsRunAlone(t *testing.T) {
 	}
 	rig.run(t, "alice", "nothing about either")
 	bobs := rig.run(t, "bob", "start DEMO-99")
-	rig.write(t, bobs, "bob", statusWrite("w-2", "DEMO-99"), "DEMO-99")
+	rig.touched(t, bobs, "DEMO-99")
 
 	if got := goingRunIDs(rig.list(t, "alice", "?issue=DEMO-12")); !slices.Equal(got, []string{wrote}) {
 		t.Fatalf("alice's runs over DEMO-12 = %v, want the run that wrote it [%s]", got, wrote)
@@ -163,8 +140,8 @@ func TestGoingRunsIssueFilterReadsThePersonsRunAlone(t *testing.T) {
 	}
 }
 
-// A run nobody finished keeps every part it stored and reads unfinished, and each write's
-// before, after and outcome read back from the route as they were written.
+// A run nobody finished keeps every part it stored and reads unfinished, and reads finished,
+// with every part kept, once it is finished.
 func TestGoingRunsAnAbandonedRunKeepsItsOutcomesAndReadsUnfinished(t *testing.T) {
 	rig := newGoingRunsRig(t)
 	ctx := context.Background()
@@ -187,20 +164,6 @@ func TestGoingRunsAnAbandonedRunKeepsItsOutcomesAndReadsUnfinished(t *testing.T)
 	}); err != nil {
 		t.Fatalf("fill the run: %v", err)
 	}
-	applied := goingRunWrite{
-		ID: "w-applied", Action: "dispatch_issue_update", Target: "DEMO-12", Fields: []string{"assignee"},
-		Before: json.RawMessage(`null`), After: json.RawMessage(`"alice"`),
-		Outcome:  goingWriteOutcome{OK: true, Status: http.StatusOK},
-		Approved: "person", At: time.Now().UTC().Truncate(time.Microsecond),
-	}
-	refused := goingRunWrite{
-		ID: "w-refused", Action: "dispatch_issue_update", Target: "DEMO-13", Fields: []string{"assignee"},
-		Before: json.RawMessage(`"bob"`), After: json.RawMessage(`"bob"`),
-		Outcome:  goingWriteOutcome{Status: http.StatusForbidden, Code: "SCOPE_REQUIRED", Message: "not yours to assign"},
-		Approved: "confirmed", At: time.Now().UTC().Truncate(time.Microsecond),
-	}
-	rig.write(t, id, "alice", applied, "DEMO-12")
-	rig.write(t, id, "alice", refused, "DEMO-13")
 
 	page := rig.list(t, "alice", "")
 	if len(page.Rows) != 1 {
@@ -210,20 +173,8 @@ func TestGoingRunsAnAbandonedRunKeepsItsOutcomesAndReadsUnfinished(t *testing.T)
 	if run.Finished || run.FinishedAt != nil {
 		t.Fatalf("the abandoned run reads finished %v at %v, want unfinished", run.Finished, run.FinishedAt)
 	}
-	if len(run.Writes) != 2 {
-		t.Fatalf("the run reads %d writes, want both: %+v", len(run.Writes), run.Writes)
-	}
-	for index, want := range []goingRunWrite{applied, refused} {
-		got := run.Writes[index]
-		if got.ID != want.ID || got.Target != want.Target || !slices.Equal(got.Fields, want.Fields) || got.Approved != want.Approved ||
-			string(got.Before) != string(want.Before) || string(got.After) != string(want.After) ||
-			got.Outcome != want.Outcome || !got.At.Equal(want.At) {
-			t.Fatalf("write %d reads %+v (before %s, after %s), want %+v (before %s, after %s)",
-				index, got, got.Before, got.After, want, want.Before, want.After)
-		}
-	}
-	if issues := slices.Sorted(slices.Values(run.Issues)); !slices.Equal(issues, []string{"DEMO-12", "DEMO-13"}) {
-		t.Fatalf("the run's issues = %v, want the hit's and both writes' once each, DEMO-12 and DEMO-13", run.Issues)
+	if !slices.Equal(run.Issues, []string{"DEMO-13"}) {
+		t.Fatalf("the run's issues = %v, want the hit's, DEMO-13", run.Issues)
 	}
 	if len(run.Hits) != 1 || run.Hits[0].ID != "DEMO-13" || run.StructuredOutput == nil || *run.StructuredOutput != "refused" ||
 		run.Decision == nil || !reflect.DeepEqual(*run.Decision, decision) ||
@@ -239,35 +190,16 @@ func TestGoingRunsAnAbandonedRunKeepsItsOutcomesAndReadsUnfinished(t *testing.T)
 	if err != nil {
 		t.Fatalf("read the finished run: %v", err)
 	}
-	if !finished.Finished || finished.FinishedAt == nil || len(finished.Writes) != 2 || len(finished.Hits) != 1 {
+	if !finished.Finished || finished.FinishedAt == nil || len(finished.Hits) != 1 || finished.Proposal == nil {
 		t.Fatalf("the finished run reads %+v, want it finished with every part kept", finished)
 	}
 }
 
-// ?undoable=true keeps the runs holding a write that went through and that no undo reverted, and
-// ?q= the runs whose words hold the text in any case.
-func TestGoingRunsUndoableAndWordsFilters(t *testing.T) {
+// ?q= keeps the runs whose words hold the text in any case.
+func TestGoingRunsWordsFilter(t *testing.T) {
 	rig := newGoingRunsRig(t)
-	pending := rig.run(t, "alice", "Start DEMO-1")
-	rig.write(t, pending, "alice", statusWrite("w-pending", "DEMO-1"), "DEMO-1")
-	undone := rig.run(t, "alice", "start DEMO-2")
-	rig.write(t, undone, "alice", statusWrite("w-undone", "DEMO-2"), "DEMO-2")
-	rig.undo(t, undone, "alice", "w-undone", true)
-	failedUndo := rig.run(t, "alice", "start DEMO-3")
-	rig.write(t, failedUndo, "alice", statusWrite("w-stuck", "DEMO-3"), "DEMO-3")
-	rig.undo(t, failedUndo, "alice", "w-stuck", false)
-	refused := rig.run(t, "alice", "start DEMO-4")
-	write := statusWrite("w-refused", "DEMO-4")
-	write.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: "CLAIM_HELD", Message: "held"}
-	rig.write(t, refused, "alice", write, "DEMO-4")
-	rig.run(t, "alice", "what is DEMO-5?")
-
-	if got := goingRunIDs(rig.list(t, "alice", "?undoable=true")); !slices.Equal(got, []string{failedUndo, pending}) {
-		t.Fatalf("alice's undoable runs = %v, want the one whose undo failed and the one never undone [%s %s]",
-			got, failedUndo, pending)
-	}
-	if got := goingRunIDs(rig.list(t, "alice", "?undoable=true&limit=1")); !slices.Equal(got, []string{failedUndo}) {
-		t.Fatalf("alice's newest undoable run = %v, want [%s]", got, failedUndo)
+	for _, words := range []string{"Start DEMO-1", "start DEMO-2", "start DEMO-3", "start DEMO-4", "what is DEMO-5?"} {
+		rig.run(t, "alice", words)
 	}
 	if got := rig.list(t, "alice", "?q=start%20demo"); len(got.Rows) != 4 || got.Total != 4 {
 		t.Fatalf("alice's runs whose words hold 'start demo' = %v, want the four in any case", goingRunIDs(got))
@@ -275,34 +207,25 @@ func TestGoingRunsUndoableAndWordsFilters(t *testing.T) {
 	if got := goingRunIDs(rig.list(t, "alice", "?q=DEMO-5")); len(got) != 1 {
 		t.Fatalf("alice's runs whose words hold DEMO-5 = %v, want one", got)
 	}
-	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/me/going-runs?undoable=yes", nil, "alice"); response.Code != http.StatusBadRequest {
-		t.Fatalf("undoable=yes answers %d %s, want 400", response.Code, response.Body.String())
-	}
-	if err := rig.server.recordGoingRunUndo(context.Background(), pending, "alice", goingRunUndo{WriteID: "w-nobody-wrote"}, ""); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("an undo of a write the run does not hold: %v, want pgx.ErrNoRows", err)
-	}
 }
 
 // A run older than seven days is not read, even before the sweep deletes it; one inside them is.
 func TestGoingRunsOlderThanSevenDaysAreNotReturned(t *testing.T) {
 	rig := newGoingRunsRig(t)
 	old := rig.run(t, "alice", "eight days ago")
-	rig.write(t, old, "alice", statusWrite("w-old", "DEMO-12"), "DEMO-12")
+	rig.touched(t, old, "DEMO-12")
 	rig.age(t, old, 8*24*time.Hour)
 	kept := rig.run(t, "alice", "six days ago")
-	rig.write(t, kept, "alice", statusWrite("w-kept", "DEMO-12"), "DEMO-12")
+	rig.touched(t, kept, "DEMO-12")
 	rig.age(t, kept, 6*24*time.Hour)
 
-	for _, query := range []string{"", "?issue=DEMO-12", "?undoable=true"} {
+	for _, query := range []string{"", "?issue=DEMO-12"} {
 		if got := goingRunIDs(rig.list(t, "alice", query)); !slices.Equal(got, []string{kept}) {
 			t.Fatalf("alice's runs%s = %v, want the 6-day run alone [%s]", query, got, kept)
 		}
 	}
 	if _, err := rig.server.readGoingRun(context.Background(), old, "alice"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("reading the 8-day run: %v, want pgx.ErrNoRows", err)
-	}
-	if err := rig.server.recordGoingRunUndo(context.Background(), old, "alice", goingRunUndo{WriteID: "w-old"}, ""); !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("an undo appended to the 8-day run: %v, want pgx.ErrNoRows", err)
 	}
 }
 

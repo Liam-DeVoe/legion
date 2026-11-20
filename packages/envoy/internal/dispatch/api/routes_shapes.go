@@ -341,13 +341,10 @@ type myAnswersQuery struct {
 // myGoingRunsQuery is GET /api/v1/me/going-runs's query: the filters it narrows the caller's
 // runs by, and the offset page GET /api/v1/me/answers answers.
 type myGoingRunsQuery struct {
-	// Issue keeps the runs whose hits or writes touched that issue key.
+	// Issue keeps the runs whose hits or landed requests touched that issue key.
 	Issue string `query:"issue"`
 	// Q keeps the runs whose words hold that text, in any case.
 	Q string `query:"q"`
-	// Undoable, true, keeps the runs holding a write that went through and that no undo
-	// reverted; any value but true or false is 400 INVALID_QUERY.
-	Undoable bool `query:"undoable"`
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
@@ -857,10 +854,8 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/going/runs/{id}/plan/reject": {
 		Status: http.StatusOK, Response: goingPlanAnswer{}, Request: goingPlanRejectInput{},
 	},
-	"POST /api/v1/going/runs/{id}/undo": {
-		Status: http.StatusOK, Response: goingUndoAnswer{}, Request: goingUndoInput{}, OptionalRequest: true,
-	},
-	"GET /api/v1/me/going/settings": {Status: http.StatusOK, Response: goingSettings{}},
+	"POST /api/v1/going/runs/{id}/undo": {Status: http.StatusOK, Response: goingUndoAnswer{}},
+	"GET /api/v1/me/going/settings":     {Status: http.StatusOK, Response: goingSettings{}},
 	"PUT /api/v1/me/going/settings": {
 		Status: http.StatusOK, Response: goingSettings{}, Request: goingSettingsInput{},
 	},

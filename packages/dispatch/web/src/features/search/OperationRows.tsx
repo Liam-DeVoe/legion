@@ -17,7 +17,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { actionName, type Turn, targetOf } from "./going-turns";
+import { actionName, targetOf } from "./going-turns";
 import { barNoteClassName, type OfferRow, useWordsState } from "./offer";
 import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
 
@@ -494,37 +494,5 @@ function PlanStep({ runId }: { readonly runId: string }): ReactNode {
         </p>
       )}
     </div>
-  );
-}
-
-/** What a turn's undo says, in the shell's notice of the undo key. */
-export function UndoSaid({ undo }: { readonly undo: Turn["undo"] }): ReactNode {
-  if (undo === undefined) return null;
-  const stopped =
-    undo.stopped === 0
-      ? ""
-      : ` ${undo.stopped === 1 ? "One write" : `${undo.stopped} writes`} still waiting ${
-          undo.stopped === 1 ? "was" : "were"
-        } stopped before ${undo.stopped === 1 ? "it was" : "they were"} sent.`;
-  if (undo.state === "undoing") {
-    return (
-      <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-undo-said" role="status">
-        Undoing…{stopped}
-      </p>
-    );
-  }
-  if (undo.state === "refused") {
-    return (
-      <p className={`text-xs ${dangerText}`} data-testid="going-undo-said" role="alert">
-        Could not undo: {undo.message}
-        {stopped}
-      </p>
-    );
-  }
-  return (
-    <p className={`text-xs ${textMutedOnSurface}`} data-testid="going-undo-said" role="status">
-      {undo.message ?? "Undone."}
-      {stopped}
-    </p>
   );
 }

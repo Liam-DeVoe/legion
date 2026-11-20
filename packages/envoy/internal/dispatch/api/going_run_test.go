@@ -271,8 +271,12 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.
 	if err != nil {
 		t.Fatalf("read the run's record: %v", err)
 	}
-	if !run.Finished || len(run.Writes) != 0 || run.StructuredOutput == nil || *run.StructuredOutput != going.StructuredOutputAccepted {
-		t.Errorf("the record reads finished=%v writes=%v structured_output=%v, want finished, no write, accepted", run.Finished, run.Writes, run.StructuredOutput)
+	if !run.Finished || run.StructuredOutput == nil || *run.StructuredOutput != going.StructuredOutputAccepted {
+		t.Errorf("the record reads finished=%v structured_output=%v, want finished, accepted", run.Finished, run.StructuredOutput)
+	}
+	var landed int
+	if err := rig.database.Pool.QueryRow(context.Background(), `select count(*) from going_landings where run_id = $1::uuid`, id).Scan(&landed); err != nil || landed != 0 {
+		t.Errorf("the pause landed %d requests (%v), want none: it makes no write", landed, err)
 	}
 	if run.Decision == nil || !reflect.DeepEqual(*run.Decision, decision) {
 		t.Errorf("the record keeps the decision %+v, want the frame's %+v", run.Decision, decision)

@@ -7,20 +7,16 @@ package api
 // runs on each request exactly as it runs on a request off the network, so the bar can do nothing
 // its person could not do by hand, and a route's refusal is answered as the route answered it. A
 // run's writes go through it as the rows of its approved plan (going_plan_run.go), and its undo
-// (going_undo.go) through it too; and it holds the helpers the undo shares with them.
+// (going_undo.go) through it too.
 
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"sync/atomic"
-
-	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -102,8 +98,8 @@ func (d goingInProcess) serve(request *http.Request) *recordedAnswer {
 }
 
 // goingLandingStep is a landing a request carries on its context (goingLandingKey): the record of
-// an undo's request on its run (goingLanding), or of a run call's request in going_landings
-// (goingRunLanding). Its step records it in the route's own transaction.
+// a run call's request (goingRunLanding) or of a run undo's request (goingUndoLanding) in
+// going_landings. Its step records it in the route's own transaction.
 type goingLandingStep interface {
 	step(running *atomic.Bool, sink *goingAnswerSink) store.BeforeCommit
 }
@@ -172,57 +168,6 @@ const (
 	codeGoingRunNotFound = "GOING_RUN_NOT_FOUND"
 	codeGoingInput       = "GOING_INPUT"
 )
-
-// goingClaimedRetryAfter is the Retry-After, in seconds, of an undo another request of the same
-// run is making.
-const goingClaimedRetryAfter = "1"
-
-// goingLanded is the requests of a write that landed before the first that did not.
-func goingLanded(requests []goingWriteRequest) []goingWriteRequest {
-	landed := 0
-	for landed < len(requests) && requests[landed].Outcome.OK {
-		landed++
-	}
-	return requests[:landed]
-}
-
-// goingBookkeeping is the context a claim is recorded or released on: ctx's values without its
-// end, bounded as the keyed layer's own bookkeeping is (keyedBookkeeping), so an undo that landed
-// as its request's time ran out is still recorded.
-func goingBookkeeping(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), keyedBookkeeping)
-}
-
-// writeGoingRunAppendError answers an undo the record would not take: a run that went past seven
-// days, or was swept, between the read and the append is the run's own 404.
-func (s *server) writeGoingRunAppendError(w http.ResponseWriter, err error) {
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeGoingRunNotFound(w)
-		return
-	}
-	s.writeHandlerError(w, fmt.Errorf("append to the going run: %w", err))
-}
-
-// readCallersGoingRun is the caller's run the path names, or the run's 404 written: an id that is
-// no uuid, a run of anyone else's, one the record does not hold and one older than seven days are
-// one answer.
-func (s *server) readCallersGoingRun(w http.ResponseWriter, r *http.Request, login string) (goingRun, bool) {
-	id, err := uuid.Parse(r.PathValue("id"))
-	if err != nil {
-		writeGoingRunNotFound(w)
-		return goingRun{}, false
-	}
-	run, err := s.readGoingRun(r.Context(), id.String(), login)
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeGoingRunNotFound(w)
-		return goingRun{}, false
-	}
-	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("read the going run: %w", err))
-		return goingRun{}, false
-	}
-	return run, true
-}
 
 func writeGoingRunNotFound(w http.ResponseWriter) {
 	writeError(w, codeGoingRunNotFound, http.StatusNotFound,

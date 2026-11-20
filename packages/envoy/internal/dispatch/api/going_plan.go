@@ -63,12 +63,15 @@ const goingFramePlan = "plan"
 // server last read it as the person: the item, the issue it is or belongs to, the fields the
 // change writes and their value now, the holder of the issue's claim, and why the row waits for
 // the person in every mode (goingRowWaits). Changed is a row that waits again because its item
-// changed after the person saw it.
+// changed after the person saw it. Token is a document's token as that read answered it
+// (goingObservation.token), which the undo of the row's edit holds to the token the edit's route
+// answered it found, to know the content read is the content the edit replaced.
 type goingRowShown struct {
 	Item    string          `json:"item,omitempty"`
 	Issue   string          `json:"issue,omitempty"`
 	Fields  []string        `json:"fields,omitempty"`
 	Now     json.RawMessage `json:"now,omitempty"`
+	Token   string          `json:"token,omitempty"`
 	Claim   *goingHolder    `json:"claim,omitempty"`
 	Waits   []string        `json:"waits,omitempty"`
 	Changed bool            `json:"changed,omitempty"`
@@ -306,7 +309,7 @@ func (s *server) goingReadRow(ctx context.Context, doer GoingDoer, login, tool s
 	if err != nil {
 		return goingRowShown{}, err
 	}
-	shown := goingRowShown{Item: before.target, Issue: before.issue, Fields: before.fields}
+	shown := goingRowShown{Item: before.target, Issue: before.issue, Fields: before.fields, Token: before.token}
 	if shown.Issue == "" && strings.HasPrefix(prepared.route.Pattern, "/api/v1/issues/{key}") {
 		shown.Issue = prepared.call.path["key"]
 	}

@@ -19,7 +19,6 @@ import {
   renderBar,
   spyOnGoingBar,
 } from "./going-bar-fixture";
-import { forgetTurns } from "./going-turns";
 import { OPERATION_OPTION_ID, offerOptionId } from "./OperationRows";
 import { optionId } from "./search-model";
 import { forgetAnsweredRun } from "./useGoingAnswer";
@@ -83,7 +82,6 @@ afterEach(() => {
   spies.restore();
   plans.mockRestore();
   forgetAnsweredRun();
-  forgetTurns();
   realClock();
 });
 

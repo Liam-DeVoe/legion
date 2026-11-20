@@ -65,8 +65,6 @@ import {
   routeIsInbox,
   routeProjectOf,
 } from "./features/refs/routes";
-import { GoingUndoNotice } from "./features/search/GoingUndoNotice";
-import { undoNewestGoingTurn } from "./features/search/going-turns";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPalette } from "./features/search/SearchPalette";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
@@ -785,18 +783,6 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       // only from `xl`, so a toggle there would change nothing on screen and flip it for later.
       when: () => detailsDrawer !== undefined || (!isCompactViewport && hasMargin),
     },
-    {
-      // Undoes the person's newest turn of the command bar, from any page and after a reload
-      // (`GET /api/v1/me/going-runs?undoable=true&limit=1`); the shell's corner says what it did.
-      // Not `inEditable`, so an editor's own undo is untouched. No row: the bar's lines carry an
-      // Undo of their own, and a row chosen from the bar would undo a turn the reader is not
-      // looking at.
-      id: "going-undo",
-      keys: "$mod+z",
-      label: "Undo the command bar's last turn",
-      palette: false,
-      run: () => void undoNewestGoingTurn(writesOf(queryClient)),
-    },
   ]);
   const login = user.login;
   // Each press signs out the person signed in when it was made, and carries their login: the
@@ -943,7 +929,6 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           ref={statusCornerRef}
         >
           <PendingWritesIndicator />
-          <GoingUndoNotice />
           <DraftsNotKept />
           {connection === "stuck" ? (
             <p

@@ -40,12 +40,14 @@ func TestTheBarsMarkOnAWrite(t *testing.T) {
 
 	t.Run("a write of a run", func(t *testing.T) {
 		issue := rig.issue(t, "Moved through the bar")
-		run, line := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "status": "in_progress"}, nil)
-		if !line.Outcome.OK {
-			t.Fatalf("the bar's write answered %+v, want it landed", line)
+		doer := rig.served.goingDoer(goingCallerOf(t, rig, false), testServerURL)
+		if status, body := goingInProcessSend(t, doer, goingJSONSend(t, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{
+			"status": "in_progress",
+		})); status != http.StatusOK {
+			t.Fatalf("the bar's write: status=%d body=%s", status, body)
 		}
 		want := model.Actor{Kind: "user", ID: "alice", Proven: true, Act: &model.ActorAct{
-			Scopes: model.Scopes, Agent: model.ActAgentCommandBar, Run: run,
+			Scopes: model.Scopes, Agent: model.ActAgentCommandBar, Run: goingTestRun,
 		}}
 		if actor := newestEventActor(t, rig.mux, issue, "issue.updated"); !reflect.DeepEqual(actor, want) {
 			t.Fatalf("the change's event is recorded as %+v (act %+v), want alice with the bar's act %+v", actor, actor.Act, want.Act)

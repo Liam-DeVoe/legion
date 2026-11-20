@@ -12,6 +12,17 @@ import (
 	"github.com/sjawhar/envoy/going/agentwire"
 )
 
+// goingReasonsOn is how many messages of issue say body.
+func (rig goingWritesRig) goingReasonsOn(t *testing.T, issue string, body any) int {
+	t.Helper()
+	var count int
+	if err := rig.database.Pool.QueryRow(context.Background(),
+		`select count(*) from messages where issue_key = $1 and body = $2`, issue, body).Scan(&count); err != nil {
+		t.Fatalf("count %s's messages saying %v: %v", issue, body, err)
+	}
+	return count
+}
+
 // TestALandedRequestIsNotSentAgain: each request a run's call sends in-process records that it
 // landed in its route's own transaction (going_landings), keyed by the run, the step, the call and
 // the request's number. A reasoned close whose reason landed and whose close did not sends only the

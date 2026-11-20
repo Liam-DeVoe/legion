@@ -647,12 +647,6 @@ export function agentStateRequest(
   );
 }
 
-/** `POST /api/v1/going/runs/{id}/undo`: undoes every write of one of the bar's runs that went
- *  through, each by the undo its catalogue row states. */
-export function goingUndoRequest(id: string, input: Body<"/api/v1/going/runs/{id}/undo", "post">) {
-  return writeRequest("post", "/api/v1/going/runs/{id}/undo", { id }, input);
-}
-
 /** `POST /api/v1/going/runs/{id}/plan/approve`: the person approves the run's waiting plan, each
  *  row as the plan shows it unless the body unticks or edits it, and the run makes its changes. */
 export function goingPlanApproveRequest(

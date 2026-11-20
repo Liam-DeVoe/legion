@@ -1,26 +1,28 @@
-// going_undo_test.go holds the undo of a command-bar turn to R4: every row of the catalogue
-// states its undo, each kind of undo puts back what its write changed - or, for a trace, records
-// the turn undone and erases nothing - a field another writer changed since is left as it is now
-// while the rest is undone, a release is taken back only for the caller's own claim,
-// and a run past seven days takes no undo.
+// going_undo_test.go holds the undo of one command-bar run to R6: every row of the catalogue
+// states its undo, and the undo of a run walks its landed rows newest first, as the person who
+// pressed it - writing back what the run left unless another writer changed it since, closing
+// what it created, rejecting its open suggestions and naming its messages sent, not undone -
+// while History lists the run, and sends nothing twice.
 package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// goingUndoKinds is the undo R4 gives each action of the catalogue: a reverse where Dispatch
-// serves one, a write back where the write wrote a value, the close of an issue the turn created,
+// goingUndoKinds is the undo R6 gives each action of the catalogue: a reverse where Dispatch
+// serves one, a write back where the write wrote a value, the close of an issue the run created,
 // and not_undone for every other write.
 var goingUndoKinds = map[string]goingUndoKind{
 	"dispatch_issue":             goingUndoCloseCreated,
@@ -32,7 +34,7 @@ var goingUndoKinds = map[string]goingUndoKind{
 	"dispatch_resolve_comment":   goingUndoReverse,
 	"dispatch_follow":            goingUndoReverse,
 	"dispatch_comment":           goingUndoNotUndone,
-	"dispatch_suggest":           goingUndoNotUndone,
+	"dispatch_suggest":           goingUndoReverse,
 	"dispatch_message":           goingUndoNotUndone,
 	"dispatch_send_to_agent":     goingUndoNotUndone,
 	"dispatch_doc_edit":          goingUndoWriteBack,
@@ -46,7 +48,7 @@ var goingUndoKinds = map[string]goingUndoKind{
 }
 
 // TestGoingUndoEveryRowStatesItsUndo: every row the builder holds, counted against it, states one
-// of the four undos, the one R4 gives its action, the same on every row of one action, and writes
+// of the four undos, the one R6 gives its action, the same on every row of one action, and writes
 // only through rows the served table classes as writes.
 func TestGoingUndoEveryRowStatesItsUndo(t *testing.T) {
 	catalogue, err := BuildGoingCatalogue()
@@ -58,7 +60,7 @@ func TestGoingUndoEveryRowStatesItsUndo(t *testing.T) {
 	for _, action := range catalogue.Actions() {
 		want, listed := goingUndoKinds[action.Action]
 		if !listed {
-			t.Errorf("%s: R4 gives it no undo here", action.Action)
+			t.Errorf("%s: R6 gives it no undo here", action.Action)
 		}
 		for _, route := range action.Routes {
 			rows++
@@ -84,1145 +86,324 @@ func TestGoingUndoEveryRowStatesItsUndo(t *testing.T) {
 		t.Fatalf("%d of the builder's %d rows state an undo, want every one", stated, rows)
 	}
 	if len(goingUndoKinds) != len(catalogue.Actions()) {
-		t.Fatalf("R4's table names %d actions and the catalogue holds %d", len(goingUndoKinds), len(catalogue.Actions()))
+		t.Fatalf("R6's table names %d actions and the catalogue holds %d", len(goingUndoKinds), len(catalogue.Actions()))
 	}
 }
 
-// undo undoes login's run through the route and answers its lines.
-func (rig goingWritesRig) undo(t *testing.T, login, run string, body any) goingUndoAnswer {
+// ran is a run of alice's words whose model proposes changes as its plan, which she approves
+// whole, answered once it ended done.
+func (rig goingPlanRig) ran(t *testing.T, words string, changes ...map[string]any) string {
 	t.Helper()
-	response := rig.browser(t, login, http.MethodPost, "/api/v1/going/runs/"+run+"/undo", body)
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(changes...)
+		}
+		return answered("Done.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	rig.waiting(t, run)
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+	}
+	return run
+}
+
+// undo presses Undo on run as login, and answers the status and, for a 200, the answer.
+func (rig goingPlanRig) undo(t *testing.T, login, run string) (int, goingUndoAnswer) {
+	t.Helper()
+	response := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/undo", nil, login)
 	if response.Code != http.StatusOK {
-		t.Fatalf("undo %s: status=%d body=%s", run, response.Code, response.Body.String())
+		return response.Code, goingUndoAnswer{}
 	}
-	return decodeBody[goingUndoAnswer](t, response)
+	return response.Code, decodeBody[goingUndoAnswer](t, response)
 }
 
-// oneLine is the one line of an undo, which must have gone as ok says.
-func oneLine(t *testing.T, answer goingUndoAnswer, ok bool) goingUndoLine {
+// undone presses Undo on run as alice, which must answer one line for each landed row of the run,
+// newest first, of the tools want names.
+func (rig goingPlanRig) undone(t *testing.T, run string, want ...string) []goingUndoLine {
 	t.Helper()
-	if len(answer.Lines) != 1 || answer.Lines[0].Outcome.OK != ok {
-		t.Fatalf("the undo answered %+v, want one line, ok %v", answer.Lines, ok)
+	status, answer := rig.undo(t, "alice", run)
+	if status != http.StatusOK {
+		t.Fatalf("Undo of %s answered %d, want 200", run, status)
 	}
-	return answer.Lines[0]
+	tools := make([]string, 0, len(answer.Lines))
+	for _, line := range answer.Lines {
+		tools = append(tools, line.Tool)
+	}
+	if !slices.Equal(tools, want) {
+		t.Fatalf("Undo of %s answered lines of %v (%+v), want %v", run, tools, answer.Lines, want)
+	}
+	return answer.Lines
 }
 
-// requireNoFieldSaidTwice fails the test where a refused field of an undo's line says its own name
-// first: the bar prints each refused field as its name and then its message (undoneText,
-// "status: holds ..."), so a message that starts with that name as well reads the field twice
-// ("status: status holds ...").
-func requireNoFieldSaidTwice(t *testing.T, line goingUndoLine) {
+// aged makes run age old.
+func (rig goingPlanRig) aged(t *testing.T, run string, age time.Duration) {
 	t.Helper()
-	for _, field := range line.Fields {
-		if field.OK || field.Field == "" {
-			continue
-		}
-		if said := strings.ToLower(field.Message); strings.HasPrefix(said, field.Field+" ") || strings.HasPrefix(said, field.Field+":") {
-			t.Errorf("the undo's %s field says %q, which the bar prints as %q", field.Field, field.Message, field.Field+": "+field.Message)
-		}
-	}
+	rig.exec(t, `update going_runs set created_at = now() - make_interval(secs => $2) where id = $1::uuid`, run, age.Seconds())
 }
 
-// runOne records a run of alice's proposing action with arguments, writes it as the person and
-// answers the run's id and the write's line.
-func (rig goingWritesRig) runOne(t *testing.T, action string, arguments map[string]any, fill any) (string, goingWriteLine) {
+// followUp records a follow-up of run in its conversation, age old, done.
+func (rig goingPlanRig) followUp(t *testing.T, run string, age time.Duration) {
 	t.Helper()
-	run := rig.proposed(t, "alice", false, action, arguments)
-	body := map[string]any{"offer": action, "invocation": 0, "approved": goingApprovedPerson}
-	if fill != nil {
-		body["fill"] = fill
-	}
-	return run, rig.wrote(t, "alice", run, body)
+	rig.exec(t, `
+		insert into going_runs (id, author_login, words, conversation_id, continues, level, mode, state, shape, created_at)
+		select gen_random_uuid(), author_login, 'and then this', conversation_id, id, 'standard', 'ask', 'done', $2, now() - make_interval(secs => $3)
+		from going_runs where id = $1::uuid
+	`, run, goingRunShape, age.Seconds())
 }
 
-// issueRead is the issue as its own route reads it.
-func (rig goingWritesRig) issueRead(t *testing.T, key string) model.Issue {
+// documentText is the markdown the document id holds now.
+func (rig goingPlanRig) documentText(t *testing.T, id string) string {
 	t.Helper()
-	return decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/issues/"+key, nil))
+	return decodeBody[struct {
+		Markdown string `json:"markdown"`
+	}](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/artifacts/"+id+"/text", nil)).Markdown
 }
 
-// TestGoingUndoWritesBackAnIssuesFieldsAnAsksTextAndADocumentsContent: a write_back undo writes
-// the value Dispatch read before the write back over it.
-func TestGoingUndoWritesBackAnIssuesFieldsAnAsksTextAndADocumentsContent(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Written back", "The spec.\n").Key
-	before := rig.issueRead(t, issue)
-
-	t.Run("an issue's fields", func(t *testing.T) {
-		run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "status": "in_progress", "title": "Renamed by the bar"}, nil)
-		if written := rig.issueRead(t, issue); written.Status != "in_progress" || written.Title != "Renamed by the bar" {
-			t.Fatalf("the write left the issue %s %q, want it in_progress and renamed", written.Status, written.Title)
-		}
-		line := oneLine(t, rig.undo(t, "alice", run, nil), true)
-		after := rig.issueRead(t, issue)
-		if line.Undo != goingUndoWriteBack || after.Status != before.Status || after.Title != before.Title {
-			t.Fatalf("the undo answered %+v and the issue reads %s %q, want %s %q back", line, after.Status, after.Title, before.Status, before.Title)
-		}
-	})
-	t.Run("an ask's text", func(t *testing.T) {
-		ask := rig.ask(t, issue, "Ship it on Friday?")
-		run, _ := rig.runOne(t, "dispatch_edit_ask", map[string]any{"ask": ask, "question": "Ship it on Monday?"}, nil)
-		if written := decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+ask, nil)); written.Ask.Question != "Ship it on Monday?" {
-			t.Fatalf("the edit left the ask reading %q, want its new words", written.Ask.Question)
-		}
-		oneLine(t, rig.undo(t, "alice", run, nil), true)
-		read := decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+ask, nil))
-		if read.Ask.Question != "Ship it on Friday?" {
-			t.Fatalf("the ask reads %q after the undo, want its words back", read.Ask.Question)
-		}
-	})
-	t.Run("a document's content", func(t *testing.T) {
-		notes := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "notes.md", "# Notes\n\nThe first line.\n")
-		original := decodeBody[artifactText](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/artifacts/"+notes.Artifact.ID+"/text", nil)).Markdown
-		run, line := rig.runOne(t, "dispatch_doc_edit", map[string]any{
-			"issue": issue, "artifact": notes.Artifact.Slug,
-			"ops": []any{map[string]any{"op": "replace", "find": "first line", "with": "opening line"}},
-		}, nil)
-		if line.Item != notes.Artifact.ID {
-			t.Fatalf("the edit's line names %q, want the document %s", line.Item, notes.Artifact.ID)
-		}
-		edited := decodeBody[artifactText](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/artifacts/"+notes.Artifact.ID+"/text", nil)).Markdown
-		if edited == original {
-			t.Fatal("the edit changed nothing")
-		}
-		oneLine(t, rig.undo(t, "alice", run, nil), true)
-		restored := decodeBody[artifactText](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/artifacts/"+notes.Artifact.ID+"/text", nil)).Markdown
-		if restored != original {
-			t.Fatalf("the document reads %q after the undo, want %q", restored, original)
-		}
-	})
+// replaceText is the edit of a document that replaces find with with.
+func replaceText(find, with string) []any {
+	return []any{map[string]any{"op": "replace", "find": find, "with": with}}
 }
 
-// TestGoingUndoPutsBackAnIssuesAdvancesRelation: a write that replaces an issue's advances
-// relation is a field the undo writes back, by the issue's own priority ids before the write,
-// carrying the revision the write left as the route's compare-and-set (advances_revision).
-func TestGoingUndoPutsBackAnIssuesAdvancesRelation(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Advancing", "The spec.\n").Key
-	first := createTestPriority(t, rig.mux, map[string]any{"title": "Ship the daemon"}, "alice").ID
-	second := createTestPriority(t, rig.mux, map[string]any{"title": "Cut the queue"}, "alice").ID
-	rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"advances": []string{first}})
-	before := rig.issueRead(t, issue)
+// TestUndoOfOneRun (R6): Undo of a run, pressed by its person, walks the rows the run landed newest
+// first. A reverse calls each row's reverse route in that order; a write back keeps a value another
+// person left since and names them, and writes the rest back; an issue the run created is closed
+// and holds no message; a suggestion still open is rejected; a message is named sent, not undone.
+// A run is undone from what its routes recorded beside their landings, so a write whose process
+// ended after it landed is undone all the same, and a document another person changed since is
+// undone by nothing, saying why. Undo is offered while History lists the run's conversation, so a
+// run 8 days old in a conversation whose newest run is 1 day old is undone, and one whose
+// conversation's newest run is 8 days old answers 404. A second press answers each row whose undo
+// landed from that landing, sending nothing twice, and resumes where the first press ended.
+func TestUndoOfOneRun(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	ctx := context.Background()
 
-	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{
-		"issue": issue, "advances": []any{second}, "advances_revision": before.AdvancesRevision,
-	}, nil)
-	if written := rig.issueRead(t, issue); !slices.Equal(advanceEntries(written.Advances), []string{second + " own"}) {
-		t.Fatalf("the write left %s advancing %v, want only %s", issue, advanceEntries(written.Advances), second)
-	}
-	line := oneLine(t, rig.undo(t, "alice", run, nil), true)
-	after := rig.issueRead(t, issue)
-	if line.Undo != goingUndoWriteBack || !slices.Equal(advanceEntries(after.Advances), []string{first + " own"}) {
-		t.Fatalf("the undo answered %+v and %s advances %v, want %s back", line, issue, advanceEntries(after.Advances), first)
-	}
-}
-
-// TestGoingUndoRefusesAnAdvancesRelationASecondWriterChanged: a second writer who changes the
-// issue's advances relation between the write and its undo moves its revision, so the undo is
-// refused for advances, naming what it holds now, and writes nothing.
-func TestGoingUndoRefusesAnAdvancesRelationASecondWriterChanged(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Contended advance", "The spec.\n").Key
-	first := createTestPriority(t, rig.mux, map[string]any{"title": "Ship the daemon"}, "alice").ID
-	second := createTestPriority(t, rig.mux, map[string]any{"title": "Cut the queue"}, "alice").ID
-	third := createTestPriority(t, rig.mux, map[string]any{"title": "Hold the line"}, "alice").ID
-	rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"advances": []string{first}})
-	before := rig.issueRead(t, issue)
-
-	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{
-		"issue": issue, "advances": []any{second}, "advances_revision": before.AdvancesRevision,
-	}, nil)
-	left := rig.issueRead(t, issue)
-	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue,
-		map[string]any{"advances": []string{third}, "advances_revision": left.AdvancesRevision})
-
-	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	if line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "advances") {
-		t.Fatalf("the undo answered %+v, want advances refused as changed", line)
-	}
-	requireNoFieldSaidTwice(t, line)
-	if read := rig.issueRead(t, issue); !slices.Equal(advanceEntries(read.Advances), []string{third + " own"}) {
-		t.Fatalf("the undo left %s advancing %v, want bob's %s untouched", issue, advanceEntries(read.Advances), third)
-	}
-}
-
-// TestGoingUndoReversesAClaimAFollowACommentResolveAndAnOpenedAsk: a reverse undo runs the write's
-// reverse, as the caller: the claim released, the follow unfollowed, the thread reopened, and an
-// ask the turn opened - an approval request's among them - retracted.
-func TestGoingUndoReversesAClaimAFollowACommentResolveAndAnOpenedAsk(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Reversed", "The spec.\n").Key
-	askState := func(t *testing.T, id string) string {
-		t.Helper()
-		return decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+id, nil)).Ask.State
-	}
-
-	t.Run("a claim is released", func(t *testing.T) {
-		run, _ := rig.runOne(t, "dispatch_claim", map[string]any{"issue": issue}, nil)
-		if rig.issueRead(t, issue).Claim == nil {
-			t.Fatal("the claim did not land")
-		}
-		oneLine(t, rig.undo(t, "alice", run, nil), true)
-		if claim := rig.issueRead(t, issue).Claim; claim != nil {
-			t.Fatalf("the claim is held by %+v after the undo", claim.Actor)
-		}
-	})
-	t.Run("a follow is unfollowed", func(t *testing.T) {
-		ask := rig.ask(t, issue, "Which region first?")
-		run, _ := rig.runOne(t, "dispatch_follow", map[string]any{"ask": ask, "action": "follow"}, goingPlannerTitle)
-		followers := func() []model.AskFollower {
-			return decodeBody[askFollowersRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+ask+"/followers", nil)).Followers
-		}
-		if len(followers()) == 0 {
-			t.Fatal("the follow did not land")
-		}
-		oneLine(t, rig.undo(t, "alice", run, nil), true)
-		for _, follower := range followers() {
-			if follower.SessionID == goingPlanner {
-				t.Fatalf("%s still follows after the undo", goingPlanner)
-			}
-		}
-	})
-	t.Run("a resolved thread is reopened", func(t *testing.T) {
-		comment := decodeBody[model.Comment](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{"body": "A thread."})).ID
-		run, _ := rig.runOne(t, "dispatch_resolve_comment", map[string]any{"comment": comment}, nil)
-		oneLine(t, rig.undo(t, "alice", run, nil), true)
-		read := decodeBody[commentRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/comments/"+comment, nil))
-		if read.Comment.Resolved {
-			t.Fatal("the thread is still resolved after the undo")
-		}
-	})
-	t.Run("an opened ask is retracted", func(t *testing.T) {
-		run, line := rig.runOne(t, "dispatch_ask", map[string]any{"issue": issue, "question": "Ship on Friday?"}, nil)
-		oneLine(t, rig.undo(t, "alice", run, nil), true)
-		if state := askState(t, line.Item); state != "resolved" {
-			t.Fatalf("the ask the turn opened is %s after the undo, want resolved", state)
-		}
-	})
-	t.Run("an approval request is retracted", func(t *testing.T) {
-		run, line := rig.runOne(t, "dispatch_request_approval", map[string]any{"issue": issue, "artifact": "spec", "summary": "Ready."}, nil)
-		oneLine(t, rig.undo(t, "alice", run, nil), true)
-		if state := askState(t, line.Item); state != "resolved" {
-			t.Fatalf("the approval ask is %s after the undo, want resolved", state)
-		}
-	})
-}
-
-// TestGoingUndoRefusesAFollowAnotherWriterUndid: a follow another writer undid before the undo is
-// left as that writer left it, and the undo is refused, 409 GOING_UNDO_CHANGED, saying what holds
-// now on the field the write changed, in words the bar prints after that field's name.
-func TestGoingUndoRefusesAFollowAnotherWriterUndid(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Followed, then not", "The spec.\n").Key
-	ask := rig.ask(t, issue, "Which region first?")
-	run, _ := rig.runOne(t, "dispatch_follow", map[string]any{"ask": ask, "action": "follow"}, goingPlannerTitle)
-	rig.fixture(t, "bob", http.MethodDelete, "/api/v1/asks/"+ask+"/followers/"+goingPlanner, nil)
-
-	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	if line.Outcome.Code != codeGoingUndoChanged || len(line.Fields) != 1 || line.Fields[0].OK || line.Fields[0].Message == "" {
-		t.Fatalf("the undo answered %+v, want the follow refused as changed, its one field saying why", line)
-	}
-	requireNoFieldSaidTwice(t, line)
-	followers := decodeBody[askFollowersRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+ask+"/followers", nil)).Followers
-	for _, follower := range followers {
-		if follower.SessionID == goingPlanner {
-			t.Fatalf("%s follows again after the undo answered %+v, want bob's unfollow kept", goingPlanner, line)
-		}
-	}
-}
-
-// TestGoingUndoClosesAnIssueTheTurnCreatedWithTheReason: an issue the turn created is closed by its
-// undo, the undo's reason posted on it as a message first.
-func TestGoingUndoClosesAnIssueTheTurnCreatedWithTheReason(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
-	run, line := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made by mistake", "force": true}, nil)
-	const reason = "Filed by mistake from the bar."
-	oneLine(t, rig.undo(t, "alice", run, map[string]any{"reason": reason}), true)
-	if status := rig.issueRead(t, line.Item).Status; status != "done" {
-		t.Fatalf("the created issue is %s after the undo, want done", status)
-	}
-	threads := decodeBody[[]messageRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/issues/"+line.Item+"/messages", nil))
-	if len(threads) == 0 || threads[len(threads)-1].Message.Body != reason {
-		t.Fatalf("the created issue's messages are %+v, want the reason posted", threads)
-	}
-}
-
-// TestGoingUndoOfACreatedIssueResumesAfterTheReasonItPosted (review round 3, finding 1, in the
-// undo): an undo that closes an issue the turn created posts its reason and then closes it. Where
-// the reason landed and the close was refused 503, 408 or 429, the undo is recorded refused, with
-// the reason recorded landed, and stays undoable; the next undo resumes at the close, posting no
-// second reason, and closes the issue.
-func TestGoingUndoOfACreatedIssueResumesAfterTheReasonItPosted(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
-	inner := rig.served.inProcess
-	t.Cleanup(func() { rig.served.inProcess = inner })
-	for _, tc := range []struct {
-		status int
-		code   string
-	}{
-		{http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
-		{http.StatusRequestTimeout, "REQUEST_TIMEOUT"},
-		{http.StatusTooManyRequests, "RATE_LIMITED"},
-	} {
-		t.Run(tc.code, func(t *testing.T) {
-			run, line := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made by mistake " + tc.code, "force": true}, nil)
-			reason := "Filed by mistake, " + tc.code + "."
-			refused := false
-			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.Method == http.MethodPatch && r.URL.Path == "/api/v1/issues/"+line.Item && !refused {
-					refused = true
-					w.Header().Set("Retry-After", "1")
-					writeError(w, tc.code, tc.status, "the close was refused")
-					return
-				}
+	t.Run("the reverse calls run newest first", func(t *testing.T) {
+		first, second := rig.issue(t, "Claimed first"), rig.issue(t, "Claimed second")
+		run := rig.ran(t, "claim the two issues",
+			goingChange("dispatch_claim", map[string]any{"issue": first}), goingChange("dispatch_claim", map[string]any{"issue": second}))
+		var mu sync.Mutex
+		var released []string
+		for _, issue := range []string{first, second} {
+			rig.hooks.set(t, http.MethodDelete, "/api/v1/issues/"+issue+"/claim", func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+				mu.Lock()
+				released = append(released, issue)
+				mu.Unlock()
 				inner.ServeHTTP(w, r)
 			})
-			first := oneLine(t, rig.undo(t, "alice", run, map[string]any{"reason": reason}), false)
-			if first.Outcome.Status != tc.status {
-				t.Fatalf("the undo whose close was refused answered %+v, want the route's %d", first.Outcome, tc.status)
-			}
-			oneLine(t, rig.undo(t, "alice", run, map[string]any{"reason": reason}), true)
-			rig.served.inProcess = inner
-			if status := rig.issueRead(t, line.Item).Status; status != "done" {
-				t.Fatalf("the created issue is %s after the second undo, want done", status)
-			}
-			var posted int
-			if err := rig.database.Pool.QueryRow(context.Background(),
-				`select count(*) from messages where issue_key = $1 and body = $2`, line.Item, reason).Scan(&posted); err != nil || posted != 1 {
-				t.Fatalf("the created issue holds %d messages saying %q (%v), want the reason posted once", posted, reason, err)
-			}
-			// Read off the stored record itself, how each request of each undo went.
-			var undos []struct {
-				Outcome  goingWriteOutcome `json:"outcome"`
-				Requests []struct {
-					Outcome goingWriteOutcome `json:"outcome"`
-				} `json:"requests"`
-			}
-			if err := rig.database.Pool.QueryRow(context.Background(), `select undos from going_runs where id = $1::uuid`, run).Scan(&undos); err != nil {
-				t.Fatalf("read the run's undos: %v", err)
-			}
-			if len(undos) != 2 || undos[0].Outcome.OK || len(undos[0].Requests) != 2 || !undos[0].Requests[0].Outcome.OK ||
-				!undos[1].Outcome.OK || len(undos[1].Requests) != 2 || !undos[1].Requests[1].Outcome.OK {
-				t.Fatalf("the run keeps the undos %+v, want the refused undo with its reason landed, then the undo that closed it", undos)
-			}
-		})
-	}
-}
-
-// goingCloseRefusedOnce is a route table that refuses the first close of issue 503 before its
-// route sees it, so an undo's reason lands and its close does not.
-func goingCloseRefusedOnce(inner http.Handler, issue string) http.Handler {
-	refused := false
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch && r.URL.Path == "/api/v1/issues/"+issue && !refused {
-			refused = true
-			writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "the close was refused")
-			return
 		}
-		inner.ServeHTTP(w, r)
-	})
-}
-
-// TestGoingUndoRefusedAfterItsReasonLandedCreditsTheReasonToTheUndo (review round 5, thread 9): an
-// undo of a created issue whose reason landed and whose close was refused says that this undo's
-// earlier request stands, not the write's: the reason is the undo's own.
-func TestGoingUndoRefusedAfterItsReasonLandedCreditsTheReasonToTheUndo(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
-	inner := rig.served.inProcess
-	t.Cleanup(func() { rig.served.inProcess = inner })
-	run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made, its close refused", "force": true}, nil)
-	rig.served.inProcess = goingCloseRefusedOnce(inner, made.Item)
-	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	rig.served.inProcess = inner
-	if !strings.Contains(line.Outcome.Message, "this undo's earlier request") || strings.Contains(line.Outcome.Message, "this write's") {
-		t.Fatalf("the undo whose close was refused answered %q, want it to credit the reason to this undo", line.Outcome.Message)
-	}
-}
-
-// TestGoingUndoResumedOntoAClosedOrMovedIssueSaysTheReasonStands (review round 5, thread 4): an
-// undo of a created issue posted its reason and its close was refused 503; before the next undo,
-// someone closed the issue, or moved it. The next undo is refused before it sends anything, and
-// its line says the reason the earlier undo posted stands, as the run records it.
-func TestGoingUndoResumedOntoAClosedOrMovedIssueSaysTheReasonStands(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
-	inner := rig.served.inProcess
-	t.Cleanup(func() { rig.served.inProcess = inner })
-	for _, moved := range []string{"done", "in_progress"} {
-		t.Run(moved, func(t *testing.T) {
-			run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made, then moved to " + moved, "force": true}, nil)
-			rig.served.inProcess = goingCloseRefusedOnce(inner, made.Item)
-			oneLine(t, rig.undo(t, "alice", run, nil), false)
-			rig.served.inProcess = inner
-			rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+made.Item, map[string]any{"status": moved})
-			line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-			reason := "/api/v1/issues/" + made.Item + "/messages"
-			if line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, reason) {
-				t.Fatalf("the undo onto the issue bob moved to %s answered %+v, want it refused naming the reason %s, which stands", moved, line.Outcome, reason)
-			}
-			undos := rig.record(t, "alice", run).Undos
-			if latest := undos[len(undos)-1]; len(latest.Requests) != 1 || latest.Requests[0].Path != reason || !latest.Requests[0].Outcome.OK {
-				t.Fatalf("the run records the latest undo %+v, want it naming the reason landed", latest)
-			}
-		})
-	}
-}
-
-// TestGoingUndoOfACreatedIssueWhoseRecordNamesNoStatusClosesNothing (review round 5, thread 3): the
-// close of an issue the turn created expects the status the create recorded it left; a record
-// that names none holds no status to expect, so the undo is the server's own failure, posts and
-// closes nothing, and leaves the write undoable - never a close held to the status read now.
-func TestGoingUndoOfACreatedIssueWhoseRecordNamesNoStatusClosesNothing(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
-	run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made, its status unrecorded", "force": true}, nil)
-	if _, err := rig.database.Pool.Exec(context.Background(), `
-		update going_runs set writes = jsonb_set(writes, '{0,after}', jsonb_build_object('key', $2::text)) where id = $1::uuid`, run, made.Item); err != nil {
-		t.Fatalf("drop the status from the write's record: %v", err)
-	}
-	const reason = "Closed on a status read now."
-	line := oneLine(t, rig.undo(t, "alice", run, map[string]any{"reason": reason}), false)
-	if line.Outcome.Status != http.StatusInternalServerError || rig.issueRead(t, made.Item).ClosedAt != nil || rig.goingReasonsOn(t, made.Item, reason) != 0 {
-		t.Fatalf("the undo of a record naming no status answered %+v and left %s %s with %d reasons, want 500 and nothing posted or closed",
-			line.Outcome, made.Item, rig.issueRead(t, made.Item).Status, rig.goingReasonsOn(t, made.Item, reason))
-	}
-}
-
-// TestGoingUndoOfAWriteNotUndoneLeavesItInPlaceAndMarksItUndone: a comment, a message and an
-// artifact the turn made stay where they are; the undo records the turn undone, so the run is no
-// longer undoable.
-func TestGoingUndoOfAWriteNotUndoneLeavesItInPlaceAndMarksItUndone(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Traced", "The spec.\n").Key
-	for _, write := range []struct {
-		action    string
-		arguments map[string]any
-		read      string
-	}{
-		{"dispatch_comment", map[string]any{"issue": issue, "body": "Stays."}, "/api/v1/comments/"},
-		{"dispatch_message", map[string]any{"issue": issue, "body": "Stays too."}, "/api/v1/messages/"},
-		{"dispatch_artifact", map[string]any{"issue": issue, "name": "kept.md", "content": "# Kept\n"}, "/api/v1/artifacts/"},
-	} {
-		t.Run(write.action, func(t *testing.T) {
-			run, line := rig.runOne(t, write.action, write.arguments, nil)
-			undone := oneLine(t, rig.undo(t, "alice", run, nil), true)
-			if undone.Undo != goingUndoNotUndone {
-				t.Fatalf("the undo of %s is %s, want it not undone", write.action, undone.Undo)
-			}
-			if read := dispatchRequest(t, rig.mux, http.MethodGet, write.read+line.Item, nil, "alice"); read.Code != http.StatusOK {
-				t.Fatalf("what %s made reads %d after the undo, want it in place", write.action, read.Code)
-			}
-			if again := rig.undo(t, "alice", run, nil); len(again.Lines) != 0 {
-				t.Fatalf("a second undo of the run undid %+v again", again.Lines)
-			}
-			listed := decodeBody[goingRunsPage](t, rig.browser(t, "alice", http.MethodGet, "/api/v1/me/going-runs?undoable=true", nil))
-			for _, row := range listed.Rows {
-				if row.ID == run {
-					t.Fatalf("the run reads undoable after its undo")
-				}
-			}
-		})
-	}
-}
-
-// TestGoingUndoRefusesAFieldAnotherWriterChangedAndUndoesTheRest: a field another writer changed
-// after the turn's write is left as that writer left it, refused by name, and every other field
-// and every other write of the turn is undone.
-func TestGoingUndoRefusesAFieldAnotherWriterChangedAndUndoesTheRest(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	first := createInteractionIssue(t, rig.mux, "DEMO", "First", "The spec.\n").Key
-	second := rig.issue(t, "Second")
-	beforeFirst, beforeSecond := rig.issueRead(t, first), rig.issueRead(t, second)
-	run := rig.proposed(t, "alice", false, "dispatch_issue_update",
-		map[string]any{"issue": first, "status": "in_progress", "title": "First, renamed"},
-		map[string]any{"issue": second, "status": "in_progress"})
-	for invocation := range 2 {
-		rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_issue_update", "invocation": invocation, "approved": goingApprovedPerson})
-	}
-	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+first, map[string]any{"title": "Bob's title"})
-
-	answer := rig.undo(t, "alice", run, nil)
-	if len(answer.Lines) != 2 {
-		t.Fatalf("the undo answered %+v, want a line for each write", answer.Lines)
-	}
-	changed, clean := answer.Lines[1], answer.Lines[0]
-	if changed.Item != first || changed.Outcome.OK || changed.Outcome.Code != codeGoingUndoChanged ||
-		!strings.Contains(changed.Outcome.Message, "title") || !strings.Contains(changed.Outcome.Message, "Bob's title") {
-		t.Fatalf("the first issue's undo answered %+v, want title refused naming what it holds now", changed)
-	}
-	if !clean.Outcome.OK || clean.Item != second {
-		t.Fatalf("the second issue's undo answered %+v, want it undone", clean)
-	}
-	afterFirst, afterSecond := rig.issueRead(t, first), rig.issueRead(t, second)
-	if afterFirst.Title != "Bob's title" || afterFirst.Status != beforeFirst.Status || afterSecond.Status != beforeSecond.Status {
-		t.Fatalf("after the undo the first reads %s %q and the second %s, want bob's title kept and both statuses back",
-			afterFirst.Status, afterFirst.Title, afterSecond.Status)
-	}
-	fields := map[string]goingUndoField{}
-	for _, field := range changed.Fields {
-		fields[field.Field] = field
-	}
-	if len(fields) != 2 || !fields["status"].OK || fields["title"].OK || !strings.Contains(fields["title"].Message, "Bob's title") {
-		t.Fatalf("the first issue's undo reports its fields as %+v, want status put back and title left, naming what it holds", changed.Fields)
-	}
-	requireNoFieldSaidTwice(t, changed)
-
-	// The refusal is the turn's verdict on that write: a second undo tries nothing again, and the
-	// run no longer reads undoable.
-	if again := rig.undo(t, "alice", run, nil); len(again.Lines) != 0 {
-		t.Fatalf("a second undo tried %+v again", again.Lines)
-	}
-	undos := rig.record(t, "alice", run).Undos
-	if len(undos) != 2 || !undos[0].Settled || !undos[1].Settled || len(undos[1].Fields) != 2 {
-		t.Fatalf("the run keeps the undos %+v, want both settled and the refused one field by field", undos)
-	}
-	listed := decodeBody[goingRunsPage](t, rig.browser(t, "alice", http.MethodGet, "/api/v1/me/going-runs?undoable=true", nil))
-	for _, row := range listed.Rows {
-		if row.ID == run {
-			t.Fatal("the run reads undoable after its undo was settled")
+		lines := rig.undone(t, run, "dispatch_claim", "dispatch_claim")
+		if !slices.Equal(released, []string{second, first}) {
+			t.Fatalf("Undo released %v, want the newest claim's issue first: %v", released, []string{second, first})
 		}
-	}
-}
-
-// TestGoingUndoPutsARankBackBetweenItsOldNeighbours: an issue's rank is a field the undo writes
-// back, by naming the issues it stood between before the write; one another writer moved again
-// since is refused for its rank, naming where it stands now, while the turn's other fields are
-// undone.
-func TestGoingUndoPutsARankBackBetweenItsOldNeighbours(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	first := createInteractionIssue(t, rig.mux, "DEMO", "First in line", "The spec.\n").Key
-	second, third, moved := rig.issue(t, "Second in line"), rig.issue(t, "Third in line"), rig.issue(t, "Moved about")
-	rank := func(key string) string {
-		t.Helper()
-		return rig.issueRead(t, key).Rank
-	}
-	between := func(t *testing.T, key, after, before string) bool {
-		t.Helper()
-		at := rank(key)
-		return (after == "" || rank(after) < at) && (before == "" || at < rank(before))
-	}
-	if !between(t, moved, third, "") {
-		t.Fatalf("%s is not last in its project to begin with", moved)
-	}
-
-	t.Run("a move is undone between the old neighbours", func(t *testing.T) {
-		run, line := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": moved, "after": first, "before": second}, nil)
-		if !between(t, moved, first, second) || !slices.Contains(line.Fields, "rank") {
-			t.Fatalf("the move answered %+v and did not put %s between %s and %s", line, moved, first, second)
+		for _, line := range lines {
+			if !line.Outcome.OK || line.Undo != goingUndoReverse {
+				t.Fatalf("a claim's undo answered %+v, want it reversed", line)
+			}
 		}
-		oneLine(t, rig.undo(t, "alice", run, nil), true)
-		if !between(t, moved, third, "") {
-			t.Fatalf("after the undo %s stands at %s, want after %s (%s) again", moved, rank(moved), third, rank(third))
+		if rig.issueRead(t, first).Claim != nil || rig.issueRead(t, second).Claim != nil {
+			t.Fatalf("a claim the run took still stands after its Undo")
 		}
 	})
 
-	t.Run("a move another writer made since is refused for rank, the rest undone", func(t *testing.T) {
-		status := rig.issueRead(t, moved).Status
-		run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{
-			"issue": moved, "status": "in_progress", "after": first, "before": second,
-		}, nil)
-		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+moved, map[string]any{"rank": map[string]any{"after": second, "before": third}})
-		line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	t.Run("a later value of another writer is kept and named", func(t *testing.T) {
+		issue := rig.issue(t, "Renamed twice")
+		before := rig.issueRead(t, issue)
+		run := rig.ran(t, "rename Renamed twice and start it",
+			goingChange("dispatch_issue_update", map[string]any{"issue": issue, "title": "Ours", "status": "in_progress"}))
+		rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"title": "Bob's"})
+		line := rig.undone(t, run, "dispatch_issue_update")[0]
+		if after := rig.issueRead(t, issue); after.Title != "Bob's" || after.Status != before.Status {
+			t.Fatalf("after Undo the issue is titled %q and %s, want Bob's title kept and its status %s back", after.Title, after.Status, before.Status)
+		}
 		fields := map[string]goingUndoField{}
 		for _, field := range line.Fields {
 			fields[field.Field] = field
 		}
-		if line.Outcome.Code != codeGoingUndoChanged || fields["rank"].OK || !fields["status"].OK ||
-			!strings.Contains(fields["rank"].Message, second) || !strings.Contains(fields["rank"].Message, third) {
-			t.Fatalf("the undo answered %+v, want rank refused naming where bob left it and status put back", line)
+		if kept := fields["title"]; kept.OK || !strings.Contains(kept.Message, `"Bob's"`) || !strings.Contains(kept.Message, "user bob") {
+			t.Fatalf("the title's undo answered %+v, want it kept, naming Bob's title and bob", kept)
 		}
-		requireNoFieldSaidTwice(t, line)
-		if !between(t, moved, second, third) || rig.issueRead(t, moved).Status != status {
-			t.Fatalf("after the undo %s is %s at %s, want bob's place kept and the status back to %s",
-				moved, rig.issueRead(t, moved).Status, rank(moved), status)
+		if !fields["status"].OK || line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "status") {
+			t.Fatalf("the line answered %+v, want %s naming the kept title and the status written back", line, codeGoingUndoChanged)
 		}
 	})
-}
 
-// TestGoingUndoTwoUndosOfOneRunTakeTurns: two undos of one run sent at once undo each write once:
-// one claims the run's writes, and the other either finds them claimed - 429 with a Retry-After -
-// or comes after and finds nothing left to undo; a retry once both answered undoes nothing more.
-func TestGoingUndoTwoUndosOfOneRunTakeTurns(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Twice", "The spec.\n").Key
-	run := rig.proposed(t, "alice", false, "dispatch_issue_update",
-		map[string]any{"issue": issue, "labels": []any{"one"}},
-		map[string]any{"issue": issue, "title": "Twice, renamed"},
-		map[string]any{"issue": issue, "status": "in_progress"})
-	for invocation := range 3 {
-		rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_issue_update", "invocation": invocation, "approved": goingApprovedPerson})
-	}
-	cookie := rig.cookie(t, "alice")
-	answers := make(chan *httptest.ResponseRecorder, 2)
-	for range 2 {
-		go func() {
-			answers <- goingRequestTo(t, rig.network, http.MethodPost, "/api/v1/going/runs/"+run+"/undo", nil, pageOrigin, cookie)
-		}()
-	}
-	lines := 0
-	for range 2 {
-		var response *httptest.ResponseRecorder
-		select {
-		case response = <-answers:
-		case <-time.After(30 * time.Second):
-			t.Fatal("an undo never answered")
+	t.Run("a created issue is closed and holds no message", func(t *testing.T) {
+		run := rig.ran(t, "file Made by the run", goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made by the run", "force": true}))
+		line := rig.undone(t, run, "dispatch_issue")[0]
+		if !line.Outcome.OK || line.Undo != goingUndoCloseCreated || rig.issueRead(t, line.Item).Status != "done" {
+			t.Fatalf("Undo of the create answered %+v and left %s %s, want it closed", line, line.Item, rig.issueRead(t, line.Item).Status)
 		}
-		switch {
-		case response.Code == http.StatusOK:
-			lines += len(decodeBody[goingUndoAnswer](t, response).Lines)
-		case response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), codeGoingUndoInProgress) ||
-			response.Header().Get("Retry-After") == "":
-			t.Fatalf("an undo answered %d %s, want its lines or 429 %s with a Retry-After", response.Code, response.Body.String(), codeGoingUndoInProgress)
+		if messages, comments := rig.count(t, `select count(*) from messages where issue_key = $1`, line.Item),
+			rig.count(t, `select count(*) from comments where issue_key = $1`, line.Item); messages != 0 || comments != 0 {
+			t.Fatalf("the closed issue holds %d messages and %d comments, want none", messages, comments)
 		}
-	}
-	if again := rig.undo(t, "alice", run, nil); len(again.Lines) != 0 {
-		t.Fatalf("an undo after both undid %+v again", again.Lines)
-	}
-	undos := rig.record(t, "alice", run).Undos
-	if lines != 3 || len(undos) != 3 {
-		t.Fatalf("the two undos answered %d lines and recorded %+v, want each of the three writes undone once", lines, undos)
-	}
-	seen := map[string]bool{}
-	for _, undo := range undos {
-		if seen[undo.WriteID] || !undo.Outcome.OK || undo.Pending {
-			t.Fatalf("the run keeps the undos %+v, want each write undone once, ok and recorded", undos)
-		}
-		seen[undo.WriteID] = true
-	}
-}
-
-// TestGoingUndoTakesBackAReleaseOnlyWhereTheCallerHeldTheClaim: the undo of a
-// release takes the claim back where the caller held it before, and refuses, naming the holder,
-// where someone else did, since taking it would make the caller a holder it never was.
-func TestGoingUndoTakesBackAReleaseOnlyWhereTheCallerHeldTheClaim(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	own := createInteractionIssue(t, rig.mux, "DEMO", "Alice's", "The spec.\n").Key
-	others := rig.issue(t, "Bob's")
-	rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+own+"/claim", map[string]any{})
-	rig.fixture(t, "bob", http.MethodPost, "/api/v1/issues/"+others+"/claim", map[string]any{})
-
-	run, _ := rig.runOne(t, "dispatch_claim", map[string]any{"issue": own, "release": true}, nil)
-	if rig.issueRead(t, own).Claim != nil {
-		t.Fatal("the release did not land")
-	}
-	oneLine(t, rig.undo(t, "alice", run, nil), true)
-	if claim := rig.issueRead(t, own).Claim; claim == nil || model.CanonicalLogin(claim.Actor.ID) != "alice" {
-		t.Fatalf("alice's own claim reads %+v after the undo, want hers again", claim)
-	}
-
-	run, _ = rig.runOne(t, "dispatch_claim", map[string]any{"issue": others, "release": true}, nil)
-	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	if line.Outcome.Code != codeGoingUndoNotCallers || !strings.Contains(line.Outcome.Message, "bob") {
-		t.Fatalf("the undo of a release of bob's claim answered %+v, want it refused naming bob", line)
-	}
-	if claim := rig.issueRead(t, others).Claim; claim != nil {
-		t.Fatalf("bob's released claim is held by %+v after the refused undo", claim.Actor)
-	}
-}
-
-// TestGoingUndoOfARunPastSevenDaysIsRefusedAndOneInsideThemIsUndone: a turn is undone for as long
-// as its run is kept; a run of eight days is gone, and one of six is undone.
-func TestGoingUndoOfARunPastSevenDaysIsRefusedAndOneInsideThemIsUndone(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Aged", "The spec.\n").Key
-	age := func(run string, by time.Duration) {
-		t.Helper()
-		if _, err := rig.database.Pool.Exec(context.Background(),
-			`update going_runs set created_at = now() - $2::interval where id = $1::uuid`, run, by.String()); err != nil {
-			t.Fatalf("age the run: %v", err)
-		}
-	}
-	gone, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "labels": []any{"gone"}}, nil)
-	kept, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "labels": []any{"kept"}}, nil)
-	age(gone, 8*24*time.Hour)
-	age(kept, 6*24*time.Hour)
-	if response := rig.browser(t, "alice", http.MethodPost, "/api/v1/going/runs/"+gone+"/undo", nil); response.Code != http.StatusNotFound ||
-		!strings.Contains(response.Body.String(), codeGoingRunNotFound) {
-		t.Fatalf("the undo of an 8-day run: status=%d body=%s, want 404 %s", response.Code, response.Body.String(), codeGoingRunNotFound)
-	}
-	oneLine(t, rig.undo(t, "alice", kept, nil), true)
-	if labels := rig.issueRead(t, issue).Labels; len(labels) != 1 || labels[0] != "gone" {
-		t.Fatalf("the issue's labels read %v after the 6-day run's undo, want the labels before it", labels)
-	}
-}
-
-// TestGoingUndoOfAWriteWhoseActionIsGoneIsRefusedAsUnknown: a write whose action the catalogue no
-// longer holds has no undo to run, so its undo is refused with a code of its own, and the issue
-// is left as the write left it.
-func TestGoingUndoOfAWriteWhoseActionIsGoneIsRefusedAsUnknown(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Orphaned", "The spec.\n").Key
-	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "labels": []any{"left"}}, nil)
-	if _, err := rig.database.Pool.Exec(context.Background(),
-		`update going_runs set writes = jsonb_set(writes, '{0,action}', '"dispatch_retired"') where id = $1::uuid`, run); err != nil {
-		t.Fatalf("retire the write's action: %v", err)
-	}
-	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	if line.Outcome.Status != http.StatusConflict || line.Outcome.Code != codeGoingUndoUnknown {
-		t.Fatalf("the undo of a retired action answered %+v, want 409 %s", line.Outcome, codeGoingUndoUnknown)
-	}
-	if labels := rig.issueRead(t, issue).Labels; len(labels) != 1 || labels[0] != "left" {
-		t.Fatalf("the issue's labels read %v, want the write's left in place", labels)
-	}
-}
-
-// TestGoingUndoOfAClaimTheCallerAlreadyHeldReleasesNothing: a bar turn that claims an issue the
-// person already held changed nothing, so its undo leaves the claim with them.
-func TestGoingUndoOfAClaimTheCallerAlreadyHeldReleasesNothing(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Held by hand", "The spec.\n").Key
-	rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/claim", map[string]any{})
-	run, _ := rig.runOne(t, "dispatch_claim", map[string]any{"issue": issue}, nil)
-	oneLine(t, rig.undo(t, "alice", run, nil), true)
-	if claim := rig.issueRead(t, issue).Claim; claim == nil || model.CanonicalLogin(claim.Actor.ID) != "alice" {
-		t.Fatalf("alice's own claim reads %+v after the undo of a turn that changed nothing, want it hers still", claim)
-	}
-}
-
-// TestGoingUndoOfAnApprovalRequestRetractsOnlyTheAskItOpened: a second request for approval of a
-// document renews the ask the first opened; the second's undo leaves that ask open, and the
-// first's, which opened it, retracts it.
-func TestGoingUndoOfAnApprovalRequestRetractsOnlyTheAskItOpened(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Approved twice", "The spec.\n").Key
-	askState := func(id string) string {
-		t.Helper()
-		return decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+id, nil)).Ask.State
-	}
-	first, opened := rig.runOne(t, "dispatch_request_approval", map[string]any{"issue": issue, "artifact": "spec", "summary": "Ready."}, nil)
-	second, renewed := rig.runOne(t, "dispatch_request_approval", map[string]any{"issue": issue, "artifact": "spec", "summary": "Ready."}, nil)
-	if renewed.Item != opened.Item {
-		t.Fatalf("the second request answered the ask %s, want the first's %s renewed", renewed.Item, opened.Item)
-	}
-	oneLine(t, rig.undo(t, "alice", second, nil), true)
-	if state := askState(opened.Item); state != "open" {
-		t.Fatalf("the approval ask is %s after the undo of the request that renewed it, want open", state)
-	}
-	oneLine(t, rig.undo(t, "alice", first, nil), true)
-	if state := askState(opened.Item); state != "resolved" {
-		t.Fatalf("the approval ask is %s after the undo of the request that opened it, want resolved", state)
-	}
-}
-
-// TestGoingUndoRefusedForACauseThatClearsStaysUndoable: an undo its route refused 429 settles
-// nothing - the run still reads undoable - and a second undo of the run undoes the write.
-func TestGoingUndoRefusedForACauseThatClearsStaysUndoable(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Busy", "The spec.\n").Key
-	status := rig.issueRead(t, issue).Status
-	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "status": "in_progress"}, nil)
-	inner := rig.served.inProcess
-	t.Cleanup(func() { rig.served.inProcess = inner })
-	limited := false
-	rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPatch && !limited {
-			limited = true
-			w.Header().Set("Retry-After", "1")
-			writeError(w, "RATE_LIMITED", http.StatusTooManyRequests, "too many writes from this caller: try again shortly")
-			return
-		}
-		inner.ServeHTTP(w, r)
 	})
-	refused := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	if refused.Outcome.Status != http.StatusTooManyRequests {
-		t.Fatalf("the undo answered %+v, want the route's 429", refused.Outcome)
-	}
-	listed := decodeBody[goingRunsPage](t, rig.browser(t, "alice", http.MethodGet, "/api/v1/me/going-runs?undoable=true", nil))
-	if !slices.ContainsFunc(listed.Rows, func(row goingRun) bool { return row.ID == run }) {
-		t.Fatal("the run no longer reads undoable after an undo refused 429")
-	}
-	oneLine(t, rig.undo(t, "alice", run, nil), true)
-	if now := rig.issueRead(t, issue).Status; now != status {
-		t.Fatalf("the issue is %s after the second undo, want %s back", now, status)
-	}
-}
 
-// TestGoingUndoSettlesOnlyAVerdictARetryWouldRepeat: ok, another writer's change and a refusal
-// that is the route's final word settle a write; the server's own failure, a refusal that says
-// only this attempt was not heard (401, 408, 429) and a contended claim do not.
-func TestGoingUndoSettlesOnlyAVerdictARetryWouldRepeat(t *testing.T) {
-	for _, tc := range []struct {
-		outcome goingWriteOutcome
-		settles bool
-	}{
-		{goingWriteOutcome{OK: true, Status: http.StatusOK}, true},
-		{goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoChanged}, true},
-		{goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoNotCallers}, true},
-		{goingWriteOutcome{Status: http.StatusForbidden, Code: "OAUTH_SCOPE_REQUIRED"}, true},
-		{goingWriteOutcome{Status: http.StatusConflict, Code: codeClaimContended}, false},
-		{goingWriteOutcome{Status: http.StatusUnauthorized, Code: "UNAUTHENTICATED"}, false},
-		{goingWriteOutcome{Status: http.StatusRequestTimeout, Code: "REQUEST_TIMEOUT"}, false},
-		{goingWriteOutcome{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED"}, false},
-		{goingWriteOutcome{Status: http.StatusInternalServerError, Code: codeInternal}, false},
-		{goingWriteOutcome{Status: http.StatusNotImplemented, Code: codeGoingUndoUnserved}, false},
-	} {
-		if got := goingUndoSettles(tc.outcome); got != tc.settles {
-			t.Errorf("an undo answered %d %s settles its write: %v, want %v", tc.outcome.Status, tc.outcome.Code, got, tc.settles)
+	t.Run("an open suggestion is rejected", func(t *testing.T) {
+		issue := decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": "DEMO", "title": "Suggested on", "spec": "The spec says hello to everyone.\n", "force": true,
+		})).Key
+		run := rig.ran(t, "suggest hi on Suggested on",
+			goingChange("dispatch_suggest", map[string]any{"issue": issue, "quote": "says hello", "replace_with": "says hi"}))
+		line := rig.undone(t, run, "dispatch_suggest")[0]
+		read := decodeBody[struct {
+			Comment struct {
+				Suggestion *model.Suggestion `json:"suggestion"`
+			} `json:"comment"`
+		}](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/comments/"+line.Item, nil))
+		if suggestion := read.Comment.Suggestion; !line.Outcome.OK || suggestion == nil || suggestion.Accepted == nil || *suggestion.Accepted {
+			t.Fatalf("Undo of the suggestion answered %+v and left it %+v, want it rejected", line, suggestion)
 		}
-	}
-}
-
-// TestGoingUndoOfARankWhoseNeighboursCannotBeReadFailsUnsettled: a failed read of the issues a
-// rank stood between is the undo's failure, answered 500 and settling nothing, never another
-// writer's change.
-func TestGoingUndoOfARankWhoseNeighboursCannotBeReadFailsUnsettled(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Ranked", "The spec.\n").Key
-	neighbour := rig.issue(t, "Its neighbour")
-	// A context holding a connection already: the pool refuses the read a second one.
-	held, release := store.HoldsConnection(context.Background())
-	defer release()
-	observer := goingObserver{s: rig.served}
-	restore, why, err := observer.rankRestore(held, issue, issueRankPlace{After: &neighbour})
-	if err == nil || why != "" || restore != nil {
-		t.Fatalf("rankRestore on a read that failed answered %v, %q, %v; want its error and no reason", restore, why, err)
-	}
-
-	undoer := goingUndoer{s: rig.served}
-	write := goingRunWrite{ID: "w-rank", Action: "dispatch_issue_update", Target: issue, Fields: []string{goingRank},
-		Before: json.RawMessage(`{"rank":{"rank":"a"}}`), After: json.RawMessage(`{"rank":{"rank":"b"}}`), Outcome: goingWriteOutcome{OK: true}}
-	read := func([]string) (map[string]any, error) {
-		return map[string]any{goingRank: map[string]any{"rank": "b"}}, nil
-	}
-	_, outcome, _ := undoer.writeBack(context.Background(), write, read, goingIssuePatchRoute, map[string]string{"key": issue},
-		func(string, json.RawMessage, json.RawMessage, json.RawMessage) (any, string, error) {
-			return nil, "", err
-		}, func(map[string]json.RawMessage) (map[string]any, goingCondition) { return nil, goingCondition{} }, func(string) bool { return false })
-	if outcome.OK || outcome.Status != http.StatusInternalServerError || goingUndoSettles(outcome) {
-		t.Fatalf("the write back answered %+v, want the server's own 500, which settles nothing", outcome)
-	}
-}
-
-// TestGoingUndoOfARowWhoseUndoThisServerCannotRunIsRefused: a write recorded through a row whose
-// undo kind names no undo this server runs for its action is refused, 501 GOING_UNDO_UNSERVED,
-// which settles nothing, rather than recorded as undone with nothing undone.
-func TestGoingUndoOfARowWhoseUndoThisServerCannotRunIsRefused(t *testing.T) {
-	catalogue, err := BuildGoingCatalogue()
-	if err != nil {
-		t.Fatal(err)
-	}
-	undoer := goingUndoer{s: &server{going: catalogue}}
-	// A row added later whose undo is stated as a reverse, with no reverse written for it here.
-	line := undoer.undo(context.Background(), goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Fields: []string{"state"},
-		Outcome: goingWriteOutcome{OK: true}, Undo: goingUndoReverse}, nil)
-	if line.Outcome.OK || line.Outcome.Status != http.StatusNotImplemented || line.Outcome.Code != codeGoingUndoUnserved || goingUndoSettles(line.Outcome) {
-		t.Fatalf("the undo of a reverse row with no reverse answered %+v, want 501 %s, unsettled", line.Outcome, codeGoingUndoUnserved)
-	}
-}
-
-// TestGoingUndoRunsTheUndoOfTheRowTheWriteWentThrough (review finding 4): the rows of one action
-// may state different undos, so a write is undone by the undo of the row it went through, as its
-// record keeps it, and never by the action's first row's; a write whose record names no undo is
-// refused, 409 GOING_UNDO_UNKNOWN, with nothing undone.
-func TestGoingUndoRunsTheUndoOfTheRowTheWriteWentThrough(t *testing.T) {
-	catalogue, err := BuildGoingCatalogue()
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The resolve's first row now states a reverse this server has none of; the write went
-	// through a row stating it is not undone.
-	resolve := catalogue.byAction["dispatch_resolve_ask"]
-	catalogue.actions[resolve].Routes[0].Undo = GoingUndo{Kind: goingUndoReverse, Routes: []string{goingAskResolveRoute}}
-	undoer := goingUndoer{s: &server{going: catalogue}}
-	write := goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Fields: []string{"state"},
-		Outcome: goingWriteOutcome{OK: true}, Undo: goingUndoNotUndone}
-	if line := undoer.undo(context.Background(), write, nil); !line.Outcome.OK || line.Undo != goingUndoNotUndone {
-		t.Fatalf("the undo of a write through a row that is not undone answered %+v by %s, want it recorded as not undone", line.Outcome, line.Undo)
-	}
-	write.Undo = ""
-	if line := undoer.undo(context.Background(), write, nil); line.Outcome.OK || line.Outcome.Code != codeGoingUndoUnknown {
-		t.Fatalf("the undo of a write whose record names no undo answered %+v, want 409 %s", line.Outcome, codeGoingUndoUnknown)
-	}
-}
-
-// TestGoingWriteRecordsTheUndoOfTheRowItWentThrough: each write the route makes keeps, on the run,
-// the undo the catalogue row it went through states: a claim's reverse and an update's write back.
-func TestGoingWriteRecordsTheUndoOfTheRowItWentThrough(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Recorded undo", "The spec.\n").Key
-	for _, tc := range []struct {
-		action    string
-		arguments map[string]any
-		undo      goingUndoKind
-	}{
-		{"dispatch_claim", map[string]any{"issue": issue}, goingUndoReverse},
-		{"dispatch_issue_update", map[string]any{"issue": issue, "title": "Renamed by the bar"}, goingUndoWriteBack},
-	} {
-		run, _ := rig.runOne(t, tc.action, tc.arguments, nil)
-		if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || writes[0].Undo != tc.undo {
-			t.Fatalf("the run of %s records %+v, want one write undone by %s", tc.action, writes, tc.undo)
-		}
-	}
-}
-
-// TestGoingUndoOfAnApprovalRequestWhoseRecordDoesNotDecodeRetractsNothing (review round 2,
-// finding D): an approval request whose record does not say, in a form that decodes, whether it
-// opened its ask cannot tell whether it may retract it, so its undo is the server's own failure,
-// 500, which settles nothing, and the ask stays open.
-func TestGoingUndoOfAnApprovalRequestWhoseRecordDoesNotDecodeRetractsNothing(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Approval, garbled", "The spec.\n").Key
-	run, opened := rig.runOne(t, "dispatch_request_approval", map[string]any{"issue": issue, "artifact": "spec", "summary": "Ready."}, nil)
-	if _, err := rig.database.Pool.Exec(context.Background(),
-		`update going_runs set writes = jsonb_set(writes, '{0,after,opened}', '"not a yes or a no"') where id = $1::uuid`, run); err != nil {
-		t.Fatalf("garble the record's value after: %v", err)
-	}
-	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	if line.Outcome.Status != http.StatusInternalServerError || goingUndoSettles(line.Outcome) {
-		t.Fatalf("the undo of a request whose record does not decode answered %+v, want the server's own 500, unsettled", line.Outcome)
-	}
-	if state := decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+opened.Item, nil)).Ask.State; state != "open" {
-		t.Fatalf("the approval ask is %s after the failed undo, want open", state)
-	}
-}
-
-// TestGoingUndoOfAnApprovalRequestWhoseRecordNamesNoAskRetractsNothing (the class of review round
-// 2's finding D): an approval request whose record says it opened an ask and does not name that
-// ask as text cannot tell which ask to retract, so its undo is the server's own failure, 500,
-// which settles nothing, rather than an undo answered ok for an ask it never retracted; the ask
-// stays open.
-func TestGoingUndoOfAnApprovalRequestWhoseRecordNamesNoAskRetractsNothing(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Approval, its ask garbled", "The spec.\n").Key
-	run, opened := rig.runOne(t, "dispatch_request_approval", map[string]any{"issue": issue, "artifact": "spec", "summary": "Ready."}, nil)
-	if _, err := rig.database.Pool.Exec(context.Background(),
-		`update going_runs set writes = jsonb_set(writes, '{0,after,ask}', '7') where id = $1::uuid`, run); err != nil {
-		t.Fatalf("garble the record's value after: %v", err)
-	}
-	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	if line.Outcome.Status != http.StatusInternalServerError || goingUndoSettles(line.Outcome) {
-		t.Fatalf("the undo of a request whose record names no ask answered %+v, want the server's own 500, unsettled", line.Outcome)
-	}
-	if state := decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+opened.Item, nil)).Ask.State; state != "open" {
-		t.Fatalf("the approval ask is %s after the failed undo, want open", state)
-	}
-}
-
-// TestGoingUndoOfAnAdvancesRelationWhoseRecordDoesNotDecodeClearsNothing (the class of review round
-// 2's finding D): a write of an issue's advances relation whose record holds a value before that
-// does not decode holds no ids to put back, so its undo refuses the relation, naming why, and
-// writes nothing: the relation the turn left stands, rather than an empty set written back over
-// it.
-func TestGoingUndoOfAnAdvancesRelationWhoseRecordDoesNotDecodeClearsNothing(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Advancing, garbled", "The spec.\n").Key
-	first := createTestPriority(t, rig.mux, map[string]any{"title": "Ship the daemon"}, "alice").ID
-	second := createTestPriority(t, rig.mux, map[string]any{"title": "Cut the queue"}, "alice").ID
-	rig.fixture(t, "alice", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"advances": []string{first}})
-	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{
-		"issue": issue, "advances": []any{second}, "advances_revision": rig.issueRead(t, issue).AdvancesRevision,
-	}, nil)
-	if _, err := rig.database.Pool.Exec(context.Background(),
-		`update going_runs set writes = jsonb_set(writes, '{0,before,advances,ids}', '"not a list"') where id = $1::uuid`, run); err != nil {
-		t.Fatalf("garble the record's value before: %v", err)
-	}
-	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
-	if len(line.Fields) != 1 || line.Fields[0].Field != goingAdvances || line.Fields[0].OK || line.Fields[0].Message == "" ||
-		!strings.Contains(line.Outcome.Message, goingAdvances) {
-		t.Fatalf("the undo answered %+v, want advances refused, naming why", line)
-	}
-	requireNoFieldSaidTwice(t, line)
-	if read := rig.issueRead(t, issue); !slices.Equal(advanceEntries(read.Advances), []string{second + " own"}) {
-		t.Fatalf("the undo left %s advancing %v, want the %s the turn left kept", issue, advanceEntries(read.Advances), second)
-	}
-}
-
-// TestGoingUndoOfACreatedIssueWhoseRecordDoesNotDecodeClosesNothing (the class of review round 2's
-// finding D): an issue the turn created whose record holds a value after that does not decode
-// does not say the status the turn left it in, so its undo is the server's own failure, 500,
-// which settles nothing, and posts no reason and closes nothing, rather than holding the issue to
-// the status it reads now.
-func TestGoingUndoOfACreatedIssueWhoseRecordDoesNotDecodeClosesNothing(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
-	run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made, its record garbled", "force": true}, nil)
-	status := rig.issueRead(t, made.Item).Status
-	if _, err := rig.database.Pool.Exec(context.Background(),
-		`update going_runs set writes = jsonb_set(writes, '{0,after,status}', '7') where id = $1::uuid`, run); err != nil {
-		t.Fatalf("garble the record's value after: %v", err)
-	}
-	const reason = "Undone from a garbled record."
-	line := oneLine(t, rig.undo(t, "alice", run, map[string]any{"reason": reason}), false)
-	if line.Outcome.Status != http.StatusInternalServerError || goingUndoSettles(line.Outcome) {
-		t.Fatalf("the undo of a create whose record does not decode answered %+v, want the server's own 500, unsettled", line.Outcome)
-	}
-	if now := rig.issueRead(t, made.Item).Status; now != status {
-		t.Fatalf("the created issue is %s after the failed undo, want it %s still", now, status)
-	}
-	var posted int
-	if err := rig.database.Pool.QueryRow(context.Background(),
-		`select count(*) from messages where issue_key = $1 and body = $2`, made.Item, reason).Scan(&posted); err != nil || posted != 0 {
-		t.Fatalf("the created issue holds %d messages saying %q (%v), want no reason posted", posted, reason, err)
-	}
-}
-
-// TestGoingUndoMadeAndNotRecordedKeepsItsClaim (review round 2, finding E): an undo that put the
-// newest write back and whose record the database refused keeps that write's undo claimed, as a
-// write whose record failed keeps its claim, while the claim of the write it never reached is
-// given up; so the next undo of the run is told one is under way and undoes nothing a second
-// time.
-func TestGoingUndoMadeAndNotRecordedKeepsItsClaim(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Undone, not recorded", "The spec.\n").Key
-	before := rig.issueRead(t, issue)
-	run := rig.proposed(t, "alice", false, "dispatch_issue_update",
-		map[string]any{"issue": issue, "labels": []any{"one"}},
-		map[string]any{"issue": issue, "title": "Renamed by the bar"})
-	titled := ""
-	for invocation := range 2 {
-		line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_issue_update", "invocation": invocation, "approved": goingApprovedPerson})
-		titled = line.WriteID
-	}
-	// The record takes a claim and its release, and refuses every undo recorded as made.
-	allow := rig.refuseRecordedUndos(t)
-	if first := rig.browser(t, "alice", http.MethodPost, "/api/v1/going/runs/"+run+"/undo", nil); first.Code != http.StatusInternalServerError {
-		t.Fatalf("the undo whose record failed answered %d %s, want 500", first.Code, first.Body.String())
-	}
-	allow()
-	if title := rig.issueRead(t, issue).Title; title != before.Title {
-		t.Fatalf("the issue is titled %q after the undo whose record failed, want %q put back", title, before.Title)
-	}
-	undos := rig.record(t, "alice", run).Undos
-	if len(undos) != 1 || undos[0].WriteID != titled || !undos[0].Pending {
-		t.Fatalf("the run keeps the undos %+v, want the title's undo claimed alone, the labels' given up", undos)
-	}
-
-	again := rig.browser(t, "alice", http.MethodPost, "/api/v1/going/runs/"+run+"/undo", nil)
-	if again.Code != http.StatusTooManyRequests || !strings.Contains(again.Body.String(), codeGoingUndoInProgress) {
-		t.Fatalf("the next undo answered %d %s, want 429 %s", again.Code, again.Body.String(), codeGoingUndoInProgress)
-	}
-	if undos := rig.record(t, "alice", run).Undos; len(undos) != 1 || !undos[0].Pending {
-		t.Fatalf("the run keeps the undos %+v after the next undo, want the one claim and nothing undone again", undos)
-	}
-}
-
-// refuseRecordedUndos makes the record refuse every undo recorded as made, while it still takes a
-// claim and its release, until the func it answers lets it take them again.
-func (rig goingWritesRig) refuseRecordedUndos(t *testing.T) (allow func()) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := rig.database.Pool.Exec(ctx, `
-		create function going_test_refuse_undo() returns trigger language plpgsql as $$
-		begin
-		  if exists (select 1 from jsonb_array_elements(new.undos) u where not coalesce((u->>'pending')::boolean, false)) then
-		    raise exception 'the record refuses this undo';
-		  end if;
-		  return new;
-		end $$;
-		create trigger going_test_refuse_undo before update on going_runs for each row execute function going_test_refuse_undo();
-	`); err != nil {
-		t.Fatalf("make the record refuse an undo: %v", err)
-	}
-	return func() {
-		t.Helper()
-		if _, err := rig.database.Pool.Exec(ctx, `drop trigger going_test_refuse_undo on going_runs; drop function going_test_refuse_undo()`); err != nil {
-			t.Fatalf("let the record take an undo again: %v", err)
-		}
-	}
-}
-
-// TestGoingUndoMadeAndNotRecordedRunsNoSecondTimePastTheBound (review round 3, finding 2; check
-// c21; review round 5, thread 2): an undo that released the claim a bar turn took, and whose record
-// the database refused, is never made a second time, however long after. Its release recorded its
-// landing in its own transaction, so once its claim is older than any request can still run
-// (goingClaimBound), the next undo of the run reads that landing first and records the undo done,
-// as the round 5 rule asks of an undo past its bound whose record shows a landing (it was answered
-// unsettled before that rule): nothing is sent again, so the claim the person took again by hand
-// is released once, by the first undo alone, and a further undo finds nothing left to undo.
-func TestGoingUndoMadeAndNotRecordedRunsNoSecondTimePastTheBound(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Released, not recorded", "The spec.\n").Key
-	run, _ := rig.runOne(t, "dispatch_claim", map[string]any{"issue": issue}, nil)
-	allow := rig.refuseRecordedUndos(t)
-	if first := rig.browser(t, "alice", http.MethodPost, "/api/v1/going/runs/"+run+"/undo", nil); first.Code != http.StatusInternalServerError {
-		t.Fatalf("the undo whose record failed answered %d %s, want 500", first.Code, first.Body.String())
-	}
-	allow()
-	if claim := rig.issueRead(t, issue).Claim; claim != nil {
-		t.Fatalf("the claim is held by %+v after the undo whose record failed, want it released", claim.Actor)
-	}
-	// The person takes the claim again by hand, and the undo's claim grows older than the bound.
-	rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/claim", map[string]any{})
-	aged := time.Now().UTC().Add(-(rig.served.goingClaimBound() + time.Minute))
-	if _, err := rig.database.Pool.Exec(context.Background(), `update going_runs set undos = jsonb_set(undos, '{0,at}', to_jsonb($2::text)) where id = $1::uuid`,
-		run, aged.Format(time.RFC3339Nano)); err != nil {
-		t.Fatalf("age the undo's claim: %v", err)
-	}
-
-	line := oneLine(t, rig.undo(t, "alice", run, nil), true)
-	if line.Outcome.Status != http.StatusOK {
-		t.Fatalf("the undo past the bound answered %+v, want the undo whose release landed recorded done", line.Outcome)
-	}
-	if claim := rig.issueRead(t, issue).Claim; claim == nil || model.CanonicalLogin(claim.Actor.ID) != "alice" {
-		t.Fatalf("the claim alice took again reads %+v after the undo past the bound, want it hers: released once", claim)
-	}
-	if again := rig.undo(t, "alice", run, nil); len(again.Lines) != 0 {
-		t.Fatalf("a further undo answered %+v, want no line: the write's undo is recorded done", again.Lines)
-	}
-}
-
-// TestGoingUndoOfAClaimTakenByHandAsTheBarClaimedReleasesNothing (the claim race): a person takes
-// an issue's claim by hand between the bar's read before its claim and the claim itself, so the
-// claim route finds the claim already theirs and changes nothing; the turn's undo, told so by
-// the route rather than by the read before, which saw nobody, leaves the claim with them.
-func TestGoingUndoOfAClaimTakenByHandAsTheBarClaimedReleasesNothing(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Claimed by hand meanwhile", "The spec.\n").Key
-	inner := rig.served.inProcess
-	t.Cleanup(func() { rig.served.inProcess = inner })
-	taken := false
-	rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/api/v1/issues/"+issue+"/claim" && !taken {
-			taken = true
-			rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/claim", map[string]any{})
-		}
-		inner.ServeHTTP(w, r)
 	})
-	run, _ := rig.runOne(t, "dispatch_claim", map[string]any{"issue": issue}, nil)
-	rig.served.inProcess = inner
-	if !taken {
-		t.Fatal("the bar's claim was never sent")
-	}
-	oneLine(t, rig.undo(t, "alice", run, nil), true)
-	if claim := rig.issueRead(t, issue).Claim; claim == nil || model.CanonicalLogin(claim.Actor.ID) != "alice" {
-		t.Fatalf("the claim alice took by hand reads %+v after the undo of a turn whose claim changed nothing, want it hers", claim)
-	}
-}
 
-// TestGoingUndoOfAnApprovalRequestThatRenewedAnAskOpenedAsItRanRetractsNothing (the approval
-// race): an approval ask is opened on the document between the bar's read before its request and
-// the request itself, so the request renews that ask rather than opening one; the turn's undo,
-// told so by the route rather than by the read before, which saw no ask open, leaves it open.
-func TestGoingUndoOfAnApprovalRequestThatRenewedAnAskOpenedAsItRanRetractsNothing(t *testing.T) {
-	rig := newGoingWritesRig(t)
-	issue := createInteractionIssue(t, rig.mux, "DEMO", "Approval asked meanwhile", "The spec.\n").Key
-	inner := rig.served.inProcess
-	t.Cleanup(func() { rig.served.inProcess = inner })
-	opened := ""
-	rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/approval-requests") && opened == "" {
-			other := decodeBody[struct {
-				Ask *struct {
-					ID string `json:"id"`
-				} `json:"ask"`
-			}](t, rig.fixture(t, "bob", http.MethodPost, r.URL.Path, map[string]any{"summary": "Ready."}))
-			if other.Ask == nil {
-				t.Fatal("the request made meanwhile opened no ask")
+	t.Run("a message is named sent, not undone", func(t *testing.T) {
+		issue := rig.issue(t, "Messaged")
+		run := rig.ran(t, "ask on Messaged where we are", goingChange("dispatch_message", map[string]any{"issue": issue, "body": "Where are we?"}))
+		line := rig.undone(t, run, "dispatch_message")[0]
+		if line.Undo != goingUndoNotUndone || !line.Outcome.OK || line.Outcome.Message != "sent, not undone" {
+			t.Fatalf("Undo of the message answered %+v, want it named sent, not undone", line)
+		}
+		if messages := rig.count(t, `select count(*) from messages where issue_key = $1 and body = 'Where are we?'`, issue); messages != 1 {
+			t.Fatalf("the issue holds %d of the run's messages after Undo, want the one sent", messages)
+		}
+	})
+
+	t.Run("a run whose conversation's newest run is 8 days old answers 404", func(t *testing.T) {
+		issue := rig.issue(t, "Long ago")
+		run := rig.ran(t, "rename Long ago", goingChange("dispatch_issue_update", retitle(issue, "Renamed long ago")))
+		rig.aged(t, run, 9*24*time.Hour)
+		rig.followUp(t, run, 8*24*time.Hour)
+		if status, _ := rig.undo(t, "alice", run); status != http.StatusNotFound {
+			t.Fatalf("Undo of a run whose conversation's newest run is 8 days old answered %d, want 404", status)
+		}
+		if title := rig.title(t, issue); title != "Renamed long ago" {
+			t.Fatalf("the issue is titled %q after the refused Undo, want the run's title kept", title)
+		}
+	})
+
+	t.Run("a run 8 days old in a conversation whose newest run is 1 day old keeps its Undo", func(t *testing.T) {
+		issue := rig.issue(t, "Followed up")
+		run := rig.ran(t, "rename Followed up", goingChange("dispatch_issue_update", retitle(issue, "Renamed and followed up")))
+		rig.aged(t, run, 8*24*time.Hour)
+		rig.followUp(t, run, 24*time.Hour)
+		if status, _ := rig.undo(t, "bob", run); status != http.StatusNotFound {
+			t.Fatalf("bob's Undo of alice's run answered %d, want 404", status)
+		}
+		if line := rig.undone(t, run, "dispatch_issue_update")[0]; !line.Outcome.OK || rig.title(t, issue) != "Followed up" {
+			t.Fatalf("Undo answered %+v and the issue is titled %q, want the title written back", line, rig.title(t, issue))
+		}
+	})
+
+	t.Run("a second press after the first landed sends nothing twice", func(t *testing.T) {
+		issue := rig.issue(t, "Released once")
+		run := rig.ran(t, "claim Released once", goingChange("dispatch_claim", map[string]any{"issue": issue}))
+		var released atomic.Int32
+		rig.hooks.set(t, http.MethodDelete, "/api/v1/issues/"+issue+"/claim", func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			if released.Add(1) == 1 {
+				// The release commits, and its answer is lost: the route answers 503 in its place.
+				inner.ServeHTTP(httptest.NewRecorder(), r)
+				writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "the release committed and its answer was lost")
+				return
 			}
-			opened = other.Ask.ID
+			inner.ServeHTTP(w, r)
+		})
+		first := rig.undone(t, run, "dispatch_claim")
+		second := rig.undone(t, run, "dispatch_claim")
+		if !first[0].Outcome.OK || !reflect.DeepEqual(first, second) {
+			t.Fatalf("the first press answered %+v and the second %+v, want the release landed, answered alike", first, second)
 		}
-		inner.ServeHTTP(w, r)
+		if sent := released.Load(); sent != 1 || rig.issueRead(t, issue).Claim != nil {
+			t.Fatalf("the release was sent %d times, want once, the claim gone", sent)
+		}
 	})
-	run, line := rig.runOne(t, "dispatch_request_approval", map[string]any{"issue": issue, "artifact": "spec", "summary": "Ready."}, nil)
-	rig.served.inProcess = inner
-	if opened == "" || line.Item != opened {
-		t.Fatalf("the bar's request answered the ask %s, want the ask %s opened meanwhile, renewed", line.Item, opened)
-	}
-	oneLine(t, rig.undo(t, "alice", run, nil), true)
-	if state := decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+opened, nil)).Ask.State; state != "open" {
-		t.Fatalf("the ask opened meanwhile is %s after the undo of the request that only renewed it, want open", state)
-	}
+
+	t.Run("an undo of a write whose process ended after it landed undoes from what its route recorded", func(t *testing.T) {
+		issue := rig.issue(t, "Landed as its process ended")
+		run := rig.ran(t, "rename Landed as its process ended", goingChange("dispatch_issue_update", retitle(issue, "Landed and never recorded")))
+		// The process ended once the write's route committed: its row says only the key that ran
+		// it, and holds no read of the item it was approved over.
+		rig.exec(t, `
+			update going_plan_rows set state = 'running', approval = null, result = jsonb_build_object('step', result->'step', 'call', result->'call')
+			where run_id = $1::uuid
+		`, run)
+		if line := rig.undone(t, run, "dispatch_issue_update")[0]; !line.Outcome.OK || rig.title(t, issue) != "Landed as its process ended" {
+			t.Fatalf("Undo answered %+v and the issue is titled %q, want the title its route found written back", line, rig.title(t, issue))
+		}
+	})
+
+	t.Run("a document's edit is written back", func(t *testing.T) {
+		issue := rig.issue(t, "Holds notes to put back")
+		notes := uploadDocument(t, rig.mux, "/api/v1/issues/"+issue, "notes.md", "# Notes\n\nThe first line.\n")
+		run := rig.ran(t, "edit the notes to put back", goingChange("dispatch_doc_edit", map[string]any{
+			"issue": issue, "artifact": notes.Artifact.Slug, "ops": replaceText("first line", "opening line"),
+		}))
+		line := rig.undone(t, run, "dispatch_doc_edit")[0]
+		if text := rig.documentText(t, notes.Artifact.ID); !line.Outcome.OK || !strings.Contains(text, "The first line.") {
+			t.Fatalf("Undo of the edit answered %+v and the document reads %q, want the first line back", line, text)
+		}
+	})
+
+	t.Run("a document that changed since is undone by nothing, saying why", func(t *testing.T) {
+		issue := rig.issue(t, "Holds notes to edit")
+		owner := "/api/v1/issues/" + issue
+		notes := uploadDocument(t, rig.mux, owner, "notes.md", "# Notes\n\nThe first line.\n")
+		run := rig.ran(t, "edit the notes", goingChange("dispatch_doc_edit", map[string]any{
+			"issue": issue, "artifact": notes.Artifact.Slug, "ops": replaceText("first line", "opening line"),
+		}))
+		rig.fixture(t, "bob", http.MethodPost, owner+"/artifacts/"+notes.Artifact.Slug+"/edits", map[string]any{
+			"ops": replaceText("opening line", "line bob wrote"),
+		})
+		line := rig.undone(t, run, "dispatch_doc_edit")[0]
+		if line.Outcome.OK || line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "version") ||
+			!strings.Contains(line.Outcome.Message, "user bob") {
+			t.Fatalf("Undo of the edit answered %+v, want %s naming the document's version now and bob", line, codeGoingUndoChanged)
+		}
+		if text := rig.documentText(t, notes.Artifact.ID); !strings.Contains(text, "line bob wrote") {
+			t.Fatalf("the document reads %q after Undo, want bob's line kept", text)
+		}
+	})
+
+	t.Run("a created issue whose undo's process ended resumes at the close", func(t *testing.T) {
+		renamed := rig.issue(t, "Renamed beside a create")
+		run := rig.ran(t, "file one issue and rename another",
+			goingChange("dispatch_issue", map[string]any{"project": "DEMO", "title": "Made before the undo ended", "force": true}),
+			goingChange("dispatch_issue_update", retitle(renamed, "Renamed by the run")))
+		var created string
+		if err := rig.database.Pool.QueryRow(ctx, `select key from issues where title = 'Made before the undo ended'`).Scan(&created); err != nil {
+			t.Fatal(err)
+		}
+		var renames atomic.Int32
+		rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+renamed, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			renames.Add(1)
+			inner.ServeHTTP(w, r)
+		})
+		var ended atomic.Bool
+		rig.hooks.set(t, http.MethodPatch, "/api/v1/issues/"+created, func(w http.ResponseWriter, r *http.Request, inner http.Handler) {
+			if ended.CompareAndSwap(false, true) {
+				panic("the process ends as the close is sent")
+			}
+			inner.ServeHTTP(w, r)
+		})
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Fatal("the first Undo ran to its end, want it to end as the close is sent")
+				}
+			}()
+			dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/undo", nil, "alice")
+		}()
+		if title, status := rig.title(t, renamed), rig.issueRead(t, created).Status; title != "Renamed beside a create" || status == "done" {
+			t.Fatalf("after the Undo that ended the renamed issue is %q and the created one %s, want the title back and the issue open", title, status)
+		}
+		lines := rig.undone(t, run, "dispatch_issue_update", "dispatch_issue")
+		if !lines[0].Outcome.OK || !lines[1].Outcome.OK || rig.issueRead(t, created).Status != "done" || renames.Load() != 1 {
+			t.Fatalf("the second Undo answered %+v with the rename sent %d times, want the close made and the rename sent once", lines, renames.Load())
+		}
+		if messages := rig.count(t, `select count(*) from messages where issue_key = $1`, created); messages != 0 {
+			t.Fatalf("the closed issue holds %d messages, want none", messages)
+		}
+	})
 }

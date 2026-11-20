@@ -504,7 +504,7 @@ export function setGoingDisplayFit(off: boolean, options: ApiOptions = {}) {
 }
 
 /** `GET /api/v1/me/going-runs`: the caller's own command-bar runs, newest first, each with every
- *  write it made and every undo of it. */
+ *  part its record keeps. */
 export function listMyGoingRuns(
   query: Query<"/api/v1/me/going-runs", "get"> = {},
   options: ApiOptions = {}

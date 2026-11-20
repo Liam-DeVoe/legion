@@ -1,25 +1,18 @@
 // going_writes_test.go holds the writes a command-bar run makes to what they run through: every
 // row of the catalogue executes through GoingCaller.Do against the server's own route table, as
-// its caller (c8), and the writes route performs a proposed write as its caller, refusing what
-// its route refuses exactly as that route does, with the person's own
-// confirmation setting held on the server.
+// its caller (c8), refusing what its route refuses exactly as that route does, with the person's
+// own mode held on the server.
 package api
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -203,179 +196,6 @@ func goingFakeProposal(t *testing.T, start goingRunStart, action string, argumen
 		&going.Final{Answer: "Done.", Arguments: string(written)}, start, goingHolds{})
 }
 
-// proposed records a finished run of login's whose decision chose action, at or above the action
-// threshold where act, and whose proposal is the fake answer's arguments for it, and answers the
-// run's id. The run's words name every item, every hand-over and every upload's name the
-// arguments name, as a person's words do when they ask for a write on those items, so each
-// invocation may run at once (goingAutomatic).
-func (rig goingWritesRig) proposed(t *testing.T, login string, act bool, action string, arguments ...map[string]any) string {
-	t.Helper()
-	start := goingBrowserStart(t)
-	start.words = "the words of " + action
-	for _, call := range arguments {
-		for argument, value := range call {
-			if goingItemArguments[argument] == "" && !goingHeldArguments[argument] && goingUploadNames[action] != argument {
-				continue
-			}
-			values := []any{value}
-			if list, isList := value.([]any); isList {
-				values = list
-			}
-			for _, element := range values {
-				if text, isText := element.(string); isText {
-					start.words += " " + text
-				}
-			}
-		}
-	}
-	return rig.recorded(t, login, act, action, start.words, goingFakeProposal(t, start, action, arguments...))
-}
-
-// recorded records a finished run of login's, typed as words, whose decision chose action, at or
-// above the action threshold where act, and which proposed proposal, and answers the run's id.
-func (rig goingWritesRig) recorded(t *testing.T, login string, act bool, action, words string, proposal goingProposal) string {
-	t.Helper()
-	confidence := 0.99
-	decision := goingDecision{
-		Actions: []goingDecidedAction{{Action: action, Confidence: &confidence}}, Act: act,
-		Context: going.ContextNamed, Display: goingDecidedDisplay{Choice: going.DisplayProse},
-	}
-	id := uuid.NewString()
-	ctx := context.Background()
-	if err := rig.served.recordGoingRun(ctx, id, model.CanonicalLogin(login), words, nil); err != nil {
-		t.Fatalf("record the run: %v", err)
-	}
-	if err := rig.served.fillGoingRun(ctx, id, goingRunParts{Decision: &decision, Proposal: &proposal, Finished: true}); err != nil {
-		t.Fatalf("fill the run: %v", err)
-	}
-	return id
-}
-
-// goingWriteLine is what a write the tests make answers of it: the item it changed, the fields of
-// that item it changed, the value before and the value now, how it went, and for a send to an
-// agent the message's last delivery, as its record on the run keeps them.
-type goingWriteLine struct {
-	WriteID  string            `json:"write_id"`
-	Action   string            `json:"action"`
-	Item     string            `json:"item"`
-	Fields   []string          `json:"fields"`
-	Before   json.RawMessage   `json:"before"`
-	Now      json.RawMessage   `json:"now"`
-	Outcome  goingWriteOutcome `json:"outcome"`
-	Delivery *goingDelivery    `json:"delivery,omitempty"`
-}
-
-// wrote makes, as login, the write of the invocation body names of run's proposal - its offer, its
-// invocation and, for one missing the session it acts for, that session's title (fill) - through
-// the server's route table in-process, as the writes route made one: under a claim of the write on
-// the run, each request recording its landing in its route's own transaction, so a follow that
-// changed nothing is recorded as one; an upload with force over the document its read before
-// found writes that document's next version, naming the token of the version it replaces. The
-// write is recorded on the run in the place of its claim as a write that went through, with the
-// item, the fields, the value before and after as its route answered them, how each request went
-// and the undo its row states: the record the run's undo reads. It answers the write's line.
-func (rig goingWritesRig) wrote(t *testing.T, login, run string, body map[string]any) goingWriteLine {
-	t.Helper()
-	ctx := context.Background()
-	login = model.CanonicalLogin(login)
-	offer, _ := body["offer"].(string)
-	index, _ := body["invocation"].(int)
-	var invocation *goingInvocation
-	if proposal := rig.record(t, login, run).Proposal; proposal != nil {
-		for _, proposed := range proposal.Offers {
-			if proposed.Action == offer && index < len(proposed.Invocations) {
-				invocation = &proposed.Invocations[index]
-			}
-		}
-	}
-	if invocation == nil {
-		t.Fatalf("run %s proposed no invocation %d of %s", run, index, offer)
-	}
-	person := model.Actor{Kind: "user", ID: login, Credential: personCredential, Proven: true}
-	caller := GoingCaller{Catalogue: rig.served.going, Doer: rig.served.goingDoer(goingBarCaller(person, true, run), testServerURL),
-		knownSession: rig.served.goingKnownSession}
-	if fill, named := body["fill"].(string); named {
-		session, err := caller.reader().session(ctx, fill)
-		if err != nil {
-			t.Fatalf("resolve the session %q: %v", fill, err)
-		}
-		caller.Session = session
-	}
-	prepared, err := caller.prepare(ctx, offer, maps.Clone(invocation.Arguments))
-	if err != nil {
-		t.Fatalf("prepare %s: %v", offer, err)
-	}
-	specs, err := prepared.call.requests(prepared.route)
-	if err != nil {
-		t.Fatalf("encode %s: %v", offer, err)
-	}
-	write := goingRunWrite{ID: uuid.NewString(), Action: offer, Invocation: index, At: time.Now().UTC()}
-	if err := rig.served.claimGoingRunWrite(ctx, run, login, write, ""); err != nil {
-		t.Fatalf("claim %s on the run: %v", offer, err)
-	}
-	caller.landings = &goingLandings{s: rig.served, run: run, login: login, write: write.ID}
-	// landed reads whether the write's last request committed a change in its route's own
-	// transaction, as its landing records it there, for a route whose answer does not say (a
-	// follow).
-	observer := goingObserver{read: caller.reader(), s: rig.served, landed: func(ctx context.Context) (bool, error) {
-		return caller.landings.landed(ctx, len(specs)-1, specs[len(specs)-1])
-	}}
-	before, err := observer.observe(ctx, prepared, nil, 0, goingObservation{})
-	if err != nil {
-		t.Fatalf("read before %s: %v", offer, err)
-	}
-	if _, uploads := goingUploadNames[prepared.action]; uploads && prepared.arguments["force"] == true && before.held != nil {
-		// An upload with force over the document its read before found sheds the create alone its
-		// translation carries and names the token of the version it replaces.
-		prepared.call.condition = nil
-		base, err := observer.uploadBase(ctx, before.held)
-		if err != nil {
-			t.Fatalf("read the token %s writes over: %v", offer, err)
-		}
-		if base != "" {
-			prepared.call.body["precondition"] = map[string]any{"document": base}
-		}
-		if specs, err = prepared.call.requests(prepared.route); err != nil {
-			t.Fatalf("encode %s: %v", offer, err)
-		}
-	}
-	response, requests, err := caller.send(ctx, prepared, nil)
-	if err != nil || response == nil {
-		t.Fatalf("send %s: %v", offer, err)
-	}
-	answer, err := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if err != nil || response.StatusCode >= http.StatusMultipleChoices {
-		t.Fatalf("%s answered %d %s (%v)", offer, response.StatusCode, answer, err)
-	}
-	// A write whose value after its answer does not say is recorded landed with that value unread,
-	// as the run's record keeps such a write, so its undo puts nothing back.
-	after, err := observer.observe(ctx, prepared, answer, response.StatusCode, before)
-	afterUnread := err != nil
-	message := after.note
-	if afterUnread {
-		after = goingObservation{target: before.target, fields: before.fields, issue: before.issue, beforeUnread: after.beforeUnread}
-		message = "the write landed and the value after it could not be read (" + goingFailed(err).Message + ")"
-	}
-	write.Target, write.Fields = cmp.Or(after.target, before.target), after.fields
-	write.Before, write.After = goingJSONOrNull(before.value), goingJSONOrNull(after.value)
-	write.Outcome = goingWriteOutcome{OK: true, Status: response.StatusCode, Message: message}
-	write.Approved, write.Requests, write.Sends, write.Undo = "person", requests, len(specs), prepared.route.Undo.Kind
-	write.Delivery, write.Unchanged, write.BeforeToken, write.BeforeUnread = after.delivery, after.unchanged, before.token, after.beforeUnread
-	write.AfterUnread = afterUnread
-	if len(write.Fields) == 0 {
-		write.Fields = before.fields
-	}
-	if after.stood != nil {
-		write.Before = after.stood
-	}
-	if err := rig.served.recordGoingRunWrite(ctx, run, login, write, cmp.Or(after.issue, before.issue)); err != nil {
-		t.Fatalf("record %s on the run: %v", offer, err)
-	}
-	return goingWriteLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Fields: write.Fields, Before: write.Before,
-		Now: write.After, Outcome: write.Outcome, Delivery: write.Delivery}
-}
-
 // TestGoingSettingsAreThePersonsOwnAndReadAskUntilSet: the mode of the bar is held for the
 // person, read ask until they set it, read back as they set it, refused when it is neither mode,
 // and nobody else's.
@@ -406,14 +226,10 @@ func TestGoingSettingsAreThePersonsOwnAndReadAskUntilSet(t *testing.T) {
 	}
 }
 
-// record is login's run as the record keeps it.
-func (rig goingWritesRig) record(t *testing.T, login, run string) goingRun {
+// issueRead is the issue as its own route reads it.
+func (rig goingWritesRig) issueRead(t *testing.T, key string) model.Issue {
 	t.Helper()
-	read, err := rig.served.readGoingRun(context.Background(), run, model.CanonicalLogin(login))
-	if err != nil {
-		t.Fatalf("read the run: %v", err)
-	}
-	return read
+	return decodeBody[model.Issue](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/issues/"+key, nil))
 }
 
 // goingRecordingDoer is a Doer that records each request it sends, by method and path.

@@ -67,6 +67,7 @@ const (
 	goingAskEditRoute       = http.MethodPatch + " /api/v1/asks/{id}"
 	goingCommentReopenRoute = http.MethodPost + " /api/v1/comments/{id}/reopen"
 	goingCommentResolve     = http.MethodPost + " /api/v1/comments/{id}/resolve"
+	goingCommentRejectRoute = http.MethodPost + " /api/v1/comments/{id}/reject"
 	goingFollowRoute        = http.MethodPut + " /api/v1/asks/{id}/followers/{session_id}"
 	goingUnfollowRoute      = http.MethodDelete + " /api/v1/asks/{id}/followers/{session_id}"
 	goingIssueUploadRoute   = http.MethodPost + " /api/v1/issues/{key}/artifacts"
@@ -80,17 +81,17 @@ type goingUndoKind string
 const (
 	// goingUndoReverse runs the write's reverse, a route of the table whether or not a tool
 	// calls it: a claim is released, a follow unfollowed, a resolved comment reopened, an ask
-	// the turn opened retracted.
+	// the run opened retracted, a suggestion the run posted rejected while it is still open.
 	goingUndoReverse goingUndoKind = "reverse"
-	// goingUndoWriteBack writes the value read before the write back over it: an issue's
-	// fields, an ask's text, a document's content.
+	// goingUndoWriteBack writes the value the write found back over it: an issue's fields, an
+	// ask's text, a document's content.
 	goingUndoWriteBack goingUndoKind = "write_back"
-	// goingUndoCloseCreated closes an issue the turn created, posting the undo's reason on it
-	// first, the order a reasoned close takes.
+	// goingUndoCloseCreated closes an issue the run created, posting nothing on it.
 	goingUndoCloseCreated goingUndoKind = "close_created"
-	// goingUndoNotUndone is a write that stays as it is: one that reached a person or a session
-	// at once (a message, a broadcast, an answer, a review), or one Dispatch serves no reverse of
-	// and whose value before no read keeps. Each table entry of this kind says which, beside it.
+	// goingUndoNotUndone is a write that stays as it is, named "sent, not undone": one that
+	// reached a person or a session at once (a message, a broadcast, an answer, a review), or one
+	// Dispatch serves no reverse of and whose value before no read keeps. Each table entry of this
+	// kind says which, beside it.
 	goingUndoNotUndone goingUndoKind = "not_undone"
 )
 
@@ -250,13 +251,13 @@ func goingArgumentText(value any) (string, bool) {
 // first whose guard it satisfies and whose placeholders it fills: a document write names its
 // issue, else its project, else the document itself.
 var goingWriteTools = map[string]goingWriteTool{
-	// A created issue is closed by its undo, the undo's reason posted on it first.
+	// A created issue is closed by its undo, with nothing posted on it.
 	"dispatch_issue": {
 		Routes: []goingToolRoute{{
 			Method: http.MethodPost, Pattern: "/api/v1/issues", Path: map[string]string{},
 			Relations:  []string{"child_of", "blocked_by", "affects", "mentions"},
 			Translate:  goingArgumentsAsBody,
-			UndoRoutes: []string{goingIssueMessageRoute, goingIssuePatchRoute},
+			UndoRoutes: []string{goingIssuePatchRoute},
 		}},
 		Observe: goingObserver.issueCreated, Undo: goingUndoCloseCreated,
 		Class: goingClassCreatePlain, Event: "issue.created", Proposed: true,
@@ -383,23 +384,25 @@ var goingWriteTools = map[string]goingWriteTool{
 		},
 		Undo: goingUndoNotUndone, Class: goingClassText, Event: "comment.created", Proposed: true,
 	},
-	// A suggestion reaches the document's readers when it is posted, so it stays.
+	// A suggestion the run posted is rejected by its undo while it is still open.
 	"dispatch_suggest": {
 		Routes: []goingToolRoute{
 			{
 				Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/comments",
-				Path:      map[string]string{"key": "issue"},
-				Relations: []string{"owned_by", "anchored_to", "mentions"},
-				Translate: goingTranslateIssueSuggest,
+				Path:       map[string]string{"key": "issue"},
+				Relations:  []string{"owned_by", "anchored_to", "mentions"},
+				Translate:  goingTranslateIssueSuggest,
+				UndoRoutes: []string{goingCommentRejectRoute},
 			},
 			{
 				Method: http.MethodPost, Pattern: "/api/v1/artifacts/{id}/comments",
-				Path:      map[string]string{"id": "artifact"},
-				Relations: []string{"owned_by", "anchored_to", "mentions"},
-				Translate: goingTranslateDocumentSuggest,
+				Path:       map[string]string{"id": "artifact"},
+				Relations:  []string{"owned_by", "anchored_to", "mentions"},
+				Translate:  goingTranslateDocumentSuggest,
+				UndoRoutes: []string{goingCommentRejectRoute},
 			},
 		},
-		Undo: goingUndoNotUndone, Class: goingClassSuggestion, Event: "comment.created", Proposed: true,
+		Undo: goingUndoReverse, Class: goingClassSuggestion, Event: "comment.created", Proposed: true,
 	},
 	// A message reaches its session when it is sent, so it stays.
 	"dispatch_message": {

@@ -341,12 +341,14 @@ func (a *AgentListener) callRun(ctx context.Context, request agentwire.CallReque
 }
 
 // goingLandedRequest is one request of a call key that landed, as its going_landings row holds
-// it: what was sent, and the status and body its route recorded, 0 and null where it recorded
-// none.
+// it: what was sent, the status and body its route recorded, 0 and null where it recorded none,
+// and the delivery recovery point it committed, nil for none, which the undo of a suggestion reads
+// the suggestion's comment from (goingUndoer.suggestion).
 type goingLandedRequest struct {
 	method, path, digest string
 	status               int
 	body                 json.RawMessage
+	recovery             json.RawMessage
 }
 
 // sends reports whether the row records the very request spec sends.
@@ -714,34 +716,40 @@ type goingRunLanding struct {
 // call's lease: the route's transaction rolls back, so the stale owner's change is not made.
 var errGoingStaleLease = errors.New("the run is no longer held under this call's lease, so its change was not made")
 
+// goingTransactionWrote reports whether tx wrote: it holds the ROW EXCLUSIVE lock an INSERT,
+// UPDATE, DELETE or MERGE takes on a table but request_keys, going_runs and going_landings, whose
+// rows record a request and its landing and are no change of a route's own.
+func goingTransactionWrote(ctx context.Context, tx pgx.Tx) (bool, error) {
+	var wrote bool
+	if err := tx.QueryRow(ctx, `
+		select txid_current_if_assigned() is not null and exists (
+			select 1 from pg_locks l join pg_class c on c.oid = l.relation
+			where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.mode = 'RowExclusiveLock'
+			  and c.relkind in ('r', 'p') and c.oid not in ('request_keys'::regclass, 'going_runs'::regclass, 'going_landings'::regclass)
+		)
+	`).Scan(&wrote); err != nil {
+		return false, fmt.Errorf("record a run's request landed: %w", err)
+	}
+	return wrote, nil
+}
+
 // step is the commit step a route's transaction takes while the request runs (running). A
-// transaction that wrote - it holds the ROW EXCLUSIVE lock an INSERT, UPDATE, DELETE or MERGE
-// takes on a table but request_keys, going_runs and going_landings, as goingLanding.step reads it
-// - checks, under the run's row locked for share, that the call's lease token is the run's and the
-// run works, and refuses otherwise, rolling the change back; it adds the issue the request
-// addresses to the run's issues, or the issue a create made, as its route recorded it; and it
-// writes the request's going_landings row with what its route recorded it answers
-// (goingRecordAnswer) and the delivery recovery point it committed (goingRecordRecovery). A
-// transaction that only read records nothing. A route that commits several transactions writes
-// the row with the first and checks the lease with each.
+// transaction that wrote (goingTransactionWrote) checks, under the run's row locked for share,
+// that the call's lease token is the run's and the run works, and refuses otherwise, rolling the
+// change back; it adds the issue the request addresses to the run's issues, or the issue a create
+// made, as its route recorded it; and it writes the request's going_landings row with what its
+// route recorded it answers (goingRecordAnswer) and the delivery recovery point it committed
+// (goingRecordRecovery). A transaction that only read records nothing. A route that commits
+// several transactions writes the row with the first and checks the lease with each.
 func (l goingRunLanding) step(running *atomic.Bool, sink *goingAnswerSink) store.BeforeCommit {
 	var recorded atomic.Bool
 	return func(ctx context.Context, tx pgx.Tx) error {
 		if !running.Load() {
 			return nil
 		}
-		var wrote bool
-		if err := tx.QueryRow(ctx, `
-			select txid_current_if_assigned() is not null and exists (
-				select 1 from pg_locks l join pg_class c on c.oid = l.relation
-				where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.mode = 'RowExclusiveLock'
-				  and c.relkind in ('r', 'p') and c.oid not in ('request_keys'::regclass, 'going_runs'::regclass, 'going_landings'::regclass)
-			)
-		`).Scan(&wrote); err != nil {
-			return fmt.Errorf("record a run's request landed: %w", err)
-		}
-		if !wrote {
-			return nil
+		wrote, err := goingTransactionWrote(ctx, tx)
+		if err != nil || !wrote {
+			return err
 		}
 		status, body, answered := sink.recorded()
 		issue := l.issue

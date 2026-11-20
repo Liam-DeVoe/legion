@@ -43,16 +43,22 @@ func (goingResolvingDoer) Do(request *http.Request) (*http.Response, error) {
 
 // goingTranslatorConsumes names, per action, each argument a translator consumes by design rather
 // than forwarding to the request it builds, with why. Everything else an action takes must reach
-// the built request (its path, its body, a pre-request such as a reasoned close's message, or a
-// resolved document id) or decide whether the write is sent at all (goingSendRefusal), under every
-// approval the writes route takes, or TestEveryTranslatorForwardsOrConsumesEveryArgument fails. An
-// upload's `force` is no entry: it is sent nowhere, and it decides whether an upload over a held
-// name is sent, which the test holds it to under each approval (goingUploadForceRefusal).
+// the built request - its path, its body, a pre-request such as a reasoned close's message, or a
+// resolved document id - or refuse the call before or at its translation, or
+// TestEveryTranslatorForwardsOrConsumesEveryArgument fails.
 var goingTranslatorConsumes = map[string]map[string]string{
 	// release and action pick which row of their tool the call performs; the row chosen is the
 	// request, so the value is read by chooseGoingRoute, not sent.
 	"dispatch_claim":  {"release": "picks the release row from the claim row"},
 	"dispatch_follow": {"action": "picks the follow or the unfollow row"},
+	// A plan's upload row is sent as the plan's runner decides from its read before (rowUpload):
+	// a document of the name found is written as its next version, under the token that read
+	// gave, since the person's approval of the row, which shows that document, is the consent
+	// force gives on the command line; and the token sent is the one read, not one the model wrote.
+	"dispatch_artifact": {
+		"force":        "the approval of the row that shows the document is the consent (rowUpload)",
+		"precondition": "the runner sends the token its own read before found (rowUpload)",
+	},
 }
 
 func goingRouteKey(r GoingRoute) string { return r.Method + " " + r.Pattern }
@@ -164,9 +170,8 @@ func goingCloneArgs(args map[string]any) map[string]any {
 }
 
 // goingGuardHeld is the read before a write of action makes where its call writes to an owner that
-// holds a document of the name it uploads under: the strictest read the write's send-time checks
-// (goingSendRefusal) meet, so every argument that decides one of them is held to it. A write of
-// any other action reads nothing here.
+// holds a document of the name it uploads under: a document of one version, with its name and
+// slug the upload's. A write of any other action reads nothing here.
 func goingGuardHeld(action string, args map[string]any) goingObservation {
 	argument, uploads := goingUploadNames[action]
 	if !uploads {
@@ -181,10 +186,9 @@ func goingGuardHeld(action string, args map[string]any) goingObservation {
 // goingGuardWrite is what a write of action through route makes of call, approved as approved:
 // the requests its translation builds, serialised - each request's method, path, query, body (its
 // boundary-independent form for a multipart upload) and the condition it carries on its context
-// (goingSend.condition) - and the refusal the write meets before it sends them (goingSendRefusal),
-// against the read before goingGuardHeld makes, so two calls make the same write exactly where
-// they build the same requests and meet the same refusal. A call the bar can never send as written
-// is refused before its translation, as GoingCaller.prepare refuses it (goingUnsendable).
+// (goingSend.condition) - so two calls make the same write exactly where they build the same
+// requests. A call the bar can never send as written is refused before its translation, as
+// GoingCaller.prepare refuses it (goingUnsendable).
 func goingGuardWrite(action string, route GoingRoute, args map[string]any, values map[string]string, session, approved string) (string, error) {
 	if why := goingUnsendable(action, args); why != "" {
 		return "", GoingArgumentError{Action: action, Reason: why}

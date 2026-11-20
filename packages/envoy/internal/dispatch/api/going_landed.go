@@ -1,73 +1,40 @@
 package api
 
-// going_landed.go is how a command-bar write or undo knows which of its requests landed. A
+// going_landed.go is how a request the command bar sends in-process records that it landed. A
 // request has landed when its handler's transaction committed the change it made, whatever status
 // its answer then carried: a route may commit and then answer 5xx (createStoredMessage commits a
 // message and then fails to read its deliveries), and an answer may be lost after its commit with
 // the process that was to read it. So no answer is taken for a landing. The record is written by
-// the request itself: each request a write or an undo sends in-process carries a goingLanding on
-// its context, and goingInProcess.Do hands its route the commit step that writes it
-// (goingLanding.step), inside the route's own transaction, so the change and the record of its
-// landing commit together or not at all. The write or the undo then reads that record back
-// (goingLandings.landed), and a later request for the same invocation resumes after every request
-// the record names as landed, sending none of them again, whether the request that sent them
-// answered, was refused or ended with its process. A route that answers what its transaction
-// found and left hands that answer to the landing before its commit (goingRecordAnswer), which
-// records it beside the landing in the same statement, so a write whose process ended after its
-// last request landed is recorded from the values of the change itself (goingObserver.recorded),
-// never from a read made after another writer may have moved the item.
+// the request itself: each request of a run's call (goingRunLanding) or of a run's undo
+// (goingUndoLanding) carries its landing on its context (goingLandingKey), and goingInProcess.Do
+// hands its route the commit step that writes the request's going_landings row, inside the
+// route's own transaction, so the change and the record of its landing commit together or not at
+// all. A route that answers what its transaction found and left hands that answer to the landing
+// before its commit (goingRecordAnswer), which records it beside the landing in the same
+// statement, so a call whose process ended after it landed is read from the values of the change
+// itself, never from a read made after another writer may have moved the item.
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
-	"strconv"
-	"strings"
 	"sync/atomic"
-
-	"github.com/jackc/pgx/v5"
-
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// goingLandingKey carries a goingLanding on the context of the request it belongs to.
+// goingLandingKey carries a request's landing (goingLandingStep) on the context of the request it
+// belongs to.
 type goingLandingKey struct{}
-
-// goingLandings is where the requests of one write, or of one write's undo, record that they
-// landed: the author's run, the write's id, and for an undo the moment its claim was made
-// (goingUndoClaimedAt), "" for the write itself. A nil *goingLandings records nothing, which is
-// a GoingCaller sending to another server's table, where no record of this server's is reached.
-// reached is an undo that marked its claim as about to send its first request (reach).
-type goingLandings struct {
-	s       *server
-	run     string
-	login   string
-	write   string
-	undo    string
-	reached bool
-}
-
-// goingLanding is one request's landing as goingLandings records it: its index among the
-// requests the write or the undo sends, and its method and path.
-type goingLanding struct {
-	landings goingLandings
-	index    int
-	request  goingWriteRequest
-}
 
 // goingAnswerKey carries the goingAnswerSink of a request the command bar sends in-process with a
 // landing (goingInProcess.Do), for its route to fill (goingRecordAnswer).
 type goingAnswerKey struct{}
 
 // goingAnswerSink is what a request's route hands its landing before its commit: the status it is
-// about to answer and the value it answers with, which its landing records beside it
-// (goingWriteRequest.Answer), and the delivery recovery point of a write that delivers to
-// sessions (goingRecordRecovery), which a run call's landing records beside it
-// (goingRunLanding). A route's detached work may commit beside the request, so each is read and
-// written whole, atomically.
+// about to answer and the value it answers with, which its landing records beside it, and the
+// delivery recovery point of a write that delivers to sessions (goingRecordRecovery), which a run
+// call's landing records beside it (goingRunLanding). A route's detached work may commit beside
+// the request, so each is read and written whole, atomically.
 type goingAnswerSink struct {
 	answer   atomic.Pointer[goingSunkAnswer]
 	recovery atomic.Pointer[json.RawMessage]
@@ -90,7 +57,7 @@ func (s *goingAnswerSink) recorded() (status int, body json.RawMessage, recorded
 }
 
 // goingSunkAnswer is one answer a route handed its request's landing: the status, and the
-// function that builds the value the landing encodes in the commit step (goingLanding.step).
+// function that builds the value the landing encodes in the commit step.
 type goingSunkAnswer struct {
 	status int
 	answer func() any
@@ -98,19 +65,19 @@ type goingSunkAnswer struct {
 
 // goingRecordAnswer hands the landing of the request ctx belongs to the status its route is about
 // to answer and answer, the function that builds the value it answers with, as the transaction
-// about to commit computed it: the landing records them in that transaction (goingLanding.step),
-// so the change and what its route answered of it commit together or not at all. The routes whose
-// answer says what they found and left call it just before their commit - an issue's update,
-// create, claim and release, an ask's edit and open, a thread's resolve, a follow, a document's
-// edit and upload, an approval request, and a send to an agent, whose answer names the message it
-// stored - and nothing else is changed of them: off the bar's in-process path it does nothing.
-// The landing calls answer in the commit step, after the transaction's queued writes have run, so
-// a value holding what that write phase fills in - the id of the event it queued, as an opened
-// ask's opened_event_id, or the last_seq an issue update's events leave - is recorded as the route
+// about to commit computed it: the landing records them in that transaction, so the change and
+// what its route answered of it commit together or not at all. The routes whose answer says what
+// they found and left call it just before their commit - an issue's update, create, claim and
+// release, an ask's edit and open, a thread's resolve, a follow, a document's edit and upload, an
+// approval request, and a send to an agent, whose answer names the message it stored - and
+// nothing else is changed of them: off the bar's in-process path it does nothing. The landing
+// calls answer in the commit step, after the transaction's queued writes have run, so a value
+// holding what that write phase fills in - the id of the event it queued, as an opened ask's
+// opened_event_id, or the last_seq an issue update's events leave - is recorded as the route
 // answers it once its Commit has run. A route whose answer holds such a value builds it in one
 // local function it hands here and calls again for its own response, so the record and the
 // response are one value. A value that does not encode is logged and recorded as none, which
-// leaves a write taken over after its process ended with what it left unread.
+// leaves the undo of the call with what it left unread.
 func goingRecordAnswer(ctx context.Context, status int, answer func() any) {
 	sink, carries := ctx.Value(goingAnswerKey{}).(*goingAnswerSink)
 	if !carries {
@@ -137,267 +104,4 @@ func goingRecordRecovery[T recoveryPoint](ctx context.Context, point T) error {
 	recovery := json.RawMessage(encoded)
 	sink.recovery.Store(&recovery)
 	return nil
-}
-
-// goingWithoutAnswers is requests without the answers their routes recorded beside their landings
-// (goingWriteRequest.Answer), which serve only a write or an undo taken over before it is
-// recorded: a recorded one keeps what the answers said in its own values.
-func goingWithoutAnswers(requests []goingWriteRequest) []goingWriteRequest {
-	if requests == nil {
-		return nil
-	}
-	stripped := slices.Clone(requests)
-	for index := range stripped {
-		stripped[index].Answer = nil
-	}
-	return stripped
-}
-
-// goingLandingUnread is a request whose landing could not be read back: whether it landed is
-// unknown, so the write or the undo that sent it keeps its claim and is never made again.
-type goingLandingUnread struct{ err error }
-
-func (e goingLandingUnread) Error() string {
-	return "read whether the request landed: " + e.err.Error()
-}
-
-func (e goingLandingUnread) Unwrap() error { return e.err }
-
-// on is ctx carrying the landing of the request at index, spec, by its method, path and body's
-// digest, for goingInProcess.Do to hand that request's route.
-func (l *goingLandings) on(ctx context.Context, index int, spec goingSend) context.Context {
-	if l == nil {
-		return ctx
-	}
-	return context.WithValue(ctx, goingLandingKey{}, goingLanding{landings: *l, index: index,
-		request: goingWriteRequest{Method: spec.method, Path: spec.path, BodySHA256: spec.digest(), Outcome: goingWriteOutcome{OK: true}}})
-}
-
-// element is the column of the run the landings' claim is an element of, and the condition, on
-// the element e, that holds of that claim: the pending write of id $3, or the pending undo of
-// write $3 claimed at $4, which is empty for a write.
-func (l goingLandings) element() (column, condition string) {
-	if l.undo == "" {
-		return "writes", `(e->>'id' = $3 and coalesce((e->>'pending')::boolean, false) and $4::text = '')`
-	}
-	return "undos", `(e->>'write_id' = $3 and coalesce((e->>'pending')::boolean, false) and e->>'at' = $4::text)`
-}
-
-// goingLandedRead reads whether the pending claim of the run $1 of author $2 - the write of id $3,
-// or where $4 is the moment an undo was claimed, that undo of write $3 - records its request $5,
-// of method $6, path $7 and body digest $8, landed. A landing at that index for another request -
-// one an earlier attempt of the write sent before its arguments changed - is no landing of this
-// one, and every landing names its digest, so one that names none is no landing of any request.
-const goingLandedRead = `
-	select exists (
-	  select 1 from going_runs r, jsonb_array_elements(case when $4::text = '' then r.writes else r.undos end) e
-	  where r.id = $1::uuid and r.author_login = $2 and coalesce((e->>'pending')::boolean, false)
-	    and case when $4::text = '' then e->>'id' = $3 else e->>'write_id' = $3 and e->>'at' = $4::text end
-	    and e->'requests'->$5::int->>'method' = $6 and e->'requests'->$5::int->>'path' = $7
-	    and e->'requests'->$5::int->>'body_sha256' = $8
-	    and coalesce((e->'requests'->$5::int->'outcome'->>'ok')::boolean, false))`
-
-// landed reports whether the request at index, spec, landed: whether the claim's record names
-// that very request landed at its index, as its own transaction wrote it (goingLanding.step). It
-// reads on its own bounded context, so a request whose time ran out as it landed is still read as
-// landed.
-func (l *goingLandings) landed(ctx context.Context, index int, spec goingSend) (bool, error) {
-	bookkeeping, cancel := goingBookkeeping(ctx)
-	defer cancel()
-	var landed bool
-	if err := l.s.deps.Store.Pool.QueryRow(bookkeeping, goingLandedRead, l.run, l.login, l.write, l.undo, index,
-		spec.method, spec.path, spec.digest()).Scan(&landed); err != nil {
-		return false, goingLandingUnread{err}
-	}
-	return landed, nil
-}
-
-// goingRecordedAnswerRead reads what the route of request $5 of the pending claim of the run $1 of
-// author $2 - the write of id $3, or where $4 is the moment an undo was claimed, that undo of write
-// $3 - recorded beside its landing (goingRecordAnswer), null for none.
-const goingRecordedAnswerRead = `
-	select e->'requests'->$5::int->'answer'
-	from going_runs r, jsonb_array_elements(case when $4::text = '' then r.writes else r.undos end) e
-	where r.id = $1::uuid and r.author_login = $2 and coalesce((e->>'pending')::boolean, false)
-	  and case when $4::text = '' then e->>'id' = $3 else e->>'write_id' = $3 and e->>'at' = $4::text end`
-
-// recordedAnswer is what the route of the request at index recorded beside its landing on the
-// pending claim (goingRecordAnswer), nil where it recorded none or the claim is no longer pending.
-// It is the writes route's own read, outside every commit step, on ctx as given.
-func (l goingLandings) recordedAnswer(ctx context.Context, index int) (json.RawMessage, error) {
-	var answer []byte
-	err := l.s.deps.Store.Pool.QueryRow(ctx, goingRecordedAnswerRead, l.run, l.login, l.write, l.undo, index).Scan(&answer)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	return answer, err
-}
-
-// goingLandingsPlanned merges $5, an object of the write's own keys, into the pending claim of
-// the run $1 of author $2, the write of id $3 ($4 is the undo's moment, empty for a write), and
-// adds $6, the key of the issue the write is about to change (empty for none), to the run's issues.
-const goingLandingsPlanned = `
-	update going_runs r set %[1]s = (
-	  select jsonb_agg(case when %[2]s then e || $5::jsonb else e end order by n)
-	  from jsonb_array_elements(r.%[1]s) with ordinality x(e, n)),
-	  issues = case when $6::text = '' or $6::text = any(r.issues) then r.issues else array_append(r.issues, $6::text) end
-	where r.id = $1::uuid and r.author_login = $2
-	  and exists (select 1 from jsonb_array_elements(r.%[1]s) e where %[2]s)`
-
-// plan records on the write's claim, before anything of its call is sent, what the call is: the
-// requests it resumes after (write.Requests), beside which each request it sends records its
-// landing at its own index; how many requests it sends (Sends), so a write taken over after its
-// process ended tells whether all of it landed; and its item, fields, value before, the token of
-// the read before where the read answers one, and undo, so such a write is recorded as it stands
-// (goingWriteClaim.landedWhole, settleGoingTakenOver), beside issue, the key of the issue it is
-// about to change, on the run's issues. It never rewrites another write's landings: the claim is a
-// fresh one, or a taken-over one whose own landings the call starts with and keeps. It is
-// bookkeeping outside every commit step (store.WithoutBeforeCommit); a claim the run no longer
-// holds is pgx.ErrNoRows.
-func (l *goingLandings) plan(ctx context.Context, write goingRunWrite, issue string) error {
-	requests := write.Requests
-	if requests == nil {
-		requests = []goingWriteRequest{}
-	}
-	encoded, err := json.Marshal(struct {
-		Requests    []goingWriteRequest `json:"requests"`
-		Sends       int                 `json:"sends"`
-		Target      string              `json:"target"`
-		Fields      []string            `json:"fields"`
-		Before      json.RawMessage     `json:"before"`
-		BeforeToken string              `json:"before_token,omitempty"`
-		Undo        goingUndoKind       `json:"undo,omitempty"`
-	}{requests, write.Sends, write.Target, write.Fields, goingJSONOrNullRaw(write.Before), write.BeforeToken, write.Undo})
-	if err != nil {
-		return err
-	}
-	return l.merge(ctx, string(encoded), issue)
-}
-
-// reach marks the pending undo, once, as about to send its first request, and how many requests it
-// sends (goingRunUndo.Sends), as plan marks a write: an undo taken over after its process ended
-// whose claim names no such mark was never reached, so it made nothing and is made now, while one
-// marked with no landing recorded may have run and is unsettled (goingUndoTakeOver). It marks
-// beside them left, the fields of the write the undo leaves as another writer left them, each
-// with what changed (goingUndoer.writeBack), which no request of it sends: so an undo taken over
-// once all it sends landed answers those fields refused, as this one does (goingUndoLandedLine).
-// A nil *goingLandings marks nothing. It is bookkeeping outside every commit step; a claim the run
-// no longer holds is pgx.ErrNoRows.
-func (l *goingLandings) reach(ctx context.Context, sends int, left []goingUndoField) error {
-	if l == nil || l.reached {
-		return nil
-	}
-	encoded, err := json.Marshal(struct {
-		Sends  int              `json:"sends"`
-		Fields []goingUndoField `json:"fields,omitempty"`
-	}{sends, left})
-	if err != nil {
-		return err
-	}
-	if err := l.merge(ctx, string(encoded), ""); err != nil {
-		return err
-	}
-	l.reached = true
-	return nil
-}
-
-// merge merges the object encoded into the landings' claim and adds issue to the run's issues
-// (goingLandingsPlanned), on its own bounded context and outside every commit step.
-func (l *goingLandings) merge(ctx context.Context, encoded, issue string) error {
-	column, condition := l.element()
-	bookkeeping, cancel := goingBookkeeping(ctx)
-	defer cancel()
-	return l.s.appendToGoingRun(store.WithoutBeforeCommit(bookkeeping), fmt.Sprintf(goingLandingsPlanned, column, condition),
-		l.run, l.login, l.write, l.undo, encoded, strings.TrimSpace(issue))
-}
-
-// goingPaddedRequests is the requests of the claim's element e padded with nulls up to index $7,
-// so a landing at $7 is set at that index whatever the element held: jsonb_set past the end of an
-// array appends rather than leaving a gap, which would put a landing at the wrong index.
-const goingPaddedRequests = `(coalesce(e->'requests', '[]'::jsonb) || coalesce((
-	select jsonb_agg('null'::jsonb) from generate_series(jsonb_array_length(coalesce(e->'requests', '[]'::jsonb)), $7::int)), '[]'::jsonb))`
-
-// step is the commit step a route's transaction takes while the request runs (running): a
-// transaction that wrote - it holds the ROW EXCLUSIVE lock an INSERT, UPDATE, DELETE or MERGE
-// takes, as markRequestKeyCommitted reads it, on any table but request_keys, going_runs, which
-// this statement's own update takes, and going_landings, whose rows record landings and are no
-// change of the route's own - records the request landed on the claim's element of the run, at
-// the request's own index (goingPaddedRequests), in that same transaction. A transaction that
-// only read records nothing. One whose record finds no such claim - the run is gone, or the
-// claim was taken off - is refused and rolls back, so no change commits without the record of its
-// landing. A route that commits several transactions records the same landing with each. Where
-// the route handed the request's sink the status and value it is about to answer
-// (goingRecordAnswer), the landing records them beside it, in the same statement, so they commit
-// with the change or not at all; otherwise the status its answer will carry and the item it makes
-// are not known before the commit, and the caller adds them once it reads the answer
-// (goingLandings.answered).
-func (landing goingLanding) step(running *atomic.Bool, sink *goingAnswerSink) store.BeforeCommit {
-	return func(ctx context.Context, tx pgx.Tx) error {
-		if !running.Load() {
-			return nil
-		}
-		request := landing.request
-		if status, body, recorded := sink.recorded(); recorded {
-			request.Outcome.Status, request.Answer = status, body
-		}
-		encoded, err := json.Marshal(request)
-		if err != nil {
-			return err
-		}
-		column, condition := landing.landings.element()
-		var wrote, recorded bool
-		if err := tx.QueryRow(ctx, fmt.Sprintf(`
-			with wrote as (
-				select txid_current_if_assigned() is not null and exists (
-					select 1 from pg_locks l join pg_class c on c.oid = l.relation
-					where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.mode = 'RowExclusiveLock'
-					  and c.relkind in ('r', 'p') and c.oid not in ('request_keys'::regclass, 'going_runs'::regclass, 'going_landings'::regclass)
-				) as yes
-			), recorded as (
-				update going_runs r set %[1]s = (
-				  select jsonb_agg(case when %[2]s then jsonb_set(e, '{requests}',
-				    jsonb_set(%[3]s, array[$5::text], $6::jsonb, true)) else e end order by n)
-				  from jsonb_array_elements(r.%[1]s) with ordinality x(e, n))
-				where r.id = $1::uuid and r.author_login = $2 and (select yes from wrote)
-				  and exists (select 1 from jsonb_array_elements(r.%[1]s) e where %[2]s)
-				returning 1
-			)
-			select (select yes from wrote), exists (select 1 from recorded)`, column, condition, goingPaddedRequests),
-			landing.landings.run, landing.landings.login, landing.landings.write, landing.landings.undo,
-			strconv.Itoa(landing.index), string(encoded), landing.index).Scan(&wrote, &recorded); err != nil {
-			return fmt.Errorf("record a going request landed: %w", err)
-		}
-		if wrote && !recorded {
-			return fmt.Errorf("record a going request landed: the run holds no claim of write %s", landing.landings.write)
-		}
-		return nil
-	}
-}
-
-// answered adds to the landing of the request at index, where the claim's record holds that very
-// request (record's method, path and body digest) landed there, the status its answer carried
-// and the item it made (record), so a write taken over after its process ended
-// (adoptGoingRunWrite) names them as the request's own answer did. It is the writes route's
-// bookkeeping, outside every commit step (store.WithoutBeforeCommit), and best effort: a landing
-// it cannot amend still stands, without them.
-func (l *goingLandings) answered(ctx context.Context, index int, record goingWriteRequest) {
-	encoded, err := json.Marshal(record)
-	if err != nil {
-		return
-	}
-	column, condition := l.element()
-	landed := `(coalesce((e->'requests'->$7::int->'outcome'->>'ok')::boolean, false)
-		and e->'requests'->$7::int->>'method' = $8 and e->'requests'->$7::int->>'path' = $9
-		and e->'requests'->$7::int->>'body_sha256' = $10)`
-	bookkeeping, cancel := goingBookkeeping(ctx)
-	defer cancel()
-	if err := goingReleased(l.s.appendToGoingRun(store.WithoutBeforeCommit(bookkeeping), fmt.Sprintf(`
-		update going_runs r set %[1]s = (
-		  select jsonb_agg(case when %[2]s and %[3]s then jsonb_set(e, array['requests', $5::text], $6::jsonb) else e end order by n)
-		  from jsonb_array_elements(r.%[1]s) with ordinality x(e, n))
-		where r.id = $1::uuid and r.author_login = $2
-		  and exists (select 1 from jsonb_array_elements(r.%[1]s) e where %[2]s and %[3]s)`, column, condition, landed),
-		l.run, l.login, l.write, l.undo, strconv.Itoa(index), string(encoded), index, record.Method, record.Path, record.BodySHA256)); err != nil {
-		slog.Warn("dispatch: add a going request's answer to its landing", "error", err)
-	}
 }

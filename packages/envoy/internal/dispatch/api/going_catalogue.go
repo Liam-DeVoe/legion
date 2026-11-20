@@ -375,13 +375,9 @@ type GoingCaller struct {
 	Session string
 	Doer    GoingDoer
 
-	// landings is where each write the call sends records that it landed, nil for a call to
-	// another server's table (goingLandings); with it, a write has landed when its route's
-	// transaction committed, whatever its answer said (send).
-	landings *goingLandings
-	// resumeAfter says what of a call's first requests an earlier write of the invocation
-	// landed (goingResumeAfter), which a translation's own refusal words for what of the write
-	// already stands (goingCallInput.resumes); nil for none.
+	// resumeAfter says what of a call's first requests an earlier try of its call landed
+	// (goingLandedBefore), which a translation's own refusal words for what of the write already
+	// stands (goingCallInput.resumes); nil for none.
 	resumeAfter func(specs []goingSend) []goingWriteRequest
 	// knownSession is the listener's own lookup of one session, running or not
 	// (server.goingKnownSession), which a send to an agent resolves its recipient by
@@ -470,15 +466,12 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 // send sends a prepared call: each write that must land first, then the row's own, and answers
 // the answer of the request that ended it - the row's own, or one sent first that did not land -
 // beside how each request it sent went (goingWriteRequest). A request landed where it was
-// answered below 300, or, for a call to the server's own table, where its route's transaction
-// committed, as the record it wrote in that transaction says (goingLandings.landed), whatever its
-// answer's status. landed is the requests an earlier write of the same invocation already landed
-// that the call starts with (goingResumeAfter): each the call still starts with, by method, path
-// and body (goingSameSend), is not sent again and stands in the record as it was, and the call
-// resumes at the first after them. A call every one of whose requests landed before sends nothing
-// and answers no response. A request that could not be built or sent ends the call with its error
-// and the requests before it, and one whose landing could not be read back with
-// goingLandingUnread.
+// answered below 300. landed is the requests an earlier write of the same invocation already
+// landed that the call starts with: each the call still starts with, by method, path and body
+// (goingSameSend), is not sent again and stands in the record as it was, and the call resumes at
+// the first after them. A call every one of whose requests landed before sends nothing and answers
+// no response. A request that could not be built or sent ends the call with its error and the
+// requests before it.
 func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []goingWriteRequest) (*http.Response, []goingWriteRequest, error) {
 	requests, err := prepared.call.requests(prepared.route)
 	if err != nil {
@@ -492,7 +485,7 @@ func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []
 			sent = append(sent, landed[index])
 			continue
 		}
-		request, err := spec.build(c.landings.on(ctx, index, spec), c.BaseURL)
+		request, err := spec.build(ctx, c.BaseURL)
 		if err != nil {
 			return nil, sent, err
 		}
@@ -502,25 +495,12 @@ func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []
 		}
 		record := goingWriteRequest{Method: spec.method, Path: spec.path, BodySHA256: spec.digest(),
 			Outcome: goingWriteOutcome{OK: response.StatusCode < http.StatusMultipleChoices, Status: response.StatusCode}}
-		if !record.Outcome.OK && c.landings != nil {
-			if record.Outcome.OK, err = c.landings.landed(ctx, index, spec); err != nil {
-				_ = response.Body.Close()
-				return nil, append(sent, record), err
-			}
-		}
 		if index == len(requests)-1 || !record.Outcome.OK {
 			return response, append(sent, record), nil
 		}
 		answer, _ := io.ReadAll(response.Body)
 		_ = response.Body.Close()
-		if response.StatusCode < http.StatusMultipleChoices {
-			record.Made = goingMadeID(answer)
-		}
-		if c.landings != nil {
-			// A later attempt resumes after this request: its landing names what it was
-			// answered, should this attempt end before the write is recorded.
-			c.landings.answered(ctx, index, record)
-		}
+		record.Made = goingMadeID(answer)
 		sent = append(sent, record)
 	}
 	return nil, sent, nil

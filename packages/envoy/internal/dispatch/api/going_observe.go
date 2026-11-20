@@ -3,10 +3,10 @@ package api
 // going_observe.go reads what a command-bar write changes, for the write and for its undo: the
 // value a write is about to change and the value it left (goingObserver), each read in-process as
 // the caller through the caller's own Doer (goingReader), and the refusal a route answered one of
-// those reads or writes with (goingRefusal). The writes route (going_writes.go) records what the
-// write's route answered its own transaction found and left, where the route answers them, over
-// what the observer read on either side of the write; the undo (going_undo.go) compares what is
-// there now with what the write left, in the statement of its own write back.
+// those reads or writes with (goingRefusal). A plan shows the value before a write and holds its
+// row to it (going_plan.go); the undo (going_undo.go) reads what a landed write found and left off
+// what its route answered of its own transaction, recorded beside its landing, and compares what
+// is there now with what the write left, in the statement of its own write back.
 
 import (
 	"cmp"
@@ -141,10 +141,10 @@ func (r goingReader) get(ctx context.Context, path string, into any) error {
 
 // goingObservation is what a read before or after a write saw: the item, the fields of it the
 // write changes, the value, the issue the item is or belongs to, where it is one, for a send to
-// an agent the message's last delivery, after a claim or a release whether its route answered
-// that it changed nothing (goingRunWrite.Unchanged), and where the write's route answered what
-// stood before it in its own transaction, that value (stood), which the record keeps over the
-// read before: another writer may move the item between that read and the write.
+// an agent the message's last delivery, after a claim, a release or a create whether its route
+// answered that it changed nothing (unchanged), and where the write's route answered what stood
+// before it in its own transaction, that value (stood), which the undo reads over the read
+// before: another writer may move the item between that read and the write.
 type goingObservation struct {
 	target    string
 	fields    []string
@@ -163,7 +163,7 @@ type goingObservation struct {
 	token string
 	// beforeUnread is a write whose route answered it found a value other than the one the read
 	// before saw: another writer changed the item between the two, and the route answers no value
-	// of what it replaced (goingRunWrite.BeforeUnread).
+	// of what it replaced, so its undo puts nothing back.
 	beforeUnread bool
 	// note is what the write's line says of a write its route answered changed nothing, where the
 	// line has nothing else to say: a create that named an issue Dispatch already holds.
@@ -182,8 +182,7 @@ func goingFields(field string) []string {
 // through the caller's own Doer. An issue's place in its project's ranking is read from the
 // store (rankPlace), since no route answers an issue's neighbours in rank order. landed reports
 // whether the write's last request committed a change in its route's own transaction, as that
-// request's landing records it (goingLandings.landed): a follow answers 204 whether or not it
-// changed anything.
+// request's landing records it: a follow answers 204 whether or not it changed anything.
 type goingObserver struct {
 	read   goingReader
 	s      *server
@@ -495,37 +494,10 @@ func (o goingObserver) uploaded(ctx context.Context, prepared goingPrepared, ans
 	return observed, nil
 }
 
-// recorded is what a write taken over after its process ended, every request of it landed, left
-// and found, from what the route of its last request recorded beside that request's landing, in
-// the transaction of the change (goingRecordAnswer): observe reads that record as it reads the
-// answer the route would have given, of the call's row named by the request itself
-// (goingRecordedCall), so nothing of the call is translated or read before again. Whether the
-// call's last request changed anything is its landing, which the record holds (landed): a follow's
-// route answers nothing more. A document edit's record holds its tokens, so its value after is
-// read and kept only where the document still holds the token the edit left, and its value before
-// only where the read before read the token the edit found (documentEdited). A last request that
-// recorded nothing beside its landing, or whose row the catalogue no longer holds, is an error:
-// what the write left is unknown.
-func (o goingObserver) recorded(ctx context.Context, catalogue GoingCatalogue, write goingRunWrite, before goingObservation) (goingObservation, error) {
-	if len(write.Requests) == 0 {
-		return before, errors.New("the write records no request")
-	}
-	last := write.Requests[len(write.Requests)-1]
-	prepared, held := goingRecordedCall(catalogue, write.Action, last)
-	if !held {
-		return before, fmt.Errorf("no row of %s sends %s %s", write.Action, last.Method, last.Path)
-	}
-	if len(last.Answer) == 0 {
-		return before, fmt.Errorf("the route of %s %s recorded nothing of what it left beside its landing", last.Method, last.Path)
-	}
-	o.landed = func(context.Context) (bool, error) { return last.Outcome.OK, nil }
-	return o.observe(ctx, prepared, last.Answer, last.Outcome.Status, before)
-}
-
-// goingRecordedCall is the call of action that sent request, as much as its record names: the
+// goingRecordedCall is the call of action that sent request, as much as its landing names: the
 // action's row whose method is the request's and whose pattern its path fills, and the value of
-// each placeholder of the path (goingPathValues), so what a taken-over write left is read off its
-// record as observe reads a call's, with nothing of the call translated again.
+// each placeholder of the path (goingPathValues), so what a landed call left is read off its
+// landing as observe reads a call's, with nothing of the call translated again (goingUndoer.recorded).
 func goingRecordedCall(catalogue GoingCatalogue, action string, request goingWriteRequest) (goingPrepared, bool) {
 	entry, held := catalogue.Lookup(action)
 	if !held {
