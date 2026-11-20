@@ -24,6 +24,7 @@ const (
 type Finding struct {
 	Kind      FindingKind
 	Name      string
+	Safe      bool
 	Statement string
 }
 
@@ -144,6 +145,8 @@ func (w *sqlWalker) walkSQLValue(raw json.RawMessage) {
 				w.readCopy(body)
 			case "CreateStmt":
 				w.readCreateTable(body)
+			case "CreateForeignTableStmt":
+				w.readForeignTable(body)
 			case "AlterTableStmt":
 				w.readAlterTable(body)
 			case "DoStmt":
@@ -173,8 +176,10 @@ func (w *sqlWalker) readFunction(raw json.RawMessage) {
 		return
 	}
 	switch name {
-	case "nextval", "setval", "currval":
+	case "nextval", "setval":
 		w.add(SequenceCall, name)
+	case "currval":
+		w.addFinding(Finding{Kind: SequenceCall, Name: name, Safe: safeLatestEventID(fields), Statement: w.statement})
 	case "query_to_xml", "query_to_xmlschema", "query_to_xml_and_xmlschema", "cursor_to_xml", "cursor_to_xmlschema":
 		w.add(DynamicSQL, name)
 	}
@@ -228,6 +233,13 @@ func (w *sqlWalker) readCreateTable(raw json.RawMessage) {
 	}
 	if relationsContainEvent(fields["inhRelations"]) || tableLikeUsesEvent(fields["tableElts"]) {
 		w.add(DerivedEventTable, "")
+	}
+}
+
+func (w *sqlWalker) readForeignTable(raw json.RawMessage) {
+	fields, ok := objectFields(raw)
+	if ok {
+		w.readCreateTable(fields["base"])
 	}
 }
 
@@ -321,6 +333,12 @@ func (w *sqlWalker) walkPLValue(raw json.RawMessage) {
 			case "PLpgSQL_stmt_dynexecute":
 				w.readDynamicExecution(body)
 				continue
+			case "PLpgSQL_stmt_dynfors":
+				w.readDynamicField(body, "query")
+				continue
+			case "PLpgSQL_stmt_open", "PLpgSQL_stmt_return_query":
+				w.readDynamicField(body, "dynquery")
+				continue
 			case "PLpgSQL_expr":
 				w.readPLExpression(body)
 				continue
@@ -346,6 +364,20 @@ func (w *sqlWalker) readDynamicExecution(raw json.RawMessage) {
 	w.readDynamicExpression(fields["query"])
 	for name, value := range fields {
 		if name != "query" {
+			w.walkPLValue(value)
+		}
+	}
+}
+
+func (w *sqlWalker) readDynamicField(raw json.RawMessage, name string) {
+	fields, ok := objectFields(raw)
+	if !ok {
+		w.add(DynamicSQL, "unreadable execute")
+		return
+	}
+	w.readDynamicExpression(fields[name])
+	for field, value := range fields {
+		if field != name {
 			w.walkPLValue(value)
 		}
 	}
@@ -463,11 +495,7 @@ func constantSQL(expression string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	value, ok := namedNode(constantFields["sval"], "String")
-	if !ok {
-		return "", false
-	}
-	valueFields, ok := objectFields(value)
+	valueFields, ok := objectFields(constantFields["sval"])
 	if !ok {
 		return "", false
 	}
@@ -492,6 +520,60 @@ func functionName(raw json.RawMessage) (string, bool) {
 		name = rawString(fields["sval"])
 	}
 	return strings.ToLower(name), name != ""
+}
+
+func safeLatestEventID(fields map[string]json.RawMessage) bool {
+	if !functionIs(fields["funcname"], "pg_catalog", "currval") {
+		return false
+	}
+	args, ok := rawList(fields["args"])
+	if !ok || len(args) != 1 {
+		return false
+	}
+	call, ok := namedNode(args[0], "FuncCall")
+	if !ok {
+		return false
+	}
+	inner, ok := objectFields(call)
+	if !ok || !functionIs(inner["funcname"], "pg_catalog", "pg_get_serial_sequence") {
+		return false
+	}
+	args, ok = rawList(inner["args"])
+	return ok && len(args) == 2 && stringConstant(args[0]) == "events" && stringConstant(args[1]) == "id"
+}
+
+func functionIs(raw json.RawMessage, want ...string) bool {
+	parts, ok := rawList(raw)
+	if !ok || len(parts) != len(want) {
+		return false
+	}
+	for index, part := range parts {
+		body, ok := namedNode(part, "String")
+		if !ok {
+			return false
+		}
+		fields, ok := objectFields(body)
+		if !ok || !strings.EqualFold(rawString(fields["sval"]), want[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func stringConstant(raw json.RawMessage) string {
+	body, ok := namedNode(raw, "A_Const")
+	if !ok {
+		return ""
+	}
+	fields, ok := objectFields(body)
+	if !ok {
+		return ""
+	}
+	value, ok := objectFields(fields["sval"])
+	if !ok {
+		return ""
+	}
+	return rawString(value["sval"])
 }
 
 func eventRelation(raw json.RawMessage) bool {
