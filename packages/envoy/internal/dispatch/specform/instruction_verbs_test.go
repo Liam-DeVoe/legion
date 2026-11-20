@@ -19,19 +19,23 @@ import (
 
 // The program that writes the list of the verbs of an instruction (instruction-verbs.txt) and its
 // evidence (testdata/instruction-verbs.json), and the test that holds both to it. Run with
-// -write-verbs, it reads the skills of the repository (skills/*/SKILL.md) at -verbs-commit and
-// keeps each of their sentences in testdata/instruction-verb-sources.json; with -verbs-live (a
-// `dispatch doc-read` of the live Verification document of The Spec's root) it keeps that
-// document's procedures in testdata/live-procedures.txt too. From those two files it writes each
-// word that opens an instruction sentence (openerVerb). Run with no flag, the test builds the
-// evidence and the list again from the same two files, in any clone, and fails when either file
-// differs, so an edit of either by hand fails; it fails by name when a source file is missing or
-// empty. The commit is the sources' provenance, and the command is the list's header. The program
-// writes every Dispatch key of a sentence as `<KEY>` (dispatchKeyForm), the skills' own word for a
-// key, before it keeps the sentence, so neither file names an issue; the test fails when one does.
+// -write-verbs, it writes the list and its evidence from the two source files the test reads: the
+// sentences of the repository's skills (skills/*/SKILL.md) kept in
+// testdata/instruction-verb-sources.json, and the live procedures of The Spec kept in
+// testdata/live-procedures.txt, so it writes them again in any clone, also one of depth 1, and
+// writes the list that the test accepts. With -verbs-commit it first reads the skills again from
+// git at that commit and keeps their sentences in the sources file; with -verbs-live (a `dispatch
+// doc-read` of the live Verification document of The Spec's root) it first keeps that document's
+// procedures. From the two files it writes each word that opens an instruction sentence
+// (openerVerb). Run with no flag, the test builds the evidence and the list again from the same
+// two files, in any clone, and fails when either file differs, so an edit of either by hand fails;
+// it fails by name when a source file is missing or empty. The commit is the sources' provenance,
+// and the command is the list's header. The program writes every Dispatch key of a sentence as
+// `<KEY>` (dispatchKeyForm), the skills' own word for a key, before it keeps the sentence, so
+// neither file names an issue; the test fails when one does.
 var (
-	writeVerbs  = flag.Bool("write-verbs", false, "write instruction-verbs.txt, its evidence and its sources from -verbs-commit and -verbs-live")
-	verbsCommit = flag.String("verbs-commit", "", "the commit whose skills/*/SKILL.md the list of verbs is read from")
+	writeVerbs  = flag.Bool("write-verbs", false, "write instruction-verbs.txt and its evidence from the kept sources, after -verbs-commit and -verbs-live")
+	verbsCommit = flag.String("verbs-commit", "", "read the skills again from git at this commit and keep their sentences as the sources; the kept sources when empty")
 	verbsLive   = flag.String("verbs-live", "", "a `dispatch doc-read` of the Verification document whose procedures the list reads; the kept procedures when empty")
 )
 
@@ -204,8 +208,8 @@ func sentenceVerb(sentence string) (string, bool) {
 }
 
 // readSkills reads each skills/*/SKILL.md at commit: its digest, and each of its sentences, with
-// every Dispatch key written as `<KEY>`. Only -write-verbs reads git; the test reads what this
-// kept (verbsSourcesFile).
+// every Dispatch key written as `<KEY>`. Only -verbs-commit reads git; -write-verbs with no commit
+// and the test read what this kept (verbsSourcesFile).
 func readSkills(t *testing.T, commit string) []skillText {
 	t.Helper()
 	git := func(args ...string) []byte {
@@ -247,7 +251,7 @@ func buildEvidence(commit string, skills []skillText, live []byte) verbEvidence 
 	}
 	digest := sha256.Sum256(live)
 	sources := append(slices.Clone(skills), skillText{Path: verbsLiveFile, SHA256: hex.EncodeToString(digest[:]), Sentences: procedures})
-	evidence := verbEvidence{Commit: commit, Command: verbsCommand(commit)}
+	evidence := verbEvidence{Commit: commit, Command: verbsCommand}
 	verbs := map[string]bool{}
 	for _, source := range sources {
 		read := verbSource{Path: source.Path, SHA256: source.SHA256, Sentences: len(source.Sentences), Openers: []verbOpening{}}
@@ -291,9 +295,9 @@ func nounUse(sentence string, verbs map[string]bool) (string, bool) {
 	return "", false
 }
 
-func verbsCommand(commit string) string {
-	return fmt.Sprintf("go test ./internal/dispatch/specform/ -run '^TestTheVerbListIsItsProgramsOutput$' -args -write-verbs -verbs-commit %s [-verbs-live <a dispatch doc-read of the Verification document of The Spec's root>]", commit)
-}
+// verbsCommand is the command that writes the list and its evidence again from the kept sources,
+// which the list's header and each failure of the test print.
+const verbsCommand = "go test ./internal/dispatch/specform/ -run '^TestTheVerbListIsItsProgramsOutput$' -args -write-verbs"
 
 // renderVerbs is the list file of evidence.
 func renderVerbs(evidence verbEvidence) []byte {
@@ -364,20 +368,20 @@ func writeLiveProcedures(t *testing.T, path string) {
 
 func TestTheVerbListIsItsProgramsOutput(t *testing.T) {
 	if *writeVerbs {
-		if *verbsCommit == "" {
-			t.Fatal("-write-verbs needs -verbs-commit")
-		}
 		if *verbsLive != "" {
 			writeLiveProcedures(t, *verbsLive)
 		}
-		skills := readSkills(t, *verbsCommit)
-		live, err := os.ReadFile(verbsLiveFile)
-		if err != nil {
-			t.Fatal(err)
+		commit := *verbsCommit
+		if commit != "" {
+			if err := os.WriteFile(verbsSourcesFile, renderJSON(t, readSkills(t, commit)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			commit = keptCommit(t)
 		}
-		evidence := buildEvidence(*verbsCommit, skills, live)
+		skills, _, live := keptSources(t)
+		evidence := buildEvidence(commit, skills, live)
 		for path, content := range map[string][]byte{
-			verbsSourcesFile:  renderJSON(t, skills),
 			verbsEvidenceFile: renderJSON(t, evidence),
 			verbsListFile:     renderVerbs(evidence),
 		} {
@@ -387,6 +391,32 @@ func TestTheVerbListIsItsProgramsOutput(t *testing.T) {
 		}
 		return
 	}
+	raw, evidence := keptEvidence(t)
+	skills, kept, live := keptSources(t)
+	// Neither file names a Dispatch issue: the program writes each key as `<KEY>`.
+	for path, content := range map[string][]byte{verbsEvidenceFile: raw, verbsSourcesFile: kept} {
+		if keys := dispatchKeyForm.FindAll(content, -1); len(keys) > 0 {
+			t.Errorf("%s holds %d Dispatch keys (%s): regenerate it with %s -verbs-commit <commit>", path, len(keys), bytes.Join(keys, []byte(", ")), verbsCommand)
+		}
+	}
+	built := buildEvidence(evidence.Commit, skills, live)
+	if got := renderJSON(t, built); !bytes.Equal(raw, got) {
+		t.Errorf("%s is not its program's output from %s and %s: regenerate it with %s", verbsEvidenceFile, verbsSourcesFile, verbsLiveFile, verbsCommand)
+	}
+	if got := renderVerbs(built); !bytes.Equal([]byte(instructionVerbsFile), got) {
+		t.Errorf("%s is not its program's output from %s and %s: regenerate it with %s", verbsListFile, verbsSourcesFile, verbsLiveFile, verbsCommand)
+	}
+	if len(instructionVerbs) != len(built.Verbs) {
+		t.Errorf("the sources give %d verbs, and the rule reads %d", len(built.Verbs), len(instructionVerbs))
+	}
+	for _, problem := range evidenceProblems(evidence) {
+		t.Error(problem)
+	}
+}
+
+// keptEvidence is the list's evidence as the tree keeps it, and its bytes.
+func keptEvidence(t *testing.T) ([]byte, verbEvidence) {
+	t.Helper()
 	raw, err := os.ReadFile(verbsEvidenceFile)
 	if err != nil {
 		t.Fatal(err)
@@ -395,40 +425,39 @@ func TestTheVerbListIsItsProgramsOutput(t *testing.T) {
 	if err := json.Unmarshal(raw, &evidence); err != nil {
 		t.Fatal(err)
 	}
-	// The sources the list is built from are in the tree, so the test builds it again in any
-	// clone, also one that does not hold the commit the skills were read at. A missing or empty
-	// source is a failure by name, never a pass of a test that saw nothing.
+	return raw, evidence
+}
+
+// keptCommit is the commit that the kept sources were read at, as the evidence names it: their
+// provenance, which -write-verbs keeps when it reads no skill again.
+func keptCommit(t *testing.T) string {
+	t.Helper()
+	if _, evidence := keptEvidence(t); evidence.Commit != "" {
+		return evidence.Commit
+	}
+	t.Fatalf("UNKNOWN: %s names no commit of its sources: read the skills again with %s -verbs-commit <commit>", verbsEvidenceFile, verbsCommand)
+	return ""
+}
+
+// keptSources is the sources the list is built from, which the tree holds, so the list is built
+// again in any clone, also one that does not hold the commit the skills were read at: the skills'
+// sentences (and the bytes of their file) and the live procedures. A missing or empty source is a
+// failure by name, never a pass of a test that saw nothing.
+func keptSources(t *testing.T) ([]skillText, []byte, []byte) {
+	t.Helper()
 	kept, err := os.ReadFile(verbsSourcesFile)
 	if err != nil {
-		t.Fatalf("UNKNOWN: the list's sources %s cannot be read (%v): regenerate them with %s", verbsSourcesFile, err, evidence.Command)
+		t.Fatalf("UNKNOWN: the list's sources %s cannot be read (%v): read the skills again with %s -verbs-commit <commit>", verbsSourcesFile, err, verbsCommand)
 	}
 	var skills []skillText
 	if err := json.Unmarshal(kept, &skills); err != nil || len(skills) == 0 {
-		t.Fatalf("UNKNOWN: %s holds no skill (%v): regenerate it with %s", verbsSourcesFile, err, evidence.Command)
+		t.Fatalf("UNKNOWN: %s holds no skill (%v): read the skills again with %s -verbs-commit <commit>", verbsSourcesFile, err, verbsCommand)
 	}
 	live, err := os.ReadFile(verbsLiveFile)
 	if err != nil || len(strings.TrimSpace(string(live))) == 0 {
 		t.Fatalf("UNKNOWN: the live procedures %s cannot be read or are empty (%v)", verbsLiveFile, err)
 	}
-	// Neither file names a Dispatch issue: the program writes each key as `<KEY>`.
-	for path, content := range map[string][]byte{verbsEvidenceFile: raw, verbsSourcesFile: kept} {
-		if keys := dispatchKeyForm.FindAll(content, -1); len(keys) > 0 {
-			t.Errorf("%s holds %d Dispatch keys (%s): regenerate it with %s", path, len(keys), bytes.Join(keys, []byte(", ")), evidence.Command)
-		}
-	}
-	built := buildEvidence(evidence.Commit, skills, live)
-	if got := renderJSON(t, built); !bytes.Equal(raw, got) {
-		t.Errorf("%s is not its program's output from %s and %s: regenerate it with %s", verbsEvidenceFile, verbsSourcesFile, verbsLiveFile, evidence.Command)
-	}
-	if got := renderVerbs(built); !bytes.Equal([]byte(instructionVerbsFile), got) {
-		t.Errorf("%s is not its program's output from %s and %s: regenerate it with %s", verbsListFile, verbsSourcesFile, verbsLiveFile, evidence.Command)
-	}
-	if len(instructionVerbs) != len(built.Verbs) {
-		t.Errorf("the sources give %d verbs, and the rule reads %d", len(built.Verbs), len(instructionVerbs))
-	}
-	for _, problem := range evidenceProblems(evidence) {
-		t.Error(problem)
-	}
+	return skills, kept, live
 }
 
 // The checks of the evidence read each sentence from its own field, never a place written into
