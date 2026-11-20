@@ -83,15 +83,17 @@ async function clicksDelivered(page: Page): Promise<void> {
 }
 
 /**
- * Waits until every scroller around `element`, the window's own among them, has held one
- * animation frame still. dnd-kit scrolls them a step every few milliseconds while the pointer of a
- * carried card is in an edge zone, so an unchanged frame is the view at rest.
+ * Waits until `element` and every scroller around it, the window's own among them, have held one
+ * animation frame still. dnd-kit scrolls them a step every few milliseconds while the pointer or
+ * finger of a carried card is in an edge zone, and stops a frame or two after it leaves; a card in
+ * flight takes the snapping off the board's scroller (`IssueBoard.tsx`), so there is no fling and
+ * no snap behind that scrolling: one unchanged frame is the view at rest.
  */
 async function viewAtRest(element: Locator): Promise<void> {
   await element.evaluate(async (start) => {
     const read = (): string => {
       const offsets = [`${window.scrollX},${window.scrollY}`];
-      for (let node = start.parentElement; node !== null; node = node.parentElement) {
+      for (let node: Element | null = start; node !== null; node = node.parentElement) {
         offsets.push(`${node.scrollLeft},${node.scrollTop}`);
       }
       return offsets.join(" ");
@@ -737,27 +739,9 @@ async function columnArrived(column: Locator, within: number): Promise<number> {
   }, within);
 }
 
-/** Waits until the scroller has held one frame still. dnd-kit scrolls it with a step a frame
- *  while a carried card is in an edge zone and stops a frame or two after the finger leaves, and
- *  a card in flight takes the snapping off the scroller (`IssueBoard.tsx`), so there is no fling
- *  and no snap behind that scrolling: one unchanged frame is rest. */
-async function scrollerAtRest(scroller: Locator): Promise<void> {
-  await scroller.evaluate(async (element) => {
-    for (;;) {
-      const was = element.scrollLeft;
-      const frame = Promise.withResolvers<void>();
-      requestAnimationFrame(() => requestAnimationFrame(() => frame.resolve()));
-      await frame.promise;
-      if (element.scrollLeft === was) {
-        return;
-      }
-    }
-  });
-}
-
 /** Puts the `index`-th column's start edge at the scroller's start and waits for the scroll to end. */
 async function scrollToColumn(scroller: Locator, index: number): Promise<void> {
-  await scrollerAtRest(scroller);
+  await viewAtRest(scroller);
   // The scroller came to rest above, so the offsets read here are the ones it holds still at.
   const target = await scroller.evaluate((element, index) => {
     const section = element.querySelectorAll("section")[index];
@@ -917,7 +901,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
     // worth anything.
     const drop = scrollerBox.x + scrollerBox.width / 2;
     await finger.moveTo({ x: drop, y: from.y }, 1);
-    await scrollerAtRest(scroller);
+    await viewAtRest(scroller);
     // The scroller came to rest above, so the column's box read now is where the drop lands.
     const landing = await inProgress.boundingBox();
     if (landing === null || landing.x > drop - 40 || landing.x + landing.width < drop + 40) {
