@@ -128,9 +128,13 @@ func (r *childReport) storeFault() error {
 }
 
 // alongside is w with the report reading what is written to it too; the report alone when w is
-// nil, which exec.Cmd would have made the null device.
+// nil, which exec.Cmd would have made the null device, and w itself for a nil report, which reads
+// nothing.
 func (r *childReport) alongside(w io.Writer) io.Writer {
-	if w == nil {
+	switch {
+	case r == nil:
+		return w
+	case w == nil:
 		return r
 	}
 	return io.MultiWriter(w, r)
