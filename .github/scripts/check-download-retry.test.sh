@@ -5583,6 +5583,45 @@ check "charges the inner loop's waits at both passes of the outer one" \
   "$(contains "$out" 'its own retries take 2880 s to exhaust')"
 check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 49')"
 
+# T13. A `sleep` written as the last command of a loop's body runs after every pass, the last one
+# included, so a loop of three passes sleeps three times. around() adds `(passes - 1) * sleep`,
+# which is right only where the body skips its last sleep, as dequeued.yaml's
+# `[ "$attempt" = 7 ] || sleep 10` does. The step runs r44-fetch.sh, which retries at 30 s,
+# 5 x 30 + 150 = 300 s, in three passes, each followed by `sleep 300`: bash waits
+# 3 x 300 + 3 x 300 = 1800 s, which `timeout-minutes: 29`, 1740 s, does not exceed. At c53b3c8d
+# the gate charges 3 x 300 + 2 x 300 = 1500 s and passes the step. Timed in bash, with every
+# figure divided by 100, r43's step above ran 45.9 s where the gate charges it 28.8 s, and under
+# the 49 minutes the gate names for it, scaled to 29.4 s, timeout ended it with exit 124
+# (dispatch://INFRA-1545, the tester's round 43). The case asks only that the gate exits 1 with no
+# traceback, so a refusal by name or a charged figure both pass it.
+echo "case: r44 T13 a sleep that ends a loop's body is charged at every pass, the last included"
+root=$(fixture r44-T13-trailing-sleep)
+cat > "$root/.github/scripts/r44-fetch.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 30 -- curl -fsSL --max-time 30 -o a https://example.com/a
+SH
+chmod +x "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch three times, sleeping after each pass
+        timeout-minutes: 29
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 300
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
 # Two paths reaching one file with the same product of loop factors are both charged, each run
 # with the waits of the loops around it (dispatch://INFRA-1545, round 37; until then the file
 # was charged once, through the path whose loops waited longer). The step runs pa.sh and pz.sh
