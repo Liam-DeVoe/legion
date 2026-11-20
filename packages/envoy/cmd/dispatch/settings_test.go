@@ -2289,6 +2289,61 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_SERVER_HEAP": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_KEEP_CLOSED_ROOMS": func(t *testing.T) {
+			// The reader is the server's handler (plantLeaks): with the hook on, a document socket
+			// that has closed leaves its room's document kept, and no other request keeps one.
+			database := storetest.Open(t)
+			kept := func() int {
+				closedRoomDocuments.Lock()
+				defer closedRoomDocuments.Unlock()
+				return len(closedRoomDocuments.documents)
+			}
+			served := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+			const socket = "/ws/doc/0199e2a0-3333-7000-8000-000000000001"
+			for _, row := range []struct {
+				value, path string
+				want        int
+			}{{"", socket, 0}, {"true", socket, 0}, {"1", "/api/v1/issues", 0}, {"1", socket, 1}} {
+				before := kept()
+				boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_KEEP_CLOSED_ROOMS": row.value})
+				if boot.KeepClosedRooms != (row.value == "1") {
+					t.Errorf("DISPATCH_TEST_KEEP_CLOSED_ROOMS=%q: KeepClosedRooms = %v, want only 1 to set it", row.value, boot.KeepClosedRooms)
+				}
+				plantLeaks(served, boot, database).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, row.path, nil))
+				if got := kept() - before; got != row.want {
+					t.Errorf("DISPATCH_TEST_KEEP_CLOSED_ROOMS=%q: GET %s kept %d documents, want %d", row.value, row.path, got, row.want)
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_KEEP_CLOSED_ROOMS": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_KEEP_REQUEST_MEGABYTES": func(t *testing.T) {
+			// The reader is the server's handler (plantLeaks): with the hook on, every request stores
+			// one more megabyte.
+			stored := func() int {
+				requestMegabytes.Lock()
+				defer requestMegabytes.Unlock()
+				return len(requestMegabytes.stored)
+			}
+			served := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+			for _, row := range []struct {
+				value string
+				want  int
+			}{{"", 0}, {"true", 0}, {"1", 2}} {
+				before := stored()
+				boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_KEEP_REQUEST_MEGABYTES": row.value})
+				if boot.KeepRequestMegabytes != (row.value == "1") {
+					t.Errorf("DISPATCH_TEST_KEEP_REQUEST_MEGABYTES=%q: KeepRequestMegabytes = %v, want only 1 to set it", row.value, boot.KeepRequestMegabytes)
+				}
+				handler := plantLeaks(served, boot, nil)
+				for _, path := range []string{"/healthz", "/api/v1/issues"} {
+					handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+				}
+				if got := stored() - before; got != row.want {
+					t.Errorf("DISPATCH_TEST_KEEP_REQUEST_MEGABYTES=%q: two requests stored %d megabytes, want %d", row.value, got, row.want)
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_KEEP_REQUEST_MEGABYTES": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_AGENT_SLOTS": func(t *testing.T) {
 			// The server names the agent's slots in its environment, and the agent refuses a count
 			// that is no whole number from 1 to 64 before it calls anything.

@@ -87,9 +87,8 @@ type bootConfig struct {
 	DefaultProject string
 	// NewIssueLabel and NewIssueSession are DISPATCH_NEW_ISSUE_LABEL and
 	// DISPATCH_NEW_ISSUE_SESSION: the label an issue the search bar files from a person's typed
-	// words carries, and the session that issue is routed to and its first message is sent to.
-	// Empty is a deployment that configured neither: the issue carries no label, and no
-	// conversation is started on it.
+	// words carries, and the session that issue is routed to; nothing is posted on it. Empty is
+	// a deployment that configured neither: the issue carries no label, and takes no route.
 	NewIssueLabel   string
 	NewIssueSession string
 	EnvoyURL        string
@@ -197,6 +196,13 @@ type bootConfig struct {
 	// the test hooks, sets it, so the test of the memory group holds the server near its peak
 	// beside its agent.
 	ServerHeap int64
+	// KeepClosedRooms keeps a copy of the document of each room a document socket leaves, on ygo's
+	// heap until the process exits (keepClosedRoomDocuments), and KeepRequestMegabytes stores 1 MB
+	// for each request in a map nothing prunes (keepRequestMegabytes): the leaks the negative
+	// control of the comparison of production's heap plants. Only DISPATCH_TEST_KEEP_CLOSED_ROOMS=1
+	// and DISPATCH_TEST_KEEP_REQUEST_MEGABYTES=1, under the test hooks, set them.
+	KeepClosedRooms      bool
+	KeepRequestMegabytes bool
 	// AgentCallHook is the rules on routes every call of which this process runs for its agent
 	// panics in, or is held in before or after its route (api.Deps.AgentCallHook); only
 	// DISPATCH_TEST_AGENT_CALL_HOOK, under the test hooks, sets it.
@@ -1192,6 +1198,8 @@ func main() {
 		}}
 	}
 	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens}, reads)
+	// A test's server leaks on purpose where its boot asks it to (plantLeaks).
+	handler = plantLeaks(handler, boot, database)
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
 	// does either before serving, so a socket it cannot serve on or an address it cannot take ends
@@ -1522,6 +1530,8 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 		{"DISPATCH_TEST_AGENT_HOOKS", &boot.AgentHooks},
+		{"DISPATCH_TEST_KEEP_CLOSED_ROOMS", &boot.KeepClosedRooms},
+		{"DISPATCH_TEST_KEEP_REQUEST_MEGABYTES", &boot.KeepRequestMegabytes},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err

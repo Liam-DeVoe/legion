@@ -1,13 +1,22 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
+
+	"github.com/reearth/ygo/crdt"
+	"github.com/reearth/ygo/persistence"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // The test hooks of the memory group's test (agent_memory_group_test.go): an agent that allocates
@@ -67,4 +76,99 @@ func growAgentHeap(after time.Duration, stderr io.Writer) {
 			}()
 		}
 	}()
+}
+
+// The leaks a test's server plants for the negative control of the comparison of production's
+// heap (memory_leaks_test.go): a copy of each closed room's document, held on ygo's heap after the
+// room has gone (DISPATCH_TEST_KEEP_CLOSED_ROOMS), and 1 MB stored for each request
+// (DISPATCH_TEST_KEEP_REQUEST_MEGABYTES). The server takes each only under DISPATCH_TEST_HOOKS=1;
+// a deployment sets neither.
+
+// plantLeaks wraps handler, the whole handler of the server's HTTP port, in the leaks boot turns
+// on, the closed rooms' documents read from database; with neither on it is handler itself.
+func plantLeaks(handler http.Handler, boot bootConfig, database *store.Store) http.Handler {
+	if boot.KeepClosedRooms {
+		handler = keepClosedRoomDocuments(handler, docs.NewPgVersioned(database).Load)
+	}
+	if boot.KeepRequestMegabytes {
+		handler = keepRequestMegabytes(handler)
+	}
+	return handler
+}
+
+// roomStateLoad reads a room's stored state as a room's load reads it (docs.PgVersioned.Load).
+type roomStateLoad func(ctx context.Context, room string) (persistence.LoadResult, error)
+
+// closedRoomDocuments is every document keepClosedRoomDocuments kept, reachable until the process
+// exits, so the collector frees none of them.
+var closedRoomDocuments struct {
+	sync.Mutex
+	documents []*crdt.Doc
+}
+
+// keepClosedRoomDocuments keeps the document of each room a document socket (GET /ws/doc/{room})
+// leaves. Once the socket's handler has returned, which it does when the socket closes, it decodes
+// the room's stored state with ygo, as a room's load decodes it, into a document of its own
+// (keepRoomDocument), and holds that document until the process exits. The room itself goes after
+// its idle minute, as every room does, and dispatch_rooms' resident_bytes stops counting it, while
+// its copy keeps as much of ygo's heap as the room's document held.
+func keepClosedRoomDocuments(next http.Handler, load roomStateLoad) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r)
+		if room, ok := strings.CutPrefix(r.URL.Path, "/ws/doc/"); ok && room != "" && r.Method == http.MethodGet {
+			keepRoomDocument(room, load)
+		}
+	})
+}
+
+// keepRoomDocument decodes room's stored state into a new document and adds it to
+// closedRoomDocuments. A state it cannot read or decode is logged, and nothing is kept.
+func keepRoomDocument(room string, load roomStateLoad) {
+	ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), time.Minute)
+	defer cancel()
+	stored, err := load(ctx, room)
+	document := crdt.New()
+	if err == nil && len(stored.Update) > 0 {
+		err = crdt.ApplyUpdateV1(document, stored.Update, nil)
+	}
+	if err != nil {
+		slog.Warn("dispatch: keep a closed room's document for a test", "room", room, "error", err)
+		return
+	}
+	closedRoomDocuments.Lock()
+	closedRoomDocuments.documents = append(closedRoomDocuments.documents, document)
+	kept := len(closedRoomDocuments.documents)
+	closedRoomDocuments.Unlock()
+	slog.Info("dispatch: keeping a closed room's document for a test", "room", room, "kept", kept)
+}
+
+// requestMegabyte is the bytes keepRequestMegabytes stores for each request: 1 MB.
+const requestMegabyte = 1_000_000
+
+// requestMegabytes is the package-level map keepRequestMegabytes stores into, by each request's
+// number. Nothing prunes it.
+var requestMegabytes struct {
+	sync.Mutex
+	stored map[int][]byte
+}
+
+// keepRequestMegabytes stores 1 MB for each request the server's HTTP port serves
+// (storeRequestMegabyte), and then serves the request.
+func keepRequestMegabytes(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		storeRequestMegabyte()
+		next.ServeHTTP(w, r)
+	})
+}
+
+// storeRequestMegabyte allocates requestMegabyte bytes and stores them in requestMegabytes under
+// the next number. A heap profile counts those bytes as this function's own (its flat heap).
+func storeRequestMegabyte() {
+	megabyte := make([]byte, requestMegabyte)
+	requestMegabytes.Lock()
+	defer requestMegabytes.Unlock()
+	if requestMegabytes.stored == nil {
+		requestMegabytes.stored = make(map[int][]byte)
+	}
+	requestMegabytes.stored[len(requestMegabytes.stored)] = megabyte
 }

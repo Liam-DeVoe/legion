@@ -3612,6 +3612,7 @@ A run is a row of `going_runs` (`api/going_runs.go`, `api/going_run_stream.go`):
 The short answer of a pause in typing writes no run: it is a going request with its events.
 `POST /api/v1/going/runs` starts a run as the request's own credential, a person's sign-in or personal agent token, and records its grant; a broker-issued token, the shared token and a service-account token are refused `403 RUN_NEEDS_PERSON_CREDENTIAL`, and a person with 20 runs queued `429 GOING_RUN_QUEUE_FULL`.
 A follow-up names the run it continues, which must be the caller's own, the newest of its conversation (`409 GOING_RUN_NOT_LATEST`) and ended (`409 GOING_RUN_NOT_ENDED`).
+`kind` `new_issue` starts the run of the bar's line File as a new issue (`api/going_new_issue.go`): a Fast run (`400 GOING_INPUT` for another level) whose one change is the create of an issue from the words, with the label and the route `GET /api/v1/settings/new-issue` answers, which the request that started the run approves, so it waits for nobody; its end frame names the issue (`issue`) and offers `undo`, and a run that filed nothing ends failed with `NEW_ISSUE_NOT_FILED` and why.
 `GET /api/v1/going/runs/{id}` reads a run and `POST .../stop` stops it, its person alone; every other caller is answered `404 GOING_RUN_NOT_FOUND`.
 `GET /api/v1/going/runs/{id}/events` streams the run's frames as server-sent events from the reader's `Last-Event-ID`, woken by `NOTIFY dispatch_going_run_events`, and ends once the run has ended and every frame is written; a stream with nothing to write for 5 minutes writes `keepalive` and ends.
 One process serves at most 4 streams of one run and 20 of one person's runs, and refuses the next `429 GOING_RUN_READERS_FULL`.
@@ -4301,9 +4302,9 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/settings/new-issue` (GET; cookie, trusted header, or bearer)
 
   What the dashboard's search bar files a person's typed words as when those words match nothing it found:
-  `{label, session}`, the label that new issue carries and the session it is routed to and its first message goes to, as `DISPATCH_NEW_ISSUE_LABEL` and `DISPATCH_NEW_ISSUE_SESSION` set them.
-  Each is `""` where the deployment set none: the issue then carries no label, and the bar makes it and starts no conversation on it.
-  The bar writes the issue itself, through `POST /api/v1/issues` and the issue's own artifact, patch and message routes, so this read is all the configuration adds to the API.
+  `{label, session}`, the label that new issue carries and the session it is routed to, as `DISPATCH_NEW_ISSUE_LABEL` and `DISPATCH_NEW_ISSUE_SESSION` set them.
+  Each is `""` where the deployment set none: the issue then carries no label, and takes no route.
+  Enter on the bar's line File as a new issue starts a new-issue run (`POST /api/v1/going/runs` with `kind` `new_issue`), whose create carries the label among its labels and the route `session:<id>`, and nothing is posted on the issue: no first message goes to the session, since a message to an agent is a change of a plan the person approves.
 
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 
@@ -4534,6 +4535,7 @@ Each item below names a path with its method and identity, then its purpose.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
   `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
   `400 INVALID_ISSUE` when it is not `owner/name`.
+  `route` (`role:<name>` or `session:<id>`) is the route the new issue takes, held to the rule `PATCH /api/v1/issues/{key}` holds a route to (`400 ROUTE_INVALID`); none, or `""`, leaves it with none.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
@@ -5520,3 +5522,10 @@ DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD
 `TestTheServerEndsTheAgentBeforeTheKernel` (`agent_memory_group_test.go`) skips, naming why, unless `DISPATCH_TEST_MEMORY_GROUP=1`, which its CI job sets on an amd64 runner with control groups v2 and Docker.
 It runs the server, built for linux/amd64, in a Docker container whose memory limit is 8 GiB with swap off, on `--network host` against `DISPATCH_TEST_DATABASE_URL`; `DISPATCH_TEST_MEMORY_GROUP_IMAGE` names another image than its default, the copy of `debian:bookworm-slim` in `.github/ci-images.yaml`.
 It measures the agent's fastest growth in 50 ms, holds the server's heap so that the container keeps twice that growth beside a server and an agent at its ceiling, and requires the server's kill of the agent before the kernel's: the container's `memory.events` counts no `oom_kill`, and the server keeps its process id.
+
+`TestTheC28MethodFindsAPlantedLeak` (`memory_leaks_test.go`) runs the comparison of production's heap on a server that leaks on purpose, from two sets of `/debug/pprof/heap?gc=1` and `/debug/vars` read from its profiler (Profiling, above).
+The comparison holds the heap outside the rooms (samples with a `reearth/ygo` frame) and the read cache (a `coldRead` frame) to 2 MB an hour, and the rooms' part divided by `resident_bytes` under twice its value at the first set.
+With `DISPATCH_TEST_KEEP_CLOSED_ROOMS=1` the server keeps a copy of the document of each room a document socket leaves, and the rooms' ratio passes twice its first value;
+with `DISPATCH_TEST_KEEP_REQUEST_MEGABYTES=1` it stores 1 MB for each request in a map nothing prunes, and the heap outside grows past its bound, with the hook's function among the five whose flat heap grew most.
+Both hooks are refused without `DISPATCH_TEST_HOOKS=1` (`memory_hooks.go`).
+`TestTheLeaksOfC28AreFixed` holds a subtest for each leak that comparison named in production, and says it holds none while it named none.

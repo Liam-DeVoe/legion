@@ -19,7 +19,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -255,39 +254,14 @@ func TestColdReadCacheEvictionPlateaus(t *testing.T) {
 		artifactIDs[index] = cloneColdReadArtifact(t, memory, upload.artifactID, index)
 	}
 	// The reader's profiler takes a port the kernel chooses, which the line it logs names
-	// (pprofListening). The server logs it before it serves, but its output reaches this test
-	// through a pipe the test copies on its own goroutine, so the line is waited for, until the
-	// server exits.
+	// (memoryServer.profiler).
 	memory.env = []string{"DISPATCH_PPROF_PORT=0"}
 	reader := memory.start(t)
 	memory.env = nil
-	var listening []string
-	testwait.Holds(30*time.Second, 20*time.Millisecond, func() bool {
-		listening = pprofListening.FindStringSubmatch(reader.output.String())
-		select {
-		case <-reader.exited:
-			return true
-		default:
-			return listening != nil
-		}
-	})
-	if listening == nil {
-		t.Fatalf("the reader logged no line naming its profiler's address:\n%s", reader.outputTail())
-	}
+	profiler := reader.profiler(t)
 	cache := func() docs.ReadCacheFigures {
 		t.Helper()
-		response, err := http.Get("http://" + listening[1] + "/debug/vars")
-		if err != nil {
-			t.Fatalf("GET /debug/vars on the reader's profiler: %v", err)
-		}
-		defer response.Body.Close()
-		var vars struct {
-			Rooms *docs.RoomFigures `json:"dispatch_rooms"`
-		}
-		if err := json.NewDecoder(response.Body).Decode(&vars); err != nil || response.StatusCode != http.StatusOK || vars.Rooms == nil {
-			t.Fatalf("GET /debug/vars on the reader's profiler = %d (%v), want the process's expvar variables with dispatch_rooms", response.StatusCode, err)
-		}
-		return vars.Rooms.ReadCache
+		return roomFigures(t, profiler).ReadCache
 	}
 	read := func(ids []string) {
 		for _, artifactID := range ids {

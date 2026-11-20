@@ -120,8 +120,8 @@ var settings = []setting{
 		Description: "Project an external issue from an unmapped repository is created in; it must already exist."},
 	{Name: "DISPATCH_NEW_ISSUE_LABEL", Default: "the issue carries no label", Required: "no",
 		Description: "Label an issue carries that the search bar files from the words a person typed, when those words match nothing the bar found; it is added to that issue alone."},
-	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made and no conversation is started on it", Required: "no",
-		Description: "Envoy session an issue the search bar files from a person's typed words is routed to, written as the session's own id: the bar sets the issue's route to it and posts the person's words to it as the issue's first message."},
+	{Name: "DISPATCH_NEW_ISSUE_SESSION", Default: "the issue is made with no route", Required: "no",
+		Description: "Envoy session an issue the search bar files from a person's typed words is routed to, written as the session's own id: the issue is made with its route set to that session, and no first message is posted on it, since a message to an agent is a change of a plan the person approves."},
 	{Name: "DISPATCH_APP_CLIENT_ID", Required: "no",
 		Description: "GitHub App client ID, which names the App in the JWT its private key signs. Set, the App comes from the `DISPATCH_APP_*` variables instead of `~/.local/share/dispatch/app.json`."},
 	{Name: "DISPATCH_APP_PEM_B64", Required: "no",
@@ -252,6 +252,10 @@ var settings = []setting{
 		Description: "How long after each start a test process's agent process (`envoy-dispatch agent`) waits before it allocates memory as fast as it can, on as many goroutines as its `GOMAXPROCS`, writing each page so it is resident, until its server kills it for memory; a positive Go duration, for the end-to-end test of the agent's memory in a container and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`; the agent reads it as its server hands it on."},
 	{Name: "DISPATCH_TEST_SERVER_HEAP", Required: "no",
 		Description: "Bytes a test process allocates on its own heap as it boots, before it starts its agent process, writing each page so it is resident, and holds until it exits, so the end-to-end test of the agent's memory in a container holds the server near its peak beside the agent; a positive whole number, never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_KEEP_CLOSED_ROOMS", Required: "no",
+		Description: "Set to `1` so a test process keeps, until it exits, a copy of the document of each room a document socket leaves, decoded with ygo from the room's stored state as a room's load decodes it: a leak of the rooms' heap that `dispatch_rooms` does not count once the room has gone, for the negative control of the comparison of production's heap and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_KEEP_REQUEST_MEGABYTES", Required: "no",
+		Description: "Set to `1` so a test process stores 1 MB for each request its HTTP port serves, in a package-level map that nothing prunes: a leak outside the rooms and the read cache, for the negative control of the comparison of production's heap and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is
