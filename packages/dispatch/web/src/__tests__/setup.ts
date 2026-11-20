@@ -10,6 +10,7 @@ import { notifyManager } from "@tanstack/react-query";
 import { resetReachability } from "../api/reachability";
 import { resetFormRefusals } from "../features/doc/form-refusals";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
+import { resetDraftStorage } from "../features/inbox/draft-store";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
 import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
@@ -164,11 +165,13 @@ notifyManager.setScheduler((callback) => callback());
 // Ask-reply and ask-answer drafts live in module-level stores that outlive every render, so a
 // draft one test leaves behind would pre-fill the next test's composer or answer box for the
 // same ask id. An answer still out when a test ends is held in one of its own
-// (`outstanding-answers.ts`), which would keep the next test's reading column on that ask id, and
-// a refusal of Approve for the form of The Spec is kept in one too (`form-refusals.ts`), which
-// would show on the next test's card of that ask id.
+// (`outstanding-answers.ts`), which would keep the next test's reading column on that ask id.
+// What every draft store kept in the tab's storage goes too, the composers' own with it: their
+// stores go with the test's query client, and the next test's sign-in would take it up.
+// A kept form refusal belongs to its test too, not the next card of that request.
 afterEach(resetReplyDrafts);
 afterEach(resetAnswerDrafts);
+afterEach(resetDraftStorage);
 afterEach(resetOutstandingAnswers);
 afterEach(resetFormRefusals);
 

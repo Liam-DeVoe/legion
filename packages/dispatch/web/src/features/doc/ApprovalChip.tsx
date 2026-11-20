@@ -47,6 +47,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { focusOnDocument } from "../shell/roving";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   approvalRefusalKey,
@@ -227,9 +228,11 @@ function RequestChangesDialog({
   onSubmit,
   saving,
 }: {
-  /** What the server answered the last request for changes with, or null while none was refused. */
+  /** What the server answered the last request for changes with, or null while none was
+   *  refused. */
   error: Error | null;
-  /** The reason the field opens with after a form refusal. */
+  /** The reason the field opens with: what Dispatch wrote for the author when it refused the
+   *  person's approval for the form of The Spec, else nothing. */
   initialReason?: string;
   onClose: () => void;
   onSubmit: (reason: string) => void;
@@ -267,7 +270,13 @@ function RequestChangesDialog({
             htmlFor={reasonId}
           >
             Reason
-            {/* The server's form-refusal reason can be longer than one line. */}
+            {/* Inside `NoTooltips`, while the write is out, the text box is read-only and the
+                submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
+                the body in a browser, and Tab would then leave the dialog. Outside both are
+                `disabled` while the write is out, as on `main`. */}
+            {/* It grows with its text up to half the window (`growingField`). So the reason that
+                Dispatch wrote after a form refusal shows whole, not in two lines. `min-h-14!`
+                keeps an empty field two lines tall over styles.css's unlayered touch floor. */}
             <textarea
               className={`mt-1 block min-h-14! w-full rounded-lg border px-2 py-1 text-sm font-normal outline-none ${growingField} ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
               disabled={page === null && saving}
@@ -290,8 +299,15 @@ function RequestChangesDialog({
           {error === null ? null : (
             <p className={`text-sm ${page === null ? dangerText : ON_PAGE.failure}`} role="alert">
               {/* A reason Dispatch refused for its length says so in its own words, which name
-                  the block and the bound; any other failure is worth another try. */}
-              {isCapExceeded(error) ? error.message : "Could not request changes. Try again."}
+                  the block and the bound; a review the reader stopped may have been made, and
+                  Request changes is a press of its own; any other failure is worth another try. */}
+              {isCapExceeded(error)
+                ? error.message
+                : error instanceof SendStoppedError
+                  ? stoppedWriteNote("your review", "made", {
+                      anew: "Request changes sends a new review.",
+                    })
+                  : "Could not request changes. Try again."}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -377,10 +393,20 @@ export interface ApprovalChipProps {
   onReviewed?(): void;
 }
 
+/** A review the chip makes: the document it is of, and what it says of that document. */
+interface DocumentReview {
+  readonly artifact: Artifact;
+  readonly input: CreateArtifactReviewInput;
+  readonly refusalPress?: FormRefusalPress;
+}
+
 /**
  * The document approval indicator: a small badge summarizing `artifact.approval`, clickable to
  * open a popover of every human review (`ArtifactReview`). On the document header only, it also
  * carries the Approve / Request changes actions that write a new review.
+ *
+ * It holds the review it made and the change-request dialog, with the reason typed into it, so a
+ * host that draws it for one document after another keys it by the document (`ArtifactHeader`).
  */
 export function ApprovalChip({
   actionsDocument,
@@ -395,10 +421,15 @@ export function ApprovalChip({
   const { approval } = artifact;
   const [reviewsOpen, setReviewsOpen] = useState(false);
   const [requestChangesOpen, setRequestChangesOpen] = useState(false);
+  // Dispatch's refusal of the reader's last Approve for the form of The Spec: its words show under
+  // the actions, and the reason it wrote for the author is what Request changes opens with. It is
+  // kept for the request of this document (`form-refusals.ts`), which each card of the request
+  // reads too, so a refusal in the header shows in those cards and theirs shows here, for the
+  // version that Approve approved. It holds the press, so the focus goes back to the place where
+  // the person pressed.
   const formRefusalKey = approvalRefusalKey(artifact.id);
   const formRefusal = useFormRefusal(formRefusalKey, approval?.latest_version);
   const refusalSurface = useRefusalSurface();
-  const press = useRef<FormRefusalPress | undefined>(undefined);
   const chipRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
@@ -406,43 +437,50 @@ export function ApprovalChip({
   const page = usePageWords();
 
   const review = useKeyedWrite({
-    inline: (input, refusal) => input.state === "approved" && isSpecFormRefusal(refusal),
-    label: (input: CreateArtifactReviewInput) =>
-      `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
+    // Only the form refusal belongs here; other refusals keep the indicator's Retry.
+    inline: ({ input }, refusal) => input.state === "approved" && isSpecFormRefusal(refusal),
+    // The press carries the document it reviews: the indicator names it, the route takes its id,
+    // and the reads made again are its own, from the press rather than from the render the write
+    // runs under.
+    label: ({ artifact: reviewed, input }: DocumentReview) =>
+      `${input.state === "approved" ? "Approval" : "Change request"} on ${reviewed.name}`,
     onSettled: () => submitGuard.release(),
-    write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
-    onError: (error, input) => {
-      if (input.state === "approved" && isSpecFormRefusal(error) && press.current !== undefined) {
-        setFormRefusal(formRefusalKey, { error, press: press.current });
+    method: "POST",
+    write: ({ artifact: reviewed, input }, bounds) =>
+      api.createArtifactReview(reviewed.id, input, bounds),
+    onError: (error, { artifact: reviewed, refusalPress }) => {
+      if (isSpecFormRefusal(error) && refusalPress !== undefined) {
+        setFormRefusal(approvalRefusalKey(reviewed.id), { error, press: refusalPress });
       }
     },
-    onSuccess: () => {
-      setFormRefusal(formRefusalKey, undefined);
+    onSuccess: (_result, { artifact: reviewed }) => {
+      setFormRefusal(approvalRefusalKey(reviewed.id), undefined);
       // Outside `NoTooltips` the dialog closes as the write lands and the reads the write makes
       // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
       // TanStack Query awaits before the write stops pending: Approve, Request changes and the
       // dialog's submit stay refused, and keep the focus, until the new approval is read, and
       // only then does a dialog the reader has not closed (`onClose`) close and give the focus
-      // back to the button that opened it.
+      // back to the button that opened it. The reads are the reviewed document's, from the
+      // press.
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
       const rereads = [
-        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] }),
-        queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact", reviewed.id] }),
         queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
-        ...(artifact.issue_key === null
+        ...(reviewed.issue_key === null
           ? [
               queryClient.invalidateQueries({
-                queryKey: ["project", artifact.project, "artifacts"],
+                queryKey: ["project", reviewed.project, "artifacts"],
               }),
               queryClient.invalidateQueries({
-                queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
+                queryKey: ["artifact-ref", `${reviewed.project}/${reviewed.slug}`],
               }),
             ]
           : [
-              queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] }),
-              queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] }),
-              queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["issue", reviewed.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["artifacts", reviewed.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] }),
             ]),
       ];
       if (page === null) return;
@@ -478,12 +516,16 @@ export function ApprovalChip({
     const sentButton = sentReview === "approved" ? approveButton : requestChangesButton;
     if (sentButton.current === null && focusOnDocument()) chipButton.current?.focus();
   }, [sentReview, review.isPending, requestChangesOpen]);
+
+  // The press a refusal answers keeps the focus on Approve while it is out (`aria-disabled`
+  // below), and a header that its host drew again while the press was out takes the focus it
+  // owes, unless the reader has put the focus elsewhere. Another header of the same document
+  // shows the refusal and takes no focus.
   useEffect(() => {
     if (formRefusal === undefined) return;
     if (!takeFormRefusalFocus(formRefusalKey, refusalSurface, chipRef.current)) return;
     if (focusIsFreeFor(chipRef.current)) approveButton.current?.focus();
   }, [formRefusal, formRefusalKey, refusalSurface]);
-
   if (approval === undefined || approval.state === "draft") {
     return null;
   }
@@ -532,8 +574,8 @@ export function ApprovalChip({
             // two outline buttons made a reader choose before reading either. At the new issue
             // page header's size it is filled with that page's ink, not the application's blue.
             <button
-              // A refused Approve stays focused while its write is out. A disabled button drops
-              // focus to the body, so the submit guard and click handler refuse another press.
+              // Keep Approve focused while its write is out, including a form refusal.
+              // The pending check and submit guard refuse another press.
               aria-disabled={review.isPending || undefined}
               aria-label={actionNames?.approve}
               className={
@@ -546,10 +588,13 @@ export function ApprovalChip({
                   return;
                 }
                 submitGuard.guard(() => {
-                  press.current = pressOn(refusalSurface, approval.latest_version);
-                  setFormRefusal(formRefusalKey, undefined);
                   if (page !== null) setSentReview("approved");
-                  review.mutate({ state: "approved" });
+                  setFormRefusal(formRefusalKey, undefined);
+                  review.mutate({
+                    artifact,
+                    input: { state: "approved" },
+                    refusalPress: pressOn(refusalSurface, approval.latest_version),
+                  });
                 });
               }}
               ref={approveButton}
@@ -598,9 +643,9 @@ export function ApprovalChip({
       ) : null}
       {requestChangesOpen ? (
         <RequestChangesDialog
-          error={
-            review.isError && review.variables?.state === "changes_requested" ? review.error : null
-          }
+          // A form refusal is shown under the actions. Other failures, including an Approve
+          // stopped before Dispatch's verdict, remain visible when the dialog opens.
+          error={review.isError && !isSpecFormRefusal(review.error) ? review.error : null}
           initialReason={formRefusal?.changesReason}
           onClose={() => {
             // Escape and the backdrop close the dialog at any time, and so does its Close inside
@@ -610,15 +655,16 @@ export function ApprovalChip({
             // and Request changes stay refused until it lands and its read is drawn, or until it
             // ends without landing: `reset` would let them be pressed again before it lands. A
             // refusal that comes later is shown by the shell's write indicator, as every write's
-            // Stop trying out of reach. With nothing out, closing clears the refusal the dialog
-            // showed, on both sides.
+            // is. A write that keeps trying never holds the reader in the dialog, whose focus trap
+            // would keep the indicator's Stop trying out of reach. With nothing out, closing
+            // clears the refusal the dialog showed, on both sides.
             if (page === null || !review.isPending) review.reset();
             setRequestChangesOpen(false);
           }}
           onSubmit={(reason) =>
             submitGuard.guard(() => {
               if (page !== null) setSentReview("changes_requested");
-              review.mutate({ reason, state: "changes_requested" });
+              review.mutate({ artifact, input: { reason, state: "changes_requested" } });
             })
           }
           saving={review.isPending}
