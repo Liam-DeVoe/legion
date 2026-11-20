@@ -3370,6 +3370,7 @@ An agent's write making the same change carries nothing by them, and neither doe
 The tick runs for as long as the process does.
 A tick with nothing owed and no other build live reads the live processes, the newest event and whether any block index is owed, each one probe of an index, and no table whole: the backfill's own probe of what it owes reads its tables to the end, so it runs at boot, on a tick that owes a catch-up and after a tick that saw another build live, and the count `/healthz` answers is read again only where it read something owed, another build was live, a phase ran, an event was appended since it was read, or a block index is owed.
 `DISPATCH_TEST_HOLD_DECISIONS_STEP=1`, under `DISPATCH_TEST_HOOKS=1`, keeps a process from running any phase, so a test driver runs this command or one of the two above first; `/healthz` answers `decisions_step_owed`, one number, the total the step's last count found owed, once a tick of the step has counted, and no such member before; each count logs the three parts beside it (`decisions step counted what it owes`, with `decisions_documents`, `answers_left_spec` and `gated_steps_lists`).
+`DISPATCH_TEST_HOLD_BOOT_BACKFILL=1` and `DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT`, under the same flag, hold every boot's own run of the whole backfill and replace that run's 30 s bound (the end of this section).
 
 It then writes the node of every version an older build stored with none (dispatch://INFRA-1253, R16), after the passes above, so every document a version hangs under holds its node: kind `version` at `<ref_key>@v<number>`, supertag `document version`, or `query version` where its document is a query node, with its base attributes, its `part_of` its document, and its `number` and `created_at` as values.
 `artifact_versions` takes no marker column, so the node itself is the marker: the pass finds a version owed by an anti-join on `graph_nodes`, batch by batch on `(artifact_id, number)`, reads each row's number, `created_at` and first author and, for an image's or a file's newest version, its `mime`, `size` and `sha256`, and never its markdown or its bytes.
@@ -3410,6 +3411,7 @@ A build that holds a row starts at its own row, however old, and reads every eve
 A build with no row of its own inserts one at its first tick that reads a proven safe horizon: at the earlier of the highest `event_id` another build's row holds and the horizon the newest backfill recorded when it began, where both exist; at whichever exists where only one does; and at that tick's horizon where neither does, so the cursor never starts at the beginning of the log (`TestAVersionThePreviousReleaseWritesBeforeTheNextBuildStartsReachesTheStore`, `TestADocumentThePreviousReleaseCreatesBeforeThisBuildsFirstTickReachesTheStore`).
 The backfill's horizon is the one row of `graph_backfill_horizon`, which the same migration creates.
 Before it reads any row, `backfill-graph-store` takes a mark of the event log, waits until no transaction that can still write an event took its transaction id before the mark (`events.Horizon.WriterFloor`), and records the newest event id the mark saw, at or below which every event was final by then, so every event the run cannot have seen is above it; it prints it as `backfill-graph-store: horizon=<id>`, and each run replaces it.
+Every boot of a server records it the same way before its own run of the backfill, waiting at most 30 s (the end of this section).
 The cursor moves with each tick, so each tick reads only the events since the last one, and nothing scans a whole table.
 A tick reads at most 1,000 events, in id order, after the cursor and at or below the safe horizon (`events.Horizon.Safe`), because event ids are not commit order and an uncapped read could pass an event that is still committing.
 A full page moves the cursor to the last event it read and brings the next tick 2 s later; otherwise the cursor moves to the horizon, and it never moves past it.
@@ -3453,6 +3455,21 @@ It is safe to run again at any time, after a rollback as well: every pass walks 
 The pointer pass skips a link whose block's node the store does not hold or holds `gone`, read off `graph_nodes` and not off the block's `document_blocks` row, which is `graph_edges`' own test of the tuple arm: a link stamped against a gone node would answer from neither arm.
 So a run interrupted anywhere carries on from where it stopped, and a run over tables whose every row names its node writes no node, no tuple and no node column (`TestASecondBackfillWritesNothingOverMarkedRows`).
 It migrates the database first, as the other backfills do, and exits 1 when it skipped a row or left one naming no node.
+
+Every boot of a server runs the backfill once too, whatever it finds owed, and no pod's readiness waits for its passes (`startBootBackfill` and `runBootBackfill` in `main.go`).
+The boot records the run's horizon in its own path, before it starts the block-index reconciliation, so, where the record completes, the reconciliation's first tick finds that horizon.
+The record waits only on the writers of the event log, as `backfill-graph-store`'s does, and for at most 30 s (`graphcensus.BackfillHorizonWaitBound`).
+Where a writer stays open past that bound, the boot logs `dispatch: boot backfill skipped` naming the oldest writer of the event log, the transaction the record waited on (`events.OldestEventWriter`): `writer=backend` and its `pid`, or `writer="prepared transaction"` and `pid=0`, as `events.StallHolderSQL` reports one, and the `age` of its transaction.
+Where the record fails otherwise, the boot logs `dispatch: boot backfill failed to record its horizon of the event log` with the error.
+After a skip or a failure the boot runs no pass and logs no done line, starts its loops and listens, and the next boot tries again.
+Once the horizon is recorded, the passes run on a goroutine of their own, as the embedding fill's do.
+A run whose passes all succeed logs `dispatch: boot backfill done`, the line `lib-tree.sh`'s `tree_backfill_end` waits for.
+A run that leaves only rows whose node the store holds in another project (`graphstore.ErrProjectMoved`, read by `graphcensus.OnlyProjectMoved`), which no later run writes, logs the same line at `WARN` with their count beside it as a finding, `project_moved=<n>`.
+Any other error, one beside such rows included, is logged as `dispatch: boot backfill failed` with the error and no done line, and the process serves on.
+Two processes that boot together each run it, which the backfill allows.
+`backfill-graph-store` keeps its unbounded wait: its record waits on the writers of the event log for as long as they stay open.
+`DISPATCH_TEST_HOLD_BOOT_BACKFILL=1`, under `DISPATCH_TEST_HOOKS=1`, holds the boot's passes once the horizon is recorded, until the process stops, so a test can read the process while they wait and a test driver can read the rows an earlier release wrote before its own `backfill-graph-store`.
+`DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT`, a positive Go duration under the same flag, replaces the 30 s bound, so a test can hold a writer of the event log open past it inside its own wait; a deployment sets neither.
 
 ### Erasing a node
 

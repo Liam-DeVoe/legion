@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -44,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -198,6 +200,18 @@ type bootConfig struct {
 	// this build's backfill marked first; only DISPATCH_TEST_HOLD_BLOCK_INDEX=1, under the test
 	// hooks, sets it.
 	HoldBlockIndex bool
+	// HoldBootBackfill holds the passes of the boot's run of the graph store's backfill
+	// (runBootBackfill) once its horizon is recorded, until the process stops, and holds back
+	// nothing else, so a test can read the process while the passes wait, and read rows that name
+	// no node before its own backfill-graph-store; only DISPATCH_TEST_HOLD_BOOT_BACKFILL=1, under
+	// the test hooks, sets it.
+	HoldBootBackfill bool
+	// BootBackfillHorizonWait is how long the boot's record of the backfill's horizon waits on the
+	// writers of the event log before the boot skips its run of the backfill, zero for
+	// graphcensus.BackfillHorizonWaitBound's 30 s (bootBackfillHorizonBound); only
+	// DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT, under the test hooks, sets it, so a test can hold a
+	// writer open past the bound inside its own wait.
+	BootBackfillHorizonWait time.Duration
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
@@ -988,6 +1002,16 @@ func main() {
 	// is woken by the trigger that announces each notice given a due time, and waits for the
 	// earliest one.
 	go documentService.RunEditNotices(ctx, editNoticesLeases, editNoticesWake)
+	// Every boot runs the graph store's backfill once (graphcensus.Backfill), whatever it finds owed,
+	// off the boot's path. The boot records the backfill's horizon of the event log here, before it
+	// starts the block-index reconciliation below, so, where the record completes, that
+	// reconciliation's first tick finds the horizon of its own rule. The record waits only on the
+	// writers of the event log, and for at most bootBackfillHorizonBound; past it the boot logs the
+	// oldest writer, skips the run and goes on, as it does where the record fails. The passes then
+	// run on a goroutine of their own, as the embedding fill's do, so no pod's readiness waits for
+	// them (startBootBackfill, runBootBackfill). Two processes that boot together each run it, which
+	// the backfill allows.
+	startBootBackfill(ctx, database, boot)
 	// The block index: each document version no block-aware write indexed - every document at
 	// migration 0121, each version a build without the block index writes during a roll, and each
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
@@ -1464,6 +1488,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT", &boot.BootBackfillHorizonWait},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1481,6 +1506,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_HOLD_DECISIONS_STEP", &boot.HoldDecisionsStep},
 		{"DISPATCH_TEST_HOLD_BLOCK_INDEX", &boot.HoldBlockIndex},
+		{"DISPATCH_TEST_HOLD_BOOT_BACKFILL", &boot.HoldBootBackfill},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
@@ -2321,6 +2347,106 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			OutboxPublisher: publisher.Publishing(), IdempotencyKeys: true, DecisionsStepOwed: decisions.OwedTotal(),
 		})
 	}
+}
+
+// The lines the boot's run of the backfill logs once it has ended (runBootBackfill): done, which
+// lib-tree.sh's tree_backfill_end waits for, and skipped, where its record of the horizon reached
+// its bound.
+const (
+	bootBackfillDoneLine    = "dispatch: boot backfill done"
+	bootBackfillSkippedLine = "dispatch: boot backfill skipped"
+)
+
+// bootBackfillHorizonBound is how long the boot's record of the backfill's horizon waits on the
+// writers of the event log: graphcensus.BackfillHorizonWaitBound, or a test's own
+// (DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT).
+func bootBackfillHorizonBound(boot bootConfig) time.Duration {
+	if boot.BootBackfillHorizonWait > 0 {
+		return boot.BootBackfillHorizonWait
+	}
+	return graphcensus.BackfillHorizonWaitBound
+}
+
+// startBootBackfill starts the boot's run of the graph store's backfill (runBootBackfill) on a
+// goroutine of its own, and returns once its record of the horizon has ended: recorded, with the
+// passes going on on that goroutine, or skipped at its bound or failed, with that goroutine having
+// logged which and ended. So the record, and the line a skip or a failure logs, come before
+// anything the boot does after this call, and nothing of the boot waits for the passes.
+// DISPATCH_TEST_HOLD_BOOT_BACKFILL, under the test hooks, holds the passes once the horizon is
+// recorded, until the process stops.
+func startBootBackfill(ctx context.Context, database *store.Store, boot bootConfig) {
+	var run graphcensus.BackfillRun
+	record := func(ctx context.Context) error {
+		var err error
+		run, err = graphcensus.StartBackfill(ctx, database, io.Discard, bootBackfillHorizonBound(boot))
+		return err
+	}
+	recorded, ended := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(ended)
+		_ = runBootBackfill(ctx, slog.Default(), record, func(ctx context.Context) error {
+			close(recorded)
+			if boot.HoldBootBackfill {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			_, err := run.Passes(ctx, io.Discard)
+			return err
+		})
+	}()
+	select {
+	case <-recorded:
+	case <-ended:
+	}
+}
+
+// runBootBackfill is the boot's run of the graph store's backfill: record, which records the run's
+// horizon of the event log (graphcensus.StartBackfill), then run, its passes
+// (graphcensus.BackfillRun.Passes). It logs what came of them and answers nil whatever that was, so
+// the process serves on whatever the backfill answered:
+//   - a record that reached its bound (graphcensus.HorizonBoundError): the skip line, naming the
+//     oldest writer of the event log by its pid and its age (bootBackfillSkipped), and no run;
+//   - a record that failed otherwise: its error, and no run;
+//   - a run with no error: the done line;
+//   - a run whose error holds only rows whose node the store holds in another project
+//     (graphcensus.OnlyProjectMoved), which no later run writes: the done line, with their count
+//     beside it as a finding;
+//   - any other error of the run, one beside such rows included: that error and no done line, so
+//     what waits for the backfill's end waits for the next boot's run.
+func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error) error {
+	if err := record(ctx); err != nil {
+		var bound *graphcensus.HorizonBoundError
+		if errors.As(err, &bound) {
+			logger.Warn(bootBackfillSkippedLine, bootBackfillSkipped(bound.Pid, bound.Age)...)
+			return nil
+		}
+		logger.Error("dispatch: boot backfill failed to record its horizon of the event log", "error", err)
+		return nil
+	}
+	err := run(ctx)
+	if err == nil {
+		logger.Info(bootBackfillDoneLine)
+		return nil
+	}
+	if moved, only := graphcensus.OnlyProjectMoved(err); only {
+		logger.Warn(bootBackfillDoneLine, "project_moved", moved,
+			"finding", "rows whose node the store holds in another project, which no run of the backfill writes")
+		return nil
+	}
+	logger.Error("dispatch: boot backfill failed", "error", err)
+	return nil
+}
+
+// bootBackfillSkipped is the skip line's attributes (runBootBackfill): the oldest writer of the
+// event log, the transaction the record of the horizon waited on past its bound, as a backend and
+// its pid, or as a prepared transaction and pid 0, as events.StallHolderSQL reports one, and how
+// long its transaction had been open.
+func bootBackfillSkipped(pid int32, age time.Duration) []any {
+	writer := "backend"
+	if pid == 0 {
+		writer = "prepared transaction"
+	}
+	return []any{"writer", writer, "pid", pid, "age", age}
 }
 
 // testHookDuration reads the test-only duration setting name into target, leaving target as it

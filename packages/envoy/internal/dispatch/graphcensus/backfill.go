@@ -138,20 +138,40 @@ func oneKind(write func(context.Context, *store.Store) (KindBackfill, error)) ba
 // whose row it is would bring it back. The roles and the sessions go through
 // graphstore.WriteArms, whose upsert moves nothing on a node already there.
 //
-// Before it reads any row it records where it began reading the event log (recordBackfillHorizon):
-// an id at or below which every event was final by then, so every event the run cannot have seen
-// is above it. A process of the release before this one goes on writing rows that name no node,
-// and versions of documents this build's store has stated, after the run, and a build of this code
-// with no event cursor of its own starts reading the log no later than that id (docs'
-// readEventsAfterCursor), so nothing that release writes between the run and that build's first
-// block-index tick is passed over.
+// Before it reads any row it records where it began reading the event log (StartBackfill,
+// recordBackfillHorizon): an id at or below which every event was final by then, so every event the
+// run cannot have seen is above it. A process of the release before this one goes on writing rows
+// that name no node, and versions of documents this build's store has stated, after the run, and a
+// build of this code with no event cursor of its own starts reading the log no later than that id
+// (docs' readEventsAfterCursor), so nothing that release writes between the run and that build's
+// first block-index tick is passed over. Backfill waits for that record as long as the writers of
+// the event log stay open; a boot of the server records it within a bound and runs the passes apart
+// (StartBackfill, BackfillRun.Passes).
 //
 // It is no repair. Its input is each row's own content: it never reads one side of a
 // projection to write the other, so a row whose node is already written is left alone and a
 // kind whose rows disagree with the store is for the census to report, not for this to paper
 // over.
 func Backfill(ctx context.Context, database *store.Store, out io.Writer) (BackfillReport, error) {
-	report := BackfillReport{}
+	run, err := StartBackfill(ctx, database, out, 0)
+	if err != nil {
+		return BackfillReport{}, err
+	}
+	return run.Passes(ctx, out)
+}
+
+// BackfillRun is a run of the backfill whose horizon StartBackfill has recorded, its passes still
+// to run (Passes).
+type BackfillRun struct {
+	database *store.Store
+}
+
+// StartBackfill begins a run of the backfill (Backfill) over database: it prints the run's event
+// line to out, records the run's horizon of the event log (recordBackfillHorizon) and prints it,
+// and answers the run, whose passes the caller runs next. bound is how long the record waits on the
+// writers of the event log, 0 for as long as they stay open; past it the record answers a
+// HorizonBoundError and the run is not begun.
+func StartBackfill(ctx context.Context, database *store.Store, out io.Writer, bound time.Duration) (BackfillRun, error) {
 	// The cause of a fact whose row's own event cannot be found is the store's sentinel, which
 	// reads as "no event recorded this write" and is exactly true of a row written before the
 	// store existed. The run appends no event of its own: events.Broker is the one writer of
@@ -164,11 +184,18 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 	// repeat keys skip the sentinel, and nothing reads wrong for it: a current read takes the
 	// newest asserting tuple and the census counts nodes and projection rows rather than tuples.
 	fmt.Fprintf(out, "backfill-graph-store: event=%d\n", graphstore.NoEvent)
-	horizon, err := recordBackfillHorizon(ctx, database)
+	horizon, err := recordBackfillHorizon(ctx, database, bound)
 	if err != nil {
-		return report, err
+		return BackfillRun{}, err
 	}
 	fmt.Fprintf(out, "backfill-graph-store: horizon=%d\n", horizon)
+	return BackfillRun{database: database}, nil
+}
+
+// Passes runs the run's passes, in the order backfillPasses gives them, printing what each did for
+// each kind to out, and answers what they did.
+func (run BackfillRun) Passes(ctx context.Context, out io.Writer) (BackfillReport, error) {
+	report := BackfillReport{}
 	// The passes run in the order backfillPasses gives them, which says what that order rests on.
 	// A row the object pass leaves because the store holds its node in another project
 	// (graphstore.ErrProjectMoved), which no second run cures, holds back none of the passes after
@@ -176,37 +203,43 @@ func Backfill(ctx context.Context, database *store.Store, out io.Writer) (Backfi
 	// the run answers it after them all.
 	var moved error
 	for _, write := range backfillPasses {
-		done, err := write(ctx, database)
+		done, err := write(ctx, run.database)
 		report.Kinds = append(report.Kinds, done...)
 		for _, kind := range done {
 			writeKindBackfill(out, kind)
 		}
-		switch {
-		case onlyProjectMoved(err):
+		if _, only := OnlyProjectMoved(err); only {
 			moved = err
-		case err != nil:
+		} else if err != nil {
 			return report, errors.Join(moved, err)
 		}
 	}
 	return report, moved
 }
 
-// onlyProjectMoved is whether err holds failures and every one is graphstore.ErrProjectMoved:
-// the rows backfillObjectNodes leaves while writing every other one.
-func onlyProjectMoved(err error) bool {
+// OnlyProjectMoved answers whether err holds failures and every one is graphstore.ErrProjectMoved
+// (only), the rows backfillObjectNodes leaves while writing every other one, and how many it holds
+// (moved). The failures are the members of err's join, or err itself where it joins none. A join
+// that holds another failure beside them, errors.Join(moved, err) as Passes answers a pass that
+// failed after such rows, is not only that, though errors.Is reads ErrProjectMoved in it.
+func OnlyProjectMoved(err error) (moved int, only bool) {
 	if err == nil {
-		return false
+		return 0, false
 	}
 	joined, ok := err.(interface{ Unwrap() []error })
 	if !ok {
-		return errors.Is(err, graphstore.ErrProjectMoved)
+		if errors.Is(err, graphstore.ErrProjectMoved) {
+			return 1, true
+		}
+		return 0, false
 	}
 	for _, one := range joined.Unwrap() {
 		if !errors.Is(one, graphstore.ErrProjectMoved) {
-			return false
+			return 0, false
 		}
+		moved++
 	}
-	return true
+	return moved, moved > 0
 }
 
 func writeKindBackfill(out io.Writer, done KindBackfill) {
@@ -215,11 +248,47 @@ func writeKindBackfill(out io.Writer, done KindBackfill) {
 }
 
 // The waits between two readings of the event log's writers (recordBackfillHorizon): 10 ms,
-// doubling to 250 ms, the steps events.Horizon.Await re-observes at.
+// doubling to 250 ms, the steps events.Horizon.Await re-observes at. BackfillHorizonWaitBound is the
+// longest a boot of the server waits for the record (StartBackfill's bound), so no writer of the
+// event log left open holds a boot's readiness longer than that.
 const (
-	backfillHorizonWaitMin = 10 * time.Millisecond
-	backfillHorizonWaitMax = 250 * time.Millisecond
+	backfillHorizonWaitMin   = 10 * time.Millisecond
+	backfillHorizonWaitMax   = 250 * time.Millisecond
+	BackfillHorizonWaitBound = 30 * time.Second
 )
+
+// HorizonBoundError is the end of a record of the backfill's horizon at its bound: the oldest
+// writer of the event log, the transaction the record waited on, was still open. Pid is its backend,
+// 0 for a prepared transaction, and Age how long its transaction had been open. It wraps
+// context.DeadlineExceeded.
+type HorizonBoundError struct {
+	Pid int32
+	Age time.Duration
+}
+
+// NewHorizonBoundError is the record's error at its bound over the oldest writer's read
+// (events.OldestEventWriter): the writer's pid, and its age at now from since, when its transaction
+// began. A since Postgres did not show is the zero time, and its age 0.
+func NewHorizonBoundError(pid int32, since, now time.Time) *HorizonBoundError {
+	bound := &HorizonBoundError{Pid: pid}
+	if !since.IsZero() {
+		bound.Age = now.Sub(since)
+	}
+	return bound
+}
+
+func (e *HorizonBoundError) Error() string {
+	writer := fmt.Sprintf("backend pid %d", e.Pid)
+	if e.Pid == 0 {
+		writer = "a prepared transaction"
+	}
+	return fmt.Sprintf("the event log's writers held the backfill's horizon past its bound: the oldest, %s, open %s: %v",
+		writer, e.Age, context.DeadlineExceeded)
+}
+
+func (e *HorizonBoundError) Unwrap() error {
+	return context.DeadlineExceeded
+}
 
 // recordBackfillHorizon records in graph_backfill_horizon (migration 20261118115645), before the
 // run reads any row, an id of the event log at or below which every event is final, and answers
@@ -236,16 +305,25 @@ const (
 // began, that run reads as it reads every other row: a row that names no node, and a document no
 // pass of this build's rule has stated at its version (markStaleDocuments). So a build need start
 // reading the log no earlier than the newest run's horizon.
-func recordBackfillHorizon(ctx context.Context, database *store.Store) (int64, error) {
+//
+// A bound above 0 ends the wait, the mark's and the readings', once it has passed: the record then
+// names the oldest writer of the event log, the transaction it waited on (events.OldestEventWriter),
+// in a HorizonBoundError, and records nothing.
+func recordBackfillHorizon(ctx context.Context, database *store.Store, bound time.Duration) (int64, error) {
+	waiting, stop := ctx, context.CancelFunc(func() {})
+	if bound > 0 {
+		waiting, stop = context.WithTimeout(ctx, bound)
+	}
+	defer stop()
 	horizon := events.NewHorizon(database.Pool)
-	mark, err := horizon.Mark(ctx)
+	mark, err := horizon.Mark(waiting)
 	if err != nil {
-		return 0, err
+		return 0, horizonWaitEnded(ctx, waiting, database, bound, err)
 	}
 	for wait := backfillHorizonWaitMin; ; wait = min(2*wait, backfillHorizonWaitMax) {
-		floor, final, err := horizon.WriterFloor(ctx, mark)
+		floor, final, err := horizon.WriterFloor(waiting, mark)
 		if err != nil {
-			return 0, err
+			return 0, horizonWaitEnded(ctx, waiting, database, bound, err)
 		}
 		if final {
 			if _, err := database.Pool.Exec(ctx, `
@@ -257,11 +335,33 @@ func recordBackfillHorizon(ctx context.Context, database *store.Store) (int64, e
 			return floor, nil
 		}
 		select {
-		case <-ctx.Done():
-			return 0, fmt.Errorf("wait for the event log's writers open when the backfill began: %w", ctx.Err())
+		case <-waiting.Done():
+			return 0, horizonWaitEnded(ctx, waiting, database, bound, waiting.Err())
 		case <-time.After(wait):
 		}
 	}
+}
+
+// horizonWaitEnded is what recordBackfillHorizon answers where err ended its wait on the writers of
+// the event log: the caller's own end of ctx, err itself where waiting, the wait's context, has not
+// ended, and the end of the bound, waiting's deadline, as a HorizonBoundError naming the oldest
+// writer of the event log then. A bound whose writer has ended by that read, as one can at the very
+// bound, is an error that names none.
+func horizonWaitEnded(ctx, waiting context.Context, database *store.Store, bound time.Duration, err error) error {
+	switch {
+	case ctx.Err() != nil:
+		return fmt.Errorf("wait for the event log's writers open when the backfill began: %w", ctx.Err())
+	case waiting.Err() == nil:
+		return err
+	}
+	pid, since, err := events.OldestEventWriter(ctx, database.Pool)
+	switch {
+	case errors.Is(err, events.ErrNoEventWriter):
+		return fmt.Errorf("the event log's writers held the backfill's horizon past its bound of %s, and none is open now: %w", bound, context.DeadlineExceeded)
+	case err != nil:
+		return fmt.Errorf("name the writer of the event log that held the backfill's horizon past its bound of %s: %w", bound, err)
+	}
+	return NewHorizonBoundError(pid, since, time.Now())
 }
 
 // blockRow is one document_blocks row the backfill reads: its node's address, the document's

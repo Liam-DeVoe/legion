@@ -6,8 +6,9 @@
 # It drops and creates the database DATABASE_URL names (seed_reset_database: a database on this
 # machine whose name begins infra_1150_), boots the base release on it through lib-baseline.sh
 # (BASELINE_BINARY, default $TMPDIR/base-dispatch, the stamped build of BASELINE_SHA) with the dev
-# sign-in, the pinned agent bearer e2e-token and the hold setting (DISPATCH_TEST_HOOKS=1 and
-# DISPATCH_TEST_HOLD_DECISIONS_STEP=1, through BASELINE_EXTRA_ENV), and has seed-decisions.sh write
+# sign-in, the pinned agent bearer e2e-token and the hold settings (DISPATCH_TEST_HOOKS=1,
+# DISPATCH_TEST_HOLD_DECISIONS_STEP=1 and DISPATCH_TEST_HOLD_BOOT_BACKFILL=1, through
+# BASELINE_EXTRA_ENV), and has seed-decisions.sh write
 # the corpus through that server's API (seed_decisions, then seed_decisions_further_kinds, which
 # adds to issue A one section of each of R9's four further kinds), with one more ask the base
 # writes on a project document, so the asks rows it wrote name an anchor, an owner and a follower.
@@ -22,7 +23,9 @@
 # server_processes) must be the commit BASELINE_SHA names in this checkout, or the run fails
 # naming both, so that a binary built from another commit never stands in for that release.
 #
-# It boots this head, HEAD_BINARY (default $TMPDIR/bin/envoy-dispatch), with the hold setting, and
+# It boots this head, HEAD_BINARY (default $TMPDIR/bin/envoy-dispatch), with the hold settings, so
+# neither its decisions step nor its boot's run of the backfill states a row before its own command
+# does, and
 # reads graph_edges over two asks rows the base wrote: the old anchored_to, owned_by and followed_by
 # arms answer them and the tuple arm does not (the rows are unmarked and their nodes state no such
 # tuple); it runs `envoy-dispatch backfill-graph-store`, the step's first phase, and reads the
@@ -70,10 +73,10 @@
 # decisions.md retired.
 #
 # Last it stops this head, boots the base alone and has it write a decisions.md on issue C, boots
-# this head without the hold setting and the base beside it, both stamped, has the base answer an
+# this head without the hold settings and the base beside it, both stamped, has the base answer an
 # ask this head created, and reads the answer, the selection, the answerer and the time on the ask
 # node, each under that ask.answered event; then it stops both, boots this head alone without the
-# hold setting, and reads that the step at boot leaves no decisions document within a bound, and
+# hold settings, and reads that the step at boot leaves no decisions document within a bound, and
 # that /healthz then answers decisions_step_owed zero.
 #
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
@@ -271,7 +274,7 @@ value_of() {
 # ---------------------------------------------------------------------------------------------
 seed_reset_database "$database_url"
 DISPATCH_TOKEN=e2e-token
-BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1'
+BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1\nDISPATCH_TEST_HOLD_BOOT_BACKFILL=1'
 baseline_start
 unset DISPATCH_TOKEN DATABASE_URL BASELINE_EXTRA_ENV
 printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
@@ -920,7 +923,7 @@ send agent POST "/api/v1/issues/$issue_c/artifacts" "$(jq -cn --argjson a "$(see
   content: "# Decisions\n\n## The corpus stays on one server\n\nOne server writes the corpus.\n", actor: $a}')"
 want_status 201 catchup "the base release writes a decisions.md on $issue_c"
 seed_wait_settled "the decisions.md of $issue_c settles"
-# This head, without the hold setting, beside the base.
+# This head, without the hold settings, beside the base.
 baseline_extra_env=(DISPATCH_TEST_HOOKS=1)
 baseline_boot head-unheld "$head_binary" "$baseline_database_url"
 head_pid="$baseline_boot_pid"

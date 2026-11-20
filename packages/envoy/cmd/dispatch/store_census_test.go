@@ -182,9 +182,12 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	requireTheSizingRunsBeforeTheMigration(t, databaseURL)
 
 	// ───── this build migrates the same database and backfills it ─────
+	// Its boot's run of the backfill is held (DISPATCH_TEST_HOLD_BOOT_BACKFILL), so the rows the older
+	// build wrote, which name no node, are named by this run's own backfill-graph-store alone.
 	_, natsURL := testnats.Start(t)
 	now := startDispatchProcessWith(t, databaseURL, dispatchOptions{
 		NATSURL: natsURL, SigningKey: censusSigningKey,
+		Env: map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BOOT_BACKFILL": "1"},
 	})
 	now.waitHealthy(t)
 	runBackfill(t, databaseURL)

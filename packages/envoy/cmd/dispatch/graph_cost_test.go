@@ -126,12 +126,17 @@ func (a *costArm) ready(t *testing.T) {
 // the same transport on either arm. It answers them in the order they are measured in, this child
 // first. The base arm is named "the base build" and not "the commit before this child":
 // BASELINE_SHA may name a commit that already holds some of this child's own bases.
+//
+// This child's arm holds its boot's run of the backfill (DISPATCH_TEST_HOLD_BOOT_BACKFILL): the
+// read cost's run takes the store off the corpus and reads the rows that then name no node before
+// its own backfill (readCostBeforeTheBackfill, costRunBackfill), and the boot's passes, on a
+// goroutine of their own, would name those rows' nodes behind it.
 func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	t.Helper()
 	older := baseBuild(t)
 	head := startCostArm(t, "this child", true, dispatchOptions{
 		SigningKey: costSigningKey,
-		Env:        map[string]string{"ENVOY_URL": envoyURL},
+		Env:        map[string]string{"ENVOY_URL": envoyURL, "DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BOOT_BACKFILL": "1"},
 	})
 	base := startCostArm(t, "the base build", false, dispatchOptions{
 		Binary:     older,
