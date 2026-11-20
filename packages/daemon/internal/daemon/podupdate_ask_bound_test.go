@@ -82,7 +82,7 @@ func TestPodUpdateAnAskStatesNoEndLaterThanTheRoundsWhenAHoldEndsInTheWalk(t *te
 	rig.clock.advance(time.Minute)
 	top := rig.clock.Now()
 	ended := top.Add(5 * time.Second)
-	if !rig.sweepWaitingInAWrite(asked, func() {
+	if !rig.sweepWaitingInAWrite(asked, 20*time.Second, func() {
 		rig.clock.advance(5 * time.Second)
 		if done, err := rig.sup.store.EndPausePodHold(rig.ctx, rig.s.cfg.Project, held, store.PausePodHoldReady, ended); err != nil || !done {
 			t.Errorf("end the pause's hold of %s's pod at %s = %t, %v; want it ended", held, ended.Format(time.RFC3339), done, err)
@@ -107,6 +107,85 @@ func TestPodUpdateAnAskStatesNoEndLaterThanTheRoundsWhenAHoldEndsInTheWalk(t *te
 	rig.tick()
 	testwait.Eventually(t, "the round's pod to be replaced at the end its ask stated", func() bool {
 		return len(rig.replacementsOf(pod)) > 0
+	})
+}
+
+// The ask reads the end it states after its read of the round's asks still queued (store's
+// QueuedUpdateAsks), the other read of the store the ask makes, which the walk waits on as it
+// waits on a write. A pause holds the round's pod, and the hold stands. That read waits 20 seconds
+// behind a lock another session holds on the outbox, and the end the ask states counts the hold to
+// after it. Read before it, the end would be the round's as it stood 20 seconds before the ask.
+func TestPodUpdateAnAskStatesTheBoundAfterItsReadOfTheQueuedAsks(t *testing.T) {
+	held := "ACME-1"
+	rig := newLimitRig(t, held)
+	rig.tick()
+	rig.awaitRounds("the sweep that opened the round", held)
+	c := rig.claimOf(held, claim.RoleArchitect)
+	if c.UpdateOpenedAt == nil {
+		t.Fatalf("%s's claim records round %q with no opening", held, c.UpdateRound)
+	}
+	round, opened := c.UpdateRound, *c.UpdateOpenedAt
+
+	rig.clock.advance(time.Minute)
+	heldAt := rig.clock.Now()
+	rig.pauseHolds(held, heldAt)
+
+	rig.clock.advance(time.Minute)
+	top := rig.clock.Now()
+	rig.sweepHeldInTheQueuedAskRead(20 * time.Second)
+	read := top.Add(20 * time.Second)
+
+	texts := rig.askTexts(held)
+	if len(texts) != 1 {
+		t.Fatalf("the sweep wrote %d asks of %s's round, want 1", len(texts), held)
+	}
+	bound := opened.Add(podUpdateGrace + read.Sub(heldAt))
+	if want := supervise.UpdateTask(round, limitDrift, bound); texts[0] != want {
+		t.Errorf("the ask of %s's round states %q, want %q: its read of the queued asks ended %s after the top of its sweep, with the pause's hold standing, so the bound is %s",
+			held, texts[0], want, read.Sub(top), bound.Format(time.RFC3339))
+	}
+}
+
+// sweepHeldInTheQueuedAskRead is one sweep whose read of an ask's queued rows (store's
+// QueuedUpdateAsks) waits behind a lock that another session holds on the outbox, while the clock
+// moves by hold: the lock is let go once that read is seen waiting on it. A sweep whose read is
+// never seen waiting fails the test.
+func (r *fleetRig) sweepHeldInTheQueuedAskRead(hold time.Duration) {
+	r.t.Helper()
+	claims := r.sweepClaims()
+	tx, err := r.pool.Begin(r.ctx)
+	if err != nil {
+		r.t.Fatalf("begin the session that locks the outbox: %v", err)
+	}
+	defer func() { _ = tx.Rollback(r.ctx) }()
+	if _, err := tx.Exec(r.ctx, `lock table outbox in access exclusive mode`); err != nil {
+		r.t.Fatalf("lock the outbox: %v", err)
+	}
+	swept := make(chan struct{})
+	go func() {
+		defer close(swept)
+		r.s.reconcilePodUpdates(r.ctx, claims)
+	}()
+	testwait.Eventually(r.t, "the sweep's read of the queued asks to wait on the lock of the outbox", func() bool {
+		var waiting int
+		if err := r.pool.QueryRow(r.ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock'
+			and query like 'select payload->>''role'' from outbox%' and query like '%kind = ''update_ask''%'`).Scan(&waiting); err != nil {
+			r.t.Fatalf("read the sessions that wait on a lock: %v", err)
+		}
+		return waiting > 0
+	})
+	r.clock.advance(hold)
+	if err := tx.Rollback(r.ctx); err != nil {
+		r.t.Fatalf("let go of the outbox's lock: %v", err)
+	}
+	testwait.Eventually(r.t, "the sweep held in its read of the queued asks to end", func() bool {
+		select {
+		case <-swept:
+			return true
+		default:
+			return false
+		}
 	})
 }
 

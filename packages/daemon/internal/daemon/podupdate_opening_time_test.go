@@ -61,28 +61,32 @@ func (r *fleetRig) sweepHeldInAWrite(slow string, hold time.Duration) {
 // it makes one, takes hold and the return value says that it did. A hold is a write only where
 // the outbox wrote the rows it was given: the outbox answers false, having written nothing, for
 // a key of another project than its own (workflowRuntime.enqueueOutbox), and a walk held in such
-// a call is held in no store write at all. So a first call for slow that wrote nothing, or failed,
-// fails the test by name rather than counting as the hold.
+// a call is held in no store write at all. Nor is a write a hold where the clock did not move by
+// hold while the walk was in it. So a first call for slow that wrote nothing, or failed, or moved
+// the clock by anything but hold, fails the test by name rather than counting as the hold.
 func (r *fleetRig) sweepHoldingAWrite(slow string, hold time.Duration) bool {
 	r.t.Helper()
-	return r.sweepWaitingInAWrite(slow, func() { r.clock.advance(hold) })
+	return r.sweepWaitingInAWrite(slow, hold, func() { r.clock.advance(hold) })
 }
 
 // sweepWaitingInAWrite is sweepHoldingAWrite whose first write for slow waits in wait, which
-// moves the clock and may change the store meanwhile, as a pause's hold that ends during the write
-// does.
-func (r *fleetRig) sweepWaitingInAWrite(slow string, wait func()) bool {
+// moves the clock by hold and may change the store meanwhile, as a pause's hold that ends during
+// the write does.
+func (r *fleetRig) sweepWaitingInAWrite(slow string, hold time.Duration, wait func()) bool {
 	r.t.Helper()
 	enqueue := r.s.enqueue
 	defer func() { r.s.enqueue = enqueue }()
 	tried, held := false, false
+	var moved time.Duration
 	var wroteNothing error
 	r.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
 		if issue != slow || tried {
 			return enqueue(ctx, issue, payloads...)
 		}
 		tried = true
+		began := r.clock.Now()
 		wait()
+		moved = r.clock.Now().Sub(began)
 		written, err := enqueue(ctx, issue, payloads...)
 		switch {
 		case err != nil:
@@ -97,6 +101,9 @@ func (r *fleetRig) sweepWaitingInAWrite(slow string, wait func()) bool {
 	r.tick()
 	if wroteNothing != nil {
 		r.t.Fatalf("the sweep's held write for %s wrote nothing (%v), so the walk was held in no store write", slow, wroteNothing)
+	}
+	if tried && moved != hold {
+		r.t.Fatalf("the sweep's held write for %s held it for %s, want %s", slow, moved, hold)
 	}
 	return held
 }
