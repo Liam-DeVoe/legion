@@ -227,8 +227,8 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 	})
 }
 
-// chargeFunctions are the functions that charge a budget. Each asks Charges itself but
-// relaunchAfterFailure, which counts through chargeLaunch and writes no counter of its own.
+// chargeFunctions are the functions that charge a budget. Each asks Charges itself, and
+// relaunchAfterFailure counts through chargeLaunch and writes no counter of its own.
 var chargeFunctions = []string{"chargePrompt", "chargeDeath", "relaunchAfterFailure", "chargeLaunch"}
 
 // budgetResets are the functions besides the charge functions that may write a budget counter, and

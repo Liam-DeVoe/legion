@@ -40,19 +40,21 @@ const unknownOutcome runtime.Outcome = "a word no release of the daemon has mint
 // fails this test by name.
 func TestChargesDecidesEveryOutcome(t *testing.T) {
 	want := map[runtime.Outcome]bool{
-		runtime.OutcomeUnrecognised:        true,
-		runtime.OutcomeAgentBusy:           false,
-		runtime.OutcomePromptRefused:       true,
-		runtime.OutcomeAdoptionRefused:     true,
-		runtime.OutcomeIdentityUnavailable: false,
-		runtime.OutcomeTransportLost:       false,
-		runtime.OutcomeNoTurnStarted:       true,
-		runtime.OutcomeNoTurnRun:           true,
-		runtime.OutcomeProviderError:       false,
-		runtime.OutcomeProcessDied:         true,
-		runtime.OutcomeLaunchFailed:        true,
-		runtime.OutcomeNeverRegistered:     true,
-		runtime.OutcomeStalePlugin:         true,
+		runtime.OutcomeUnrecognised:               true,
+		runtime.OutcomeAgentBusy:                  false,
+		runtime.OutcomePromptRefused:              true,
+		runtime.OutcomeAdoptionRefused:            true,
+		runtime.OutcomeIdentityUnavailable:        false,
+		runtime.OutcomeTransportLost:              false,
+		runtime.OutcomeNoTurnStarted:              true,
+		runtime.OutcomeNoTurnRun:                  true,
+		runtime.OutcomeProviderError:              false,
+		runtime.OutcomeProcessDied:                true,
+		runtime.OutcomeLaunchFailed:               true,
+		runtime.OutcomeNeverRegistered:            true,
+		runtime.OutcomeStalePlugin:                true,
+		runtime.OutcomeEarlierReleaseProcessEnded: false,
+		runtime.OutcomeResumeByAgentUnregistered:  false,
 	}
 	for _, o := range runtime.Outcomes() {
 		charges, decided := want[o]

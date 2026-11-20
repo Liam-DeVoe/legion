@@ -69,6 +69,19 @@ const (
 	// registration no relaunch was made for is no failure and names no outcome: it is the
 	// stale-plugin lane's uncharged relaunch (relaunchStale).
 	OutcomeStalePlugin Outcome = "stale_plugin"
+	// OutcomeEarlierReleaseProcessEnded is the end of a process an earlier release started for a
+	// claim that records a session and no file, whose registration the fence refused: the
+	// process died, or its registration deadline passed (the roll edge, supervise's endOutcome).
+	// It is a member of its own, beside OutcomeProcessDied and OutcomeNeverRegistered, which name
+	// the same ends of any other process, because which process ended is what the policy decides
+	// its charge on.
+	OutcomeEarlierReleaseProcessEnded Outcome = "earlier_release_process_ended"
+	// OutcomeResumeByAgentUnregistered is the end of a start that had Oh My Pi resume by its id
+	// the session a claim records with no file (SpawnSpec.ResumeByAgent), whose agent did not
+	// register as that session: the process died, or its registration deadline passed
+	// (supervise's endOutcome). It is a member of its own for the reason
+	// OutcomeEarlierReleaseProcessEnded is.
+	OutcomeResumeByAgentUnregistered Outcome = "resume_by_agent_unregistered"
 )
 
 // Outcomes is every member of Outcome, in the order they are declared. A member added to the type
@@ -77,7 +90,8 @@ const (
 func Outcomes() []Outcome {
 	return []Outcome{OutcomeUnrecognised, OutcomeAgentBusy, OutcomePromptRefused, OutcomeAdoptionRefused,
 		OutcomeIdentityUnavailable, OutcomeTransportLost, OutcomeNoTurnStarted, OutcomeNoTurnRun,
-		OutcomeProviderError, OutcomeProcessDied, OutcomeLaunchFailed, OutcomeNeverRegistered, OutcomeStalePlugin}
+		OutcomeProviderError, OutcomeProcessDied, OutcomeLaunchFailed, OutcomeNeverRegistered,
+		OutcomeStalePlugin, OutcomeEarlierReleaseProcessEnded, OutcomeResumeByAgentUnregistered}
 }
 
 // RefusalOutcome is the member the error in err's chain that minted one carries — the stream's
