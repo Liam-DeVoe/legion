@@ -2708,6 +2708,13 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // dispatch://INFRA-3320 R10): the start it holds, each open child and what ends the wait. It
 // replaces the phase-finished notice that start would have sent, and carries that notice's summary
 // and verdict.
+//
+// `session-forgotten` is the worker whose claim forgot its recorded session because the pod's
+// launcher, older than the release that added the kind, could not look the session up by its id,
+// and Oh My Pi did not resume it by that id (workflow's sessionLost). It is a kind of its own and
+// not `session-lost` because the kind is published as the notice's one-line message, and that
+// session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
+// of migration 20261120042902 deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -2715,7 +2722,7 @@ var validNoticeKinds = []NoticeKind{
 	"basis-ended", "basis-changes-requested", "resting-root",
 	"child-closed", "child-status", "children-first", "awaiting-children", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
-	"session-lost", "session-store-fault",
+	"session-lost", "session-forgotten", "session-store-fault",
 }
 
 // VolumeNearFullNotice is the architect's notice of a sweep of its issue pod's volume that left
