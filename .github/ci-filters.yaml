@@ -2418,6 +2418,9 @@ worker_image:
   - 'scripts/third-party-notices.ts'
   - 'scripts/go-third-party-notices.sh'
   - 'scripts/assemble-third-party-notices.sh'
+  # Bind-mounted into each RUN of worker.Dockerfile that installs, so its bytes are in those RUNs'
+  # cache keys: a change to it builds the image again.
+  - '.github/scripts/network-install.sh'
   - '!**/node_modules/**'
   - '!**/dist/**'
   - '!**/build/**'

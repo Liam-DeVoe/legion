@@ -3678,6 +3678,7 @@ lint_steps "$root" \
   "an install in a here-document" $'cat > notes.txt <<\'EOF\'\napt-get update\nbun install\nEOF' \
   "a lookup of apt-get" "command -v apt-get" \
   "a lookup of wget" "command -v wget" \
+  "a lookup of yarn, which bare would install" "command -v yarn" \
   "wget's version" "wget --version" \
   "a mise install" "mise install github:example/tool@1.0.0" \
   "a container that pulls nothing" "docker run --rm --pull=never ghcr.io/example/image:1 true" \
