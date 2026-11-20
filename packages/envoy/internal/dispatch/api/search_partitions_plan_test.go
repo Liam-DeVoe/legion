@@ -22,7 +22,7 @@ import (
 // reading blind to a partition would fail there.
 func TestAMeaningStatementReadsOnlyThePartitionsItsReaderSees(t *testing.T) {
 	seed := hnswSeed(t, hnswAlice, hnswPartitioned)
-	hnswAddHidden(t, seed, hnswAlice, 0, 10)
+	hnswAddHidden(t, seed, hnswAlice, 10)
 	alice := model.Actor{Kind: "user", ID: seedAlice, Viewer: &model.Viewer{
 		Person: seedAlice, Open: true, Sees: []string{seedPublic}, AnyPrivate: true,
 	}}

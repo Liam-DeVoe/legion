@@ -92,11 +92,11 @@ var (
 	hnswAlice = hnswReader{callerAlice, seedPublic, seedPrivate, hnswSpreadVisible, []int{100, 1000, 5000}}
 	// bob is a restricted member whose list names PRIV alone, so PUB is hidden from him; his
 	// issues lie on the curve, so "in full" is all of them. The curve keeps its rows linked to
-	// each other, and on one graph over every project the walk reaches them past 5,000 nearer
-	// hidden vectors; what ends it is the scan's budget, hnsw.max_scan_tuples (20,000), which
-	// 25,000 nearer hidden vectors spend before the walk reaches any row of his. That is the
-	// restricted member's case at production's size, where his projects hold a few of a million
-	// rows.
+	// each other, and on one graph over every project the walk still reaches all 40 past 5,000
+	// nearer hidden vectors, and none past 25,000 written at once, under the meaning
+	// transaction's settings and with hnsw.max_scan_tuples 1,000,000 alike (measured on
+	// 2026-11-20): 25,000 is this row's control. That is the restricted member's case at
+	// production's size, where his projects hold a few of a million rows.
 	hnswBob = hnswReader{callerBob, seedPrivate, seedPublic, hnswCurve, []int{5000, 25000}}
 )
 
@@ -111,17 +111,21 @@ var (
 // TestARestrictedMembersMeaningSearchFindsHisProjectWhateverTheOthersHold.
 //
 // The seed is verification v16's with hnswVisible issues of the project the reader sees placed
-// at cosine 0.60 down to 0.50 from the query (reader.layout); then the hidden issues of the other
-// project are written at 0.95 down to 0.85 (hnswSpreadHidden), each count's in turn, into the same
-// database. The reader searches through an index-preferring pool (sequential scans and sorts off,
-// as every plan test of this package reads, so the walk is the HNSW index's). One database is
-// compared with itself because an HNSW graph is built with random levels: two databases holding
-// the same 40 spread vectors answer 33 of them or 34 (both seen on 2026-11-20), so a comparison
-// across databases reads the graph's luck, not the hidden vectors.
+// at cosine 0.60 down to 0.50 from the query (reader.layout). For each count a fresh seed is
+// searched, then that many hidden issues of the other project are written into it in one batch at
+// 0.95 down to 0.85 (hnswSpreadHidden), and it is searched again. The reader searches through an
+// index-preferring pool (sequential scans and sorts off, as every plan test of this package
+// reads, so the walk is the HNSW index's). Each database is compared with itself because an HNSW
+// graph is built with random levels: two databases holding the same 40 spread vectors answer 33
+// of them or 34 (both seen on 2026-11-20), so a comparison across databases reads the graph's
+// luck, not the hidden vectors. The hidden vectors go in one batch because how they are written
+// changes the graph they make: on one graph over every project, 25,000 of them written at once
+// take every hit from bob, while 5,000 and then 20,000 more, the same 25,000, leave him all 40
+// (both measured on 2026-11-20).
 //
 // Measured on 2026-11-20 against pgvector 0.8.7 (the test's own log): on one graph over every
 // project, alice reads 33 hits of PUB's 40 with no hidden vector, the walk's own reach over the
-// spread placement (hnswLayout), and 0 with 100 hidden vectors and 0 with 2,000, under the
+// spread placement (hnswLayout), and 0 with 100, 1,000 and 5,000 hidden vectors, under the
 // meaning transaction's settings and under the raised budgets alike. The same geometry in a
 // bare pgvector table (40 visible rows, then 1,000 or 5,000 hidden ones, ef_search 400 or 1,000,
 // iterative_scan relaxed_order, strict_order or off, max_scan_tuples 1,000,000,
@@ -131,24 +135,20 @@ var (
 // `embedding is not null` cannot use the partial index and sorts every row exactly, which is the
 // 40; through the index the 40 spread rows alone answer 33, as search does.) On one graph a
 // project, alice reads the same hits with 100, 1,000 and 5,000 hidden vectors as with none, and
-// bob all 40 of his with 5,000 and 25,000; on one graph over every project bob reads 0 with
-// 25,000. Run it as
+// bob all 40 of his with 5,000 and 25,000; on one graph over every project bob reads 40 with
+// 5,000 and 0 with 25,000. Run it as
 // env DISPATCH_HNSW_HIDDEN_VECTORS=100,1000,5000 go test -v -run TestMeasureAMeaningSearchBesideNearerHiddenVectors ./internal/dispatch/api/
 func TestMeasureAMeaningSearchBesideNearerHiddenVectors(t *testing.T) {
 	for _, reader := range []hnswReader{hnswAlice, hnswBob} {
 		for _, shape := range []hnswShape{hnswSharedGraph, hnswPartitioned} {
-			seed := hnswSeed(t, reader, shape)
-			without := hnswSearch(t, seed, reader, nil)
-			if len(without.Results) == 0 {
-				t.Fatalf("%s: %s's search before any hidden vector holds no hit of %s's %d: the measurement measures nothing",
-					shape, reader.caller, reader.visible, hnswVisible)
-			}
-			t.Logf("%s, %s, no hidden vector: total %d, %d hits of %s's %d",
-				shape, reader.caller, without.Total, len(without.Results), reader.visible, hnswVisible)
-			placed := 0
 			for _, hidden := range hnswHiddenCounts(t, reader) {
-				hnswAddHidden(t, seed, reader, placed, hidden)
-				placed = hidden
+				seed := hnswSeed(t, reader, shape)
+				without := hnswSearch(t, seed, reader, nil)
+				if len(without.Results) == 0 {
+					t.Fatalf("%s: %s's search before any hidden vector holds no hit of %s's %d: the measurement measures nothing",
+						shape, reader.caller, reader.visible, hnswVisible)
+				}
+				hnswAddHidden(t, seed, reader, hidden)
 				for _, scan := range []struct {
 					name     string
 					settings map[string]string
@@ -157,8 +157,8 @@ func TestMeasureAMeaningSearchBesideNearerHiddenVectors(t *testing.T) {
 					{"hnsw.max_scan_tuples 1000000 and hnsw.scan_mem_multiplier 64", map[string]string{"hnsw.max_scan_tuples": "1000000", "hnsw.scan_mem_multiplier": "64"}},
 				} {
 					with := hnswSearch(t, seed, reader, scan.settings)
-					t.Logf("%s, %s, %d hidden vectors of %s nearer the query, %s: total %d, %d hits, equal to the answer before them: %t",
-						shape, reader.caller, hidden, reader.hidden, scan.name, with.Total, len(with.Results),
+					t.Logf("%s, %s, %d hits before any hidden vector, then %d hidden vectors of %s nearer the query, %s: total %d, %d hits, equal to the answer before them: %t",
+						shape, reader.caller, len(without.Results), hidden, reader.hidden, scan.name, with.Total, len(with.Results),
 						with.Total == without.Total && slices.Equal(hnswHits(with), hnswHits(without)))
 				}
 			}
@@ -168,8 +168,8 @@ func TestMeasureAMeaningSearchBesideNearerHiddenVectors(t *testing.T) {
 
 // TestAMeaningSearchFindsWhatItWouldWithoutNearerHiddenVectors (HNSW): a meaning search answers a
 // reader what it would answer were the vectors the reader may not see absent, even when every one
-// of them is nearer the query than everything the reader sees: as 100, 1,000 and 5,000 vectors of
-// PRIV are written, alice's total and hits, ids and order, stay what the same database answered
+// of them is nearer the query than everything the reader sees: once 100, 1,000 or 5,000 vectors
+// of PRIV are written, alice's total and hits, ids and order, stay what the same database answered
 // her before them. Each project's vectors are a partition of embeddings and an HNSW graph of its
 // own, and alice's arms read only the partitions of the projects she sees
 // (searchReaderPartitions), so no vector of PRIV is in any graph her search walks. On one graph
@@ -181,7 +181,7 @@ func TestAMeaningSearchFindsWhatItWouldWithoutNearerHiddenVectors(t *testing.T) 
 
 // TestARestrictedMembersMeaningSearchFindsHisProjectWhateverTheOthersHold (HNSW, R3): bob, a
 // restricted member whose list names PRIV alone, reads PRIV's hits in full - all hnswVisible of
-// them, in the order he read before - when hnswHiddenCounts vectors of PUB, a project he does not
+// them, in the order he read before - when 5,000 or 25,000 vectors of PUB, a project he does not
 // see, are written nearer his query than every one of them. His arms read PRIV's partition and the
 // one of no project, and nothing of PUB's.
 func TestARestrictedMembersMeaningSearchFindsHisProjectWhateverTheOthersHold(t *testing.T) {
@@ -198,29 +198,32 @@ func TestARestrictedMembersMeaningSearchFindsHisProjectWhateverTheOthersHold(t *
 	}
 }
 
-// requireHiddenVectorsChangeNothing is the HNSW rows' one comparison: reader's search of a seed on
-// shape before any hidden vector, against the same database's after each of hnswHiddenCounts of
-// them is written, total and hits in order. It answers the search before them.
+// requireHiddenVectorsChangeNothing is the HNSW rows' one comparison: for each of
+// hnswHiddenCounts, reader's search of a fresh seed on shape before any hidden vector, against the
+// same database's once that many are written, total and hits in order. It answers the first
+// search before them.
 func requireHiddenVectorsChangeNothing(t *testing.T, reader hnswReader, shape hnswShape) model.SearchResponse {
 	t.Helper()
-	seed := hnswSeed(t, reader, shape)
-	without := hnswSearch(t, seed, reader, nil)
-	if len(without.Results) == 0 {
-		t.Fatalf("%s's search before any hidden vector holds no hit of %s's %d: the comparison proves nothing", reader.caller, reader.visible, hnswVisible)
-	}
-	t.Logf("%s, %s, no hidden vector: total %d, %d hits", shape, reader.caller, without.Total, len(without.Results))
-	placed := 0
-	for _, hidden := range hnswHiddenCounts(t, reader) {
-		hnswAddHidden(t, seed, reader, placed, hidden)
-		placed = hidden
+	var first model.SearchResponse
+	for i, hidden := range hnswHiddenCounts(t, reader) {
+		seed := hnswSeed(t, reader, shape)
+		without := hnswSearch(t, seed, reader, nil)
+		if len(without.Results) == 0 {
+			t.Fatalf("%s's search before any hidden vector holds no hit of %s's %d: the comparison proves nothing", reader.caller, reader.visible, hnswVisible)
+		}
+		if i == 0 {
+			first = without
+		}
+		hnswAddHidden(t, seed, reader, hidden)
 		with := hnswSearch(t, seed, reader, nil)
-		t.Logf("%s, %s, %d hidden vectors of %s nearer the query: total %d, %d hits", shape, reader.caller, hidden, reader.hidden, with.Total, len(with.Results))
+		t.Logf("%s, %s: %d hits before any hidden vector, then %d hidden vectors of %s nearer the query: total %d, %d hits",
+			shape, reader.caller, len(without.Results), hidden, reader.hidden, with.Total, len(with.Results))
 		if with.Total != without.Total || !slices.Equal(hnswHits(with), hnswHits(without)) {
 			t.Errorf("%s, with %d vectors of %s nearer the query, %s's search answers a total %d and %d hits\n\t%v\nwant what it answered before them, a total %d and %d hits\n\t%v",
 				shape, hidden, reader.hidden, reader.caller, with.Total, len(with.Results), hnswHits(with), without.Total, len(without.Results), hnswHits(without))
 		}
 	}
-	return without
+	return first
 }
 
 // hnswSeed is verification v16's seed with the fake embedder answering queryVector() for
@@ -245,15 +248,11 @@ func hnswSeed(t *testing.T, reader hnswReader, shape hnswShape) privateSeed {
 	return seed
 }
 
-// hnswAddHidden writes hidden issues of the project reader does not see until it holds total of
-// them, from the placed it holds: total - placed more, at cosine 0.95 down to 0.85 from the query,
-// spread (hnswSpreadHidden).
-func hnswAddHidden(t *testing.T, seed privateSeed, reader hnswReader, placed, total int) {
+// hnswAddHidden writes count hidden issues of the project reader does not see, in one batch, at
+// cosine 0.95 down to 0.85 from the query, spread (hnswSpreadHidden).
+func hnswAddHidden(t *testing.T, seed privateSeed, reader hnswReader, count int) {
 	t.Helper()
-	if total <= placed {
-		t.Fatalf("hidden vector counts %v are not increasing: %d after %d", hnswHiddenCounts(t, reader), total, placed)
-	}
-	hnswIssues(t, seed, reader.hidden, 1001+placed, total-placed, 0.95, 0.85, hnswSpreadHidden)
+	hnswIssues(t, seed, reader.hidden, 1001, count, 0.95, 0.85, hnswSpreadHidden)
 }
 
 // hnswIssues writes count issues of project, numbered from first, each with the graph node of the
