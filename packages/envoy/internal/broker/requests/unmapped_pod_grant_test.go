@@ -82,3 +82,51 @@ func TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant(t *testing.T) {
 	}
 	requireRevokedBy(t, m, grantID, dave.person)
 }
+
+// TestAnUnmappedPersonsPodsFormerPersonEndsAGrantTheySeeOnlyAsAnyoneMay: the revoke's transaction
+// reads the operator the person rule reads (operatorOf), so a former person of a person's pod
+// that BROKER_POD_OPERATORS no longer maps is not its grant's operator there either. dave's pod
+// enrolls while the setting maps it to dave, and BROKER_EXCHANGE_ACCOUNTS maps the same account to
+// the public project TEAM, so once the setting drops the account the pod names TEAM and every
+// grant it gets is one dave may see. The pod asks for DEEL_API_KEY, which the fixture's operator
+// approves. dave lists the grant, but his revoke is refused NOT_APPROVER, as anyone's who neither
+// approved it nor is its operator, and the grant stays live with nothing withheld from the pod. Its
+// approver still ends it.
+func TestAnUnmappedPersonsPodsFormerPersonEndsAGrantTheySeeOnlyAsAnyoneMay(t *testing.T) {
+	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
+	set, err := exchange.NewSet([]exchange.AccountEntry{{Account: dave.account, Project: teamProject, Person: insider}}, nil, nil, nil, "")
+	if err != nil {
+		t.Fatalf("exchange.NewSet: %v", err)
+	}
+	m.Exchange = set
+	m.PodOperators = map[string]string{dave.account: dave.person}
+	pod, key := dave.enroll(t, m.Store, "pod-dave-visible")
+	delete(m.PodOperators, dave.account)
+
+	req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "deploy the billing service", "DEEL_API_KEY"), "", nil)
+	if err != nil || req.State != "pending" || req.RecordID == nil {
+		t.Fatalf("Create(DEEL_API_KEY) from the unmapped pod = %+v, %v; want it pending its owner's approval", req, err)
+	}
+	dec, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
+	if err != nil || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision by %s = %+v, %v; want a grant", fixtureOperator, dec, err)
+	}
+	grantID := dec.GrantID
+	grants, err := m.GrantsForApprover(t.Context(), dave.person)
+	if err != nil || !slices.ContainsFunc(grants, func(g ApproverGrant) bool { return g.GrantID == grantID }) {
+		t.Fatalf("GrantsForApprover(%s) = %+v, %v; want the grant of TEAM he may see, so the row reaches the transaction", dave.person, grants, err)
+	}
+	if err := m.RevokeByApprover(t.Context(), grantID, dave.person, record.HumanActor(dave.person)); !errors.Is(err, ErrNotApprover) {
+		t.Errorf("dave's revoke of grant %s, which he may see but neither approved nor holds as operator = %v; want ErrNotApprover", grantID, err)
+	}
+	requireGrantLive(t, m, grantID)
+	var withheld int
+	if err := m.Store.Pool.QueryRow(t.Context(), `select count(*) from withheld_secrets where enrollment_id=$1`, pod).Scan(&withheld); err != nil || withheld != 0 {
+		t.Errorf("names withheld from the pod = %d, %v; want none", withheld, err)
+	}
+	if err := m.RevokeByApprover(t.Context(), grantID, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+		t.Errorf("the approver's revoke of grant %s = %v; want it ended", grantID, err)
+	}
+	requireRevokedBy(t, m, grantID, fixtureOperator)
+}

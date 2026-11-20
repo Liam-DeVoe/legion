@@ -167,7 +167,8 @@ func (m *Machine) hideUnseenRow(ctx context.Context, row, login string, facts ro
 // gives none for it. Anyone else is asked the rule (hideUnseenRow): pgx.ErrNoRows for an id no
 // grant has and for a grant they may not see, ErrProjectAccessUnavailable when Dispatch could not
 // say, and nil for a grant they may see, which mayRevoke then lets them end only where its
-// approver is record.AnyoneApprover or they are its operator. It reads the grant as
+// approver is record.AnyoneApprover: mayRevoke reads the same operator (operatorOf), so a former
+// person of such a pod ends its grants only as anyone else may. It reads the grant as
 // GrantsForApprover lists it (grantKey), so such a person revokes exactly the grants their own
 // list may show them. It answers the grant as it judged it (grantJudged), which RevokeByApprover's
 // transaction compares with its own read.

@@ -2687,10 +2687,11 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 	return nil
 }
 
-// RevokeByApprover ends a grant on a person's login: the grant's approver, its enrollment's
-// operator, or anyone at all for a grant whose approver is record.AnyoneApprover (mayRevoke). A
-// login the grant names, its approver or its operator, ends it whatever Dispatch answers; any
-// other login must be a person the person rule shows the grant to (hideUnseenGrant). A login the
+// RevokeByApprover ends a grant on a person's login: the grant's approver, the person the
+// enrollment that holds it acts for (its operator, operatorOf), or anyone at all for a grant whose
+// approver is record.AnyoneApprover (mayRevoke). A login the grant names, its approver or its
+// operator, ends it whatever Dispatch answers; any other login must be a person the person rule
+// shows the grant to (hideUnseenGrant). A login the
 // rule hides the grant from is refused pgx.ErrNoRows, the refusal of a grant id no grant has, and
 // a grant Dispatch could not answer for ErrProjectAccessUnavailable, each before the transaction
 // and with nothing written. actor is what every row it writes records as having done it,
@@ -2765,8 +2766,10 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	}
 	defer tx.Rollback(ctx)
 	var session, requestID string
-	var approver, operator *string
-	if err := tx.QueryRow(ctx, `select operator from enrollments where id=$1 for no key update`, judged.holder).Scan(&operator); err != nil {
+	var approver *string
+	var holder enrollmentRow
+	if err := tx.QueryRow(ctx, `select kind, operator, subject from enrollments where id=$1 for no key update`, judged.holder).
+		Scan(&holder.Kind, &holder.Operator, &holder.Subject); err != nil {
 		return err
 	}
 	if err := tx.QueryRow(ctx, `select enrollment_id, request_id, approver from grants where id=$1`, grantID).Scan(&session, &requestID, &approver); err != nil {
@@ -2775,7 +2778,11 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	if session != judged.holder || record.CanonicalLogin(deref(approver)) != judged.approver {
 		return errGrantMovedSinceJudged
 	}
-	allowed, asOperator := mayRevoke(login, approver, operator)
+	// The operator mayRevoke reads is the person rule's (operatorOf): a person's pod that
+	// BROKER_POD_OPERATORS no longer maps acts for no person, so its former person is not its
+	// operator here either, and ends its grant only as its approver or as anyone may, withholding
+	// nothing from the pod.
+	allowed, asOperator := mayRevoke(login, approver, m.operatorOf(holder))
 	if !allowed {
 		return ErrNotApprover
 	}
@@ -2816,7 +2823,7 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	// they are in no order the table holds: withhold's aggregate answers them by grant_id, a
 	// UUID order, and the statement's audited CTE inserts them with no ordering at all. Each
 	// names the request whose grant it ended, which is not the revoked grant's.
-	enr := enrollmentRow{ID: session, Operator: operator}
+	enr := enrollmentRow{ID: session, Operator: holder.Operator}
 	for _, g := range endedByWithhold {
 		logGrantRow("grant.revoked", actor, enr, g.RequestID, g.GrantID, g.Detail)
 	}
@@ -2864,10 +2871,13 @@ func withhold(ctx context.Context, tx pgx.Tx, enrollmentID, requestID, actor str
 }
 
 // mayRevoke answers whether login may revoke a grant, and whether as its enrollment's operator,
-// whose revoke withholds (RevokeByApprover), rather than as its approver. A person the grant names
-// may (namedOnGrant), the operator first, so an operator who also approved the grant revokes it as
-// the operator. A login the grant does not name is asked it only once the person rule shows it the
-// grant (hideUnseenGrant): a grant of a private project is nobody else's to end outside it.
+// whose revoke withholds (RevokeByApprover), rather than as its approver. operator is the person
+// the enrollment that holds the grant acts for (operatorOf), the one the person rule exempts, so a
+// former person of a person's pod BROKER_POD_OPERATORS no longer maps is not its operator to
+// either. A person the grant names may (namedOnGrant), the operator first, so an operator who also
+// approved the grant revokes it as the operator. A login the grant does not name is asked it only
+// once the person rule shows it the grant (hideUnseenGrant): a grant of a private project is
+// nobody else's to end outside it.
 //
 // A grant whose approver is the sentinel record.AnyoneApprover is every signed-in person's to
 // end: the model judge approved it in anyone's stead, so it names no person who could end it,

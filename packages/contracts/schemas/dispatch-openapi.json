@@ -3776,7 +3776,7 @@
     },
     "/api/v1/credential-grants/{id}/revoke": {
       "post": {
-        "description": "Revoke a credential grant as the caller, its approver or its enrollment's operator, whatever project it touches. A grant whose approver is anyone, revoked by someone named nowhere on it, is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch.",
+        "description": "Revoke a credential grant as the caller: its approver, or the person its enrollment acts for, ends it whatever project it touches. A grant revoked by someone it does not name is 404 when it belongs to a private project the caller may not see, as an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one whose approver is anyone, and any other is 403 NOT_APPROVER.",
         "operationId": "postApiV1CredentialGrantsByIdRevoke",
         "parameters": [
           {

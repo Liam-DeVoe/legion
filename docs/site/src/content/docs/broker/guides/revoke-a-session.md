@@ -40,14 +40,15 @@ how it was **Granted** (**Automatically**, or **Approved by** whoever decided it
 `judge:<model id>` where the model judge decided it in an approver's stead), and when it was
 created and expires. Click
 **Revoke** to end one at once; the session's next read of it is refused `GRANT_NOT_LIVE`. The
-broker allows it when you are the grant's approver or its session's operator, whatever project
-the grant touches and whether or not Dispatch answers: you are named on the grant, and a revoke
-only takes access away. It allows anyone signed in to end a grant whose approver is `anyone`,
-but only when they may see it: a grant of a private Dispatch project they are not on, by a
-secret's project tag, a project its session's credential names, or an issue key its reason
-names, answers `404 NOT_FOUND`, as for a grant id no grant has, and a Dispatch that does not
-answer gets `503 PROJECT_ACCESS_UNAVAILABLE`, revoking nothing. It refuses everyone else
-`NOT_APPROVER` — so a grant with no approver and no operator has no **Revoke** button at all. Its
+broker allows it when you are the grant's approver or the person its session acts for, whatever
+project the grant touches and whether or not Dispatch answers: you are named on the grant, and a
+revoke only takes access away. A grant revoked by someone it does not name is asked about first:
+one of a private Dispatch project they are not on, by a secret's project tag, a project its
+session's credential names, or an issue key its reason names, answers `404 NOT_FOUND`, as for a
+grant id no grant has, and a Dispatch that does not answer gets `503 PROJECT_ACCESS_UNAVAILABLE`,
+revoking nothing. Of the grants they may see, they end one whose approver is `anyone`, and the
+broker refuses them any other `NOT_APPROVER` — so a grant with no approver and no operator has no
+**Revoke** button at all. Its
 row reads **Ends with its machine login** instead:
 [revoke the service's machine login](#end-a-machines-login), which ends every session it started,
 rather than that one row.

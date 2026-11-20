@@ -3,22 +3,55 @@ package requests
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// TestAListWhoseCallerWentAwayLogsNoRowOfItsOwn: the caller of a pending or a grant list goes
-// away while the list still asks Dispatch about the reader's own rows, which are read on the
-// list's context: an Inbox tab or the Live grants page closed. Dispatch was not left unanswering,
-// so no row is logged as one Dispatch could not be asked about (rowUnansweredMessage, written with
-// error=context canceled before). The rows are requests and grants that name no responsible person
-// and no approver, read by carol, and touch TEAM by their reason, so each asks Dispatch a question
-// that takes 300 ms; the caller leaves 400 ms in.
-func TestAListWhoseCallerWentAwayLogsNoRowOfItsOwn(t *testing.T) {
+// goneOnFirstAsk is a Dispatch whose caller goes away as it is asked its first question: the
+// first question, of whatever kind, ends the list's context (cancel), and every question,
+// that one included, waits for the context it was asked on to end and answers its error, as a
+// Dispatch read cut short by its caller does. No clock decides when the caller leaves, so a slow
+// database read before the first question changes nothing. asked counts the questions.
+type goneOnFirstAsk struct {
+	cancel context.CancelFunc
+	once   sync.Once
+	asked  atomic.Int32
+}
+
+func (g *goneOnFirstAsk) wait(ctx context.Context) error {
+	g.asked.Add(1)
+	g.once.Do(g.cancel)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (g *goneOnFirstAsk) Access(ctx context.Context, _, _ string) (projectaccess.Answer, error) {
+	return projectaccess.Answer{}, g.wait(ctx)
+}
+
+func (g *goneOnFirstAsk) MemberKind(ctx context.Context, _ string) (string, error) {
+	return "", g.wait(ctx)
+}
+
+func (g *goneOnFirstAsk) States(ctx context.Context, _ []string) (map[string]projectaccess.Answer, error) {
+	return nil, g.wait(ctx)
+}
+
+// TestAListWhoseCallerWentAwayLogsNothingOfTheRowsItLeftOff: the caller of a pending or a grant
+// list goes away while the list still asks Dispatch about its rows: an Inbox tab, an approval
+// page or the Live grants page closed. Nobody reads that list, Dispatch did not fail to answer and
+// no clock ran out, so none of the lines a list writes for a row it leaves off is written: not
+// that Dispatch could not be asked about the reader's own row (rowUnansweredMessage), and not that
+// the fallback's clock cut other people's rows (fallbackCutMessage) or that a fallback read failed
+// (fallbackUnreadMessage). Each row of the table is a different read of the list: the reader's
+// own pending rows, rows whose responsible person is someone else (the fallback), and the grant
+// list.
+func TestAListWhoseCallerWentAwayLogsNothingOfTheRowsItLeftOff(t *testing.T) {
 	const rows = 5
 	for _, list := range []struct {
 		name string
@@ -26,10 +59,24 @@ func TestAListWhoseCallerWentAwayLogsNoRowOfItsOwn(t *testing.T) {
 		read func(ctx context.Context, m *Machine) error
 	}{
 		{
-			name: "the pending list",
+			name: "the reader's own pending rows",
 			make: func(t *testing.T, m *Machine, i int) {
 				pod, key := everyonesPod(t, m, fmt.Sprintf("gone-own-%02d", i), "")
 				if req, err := m.Create(t.Context(), pod, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
+					t.Fatalf("Create = %+v, %v; want it pending", req, err)
+				}
+			},
+			read: func(ctx context.Context, m *Machine) error {
+				_, err := m.PendingForApprover(ctx, insider, PendingStates{})
+				return err
+			},
+		},
+		{
+			name: "pending rows whose responsible person is someone else",
+			make: func(t *testing.T, m *Machine, i int) {
+				operator := fmt.Sprintf("gone%02d@example.com", i)
+				enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-gone-%02d", i), new(operator), nil)
+				if req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil); err != nil || req.State != "pending" {
 					t.Fatalf("Create = %+v, %v; want it pending", req, err)
 				}
 			},
@@ -52,21 +99,17 @@ func TestAListWhoseCallerWentAwayLogsNoRowOfItsOwn(t *testing.T) {
 			for i := range rows {
 				list.make(t, m, i)
 			}
-			answerFrom(t, m, dispatchRows(publicTeam))
-			var asked atomic.Int32
-			m.Projects = slowAccess{inner: m.Projects, takes: 300 * time.Millisecond, asked: &asked}
-			capture := &logtest.Recorder{}
-			logtest.SetDefault(t, capture)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			time.AfterFunc(400*time.Millisecond, cancel)
+			gone := &goneOnFirstAsk{cancel: cancel}
+			m.Projects = gone
+			capture := &logtest.Recorder{}
+			logtest.SetDefault(t, capture)
 			_ = list.read(ctx, m)
-			if asked.Load() == 0 {
-				t.Fatal("the list asked Dispatch nothing, so the caller left before any row was read and the row proves nothing")
+			if gone.asked.Load() == 0 {
+				t.Fatal("the list asked Dispatch nothing, so its caller never left while it read and the row proves nothing")
 			}
-			if lines := linesOf(capture, rowUnansweredMessage); len(lines) != 0 {
-				t.Errorf("%s whose caller went away wrote %d lines saying Dispatch could not be asked: %v; want none", list.name, len(lines), lines)
-			}
+			wantNoLine(t, capture, rowUnansweredMessage, fallbackCutMessage, fallbackUnreadMessage)
 		})
 	}
 }
