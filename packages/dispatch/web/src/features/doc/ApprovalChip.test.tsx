@@ -412,12 +412,19 @@ test("a change request made with its answer lost closes the dialog, refuses noth
 
 test("an approval refused for the form of The Spec shows the refusal under the actions", async () => {
   const user = userEvent.setup();
-  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
-    specFormRefusal()
+  const written = Promise.withResolvers<ArtifactReview>();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockImplementation(
+    () => written.promise
   );
   const view = renderChip(artifact({ latest_version: 12, state: "awaiting" }), "header");
   try {
-    await user.click(screen.getByRole("button", { name: "Approve" }));
+    const approve = screen.getByRole("button", { name: "Approve" });
+    await user.click(approve);
+    expect(approve).toBeDisabled();
+    // A browser drops a disabled control's focus to the body. The form verdict owes it back
+    // only after the write ends and the control can take focus again.
+    approve.blur();
+    await act(async () => written.reject(specFormRefusal()));
     const refusal = await screen.findByRole("alert");
     expect(refusal.textContent).toBe(specFormRefusalBody.error);
     expect(refusal.closest('[role="dialog"]')).toBeNull();
@@ -426,6 +433,7 @@ test("an approval refused for the form of The Spec shows the refusal under the a
       requestChanges.compareDocumentPosition(refusal) & Node.DOCUMENT_POSITION_FOLLOWING
     ).toBeTruthy();
     expect(createArtifactReview).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(approve).toHaveFocus());
   } finally {
     createArtifactReview.mockRestore();
     view.unmount();
@@ -451,6 +459,7 @@ test("Request changes after a form refusal opens with Dispatch's reason and no a
     expect(within(dialog).queryByRole("alert")).toBeNull();
     const reason = within(dialog).getByLabelText("Reason") as HTMLTextAreaElement;
     expect(reason.value).toBe(specFormRefusalBody.changes_reason);
+    expect(reason).toHaveClass("field-sizing-content", "max-h-[50vh]");
   } finally {
     createArtifactReview.mockRestore();
     view.unmount();
@@ -684,11 +693,9 @@ test("a form refusal of Approve is the header's alone, and any other refusal sta
   }
 });
 
-// A browser takes the focus off a button that becomes `disabled` under it, which left a reader
-// who pressed Approve on the page itself when the refusal came. The press in flight holds the
-// button with `aria-disabled`, so the focus stays on it and the next Tab reaches Request
-// changes, the step the refusal names.
-test("Approve keeps the focus while its write is out", async () => {
+// A normal pending approval keeps the default surface's native disabled control. Form-specific
+// focus recovery happens only when the verdict arrives, covered above.
+test("outside NoTooltips Approve keeps its native disabled control while pending", async () => {
   const user = userEvent.setup();
   const answer = Promise.withResolvers<never>();
   const createArtifactReview = spyOn(api, "createArtifactReview").mockReturnValue(answer.promise);
@@ -697,9 +704,8 @@ test("Approve keeps the focus while its write is out", async () => {
     const approve = screen.getByRole("button", { name: "Approve" });
     await user.click(approve);
     await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(approve).toHaveAttribute("aria-disabled", "true"));
-    expect(approve).not.toHaveAttribute("disabled");
-    expect(document.activeElement).toBe(approve);
+    await waitFor(() => expect(approve).toBeDisabled());
+    expect(approve).not.toHaveAttribute("aria-disabled");
     await user.click(approve);
     expect(createArtifactReview).toHaveBeenCalledTimes(1);
   } finally {

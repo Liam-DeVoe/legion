@@ -455,6 +455,10 @@ test("a form refusal after the card moves keeps its reason on the approval it wa
     expect(card.getByLabelText("Reason (required)")).toHaveValue(
       `${specFormRefusalBody.changes_reason}\n\nFirst note`
     );
+    expect(card.getByLabelText("Reason (required)")).toHaveClass(
+      "field-sizing-content",
+      "max-h-[50vh]"
+    );
   } finally {
     view.unmount();
   }

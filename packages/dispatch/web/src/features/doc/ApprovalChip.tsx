@@ -244,6 +244,10 @@ function RequestChangesDialog({
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
   const page = usePageWords();
   const trimmed = reason.trim();
+  const reasonShape =
+    initialReason === ""
+      ? "mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none"
+      : `mt-1 block min-h-14! w-full rounded-lg border px-2 py-1 text-sm font-normal outline-none ${growingField}`;
 
   return (
     <>
@@ -274,11 +278,10 @@ function RequestChangesDialog({
                 submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
                 the body in a browser, and Tab would then leave the dialog. Outside both are
                 `disabled` while the write is out, as on `main`. */}
-            {/* It grows with its text up to half the window (`growingField`). So the reason that
-                Dispatch wrote after a form refusal shows whole, not in two lines. `min-h-14!`
-                keeps an empty field two lines tall over styles.css's unlayered touch floor. */}
+            {/* A form refusal's reason grows up to half the window; ordinary reasons keep their
+                default shape. The minimum keeps the findings field two lines tall. */}
             <textarea
-              className={`mt-1 block min-h-14! w-full rounded-lg border px-2 py-1 text-sm font-normal outline-none ${growingField} ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
+              className={`${reasonShape} ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
               disabled={page === null && saving}
               id={reasonId}
               onChange={(event) => setReason(event.target.value)}
@@ -517,15 +520,14 @@ export function ApprovalChip({
     if (sentButton.current === null && focusOnDocument()) chipButton.current?.focus();
   }, [sentReview, review.isPending, requestChangesOpen]);
 
-  // The press a refusal answers keeps the focus on Approve while it is out (`aria-disabled`
-  // below), and a header that its host drew again while the press was out takes the focus it
-  // owes, unless the reader has put the focus elsewhere. Another header of the same document
-  // shows the refusal and takes no focus.
+  // A form verdict returns focus to its press after the write ends. Outside `NoTooltips` the
+  // pending control is disabled, as on main, so it cannot take focus before then. A reader who
+  // moved elsewhere keeps that focus, and another header of the same document takes none.
   useEffect(() => {
-    if (formRefusal === undefined) return;
+    if (formRefusal === undefined || review.isPending) return;
     if (!takeFormRefusalFocus(formRefusalKey, refusalSurface, chipRef.current)) return;
     if (focusIsFreeFor(chipRef.current)) approveButton.current?.focus();
-  }, [formRefusal, formRefusalKey, refusalSurface]);
+  }, [formRefusal, formRefusalKey, refusalSurface, review.isPending]);
   if (approval === undefined || approval.state === "draft") {
     return null;
   }
@@ -574,15 +576,16 @@ export function ApprovalChip({
             // two outline buttons made a reader choose before reading either. At the new issue
             // page header's size it is filled with that page's ink, not the application's blue.
             <button
-              // Keep Approve focused while its write is out, including a form refusal.
-              // The pending check and submit guard refuse another press.
-              aria-disabled={review.isPending || undefined}
+              // Inside `NoTooltips`, keep focus while pending; outside keep main's disabled
+              // control. A form refusal returns focus once the write ends.
+              aria-disabled={(page !== null && review.isPending) || undefined}
               aria-label={actionNames?.approve}
               className={
                 size === "compact"
                   ? `inline-flex min-h-6 shrink-0 items-center rounded-[7px] border px-2.5 text-xs leading-5 font-medium refused:cursor-not-allowed refused:opacity-50 md:min-h-0 md:py-px ${pageInkBorder} ${pageInkFill} ${focusVisibleRing}`
                   : `min-h-11 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${page === null ? `${primaryButtonBg} ${primaryButtonEnabledHoverBg} ${primaryButtonDisabled}` : ON_PAGE.filled}`
               }
+              disabled={page === null && review.isPending}
               onClick={() => {
                 if (review.isPending) {
                   return;
