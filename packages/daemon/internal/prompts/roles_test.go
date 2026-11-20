@@ -525,16 +525,60 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 	}
 }
 
-// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth and
-// dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
-// when a later edit deletes the rule; it does not show that an agent follows it, which each
-// issue's session runs measure. Each of the first four sentences sits in the core its role
-// composes, so the rule reaches that role and no other: the simplify pass and the class search are
-// the implementer's, the procedure and can-fail rules the tester's, the open-decision rule the
-// planner's, and the planner's WAITING line is phase mechanics, so it lives in its residue rather
-// than its core. R5 is the exception: Compose names core/oracle.md for no role, and it is pinned
-// beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
-// would copy from.
+// gitsMergeReading is how a role reads a merge (dispatch://INFRA-4149, R2): the merge against
+// git's own merge of its two parents, `git merge-tree --write-tree`, which shows each file where
+// the merge differs from git's merge. `git show --remerge-diff` can leave out a file git conflicts
+// in, and `jj diff -r` compares the merge with jj's own merge of its parents.
+const gitsMergeReading = `git diff "$(git merge-tree --write-tree <merge>^1 <merge>^2 | head -n 1)" <merge>`
+
+// jj can merge two commits that have more than one merge base wrongly, with no conflict and no
+// warning (jj-vcs/jj#6369), so every merge of two commits a phase worker makes is `legion merge`,
+// whose merge holds git's merge (dispatch://INFRA-4149, R1). go/worker-common.md, which every
+// phase worker's prompt holds, carries the rule for every such merge, whatever the two commits are
+// and also where a skill still names `jj new`; the next step for each way the command exits, the
+// exit 2 of a `legion` that has no `merge` command among them; that only the resolution of git's
+// conflicts goes into the merge; and how to read a merge (R2), in the paragraph on a CI
+// settlement and in the rule's own, so the comparison is written there at least twice. The match
+// runs over a body whose whitespace is collapsed to one space, so a rewrap of the part stands.
+func TestEveryMergeOfTwoCommitsIsLegionMerge(t *testing.T) {
+	body, err := goParts.ReadFile("go/worker-common.md")
+	if err != nil {
+		t.Fatalf("read go/worker-common.md: %v", err)
+	}
+	common := foldWhitespace(string(body))
+	for _, says := range []string{
+		// The rule, for every merge of two commits.
+		"Make every merge of two commits with `legion merge -R \"$LEGION_WORKSPACE\" -m \"<message>\" <first> <second>`, whatever the two commits are",
+		"Do so also where a skill names `jj new` for the merge",
+		// The next step for each way the command exits, and what goes into the merge.
+		"read each path the output names as a conflict of git's that jj merged, resolve each jj conflict in the working-copy commit",
+		"squash --from '<change id>+::@' --into <change id> --use-destination-message <each listed path>",
+		"On exit 2 with `unknown command \"merge\"`, your `legion` has no `merge` command: make no merge, also where a skill names `jj new`, and tell the architect",
+		"On exit 3 the command made nothing: act on the reason it names, and make no merge with `jj new`",
+		"Only the resolution of git's conflicts goes into the merge, and every other edit goes into a commit above it",
+		// How to read a merge, besides the comparison counted below.
+		"git diff --stat <merge>^1 <merge>",
+		"Never read a merge's own change with `jj diff -r <merge>`",
+	} {
+		if !strings.Contains(common, says) {
+			t.Errorf("go/worker-common.md does not say %q", says)
+		}
+	}
+	if n := strings.Count(common, gitsMergeReading); n < 2 {
+		t.Errorf("go/worker-common.md names %q %d times, want it at least twice: in the paragraph on a CI settlement and in the merge rule", gitsMergeReading, n)
+	}
+}
+
+// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth,
+// dispatch://INFRA-3204's check CI proves and dispatch://INFRA-4149's merge of two commits, each
+// pinned by the sentence that carries it. A pin fails when a later edit deletes the rule; it does
+// not show that an agent follows it, which each issue's session runs measure. Each of the first
+// four sentences sits in the core its role composes, so the rule reaches that role and no other:
+// the simplify pass and the class search are the implementer's, the procedure and can-fail rules
+// the tester's, the open-decision rule the planner's, and the planner's WAITING line is phase
+// mechanics, so it lives in its residue rather than its core. R5 is the exception: Compose names
+// core/oracle.md for no role, and it is pinned beside core/common.md to keep one wording of that
+// rule in the prompt tree, which a later core would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	// The phrase every text of dispatch://INFRA-3204's rule carries once, the skills included
 	// (packages/pi-legion/src/skills-guard.test.ts).
@@ -583,6 +627,16 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// the work back to an implementer who cannot cure it. The final gate points at that rule.
 		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
 		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
+		// dispatch://INFRA-4149's R1 and R2: the core implementer merges the branch's bookmark
+		// forward with `legion merge`, whose merge holds git's merge, and names no
+		// `-R "$LEGION_WORKSPACE"`, since a core names no `LEGION_` variable (headlessOnly); the
+		// implementer's role part sends the merge to no skill step; and each core that reads a merge
+		// of the base reads it against git's merge of its parents.
+		{"core/implementer.md", "legion merge -m \"<message>\" legion/<KEY> <destination>"},
+		{"core/implementer.md", gitsMergeReading},
+		{"core/reviewer.md", gitsMergeReading},
+		{"core/tester.md", gitsMergeReading},
+		{"implementer.md", "Make every merge with `legion merge`, as the daemon part below says; no skill step makes the merge"},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
@@ -592,6 +646,11 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 	// let a plan complete with four decisions open (dispatch://INFRA-206).
 	if strings.Contains(rolePart(t, "core/planner.md"), "and saying so is its answer") {
 		t.Error("core/planner.md still answers a decision its owner must make by naming it")
+	}
+	// The core implementer's forward merge was a `jj new` of the branch's bookmark and the
+	// destination, which jj can get wrong (dispatch://INFRA-4149, R1).
+	if strings.Contains(rolePart(t, "core/implementer.md"), "jj new legion/<KEY>") {
+		t.Error("core/implementer.md still merges the branch's bookmark forward with `jj new`")
 	}
 	// The forms R5 retires. A part carrying one again would give a retro two orders that disagree
 	// (dispatch://INFRA-924).

@@ -655,6 +655,30 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 	})
 }
 
+// The refusal of a completion at the head a merge forward replaced sends the role to read the
+// merge before it does the phase's work at the new head, and it names the reading every role is
+// given (dispatch://INFRA-4149, R2): the merge against git's own merge of its parents,
+// `git merge-tree --write-tree` of the new head's two parents, and never `git show --remerge-diff`,
+// which can leave out a file git conflicts in when the merge has several merge bases.
+func TestAConflictRefusalReadsTheMergeAgainstGitsMerge(t *testing.T) {
+	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
+	landsMergeForward(t, pool)
+	result := applyFacts(t, pool, readsAfter(4*time.Minute))("at the replaced head", intake.HandoffComplete{Generation: 1,
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
+		Commit: conflictHead, HandoffRecord: "handoff-1", HandoffVersion: 1})
+	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
+		t.Fatalf("the tester's completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", conflictHead, code, result.Refusal)
+	}
+	msg := result.Refusal.Message
+	if says := "git merge-tree --write-tree " + forwardHead + "^1 " + forwardHead + "^2"; !strings.Contains(msg, says) {
+		t.Errorf("the refusal reads %q, want it to say %q", msg, says)
+	}
+	if strings.Contains(msg, "--remerge-diff") {
+		t.Errorf("the refusal reads %q, want it to read the merge with no `git show --remerge-diff`", msg)
+	}
+}
+
 // The merge forward's completion fence is of the phase the issue stands in (dispatch://INFRA-4374
 // R1). The reviewer's approval moves the issue on to accepting before the reviewer completes, and
 // a conflict there asks for the merge forward, which lands; the review the landing then asks of

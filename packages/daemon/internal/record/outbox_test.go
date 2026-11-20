@@ -530,6 +530,74 @@ func TestAHookPromptStatesTheFactsAndLeavesTheHooksWordsAlone(t *testing.T) {
 	}
 }
 
+// jj can merge two commits that have more than one merge base wrongly, with no conflict and no
+// warning (jj-vcs/jj#6369), so the merge-forward ask names the merge itself: `legion merge`, whose
+// merge holds git's merge, of the issue branch and the pull request's base, after the working-copy
+// check of the foreign-path reference. It sends the merge to no step of the worker skill's
+// conflicts reference, which a skill older than the daemon still gives as a `jj new`
+// (dispatch://INFRA-4149, R1). A role whose `legion` has no `merge` command gets exit 2, so the
+// ask itself says to make no merge then and to tell the architect. The landed and the review tell
+// their role to read the merge against git's own merge of its parents, by the landed head's id,
+// and never with `git show --remerge-diff`, which can leave out a file git conflicts in (R2).
+func TestMergeForwardMessagesNameLegionMergeAndReadAgainstGitsMerge(t *testing.T) {
+	const foreignPath = "skill://legion-worker/references/foreign-path.md"
+	for _, at := range []phase.Phase{phase.Implementing, phase.Testing} {
+		ask := MergeForwardMessage{Role: claim.RoleImplementer, Step: MergeForwardAsk, Head: "c0de", Base: "main", Phase: at,
+			PullRequest: 42, Why: ConflictCheckNotGreen}.Message("LEGION-208", "acme/widgets")
+		var lacking []string
+		for _, says := range []string{
+			`legion merge -R "$LEGION_WORKSPACE" -m "<message>" legion/LEGION-208 "${base}@origin"`,
+			"gh pr view 42 -R acme/widgets --json baseRefName",
+			`unknown command "merge"`,
+			"make no merge",
+			"tell the architect",
+			foreignPath,
+		} {
+			if !strings.Contains(ask, says) {
+				lacking = append(lacking, says)
+			}
+		}
+		if len(lacking) > 0 {
+			t.Errorf("the ask in %s reads %q, want it to say each of %q", at, ask, lacking)
+		}
+		if strings.Contains(ask, "conflicts-and-rewrites") {
+			t.Errorf("the ask in %s reads %q, want it to send the merge to no step of conflicts-and-rewrites.md", at, ask)
+		}
+		if check, merge := strings.Index(ask, foreignPath), strings.Index(ask, "legion merge"); check < 0 || merge < 0 || check > merge {
+			t.Errorf("the ask in %s reads %q, want the working-copy check of foreign-path.md before `legion merge`", at, ask)
+		}
+	}
+
+	for _, told := range []struct {
+		name    string
+		message MergeForwardMessage
+	}{
+		{"landed", MergeForwardMessage{Role: claim.RoleTester, Step: MergeForwardLanded, Head: "c0de", Landed: "d00d", Base: "main",
+			Phase: phase.Testing, PullRequest: 42}},
+		{"review", MergeForwardMessage{Role: claim.RoleReviewer, Step: MergeForwardReview, Head: "c0de", Landed: "d00d", Base: "main",
+			Phase: phase.Retro, PullRequest: 42}},
+	} {
+		text := told.message.Message("LEGION-208", "acme/widgets")
+		var lacking []string
+		for _, says := range []string{
+			"git diff c0de d00d",
+			"git merge-tree --write-tree d00d^1 d00d^2",
+			`git diff "$(git merge-tree --write-tree d00d^1 d00d^2 | head -n 1)" d00d`,
+			"git diff --stat d00d^1 d00d",
+		} {
+			if !strings.Contains(text, says) {
+				lacking = append(lacking, says)
+			}
+		}
+		if len(lacking) > 0 {
+			t.Errorf("the %s reads %q, want it to say each of %q", told.name, text, lacking)
+		}
+		if strings.Contains(text, "--remerge-diff") {
+			t.Errorf("the %s reads %q, want it to read the merge with no `git show --remerge-diff`", told.name, text)
+		}
+	}
+}
+
 // The release field is gone: an issue's close deletes its Sandbox in every case, so a suspension
 // carries nothing to say which. A row the previous release queued with the field is stripped of
 // it at the upgrade (migration 0051), since the payload decodes strictly and the key would stall

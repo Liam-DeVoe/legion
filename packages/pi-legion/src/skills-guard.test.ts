@@ -101,6 +101,166 @@ test("no skill or prompt says the daemon merges", () => {
   expect(saying).toEqual([]);
 });
 
+// The words of the shell command that starts at `start` in `text`, with their quotes taken off,
+// and where the command ends: at a backtick, which ends a Markdown code span, at the end of its
+// line, which a trailing `\` carries onto the next, or at an unquoted `&`, `|`, `;` or `)`.
+function shellCommand(text: string, start: number): { words: string[]; end: number } {
+  const words: string[] = [];
+  let word: string | undefined;
+  let quote: string | undefined;
+  let end = start;
+  const close = () => {
+    if (word !== undefined) words.push(word);
+    word = undefined;
+  };
+  for (; end < text.length; end++) {
+    const char = text[end];
+    if (char === "`") break;
+    if (char === "\\" && text[end + 1] === "\n") {
+      end++;
+      if (quote === undefined) close();
+      continue;
+    }
+    if (char === "\n") break;
+    if (char === "\\" && quote !== "'") {
+      end++;
+      word = (word ?? "") + (text[end] ?? "");
+      continue;
+    }
+    if (quote !== undefined) {
+      if (char === quote) quote = undefined;
+      else word = (word ?? "") + char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      word ??= "";
+      continue;
+    }
+    if ("&|;)".includes(char)) break;
+    if (/\s/.test(char)) close();
+    else word = (word ?? "") + char;
+  }
+  close();
+  return { words, end };
+}
+
+// An option word as its name and the value written into it: `--name=value`, `-rvalue` or
+// `-r=value`. Any other word is its own name, with no value.
+function optionOf(word: string): [string, string | undefined] {
+  const long = /^(--[^=]+)=(.*)$/s.exec(word);
+  if (long) return [long[1], long[2]];
+  const short = /^(-[^-])=?(.+)$/s.exec(word);
+  if (short) return [short[1], short[2]];
+  return [word, undefined];
+}
+
+// jj's global options that take a value (`jj new --help`, "Global Options"). Its other global
+// options, `--ignore-working-copy`, `--no-pager` and `--quiet` among them, take none.
+const JJ_VALUED_GLOBALS: Record<string, true> = {
+  "-R": true,
+  "--repository": true,
+  "--at-operation": true,
+  "--at-op": true,
+  "--color": true,
+  "--config": true,
+  "--config-file": true,
+};
+// The options of `jj new` whose value is a parent of the new change: `-r` and `-o`, the aliases
+// of its revisions, and the two insertions with their long names and aliases.
+const JJ_NEW_PARENTS: Record<string, true> = {
+  "-r": true,
+  "-o": true,
+  "-A": true,
+  "--insert-after": true,
+  "--after": true,
+  "-B": true,
+  "--insert-before": true,
+  "--before": true,
+};
+
+// The parents a `jj … new` command names, read from its words, or undefined for any other jj
+// command. `-m` and its value and `--no-edit` name no parent.
+function jjNewParents(words: string[]): string[] | undefined {
+  let at = 1;
+  while (at < words.length && words[at].startsWith("-")) {
+    const [name, value] = optionOf(words[at]);
+    at += JJ_VALUED_GLOBALS[name] && value === undefined ? 2 : 1;
+  }
+  if (words[at] !== "new") return undefined;
+  const parents: string[] = [];
+  for (at += 1; at < words.length; at++) {
+    const word = words[at];
+    if (word === "--") return [...parents, ...words.slice(at + 1)];
+    if (!word.startsWith("-")) {
+      parents.push(word);
+      continue;
+    }
+    const [name, value] = optionOf(word);
+    const parent = JJ_NEW_PARENTS[name] === true;
+    const valued = parent || name === "-m" || name === "--message" || JJ_VALUED_GLOBALS[name];
+    const given = value ?? (valued ? words[++at] : undefined);
+    if (parent && given !== undefined) parents.push(given);
+  }
+  return parents;
+}
+
+// jj can merge two commits that have more than one merge base wrongly, and silently: the merge
+// reverts work one side made, with no conflict and no warning (jj-vcs/jj#6369). `legion merge`
+// makes the merge hold git's merge, so every merge of two commits a role is told to make is
+// `legion merge` (dispatch://INFRA-4149, R1), and no staged skill, daemon prompt or shipped agent
+// may give a `jj new` of two or more parents. A command runs from `jj` to a backtick, to the end
+// of its line (a trailing ` \` carries it onto the next) or to a shell operator. jj's global
+// options before the subcommand are skipped. A parent of `jj new` is each revision it names: each
+// positional one, and each value of `-r` and `-o` (their aliases), of `-A`/`--insert-after` and of
+// `-B`/`--insert-before` (`jj new --help`: "`jj new --insert-after A --insert-after X` creates a
+// change with `A` and `X` as parents"). A single `-B` on a merge commit also makes a merge, since
+// the new change takes that commit's parents, and no scan of the text can see it: only the
+// repository knows what a revision names.
+test("no skill, prompt or agent gives a `jj new` of two or more parents, since every merge of two commits is `legion merge`", () => {
+  const merging = [staged, promptsRoot, agentsRoot]
+    .flatMap(files)
+    .filter((file) => file.endsWith(".md"))
+    .flatMap((file) => {
+      const text = readFileSync(file, "utf8");
+      const name = file.startsWith(staged)
+        ? path.join("skills", path.relative(staged, file))
+        : path.relative(REPO_ROOT, file);
+      return [...text.matchAll(/(?<![\w$./-])jj(?=[ \t])/g)].flatMap(({ index }) => {
+        const { words, end } = shellCommand(text, index);
+        if ((jjNewParents(words)?.length ?? 0) < 2) return [];
+        const command = text.slice(index, end).replace(/\\\n/g, " ").replace(/\s+/g, " ").trim();
+        return [`${name}:${text.slice(0, index).split("\n").length}: ${command}`];
+      });
+    });
+  expect(merging).toEqual([]);
+});
+
+// `git show --remerge-diff <merge>` compares a merge with git's remerge of its parents, and it can
+// leave out a file git conflicts in: for the merge `55b86572`, which has several merge bases, it
+// listed 3 files, where a comparison with `git merge-tree --write-tree` of the two parents listed
+// those 3 and the 2 files git conflicts in (dispatch://INFRA-4149, R2). So a reader of the remerge
+// diff can miss how such a merge resolved its conflicts, and no skill, prompt, agent or text the
+// daemon sends a role (its Go source under internal/) may name it for reading a merge.
+test("no skill, prompt, agent or daemon text reads a merge with `git show --remerge-diff`", () => {
+  const daemonSource = files(path.join(REPO_ROOT, "packages/daemon/internal")).filter(
+    (file) => file.endsWith(".go") && !file.endsWith("_test.go")
+  );
+  const reading = [
+    ...[staged, promptsRoot, agentsRoot].flatMap(files).filter((file) => file.endsWith(".md")),
+    ...daemonSource,
+  ].flatMap((file) => {
+    const text = readFileSync(file, "utf8");
+    const name = file.startsWith(staged)
+      ? path.join("skills", path.relative(staged, file))
+      : path.relative(REPO_ROOT, file);
+    return [...text.matchAll(/git\s+show\s+--remerge-diff/g)].map(
+      ({ index }) => `${name}:${text.slice(0, index).split("\n").length}`
+    );
+  });
+  expect(reading).toEqual([]);
+});
+
 // An issue's disk dies with its pod (INFRA-80), so nothing writes the recovery marker
 // `.legion/<issue>/workspace-recovered.json` any more: `workspace-init` lost it with the lost-disk
 // verdict. The `Your workspace was recreated…` notice now reaches every resume in a new pod, so a
@@ -400,6 +560,58 @@ test("a forward merge searches the new head for each earlier finding's class", (
   ).toContain(
     "A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round"
   );
+});
+
+// The staged copy of the worker skill's forward-merge reference, which dispatch://INFRA-4149's
+// rows below read.
+const conflictsReference = () =>
+  path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md");
+
+// dispatch://INFRA-4149, R1: jj can merge two commits that have more than one merge base wrongly,
+// with no conflict and no warning (jj-vcs/jj#6369), so the skill's forward merge of the base is
+// `legion merge`, whose merge holds git's merge. Step 1 keeps what the command takes as its input:
+// the bookmark, never `@`, and the base JSON-quoted so jj reads it as a string literal. Step 2 is
+// a pointer to the command's output and help, which say what to do with each conflict, and says
+// that every merge of two commits is `legion merge`, also where a role prompt names `jj new`,
+// since a role prompt older than the skill still does, and what to do where the role's `legion`
+// has no `merge` command. The step it replaces resolved a conflict in the merge commit itself,
+// then made a `jj new`.
+test("the skill merges the base forward with `legion merge`, and sends every merge of two commits to it", () => {
+  const conflicts = collapsed(conflictsReference());
+  const lacking = [
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: `${base}` is the shell expansion step 1 runs, quoted verbatim.
+    'legion merge -R "$LEGION_WORKSPACE" -m "<message>" legion/<KEY> "${base}@origin"',
+    "Resolve as `legion merge` prints and as `legion merge --help` says",
+    "Every merge of two commits is `legion merge`, also where a role prompt names `jj new`",
+    "When your `legion` has no `merge` command, make no merge and tell the architect",
+    "Merge the bookmark, never `@`",
+    ".baseRefName | @json",
+  ].filter((phrase) => !conflicts.includes(phrase));
+  expect(lacking).toEqual([]);
+  expect(conflicts).not.toContain("Resolve any conflict in that one commit");
+});
+
+// dispatch://INFRA-4149, R2: a role reads a merge against git's merge of its parents, which
+// `legion merge --help` names, and never with `git show --remerge-diff`, which can leave out a
+// file git conflicts in. The skill's reading of a merge points to the help rather than spelling
+// the comparison out, so the command and the skill cannot come to say two things.
+test("the skill reads a merge of the base as `legion merge --help` says", () => {
+  const text = readFileSync(conflictsReference(), "utf8");
+  const lines = text.split("\n");
+  const heading = lines.indexOf("## Reading a merge of the base");
+  expect(heading).toBeGreaterThan(-1);
+  const firstBullet = lines.slice(heading + 1).find((line) => line.startsWith("- "));
+  expect(firstBullet).toContain("legion merge --help");
+  expect(text).not.toContain("--remerge-diff");
+});
+
+// dispatch://INFRA-4149, R1: the daemon's merge-forward ask is answered with the same merge, so
+// the ask's bullet runs the working-copy check before `legion merge`, and no sentence of the skill
+// calls the merge a `jj new`, which a role would take for the way to make it.
+test("the skill's answer to the daemon's ask merges with `legion merge`, and no sentence calls the merge a `jj new`", () => {
+  const conflicts = collapsed(conflictsReference());
+  expect(conflicts).toContain("before `legion merge`");
+  expect(conflicts).not.toContain("merge's `jj new`");
 });
 
 // R4: a planner waits on a decision its plan needs rather than completing around it
