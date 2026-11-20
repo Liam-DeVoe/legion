@@ -1,11 +1,13 @@
 package outbox
 
 // The idle row's witness of the test process (TestTheOutboxDoesNotScanWhileIdle): its heartbeat,
-// the renewals of the publisher hold the outbox sent, the renewal deadlines the hold's row committed,
-// and the judgment of whether a stall of the process explains a hold the outbox took back.
+// the statements of the publisher hold's that set its loss deadline as the outbox sent them, and
+// the judgment of whether a stall of the process explains the lapse of a hold the outbox took
+// back, alone or with a failure of the database's.
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -13,27 +15,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 )
 
 // processWatch is the row's witness of the test process itself, as databaseWitness is of the
 // database: a heartbeat that beats every witnessPeriod and records each gap longer than the
 // publisher hold's Renew as a stall, with the hold's loss deadline as the beat before it read it,
-// and the moment the outbox sent each renewal of the hold, from the outbox's own pool
-// (renewalTrace). A process that runs nothing - stopped, or given no CPU - for the 4 s to the
-// hold's loss deadline sends no renewal, so the hold lapses with no failure of the database's
-// behind it, and the outbox takes it back and scans, as it must (heldScans).
+// and each statement of the hold's that sets its loss deadline, with the clock reading the hold
+// took just before it sent it (holdTrace). A process that runs nothing - stopped, or given
+// no CPU - for the 4 s to the hold's loss deadline sends no renewal, so the hold lapses with no
+// failure of the database's behind it, and the outbox takes it back and scans, as it must
+// (heldScans).
 type processWatch struct {
-	mu       sync.Mutex
-	stalls   []processStall
-	renewals []time.Time
+	mu         sync.Mutex
+	stalls     []processStall
+	statements []holdStatement
+	// untimed names each statement of the hold's whose context carried no clock reading of the
+	// hold's (holdTrace).
+	untimed  []string
 	lastBeat time.Time
 }
 
 // processStall is a gap of the heartbeat, from the beat before it to the beat that ended it, or the
-// part of one in which nothing the row watches ran (explains), with the publisher hold's loss
+// part of one in which nothing the row watches ran (quiet), with the publisher hold's loss
 // deadline as it stood just before the gap's first beat (zero when the outbox held no hold).
 type processStall struct {
 	from, to, deadline time.Time
@@ -84,122 +92,108 @@ func holdDeadline(outbox *Outbox) time.Time {
 }
 
 // beatAfter waits until the heartbeat has beaten after since, so that every stall that ended by then
-// is recorded, and returns the stalls and the renewals recorded by then.
-func (p *processWatch) beatAfter(t *testing.T, since time.Time, what string) (stalls []processStall, renewals []time.Time) {
+// is recorded, and returns the stalls and the hold's statements recorded by then.
+func (p *processWatch) beatAfter(t *testing.T, since time.Time, what string) (stalls []processStall, statements []holdStatement) {
 	t.Helper()
+	var untimed []string
 	waitFor(t, outboxHangGuard, what, func() bool {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		if !p.lastBeat.After(since) {
 			return false
 		}
-		stalls, renewals = slices.Clone(p.stalls), slices.Clone(p.renewals)
+		stalls, statements, untimed = slices.Clone(p.stalls), slices.Clone(p.statements), slices.Clone(p.untimed)
 		return true
 	})
-	return stalls, renewals
+	if len(untimed) > 0 {
+		t.Fatalf("these statements of the publisher hold's carried no clock reading of the hold's, so the row cannot read the deadlines they set: %s",
+			strings.Join(untimed, "; "))
+	}
+	return stalls, statements
 }
 
-// renewalTrace is the tracer of the outbox's own pool: it records the moment each renewal of the
-// publisher hold leaves.
-type renewalTrace struct{ process *processWatch }
+// holdStatement is a statement of the publisher hold's that sets its loss deadline when it affects
+// the hold's row - the take (duty.TryHold) or a renewal (duty.Hold's renew) - with the clock
+// reading the hold took just before it sent it, which the statement's context carries
+// (duty.SentAt). One that affects the row sets the loss deadline to exactly that reading plus TTL
+// - Margin (duty.TryHold, duty.Hold's confirm), so the row compares deadlines with it exactly: no
+// second reading, and so no lag between the two, exists to bound.
+type holdStatement struct {
+	at   time.Time
+	take bool
+}
 
-func (r renewalTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	if strings.HasPrefix(data.SQL, renewalStatement) {
-		r.process.mu.Lock()
-		r.process.renewals = append(r.process.renewals, time.Now())
-		r.process.mu.Unlock()
+// holdTrace is the tracer of the outbox's own pool: it records each statement of the publisher
+// hold's that sets the hold's loss deadline, with the hold's own clock reading from its context. A
+// take or renewal whose context carries none is recorded as untimed, which fails the row by name
+// (processWatch.beatAfter) rather than be timed by any other clock.
+type holdTrace struct{ process *processWatch }
+
+func (r holdTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	take := strings.HasPrefix(data.SQL, takeStatement)
+	if !take && !strings.HasPrefix(data.SQL, renewalStatement) {
+		return ctx
 	}
+	sent, ok := duty.SentAt(ctx)
+	r.process.mu.Lock()
+	defer r.process.mu.Unlock()
+	if !ok {
+		r.process.untimed = append(r.process.untimed, fmt.Sprintf("%.40q under a %T, with no clock reading of the hold's", data.SQL, ctx))
+		return ctx
+	}
+	r.process.statements = append(r.process.statements, holdStatement{at: sent, take: take})
 	return ctx
 }
 
-func (renewalTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+func (holdTrace) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// committedHoldDeadline is the loss deadline a renewal wrote to the publisher hold's row, and
-// the database time at which that write committed. The row is the source of truth for a renewal:
-// a query starting is not proof that the renewal affected it.
-type committedHoldDeadline struct {
-	deadline, committedAt time.Time
-}
-
-// holdDeadlineWitness records each committed renewal of the publisher hold in this test's
-// database. The trigger records the database expiry, and seen derives the corresponding loss
-// deadline from the same hold margin production uses.
-type holdDeadlineWitness struct{ database *store.Store }
-
-func watchHoldDeadlines(t *testing.T, database *store.Store) *holdDeadlineWitness {
-	t.Helper()
-	ctx := context.Background()
-	for _, statement := range []string{
-		`create table idle_outbox_hold_deadlines (
-			expires_at timestamptz not null,
-			committed_at timestamptz not null
-		)`,
-		`create function record_idle_outbox_hold_deadline() returns trigger language plpgsql as $$
-			begin
-				if new.name = 'dispatch-outbox' and new.expires_at > old.expires_at then
-					insert into idle_outbox_hold_deadlines (expires_at, committed_at)
-					values (new.expires_at, clock_timestamp());
-				end if;
-				return new;
-			end
-		$$`,
-		`create trigger record_idle_outbox_hold_deadline
-			after update of expires_at on duty_holds
-			for each row execute function record_idle_outbox_hold_deadline()`,
-	} {
-		if _, err := database.Pool.Exec(ctx, statement); err != nil {
-			t.Fatalf("install the publisher hold deadline witness: %v", err)
+// sets reports whether deadline is the loss deadline a statement of the lost hold's own set:
+// exactly that statement's clock reading plus TTL - Margin. The lost hold's own statements are its
+// take - the last take before deadline, since a hold is taken before it can be lost and the next
+// take comes only after its loss - and the renewals after it. A hold given up early has its
+// deadline pulled back to that moment (duty.Hold's lose), which no statement of it set.
+func sets(deadline time.Time, statements []holdStatement) bool {
+	own := 0
+	for i, statement := range statements {
+		if statement.take && statement.at.Before(deadline) {
+			own = i
 		}
 	}
-	return &holdDeadlineWitness{database: database}
-}
-
-func (w *holdDeadlineWitness) seen(t *testing.T, until time.Time) []committedHoldDeadline {
-	t.Helper()
-	rows, err := w.database.Pool.Query(context.Background(), `
-		select expires_at - make_interval(secs => $1), committed_at
-		from idle_outbox_hold_deadlines
-		where committed_at <= $2 order by committed_at
-	`, publisherHoldOptions.Margin.Seconds(), until)
-	if err != nil {
-		t.Fatalf("read committed publisher hold deadlines: %v", err)
-	}
-	defer rows.Close()
-	var deadlines []committedHoldDeadline
-	for rows.Next() {
-		var deadline committedHoldDeadline
-		if err := rows.Scan(&deadline.deadline, &deadline.committedAt); err != nil {
-			t.Fatalf("read a committed publisher hold deadline: %v", err)
+	for _, statement := range statements[own:] {
+		if statement.at.Before(deadline) && statement.at.Add(publisherHoldOptions.TTL-publisherHoldOptions.Margin).Equal(deadline) {
+			return true
 		}
-		deadlines = append(deadlines, deadline)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("finish reading committed publisher hold deadlines: %v", err)
-	}
-	return deadlines
+	return false
 }
 
-// explains reports whether s explains the lapse of a hold whose loss deadline was deadline, the
-// outbox having sent each renewal of the hold at one of renewals, the database having confirmed
-// each resulting loss deadline in confirmed, and the witness each question at one of asked. It
-// returns the span of s in which the process ran nothing. It does when:
-//
-//   - the deadline did not move back after the beat before s read it: it either still equals that
-//     deadline, or exactly equals the deadline a committed renewal of the hold recorded;
-//   - in the longest span of s in which the outbox sent no renewal and the witness no question -
-//     so that the heartbeat's, the witness's and the renewal's goroutines all ran nothing, and
-//     the heartbeat was not held back alone - the process stopped before the second renewal due
-//     after the last confirmed one, and the deadline passed before it ran again, or within
-//     witnessBound after, since the renewal it sends as it wakes can be answered too late. The
-//     last confirmed renewal was sent TTL - Margin before the deadline, and the next is due a
-//     Renew after it, so a process that ran past that one would have sent it; one Renew more
-//     allows for the tick and its renewal coming late under load.
-func (s processStall) explains(deadline time.Time, renewals, confirmed, asked []time.Time) (processStall, bool) {
-	if deadline.Before(s.deadline) {
-		return processStall{}, false
+// admits reports whether deadline can be the deadline of a hold that lapsed during s: the deadline
+// the beat before s read, or a later one a statement of the lost hold's own set after that beat
+// (sets) - a renewal confirmed, or the hold taken, between the beat and the stop. A deadline
+// earlier than the beat's was pulled back by a hold given up early, and so was a later one no
+// statement set, after a renewal had moved it: neither is a lapse. A beat that read no hold read
+// no deadline, so the deadline must be one the hold's own take or renewal set.
+func (s processStall) admits(deadline time.Time, statements []holdStatement) bool {
+	switch {
+	case deadline.Before(s.deadline):
+		return false
+	case deadline.After(s.deadline):
+		return sets(deadline, statements)
 	}
+	return true
+}
+
+// quiet is the longest span of s in which the outbox sent no statement of the hold's and the
+// witness no question, so that the heartbeat's, the witness's and the hold's goroutines all ran
+// nothing and the heartbeat was not held back alone, with deadline as its deadline.
+func (s processStall) quiet(deadline time.Time, statements []holdStatement, asked []time.Time) processStall {
 	points := []time.Time{s.from, s.to}
-	for _, at := range slices.Concat(renewals, asked) {
+	for _, statement := range statements {
+		if s.from.Before(statement.at) && statement.at.Before(s.to) {
+			points = append(points, statement.at)
+		}
+	}
+	for _, at := range asked {
 		if s.from.Before(at) && at.Before(s.to) {
 			points = append(points, at)
 		}
@@ -211,124 +205,368 @@ func (s processStall) explains(deadline time.Time, renewals, confirmed, asked []
 			nothing.from, nothing.to = points[i-1], points[i]
 		}
 	}
-	if deadline.After(s.deadline) && !slices.Contains(confirmed, deadline) {
+	return nothing
+}
+
+// stoppedBy is the moment by which a process that let a hold lapse at deadline had stopped: the
+// statement that set the deadline left TTL - Margin before it, and the next renewal was due a
+// Renew after that, so a process that ran past that renewal would have sent it; one Renew more
+// allows for the tick and its renewal coming late under load.
+func stoppedBy(deadline time.Time) time.Time {
+	return deadline.Add(-(publisherHoldOptions.TTL - publisherHoldOptions.Margin) + 2*publisherHoldOptions.Renew)
+}
+
+// explains reports whether s explains the lapse of a hold whose loss deadline was deadline - the
+// deadline the hold had when it was lost, which nothing is read in place of - the outbox having
+// sent the hold's statements and the witness its questions at asked, and returns the span of s in
+// which the process ran nothing (quiet). It does when s admits the deadline (admits), the process
+// stopped by stoppedBy, and the deadline passed before the process ran again, or within
+// witnessBound after, since the renewal it sends as it wakes can be answered too late.
+func (s processStall) explains(deadline time.Time, statements []holdStatement, asked []time.Time) (processStall, bool) {
+	if !s.admits(deadline, statements) {
 		return processStall{}, false
 	}
-	window := publisherHoldOptions.TTL - publisherHoldOptions.Margin
-	stoppedBy := deadline.Add(-window + 2*publisherHoldOptions.Renew)
-	return nothing, nothing.from.Before(stoppedBy) && deadline.Before(nothing.to.Add(witnessBound))
+	nothing := s.quiet(deadline, statements, asked)
+	return nothing, nothing.from.Before(stoppedBy(deadline)) && deadline.Before(nothing.to.Add(witnessBound))
 }
 
-// A heartbeat can read the deadline just before a renewal succeeds, then see the process stop
-// before it beats again. The final deadline is the committed renewal's, not the old heartbeat's.
-func TestProcessStallExplainsTheDeadlineRenewedAfterItsLastBeat(t *testing.T) {
-	lastBeat := time.Date(2026, time.November, 20, 1, 0, 0, 0, time.UTC)
-	window := publisherHoldOptions.TTL - publisherHoldOptions.Margin
-	renewed := lastBeat.Add(witnessPeriod)
-	deadline := renewed.Add(window)
-	stall := processStall{
-		from:     lastBeat,
-		to:       deadline.Add(witnessBound / 2),
-		deadline: lastBeat.Add(window),
+// explainsWith reports whether s and window together explain the lapse of a hold whose loss
+// deadline was deadline, each covering one end of it: s the start and window the end, or window
+// the start and s the end, with no moment between them at which the process ran and the database
+// answered. s covers the start when the process stopped by stoppedBy, and the end when it ran
+// again within witnessBound of the deadline (explains). window covers the start when the last
+// question the database answered before it left by stoppedBy, and the end when it holds the
+// deadline (failureWindow.holds). They meet when that last question left no later than the
+// process ran again, and the process stopped before the database answered again, read up to
+// witnessBound past it as failureWindow.holds reads it. The deadline must be one s admits.
+func (s processStall) explainsWith(window failureWindow, deadline time.Time, statements []holdStatement, asked []time.Time) (processStall, bool) {
+	if !s.admits(deadline, statements) {
+		return processStall{}, false
 	}
-
-	nothing, ok := stall.explains(deadline, []time.Time{renewed}, []time.Time{deadline}, nil)
-	if !ok {
-		t.Fatalf("the stall from %s to %s did not explain the renewal's deadline %s", stall.from, stall.to, deadline)
-	}
-	if !nothing.from.Equal(renewed) {
-		t.Fatalf("the process ran nothing from %s, want the renewal at %s to end the preceding span", nothing.from, renewed)
-	}
+	nothing := s.quiet(deadline, statements, asked)
+	by := stoppedBy(deadline)
+	meet := !window.from.After(nothing.to) && nothing.from.Before(window.to.Add(witnessBound))
+	stallFirst := nothing.from.Before(by) && window.holds(deadline)
+	databaseFirst := window.from.Before(by) && deadline.Before(nothing.to.Add(witnessBound))
+	return nothing, meet && (stallFirst || databaseFirst)
 }
 
-// A hold given up early pulls its deadline back. A process stall never explains that release,
-// even when a renewal had moved the earlier deadline forward.
-func TestProcessStallDoesNotExplainADeadlineMovedBack(t *testing.T) {
-	lastBeat := time.Date(2026, time.November, 20, 1, 0, 0, 0, time.UTC)
-	window := publisherHoldOptions.TTL - publisherHoldOptions.Margin
-	renewed := lastBeat.Add(witnessPeriod)
-	stall := processStall{
-		from:     lastBeat,
-		to:       renewed.Add(window + witnessBound/2),
-		deadline: lastBeat.Add(window),
-	}
-	pulledBack := lastBeat.Add(window / 2)
+// The cases below are judged where the row judges them, by heldScan.judge, with the evidence as
+// the row records it: the scan of a hold taken back, whose cause carries the deadline the lost
+// hold had (heldScans.took), the heartbeat's stalls, the hold's statements as the trace records
+// them, and the witness's windows and questions. Each clock reading the hold takes before a
+// statement is a whole moment, which the statement carries to the trace (duty.SentAt).
 
-	if _, ok := stall.explains(pulledBack, []time.Time{renewed}, []time.Time{renewed.Add(window)}, nil); ok {
-		t.Fatalf("the stall explained the hold's deadline %s after it was pulled back from %s", pulledBack, stall.deadline)
-	}
+// lossWindow is TTL - Margin: how long after a statement of the hold's the deadline it sets falls.
+var lossWindow = publisherHoldOptions.TTL - publisherHoldOptions.Margin
+
+// fixtureStart is the moment the cases below count from.
+var fixtureStart = time.Date(2026, time.November, 20, 1, 0, 0, 0, time.UTC)
+
+// traced is a statement of the hold's sent at sent, as the trace records it.
+func traced(sent time.Time, take bool) holdStatement {
+	return holdStatement{at: sent, take: take}
 }
 
-// A later deadline needs the database's record of the renewal that committed it; a query start
-// alone is not proof that its update reached the hold's row.
-func TestProcessStallDoesNotExplainALaterDeadlineWithoutACommittedRenewal(t *testing.T) {
-	lastBeat := time.Date(2026, time.November, 20, 1, 0, 0, 0, time.UTC)
-	window := publisherHoldOptions.TTL - publisherHoldOptions.Margin
-	renewed := lastBeat.Add(witnessPeriod)
-	deadline := renewed.Add(window)
-	stall := processStall{
-		from:     lastBeat,
-		to:       deadline.Add(witnessBound / 2),
-		deadline: lastBeat.Add(window),
+// renewals is a hold taken at taken and renewed every Renew for n renewals, as the trace sees it.
+func renewals(taken time.Time, n int) []holdStatement {
+	statements := []holdStatement{traced(taken, true)}
+	for i := 1; i <= n; i++ {
+		statements = append(statements, traced(taken.Add(time.Duration(i)*publisherHoldOptions.Renew), false))
 	}
-
-	if _, ok := stall.explains(deadline, []time.Time{renewed}, nil, nil); ok {
-		t.Fatalf("the stall explained the later deadline %s with no committed renewal", deadline)
-	}
+	return statements
 }
 
-// A hold can be released after a renewal advanced its deadline. Its final deadline is later than
-// the last heartbeat's but earlier than the committed renewal's, so it is still a release the
-// stall cannot explain.
-func TestProcessStallDoesNotExplainADeadlineReleasedAfterRenewal(t *testing.T) {
-	lastBeat := time.Date(2026, time.November, 20, 1, 0, 0, 0, time.UTC)
-	window := publisherHoldOptions.TTL - publisherHoldOptions.Margin
-	renewed := lastBeat.Add(witnessPeriod)
-	renewedDeadline := renewed.Add(window)
-	stall := processStall{
-		from:     lastBeat,
-		to:       renewedDeadline.Add(witnessBound / 2),
-		deadline: lastBeat.Add(window),
-	}
-	released := renewed.Add(window - witnessPeriod/2)
-
-	if _, ok := stall.explains(released, []time.Time{renewed}, []time.Time{renewedDeadline}, nil); ok {
-		t.Fatalf("the stall explained the hold's deadline %s after the hold released it before the renewal's deadline %s", released, renewedDeadline)
-	}
+// takenBack is the first scan of a hold taken back after the last one ended at lapsed with no
+// renewal the database left unanswered, as heldScans.took names it.
+func takenBack(lapsed time.Time) heldScan {
+	return heldScan{claims: 1, cause: cause{
+		what:   fmt.Sprintf("the take of a hold that lapsed or was given up at %s with no renewal the database left unanswered", lapsed.UTC().Format("15:04:05.000")),
+		lapsed: lapsed,
+	}}
 }
 
-// stalledTake is a hold taken back after a lapse that a stall of the test process explains, as the
-// idle row records it, with the evidence that explains it.
-func stalledTake(claims, published int64) (heldScan, evidence) {
-	deadline := time.Date(2026, time.November, 20, 1, 0, 0, 0, time.UTC)
-	window := publisherHoldOptions.TTL - publisherHoldOptions.Margin
-	stall := processStall{from: deadline.Add(-window), to: deadline.Add(witnessBound / 2), deadline: deadline}
-	scan := heldScan{claims: claims, published: published,
-		cause: cause{what: "the take of a hold that lapsed", lapsed: deadline}}
-	return scan, evidence{stalls: []processStall{stall}}
-}
-
-// A take that a stall explains, and that read only its own catch-up, is left out whole.
-func TestATakeAStallExplainsIsLeftOutWithItsOwnCatchUp(t *testing.T) {
-	scan, saw := stalledTake(1, 0)
-	if judged := scan.judge(saw); judged.plain() {
-		t.Fatalf("the take's own catch-up was counted: %d by %s", judged.claims, judged.woken)
-	}
-	scan, saw = stalledTake(3, 2)
-	if judged := scan.judge(saw); judged.plain() {
-		t.Fatalf("a catch-up whose two batches published, and so read two more, was counted: %d by %s", judged.claims, judged.woken)
-	}
-}
-
-// A wake queued as the hold was lost or taken back is taken by the take's catch-up, which reads a
-// batch more than the take explains. That batch is counted, by name.
-func TestAWakeTheTakesCatchUpTookIsCounted(t *testing.T) {
-	scan, saw := stalledTake(2, 0)
+// leftOut fails t unless the row leaves scan out whole, and returns the fault it names.
+func leftOut(t *testing.T, scan heldScan, saw evidence, what string) string {
+	t.Helper()
 	judged := scan.judge(saw)
-	if !judged.plain() || judged.claims != 1 {
-		t.Fatalf("a take that read 2 batches and published none was judged %+v, want 1 claim counted", judged)
+	if judged.plain() {
+		t.Fatalf("%s: the row counted %d claims by %s, want the scan left out", what, judged.claims, judged.woken)
 	}
-	if !strings.Contains(judged.woken, "a wake the take's catch-up took") {
-		t.Fatalf("the counted claim was named %q, want the wake the catch-up took", judged.woken)
+	return judged.fault
+}
+
+// counted fails t unless the row counts claims of scan, and returns what it names as their cause.
+func counted(t *testing.T, scan heldScan, saw evidence, claims int64, what string) string {
+	t.Helper()
+	judged := scan.judge(saw)
+	if !judged.plain() || judged.claims != claims {
+		t.Fatalf("%s: the row judged %d claims plain=%v (fault %q, woken %q), want %d counted", what, judged.claims, judged.plain(), judged.fault, judged.woken, claims)
+	}
+	return judged.woken
+}
+
+// A renewal the hold confirmed after the heartbeat's last beat moves the deadline past the one
+// that beat read. A stop right after it lapses the hold at the renewal's own deadline, which the
+// row reads from the hold and accepts because a statement of the hold's set it.
+func TestAStallExplainsTheDeadlineARenewalSetAfterItsLastBeat(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	renewed := fixtureStart.Add(3 * publisherHoldOptions.Renew)
+	lastBeat := renewed.Add(-witnessPeriod / 2)
+	stall := processStall{from: lastBeat, to: renewed.Add(lossWindow + witnessBound/2), deadline: renewed.Add(lossWindow - publisherHoldOptions.Renew)}
+	saw := evidence{stalls: []processStall{stall}, statements: statements}
+
+	fault := leftOut(t, takenBack(renewed.Add(lossWindow)), saw, "a stop right after a renewal the heartbeat had not read")
+	if want := "ran nothing from " + traced(renewed, false).at.UTC().Format("15:04:05.000"); !strings.Contains(fault, want) {
+		t.Fatalf("the row named %q, want the span from the renewal on (%s)", fault, want)
+	}
+	if fault := leftOut(t, takenBack(stall.deadline), saw, "the same stop with the deadline the beat read"); fault == "" {
+		t.Fatal("no fault named")
 	}
 }
+
+// The database can commit a renewal the stopped process never reads the answer to: the hold then
+// lapses at the deadline it had, which the beat read, and the row reads that deadline from the
+// hold, never the later one the unconfirmed renewal would have set.
+func TestAStallExplainsTheDeadlineARenewalLeftUnconfirmed(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	unconfirmed := fixtureStart.Add(3 * publisherHoldOptions.Renew)
+	deadline := unconfirmed.Add(lossWindow - publisherHoldOptions.Renew)
+	for _, stop := range []time.Duration{3100 * time.Millisecond, 3250 * time.Millisecond, 3400 * time.Millisecond} {
+		stall := processStall{from: unconfirmed.Add(-witnessPeriod / 2), to: unconfirmed.Add(stop), deadline: deadline}
+		leftOut(t, takenBack(deadline), evidence{stalls: []processStall{stall}, statements: statements},
+			fmt.Sprintf("a %s stop between a renewal's commit and its confirm", stop))
+	}
+}
+
+// After a hold the database lapsed, the outbox takes a new one, and a stop after the heartbeat
+// read the new hold's deadline and before its first renewal lapses it at its take's deadline. The
+// last hold's renewals are no deadline of the new hold's. A beat that read no hold - the stop
+// came before the heartbeat beat after the take - is explained by the take's own deadline.
+func TestAStallExplainsANewHoldsFirstDeadline(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	taken := fixtureStart.Add(9 * publisherHoldOptions.Renew)
+	statements = append(statements, traced(taken, true))
+	deadline := taken.Add(lossWindow)
+	stall := processStall{from: taken.Add(200 * time.Millisecond), to: deadline.Add(300 * time.Millisecond), deadline: deadline}
+	leftOut(t, takenBack(deadline), evidence{stalls: []processStall{stall}, statements: statements},
+		"a stop before the new hold's first renewal")
+	stall.from, stall.deadline = taken.Add(-witnessPeriod/2), time.Time{}
+	leftOut(t, takenBack(deadline), evidence{stalls: []processStall{stall}, statements: statements},
+		"a stop before the heartbeat read the new hold")
+}
+
+// A hold given up early pulls its deadline back to that moment. A stall that the timing alone
+// would accept never explains it.
+func TestAStallDoesNotExplainADeadlineMovedBack(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	renewed := fixtureStart.Add(3 * publisherHoldOptions.Renew)
+	deadline := renewed.Add(lossWindow)
+	givenUp := deadline.Add(-300 * time.Millisecond)
+	stall := processStall{from: renewed.Add(witnessPeriod), to: givenUp, deadline: deadline}
+	saw := evidence{stalls: []processStall{stall}, statements: statements}
+
+	if nothing := stall.quiet(givenUp, statements, nil); !nothing.from.Before(stoppedBy(givenUp)) || !givenUp.Before(nothing.to.Add(witnessBound)) {
+		t.Fatalf("the fixture's stall %s does not meet the timing for %s: the case would not reach the rule it is for", nothing, givenUp)
+	}
+	counted(t, takenBack(givenUp), saw, 1, "a hold given up 300 ms before the deadline the beat read")
+}
+
+// A hold given up after a renewal moved its deadline past the beat's has a deadline later than
+// the beat's and earlier than the renewal's own, which no statement of it set (accept-6 D1, review
+// 6 F2): the row counts its take, though the timing alone would accept the stall.
+func TestAStallDoesNotExplainAHoldGivenUpAfterARenewal(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	renewed := fixtureStart.Add(3 * publisherHoldOptions.Renew)
+	for _, before := range []time.Duration{250 * time.Millisecond, 400 * time.Millisecond} {
+		givenUp := renewed.Add(lossWindow - before)
+		stall := processStall{from: renewed.Add(100 * time.Millisecond), to: givenUp, deadline: renewed.Add(lossWindow - publisherHoldOptions.Renew)}
+		saw := evidence{stalls: []processStall{stall}, statements: statements}
+		if nothing := stall.quiet(givenUp, statements, nil); !nothing.from.Before(stoppedBy(givenUp)) || !givenUp.Before(nothing.to.Add(witnessBound)) {
+			t.Fatalf("the fixture's stall %s does not meet the timing for %s", nothing, givenUp)
+		}
+		counted(t, takenBack(givenUp), saw, 1, fmt.Sprintf("a hold given up %s before its renewal's deadline", before))
+	}
+}
+
+// A hold taken after a stall lapsed the last one, then given up for no reason while the process
+// runs, is counted even when the moment it was given up is a deadline the last hold's renewal
+// would have set: that renewal is no statement of the new hold's (deep audit 6, F1 run 1).
+func TestAStallDoesNotExplainAHoldGivenUpAtAnotherHoldsDeadline(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	unconfirmed := fixtureStart.Add(3 * publisherHoldOptions.Renew)
+	lapsed := unconfirmed.Add(lossWindow - publisherHoldOptions.Renew)
+	stall := processStall{from: unconfirmed.Add(time.Millisecond), to: lapsed.Add(650 * time.Millisecond), deadline: lapsed}
+	taken := stall.to.Add(10 * time.Millisecond)
+	givenUp := unconfirmed.Add(lossWindow)
+	statements = append(statements, traced(taken, true))
+	saw := evidence{stalls: []processStall{stall}, statements: statements}
+
+	leftOut(t, takenBack(lapsed), saw, "the first hold's lapse")
+	counted(t, takenBack(givenUp), saw, 1, "the second hold given up while the process ran")
+}
+
+// Two stops, the second soon after the hold the first lapsed is taken back: the second take is
+// left out with the stall that lapsed its hold, and named by it.
+func TestTheSecondOfTwoStallsExplainsTheSecondLapse(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	renewed := fixtureStart.Add(3 * publisherHoldOptions.Renew)
+	first := processStall{from: renewed.Add(200 * time.Millisecond), to: renewed.Add(4700 * time.Millisecond), deadline: renewed.Add(lossWindow)}
+	taken := first.to.Add(10 * time.Millisecond)
+	statements = append(statements, traced(taken, true))
+	deadline := taken.Add(lossWindow)
+	second := processStall{from: taken.Add(100 * time.Millisecond), to: taken.Add(4600 * time.Millisecond), deadline: deadline}
+	saw := evidence{stalls: []processStall{first, second}, statements: statements}
+
+	leftOut(t, takenBack(first.deadline), saw, "the first take")
+	fault := leftOut(t, takenBack(deadline), saw, "the second take")
+	if want := second.from.UTC().Format("15:04:05.000"); !strings.Contains(fault, "ran nothing from "+want) {
+		t.Fatalf("the second take was left out as %q, want it named by the stall from %s", fault, want)
+	}
+}
+
+// A stop that ends too long before the deadline to explain the lapse, and a failure of the
+// database from before it ran again to past the deadline, together cover the lapse, as do a
+// failure that ends while the process is stopped and a stop that lasts past the deadline. Each
+// explains part of it and neither all, and the row leaves the take out naming both (round 5's
+// note on two causes in one lapse).
+func TestAStallAndAFailureTogetherExplainALapse(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	renewed := fixtureStart.Add(3 * publisherHoldOptions.Renew)
+	deadline := renewed.Add(lossWindow)
+
+	stall := processStall{from: renewed.Add(500 * time.Millisecond), to: deadline.Add(-750 * time.Millisecond), deadline: deadline}
+	window := failureWindow{from: renewed.Add(450 * time.Millisecond), to: deadline.Add(100 * time.Millisecond), err: "timeout"}
+	saw := evidence{witnessed: witnessed{windows: []failureWindow{window}}, stalls: []processStall{stall}, statements: statements}
+	if _, alone := stall.explains(deadline, statements, nil); alone {
+		t.Fatal("the stop alone explains the lapse: the case would not reach the rule it is for")
+	}
+	fault := leftOut(t, takenBack(deadline), saw, "a stop, then a failure to past the deadline")
+	if !strings.Contains(fault, "ran nothing "+stall.String()) || !strings.Contains(fault, window.String()) {
+		t.Fatalf("the row left the take out as %q, want both the stop and the failure named", fault)
+	}
+
+	window = failureWindow{from: renewed.Add(300 * time.Millisecond), to: deadline.Add(-1200 * time.Millisecond), err: "timeout"}
+	stall = processStall{from: deadline.Add(-1300 * time.Millisecond), to: deadline.Add(200 * time.Millisecond), deadline: deadline}
+	saw = evidence{witnessed: witnessed{windows: []failureWindow{window}}, stalls: []processStall{stall}, statements: statements}
+	leftOut(t, takenBack(deadline), saw, "a failure, then a stop to past the deadline")
+}
+
+// The same stop and failure with a span between them in which the process ran and the database
+// answered do not cover the lapse: a renewal sent then would have kept the hold, and the row
+// counts the take.
+func TestAStallAndAFailureWithAGapBetweenThemDoNotExplainALapse(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	renewed := fixtureStart.Add(3 * publisherHoldOptions.Renew)
+	deadline := renewed.Add(lossWindow)
+	stall := processStall{from: renewed.Add(500 * time.Millisecond), to: deadline.Add(-750 * time.Millisecond), deadline: deadline}
+	window := failureWindow{from: deadline.Add(-550 * time.Millisecond), to: deadline.Add(100 * time.Millisecond), err: "timeout"}
+	saw := evidence{witnessed: witnessed{windows: []failureWindow{window}}, stalls: []processStall{stall}, statements: statements}
+	counted(t, takenBack(deadline), saw, 1, "a stop, 200 ms of a running process and an answering database, then a failure")
+}
+
+// A take explains its own catch-up, one batch, and a scan of it that reads another took a wake
+// queued as the hold was lost or taken back: that batch is counted, by name.
+func TestATakeExplainsOnlyItsOwnCatchUp(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	renewed := fixtureStart.Add(3 * publisherHoldOptions.Renew)
+	deadline := renewed.Add(lossWindow)
+	stall := processStall{from: renewed.Add(200 * time.Millisecond), to: deadline.Add(witnessBound / 2), deadline: deadline}
+	saw := evidence{stalls: []processStall{stall}, statements: statements}
+
+	leftOut(t, takenBack(deadline), saw, "a take that read its own catch-up")
+	scan := takenBack(deadline)
+	scan.claims = 2
+	if woken := counted(t, scan, saw, 1, "a take whose scan read a second batch"); !strings.Contains(woken, "a wake the take's catch-up took") {
+		t.Fatalf("the counted batch was named %q, want the wake the take's catch-up took", woken)
+	}
+}
+
+// A LISTEN connection's catch-up explains its own batch, the one its wake starts, as a take's does:
+// a wake that lands while that batch runs reads one more, which the row counts, by name.
+func TestALISTENCatchUpExplainsOnlyItsOwnBatch(t *testing.T) {
+	lost := fixtureStart.Add(time.Second)
+	window := failureWindow{from: fixtureStart, to: lost.Add(time.Second), err: "connection refused"}
+	scan := heldScan{claims: 1, cause: cause{
+		what:   "a new LISTEN connection's catch-up, after the last one was lost (connection refused)",
+		reason: true, failedAt: []time.Time{lost},
+	}}
+	saw := evidence{witnessed: witnessed{windows: []failureWindow{window}}}
+
+	leftOut(t, scan, saw, "a catch-up that read its own batch")
+	scan.claims = 2
+	if woken := counted(t, scan, saw, 1, "a catch-up whose scan read a second batch"); !strings.Contains(woken, "a wake the scan took") {
+		t.Fatalf("the counted batch was named %q, want the wake the scan took", woken)
+	}
+}
+
+// A LISTEN connection that comes back while the outbox holds no hold sends its catch-up wake to a
+// holder that has none, and the scan of the hold taken next takes it (Outbox.listen): that scan
+// reads the take's batch and the connection's, and is left out when the witness saw the
+// connection's loss. A loss no window holds counts the connection's batch, by name.
+func TestATakeAlsoExplainsTheCatchUpOfALISTENConnectionBackBeforeIt(t *testing.T) {
+	statements := renewals(fixtureStart, 3)
+	renewed := fixtureStart.Add(3 * publisherHoldOptions.Renew)
+	deadline := renewed.Add(lossWindow)
+	lost := renewed.Add(300 * time.Millisecond)
+	window := failureWindow{from: renewed.Add(100 * time.Millisecond), to: deadline.Add(200 * time.Millisecond), err: "connection refused"}
+	scan := heldScan{claims: 2, cause: cause{
+		what:   "the publisher hold taken back after it lapsed, the database having left 3 of its renewals unanswered before then",
+		reason: true, failedAt: []time.Time{deadline}, someFailedAt: []time.Time{deadline.Add(-time.Second)}, lapsed: deadline,
+	}, listen: &cause{what: listenBackWhat("connection refused"), reason: true, failedAt: []time.Time{lost}}}
+	saw := evidence{witnessed: witnessed{windows: []failureWindow{window}}, statements: statements}
+
+	leftOut(t, scan, saw, "a take whose scan read the catch-up of a connection that came back before it")
+	scan.claims = 3
+	counted(t, scan, saw, 1, "a take whose scan read its own batch, the connection's and one more")
+	scan.claims = 2
+	scan.listen.failedAt = []time.Time{deadline.Add(time.Second)}
+	if woken := counted(t, scan, saw, 1, "the same take with the connection's loss outside every window"); !strings.Contains(woken, "LISTEN") {
+		t.Fatalf("the counted batch was named %q, want the LISTEN connection's", woken)
+	}
+}
+
+// The trace records each take and renewal of the hold with the clock reading the hold itself took
+// before it sent it, so the deadline it set is exactly that reading plus TTL - Margin; a take or
+// renewal whose context carries no reading is named as untimed. No renewal is answered, so the
+// deadline stays the take's however late the test reads it.
+func TestTheHoldTraceRecordsTheHoldsOwnReading(t *testing.T) {
+	p := &processWatch{}
+	trace := holdTrace{process: p}
+	hold, err := duty.TryHold(context.Background(), tracedHolds{trace}, publisherHold, uuid.New(), publisherHoldOptions)
+	if err != nil || hold == nil {
+		t.Fatalf("take a hold with no database: %v", err)
+	}
+	defer func() { _ = hold.Release(context.Background()) }()
+	p.mu.Lock()
+	statements := slices.Clone(p.statements)
+	p.mu.Unlock()
+	if len(statements) == 0 || !statements[0].take || !statements[0].at.Add(lossWindow).Equal(hold.Deadline()) {
+		t.Fatalf("the take was recorded as %+v, want one take whose reading plus TTL - Margin is the hold's deadline %s", statements, hold.Deadline())
+	}
+	if !sets(hold.Deadline(), statements) || sets(hold.Deadline().Add(-time.Microsecond), statements) {
+		t.Fatal("sets does not tie the take's deadline, and that deadline alone, to the take")
+	}
+	trace.TraceQueryStart(context.Background(), nil, pgx.TraceQueryStartData{SQL: renewalStatement + " = now()"})
+	if len(p.untimed) != 1 {
+		t.Fatalf("a renewal with no reading in its context was named untimed %d times, want once: %q", len(p.untimed), p.untimed)
+	}
+}
+
+// tracedHolds runs a hold's statements through trace with no database. It answers the take as one
+// that affected the hold's row, and each renewal as a failure, which leaves the deadline the take
+// set (duty.Hold's renew).
+type tracedHolds struct{ trace holdTrace }
+
+func (h tracedHolds) Exec(ctx context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	h.trace.TraceQueryStart(ctx, nil, pgx.TraceQueryStartData{SQL: sql})
+	if strings.HasPrefix(sql, renewalStatement) {
+		return pgconn.CommandTag{}, errNoDatabase
+	}
+	return pgconn.NewCommandTag("UPDATE 1"), nil
+}
+
+func (tracedHolds) QueryRow(context.Context, string, ...any) pgx.Row { return nil }
+
+// errNoDatabase is tracedHolds' answer to a renewal.
+var errNoDatabase = errors.New("no database answers this renewal")

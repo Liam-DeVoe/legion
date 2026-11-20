@@ -191,14 +191,12 @@ const backOffDue = 10 * time.Second
 
 // The words of the log lines heldScans reads: a renewal of a hold the database left unanswered
 // (duty.Hold's renew), a Postgres listener whose connection is gone and that dials again
-// (pglisten.Listener's Run), the outbox taking the publisher hold (publish), a batch that sent
-// something (scan), and the prefix of every line the outbox writes itself, whose errors are a
-// statement that failed.
+// (pglisten.Listener's Run), the outbox taking the publisher hold (publish), and the prefix of
+// every line the outbox writes itself, whose errors are a statement that failed.
 const (
 	renewFailedLine = "renew hold failed"
 	redialLine      = "a Postgres listener has no connection; redialing"
 	tookHoldLine    = "dispatch outbox: took the publisher hold"
-	sentBatchLine   = "dispatch outbox: sent batch"
 	outboxLine      = "dispatch outbox: "
 )
 
@@ -211,10 +209,13 @@ const (
 	witnessBound  = 500 * time.Millisecond
 )
 
-// renewalStatement is how the statement of a hold's renewal begins (duty.Hold's renew). The
-// publisher hold is the one hold an outbox renews, so in a row's own database a statement that
-// begins so is a renewal of the publisher hold.
-const renewalStatement = "update duty_holds set expires_at"
+// renewalStatement and takeStatement are how the statements of a hold's renewal (duty.Hold's
+// renew) and of its take (duty.TryHold) begin. The publisher hold is the one hold an outbox takes
+// and renews, so in a row's own database a statement that begins so is the publisher hold's.
+const (
+	renewalStatement = "update duty_holds set expires_at"
+	takeStatement    = "insert into duty_holds"
+)
 
 // outboxApplication is the application_name of every connection the row's outbox opens, its pool's
 // and its LISTEN connections', so that in pg_stat_activity the witness tells a backend of the
@@ -470,11 +471,12 @@ type armedWait struct {
 }
 
 // cause is what the row knows started a scan: a reason heldScans leaves out, once the row saw what
-// gave it, or a wake or a timer, which the row judges. failedAt is each moment the outbox met a
+// gave it, or a wake or a timer, which the row counts. failedAt is each moment the outbox met a
 // failure of the database's, every one of which a window of the witness's must hold, and
-// someFailedAt are moments at least one of which a window must hold. lapsed is the loss deadline of
-// a hold the outbox took back after it ended, whose lapse a stall of the test process can explain
-// in place of the database (processStall.explains).
+// someFailedAt are moments at least one of which a window must hold. lapsed is the loss deadline a
+// hold the outbox took back had when it ended, read from that hold (heldScans.took), whose lapse a
+// stall of the test process can explain in place of the database, or with it
+// (processStall.explains, processStall.explainsWith).
 type cause struct {
 	what                   string
 	reason                 bool
@@ -488,10 +490,6 @@ type cause struct {
 type heldScan struct {
 	// claims is how many batches the scan read, and upTo the outbox's claims after them.
 	claims, upTo int64
-	// published is how many of its batches published an event. A batch that published makes the
-	// scan read one batch more (scan), so a scan no wake reached reads one batch plus one for each
-	// batch that published.
-	published int64
 	// armed is the wait the scan armed the retry timer for, when it armed one.
 	armed []armedWait
 	// failed is the first error the outbox logged during the scan, when a statement of it failed,
@@ -499,6 +497,10 @@ type heldScan struct {
 	failed   string
 	failedAt time.Time
 	cause    cause
+	// listen is the catch-up of a LISTEN connection that came up while the outbox held no hold,
+	// when this is the first scan of the hold taken next: the connection's wake waited for a
+	// holder (Outbox.listen), and the take's scan takes it beside the take's own. nil otherwise.
+	listen *cause
 }
 
 // judgedScan is a heldScan judged against what the row saw. fault is the reason the row leaves the
@@ -510,83 +512,106 @@ type judgedScan struct {
 }
 
 // evidence is what the row had seen when it judges a part's scans: what its witness of the database
-// recorded, the committed renewal deadlines on the hold's row, and the stalls of the test process
-// and renewal sends its heartbeat recorded (processWatch).
+// recorded, and the stalls of the test process and the statements of the publisher hold's that its
+// heartbeat and its trace recorded (processWatch).
 type evidence struct {
 	witnessed
-	stalls    []processStall
-	renewals  []time.Time
-	deadlines []committedHoldDeadline
+	stalls     []processStall
+	statements []holdStatement
 }
 
-// deadlineAt is the last renewal deadline the database committed before the holder reported its
-// loss. A release moves only the in-process deadline, so this makes a committed renewal distinct
-// from an early release after it.
-func (e evidence) deadlineAt(at time.Time) (time.Time, bool) {
-	var deadline time.Time
-	for _, recorded := range e.deadlines {
-		if !recorded.committedAt.After(at) {
-			deadline = recorded.deadline
-		}
-	}
-	return deadline, !deadline.IsZero()
-}
-
-// judge leaves s out when its cause is a reason and the row saw what gave it (judgeCause). A hold
-// taken back explains only its own catch-up: one batch, and one more for each batch that published.
-// A wake queued as the hold was lost or taken back is taken by that catch-up and reads another
-// batch in the same scan, so the claims beyond what the take explains are counted, by name.
+// judge leaves out of s the batches its reasons explain, when the row saw what gave each
+// (cause.judge), and counts the rest, by name. A reason explains one batch, the one its own wake
+// starts: a scan reads one batch at once, and another only when a batch published or filled, or
+// when a wake reaches it while batches run, an owner a batch gave back early among them
+// (Outbox.scan, lanes.releaseEarly). So the first scan of a hold taken back explains one batch,
+// and one more when a LISTEN connection that came up while no hold was held left its catch-up
+// wake to it (listen); a wake queued as the hold was lost or taken back is taken by that scan and
+// reads a batch more, which the row counts. The count is exact where no batch publishes, fills or
+// holds an owner back: in the idle window, where nothing is written and the row asserts that
+// nothing is claimed. Elsewhere a scan's own publishes can read more batches, which the row counts
+// with the wakes.
 func (s heldScan) judge(saw evidence) judgedScan {
-	judged := s.judgeCause(saw)
-	if judged.fault == "" || s.cause.lapsed.IsZero() {
+	judged := judgedScan{heldScan: s}
+	fault, woken := s.cause.judge(saw)
+	if fault == "" {
+		judged.woken = woken
 		return judged
 	}
-	if beyond := s.claims - 1 - s.published; beyond > 0 {
-		judged.claims = beyond
-		judged.woken = fmt.Sprintf("a wake the take's catch-up took, beyond the one claim and %d published batches the take explains (%s)",
-			s.published, judged.fault)
-		judged.fault = ""
+	explained, faults := int64(1), []string{fault}
+	if s.listen != nil {
+		fault, woken := s.listen.judge(saw)
+		if fault == "" {
+			judged.claims, judged.woken = s.claims-explained, woken
+			return judged
+		}
+		explained, faults = explained+1, append(faults, fault)
 	}
+	if beyond := s.claims - explained; beyond > 0 {
+		took, explain := "the scan", "the one batch its reason explains"
+		if !s.cause.lapsed.IsZero() {
+			took, explain = "the take's catch-up", "the one batch the take explains"
+		}
+		if explained == 2 {
+			explain = "the two batches the take and the LISTEN connection's catch-up explain"
+		}
+		judged.claims = beyond
+		judged.woken = fmt.Sprintf("a wake %s took, beyond %s (%s)", took, explain, strings.Join(faults, "; "))
+		return judged
+	}
+	judged.fault = strings.Join(faults, "; ")
 	return judged
 }
 
-// judgeCause leaves s out when its cause is a reason and the row saw what gave it: for a hold taken
-// back after it ended, a stall of the test process that explains its lapse (processStall.explains),
-// and otherwise the failure of the database behind it, in windows of the witness's.
-func (s heldScan) judgeCause(saw evidence) judgedScan {
-	judged := judgedScan{heldScan: s, woken: s.cause.what}
-	if !s.cause.lapsed.IsZero() {
-		deadline := s.cause.lapsed
-		confirmed := []time.Time(nil)
-		if recorded, ok := saw.deadlineAt(s.cause.lapsed); ok {
-			deadline, confirmed = recorded, []time.Time{recorded}
-		}
+// judge is what the row makes of c: the fault it leaves c's batch out for, with what the row saw of
+// it, when c is a reason and the row saw what gave it, and otherwise woken, what started the
+// batch, which the row counts. The first scan of a hold taken back after it ended is left out when
+// a stall of the test process explains the lapse (processStall.explains), when windows of the
+// witness's hold the deadline and a renewal the database left unanswered, or when a stall and a
+// window together cover the lapse (processStall.explainsWith). Every other reason is left out when
+// windows of the witness's hold the failures it names.
+func (c cause) judge(saw evidence) (fault, woken string) {
+	if !c.lapsed.IsZero() {
 		for _, stall := range saw.stalls {
-			if nothing, ok := stall.explains(deadline, saw.renewals, confirmed, saw.asked); ok {
-				judged.fault = fmt.Sprintf("%s; the test process ran nothing %s, with that deadline standing: the heartbeat did not beat, the witness sent no question and the outbox no renewal",
-					s.cause.what, nothing)
-				judged.woken = ""
-				return judged
+			if nothing, ok := stall.explains(c.lapsed, saw.statements, saw.asked); ok {
+				return fmt.Sprintf("%s; the test process ran nothing %s, with that deadline standing: the heartbeat did not beat, the witness sent no question and the outbox no statement of the hold's",
+					c.what, nothing), ""
 			}
 		}
 	}
-	// counted is the scan judged, started by woken, with any lock of the outbox's own that held a
-	// renewal back in the run-up to at named.
-	counted := func(woken string, at time.Time) judgedScan {
-		judged.woken = woken
+	// counted is woken, counted, with any lock of the outbox's own that held a renewal back in the
+	// run-up to at named.
+	counted := func(woken string, at time.Time) (string, string) {
 		for _, own := range saw.ownLocks {
 			if own.from.Before(at.Add(witnessBound)) && at.Add(-(publisherHoldOptions.TTL - publisherHoldOptions.Margin)).Before(own.to) {
-				judged.woken += "; the outbox's own pool held the lock its renewals waited on " + own.String()
-				break
+				return "", woken + "; the outbox's own pool held the lock its renewals waited on " + own.String()
 			}
 		}
-		return judged
+		return "", woken
 	}
-	if !s.cause.reason {
-		if s.cause.lapsed.IsZero() {
-			return judged
+	// together is the fault of a lapse that a stall and a window cover together, and "" for none.
+	together := func() string {
+		if c.lapsed.IsZero() {
+			return ""
 		}
-		return counted(s.cause.what+", and the heartbeat saw no stall of the test process that explains it", s.cause.lapsed)
+		for _, stall := range saw.stalls {
+			for _, window := range saw.windows {
+				if nothing, ok := stall.explainsWith(window, c.lapsed, saw.statements, saw.asked); ok {
+					return fmt.Sprintf("%s; the test process ran nothing %s and the witness saw the database fail %s, which together cover the lapse, with that deadline standing",
+						c.what, nothing, window)
+				}
+			}
+		}
+		return ""
+	}
+	if !c.reason {
+		if c.lapsed.IsZero() {
+			return "", c.what
+		}
+		if fault := together(); fault != "" {
+			return fault, ""
+		}
+		return counted(c.what+", and the heartbeat saw no stall of the test process that explains it, alone or with a failure the witness saw", c.lapsed)
 	}
 	seen := func(at time.Time) (failureWindow, bool) {
 		for _, window := range saw.windows {
@@ -596,38 +621,41 @@ func (s heldScan) judgeCause(saw evidence) judgedScan {
 		}
 		return failureWindow{}, false
 	}
-	unseen := func(at time.Time) judgedScan {
-		woken := fmt.Sprintf("%s, though the witness saw no failure of the database at %s", s.cause.what, at.UTC().Format("15:04:05.000"))
-		if !s.cause.lapsed.IsZero() {
-			woken += ", nor the heartbeat a stall of the test process that explains the lapse"
+	unseen := func(at time.Time) (string, string) {
+		if fault := together(); fault != "" {
+			return fault, ""
+		}
+		woken := fmt.Sprintf("%s, though the witness saw no failure of the database at %s", c.what, at.UTC().Format("15:04:05.000"))
+		if !c.lapsed.IsZero() {
+			woken += ", nor the heartbeat a stall of the test process that explains the lapse, alone or with a failure"
 		}
 		return counted(woken, at)
 	}
 	var held []string
-	for _, at := range s.cause.failedAt {
+	for _, at := range c.failedAt {
 		window, ok := seen(at)
 		if !ok {
 			return unseen(at)
 		}
 		held = append(held, window.String())
 	}
-	if len(s.cause.someFailedAt) > 0 {
+	if len(c.someFailedAt) > 0 {
 		found := false
-		for _, at := range s.cause.someFailedAt {
+		for _, at := range c.someFailedAt {
 			if window, ok := seen(at); ok {
 				held, found = append(held, window.String()), true
 				break
 			}
 		}
 		if !found {
-			return unseen(s.cause.someFailedAt[0])
+			return unseen(c.someFailedAt[0])
 		}
 	}
-	judged.fault, judged.woken = s.cause.what, ""
+	fault = c.what
 	if len(held) > 0 {
-		judged.fault += "; the witness saw the database fail " + strings.Join(slices.Compact(held), ", ")
+		fault += "; the witness saw the database fail " + strings.Join(slices.Compact(held), ", ")
 	}
-	return judged
+	return fault, ""
 }
 
 // renewFailure is one renewal of the publisher hold that the database left unanswered: the loss
@@ -639,11 +667,13 @@ type renewFailure struct {
 
 // start is a moment inside the holder's claims after which the claims are a new part's: a take of
 // the publisher hold, or a LISTEN that succeeded, at the claims the outbox had made by then. hold
-// is the hold a take took, and nil for a LISTEN, whose catch-up is cause.
+// is the hold a take took, and nil for a LISTEN, whose catch-up is cause. back names a LISTEN's
+// catch-up when it is read in the scan of the take that follows it (heldScan.listen).
 type start struct {
 	claims int64
 	hold   *duty.Hold
 	cause  cause
+	back   string
 }
 
 // heldScans is the record TestTheOutboxDoesNotScanWhileIdle reads its outbox by: every scan the
@@ -670,28 +700,35 @@ type start struct {
 // scans. A scan is left out when it is:
 //
 //   - the first scan of a hold taken after the last one lapsed, when the heartbeat saw the test
-//     process run nothing over the lapse (processStall.explains), or when a window of the
-//     witness's holds the lapse's deadline and at least one renewal the database left unanswered
-//     while that deadline stood, whose warning names it. A hold the outbox gave up early has its
-//     deadline moved to the moment it was given up, which no warning names and no stall explains,
-//     and a hold that lapsed because the outbox sent no renewal while the process ran has neither
-//     a warning nor a stall: both count against the outbox;
+//     process run nothing over the lapse (processStall.explains), when a window of the witness's
+//     holds the lapse's deadline and at least one renewal the database left unanswered while that
+//     deadline stood, whose warning names it, or when a stall and a window cover the lapse
+//     between them (processStall.explainsWith). The deadline is the one the lost hold had, and a
+//     stall explains it only when the beat before the stall read it, or a take or renewal of that
+//     hold's own set it after that beat (processStall.admits). A hold the outbox gave up early has
+//     its deadline moved to the moment it was given up, which no warning names, no statement set
+//     and no stall explains, and a hold that lapsed because the outbox sent no renewal while the
+//     process ran and the database answered has neither a warning nor a stall: both count against
+//     the outbox;
 //   - a LISTEN connection's catch-up, when a window of the witness's holds the loss of the
 //     connection before it: the claims that started after its LISTEN succeeded (listenTrace), to
 //     the end of the scan the first of them is in. The listener sends the catch-up's wake only
-//     after the LISTEN succeeds, so a scan that started before then is no catch-up;
+//     after the LISTEN succeeds, so a scan that started before then is no catch-up. A connection
+//     that comes up while the outbox holds no hold leaves its wake to the next take's scan, which
+//     reads the take's batch and the connection's (heldScan.listen), or to the scan after it;
 //   - the one scan after a scan that armed its retry and logged a failed statement in a window of
 //     the witness's.
 //
-// The first take and the first connection's catch-up are the outbox's start, which the row waits
-// out before it judges. A timer armed by a scan with a reason gives its own scan none: a hold taken
-// back arms its timer for a back-off that is really due, and that timer's scan is judged as the
-// back-off's. Nor does a wake queued behind such a scan: the failure gave the outbox the one scan.
+// Each of those explains one batch, the one its own wake starts, and the row counts every batch
+// beyond (heldScan.judge). The first take and the first connection's catch-up are the outbox's
+// start, which the row waits out before it judges. A timer armed by a scan with a reason gives
+// its own scan none: a hold taken back arms its timer for a back-off that is really due, and that
+// timer's scan is judged as the back-off's. Nor does a wake queued behind such a scan: the failure
+// gave the outbox the one scan.
 type heldScans struct {
-	outbox    *Outbox
-	witness   *databaseWitness
-	deadlines *holdDeadlineWitness
-	process   *processWatch
+	outbox  *Outbox
+	witness *databaseWitness
+	process *processWatch
 	// restingAt is the claims the outbox had made when the holder last entered a wait with nothing
 	// left to do, and -1 until it enters one (atRest).
 	restingAt atomic.Int64
@@ -706,11 +743,13 @@ type heldScans struct {
 	open   heldScan
 	starts []start
 	// At the holder's last wait: the claims made by then, the hold it held, whether a wake was
-	// queued, and whether the scan it ended armed a wait.
+	// queued, whether the scan it ended armed a wait, and the catch-up of a LISTEN connection that
+	// came up while no hold was held, when its wake was the one queued (waited).
 	lastClaims int64
 	lastHold   *duty.Hold
 	lastQueued bool
 	lastArmed  bool
+	queuedBy   *cause
 	// listens counts the LISTENs that succeeded, and up is whether the connection of the last one
 	// is still up and has reported itself (listening). lost and lostAt are the error and moment of
 	// the last loss of a connection that was up.
@@ -763,13 +802,21 @@ func (h *heldScans) listened() {
 	defer h.mu.Unlock()
 	h.listens++
 	catchUp := cause{what: "the LISTEN connection's first catch-up", reason: true}
+	back := "the catch-up wake of the first LISTEN connection, which came up before the first take"
 	if h.listens > 1 {
 		catchUp = cause{
 			what:   fmt.Sprintf("a new LISTEN connection's catch-up, after the last one was lost (%s)", h.lost),
 			reason: true, failedAt: []time.Time{h.lostAt},
 		}
+		back = listenBackWhat(h.lost)
 	}
-	h.starts = append(h.starts, start{claims: h.outbox.claims.Load(), cause: catchUp})
+	h.starts = append(h.starts, start{claims: h.outbox.claims.Load(), cause: catchUp, back: back})
+}
+
+// listenBackWhat names the catch-up of a LISTEN connection dialled again after the last one was
+// lost with lost, read in the scan of the take that came after it (heldScan.listen).
+func listenBackWhat(lost string) string {
+	return fmt.Sprintf("the catch-up wake of a LISTEN connection that came back before the take, after the last one was lost (%s)", lost)
 }
 
 // listening runs once a LISTEN connection is up, after the catch-up wake it sends. The holder can
@@ -826,6 +873,8 @@ func (h *heldScans) reason() cause {
 		before = &h.scans[n-1]
 	}
 	switch {
+	case h.lastQueued && h.queuedBy != nil:
+		return *h.queuedBy
 	case before != nil && before.failed != "" && len(before.armed) > 0:
 		return cause{what: fmt.Sprintf("the retry of a statement that failed (%s)", before.failed), reason: true, failedAt: []time.Time{before.failedAt}}
 	case h.lastQueued:
@@ -840,12 +889,20 @@ func (h *heldScans) reason() cause {
 // its last wait. A start since then splits them: the claims before it are the last part's, and the
 // claims after it are the take's first scan or the connection's catch-up. A start no claim has
 // followed yet is left to the scan that follows it. It records a rest when nothing is left to do.
+//
+// A LISTEN that succeeded with no claim after it before a take sent its catch-up wake while no
+// scan could take it - no hold was held, or the last scan of the hold the take follows had ended
+// - so the wake waited in the holder's queue for the take's scan (Outbox.listen), and that scan
+// reads the connection's catch-up beside the take's own (heldScan.listen). When the take's scan
+// read only its own batch and left a wake queued, the wake is the connection's, and the scan after
+// it is the catch-up (reason).
 func (h *heldScans) waited() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	claims := h.outbox.claims.Load()
 	from, held := h.lastClaims, h.lastHold
 	current := h.reason()
+	var listen, back *cause
 	var later []start
 	for _, next := range h.starts {
 		if next.claims >= claims {
@@ -853,20 +910,26 @@ func (h *heldScans) waited() {
 			continue
 		}
 		if next.claims > from {
-			h.scans = append(h.scans, heldScan{claims: next.claims - from, upTo: next.claims, cause: current})
-			from = next.claims
+			h.scans = append(h.scans, heldScan{claims: next.claims - from, upTo: next.claims, cause: current, listen: listen})
+			from, listen, back = next.claims, nil, nil
 		}
 		current = next.cause
-		if next.hold != nil {
-			current = h.took(held)
-			held = next.hold
+		if next.hold == nil {
+			back = &cause{what: next.back, reason: next.cause.reason, failedAt: next.cause.failedAt}
+			continue
 		}
+		current, listen, back = h.took(held), back, nil
+		held = next.hold
 	}
 	h.starts = later
 	scan := h.open
 	h.open = heldScan{}
-	scan.claims, scan.upTo, scan.cause = claims-from, claims, current
+	scan.claims, scan.upTo, scan.cause, scan.listen = claims-from, claims, current, listen
 	queued := len(h.outbox.wake) > 0
+	h.queuedBy = nil
+	if scan.listen != nil && scan.claims < 2 && queued {
+		h.queuedBy, scan.listen = scan.listen, nil
+	}
 	h.scans = append(h.scans, scan)
 	h.lastClaims, h.lastHold, h.lastQueued, h.lastArmed = claims, held, queued, len(scan.armed) > 0
 	h.rest()
@@ -901,13 +964,11 @@ func (h *heldScans) logged(record slog.Record) {
 	case strings.HasPrefix(record.Message, tookHoldLine):
 		// Written after the store of the hold and before its first scan, on the goroutine that
 		// scans: the hold and the claims read here are the take's own. What the standby logged
-		// before it is no failure of a scan.
+		// before it is no failure of a scan, and what a scan the lost hold's deadline ended had
+		// logged is no part of this one: serve returns from such a scan without waiting
+		// (Outbox.serve), so waited never ended it.
 		h.starts = append(h.starts, start{claims: h.outbox.claims.Load(), hold: h.outbox.hold.Load()})
-		h.open.failed = ""
-	case strings.HasPrefix(record.Message, sentBatchLine):
-		if published := attrs["published"]; published.Kind() == slog.KindInt64 && published.Int64() > 0 {
-			h.open.published++
-		}
+		h.open = heldScan{}
 	case record.Level >= slog.LevelError && strings.HasPrefix(record.Message, outboxLine) && h.open.failed == "":
 		h.open.failed, h.open.failedAt = strings.TrimPrefix(record.Message, outboxLine)+": "+text("error"), record.Time
 	}
@@ -940,8 +1001,7 @@ func (h *heldScans) judged(t *testing.T, part string, mark int) []judgedScan {
 	t.Helper()
 	asked := time.Now()
 	saw := evidence{witnessed: h.witness.answeredAfter(t, asked, "the witness's answer after "+part)}
-	saw.stalls, saw.renewals = h.process.beatAfter(t, asked, "the heartbeat's beat after "+part)
-	saw.deadlines = h.deadlines.seen(t, asked)
+	saw.stalls, saw.statements = h.process.beatAfter(t, asked, "the heartbeat's beat after "+part)
 	h.mu.Lock()
 	scans := slices.Clone(h.scans[mark:])
 	windows, stalls := h.windowsLogged, h.stallsLogged
@@ -1029,15 +1089,15 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	database := storetest.Open(t)
 	other := storetest.SecondProcess(t, database)
 	seedIssue(t, database, "T-1", nil)
-	deadlines := watchHoldDeadlines(t, database)
-	held := &heldScans{witness: watchDatabase(t, database), deadlines: deadlines, process: &processWatch{}}
+	held := &heldScans{witness: watchDatabase(t, database), process: &processWatch{}}
 	// The outbox runs on a pool of its own, as it does in a dispatch process: named, so the witness
 	// tells a lock the outbox holds from one another session holds (witnessQuestion), and traced,
-	// so the heartbeat knows when each renewal of the publisher hold left (renewalTrace). Its
-	// LISTEN connections carry the same name, so a lock one of them holds is the outbox's own too,
-	// and are traced, so the row knows when each LISTEN succeeded (listenTrace).
+	// so the heartbeat knows when each statement of the publisher hold's that sets its deadline
+	// left (holdTrace). Its LISTEN connections carry the same name, so a lock one of them holds is
+	// the outbox's own too, and are traced, so the row knows when each LISTEN succeeded
+	// (listenTrace).
 	named := map[string]string{"application_name": outboxApplication}
-	pool := storetest.Traced(t, database.Pool, renewalTrace{process: held.process}, named)
+	pool := storetest.Traced(t, database.Pool, holdTrace{process: held.process}, named)
 	outbox := New(Deps{Store: &store.Store{Pool: pool}, Publisher: &recordingPublisher{}, Broker: events.NewBroker(),
 		Listen: storetest.Traced(t, database.Pool, listenTrace{scans: held}, named).Listener})
 	held.install(t, outbox)
