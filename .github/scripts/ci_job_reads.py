@@ -678,8 +678,6 @@ RULES = {
         ("packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
          "internal/textcheck/waiting_line_texts_test.go:483 reads that one fragment under ../../../.."),
         ("skills/legion-controller/references/admission.md",
-         "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../.."),
-        ("skills/legion-controller/references/wakes.md",
          "internal/textcheck/waiting_line_texts_test.go:483 reads it under ../../../..")),
     # The three checks main's #2989 put under packages/daemon, and the waiting-line block check
     # main's #3718 brought, read no text outside it any more: each is held to a copy committed

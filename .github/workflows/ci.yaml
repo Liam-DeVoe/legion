@@ -2953,7 +2953,6 @@ jobs:
               - 'packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml'
               - 'packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml'
               - 'skills/legion-controller/references/admission.md'
-              - 'skills/legion-controller/references/wakes.md'
               # The second page production_check_rule_test.go:30 holds to the production check's
               # rule, beside concepts.md above.
               - 'scripts/e2e/README.md'
