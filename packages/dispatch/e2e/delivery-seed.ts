@@ -147,13 +147,29 @@ export const PIPELINE_AT = "2026-10-02T12:00:00Z";
  *  window read. */
 export const ROW_DAYS_EARLIER = 364;
 
+/** The measures fixture's window (packages/envoy/internal/dispatch/delivery/measures/testdata/
+ *  dora-fixture.json, the prototype's own web/fixtures/dataset.json with its names replaced), in
+ *  the corpus's place. */
+export const FIXTURE_WINDOW = { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20:00:00Z" } as const;
+
+/** How many days after the corpus's place a row's place writes the measures fixture: five weeks,
+ *  so its window (2026-10-04 to 2026-11-01) starts after the last deploy the review corpus writes,
+ *  its Pipeline's on 2026-10-02 (`seedPipelineRows`), and each of its days is the weekday it is in
+ *  the corpus's place. An earlier place, as the timeline's is, would not keep the corpus out: the
+ *  measures look for a pull request's deploy among every deploy from the window's start on, with
+ *  no end (`readDeliveryRows`, packages/envoy/internal/dispatch/api/delivery.go), so a deploy the
+ *  corpus wrote after the window ships the fixture's last pull request, which none of the
+ *  fixture's own deploys ships, and moves the window's merge-to-production median. */
+export const MEASURES_DAYS_LATER = 35;
+
 /** Where a fixture is written: the project its issues are in, the number it gives each of its
- *  pull requests and runs, and the moment it gives each row of the timeline and the Pipeline. A
- *  caller that names no place writes each fixture as this module spells it, in project `ACME`;
- *  a row's place (the `delivery` fixture of e2e/test.ts) writes the row's own project, numbers
- *  neither another row nor the review corpus writes, and the timeline and the Pipeline
- *  `ROW_DAYS_EARLIER` days earlier, so the window a row reads holds its own rows and none of the
- *  corpus's, which a worker keeps beside them (the `reviewSeed` fixture). */
+ *  pull requests and runs, and the moment it gives each row of the timeline, the Pipeline and the
+ *  measures. A caller that names no place writes each fixture as this module spells it, in
+ *  project `ACME`; a row's place (the `delivery` fixture of e2e/test.ts) writes the row's own
+ *  project, numbers neither another row nor the review corpus writes, the timeline and the
+ *  Pipeline `ROW_DAYS_EARLIER` days earlier and the measures `MEASURES_DAYS_LATER` days later, so
+ *  the window a row reads holds its own rows and none of the corpus's, which a worker keeps
+ *  beside them (the `reviewSeed` fixture). */
 export interface DeliveryPlace {
   /** The key of the project the fixture's issues are in. */
   readonly project: string;
@@ -164,27 +180,42 @@ export interface DeliveryPlace {
   /** The moment the place writes for the timeline's or the Pipeline's moment `iso`, spelled the
    *  same way (`YYYY-MM-DDTHH:MM:SSZ`). */
   readonly at: (iso: string) => string;
+  /** The moment the place writes for the measures fixture's moment `iso`, spelled the same
+   *  way. */
+  readonly measuresAt: (iso: string) => string;
   /** The window `/delivery` is opened on to see the place's timeline fixture: the place's day,
    *  as `TIMELINE_FIXTURE_QUERY` spans the corpus's. */
   readonly timelineQuery: string;
+  /** The window `/delivery` and its measures are read in to see the place's measures fixture:
+   *  `FIXTURE_WINDOW` at the place's moments for it, as a query string without the leading
+   *  "?". */
+  readonly measuresQuery: string;
   /** The Pipeline page's pinned "today" (`?at=`) for the place's Pipeline rows: `PIPELINE_AT`
    *  at the place's moment for it. */
   readonly pipelineAt: string;
 }
 
-/** The place in `project` that adds `numbers` to each pull request's and run's number and writes
- *  the timeline and the Pipeline `daysEarlier` days before the review corpus does. */
+/** `iso` moved `days` days on, or back where `days` is below zero, spelled as `iso` is
+ *  (`YYYY-MM-DDTHH:MM:SSZ`). */
+function daysOn(iso: string, days: number): string {
+  return new Date(Date.parse(iso) + days * 24 * 60 * 60 * 1000).toISOString().replace(".000Z", "Z");
+}
+
+/** The place in `project` that adds `numbers` to each pull request's and run's number, writes
+ *  the timeline and the Pipeline `daysEarlier` days before the review corpus does, and the
+ *  measures `measuresDaysLater` days after. */
 export function deliveryPlace(
   project: string,
   numbers: number,
-  daysEarlier: number
+  daysEarlier: number,
+  measuresDaysLater: number
 ): DeliveryPlace {
-  const at = (iso: string) =>
-    new Date(Date.parse(iso) - daysEarlier * 24 * 60 * 60 * 1000)
-      .toISOString()
-      .replace(".000Z", "Z");
+  const at = (iso: string) => daysOn(iso, -daysEarlier);
+  const measuresAt = (iso: string) => daysOn(iso, measuresDaysLater);
   return {
     at,
+    measuresAt,
+    measuresQuery: `from=${encodeURIComponent(measuresAt(FIXTURE_WINDOW.from))}&to=${encodeURIComponent(measuresAt(FIXTURE_WINDOW.to))}`,
     number: (fixed) => numbers + fixed,
     pipelineAt: at(PIPELINE_AT),
     project,
@@ -193,7 +224,7 @@ export function deliveryPlace(
 }
 
 /** The place a fixture is written in when its caller names none. */
-const corpusPlace = deliveryPlace("ACME", 0, 0);
+const corpusPlace = deliveryPlace("ACME", 0, 0, 0);
 
 /** The slice 1 timeline's fixture, on the place's day (2024-06-01 in the corpus's): two
  *  population pull requests (#1 shipped by deploy run 500 and attributed to `<project>-1`, a P0
@@ -271,21 +302,17 @@ export async function seedSessionGroupsFixture({ number, project }: DeliveryPlac
   );
 }
 
-/** The measures fixture's window (packages/envoy/internal/dispatch/delivery/measures/testdata/
- *  dora-fixture.json, the prototype's own web/fixtures/dataset.json with its names replaced). */
-export const FIXTURE_WINDOW = { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20:00:00Z" } as const;
-
 /** The measures fixture: the prototype fixture's 14 population pull requests and 8 deploy runs,
  *  each run's production job (`widgets-release / widgets-release`) and failed jobs, and the four
  *  issues of the place's project, issue 103 the one open P0 with neither a claim nor a route.
- *  With no place it is the docs media harness's (docs/site/media/harness.ts), in project `ACME`,
- *  and writes the delivery settings first; a real-stack row passes its own place, whose numbers
- *  its pull requests and runs take. It stands in `FIXTURE_WINDOW` in every place: the review
- *  corpus writes no pull request or deploy in that window. Every run is a push on main. Its
+ *  With no place it is the docs media harness's (docs/site/media/harness.ts), in project `ACME`
+ *  and in `FIXTURE_WINDOW`, and writes the delivery settings first; a real-stack row passes its
+ *  own place, whose numbers its pull requests and runs take and whose moments for the measures
+ *  (`measuresAt`, `MEASURES_DAYS_LATER`) they are written at. Every run is a push on main. Its
  *  expected measures are the prototype's own computeDora with each deploy derived by its own
  *  containment (LEGION-567 slice 2 plan, "How the expected values are produced"). */
 export async function seedMeasuresFixture(place?: DeliveryPlace): Promise<void> {
-  const { number, project } = place ?? corpusPlace;
+  const { measuresAt: at, number, project } = place ?? corpusPlace;
   await sql(
     ...(place === undefined ? [SETTINGS] : []),
     `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
@@ -300,60 +327,60 @@ export async function seedMeasuresFixture(place?: DeliveryPlace): Promise<void> 
        additions, deletions, rework, issue_key, sessions, partial
      ) VALUES
        ('acme/widgets', ${number(101)}, 'Add timeline zoom brush', 'https://github.com/acme/widgets/pull/${number(101)}', 'octocat',
-        '2026-09-04T18:00:00Z', '2026-09-05T12:00:00Z', '2026-09-04T15:00:00Z', 210, 12, false, '${project}-100', ARRAY[]::text[], false),
+        '${at("2026-09-04T18:00:00Z")}', '${at("2026-09-05T12:00:00Z")}', '${at("2026-09-04T15:00:00Z")}', 210, 12, false, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', ${number(102)}, 'fix: timeline brush jumps on resize', 'https://github.com/acme/widgets/pull/${number(102)}', 'octocat',
-        '2026-09-06T09:00:00Z', '2026-09-06T13:00:00Z', '2026-09-06T08:30:00Z', 18, 4, true, '${project}-100', ARRAY[]::text[], false),
+        '${at("2026-09-06T09:00:00Z")}', '${at("2026-09-06T13:00:00Z")}', '${at("2026-09-06T08:30:00Z")}', 18, 4, true, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', ${number(103)}, 'Add DORA lead-time calc', 'https://github.com/acme/widgets/pull/${number(103)}', 'octocat',
-        '2026-09-07T10:00:00Z', '2026-09-07T16:00:00Z', '2026-09-07T08:00:00Z', 140, 6, false, '${project}-101', ARRAY[]::text[], false),
+        '${at("2026-09-07T10:00:00Z")}', '${at("2026-09-07T16:00:00Z")}', '${at("2026-09-07T08:00:00Z")}', 140, 6, false, '${project}-101', ARRAY[]::text[], false),
        ('acme/widgets', ${number(104)}, 'Add facet filtering module', 'https://github.com/acme/widgets/pull/${number(104)}', 'octocat',
-        '2026-09-08T09:00:00Z', '2026-09-08T15:00:00Z', '2026-09-08T07:00:00Z', 95, 3, false, '${project}-100', ARRAY[]::text[], false),
+        '${at("2026-09-08T09:00:00Z")}', '${at("2026-09-08T15:00:00Z")}', '${at("2026-09-08T07:00:00Z")}', 95, 3, false, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', ${number(105)}, 'revert: Add facet filtering module', 'https://github.com/acme/widgets/pull/${number(105)}', 'octocat',
-        '2026-09-09T08:00:00Z', '2026-09-09T09:00:00Z', '2026-09-09T07:45:00Z', 3, 95, true, '${project}-100', ARRAY[]::text[], false),
+        '${at("2026-09-09T08:00:00Z")}', '${at("2026-09-09T09:00:00Z")}', '${at("2026-09-09T07:45:00Z")}', 3, 95, true, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', ${number(106)}, 'Add drill-down panel', 'https://github.com/acme/widgets/pull/${number(106)}', 'octocat',
-        '2026-09-10T09:00:00Z', '2026-09-10T17:00:00Z', '2026-09-10T08:00:00Z', 180, 20, false, '${project}-100', ARRAY[]::text[], false),
+        '${at("2026-09-10T09:00:00Z")}', '${at("2026-09-10T17:00:00Z")}', '${at("2026-09-10T08:00:00Z")}', 180, 20, false, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', ${number(107)}, 'hotfix: drill-down panel crash on null issue', 'https://github.com/acme/widgets/pull/${number(107)}', 'octocat',
-        '2026-09-11T10:00:00Z', '2026-09-11T11:00:00Z', '2026-09-11T09:45:00Z', 9, 2, true, '${project}-100', ARRAY[]::text[], false),
+        '${at("2026-09-11T10:00:00Z")}', '${at("2026-09-11T11:00:00Z")}', '${at("2026-09-11T09:45:00Z")}', 9, 2, true, '${project}-100', ARRAY[]::text[], false),
        ('acme/gadgets', ${number(20)}, 'Add dispatch API client', 'https://github.com/acme/gadgets/pull/${number(20)}', 'octocat',
-        '2026-09-12T09:00:00Z', '2026-09-12T14:00:00Z', '2026-09-12T08:00:00Z', 60, 0, false, '${project}-102', ARRAY[]::text[], false),
+        '${at("2026-09-12T09:00:00Z")}', '${at("2026-09-12T14:00:00Z")}', '${at("2026-09-12T08:00:00Z")}', 60, 0, false, '${project}-102', ARRAY[]::text[], false),
        ('acme/widgets', ${number(108)}, 'Wire SSE events endpoint', 'https://github.com/acme/widgets/pull/${number(108)}', 'octocat',
-        '2026-09-13T07:00:00Z', '2026-09-13T08:00:00Z', '2026-09-13T06:00:00Z', 75, 5, false, '${project}-100', ARRAY[]::text[], false),
+        '${at("2026-09-13T07:00:00Z")}', '${at("2026-09-13T08:00:00Z")}', '${at("2026-09-13T06:00:00Z")}', 75, 5, false, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', ${number(109)}, 'Add priority facet counts', 'https://github.com/acme/widgets/pull/${number(109)}', 'octocat',
-        '2026-09-13T08:00:00Z', '2026-09-13T08:30:00Z', '2026-09-13T07:00:00Z', 40, 2, false, '${project}-101', ARRAY[]::text[], false),
+        '${at("2026-09-13T08:00:00Z")}', '${at("2026-09-13T08:30:00Z")}', '${at("2026-09-13T07:00:00Z")}', 40, 2, false, '${project}-101', ARRAY[]::text[], false),
        ('acme/widgets', ${number(110)}, 'Improve waiting-to-deploy step line', 'https://github.com/acme/widgets/pull/${number(110)}', 'octocat',
-        '2026-09-15T09:00:00Z', '2026-09-15T15:00:00Z', '2026-09-15T08:00:00Z', 30, 8, false, '${project}-100', ARRAY[]::text[], false),
+        '${at("2026-09-15T09:00:00Z")}', '${at("2026-09-15T15:00:00Z")}', '${at("2026-09-15T08:00:00Z")}', 30, 8, false, '${project}-100', ARRAY[]::text[], false),
        ('acme/widgets', ${number(111)}, 'Add component hierarchy filter', 'https://github.com/acme/widgets/pull/${number(111)}', 'octocat',
-        '2026-09-16T09:00:00Z', '2026-09-16T16:00:00Z', '2026-09-16T08:00:00Z', 120, 10, false, null, ARRAY[]::text[], false),
+        '${at("2026-09-16T09:00:00Z")}', '${at("2026-09-16T16:00:00Z")}', '${at("2026-09-16T08:00:00Z")}', 120, 10, false, null, ARRAY[]::text[], false),
        ('acme/widgets', ${number(112)}, 'fix: component hierarchy includes grandchildren', 'https://github.com/acme/widgets/pull/${number(112)}', 'octocat',
-        '2026-09-17T07:00:00Z', '2026-09-17T07:30:00Z', '2026-09-17T06:45:00Z', 14, 3, true, null, ARRAY[]::text[], false),
+        '${at("2026-09-17T07:00:00Z")}', '${at("2026-09-17T07:30:00Z")}', '${at("2026-09-17T06:45:00Z")}', 14, 3, true, null, ARRAY[]::text[], false),
        ('acme/widgets', ${number(113)}, 'Add rework share metric', 'https://github.com/acme/widgets/pull/${number(113)}', 'octocat',
-        '2026-09-18T09:00:00Z', '2026-09-18T15:00:00Z', '2026-09-18T08:00:00Z', 50, 4, false, '${project}-101', ARRAY[]::text[], false)`,
+        '${at("2026-09-18T09:00:00Z")}', '${at("2026-09-18T15:00:00Z")}', '${at("2026-09-18T08:00:00Z")}', 50, 4, false, '${project}-101', ARRAY[]::text[], false)`,
     `INSERT INTO delivery_runs (
        repo, run_id, kind, head_sha, head_commit_at, started_at, created_at, completed_at, conclusion, url, head_branch, event
      ) VALUES
-      ('acme/widgets', ${number(501)}, 'deploy', 'aaa101', '2026-09-05T12:30:00Z', '2026-09-05T12:01:00Z', '2026-09-05T12:01:00Z',
-        '2026-09-05T13:05:00Z', 'success', 'https://github.com/acme/widgets/actions/runs/${number(501)}', 'main', 'push'),
-       ('acme/widgets', ${number(502)}, 'deploy', 'aaa102', '2026-09-06T13:30:00Z', '2026-09-06T13:35:00Z', '2026-09-06T13:35:00Z',
-        '2026-09-06T14:05:00Z', 'success', 'https://github.com/acme/widgets/actions/runs/${number(502)}', 'main', 'push'),
-       ('acme/widgets', ${number(503)}, 'deploy', 'aaa103', '2026-09-09T09:30:00Z', '2026-09-09T09:35:00Z', '2026-09-09T09:35:00Z',
-        '2026-09-09T10:05:00Z', 'success', 'https://github.com/acme/widgets/actions/runs/${number(503)}', 'main', 'push'),
-       ('acme/widgets', ${number(504)}, 'deploy', 'aaa104', '2026-09-13T08:45:00Z', '2026-09-13T08:50:00Z', '2026-09-13T08:50:00Z',
-        '2026-09-13T09:05:00Z', 'success', 'https://github.com/acme/widgets/actions/runs/${number(504)}', 'main', 'push'),
-       ('acme/widgets', ${number(505)}, 'deploy', 'aaa105', '2026-09-17T07:45:00Z', '2026-09-17T07:50:00Z', '2026-09-17T07:50:00Z',
-        '2026-09-17T08:05:00Z', 'success', 'https://github.com/acme/widgets/actions/runs/${number(505)}', 'main', 'push'),
-       ('acme/widgets', ${number(506)}, 'deploy', 'aaa106', '2026-09-11T08:00:00Z', '2026-09-11T08:30:00Z', '2026-09-11T08:30:00Z',
-        '2026-09-11T09:05:00Z', 'failure', 'https://github.com/acme/widgets/actions/runs/${number(506)}', 'main', 'push'),
-       ('acme/widgets', ${number(507)}, 'deploy', 'aaa107', '2026-09-14T08:30:00Z', '2026-09-14T08:35:00Z', '2026-09-14T08:35:00Z',
-        '2026-09-14T09:05:00Z', 'failure', 'https://github.com/acme/widgets/actions/runs/${number(507)}', 'main', 'push'),
-       ('acme/widgets', ${number(508)}, 'deploy', 'aaa108', '2026-09-19T09:50:00Z', '2026-09-19T10:00:00Z', '2026-09-19T10:00:00Z',
+      ('acme/widgets', ${number(501)}, 'deploy', 'aaa101', '${at("2026-09-05T12:30:00Z")}', '${at("2026-09-05T12:01:00Z")}', '${at("2026-09-05T12:01:00Z")}',
+        '${at("2026-09-05T13:05:00Z")}', 'success', 'https://github.com/acme/widgets/actions/runs/${number(501)}', 'main', 'push'),
+       ('acme/widgets', ${number(502)}, 'deploy', 'aaa102', '${at("2026-09-06T13:30:00Z")}', '${at("2026-09-06T13:35:00Z")}', '${at("2026-09-06T13:35:00Z")}',
+        '${at("2026-09-06T14:05:00Z")}', 'success', 'https://github.com/acme/widgets/actions/runs/${number(502)}', 'main', 'push'),
+       ('acme/widgets', ${number(503)}, 'deploy', 'aaa103', '${at("2026-09-09T09:30:00Z")}', '${at("2026-09-09T09:35:00Z")}', '${at("2026-09-09T09:35:00Z")}',
+        '${at("2026-09-09T10:05:00Z")}', 'success', 'https://github.com/acme/widgets/actions/runs/${number(503)}', 'main', 'push'),
+       ('acme/widgets', ${number(504)}, 'deploy', 'aaa104', '${at("2026-09-13T08:45:00Z")}', '${at("2026-09-13T08:50:00Z")}', '${at("2026-09-13T08:50:00Z")}',
+        '${at("2026-09-13T09:05:00Z")}', 'success', 'https://github.com/acme/widgets/actions/runs/${number(504)}', 'main', 'push'),
+       ('acme/widgets', ${number(505)}, 'deploy', 'aaa105', '${at("2026-09-17T07:45:00Z")}', '${at("2026-09-17T07:50:00Z")}', '${at("2026-09-17T07:50:00Z")}',
+        '${at("2026-09-17T08:05:00Z")}', 'success', 'https://github.com/acme/widgets/actions/runs/${number(505)}', 'main', 'push'),
+       ('acme/widgets', ${number(506)}, 'deploy', 'aaa106', '${at("2026-09-11T08:00:00Z")}', '${at("2026-09-11T08:30:00Z")}', '${at("2026-09-11T08:30:00Z")}',
+        '${at("2026-09-11T09:05:00Z")}', 'failure', 'https://github.com/acme/widgets/actions/runs/${number(506)}', 'main', 'push'),
+       ('acme/widgets', ${number(507)}, 'deploy', 'aaa107', '${at("2026-09-14T08:30:00Z")}', '${at("2026-09-14T08:35:00Z")}', '${at("2026-09-14T08:35:00Z")}',
+        '${at("2026-09-14T09:05:00Z")}', 'failure', 'https://github.com/acme/widgets/actions/runs/${number(507)}', 'main', 'push'),
+       ('acme/widgets', ${number(508)}, 'deploy', 'aaa108', '${at("2026-09-19T09:50:00Z")}', '${at("2026-09-19T10:00:00Z")}', '${at("2026-09-19T10:00:00Z")}',
         null, 'cancelled', 'https://github.com/acme/widgets/actions/runs/${number(508)}', 'main', 'push')`,
     `INSERT INTO delivery_run_jobs (repo, run_id, name, completed_at, conclusion) VALUES
-       ('acme/widgets', ${number(501)}, 'widgets-release / widgets-release', '2026-09-05T13:00:00Z', 'success'),
-       ('acme/widgets', ${number(502)}, 'widgets-release / widgets-release', '2026-09-06T14:00:00Z', 'success'),
-       ('acme/widgets', ${number(503)}, 'widgets-release / widgets-release', '2026-09-09T10:00:00Z', 'success'),
-       ('acme/widgets', ${number(504)}, 'widgets-release / widgets-release', '2026-09-13T09:00:00Z', 'success'),
-       ('acme/widgets', ${number(505)}, 'widgets-release / widgets-release', '2026-09-17T08:00:00Z', 'success'),
-       ('acme/widgets', ${number(506)}, 'integration-test', '2026-09-11T09:00:00Z', 'failure'),
-       ('acme/widgets', ${number(507)}, 'widgets-release / widgets-release', '2026-09-14T09:00:00Z', 'failure')`
+       ('acme/widgets', ${number(501)}, 'widgets-release / widgets-release', '${at("2026-09-05T13:00:00Z")}', 'success'),
+       ('acme/widgets', ${number(502)}, 'widgets-release / widgets-release', '${at("2026-09-06T14:00:00Z")}', 'success'),
+       ('acme/widgets', ${number(503)}, 'widgets-release / widgets-release', '${at("2026-09-09T10:00:00Z")}', 'success'),
+       ('acme/widgets', ${number(504)}, 'widgets-release / widgets-release', '${at("2026-09-13T09:00:00Z")}', 'success'),
+       ('acme/widgets', ${number(505)}, 'widgets-release / widgets-release', '${at("2026-09-17T08:00:00Z")}', 'success'),
+       ('acme/widgets', ${number(506)}, 'integration-test', '${at("2026-09-11T09:00:00Z")}', 'failure'),
+       ('acme/widgets', ${number(507)}, 'widgets-release / widgets-release', '${at("2026-09-14T09:00:00Z")}', 'failure')`
   );
 }
 

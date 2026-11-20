@@ -33,7 +33,16 @@ import {
 } from "./harness-processes";
 import { withIssuePage } from "./issue-page-option";
 import { sql } from "./psql";
-import { type Browser, expect, type Locator, type Page, type Request, rowKey, test } from "./test";
+import {
+  type Browser,
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  rowKey,
+  rowSessionId,
+  test,
+} from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
 import { signIn } from "./users";
 
@@ -104,27 +113,33 @@ const machine = "two-builds-host";
  *  this window hold those at any drawing wider than 192 px. */
 const windowLayout = "b05b,80x24,0,0[80x12,0,0,0,80x11,0,13{40x11,0,13,1,39x11,41,13,2}]";
 
-const session: FakeSession = {
-  capabilities: ["aside", "btw", "steer"],
-  dir: "/workspaces/two-builds",
-  machine_id: machine,
-  roles: ["planner"],
-  // The live view's stream hook takes a session uuid only, as a real session id is.
-  session_id: "019a2b3c-0559-7000-8000-000000000559",
-  title: "Two builds planner",
-  tmux_place: {
-    layout: windowLayout,
-    pane_id: "%0",
-    pane_index: 0,
-    server_pid: "4242",
-    session_name: "main",
-    socket: "/tmp/tmux-1000/default",
-    window_id: "@1",
-    window_index: 1,
-    window_name: "agents",
-    zoomed: false,
-  },
-};
+/** The session the walk seeds, under an id of the row's own (`rowSessionId`, e2e/test.ts): the
+ *  walk uploads its picture to the session's conversation as `shot.png`, and an upload under a
+ *  name the conversation already holds is that picture's next version, so a session another row
+ *  of the worker had seeded would draw no `shot.png version 1`. The live view's stream hook takes
+ *  a session uuid only, as a real session id is, which `rowSessionId` answers. */
+function rowSession(): FakeSession {
+  return {
+    capabilities: ["aside", "btw", "steer"],
+    dir: "/workspaces/two-builds",
+    machine_id: machine,
+    roles: ["planner"],
+    session_id: rowSessionId("planner"),
+    title: "Two builds planner",
+    tmux_place: {
+      layout: windowLayout,
+      pane_id: "%0",
+      pane_index: 0,
+      server_pid: "4242",
+      session_name: "main",
+      socket: "/tmp/tmux-1000/default",
+      window_id: "@1",
+      window_index: 1,
+      window_name: "agents",
+      zoomed: false,
+    },
+  };
+}
 
 /** The text each seeded thing shows, which its route's landmark finds. */
 const shown = {
@@ -200,6 +215,8 @@ interface Seeded {
   readonly issue: string;
   readonly issueArtifact: string;
   readonly priority: string;
+  /** The id of the session the walk seeded (`rowSession`). */
+  readonly session: string;
 }
 
 /** What every route needs to show its own content rather than an empty or missing state: a
@@ -209,6 +226,7 @@ interface Seeded {
  *  in flight that advances it, and the delivery timeline's runs, in the row's own place. */
 async function seedEveryRoute(delivery: DeliveryPlace): Promise<Seeded> {
   const core = rowKey("CORE");
+  const session = rowSession();
   await setLiveSessions([session]);
   await createProject({ key: core, name: "Core" });
   await seedFakeGithub({
@@ -301,6 +319,7 @@ async function seedEveryRoute(delivery: DeliveryPlace): Promise<Seeded> {
     issue: issue.key,
     issueArtifact: issueArtifact.artifact.slug,
     priority: priority.id,
+    session: session.session_id,
   };
 }
 
@@ -335,7 +354,7 @@ function openDocument(page: Page, text: string): readonly Locator[] {
 function visits(seed: Seeded): readonly Visit[] {
   const core = rowKey("CORE");
   const issue = `/issues/${seed.issue}`;
-  const agent = `/agents/${session.session_id}`;
+  const agent = `/agents/${seed.session}`;
   return [
     { route: "/", shows: (page) => [heading(page, "Inbox")], url: "/" },
     {
@@ -411,7 +430,7 @@ function visits(seed: Seeded): readonly Visit[] {
         heading(page, machine),
         page
           .getByTestId("window-layout")
-          .locator(`[data-testid="window-pane"][data-agent="${session.session_id}"]`),
+          .locator(`[data-testid="window-pane"][data-agent="${seed.session}"]`),
       ],
       url: `/machines/${machine}`,
     },

@@ -239,18 +239,24 @@ test("a thread of six read replies folds the oldest four and ends in its reply b
 });
 
 /** One issue holding the three thread shapes, each a root and five replies of which the three
- *  oldest are read, so each thread folds exactly the same three. */
-async function seedThreeShapes(): Promise<{
+ *  oldest are read, so each thread folds exactly the same three. The reader is `me`, a person of
+ *  the row's own (`rowPerson`, e2e/test.ts), whose thread lists hold these three threads and no
+ *  other row's. */
+async function seedThreeShapes(me: string): Promise<{
   agent: string;
   comment: string;
   message: string;
 }> {
   const core = rowKey("CORE");
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Replay budget" });
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Replay budget" }, { login: me });
 
-  const comment = await createComment(issue.key, { body: "How far back does a replay go?" });
+  const comment = await createComment(
+    issue.key,
+    { body: "How far back does a replay go?" },
+    { login: me }
+  );
   for (let index = 1; index <= 5; index += 1) {
     await createComment(
       issue.key,
@@ -258,7 +264,11 @@ async function seedThreeShapes(): Promise<{
       asSession()
     );
   }
-  const message = await createMessage(issue.key, { body: "Where is the nightly build?" });
+  const message = await createMessage(
+    issue.key,
+    { body: "Where is the nightly build?" },
+    { login: me }
+  );
   for (let index = 1; index <= 5; index += 1) {
     await createMessage(
       issue.key,
@@ -269,6 +279,7 @@ async function seedThreeShapes(): Promise<{
   const agent = await seedAgentThread({
     body: "What is the rollout status?",
     delivery: "aside",
+    login: me,
     replies: [1, 2, 3, 4, 5].map((index) => `Agent reply ${index}.`),
   });
 
@@ -277,19 +288,23 @@ async function seedThreeShapes(): Promise<{
   const comments = (await listComments(issue.key))
     .filter((candidate) => candidate.reply_to === comment.id)
     .sort((left, right) => (left.created_at < right.created_at ? -1 : 1));
-  await markThreadRead(comment.id, comments[2]?.created_at ?? "");
+  await markThreadRead(comment.id, comments[2]?.created_at ?? "", { login: me });
   const messages = (await listIssueMessages(issue.key)).find(
     (read) => read.message.id === message.id
   );
-  await markThreadRead(message.id, (messages?.replies ?? [])[2]?.created_at ?? "");
-  const exchange = (await listAgentMessages(THREAD_SESSION.session_id)).find(
+  await markThreadRead(message.id, (messages?.replies ?? [])[2]?.created_at ?? "", {
+    login: me,
+  });
+  const exchange = (await listAgentMessages(THREAD_SESSION.session_id, { login: me })).find(
     (read) => read.message.id === agent
   );
-  await putAgentState(THREAD_SESSION.session_id, {
-    read_replies: (exchange?.replies ?? []).slice(0, 3).map((reply) => reply.id),
-  });
+  await putAgentState(
+    THREAD_SESSION.session_id,
+    { read_replies: (exchange?.replies ?? []).slice(0, 3).map((reply) => reply.id) },
+    { login: me }
+  );
 
-  const listed = await listMyReplies({ kind: ["reply", "agent"], state: "unread" });
+  const listed = await listMyReplies({ kind: ["reply", "agent"], state: "unread" }, { login: me });
   expect(
     (listed.rows ?? []).map((row) => row.unread_count).sort((left, right) => left - right)
   ).toEqual([2, 2, 2]);
@@ -299,8 +314,9 @@ async function seedThreeShapes(): Promise<{
 test("a comment thread, a message conversation and an Agent thread are drawn alike, New on each unread message", async ({
   browser,
 }) => {
-  const seeded = await seedThreeShapes();
-  const alice = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const seeded = await seedThreeShapes(me);
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await holdReadMarks(page);

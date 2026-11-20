@@ -72,6 +72,7 @@ import {
   deleteDeliveryRowsBut,
   deliveryPlace,
   deliveryRowsHeld,
+  MEASURES_DAYS_LATER,
   putDeliverySettings,
   ROW_DAYS_EARLIER,
   readDeliverySettings,
@@ -418,20 +419,22 @@ export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWork
   // A delivery row's own place: the row's project (`rowKey("ACME")`), numbers of its own for
   // its pull requests and runs, a multiple of 10,000 from `rowNumber` between 10,000 and
   // 1,999,990,000, which keeps every sum inside a Postgres `integer`, which a pull request's
-  // number is, and the timeline and the Pipeline written `ROW_DAYS_EARLIER` days before the
-  // review corpus's, which the worker keeps beside them (`reviewCorpus`). The teardown is the
-  // `finally` of every delivery row: the timeline, the measures and the Pipeline read every pull
-  // request, run and session group of their window whole ("2 PRs in current filter/window", the
-  // four measures, "p90 30m · 2 runs"), so each row deletes what it wrote there
-  // (`deleteDeliveryRowsBut`) and puts the settings back, and the next row of the worker starts
-  // on the tables and the settings this one started on.
+  // number is, the timeline and the Pipeline written `ROW_DAYS_EARLIER` days before the review
+  // corpus's, and the measures `MEASURES_DAYS_LATER` days after the corpus's, past the last
+  // deploy it writes; the worker keeps the corpus beside them (`reviewCorpus`). The teardown is
+  // the `finally` of every delivery row: the timeline, the measures and the Pipeline read every
+  // pull request, run and session group of their window whole ("2 PRs in current
+  // filter/window", the four measures, "p90 30m · 2 runs"), so each row deletes what it wrote
+  // there (`deleteDeliveryRowsBut`) and puts the settings back, and the next row of the worker
+  // starts on the tables and the settings this one started on.
   delivery: async ({ deliverySettings, freshDatabase: _resetFirst }, use) => {
     await deliverySettings();
     const held = await deliveryRowsHeld();
     const place = deliveryPlace(
       rowKey("ACME"),
       10_000 * (1 + (rowNumber("delivery") % 199_999)),
-      ROW_DAYS_EARLIER
+      ROW_DAYS_EARLIER,
+      MEASURES_DAYS_LATER
     );
     await use(place);
     await deleteDeliveryRowsBut(held, place.project);

@@ -638,7 +638,10 @@ test("an unconfigured Delivery page sets itself up from its form and then shows 
   }
 });
 
-const MEASURES_QUERY = `from=${encodeURIComponent(MEASURES_WINDOW.from)}&to=${encodeURIComponent(MEASURES_WINDOW.to)}`;
+// The measures rows read their place's window (`DeliveryPlace.measuresQuery`): the measures
+// fixture written `MEASURES_DAYS_LATER` days after the review corpus's place
+// (e2e/delivery-seed.ts), past every deploy the corpus writes, which the measures would otherwise
+// read as the deploy of the window's last pull request.
 
 test("the measures panel shows the four measures for the window and follows a facet", async ({
   browser,
@@ -648,7 +651,7 @@ test("the measures panel shows the four measures for the window and follows a fa
   await seedMeasuresFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
+  await page.goto(`/delivery?mode=list&${delivery.measuresQuery}`);
 
   const kpis = page.getByLabel("KPI targets");
   await expect(kpis).toBeVisible();
@@ -678,7 +681,7 @@ test("the measures API gives an agent the numbers the panel shows", async ({
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   const token = await mintAgentToken("measures-e2e", "alice");
-  const response = await page.request.get(`/api/v1/delivery/measures?${MEASURES_QUERY}`, {
+  const response = await page.request.get(`/api/v1/delivery/measures?${delivery.measuresQuery}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   expect(response.status()).toBe(200);
@@ -695,9 +698,9 @@ test("a brush window narrows the measures to it", async ({ browser, delivery }) 
   // The prototype's own computeDora over the brush window 2026-09-05..2026-09-12 (PRs #101-#107,
   // each deploy derived by its containment): 3 deploys, merge → production median 1140 minutes
   // (`bun /tmp/measures567a/dump-dora-stored-window.ts 2026-09-05T00:00:00Z 2026-09-12T00:00:00Z`
-  // from the prototype's web/).
-  const brush = `ws=${encodeURIComponent("2026-09-05T00:00:00.000Z")}&we=${encodeURIComponent("2026-09-12T00:00:00.000Z")}`;
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}&${brush}`);
+  // from the prototype's web/). The window is read at the place's moments for it.
+  const brush = `ws=${encodeURIComponent(new Date(delivery.measuresAt("2026-09-05T00:00:00Z")).toISOString())}&we=${encodeURIComponent(new Date(delivery.measuresAt("2026-09-12T00:00:00Z")).toISOString())}`;
+  await page.goto(`/delivery?mode=list&${delivery.measuresQuery}&${brush}`);
   const kpis = page.getByLabel("KPI targets");
   await expect(kpis.locator('[data-kpi="Deploys a day"]')).toContainText("3 deploys");
   await expect(kpis.locator('[data-kpi="Merge → production"]')).toContainText("19.0h");
@@ -711,12 +714,17 @@ test("the definitions fold opens to the per-day table", async ({ browser, delive
   await seedMeasuresFixture(delivery);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/delivery?mode=list&${MEASURES_QUERY}`);
+  await page.goto(`/delivery?mode=list&${delivery.measuresQuery}`);
   await expect(page.getByLabel("KPI targets")).toBeVisible();
 
   await page.getByRole("button", { name: "Definitions & alternatives" }).click();
   const table = page.getByRole("table").filter({ hasText: "Reached production" });
-  await expect(table.locator("tbody tr").first()).toHaveText(/^2026-09-27 \(partial\)/);
+  // The window's last day, which its end at 20:00 leaves partial: 2026-09-27 in the corpus's
+  // place, and that day at the place's moment for it here.
+  const lastDay = delivery.measuresAt(MEASURES_WINDOW.to).slice(0, 10);
+  await expect(table.locator("tbody tr").first()).toHaveText(
+    new RegExp(`^${lastDay} \\(partial\\)`)
+  );
   await page.screenshot({ path: testInfo.outputPath("delivery-measures.png"), fullPage: true });
   await context.close();
 });

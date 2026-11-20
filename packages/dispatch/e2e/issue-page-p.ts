@@ -13,6 +13,7 @@ import {
   userHeaders,
 } from "./api";
 import { filterRow } from "./issue-page";
+import { rowKey } from "./test";
 import { assertWhole } from "./unclipped";
 
 declare global {
@@ -89,9 +90,6 @@ export const TWENTY_LABELS = [
   "web",
 ] as const;
 
-/** The project the seed writes in. */
-export const HEADER_PROJECT = "HDR";
-
 /** The agent session that asks the seed's questions: a question it asks on an issue alice holds
  *  waits on alice (`waiting_on_person`). */
 export const asAgent = {
@@ -104,6 +102,9 @@ export interface HeaderSeed {
   readonly childKeys: readonly string[];
   readonly key: string;
   readonly parentKey: string;
+  /** The project the seed writes in: the row's own (`rowKey("HDR")`, e2e/test.ts), which the
+   *  header draws as text before the key. */
+  readonly project: string;
   readonly specArtifactId: string;
 }
 
@@ -115,10 +116,11 @@ export interface HeaderSeed {
  * on alice. No approval request is open: a row that needs one asks for it.
  */
 export async function seedHeader(): Promise<HeaderSeed> {
-  await createProject({ key: HEADER_PROJECT, name: "Header" });
+  const project = rowKey("HDR");
+  await createProject({ key: project, name: "Header" });
   const parent = await createIssue({
     force: true,
-    project: HEADER_PROJECT,
+    project,
     spec: "The parent's plan.",
     title: "The parent of the header's issue",
   });
@@ -126,7 +128,7 @@ export async function seedHeader(): Promise<HeaderSeed> {
   const issue = await createIssue({
     force: true,
     parent: parent.key,
-    project: HEADER_PROJECT,
+    project,
     spec: ":::requirement{#r1}\nThe header fits.\n:::\n",
     title: "The header's issue",
   });
@@ -144,7 +146,7 @@ export async function seedHeader(): Promise<HeaderSeed> {
     const child = await createIssue({
       force: true,
       parent: issue.key,
-      project: HEADER_PROJECT,
+      project,
       title,
     });
     await patchIssue(child.key, { status });
@@ -156,6 +158,7 @@ export async function seedHeader(): Promise<HeaderSeed> {
     childKeys,
     key: issue.key,
     parentKey: parent.key,
+    project,
     specArtifactId: issue.primary_artifact_id ?? "",
   };
 }

@@ -782,7 +782,11 @@ test("another person's rename and delete of a priority redraw an open page with 
 test("a priority's own page writes its title and description and lists only its work", async ({
   browser,
 }) => {
+  // The order is the deployment's, so the row's first priority takes the place after every
+  // priority standing before it (`heldBefore`): P1 over an emptied database.
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  const first = held.place(0);
   // A description with a heading and a list, so what the page draws of it is read as those
   // elements rather than as the markdown source it is stored as.
   const outline = "# Why\n\n- Every machine runs the daemon\n- Nothing waits on the old build";
@@ -806,8 +810,8 @@ test("a priority's own page writes its title and description and lists only its 
     await page.getByRole("textbox", { name: "Title" }).blur();
 
     // The description reads rendered, and no editor is drawn until the reader asks for one.
-    const rendered = page.getByRole("group", { exact: true, name: "Description of P1" });
-    const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
+    const rendered = page.getByRole("group", { exact: true, name: `Description of ${first}` });
+    const editor = page.getByRole("textbox", { exact: true, name: `Description of ${first}` });
     await expect(rendered.getByRole("heading", { name: "Why" })).toBeVisible();
     await expect(rendered.getByRole("listitem")).toHaveText([
       "Every machine runs the daemon",
@@ -843,8 +847,11 @@ test("a priority's own page writes its title and description and lists only its 
     await expect(rendered.getByRole("listitem").last()).toHaveText(line);
     // The keyboard's way in is the one button in the block, named by the words it shows, which
     // is drawn only once it holds the focus; Enter on it opens the editor as a click does.
-    const edit = rendered.getByRole("button", { exact: true, name: "Edit the description of P1" });
-    await expect(edit).toHaveText("Edit the description of P1");
+    const edit = rendered.getByRole("button", {
+      exact: true,
+      name: `Edit the description of ${first}`,
+    });
+    await expect(edit).toHaveText(`Edit the description of ${first}`);
     expect((await edit.boundingBox())?.width ?? 0).toBeLessThanOrEqual(1);
     await edit.focus();
     expect((await edit.boundingBox())?.width ?? 0).toBeGreaterThan(1);
@@ -876,7 +883,11 @@ test("a priority's own page writes its title and description and lists only its 
 test("an issue's header names the priorities it advances and links to each", async ({
   browser,
 }) => {
+  // The order is the deployment's, so the row's priorities take the places after every priority
+  // standing before it (`heldBefore`): P1 and P3 over an emptied database.
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  const [first, third] = [held.place(0), held.place(2)];
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -884,7 +895,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     await page.goto(`/issues/${seed.rollout}`);
     const line = page.getByTestId("issue-advances");
     await expect(line).toContainText("Advances");
-    const link = line.getByRole("link", { name: `P1 ${seed.titles[0]}` });
+    const link = line.getByRole("link", { name: `${first} ${seed.titles[0]}` });
     await expect(link).toBeVisible();
     await link.click();
     await expect(page).toHaveURL(`/priorities/${seed.ids[0]}`);
@@ -903,10 +914,10 @@ test("an issue's header names the priorities it advances and links to each", asy
     // ancestor's, and a relation on a child places nothing above it.
     await page.goto(`/issues/${seed.child}`);
     const inherited = page.getByTestId("issue-advances");
-    await expect(inherited.getByRole("link", { name: `P3 ${seed.titles[2]}` })).toBeVisible();
+    await expect(inherited.getByRole("link", { name: `${third} ${seed.titles[2]}` })).toBeVisible();
     await expect(inherited).toContainText("inherited");
     await expect(
-      page.getByRole("button", { name: `Remove P3 ${seed.titles[2]} from ${seed.child}` })
+      page.getByRole("button", { name: `Remove ${third} ${seed.titles[2]} from ${seed.child}` })
     ).toHaveCount(0);
   } finally {
     await context.close();
@@ -980,7 +991,11 @@ test("the margin lists a priority's history newest first and keeps the state a r
 test("a person places an issue under a priority from the issue and takes it off again", async ({
   browser,
 }) => {
+  // The order is the deployment's, so the row's second priority takes the place after every
+  // priority standing before it and the row's first (`heldBefore`): P2 over an emptied database.
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  const second = held.place(1);
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -992,7 +1007,7 @@ test("a person places an issue under a priority from the issue and takes it off 
     await page.getByRole("button", { name: "Add", exact: true }).click();
     const named = page
       .getByTestId("issue-advances")
-      .getByRole("link", { name: `P2 ${seed.titles[1]}` });
+      .getByRole("link", { name: `${second} ${seed.titles[1]}` });
     await expect(named).toBeVisible();
     await page.reload();
     await expect(named).toBeVisible();
@@ -1009,7 +1024,7 @@ test("a person places an issue under a priority from the issue and takes it off 
     // Taken off from the same line, and gone from both ends after a reload.
     await page.goto(`/issues/${seed.clock}`);
     await page
-      .getByRole("button", { name: `Remove P2 ${seed.titles[1]} from ${seed.clock}` })
+      .getByRole("button", { name: `Remove ${second} ${seed.titles[1]} from ${seed.clock}` })
       .click();
     await expect(page.getByTestId("issue-advances").getByRole("link")).toHaveCount(0);
     await page.reload();
@@ -1043,7 +1058,11 @@ test("a person places an issue under a priority from the issue and takes it off 
 test("another person's delete of a priority leaves an open issue page, whose next write lands", async ({
   browser,
 }) => {
+  // The order is the deployment's, so the row's priorities take the places after every priority
+  // standing before it (`heldBefore`): P1, P2 and P3 over an emptied database.
+  const held = await heldBefore();
   const seed = await seedPriorities();
+  const [first, second, third] = [held.place(0), held.place(1), held.place(2)];
   // The daemon's smoke suite advances P1 already; it states P3 beside it - one relation more,
   // which a write with no revision may assert - so the delete of P3 below leaves the issue one
   // relation of its own for the next write to keep.
@@ -1060,10 +1079,10 @@ test("another person's delete of a priority leaves an open issue page, whose nex
       document.documentElement.dataset.heldOpen = "yes";
     });
     const line = reader.getByTestId("issue-advances");
-    const kept = line.getByRole("link", { name: `P1 ${seed.titles[0]}` });
+    const kept = line.getByRole("link", { name: `${first} ${seed.titles[0]}` });
     const deleted = line.locator(`a[href="/priorities/${seed.ids[2]}"]`);
     await expect(kept).toBeVisible();
-    await expect(deleted).toHaveText(`P3 ${seed.titles[2]}`);
+    await expect(deleted).toHaveText(`${third} ${seed.titles[2]}`);
 
     // Another person retires P3 over the API. The open header stops naming it, by its title or
     // by its id, with no reload: the issue's read is fetched again, so the set the next write
@@ -1077,7 +1096,7 @@ test("another person's delete of a priority leaves an open issue page, whose nex
     await reader.getByRole("button", { name: `Add a priority to ${seed.smoke}` }).click();
     await reader.getByLabel("Priority to advance").selectOption(seed.ids[1]);
     await reader.getByRole("button", { name: "Add", exact: true }).click();
-    const added = line.getByRole("link", { name: `P2 ${seed.titles[1]}` });
+    const added = line.getByRole("link", { name: `${second} ${seed.titles[1]}` });
     await expect(added).toBeVisible();
     expect(await reader.evaluate(() => document.documentElement.dataset.heldOpen)).toBe("yes");
 

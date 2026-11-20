@@ -29,7 +29,6 @@ import {
   expectHeaderDrawn,
   expectHeaderWithinItsLimit,
   firstControlOfRowOne,
-  HEADER_PROJECT,
   headerFamilies,
   headerLabels,
   headerParts,
@@ -66,7 +65,7 @@ import {
 import { leaveFocus, onBody } from "./keyboard-issue";
 import { boxesApart } from "./layout";
 import { answeredPost, holdPosts, navigateInApp } from "./sends";
-import { expect, type Locator, type Page, type Request, test } from "./test";
+import { expect, type Locator, type Page, type Request, rowKey, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -218,7 +217,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       /^issue-approval-steps$/,
       /^button (Awaiting approval|Approve|Request changes)/,
       /^issue-route-unreachable$/,
-      exactly(`text ${HEADER_PROJECT}`),
+      exactly(`text ${seeded.project}`),
       exactly("text ›"),
       exactly(`text ${seeded.key}`),
       exactly("text P1"),
@@ -238,7 +237,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       const header = issueHeader(page);
       const band = identityBand(page);
       const inTheHeader: readonly (readonly [string, Locator, (string | RegExp)?])[] = [
-        ["the project", band.getByText(HEADER_PROJECT, { exact: true }), HEADER_PROJECT],
+        ["the project", band.getByText(seeded.project, { exact: true }), seeded.project],
         ["the parent", header.getByRole("link", { exact: true, name: seeded.parentKey })],
         ["the key", band.getByText(seeded.key, { exact: true }), seeded.key],
         ["the copy control", header.getByRole("button", { name: /^Copy issue key / })],
@@ -343,7 +342,7 @@ test("the header holds its list and its limits at every width @phone", async ({ 
       ).toEqual([]);
       // The list holds the words the header draws as text, so a property drawn that way is in it.
       expect(
-        [`text ${HEADER_PROJECT}`, `text ${seeded.key}`].filter((words) => !parts.includes(words)),
+        [`text ${seeded.project}`, `text ${seeded.key}`].filter((words) => !parts.includes(words)),
         `the header's parts leave out the words it draws as text at ${width} px`
       ).toEqual([]);
       const order = [
@@ -609,13 +608,17 @@ test("the approval entries stay in the header and read the document each step ap
 }) => {
   test.setTimeout(150_000);
   await phase(browser, seedHeader, async (page) => {
-    await createProject({ key: "GATED", name: "Gated" });
-    await setGatedSteps("GATED", ["decisions", "criteria", "spec"]);
-    await createProject({ key: "PLAIN", name: "Plain" });
+    // Two projects of the row's own (`rowKey`, e2e/test.ts): one that gates three steps and one
+    // that gates none.
+    const gated = rowKey("GATED");
+    const plain = rowKey("PLAIN");
+    await createProject({ key: gated, name: "Gated" });
+    await setGatedSteps(gated, ["decisions", "criteria", "spec"]);
+    await createProject({ key: plain, name: "Plain" });
 
     // A root of a project that gates steps: one entry per step, in the project's order, each
     // reading its own document.
-    const root = await createIssue({ project: "GATED", spec: "The plan.", title: "Gated root" });
+    const root = await createIssue({ project: gated, spec: "The plan.", title: "Gated root" });
     const decisions = await createIssueArtifact(root.key, {
       content: "# Decisions\n\nHTTP it is.\n",
       name: "decisions.md",
@@ -713,8 +716,8 @@ test("the approval entries stay in the header and read the document each step ap
         `the page did not open ${key}`
       ).toBeVisible();
     };
-    const plain = await createIssue({ project: "PLAIN", spec: "The plan.", title: "Plain root" });
-    await openInApp(plain.key);
+    const plainRoot = await createIssue({ project: plain, spec: "The plan.", title: "Plain root" });
+    await openInApp(plainRoot.key);
     await expectHeaderDrawn(page);
     await expect(issueHeader(page).getByTestId("issue-approval-steps")).toHaveCount(0);
     await expect(issueHeader(page)).toContainText(CONTROL_LABELS.not_requested);
@@ -737,21 +740,21 @@ test("the approval entries stay in the header and read the document each step ap
     const gatedChild = await createIssue({
       force: true,
       parent: root.key,
-      project: "GATED",
+      project: gated,
       spec: "The child's plan.",
       title: "Child of the gated root",
     });
     await oneChip(gatedChild.key, openInApp);
     const childOf = (parent: string, title: string) =>
-      createIssue({ parent, project: "PLAIN", spec: "The child's plan.", title });
+      createIssue({ parent, project: plain, spec: "The child's plan.", title });
     const unapproved = await createIssue({
-      project: "PLAIN",
+      project: plain,
       spec: "Not yet.",
       title: "Unapproved",
     });
     await oneChip((await childOf(unapproved.key, "Child of an unapproved parent")).key);
     const changed = await createIssue({
-      project: "PLAIN",
+      project: plain,
       spec: "Before.",
       title: "Changed since",
     });
@@ -761,9 +764,9 @@ test("the approval entries stay in the header and read the document each step ap
     });
     expect((await getArtifact(changed.primary_artifact_id ?? "")).approval?.state).toBe("stale");
     await oneChip((await childOf(changed.key, "Child of a changed parent")).key);
-    await requestApproval(plain.primary_artifact_id ?? "", { summary: "Read it." });
-    await reviewArtifact(plain.primary_artifact_id ?? "", { state: "approved" });
-    const child = await childOf(plain.key, "Child of an approved parent");
+    await requestApproval(plainRoot.primary_artifact_id ?? "", { summary: "Read it." });
+    await reviewArtifact(plainRoot.primary_artifact_id ?? "", { state: "approved" });
+    const child = await childOf(plainRoot.key, "Child of an approved parent");
     await oneChip(child.key);
 
     // A child with an approval request open answers it from its chip in the header.
@@ -777,14 +780,14 @@ test("the approval entries stay in the header and read the document each step ap
 
     // The plain root's spec approved, written again, and sent back with no request open: nothing
     // waits on the reader, so the header draws neither action.
-    await editArtifact(plain.primary_artifact_id ?? "", {
+    await editArtifact(plainRoot.primary_artifact_id ?? "", {
       ops: [{ find: "The plan.", op: "replace", with: "The plan, written again." }],
     });
-    await reviewArtifact(plain.primary_artifact_id ?? "", {
+    await reviewArtifact(plainRoot.primary_artifact_id ?? "", {
       reason: "Name the rollback path.",
       state: "changes_requested",
     });
-    await gotoIssue(page, `/issues/${plain.key}`);
+    await gotoIssue(page, `/issues/${plainRoot.key}`);
     await expectHeaderDrawn(page);
     await expect(
       issueHeader(page).getByRole("button", { name: "Changes requested" }),
@@ -953,7 +956,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
     // An approval request is all that waits: the count puts the focus on the approval control.
     const lone = await createIssue({
       force: true,
-      project: HEADER_PROJECT,
+      project: seeded.project,
       spec: "Plan.",
       title: "Lone",
     });
@@ -979,7 +982,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
     // focus is read once the press is done.
     const verifying = await createIssue({
       force: true,
-      project: HEADER_PROJECT,
+      project: seeded.project,
       spec: "Plan.",
       title: "Lone Verification document",
     });
@@ -1013,7 +1016,7 @@ test("the count of what waits is a control that opens the Decisions address @pho
     // opens the Decisions address.
     const decided = await createIssue({
       force: true,
-      project: HEADER_PROJECT,
+      project: seeded.project,
       spec: ":::requirement{#r1}\nThe header counts a decision that waits.\n:::\n",
       title: "Decided",
     });
@@ -1052,8 +1055,8 @@ test("the count of what waits is a control that opens the Decisions address @pho
 // through the API.
 test("the count of what waits holds only what waits on the reader", async ({ browser }) => {
   test.setTimeout(120_000);
-  await phase(browser, seedHeader, async (alice) => {
-    const issue = await createIssue({ force: true, project: HEADER_PROJECT, title: "Whose turn" });
+  await phase(browser, seedHeader, async (alice, seeded) => {
+    const issue = await createIssue({ force: true, project: seeded.project, title: "Whose turn" });
     const bobs = await asUser(browser, "bob");
     try {
       await withIssuePage(bobs, "bob");
@@ -1785,11 +1788,12 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
   await phase(
     browser,
     async () => {
-      await createProject({ key: "LIKE", name: "Large root" });
-      await setGatedSteps("LIKE", ["spec"]);
+      const like = rowKey("LIKE");
+      await createProject({ key: like, name: "Large root" });
+      await setGatedSteps(like, ["spec"]);
       const root = await createIssue({
         force: true,
-        project: "LIKE",
+        project: like,
         spec: "The plan.",
         title: MEASURED_TITLE,
       });
@@ -1797,7 +1801,7 @@ test("the header holds its limits on a large gated root @phone", async ({ browse
         const child = await createIssue({
           force: true,
           parent: root.key,
-          project: "LIKE",
+          project: like,
           title: `Part ${at + 1} of the root`,
         });
         if (at < 3) await patchIssue(child.key, { status: "done" });
@@ -1853,14 +1857,15 @@ test("the header holds its 1440 px limit on a root whose project gates two or th
 }) => {
   test.setTimeout(240_000);
   const projects = [
-    { key: "TWO", steps: ["criteria", "spec"] },
-    { key: "THREE", steps: ["decisions", "criteria", "spec"] },
+    { logical: "TWO", steps: ["criteria", "spec"] },
+    { logical: "THREE", steps: ["decisions", "criteria", "spec"] },
   ] as const;
   await phase(
     browser,
     async () => {
       const roots: { key: string; documents: string[]; steps: readonly string[] }[] = [];
-      for (const { key, steps } of projects) {
+      for (const { logical, steps } of projects) {
+        const key = rowKey(logical);
         await createProject({ key, name: `Gates ${steps.length} steps` });
         await setGatedSteps(key, [...steps]);
         const root = await createIssue({
@@ -2869,9 +2874,10 @@ test("an approval entry's a approves that entry's document and no other", async 
   await phase(
     browser,
     async () => {
-      await createProject({ key: "GATED", name: "Gated" });
-      await setGatedSteps("GATED", ["decisions", "criteria", "spec"]);
-      const root = await createIssue({ project: "GATED", spec: "The plan.", title: "Gated root" });
+      const gated = rowKey("GATED");
+      await createProject({ key: gated, name: "Gated" });
+      await setGatedSteps(gated, ["decisions", "criteria", "spec"]);
+      const root = await createIssue({ project: gated, spec: "The plan.", title: "Gated root" });
       const verification = await createIssueArtifact(root.key, {
         content: "# Verification\n\nOne check.\n",
         name: "verification.md",
@@ -3695,9 +3701,10 @@ test("an approval entry's a approves its own document when an earlier entry also
   await phase(
     browser,
     async () => {
-      await createProject({ key: "LAST", name: "Last entry" });
-      await setGatedSteps("LAST", ["decisions", "criteria", "spec"]);
-      const root = await createIssue({ project: "LAST", spec: "The plan.", title: "Gated root" });
+      const last = rowKey("LAST");
+      await createProject({ key: last, name: "Last entry" });
+      await setGatedSteps(last, ["decisions", "criteria", "spec"]);
+      const root = await createIssue({ project: last, spec: "The plan.", title: "Gated root" });
       const verification = await createIssueArtifact(root.key, {
         content: "# Verification\n\nOne check.\n",
         name: "verification.md",
