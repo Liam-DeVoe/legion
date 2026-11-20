@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"path"
-	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -24,8 +23,9 @@ import (
 //     shell resolves them, and with where it runs;
 //   - every until, while and for, with the statement before it where it stands in a list of
 //     statements of its own, and whether it stands inside another until or while;
-//   - every assignment: name=value, and those a for's variable, arithmetic ($((x = ...)),
-//     $((x += ...)), $((x++))) and a parameter's ${x=...} or ${x:=...} make;
+//   - every assignment: name=value, and those a for's variable and a parameter's ${x=...} or
+//     ${x:=...} make (an assignment arithmetic makes is in an arithmetic expansion, which the
+//     rules refuse anywhere but in a wait's deadline statement);
 //   - every arithmetic expansion, wherever it stands;
 //   - the file's own functions, each definition of them, and which of them each runs.
 //
@@ -393,7 +393,7 @@ func (r *shellRead) trap(words []*syntax.Word, s shellScope) {
 // words reads the code that a word, an assignment or a redirection holds: each command
 // substitution in it, wherever it stands (inside quotes, arithmetic, a parameter's default or a
 // here-document), is read as code, each arithmetic expansion is one of the file's, and each
-// assignment arithmetic or a parameter makes in it is an assignment of the file's.
+// assignment a parameter makes in it is an assignment of the file's.
 func (r *shellRead) words(node syntax.Node, s shellScope) {
 	syntax.Walk(node, func(n syntax.Node) bool {
 		switch n := n.(type) {
@@ -402,14 +402,6 @@ func (r *shellRead) words(node syntax.Node, s shellScope) {
 			return false
 		case *syntax.ArithmExp:
 			r.arithmetic = append(r.arithmetic, shellArithmetic{s.line(n), n})
-		case *syntax.BinaryArithm:
-			if slices.Contains(arithmeticAssigns, n.Op) {
-				r.arithmeticAssign(n, n.X, s)
-			}
-		case *syntax.UnaryArithm:
-			if n.Op == syntax.Inc || n.Op == syntax.Dec {
-				r.arithmeticAssign(n, n.X, s)
-			}
 		case *syntax.ParamExp:
 			if n.Param != nil && n.Exp != nil && (n.Exp.Op == syntax.AssignUnset || n.Exp.Op == syntax.AssignUnsetOrNull) {
 				r.assigns = append(r.assigns, shellAssign{s.line(n), s.function, n.Param.Value, shellWord{text: printed(n), source: printed(n)}, nil})
@@ -420,23 +412,6 @@ func (r *shellRead) words(node syntax.Node, s shellScope) {
 		}
 		return true
 	})
-}
-
-// arithmeticAssigns are the operators of arithmetic that assign to the variable on their left.
-// &&=, ||=, ^^= and **= are not among them: a POSIX parse refuses each ("`**` must be followed by
-// an expression"), so the file that holds one fails as one that does not parse.
-var arithmeticAssigns = []syntax.BinAritOperator{
-	syntax.Assgn, syntax.AddAssgn, syntax.SubAssgn, syntax.MulAssgn, syntax.QuoAssgn, syntax.RemAssgn,
-	syntax.AndAssgn, syntax.OrAssgn, syntax.XorAssgn, syntax.ShlAssgn, syntax.ShrAssgn,
-}
-
-// arithmeticAssign records the assignment arithmetic n makes to the variable x.
-func (r *shellRead) arithmeticAssign(n syntax.Node, x syntax.ArithmExpr, s shellScope) {
-	name := "an arithmetic expression"
-	if w, ok := x.(*syntax.Word); ok {
-		name = w.Lit()
-	}
-	r.assigns = append(r.assigns, shellAssign{s.line(n), s.function, name, shellWord{text: "$((" + name + " ...))", source: "$((" + name + " ...))"}, nil})
 }
 
 // readWord answers w as a rule reads it.

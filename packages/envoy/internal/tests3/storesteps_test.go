@@ -31,13 +31,14 @@ import (
 //     requests; and --proto =http refuses every URL but http://, since curl does not hold a
 //     file:// URL (file:///dev/zero) to --max-time, and librtmp ends an rtmp:// one by its own
 //     clock. s3 takes its arguments as its first two statements, `seconds=$1 what=$2` and
-//     `shift 2`, with no other shift or set, so a call's first word is its seconds and its words
-//     after the second are curl's, as the shell builds them at that call. Every s3 call gives a
-//     whole number of seconds above 0 (curl's 0 is no limit), and gives curl -o and
-//     --data-binary, each with one word the shell does not split, -X with a method of literal
-//     text, none of which sets a time, and one URL alone, literal text or the word after --:
-//     curl makes a request of each URL, each under its own --max-time. s3 ends the step by name,
-//     with exit 1, on curl's timeout (exit 28).
+//     `shift 2`, with no other shift or set, and sets neither seconds nor what again, so a call's
+//     first word is its seconds and its words after the second are curl's, as the shell builds
+//     them at that call. Every s3 call gives a whole number of seconds above 0 (curl's 0 is no
+//     limit), and gives curl -o with one word the shell does not split, --data-binary with
+//     literal text that names no file (curl reads @<file>, @- among them, before --max-time
+//     holds it), -X with a method of literal text, none of which sets a time, and one URL alone,
+//     literal text or the word after --: curl makes a request of each URL, each under its own
+//     --max-time. s3 ends the step by name, with exit 1, on curl's timeout (exit 28).
 //   - They start weed server only by `nohup weed server ... &`, in the background of the step
 //     that starts the store.
 //   - They wait only in an until at the top of a step, a statement of its own right after
@@ -48,8 +49,8 @@ import (
 //     outer wait reads on every pass, so it might never end.
 //   - The rules waits_test.go's ownFindings reads for the script hold here too: no own function
 //     takes the name of a command these rules read or is defined twice, only a wait's deadline
-//     statement sets deadline and holds arithmetic, and only s3 sets seconds, to its first
-//     argument.
+//     statement sets deadline and holds arithmetic, and only s3's first statement sets seconds
+//     and what, to its first and second arguments.
 
 // repository is this repository's root, read from this package's directory; workflow is the
 // workflow whose shard job starts the browser suite's file store; waitStep is that job's step
@@ -144,14 +145,16 @@ func s3Curl(args []shellWord) bool {
 }
 
 // s3CurlFinding answers what is wrong with the words an s3 call (s3 <seconds> <what> <word>...)
-// gives curl, or "" when nothing is. They must be -o <file> and --data-binary <data>, each value
-// one word the shell does not split, -X <method> with a method of literal text, none of which
-// sets a time, and one URL alone: literal text that does not start with -, or the one word after
-// --, which curl reads as a URL whatever it holds. curl makes a request of each URL, each under
-// its own --max-time, so two URLs are two bounds. A word before -- whose value this program
-// cannot know (an expansion of any kind, ~ and $'...' among them) may be an option that turns the
-// bound off (--max-time 0, -m 0, --retry) or a second URL, and so may a value of -o,
-// --data-binary or -X that the shell splits into words.
+// gives curl, or "" when nothing is. They must be -o <file> with one word the shell does not
+// split, --data-binary <data> with literal text that names no file, -X <method> with a method of
+// literal text, none of which sets a time, and one URL alone: literal text that does not start
+// with -, or the one word after --, which curl reads as a URL whatever it holds. curl makes a
+// request of each URL, each under its own --max-time, so two URLs are two bounds. A word before
+// -- whose value this program cannot know (an expansion of any kind, ~ and $'...' among them) may
+// be an option that turns the bound off (--max-time 0, -m 0, --retry) or a second URL, and so may
+// a value of -o, --data-binary or -X that the shell splits into words. curl reads the file a
+// --data-binary of @<file> names, @- its standard input among them, before --max-time holds it,
+// so a file that never ends (a pipe held open, /dev/zero) holds the request past its bound.
 func s3CurlFinding(args []shellWord) string {
 	urls := 0
 	for i := 2; i < len(args); i++ {
@@ -167,6 +170,9 @@ func s3CurlFinding(args []shellWord) string {
 			}
 			if !value.single {
 				return "an s3 call that gives curl " + w.text + " " + value.source + ", a value the shell splits into words, so it may give curl an option that turns the bound off or a second URL"
+			}
+			if w.is("--data-binary") && (!value.literal || strings.HasPrefix(value.text, "@")) {
+				return "an s3 call that gives curl --data-binary " + value.source + ", which may name a file curl reads before --max-time holds it (@- among them, a standard input that may never end)"
 			}
 			i++
 		case w.is("--"):
@@ -275,7 +281,7 @@ func stepFindings(name string, step storeStep) []string {
 			finding(loop.line, "a wait that does not end the step by name, with exit 1, once its deadline passes")
 		}
 	}
-	for _, own := range ownFindings(read, "s3", stepSeconds) {
+	for _, own := range ownFindings(read, stepSeconds, "s3", "seconds", "what") {
 		finding(own.line, own.what)
 	}
 	if s3 := read.functions["s3"]; s3 != nil && !takesArguments(read, "s3", "seconds", "what") {
