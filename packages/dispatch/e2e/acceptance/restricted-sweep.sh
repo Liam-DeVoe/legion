@@ -683,7 +683,7 @@ masked() {
       end)
     | gsub("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})";
         "<time>")
-    | gsub("\"(?<key>took_ms|age_seconds)\"[[:space:]]*:[[:space:]]*[0-9.]+";
+    | gsub("\"(?<key>took_ms|age_seconds|oldest_lacking_seconds)\"[[:space:]]*:[[:space:]]*[0-9.]+";
         "\"\(.key)\":\"<n>\"")' --args "$@"
 }
 
@@ -1222,6 +1222,16 @@ restricted_exit=$?
 wait "$watcher_full"
 full_exit=$?
 watchers=''
+# The probe prints `closed <code> <reason>` only for a feed that closed before its window ended,
+# which the whole-second clock above can miss by a second: a subscribed feed that printed it did
+# not cover the window.
+if [ -z "$live_result" ]; then
+  for feed in restricted full; do
+    if [ -e "$work/ready-$feed" ] && grep -q '^closed ' "$work/live-$feed"; then
+      live_result='a subscribed feed ended before the observation window finished'
+    fi
+  done
+fi
 [ -z "$written" ] || printf '%s\n' "$written" >>"$work/values"
 jq -Rn --arg key "$project" '{key: $key, values: ([inputs | select(length > 0) | {(.): true}] | add // {})}' \
   "$work/values" >"$work/markers.json" || unknown 'could not update the live event markers'

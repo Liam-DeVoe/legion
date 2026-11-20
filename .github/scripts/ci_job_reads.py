@@ -2038,6 +2038,7 @@ PROJECT_ACCESS_BLOB_STEP = "Compare what every caller reads at the merge base an
 PROJECT_ACCESS_STEP = "Read PRIV's objects as its listed callers, every project public"
 PROJECT_ACCESS_PRIVATE_STEP = ("Read and write every route as the callers PRIV is hidden from, "
                                "PRIV made private by the store write")
+PROJECT_ACCESS_CONNECTIONS_STEP = "Read the connections the sweep's stacks' Postgres must allow"
 PROJECT_ACCESS_DRIVER = "packages/dispatch/e2e/acceptance/project-access.sh"
 PROJECT_ACCESS_BUILD = 'go -C "$root/packages/envoy" build -o "$work/bin/" ./cmd/dispatch ./internal/testnats/cmd/natsd ||'
 PROJECT_ACCESS_PROBES = ('go -C "$root/packages/envoy" run ./internal/dispatch/api/cmd/routeprobes '
@@ -3386,7 +3387,16 @@ GATES = [
     # its base build compiles the merge base's tree, taken out of git history, so it reads no file
     # of this one. The --all-public and --private-by-sql steps run project-access.sh, which builds
     # this tree's ./cmd/dispatch and NATS; the --private-by-sql step's walk runs the route Probes.
-    gate("dispatch_project_access", PROJECT_ACCESS, runs=[
+    # The sweep's step runs restricted-sweep.test.ts, whose stacks build this tree's ./cmd/dispatch
+    # (e2e/run-server.sh) and run the route Probes, and whose control builds a commit out of git
+    # history, as the blob step's base build does; its Postgres connection limit is read first.
+    gate("dispatch_project_access", PROJECT_ACCESS, exact=[
+        pinned_step(PROJECT_ACCESS, PROJECT_ACCESS_CONNECTIONS_STEP, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
+            (ENVOY, ["./internal/dispatch/store/cmd/connections"],
+             "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
+             {"mode": "build"}),
+        ]),
+    ], runs=[
         script_run(TWO_BUILDS, TWO_BUILDS_HEAD_BUILD, f"run by {at(PROJECT_ACCESS, PROJECT_ACCESS_BLOB_STEP)} "
                    "through packages/dispatch/e2e/acceptance/project-access-blob.sh's two_builds_build",
                    ENVOY, ["./cmd/dispatch"], mode="build"),
