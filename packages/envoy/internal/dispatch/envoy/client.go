@@ -344,6 +344,22 @@ func (c *Client) authorize(request *http.Request) {
 	}
 }
 
+// listenerAnswerLimit bounds one answer of the listener this client reads: the session list of
+// a busy deployment is a few MiB.
+const listenerAnswerLimit = 64 << 20
+
+// decodeAnswer reads the listener's answer through redact.ReadAnswer and decodes it into v.
+// Whatever answers in the listener's place can echo the bearer the call carried in any word of
+// its answer, so every redact.RemoteText v holds then holds the call's request record, and an
+// error names the member that did not decode and quotes no value of the answer.
+func decodeAnswer(response *http.Response, v any) error {
+	answer, err := redact.ReadAnswer(response, listenerAnswerLimit)
+	if err != nil {
+		return err
+	}
+	return answer.Decode(v)
+}
+
 // Sessions returns every session the listener holds a registration for, live and unresponsive
 // alike, each carrying its own State; ErrRefilling (a *RefillingError) while the listener
 // refuses the list as refilling, or ErrUnavailable. A caller tests each row's State, never its
@@ -361,7 +377,7 @@ func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
 	}
 
 	var rows []listenerwire.SessionInfo
-	if err := json.NewDecoder(response.Body).Decode(&rows); err != nil {
+	if err := decodeAnswer(response, &rows); err != nil {
 		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	// Each row's topics are left behind: Dispatch keeps every row of this answer in its route
@@ -389,7 +405,7 @@ func (c *Client) ListInterests(ctx context.Context) ([]listenerwire.InterestRow,
 	}
 
 	var interests []listenerwire.InterestRow
-	if err := json.NewDecoder(response.Body).Decode(&interests); err != nil {
+	if err := decodeAnswer(response, &interests); err != nil {
 		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	if interests == nil {
@@ -425,7 +441,7 @@ func (c *Client) Interest(ctx context.Context, sessionID string) (listenerwire.I
 	}
 
 	var interest listenerwire.InterestRow
-	if err := json.NewDecoder(response.Body).Decode(&interest); err != nil {
+	if err := decodeAnswer(response, &interest); err != nil {
 		return listenerwire.InterestRow{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	if interest.Topics == nil {
@@ -460,7 +476,7 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 	}
 
 	var decoded listenerwire.UnsubscribeResponse
-	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+	if err := decodeAnswer(response, &decoded); err != nil {
 		return nil, fmt.Errorf("%w: decode POST /v1/interests/unsubscribe response: %v", ErrUnavailable, err)
 	}
 	if decoded.Removed == nil {
@@ -493,7 +509,7 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 		return c.lapsedRoleHolder(ctx, response)
 	}
 	var answer listenerwire.RoleHolder
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+	if err := decodeAnswer(response, &answer); err != nil {
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	// An older listener names no holder_state, which normalize reads as live.
@@ -531,15 +547,14 @@ func (c *Client) Role(ctx context.Context, role string) (Session, error) {
 func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) (Session, error) {
 	// The holder's session id is sent back to the listener by the session read below
 	// (RemoteText.SendBack): only where the rule prints it as it came, with every credential the
-	// lookup carried redacted first, so the route that read names, and any error that names the
-	// route, holds no more of the listener's words than a print of them shows, and never the
-	// bearer an answer in the listener's place echoed as a holder.
+	// lookup carried redacted first (decodeAnswer), so the route that read names, and any error
+	// that names the route, holds no more of the listener's words than a print of them shows, and
+	// never the bearer an answer in the listener's place echoed as a holder.
 	var refusal listenerwire.RoleRefusalAs[redact.RemoteText, redact.RemoteText, holderState]
-	if err := json.NewDecoder(response.Body).Decode(&refusal); err != nil {
+	if err := decodeAnswer(response, &refusal); err != nil {
 		return Session{}, listenerRefusal(response, redact.RemoteText{})
 	}
-	carried := redact.Carried(response)
-	if id, sent := refusal.Holder.WithoutTokens(carried...).SendBack(); sent && refusal.HolderState == holderStateUnresponsive {
+	if id, sent := refusal.Holder.SendBack(); sent && refusal.HolderState == holderStateUnresponsive {
 		holder, err := c.Session(ctx, id)
 		if err == nil {
 			return holder, nil
@@ -548,7 +563,7 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 			return Session{}, err
 		}
 	}
-	err := listenerRefusal(response, refusal.Error.WithoutTokens(carried...))
+	err := listenerRefusal(response, refusal.Error)
 	// The reason is the listener's word, compared as it came against the reasons the listener
 	// gives for a role no live session holds.
 	if slices.ContainsFunc(roleholder.NoHolderReasons, refusal.Reason.Equal) && !errors.Is(err, ErrUnavailable) {
@@ -618,7 +633,7 @@ func (c *Client) readSession(ctx context.Context, sessionID, include string) (Se
 	}
 
 	var info listenerwire.SessionInfo
-	if err := json.NewDecoder(response.Body).Decode(&info); err != nil {
+	if err := decodeAnswer(response, &info); err != nil {
 		return Session{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	return sessionOf(info, sessionID), nil
@@ -645,7 +660,7 @@ func (c *Client) Agent(ctx context.Context, sessionID string) (listenerwire.Legi
 		return listenerwire.LegionAgentAnswer{}, unavailableGetStatus(response, route)
 	}
 	var agent listenerwire.LegionAgentAnswer
-	if err := json.NewDecoder(response.Body).Decode(&agent); err != nil {
+	if err := decodeAnswer(response, &agent); err != nil {
 		return listenerwire.LegionAgentAnswer{}, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	return agent, nil
@@ -675,7 +690,7 @@ func (c *Client) legionAgents(ctx context.Context, route, query string) ([]liste
 		return nil, unavailableGetStatus(response, route)
 	}
 	var body listenerwire.LegionAgentList
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+	if err := decodeAnswer(response, &body); err != nil {
 		return nil, fmt.Errorf("%w: decode GET %s response: %v", ErrUnavailable, route, err)
 	}
 	if body.Entries == nil {
@@ -708,13 +723,13 @@ func (c *Client) get(ctx context.Context, route, query string) (*http.Response, 
 // ErrUnreachable too when that status came from in front of the listener (unavailableStatus).
 // The two list reads answer their refusals through listFailure instead, which tells a refilling
 // listener from an unavailable one. Whatever answers in the listener's place can echo the bearer
-// the read carried, so the reason prints with every credential the read carried redacted
-// (redact.Carried), as every refusal this client reads does.
+// the read carried, so the reason is read through decodeAnswer and prints with every credential
+// the read carried redacted, as every refusal this client reads does.
 func unavailableGetStatus(response *http.Response, route string) error {
 	var failure listenerwire.APIErrorAs[redact.RemoteText]
-	if err := json.NewDecoder(response.Body).Decode(&failure); err == nil && !failure.Error.IsEmpty() {
+	if err := decodeAnswer(response, &failure); err == nil && !failure.Error.IsEmpty() {
 		return unavailableStatus(response.StatusCode,
-			fmt.Errorf("%w: GET %s returned %d: %s", ErrUnavailable, route, response.StatusCode, failure.Error.WithoutTokens(redact.Carried(response)...)))
+			fmt.Errorf("%w: GET %s returned %d: %s", ErrUnavailable, route, response.StatusCode, failure.Error))
 	}
 	return unavailableStatus(response.StatusCode,
 		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.StatusCode))
@@ -794,7 +809,7 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 		return SendResult{}, listenerResponseError(response)
 	}
 	var answer listenerwire.SendResponse
-	if err := json.NewDecoder(response.Body).Decode(&answer); err != nil {
+	if err := decodeAnswer(response, &answer); err != nil {
 		return SendResult{}, fmt.Errorf("%w: decode POST /v1/messages/send response: %v", ErrUnavailable, err)
 	}
 	return SendResult{
@@ -831,19 +846,19 @@ func sendTransportError(err error, requestWritten bool) error {
 // again repeats it.
 func listenerResponseError(response *http.Response) error {
 	var body listenerwire.APIErrorAs[redact.RemoteText]
-	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+	if err := decodeAnswer(response, &body); err != nil {
 		return listenerRefusal(response, redact.RemoteText{})
 	}
-	return listenerRefusal(response, body.Error.WithoutTokens(redact.Carried(response)...))
+	return listenerRefusal(response, body.Error)
 }
 
 // listenerRefusal is a refused answer as its caller reports it: the listener's own reason when
 // its body named one, and its status when the body named nothing a caller could act on. A 502,
 // 503 or 504 is ErrUnavailable and ErrUnreachable whatever its body says, reason and all, since
 // it comes from in front of the listener or from its starting gate rather than from a decision
-// about the request. The reason is the listener's words, or its stand-in's, held with the
-// credentials the request carried redacted (redact.Carried), so it prints as it prints itself
-// (redact.RemoteText).
+// about the request. The reason is the listener's words, or its stand-in's, read through
+// decodeAnswer with the credentials the request carried redacted, so it prints as it prints
+// itself (redact.RemoteText).
 func listenerRefusal(response *http.Response, reason redact.RemoteText) error {
 	code := response.StatusCode
 	if !reason.IsEmpty() {
@@ -858,20 +873,19 @@ func listenerRefusal(response *http.Response, reason redact.RemoteText) error {
 // listFailure classifies a list read's non-200 answer from its body: the listener's refilling 503
 // is a *RefillingError, anything else ErrUnavailable carrying the listener's own reason when its
 // body names one, as it prints itself (redact.RemoteText) with every credential the read carried
-// redacted (redact.Carried), and ErrUnreachable too when the status is a 502, 503 or 504, which
+// redacted (decodeAnswer), and ErrUnreachable too when the status is a 502, 503 or 504, which
 // comes from in front of the listener or from its starting gate rather than from a verdict on the
 // read.
 func listFailure(response *http.Response, route string) error {
 	var body listenerwire.APIErrorAs[redact.RemoteText]
-	decoded := json.NewDecoder(response.Body).Decode(&body) == nil
-	carried := redact.Carried(response)
+	decoded := decodeAnswer(response, &body) == nil
 	if decoded && response.StatusCode == http.StatusServiceUnavailable && body.Code.Equal(listenerRefillingCode) {
-		return &RefillingError{RetryAfter: response.Header.Get("Retry-After"), route: route, reason: body.Error.WithoutTokens(carried...)}
+		return &RefillingError{RetryAfter: response.Header.Get("Retry-After"), route: route, reason: body.Error}
 	}
 	if !decoded || body.Error.IsEmpty() {
 		return unavailableStatus(response.StatusCode,
 			fmt.Errorf("%w: %s returned %d", ErrUnavailable, route, response.StatusCode))
 	}
 	return unavailableStatus(response.StatusCode,
-		fmt.Errorf("%w: %s returned %d: %s", ErrUnavailable, route, response.StatusCode, body.Error.WithoutTokens(carried...)))
+		fmt.Errorf("%w: %s returned %d: %s", ErrUnavailable, route, response.StatusCode, body.Error))
 }
