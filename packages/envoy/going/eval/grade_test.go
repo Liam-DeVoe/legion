@@ -171,3 +171,20 @@ func TestAChartShowsItsRowsByTheWeeksItDraws(t *testing.T) {
 		t.Errorf("the drawn chart with 3 closed in the week of 9 November misses %v; want 2026-W46=2", missing)
 	}
 }
+
+// TestAnAnswerLinksAnItemByItsDashboardPath: an answer links a project's document, an issue's
+// document and a spec by the dashboard's path to each, as the bar's answers write them, or by its
+// dispatch:// reference; a link to another issue's spec or to another document is no link of it.
+func TestAnAnswerLinksAnItemByItsDashboardPath(t *testing.T) {
+	answer := "The runbook is [Certificate rotation runbook](/projects/OPS/documents/cert-rotation-runbook); " +
+		"the log is [export-timeout-log](/issues/DEMO-16/artifacts/export-timeout-log); " +
+		"the spec is [spec.md](/issues/DEMO-3/spec), and the guide [guide](dispatch://DEMO/artifact/board-style-guide)."
+	links := []string{"OPS/artifact/cert-rotation-runbook", "DEMO-16/artifact/export-timeout-log", "DEMO-3/spec", "DEMO/artifact/board-style-guide"}
+	if missing := MissingLinks(links, answer, nil); len(missing) != 0 {
+		t.Errorf("the answer misses the links %v; want none", missing)
+	}
+	others := []string{"DEMO-31/spec", "OPS/artifact/backup-runbook"}
+	if missing := MissingLinks(others, answer+" See also /issues/DEMO-3/spec.", nil); len(missing) != 2 {
+		t.Errorf("the answer links %v of items it never names; want both missing", others)
+	}
+}

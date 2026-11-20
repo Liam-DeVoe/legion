@@ -14,8 +14,9 @@ import (
 // (going.BlockData), each block's rows the values the server's chain filled it with.
 
 // MissingLinks is each item of links (Seed.Refs) that the answer does not link: an issue by its
-// key, a document, a spec or a session by its reference, and a comment, an ask or a message by
-// the id Dispatch stores it under (ItemID), in the prose or in a block's rows.
+// key, a document, a spec or a session by its reference or by the dashboard's path to it, and a
+// comment, an ask or a message by the id Dispatch stores it under (ItemID), in the prose or in a
+// block's rows.
 func MissingLinks(links []string, answer string, blocks []json.RawMessage) []string {
 	var text strings.Builder
 	text.WriteString(answer)
@@ -33,7 +34,10 @@ func MissingLinks(links []string, answer string, blocks []json.RawMessage) []str
 	return missing
 }
 
-// linked reports whether text links the item ref names.
+// linked reports whether text links the item ref names: by the reference itself
+// (dispatch://DEMO-3/spec), or by the dashboard's path to the item, which is how the bar's answers
+// link a document (/projects/OPS/documents/<slug>, /issues/DEMO-16/artifacts/<slug>,
+// /issues/DEMO-3/spec).
 func linked(text, ref string) bool {
 	lower := strings.ToLower(text)
 	for _, kind := range []string{"ask", "comment", "message"} {
@@ -42,10 +46,29 @@ func linked(text, ref string) bool {
 			return strings.Contains(lower, stored) || strings.Contains(lower, strings.ToLower(owner+"/"+kind+"/"+id))
 		}
 	}
-	if strings.Contains(ref, "/") {
-		return strings.Contains(lower, strings.ToLower(ref))
+	if !strings.Contains(ref, "/") {
+		return regexp.MustCompile(`(?i)(^|[^a-z0-9-])` + regexp.QuoteMeta(ref) + `($|[^0-9])`).MatchString(text)
 	}
-	return regexp.MustCompile(`(?i)(^|[^a-z0-9-])` + regexp.QuoteMeta(ref) + `($|[^0-9])`).MatchString(text)
+	forms := []string{ref}
+	if owner, slug, found := strings.Cut(ref, "/artifact/"); found {
+		if strings.Contains(owner, "-") {
+			forms = append(forms, "/issues/"+owner+"/artifacts/"+slug)
+		} else {
+			forms = append(forms, "/projects/"+owner+"/documents/"+slug)
+		}
+	}
+	if key, found := strings.CutSuffix(ref, "/spec"); found {
+		forms = append(forms, "/issues/"+key+"/spec")
+	}
+	for _, form := range forms {
+		if i := strings.Index(lower, strings.ToLower(form)); i >= 0 {
+			// The form ends where the link does, so DEMO-1/spec is not found inside DEMO-12/spec's.
+			if end := i + len(form); end == len(lower) || !strings.ContainsRune("abcdefghijklmnopqrstuvwxyz0123456789-", rune(lower[end])) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // MissingChartRows is each row of the chart's table that the answer does not show: no row of a

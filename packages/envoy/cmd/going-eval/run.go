@@ -49,7 +49,7 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	flags := flag.NewFlagSet("going-eval run", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	var options runOptions
-	flags.StringVar(&options.databaseURL, "database-url", os.Getenv("LEGION_TEST_PG_DSN"), "a postgres:// URL of a Postgres server the eval may create databases on (default $LEGION_TEST_PG_DSN)")
+	flags.StringVar(&options.databaseURL, "database-url", os.Getenv("LEGION_TEST_PG_DSN"), "a postgres:// URL of a Postgres server the eval may make its own databases on (default $LEGION_TEST_PG_DSN)")
 	flags.StringVar(&options.serverBinary, "server-bin", "", "a built envoy-dispatch to run as the server (default: build ./cmd/dispatch)")
 	flags.StringVar(&options.tasks, "tasks", "", "the task ids or kinds to run, comma-separated (default: every task)")
 	flags.IntVar(&options.tries, "tries", eval.Tries, "how many times each task runs")

@@ -161,6 +161,40 @@ func TestTheEvalSetHasItsShape(t *testing.T) {
 			t.Errorf("a seed with the unknown field colour loads, or its refusal does not name the field: %v", err)
 		}
 	})
+
+	t.Run("the committed labels calibrate the judge, labelled by two model families", func(t *testing.T) {
+		labels, err := LoadLabels(Files, tasks)
+		if err != nil {
+			t.Fatalf("the committed labels are refused: %v", err)
+		}
+		raw, err := Files.ReadFile("labels.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		load := func(change func(*Labels)) error {
+			var changed Labels
+			if err := json.Unmarshal(raw, &changed); err != nil {
+				t.Fatal(err)
+			}
+			change(&changed)
+			encoded, err := json.Marshal(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = LoadLabels(fstest.MapFS{"labels.json": {Data: encoded}}, tasks)
+			return err
+		}
+		if err := load(func(l *Labels) { l.Labellers[1].Family = l.Labellers[0].Family }); err == nil || !strings.Contains(err.Error(), "different model families") {
+			t.Errorf("labels by two agents of one model family load, or their refusal does not say so: %v", err)
+		}
+		differ := slices.IndexFunc(labels.Answers, func(a LabelledAnswer) bool { return a.Discussion != "" })
+		if differ < 0 {
+			return
+		}
+		if err := load(func(l *Labels) { l.Answers[differ].Discussion = "" }); err == nil || !strings.Contains(err.Error(), "no discussion") {
+			t.Errorf("an answer whose two labels differ loads with no discussion, or its refusal does not say so: %v", err)
+		}
+	})
 }
 
 // refNew is the kind of item a Want names with New: an issue the run files.

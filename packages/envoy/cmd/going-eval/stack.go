@@ -107,9 +107,10 @@ func (d *databases) url(name string) string {
 	return u.String()
 }
 
-// create makes the database name, a copy of template where template is not "".
+// create makes the database name, a copy of template where template is not "", copied file by
+// file rather than through the write-ahead log (docs/testing.md, "A database a Go test creates").
 func (d *databases) create(ctx context.Context, name, template string) error {
-	statement := "create database " + pgx.Identifier{name}.Sanitize()
+	statement := "create database " + pgx.Identifier{name}.Sanitize() + " strategy file_copy"
 	if template != "" {
 		statement += " template " + pgx.Identifier{template}.Sanitize()
 	}
