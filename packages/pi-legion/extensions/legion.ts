@@ -875,8 +875,10 @@ export default function legionExtension(pi: PiApi): void {
   // person's direct message that envoy.ts sent in as the user's own turn is a user message too,
   // or a `skill-prompt` custom message for a `/skill:`, which `isInbound` does not know: the
   // record envoy.ts keeps of the turns it sent in says which message that is, whichever of the
-  // two extensions asks first. Every message, classified or not, says a turn is running and
-  // leaves every armed reminder timer stale.
+  // two extensions asks first. The one turn that record misses is a `/skill:` the host starts
+  // under a new session id (queued across a branch or a session file's move-off, or a session
+  // change during its `sendUserInput`), which then puts no count back at zero. Every message,
+  // classified or not, says a turn is running and leaves every armed reminder timer stale.
   pi.on("message_start", async (event, context) => {
     if (!phaseWorkerSession(context)) return;
     phaseReminder.turnStarted();

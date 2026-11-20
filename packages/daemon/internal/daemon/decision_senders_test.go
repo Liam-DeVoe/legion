@@ -34,7 +34,7 @@ const (
 
 // ruleAskers is every function of the three packages that may ask the rule itself, with why.
 var ruleAskers = map[string]string{
-	decisionPredicate:                       "the one predicate, which holds every guard that chooses whether to ask it",
+	decisionPredicate:                       "the one predicate, which holds the guards that choose whether the rule is asked of a review",
 	senderModule + "workflow.requestStands": "an approval request on the ask mirror, which is the architect's ask and no person's decision",
 }
 
@@ -101,7 +101,9 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 
 // Every sender of a person's design decision asks the one predicate whether that decision is still
 // the person's word (workflow.SupersedingApproval), so no sender decides it for itself and no sender
-// chooses for itself whether to ask the rule (dispatch://INFRA-3136/spec R2).
+// asks the rule itself (dispatch://INFRA-3136/spec R2). Which reviews a sender asks about is the
+// sender's: the daemon's readNoticeTree and controllerNotice ask again of a queued notice they
+// deliver only when it is a changes request.
 // A sender is a function of internal/workflow, internal/daemon or internal/admit, outside its
 // tests, whose body
 //
@@ -160,13 +162,14 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // again names the review whether or not the person's word has moved since, which is how the
 // sweep's send of a lost resume's start named a changes request the person's approval had
 // superseded. The resume still writes that text, which this release never sends, for the release
-// a rollback past contract 183 returns to (record.PhaseRow.EntryTask says so), so the text is
+// a rollback past contract 193 returns to (record.PhaseRow.EntryTask says so), so the text is
 // there for a new sender to read. Such a function passes only where storedTaskReaders names it,
 // with why its read sends no person's review.
 //
 // And the rule itself (classify.ReviewSuperseded) is asked by the predicate alone, and by the one
-// reading of an approval request (ruleAskers), so the guards that choose whether to ask it live in
-// one place.
+// reading of an approval request (ruleAskers), so the guards the predicate holds — the decision's
+// kind, the gate of its step, the document that gate holds, and whether the deployment gates that
+// step — live in one place.
 //
 // This test reads its sites from the source because no chokepoint can make a sender ask: the
 // predicate is the one place the answer is decided, but a notice is a plain struct literal any
@@ -218,8 +221,8 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 		}
 		if f.asks {
 			if _, ok := ruleAskers[f.name]; !ok {
-				t.Errorf("%s (%s) asks %s itself: ask %s, which holds every guard that chooses whether to ask the rule, so no copy of them "+
-					"can drift", f.short(), f.at, short(decisionRule), short(decisionPredicate))
+				t.Errorf("%s (%s) asks %s itself: ask %s, which holds the guards that choose whether the rule is asked of a review, so "+
+					"no copy of them can drift", f.short(), f.at, short(decisionRule), short(decisionPredicate))
 			}
 		}
 		if len(f.storedTasks) > 0 {

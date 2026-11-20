@@ -1309,17 +1309,22 @@ func ConflictNeedsMerge(issue record.Issue, rules *record.BaseRules, green []str
 }
 
 // GreenContexts is every context green on the pull request's current head, each once and sorted:
-// the name of each check run GitHub reported on that head that concluded succeeded (HeadRuns,
-// record.RunSucceeded), and, while a settlement stands for the head (Settled), the context of each
-// commit status the record keeps for the head (record.CommitStatus.StampedWith) whose state is
-// success. A required context is matched by its name alone, as a check run's name or a status's
-// context; GitHub's integration id is not compared. A status counts only on a settled head, since
-// the record keeps the statuses of its checked head, and a status kept for another head says
-// nothing of this one.
+// the name of each check run GitHub reported on that head that concluded succeeded or skipped
+// (HeadRuns, record.RunSucceeded, record.RunSkipped), and, while a settlement stands for the head
+// (Settled), the context of each commit status the record keeps for the head
+// (record.CommitStatus.StampedWith) whose state is success. A required context is matched by its
+// name alone, as a check run's name or a status's context; GitHub's integration id is not
+// compared. A status counts only on a settled head, since the record keeps the statuses of its
+// checked head, and a status kept for another head says nothing of this one.
+//
+// A skipped run is green as a succeeded one is, since GitHub's branch protection takes a skipped
+// required check as passing: so ConflictNeedsMerge answers for a skipped run exactly as for a
+// succeeded one (dispatch://INFRA-4135 R2), and a required check whose run skipped does not by
+// itself make the daemon merge the base forward at once (record.ConflictCheckNotGreen).
 func GreenContexts(pr record.PullRequest) []string {
 	var green []string
 	for _, run := range HeadRuns(pr) {
-		if run.Conclusion == record.RunSucceeded {
+		if run.Conclusion == record.RunSucceeded || run.Conclusion == record.RunSkipped {
 			green = append(green, run.Name)
 		}
 	}
@@ -1467,15 +1472,18 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // (record.EventMark.After). Such an approval is the person's decision in the review's place,
 // whichever approval request carried it, so nothing of the review is left to tell or to act on.
 // Every sender of a task or a notice about a person's review reaches it through one predicate,
-// workflow's SupersedingApproval, which holds every guard that chooses whether to ask it — the kind
-// of decision, the gate of the document reviewed, whether the deployment gates that step, and an
-// approval that is the gate's own — and is asked from the gates as the record holds them at that
-// moment: the changes notice (workflow's applyArtifact, tellChanges and gateRegistered, and the
-// daemon's readNoticeTree at its delivery), the resume task of a root that waited on a person
-// (workflow's resumeTask), the kept decisions and the kept approval of an architect's start or
-// catch-up (workflow's KeptDecisionsTask, which the daemon's rootTask also calls at each send and
-// its readNoticeTree at each delivery) and the controller's relay of an undelivered spec decision
-// (the outbox's parkDecision, and its controllerNotice at a relayed changes request's publish).
+// workflow's SupersedingApproval, which holds the guards that choose whether it is asked of a
+// review — the kind of decision, the gate of the document reviewed, whether the deployment gates
+// that step, and an approval that is the gate's own — and is asked from the gates as the record
+// holds them at that moment: the changes notice (workflow's applyArtifact, tellChanges and
+// gateRegistered, and the daemon's readNoticeTree at its delivery), the resume task of a root
+// that waited on a person (workflow's resumeTask), the kept decisions and the kept approval of an
+// architect's start or catch-up (workflow's KeptDecisionsTask, which the daemon's rootTask also
+// calls at each send and its readNoticeTree at each delivery) and the controller's relay of an
+// undelivered spec decision (the outbox's parkDecision, and its controllerNotice at a relayed
+// changes request's publish). Which reviews a sender asks about is the sender's: the daemon's
+// readNoticeTree and controllerNotice ask again of a queued notice they deliver only when it is a
+// changes request.
 //
 // An approval request the ask mirror holds is asked the same way (workflow's requestStands, the
 // one other caller, since a request is the architect's and no person's decision): the mirror

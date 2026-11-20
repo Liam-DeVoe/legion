@@ -24,6 +24,7 @@ var (
 	_ runtime.Runtime            = (*Runtime)(nil)
 	_ runtime.IssuePodReader     = (*Runtime)(nil)
 	_ runtime.LaunchSessionNamer = (*Runtime)(nil)
+	_ runtime.IssueVolumeReader  = (*Runtime)(nil)
 )
 
 // Call is one method the caller called, with the arguments it called it with. A method that does
@@ -95,6 +96,7 @@ type Runtime struct {
 	repository   map[claim.Token]string
 	gone         map[claim.Token]bool
 	issuePods    map[string]string
+	keptVolumes  map[string]time.Time
 	sessions     map[claim.Token]string
 	holdReplace  func()
 	replaceNoPod bool
@@ -106,13 +108,14 @@ type Runtime struct {
 // NewRuntime is a fake ready to record: no script, controller launched by the daemon, real time.
 func NewRuntime() *Runtime {
 	fake := &Runtime{
-		Now:        time.Now,
-		failures:   map[string]error{},
-		drift:      map[claim.Token][]string{},
-		repository: map[claim.Token]string{},
-		gone:       map[claim.Token]bool{},
-		issuePods:  map[string]string{},
-		sessions:   map[claim.Token]string{},
+		Now:         time.Now,
+		failures:    map[string]error{},
+		drift:       map[claim.Token][]string{},
+		repository:  map[claim.Token]string{},
+		gone:        map[claim.Token]bool{},
+		issuePods:   map[string]string{},
+		keptVolumes: map[string]time.Time{},
+		sessions:    map[claim.Token]string{},
 	}
 	fake.pending = sync.NewCond(&fake.mu)
 	return fake
@@ -231,6 +234,22 @@ func (r *Runtime) ScriptIssuePod(issue, pod string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.issuePods[issue] = pod
+}
+
+// ScriptKeptVolume makes every later IssueKeepsVolume of issue answer as the Sandbox runtime
+// answers an issue Sandbox that owns a kept volume, carries no reset mark, has the disk shape that
+// the configuration renders and was made at created: true for a since whose second is after
+// created, false for any other. A zero created clears it, which is also how a test scripts a
+// Sandbox that the next launch replaces. An issue no call named keeps no volume, which is every
+// pod's case but a microVM pod's under keep_volume.
+func (r *Runtime) ScriptKeptVolume(issue string, created time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if created.IsZero() {
+		delete(r.keptVolumes, issue)
+		return
+	}
+	r.keptVolumes[issue] = created
 }
 
 // ScriptLaunchSession makes every later LaunchSession of token's claim answer session, as the
@@ -564,6 +583,17 @@ func (r *Runtime) IssuePod(issue string) (string, bool) {
 	r.calls = append(r.calls, Call{Method: "IssuePod", Issue: issue})
 	pod, read := r.issuePods[issue]
 	return pod, read
+}
+
+// IssueKeepsVolume answers what ScriptKeptVolume set for the issue: true where its kept Sandbox
+// was made before since, cut to the second as the Sandbox runtime cuts it, since the API server
+// records a creation time to the second. It records no call: the daemon asks it only for the
+// words of a message, which a test reads instead.
+func (r *Runtime) IssueKeepsVolume(issue string, since time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	created, kept := r.keptVolumes[issue]
+	return kept && created.Before(since.Truncate(time.Second))
 }
 
 // ReplacePod plays the Sandbox runtime's own order: it waits where that runtime waits for the

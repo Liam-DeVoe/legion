@@ -1426,7 +1426,7 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
-/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 183): a live role's
+/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 193): a live role's
  * session asking, at the end of its turn, what its claim owes now. It carries what
  * `claims/activity` carries — the claim, the session the claim records, and the registration's
  * secret — and no generation, since the question changes nothing. A token the daemon does not

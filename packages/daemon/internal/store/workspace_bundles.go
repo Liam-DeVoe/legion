@@ -74,9 +74,9 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // same statement what that ask did to the bundle. project is the token of the daemon whose pod
 // asks (claim.ProjectToken). It answers runtime.WorkspaceBundleNone, having recorded nothing, when
 // the issue has no bundle of project's — one never released, one whose restore the launcher
-// confirmed, one whose release a wake cancelled, one of an issue project does not record — when
-// the row already carries an attempt, and when the pod asking is the pod the work came off
-// (source_pod_uid).
+// confirmed, one whose release a wake cancelled, one that a pod's kept volume held
+// (DropHeldWorkspaceBundle), one of an issue project does not record — when the row already
+// carries an attempt, and when the pod asking is the pod the work came off (source_pod_uid).
 //
 // A bundle is project's only where project records its issue (issues.project, the Dispatch key
 // the token lowercases). The row names no project, and its release's mark, which does, is gone
@@ -159,14 +159,8 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // (workflow.IdleHoldBundleUnrestored) and keeps the work in the database until the issue's own
 // work is over (outbox's dropReleasedWork), which is what the launcher's notice tells the roles.
 func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issue, podUID string, podCreated time.Time, left func(saved, recorded string) bool) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-	if project == "" {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the project whose pod asks", issue)
-	}
-	if podUID == "" {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the pod it is sent to", issue)
-	}
-	if podCreated.IsZero() {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs when the pod %s it is sent to was created", issue, podUID)
+	if err := restoreAsk.check(project, issue, podUID, podCreated); err != nil {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, err
 	}
 	var b runtime.WorkspaceBundle
 	var outcome string
@@ -174,37 +168,33 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, project, issu
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
 		// The lock is taken here, before left is asked, so the row the update below records the
 		// answer on is the row whose repository was read, and a second pod asking at once waits
-		// and then finds the attempt taken. The join is also the project's rule: a row of an
-		// issue project does not record is no row here, and is left as it was.
-		var saved, recorded string
-		if err := tx.QueryRow(ctx, `select b.repo, coalesce(i.repo, '')
-			from workspace_bundles b join issues i on i.key = b.issue
-			where b.issue = $1 and b.attempt_pod_uid is null and b.source_pod_uid <> $2
-				and lower(i.project) = $3
-			for update of b`,
-			issue, podUID, project).Scan(&saved, &recorded); err != nil {
+		// and then finds the attempt taken.
+		offer, err := offeredBundle(ctx, tx, project, issue, podUID, podCreated)
+		if err != nil {
 			return err
 		}
-		refuseRepository := left(saved, recorded)
+		outcome = "refused_older"
+		switch {
+		case left(offer.repo, offer.recorded):
+			outcome = "refused_repository"
+		case offer.savedBy:
+			outcome = "sent"
+		}
 		// The body is read back only when it is being sent: a refusal records the attempt and
 		// answers the row's facts alone, and a bundle runs to tens of megabytes.
 		if err := tx.QueryRow(ctx, `update workspace_bundles
-			set attempt_pod_uid = $2, attempt_at = now(),
-				attempt_outcome = case
-					when $4 then 'refused_repository'
-					when date_trunc('second', at) <= $3 then 'sent'
-					else 'refused_older' end
+			set attempt_pod_uid = $2, attempt_at = now(), attempt_outcome = $3
 			where issue = $1
-			returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
+			returning case when attempt_outcome = 'sent' then bundle end,
 				at, head, tips, bookmarks, release_id, source_pod_uid, repo`,
-			issue, podUID, podCreated, refuseRepository).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID, &b.Repo); err != nil {
+			issue, podUID, outcome).Scan(&b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID, &b.Repo); err != nil {
 			return err
 		}
-		if !refuseRepository {
+		if outcome != "refused_repository" {
 			return nil
 		}
-		// The select above holds the row's lock, so the row this deletes is the one it refused.
-		_, err := tx.Exec(ctx, `with refused as (delete from workspace_bundles where issue = $1
+		// offeredBundle holds the row's lock, so the row this deletes is the one it refused.
+		_, err = tx.Exec(ctx, `with refused as (delete from workspace_bundles where issue = $1
 				returning issue, release_id, source_pod_uid, repo, bundle, size_bytes, at, head, tips, bookmarks, attempt_pod_uid, attempt_at)
 			insert into workspace_bundles_refused (issue, release_id, source_pod_uid, repo, bundle, size_bytes, at, head, tips, bookmarks, refused_pod_uid, refused_at)
 			select * from refused`, issue)
@@ -278,10 +268,146 @@ func (s *Store) DeleteRestoredWorkspaceBundle(ctx context.Context, issue string,
 	return nil
 }
 
+// DropHeldWorkspaceBundle deletes the bundle issue's last release saved where the pod of podUID
+// holds that work already: the pod's Sandbox owns the issue's kept volume and was created at
+// keptSince, before the save, so the pod mounts the volume the work was taken off. project is the
+// token of the daemon whose pod asks (claim.ProjectToken). It answers the release and the time of
+// the bundle it deleted, and true. It answers false, having deleted nothing, when the issue has no
+// bundle of project's, when the bundle had its one attempt already, when the pod is the pod the
+// work came off (source_pod_uid), when the Sandbox was not created before the save's own second,
+// and when the issue has left the repository the work is of.
+//
+// It deletes the row a confirmed restore deletes (DeleteRestoredWorkspaceBundle), under the take's
+// own condition (offeredBundle), and it reads none of the body: a bundle runs to tens of
+// megabytes, and the volume holds the work. The take's three rules stand. The pod the work
+// came off is a role relaunched in the pod being released, and the attempt stays for the pod that
+// replaces it. A row whose attempt is spent is the record of that attempt, and it stays. A bundle
+// is project's only where project records its issue (issues.project), with the take's own test of
+// that record. A bundle of an issue that project does not record was saved by another project's
+// daemon for that daemon's own pod, and it stays for that pod.
+//
+// The comparison reads the save to its own second, as the take does, and drops the bundle only
+// when that second is after keptSince. A creationTimestamp has one-second resolution, so a Sandbox
+// created in the save's own second cannot be ordered against the save, and the bundle stays for
+// the take. That is the side to fail on: a drop deletes the only copy of the work, and a restore
+// the launcher refuses costs a notice and holds the issue's pod. keptSince is the API server's
+// clock and the save's time the clock of the released pod's node. A release comes at least the
+// idle period after the Sandbox's first pod, and a reset makes its Sandbox after a later pod's
+// init container failed, so a skew of seconds does not change the answer.
+//
+// The take's repository rule stands too, and left decides it as it decides the take's. A bundle
+// of a repository the issue has left is kept for the take, which refuses it for its repository
+// and moves it to workspace_bundles_refused, and the daemon writes on the issue where the work is.
+// The kept volume holds that work, but in the workspace of the repository the issue left: a
+// workspace's directory names its repository (workspace.Location), so the pod of the issue's
+// repository now works in another workspace on the same volume, and the volume goes at a reset
+// or at the issue's close. So the volume is no reason to delete that bundle. A row with no
+// repository, saved before the column, and a record that names none, are each an empty name,
+// which left never reads as a change, so the drop deletes such a row as it deletes any other.
+//
+// The drop refuses an empty project, an empty podUID and a zero keptSince, as the take refuses its
+// own (bundleAsk.check).
+func (s *Store) DropHeldWorkspaceBundle(ctx context.Context, project, issue, podUID string, keptSince time.Time, left func(saved, recorded string) bool) (runtime.WorkspaceBundle, bool, error) {
+	if err := dropAsk.check(project, issue, podUID, keptSince); err != nil {
+		return runtime.WorkspaceBundle{}, false, err
+	}
+	var held runtime.WorkspaceBundle
+	var dropped bool
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		held, dropped = runtime.WorkspaceBundle{}, false
+		offer, err := offeredBundle(ctx, tx, project, issue, podUID, keptSince)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if offer.savedBy || left(offer.repo, offer.recorded) {
+			return nil
+		}
+		// offeredBundle holds the row's lock, so the row this deletes is the one it read.
+		if err := tx.QueryRow(ctx, `delete from workspace_bundles where issue = $1 returning release_id, at`,
+			issue).Scan(&held.Release, &held.At); err != nil {
+			return err
+		}
+		dropped = true
+		return nil
+	})
+	if err != nil {
+		return runtime.WorkspaceBundle{}, false, fmt.Errorf("drop the workspace bundle of %s that the kept volume of the pod %s holds: %w", issue, podUID, err)
+	}
+	return held, dropped, nil
+}
+
+// bundleOffer is what offeredBundle reads of the bundle row that the take would offer a pod.
+type bundleOffer struct {
+	// repo is the repository the saved work is of (workspace_bundles.repo), and recorded is the
+	// one the issue's record names now. Each is "" where nothing recorded a repository.
+	repo, recorded string
+	// savedBy is whether the save's own second is no later than the time the ask compares it
+	// with. A pod created then is read as newer than the save. A kept Sandbox created then is not
+	// read as older than the save, so it is not known to hold the volume the save was taken off.
+	savedBy bool
+}
+
+// offeredBundle locks issue's bundle row that the take keeps its one attempt for
+// (TakeWorkspaceBundleForRestore), and reads it as a bundleOffer, with at the time that the ask
+// compares the save with. The row is the issue's, with no attempt yet, that did not come off the
+// pod podUID, of an issue that project records. The take and the drop (DropHeldWorkspaceBundle)
+// each read the row here, so the drop deletes only a row that the take would offer. It answers
+// pgx.ErrNoRows, and locks nothing, where there is no such row. The lock holds to the end of tx,
+// so the statement that records the ask's answer writes the row that was read, and a second pod
+// that asks at once waits and then finds the attempt taken or the row gone.
+//
+// The save is read to its own second (date_trunc), because the time it is compared with is one
+// the API server stamped, and a creationTimestamp has one-second resolution.
+func offeredBundle(ctx context.Context, tx pgx.Tx, project, issue, podUID string, at time.Time) (bundleOffer, error) {
+	var offer bundleOffer
+	err := tx.QueryRow(ctx, `select repo, coalesce((select i.repo from issues i where i.key = $1), ''),
+			date_trunc('second', at) <= $3
+		from workspace_bundles
+		where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
+			and exists (select 1 from issues i where i.key = $1 and lower(i.project) = $4)
+		for update`,
+		issue, podUID, at, project).Scan(&offer.repo, &offer.recorded, &offer.savedBy)
+	return offer, err
+}
+
+// bundleAsk names one ask of an issue's workspace bundle in the refusals of its arguments (check).
+// what names the ask, with a %s for the issue. pod names the pod of the ask. when names the time
+// that the ask compares with the save, with a %s for the pod.
+type bundleAsk struct{ what, pod, when string }
+
+// The two asks of a bundle that a pod makes: the take of its one restore attempt, and the drop
+// of a bundle that the pod's kept volume holds.
+var (
+	restoreAsk = bundleAsk{what: "the restore attempt of the workspace bundle of %s",
+		pod: "the pod it is sent to", when: "when the pod %s it is sent to was created"}
+	dropAsk = bundleAsk{what: "the drop of the workspace bundle of %s that a kept volume holds",
+		pod: "the pod that mounts it", when: "when the Sandbox of the pod %s was created"}
+)
+
+// check refuses an ask of issue's bundle that misses one of the three arguments that the take and
+// the drop each need: the project whose pod asks, the pod podUID, and the time at. An empty podUID
+// would never be the pod that the work came off, and a zero at would read as older than every
+// save.
+func (a bundleAsk) check(project, issue, podUID string, at time.Time) error {
+	switch {
+	case project == "":
+		return fmt.Errorf(a.what+" needs the project whose pod asks", issue)
+	case podUID == "":
+		return fmt.Errorf(a.what+" needs "+a.pod, issue)
+	case at.IsZero():
+		return fmt.Errorf(a.what+" needs "+a.when, issue, podUID)
+	}
+	return nil
+}
+
 // workspaceBundleUnrestored is whether issue has a stored bundle whose restore is not recorded,
 // which is the idle rule's reason to release no pod of the issue (store.readIdleView,
 // workflow.IdleHoldBundleUnrestored). The row's own presence is that record: a restore the pod's
-// launcher confirmed deletes it (DeleteRestoredWorkspaceBundle), and it does so before any role of
+// launcher confirmed deletes it (DeleteRestoredWorkspaceBundle), and so does the drop for a pod
+// whose kept volume holds the work (DropHeldWorkspaceBundle). Each does so before any role of
 // the pod starts, so a row still here when the idle rule reads it is work no pod has put back —
 // the release that would overwrite it is the release the hold stops. A bundle whose one attempt
 // failed is such a row, and so is one whose attempt was spent refusing a pod no newer than the
