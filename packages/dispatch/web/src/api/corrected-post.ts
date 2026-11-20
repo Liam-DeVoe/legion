@@ -395,7 +395,7 @@ const KEPT_CORRECTIONS_MAX = 100;
 interface KeptCorrection {
   readonly post: CorrectedPost;
   readonly out: Set<string>;
-  readonly rollbacks: Set<Mutation<unknown, unknown, unknown, unknown>>;
+  readonly rollbacks: Set<Mutation>;
 }
 
 /** Per QueryClient, the corrections kept, oldest first. */
