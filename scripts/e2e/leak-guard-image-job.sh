@@ -38,6 +38,13 @@
 #     Job says so in its own log, and the release lane, which reads the file from a checkout, is
 #     where those two are driven.
 #
+#   - the push step of `legion jj`, as the case `jj-push-author-from-trailer`, in a repository of
+#     its own: one identity makes a commit with `jj new`, the implementer's identity describes it
+#     with `jj commit -m` and a `Legion-Role: implementer` trailer, and `jj git push --bookmark`
+#     sends it with LEGION_ROLE_IDENTITIES set for that push alone. On the head's image the remote
+#     commit's author must be the implementer's identity, which the step sets. On the control's
+#     image, which has no step, it must be the identity that made the commit.
+#
 # The negative control is the base branch's published image, driven by the same Job with the same
 # probe: it carries no wrappers, so every one of the five cases lands. Pass it as `--control`.
 # A run with no `--control` proves only the head: it shows that the head's image refuses, and

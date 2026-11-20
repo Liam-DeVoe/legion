@@ -107,8 +107,8 @@ See [Rotating broker-held App keys](#rotating-broker-held-app-keys) for the rota
 ## What a pane's `gh`, `git` and `jj` are
 
 A tmux pane's `PATH` is the daemon's own with the state directory's `bin/` put first: its `legion`
-launcher, its `gh`, a script that runs `legion gh`, and its `git`, a script that runs `legion git`
-(below). The `jj` a pane runs is the first `jj` on the daemon's `PATH`. The daemon resolves at boot a
+launcher, its `gh`, a script that runs `legion gh`, its `git`, a script that runs `legion git`, and
+its `jj`, a script that runs `legion jj` (below). The daemon resolves at boot a
 jj of 0.38 or later — the jj bound it refuses to boot below (`resolveTools`, naming
 `LEGION_JJ_PATH`, its own override for the jj it runs) — and the real `gh` (`LEGION_GH_PATH`, or the
 first `gh` on its `PATH`, refused when that is a script), which every pane is told as `LEGION_GH_PATH`. A pane's GitHub identity is
@@ -338,6 +338,44 @@ and that file names a `legion` that has no `git` command, so every `git` command
 So before you start the older daemon, remove `<state_dir>/bin/git`. Before you run an older
 `legion controller start`, remove the `bin/git` of its state directory too.
 
+The `jj` in `bin/` runs `legion jj --after <state_dir>/bin` (`packages/daemon/cmd/legion/jj.go`).
+The daemon writes it at boot, unless the first `jj` on the daemon's own `PATH` is the worker
+image's wrapper, `/opt/legion/bin/jj`, which hands each `jj git push` to `legion jj` itself. In
+that case the daemon writes no `jj` and removes one that an earlier boot wrote.
+`legion jj` runs the next `jj` on `PATH` after `bin/`, a host's own jj wrapper included, and it
+runs every command but a `jj git push` through that `jj` unchanged.
+Before a `jj git push`, it runs the push step, and every jj command of the step runs with
+`--ignore-working-copy`.
+The daemon tells every workflow role's pane `LEGION_ROLE_IDENTITIES`, the git identity of each
+role of the issue as one JSON object (`docs/kubernetes.md`, daemon API contract 187).
+The step reads what the push sends from a dry run of the same push, and reads the author and the
+first `Legion-Role` trailer of each of those commits.
+Where a commit's author is not the identity that the table gives the trailer's role, the step
+runs one `jj metaedit` for each such role, under that role's identity, which sets the author.
+It prints one line for each commit it rewrote,
+`legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
+own arguments.
+It changes no commit that a remote bookmark holds, no immutable commit, and no commit that has no
+`Legion-Role` trailer or whose role has no identity in the table.
+A commit with an empty author whose trailer names a role of the table gets that role's author
+too, and `jj git push` still refuses one with no such trailer.
+The step adds no refusal: where it cannot read the dry run, it prints one line, and the push runs
+as written.
+A process with no table runs no step, such as a controller or a pane of an earlier release.
+Where a host's jj wrapper runs `bin/jj` again, `legion jj` follows the loop rule of `legion git`
+above, and that second run runs no step.
+Every `jj` command of a pane starts one `legion` process first.
+Measured in a gVisor pod, `jj --version` through `bin/jj` took 408 to 755 ms, and the real `jj`
+took 95 to 161 ms.
+`legion controller start` writes the same `jj` into the `bin/` of its own state directory, by the
+same rule, for the operator's controller.
+
+A release older than the first one that writes `bin/jj` leaves `<state_dir>/bin/jj` in place,
+and that file runs a `legion jj` command that the older `legion` does not have, so every `jj`
+command in a pane fails until the operator deletes it.
+So before you start the older daemon, remove `<state_dir>/bin/jj`. Before you run an older
+`legion controller start`, remove the `bin/jj` of its state directory too.
+
 No leak guard runs in a pane's `git` or `jj`.
 Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under
 `/opt/legion` in a filesystem no role can write ([Worker image](kubernetes.md#worker-image)), and
@@ -559,8 +597,10 @@ provider_keys:
   (`CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_DISABLE_CRON`), the one it sets to `1` on every pane that
   resumes a recorded Oh My Pi session (`OMP_SESSION_EXCLUSIVE`, which holds that Oh My Pi to the
   session it resumes), the git
-  identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the pointers to the secrets every launch
-  gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the variables that place
+  identity a launch sets (`JJ_USER`, `GIT_AUTHOR_NAME`, …), the identities of the issue's roles that
+  every workflow launch sets for the push step (`LEGION_ROLE_IDENTITIES`), the pointers to the
+  secrets every launch gets as a file of its own (`ENVOY_TOKEN_FILE`, `NATS_NKEY_SEED_FILE`), the
+  variables that place
   the session a resume reads (`OMP_SESSION_STORAGE`, `OMP_SESSION_SQL_DSN`,
   `OMP_SESSION_SQL_DSN_FILE`, `OMP_CONFIG_ROOT`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR`), a provider key or its
   `_FILE` pointer, any credential-shaped name (`…_TOKEN`, `…_KEY`, `…_SECRET`, `…_SEED`,
