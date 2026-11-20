@@ -186,7 +186,7 @@ func graphstoreDrives(t *testing.T) []StoreDrive {
 		},
 	}, {
 		Name: writeUncausedDrive, Database: database,
-		Sites: []string{"graphstore/write.go#WriteUncaused", "graphstore/write.go#Caused"},
+		Sites: []string{"graphstore/write.go#WriteUncaused", "graphstore/write.go#Caused", "graphstore/write.go#QueueCaused"},
 		Drive: func(t *testing.T) {
 			inTransaction(t, "write a person's node held for its cause", func(tx pgx.Tx) error {
 				write, err := graphstore.WriteUncaused(ctx, tx,

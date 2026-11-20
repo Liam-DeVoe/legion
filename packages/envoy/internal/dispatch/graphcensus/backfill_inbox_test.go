@@ -3,7 +3,6 @@ package graphcensus
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -997,9 +995,11 @@ func updateAsAnOlderBuild(t *testing.T, database *store.Store, what, sql string,
 
 // A comment on a document of issue CENS-1 is a thread whose user_threads rows name the document
 // alone, as user_threads_record keeps the comment's own null issue_key, while every writer of that
-// thread takes the issue's owner row (commentOwners). The thread pass's batch over alice's row of
-// it takes the same row: while the batch's transaction is open, a writer of the issue cannot take
-// it, so no reply into the thread lands between the batch's catch-up and its row lock.
+// thread takes the issue's owner lock (commentOwners). The thread pass's batch over alice's row of
+// it takes the same lock: while the batch's transaction is open, a writer of the issue cannot take
+// it, so no reply into the thread lands between the batch's catch-up and its row lock. The lock is
+// the owner's advisory lock, and the owner's row only while an earlier build is in the fleet
+// (store.LockOwners), so a writer is asked for the lock itself (store.TryLockOwners).
 func TestTheThreadPassTakesTheIssueOfADocumentsCommentThread(t *testing.T) {
 	writes := newAddressingWrites(t)
 	writes.createIssue(t, "CENS-1", 1, "U", alice)
@@ -1039,10 +1039,12 @@ func TestTheThreadPassTakesTheIssueOfADocumentsCommentThread(t *testing.T) {
 		t.Fatalf("begin a writer of CENS-1: %v", err)
 	}
 	defer writer.Rollback(ctx)
-	_, err = writer.Exec(ctx, `select 1 from issues where key = 'CENS-1' for no key update nowait`)
-	var refused *pgconn.PgError
-	if !errors.As(err, &refused) || refused.Code != "55P03" {
-		t.Errorf("a writer of CENS-1 took the issue's row beside the open batch (err %v), want it held by the batch", err)
+	taken, err := store.TryLockOwners(ctx, writer, store.IssueOwner("CENS-1"))
+	if err != nil {
+		t.Fatalf("try CENS-1's owner lock beside the open batch: %v", err)
+	}
+	if len(taken) != 0 {
+		t.Errorf("a writer of CENS-1 took the issue's owner lock %v beside the open batch, want it held by the batch", taken)
 	}
 }
 
@@ -1172,10 +1174,11 @@ func (r *roundTrips) count() int {
 // A reply an older build wrote is recorded (inboxwrite.RecordOlder) with the lock of the rows it
 // reached and the read of the dismissals it ended in one round trip: the two hang on who it
 // reached and not on each other, so they go as one pgx batch, the lock first. bob's reply to
-// alice's comment reached alice: recording it again takes five round trips - its thread, who it
-// reached, that batch, and the two of the deliveries' store write (graphstore.ToPerson reads the
-// nodes a tuple may not run from, then appends) - where it took six with the lock and the read
-// sent one by one.
+// alice's comment reached alice: recording it again takes four round trips - its thread, who it
+// reached, that batch, and the deliveries' store write, whose read of the nodes a tuple may not
+// run from and whose append go as one batch of their own (graphstore.ToPerson, a write phase of
+// one call) - where it took six with the lock and the read sent one by one and the store write's
+// two statements sent apart.
 func TestRecordOlderLocksAndReadsTheDismissalsInOneRoundTrip(t *testing.T) {
 	writes := newAddressingWrites(t)
 	writes.createIssue(t, "CENS-1", 1, "U", alice)
@@ -1201,18 +1204,20 @@ func TestRecordOlderLocksAndReadsTheDismissalsInOneRoundTrip(t *testing.T) {
 		t.Fatalf("record bob's reply: %v", err)
 	}
 	recorded := trips.since(start)
-	batches := 0
+	locks, storeWrites := 0, 0
 	for _, trip := range recorded {
-		if len(trip) != 1 || strings.Contains(trip[0], "for no key update") {
-			batches++
-			if len(trip) != 2 || !strings.Contains(trip[0], "for no key update") || !strings.Contains(trip[1], "current.from_id") {
-				t.Errorf("a round trip of the record carried %q, want one batch of the row lock and then the dismissals' read", trip)
-			}
+		switch {
+		case len(trip) == 2 && strings.Contains(trip[0], "for no key update") && strings.Contains(trip[1], "current.from_id"):
+			locks++
+		case len(trip) == 2 && strings.Contains(trip[0], "n.visibility") && strings.Contains(trip[1], "graph_nodes_written"):
+			storeWrites++
+		case len(trip) != 1 || strings.Contains(trip[0], "for no key update"):
+			t.Errorf("a round trip of the record carried %q, want one batch of the row lock and then the dismissals' read, and one of the deliveries' store write", trip)
 		}
 	}
-	if batches != 1 || len(recorded) != 5 {
-		t.Errorf("recording bob's reply took %d round trips, %d of them a batch or a lone lock: %q; want 5 with the lock and the read in one batch",
-			len(recorded), batches, recorded)
+	if locks != 1 || storeWrites != 1 || len(recorded) != 4 {
+		t.Errorf("recording bob's reply took %d round trips, %d of them the lock's batch and %d the deliveries' write: %q; want 4, one of each",
+			len(recorded), locks, storeWrites, recorded)
 	}
 }
 

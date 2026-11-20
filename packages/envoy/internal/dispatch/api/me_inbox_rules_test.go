@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -303,11 +304,14 @@ type meInboxCase struct {
 
 // c-subtractions: every rule that holds mail back is kept, one case each, and each reads the
 // delivery tuples, since every rule here decides a delivery rather than the read of R1. The three
-// cases of a session's copy left to a mention of it - sent, failed and still being sent - are
-// T13's, beside the mention tuples they read; this table takes them there.
+// cases of a session's copy left to a mention of it - sent, failed and still being sent - read the
+// copies the outbox delivered out of the comment's node beside the attempt's own delivery.
 func TestOneInboxKeepsEverySubtractionRule(t *testing.T) {
 	cases := []meInboxCase{
 		{"the person's own ask, comment and message draw no delivery to them", meInboxOwnWrites},
+		{"a session whose mention of a comment was sent gets no second copy", meInboxMentionSent},
+		{"a session whose mention of a comment failed gets one copy", meInboxMentionFailed},
+		{"a session whose mention of a comment is still being sent is held back, and the event is read again", meInboxMentionPending},
 		{"a claimed or routed issue sends a person's comment to the claimant and the route, not the primary document's writers", meInboxClaimantAndRoute},
 		{"a direct reply is unread past the read mark and the Clear alone, from the one person node", meInboxTwoMarks},
 		{"a reply already marked by its id is out", meInboxReadByID},
@@ -350,6 +354,124 @@ func meInboxOwnWrites(t *testing.T) {
 			t.Errorf("alice's own %s stands in her read as %v, want it under its %s tuple", own.kind, meInboxKinds(entry), meInboxAuthored)
 		}
 	}
+}
+
+// meInboxMentionedAlone posts alice's comment mentioning session alone - nothing else of the comment
+// routes to it - on a fresh issue of a server whose listener is listener, and answers the server's
+// store and deps, the issue's key and the comment's id.
+func meInboxMentionedAlone(t *testing.T, listener string, timeout time.Duration, session string) (*store.Store, Deps, string, string) {
+	t.Helper()
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener, envoyTimeout: timeout})
+	issue := createInteractionIssue(t, handler, "MENT", "A mention of "+session+" alone", "before")
+	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
+		"body": "Are you there?", "mentions": []map[string]any{{"target": "session:" + session}},
+	}))
+	return database, deps, issue.Key, created.ID
+}
+
+// meInboxSessionDeliveries is the type of the event that caused each standing delivered_to tuple
+// out of comment's node to session, in the order they were appended: a mention's delivery is
+// recorded under the comment.delivery receipt of the attempt the listener took, and a copy the
+// outbox published under the comment.created it is a copy of (outbox.deliveredGraph).
+func meInboxSessionDeliveries(t *testing.T, database *store.Store, comment, session string) []string {
+	t.Helper()
+	causes, err := readStrings(context.Background(), database.Pool, `
+		select e.type from graph_tuples t join events e on e.id = t.source_event
+		where t.from_kind = 'comment' and t.from_id = $1 and t.kind = $2 and t.to_kind = 'session' and t.to_id = $3
+		  and t.asserted
+		order by t.seq
+	`, comment, graphstore.TupleDeliveredTo, session)
+	if err != nil {
+		t.Fatalf("read the deliveries of comment %s to %s: %v", comment, session, err)
+	}
+	return causes
+}
+
+// meInboxAttemptReached is each session the first attempt of comment's mention of target
+// delivered it to, as the delivered_to tuples out of the attempt's node hold them.
+func meInboxAttemptReached(t *testing.T, database *store.Store, comment, target string) []string {
+	t.Helper()
+	return meInboxDeliveredTo(t, database, graphstore.KindDeliveryAttempt, graphstore.CommentAttempt(comment, target, 1).ID())
+}
+
+func meInboxMentionSent(t *testing.T) {
+	listener, _ := newMentionListener(t)
+	database, deps, issue, comment := meInboxMentionedAlone(t, listener.URL, time.Second, "s1")
+	if settled := settledCommentDeliveries(t, database, comment); len(settled) != 1 || settled[0].State != model.DeliveryStateSent {
+		t.Fatalf("the mention to a listener that answers = %#v, want its one attempt sent", settled)
+	}
+	runOutboxUntilSettled(t, deps, &recordingOutboxPublisher{}, issue, comment)
+	if reached := meInboxAttemptReached(t, database, comment, "session:s1"); !slices.Equal(reached, []string{graphstore.KindSession + ":s1"}) {
+		t.Fatalf("the sent mention's attempt reached %v, want s1", reached)
+	}
+	if causes := meInboxSessionDeliveries(t, database, comment, "s1"); !slices.Equal(causes, []string{"comment.delivery"}) {
+		t.Errorf("the comment reached s1 under %v, want the mention's one delivery alone: s1 drew a second copy", causes)
+	}
+	if destinations := publishedDestinationsOf(t, database, "comment.created", comment); slices.Contains(destinations, contracts.LegacyAgentSubject("s1")) {
+		t.Errorf("comment.created was published to %v: s1, whose mention was sent, drew a second copy", destinations)
+	}
+}
+
+func meInboxMentionFailed(t *testing.T) {
+	listener, state := newMentionListener(t)
+	// Never released: the send to s2 waits until its caller gives up, and the attempt fails.
+	_ = state.hold("s2")
+	database, deps, issue, comment := meInboxMentionedAlone(t, listener.URL, time.Second, "s2")
+	if settled := settledCommentDeliveries(t, database, comment); len(settled) != 1 || settled[0].State != model.DeliveryStateFailed {
+		t.Fatalf("the mention whose send never answered = %#v, want its one attempt failed", settled)
+	}
+	runOutboxUntilSettled(t, deps, &recordingOutboxPublisher{}, issue, comment)
+	if reached := meInboxAttemptReached(t, database, comment, "session:s2"); len(reached) != 0 {
+		t.Fatalf("the failed mention's attempt reached %v, want nobody", reached)
+	}
+	if causes := meInboxSessionDeliveries(t, database, comment, "s2"); !slices.Equal(causes, []string{"comment.created"}) {
+		t.Errorf("the comment reached s2 under %v, want the outbox's one copy: its mention failed", causes)
+	}
+}
+
+func meInboxMentionPending(t *testing.T) {
+	listener, state := newMentionListener(t)
+	release := state.hold("s3")
+	database, deps, issue, comment := meInboxMentionedAlone(t, listener.URL, 30*time.Second, "s3")
+	if session := state.awaitSend(t); session != "s3" {
+		t.Fatalf("the mention's send went to %s, want s3", session)
+	}
+	// While the send is held its attempt is pending, and the outbox that reads the comment's event
+	// then holds it back: the event stays unpublished, to be read again, and nothing is delivered
+	// to s3.
+	runOutboxFor(t, deps, &recordingOutboxPublisher{}, time.Second)
+	if row := commentCreatedRow(t, database, comment); row.publishedAt != nil {
+		t.Errorf("comment.created was published while its mention of s3 was still being sent, want it held back")
+	}
+	if causes := meInboxSessionDeliveries(t, database, comment, "s3"); len(causes) != 0 {
+		t.Errorf("the comment reached s3 under %v while the mention was still being sent, want nothing yet", causes)
+	}
+	release()
+	if settled := settledCommentDeliveries(t, database, comment); len(settled) != 1 || settled[0].State != model.DeliveryStateSent {
+		t.Fatalf("the mention released = %#v, want its one attempt sent", settled)
+	}
+	// Read again once the mention delivered the comment: the event is published, and s3 has the
+	// mention's delivery alone.
+	runOutboxUntilSettled(t, deps, &recordingOutboxPublisher{}, issue, comment)
+	if row := commentCreatedRow(t, database, comment); row.publishedAt == nil {
+		t.Errorf("comment.created is unpublished once its mention was sent")
+	}
+	if causes := meInboxSessionDeliveries(t, database, comment, "s3"); !slices.Equal(causes, []string{"comment.delivery"}) {
+		t.Errorf("the comment reached s3 under %v once its mention was sent, want the mention's one delivery alone", causes)
+	}
+}
+
+// runOutboxFor runs an outbox over deps' store for d and stops it, for a case that reads what one
+// such run leaves unsettled.
+func runOutboxFor(t *testing.T, deps Deps, publisher outbox.Publisher, d time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	outbox.New(outbox.Deps{
+		Store: deps.Store, Publisher: publisher, Broker: events.NewBroker(),
+		Listen:     deps.Store.Pool.Listener,
+		RoleClaims: claimedRole{}, Sessions: claimedRole{},
+	}).Run(ctx)
 }
 
 func meInboxClaimantAndRoute(t *testing.T) {

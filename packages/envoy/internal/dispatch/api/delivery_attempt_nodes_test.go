@@ -23,7 +23,8 @@ import (
 )
 
 // TestMentionsAreTuplesAndEveryAttemptIsANode is c-mention-tuples. Each of its parts is a subtest
-// of its own, so a part that breaks is named by the subtest that fails.
+// of its own, so a part that breaks is named by the subtest that fails. A mention is a tuple to the
+// identity it points at (mentionsAreTuples, mention_tuples_test.go).
 //
 // Every attempt is one delivery_attempt node: each writer of a comment_deliveries or a
 // message_deliveries row is driven once - through the real handlers where a route makes the
@@ -38,6 +39,7 @@ import (
 // tuples the outbox appended for each event (outbox.deliveredGraph), driven with
 // runOutboxUntilSettled as comment_delivery_fallback_copy_test.go drives it.
 func TestMentionsAreTuplesAndEveryAttemptIsANode(t *testing.T) {
+	t.Run("a mention is a tuple to the person, session or role it points at", mentionsAreTuples)
 	t.Run("every attempt is one delivery_attempt node", func(t *testing.T) {
 		t.Run("a mention is opened, given back, taken, resolved, sent, reported failed and answered", attemptOfAMentionFromOpenToAnswer)
 		t.Run("a lane stands down for a Retry in flight, whose send then supersedes the lane's attempt", attemptsOfAStandDownAndASupersede)

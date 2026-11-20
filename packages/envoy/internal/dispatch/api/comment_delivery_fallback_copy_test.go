@@ -69,10 +69,12 @@ func TestALiveListenerLeavesTheMentionedSessionTheMentionsCopyAlone(t *testing.T
 	}
 }
 
-// A mention whose send fails, to a session no copy of the comment reaches - a reply in a thread a
-// person started, on an issue with no route - adds no copy: the comment's comment.created payload
-// is unchanged, and once the outbox has looked at it again it still reached no topic of s2's.
-func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone(t *testing.T) {
+// A mention whose send fails, to a session no other route of the comment reaches - a reply in a
+// thread a person started, on an issue with no route - still tells that session of the comment
+// once (R5): while the send is undecided the comment's event names no topic of s2's, and once the
+// mention has failed the event is published with s2's own topic among its destinations, once, and
+// no later read of it adds a second. The comment.created payload is unchanged throughout.
+func TestAFailedMentionOfASessionNothingElseReachesGivesItOneCopy(t *testing.T) {
 	listener, state := newMentionListener(t)
 	// Never released: the send to s2 waits until its caller gives up, and the attempt fails.
 	_ = state.hold("s2")
@@ -85,27 +87,66 @@ func TestAFailedMentionOfASessionNothingSkippedLeavesTheCommentCreatedEventAlone
 	if session := state.awaitSend(t); session != "s2" {
 		t.Fatalf("the mention's send went to %s, want s2", session)
 	}
-	// The send is still held, so its attempt is pending while comment.created is published.
-	published := eventDeliveries(t, database, "comment.created", created.ID)
-	if len(published) != 1 || slices.Contains(published[0].Destinations, contracts.LegacyAgentSubject("s2")) {
-		t.Fatalf("comment.created deliveries = %#v, want the one event's, none of it to s2", published)
-	}
+	// The send is still held, so its attempt is pending: nothing the comment's event records names
+	// s2 yet.
 	before := commentCreatedRow(t, database, created.ID)
-	if before.publishedAt == nil {
-		t.Fatalf("comment.created of %s is unpublished after the outbox published it", created.ID)
+	if pending := commentDeliveryStates(t, database, created.ID); !slices.Equal(pending, []string{"pending"}) {
+		t.Fatalf("the mention whose send is held is %v, want its one attempt pending", pending)
+	}
+	if destinations := publishedDestinationsOf(t, database, "comment.created", created.ID); slices.Contains(destinations, contracts.LegacyAgentSubject("s2")) {
+		t.Fatalf("comment.created names %v while the mention is still being sent, want no topic of s2's", destinations)
 	}
 
+	published := eventDeliveries(t, database, "comment.created", created.ID)
 	settled := settledCommentDeliveries(t, database, created.ID)
 	if len(settled) != 1 || settled[0].State != "failed" {
 		t.Fatalf("the mention whose send never answered = %#v, want its one attempt failed", settled)
 	}
+	if len(published) != 1 || countOf(published[0].Destinations, contracts.LegacyAgentSubject("s2")) != 1 {
+		t.Fatalf("comment.created deliveries once the mention failed = %#v, want the one event's, s2's topic among them once", published)
+	}
 	again := eventDeliveries(t, database, "comment.created", created.ID)
-	if len(again) != 1 || slices.Contains(again[0].Destinations, contracts.LegacyAgentSubject("s2")) {
-		t.Fatalf("comment.created deliveries after the mention failed = %#v, want none of them to s2", again)
+	if len(again) != 1 || countOf(again[0].Destinations, contracts.LegacyAgentSubject("s2")) != 1 {
+		t.Fatalf("comment.created deliveries read again = %#v, want s2's topic among them once still", again)
 	}
 	if after := commentCreatedRow(t, database, created.ID); after.payload != before.payload || after.publishedAt == nil {
 		t.Fatalf("comment.created after the mention failed = %+v, want its payload as before and published: %+v", after, before)
 	}
+}
+
+// commentDeliveryStates is the state of each attempt of commentID's mentions, in attempt order.
+func commentDeliveryStates(t *testing.T, database *store.Store, commentID string) []string {
+	t.Helper()
+	states, err := readStrings(context.Background(), database.Pool,
+		`select state from comment_deliveries where comment_id = $1::uuid order by target, attempt`, commentID)
+	if err != nil {
+		t.Fatalf("read the attempts of %s: %v", commentID, err)
+	}
+	return states
+}
+
+// publishedDestinationsOf is the destinations the one event of eventType about id records, none
+// while the outbox has published it nowhere.
+func publishedDestinationsOf(t *testing.T, database *store.Store, eventType, id string) []string {
+	t.Helper()
+	var destinations []string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select coalesce(published_destinations, '{}') from events where type = $1 and payload->>'id' = $2`,
+		eventType, id).Scan(&destinations); err != nil {
+		t.Fatalf("read the destinations of %s %s: %v", eventType, id, err)
+	}
+	return destinations
+}
+
+// countOf is how many of values are value.
+func countOf(values []string, value string) int {
+	count := 0
+	for _, held := range values {
+		if held == value {
+			count++
+		}
+	}
+	return count
 }
 
 // commentCreatedState is a comment.created row's payload, as text, and its published_at.

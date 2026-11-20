@@ -123,6 +123,8 @@ var graphEdgesArms = []graphEdgesArm{
 		fate: inboxArmFate("a message's replies_to a message's block; the store answers it for a messages row that carries its node")},
 	{relation: "graph_tuples", joins: []string{"document_blocks", "block_refs", "comments", "comment_pointers", "messages", "citations", "asks", "ask_followers"},
 		fate: "the store itself, which answers an edge of a moved kind while the row that names it carries its node; it stays"},
+	{relation: "graph_tuples", joins: []string{"comment_pointers", "messages", "document_blocks"},
+		fate: "the store's mentions of a person, a session or a role out of a comment, a message or a document's block, rendered as mentions while the source's row carries its node; it stays"},
 	{relation: "graph_tuples", joins: []string{"messages"},
 		fate: "the store's replies of a message to a message's block, rendered as message_block while the reply's row carries its node; it stays"},
 	{relation: "graph_tuples", joins: []string{"comment_pointers"},
@@ -474,11 +476,12 @@ var (
 	itemBlocksAlone   = regexp.MustCompile(`WHERE tuple\.from_kind = 'block'::text AND tuple\.to_kind <> 'value'::text AND ` + itemBlockAddresses)
 )
 
-// storeArms answers the arms over graph_tuples - the tuple arm, the arms of a reply to a
-// message's block, a comment's block and an ask's part, each of which renders that one relation
-// under its address form, and the arm of every item's blocks - and holds each to its join to
-// every projection table its declaration names, and the tuple arm and the item block arm to
-// splitting the store's block tuples by the item block addresses.
+// storeArms answers the arms over graph_tuples - the tuple arm, the identity arm of the mentions
+// of a person, a session or a role, the arms of a reply to a message's block, a comment's block and
+// an ask's part, each of which renders that one relation under its address form, and the arm of
+// every item's blocks - and holds each to its join to every projection table its declaration
+// names, and the tuple arm (the one arm joining a document block's links) and the item block arm
+// to splitting the store's block tuples by the item block addresses.
 func storeArms(t *testing.T, read []graphEdgesArm) []movedArm {
 	t.Helper()
 	var stores []movedArm
@@ -503,7 +506,7 @@ func storeArms(t *testing.T, read []graphEdgesArm) []movedArm {
 			filter *regexp.Regexp
 			says   string
 		}{
-			{"document_blocks", itemBlocksLeftOut, "leaves out no tuple out of an item's block, which the item block arm answers"},
+			{"block_refs", itemBlocksLeftOut, "leaves out no tuple out of an item's block, which the item block arm answers"},
 			{"comment_blocks", itemBlocksAlone, "reads more than the tuples out of an item's block, which the tuple arm answers"},
 		} {
 			if !slices.Contains(joins, side.joins) {

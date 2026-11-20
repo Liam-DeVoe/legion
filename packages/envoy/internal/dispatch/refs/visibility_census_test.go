@@ -528,18 +528,23 @@ func storeReads(t *testing.T) (viewing, without []string) {
 	return viewing, without
 }
 
-// recordingQueryer is the Queryer a read runs on while this test reads the statements it issues.
+// recordingQueryer is the Queryer a read runs on while a test reads the statements it issues, and
+// the arguments each was bound with, at the same place: a test that explains a statement it
+// recorded binds it as the read did (TestAPersonsListKeysEveryReadOfTheStoreOnThePerson).
 type recordingQueryer struct {
 	inner      Queryer
 	statements []string
+	arguments  [][]any
 }
 
 func (r *recordingQueryer) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
 	r.statements = append(r.statements, sql)
+	r.arguments = append(r.arguments, args)
 	return r.inner.Query(ctx, sql, args...)
 }
 
 func (r *recordingQueryer) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	r.statements = append(r.statements, sql)
+	r.arguments = append(r.arguments, args)
 	return r.inner.QueryRow(ctx, sql, args...)
 }

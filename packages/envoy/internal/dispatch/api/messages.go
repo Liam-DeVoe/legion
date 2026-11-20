@@ -552,12 +552,13 @@ func (s *server) createStoredMessage(
 	if err != nil {
 		return model.Message{}, nil, err
 	}
-	// Who took part in the message's thread and whom it reached, planned here and queued after
-	// its event and every fact it states, its replies_to among them (inboxwrite.PlanRecord). A
-	// message whose row names no node is the trigger's, as an older build's is.
+	// Who took part in the message's thread and whom it reached, each person its text newly
+	// mentions among them, planned here and queued after its event and every fact it states, its
+	// replies_to among them (inboxwrite.PlanRecord). A message whose row names no node is the
+	// trigger's, as an older build's is.
 	var recording inboxwrite.Recording
 	if stored.projected {
-		if recording, err = inboxwrite.PlanRecord(ctx, tx, inbox); err != nil {
+		if recording, err = inboxwrite.PlanRecord(ctx, tx, inbox.ReachesMentioned(indexed)); err != nil {
 			return model.Message{}, nil, err
 		}
 	}
@@ -628,7 +629,7 @@ func (s *server) createStoredMessage(
 			if err := graphstore.QueueAuthored(b, graphstore.KindMessage, message.ID, actor, createdAt, graphstore.LatestEvent); err != nil {
 				return err
 			}
-			if err := recording.Queue(b, graphstore.LatestEvent); err != nil {
+			if err := queueRecordAndMentions(b, recording, indexed, actor, createdAt, graphstore.LatestEvent); err != nil {
 				return err
 			}
 		}

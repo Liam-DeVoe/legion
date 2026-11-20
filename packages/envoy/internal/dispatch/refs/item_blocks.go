@@ -290,17 +290,23 @@ type itemBlockSource struct {
 	ids       func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error)
 	madeBy    []*model.Actor
 	pairs     func(next []itemblocks.Block, ids []string) []blockPair
+	// identities is each identity the text names, a person, a session or a role, whose mention
+	// the index appends out of the item's node (identityTargets): a comment's and an issue
+	// message's; an ask's parts and a direct message name none here.
+	identities []Target
 }
 
 // itemBodySource is the reading of an item's blocks that a body makes, which IndexItem writes and
 // PlanItemIndex plans: the blocks body splits into, the sum its state row records, the ids the
-// carried spans or the text give them, and the links the mentions of located write. A comment's
-// and a message's blocks record no maker of their own, so the source names none.
+// carried spans or the text give them, the links the mentions of located write, and the
+// identities those mentions name. A comment's and a message's blocks record no maker of their
+// own, so the source names none.
 func itemBodySource(kind ItemKind, body, serverURL string, located []text.Located, carried *CarriedEdit) itemBlockSource {
 	return itemBlockSource{
-		blocks:    itemblocks.Split(body),
-		bodySum:   itemblocks.BodySHA256(body),
-		serverURL: serverURL,
+		identities: identityTargets(located),
+		blocks:     itemblocks.Split(body),
+		bodySum:    itemblocks.BodySHA256(body),
+		serverURL:  serverURL,
 		ids: func(stored []itemblocks.Stored, next []itemblocks.Block, revision, counter int) ([]string, int, error) {
 			if carried != nil && kind == ItemComment && carried.BaseRevision == revision {
 				spans, err := itemblocks.ReadCarried(stored, body, carried.Blocks)
@@ -340,6 +346,10 @@ type ItemIndex struct {
 	// whether the read of the index made them (PlanOwnRefs).
 	own     []heldCitation
 	ownRead bool
+	// mentioned is each identity the store holds a mention of out of the item's node, read with
+	// the block mentions of an indexed comment or message (heldItemBlockLinks): what the index
+	// appends no mention of again (identityMentions).
+	mentioned map[Target]struct{}
 }
 
 // itemBlockLink is one stored block mention of an item: the block holding it, the edge kind and
@@ -395,7 +405,7 @@ func ReadItemIndex(ctx context.Context, q Queryer, kind ItemKind, itemID string)
 	if index.stored, index.rows, err = storedItemBlocks(ctx, q, kind, tables, itemID); err != nil {
 		return ItemIndex{}, err
 	}
-	if index.held, index.own, index.ownRead, err = heldItemBlockLinks(ctx, q, kind, tables, itemID); err != nil {
+	if index.held, index.own, index.ownRead, index.mentioned, err = heldItemBlockLinks(ctx, q, kind, tables, itemID); err != nil {
 		return ItemIndex{}, err
 	}
 	if index.scope.held && len(index.rows) > 0 {
@@ -735,6 +745,15 @@ func planItemBlocks(
 			}
 		}
 	}
+	// The identities the text names, a mention of each out of the item's node where the store
+	// holds none from it already (identityMentions): a session's and a role's with the node's other
+	// facts, a person's through the store's one writer of a fact that names a person. An item no
+	// block-aware build indexed holds none (ReadItemIndex reads them with its links).
+	if scope.held {
+		tuples, people := identityMentions(string(kind), itemID, scope.node.Visibility, scope.node.MadeBy, at, source.identities, index.mentioned)
+		indexing.stated.Tuples = append(indexing.stated.Tuples, tuples...)
+		indexing.stated.People = append(indexing.stated.People, people...)
+	}
 	return indexing, nil
 }
 
@@ -746,7 +765,8 @@ func (i ItemIndexing) Moved() []Target {
 
 // Stated is what the index states in the node and tuple store, held for the event of the write
 // that queues it: the block nodes Queue writes before their rows, and the base attributes that
-// write states of them, the part_of of each block it places and the links it states or retracts.
+// write states of them, the part_of of each block it places and the links it states or retracts,
+// and the mention of each identity its text newly names (identityMentions).
 // A write that appends an event queues it with graphstore.QueueCaused right after that event, in
 // the same write phase; a pass no event records queues it at graphstore.NoEvent.
 func (i ItemIndexing) Stated() graphstore.Uncaused {
@@ -758,7 +778,8 @@ func (i ItemIndexing) Stated() graphstore.Uncaused {
 // (PlanAskParts). It reads the plan alone: the state this index records, the blocks the source
 // holds in its order followed by the removed ones, the ones this index removes first, as a read
 // after the write orders them (storedItemBlocks), what the index reads of each row, the links its
-// blocks hold once the reconciliation has run, and the item's scope. It holds none of the item's
+// blocks hold once the reconciliation has run, the item's scope, and the identities the store
+// holds a mention of from the item once this index's are appended. It holds none of the item's
 // own refs rows, which the plan does not read (PlanOwnRefs answers false).
 func (i ItemIndexing) Held() ItemIndex {
 	held := ItemIndex{
@@ -767,10 +788,17 @@ func (i ItemIndexing) Held() ItemIndex {
 			indexed: true, revision: i.revision, nextBlock: i.nextBlock,
 			bodySHA256: i.bodySHA256, edited: i.index.state.edited,
 		},
-		stored: make([]itemblocks.Stored, 0, len(i.index.stored)+len(i.written)),
-		rows:   make(map[string]storedItemBlock, len(i.index.rows)+len(i.written)),
-		held:   make([]itemBlockLink, 0, len(i.pairs)),
-		scope:  i.index.scope,
+		stored:    make([]itemblocks.Stored, 0, len(i.index.stored)+len(i.written)),
+		rows:      make(map[string]storedItemBlock, len(i.index.rows)+len(i.written)),
+		held:      make([]itemBlockLink, 0, len(i.pairs)),
+		scope:     i.index.scope,
+		mentioned: make(map[Target]struct{}, len(i.index.mentioned)+len(i.stated.People)),
+	}
+	for target := range i.index.mentioned {
+		held.mentioned[target] = struct{}{}
+	}
+	for _, tuple := range slices.Concat(i.stated.People, statedMentions(i.stated.Tuples)) {
+		held.mentioned[Target{Kind: tuple.ToKind, ID: tuple.ToID}] = struct{}{}
 	}
 	for id, row := range i.index.rows {
 		held.rows[id] = row
@@ -1040,10 +1068,18 @@ func readItemState(ctx context.Context, q Queryer, kind ItemKind, tables itemTab
 // citations those rows stand for, against these rows rather than a read of its own
 // (ItemIndex.PlanOwnRefs). A row of the ask's own carries no block id, which tells the two apart,
 // and its last column is its tuples_stored where a link's is whether it names its block's node.
-func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (held []itemBlockLink, own []heldCitation, read bool, err error) {
+// For a comment or a message the same statement reads the identities the store holds a mention
+// of out of the item's node (mentioned, identityMentionsRead), each a row with no block id whose
+// far end is an identity's kind, which no refs row names (TargetOf): what the index appends no
+// mention of again.
+func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables itemTables, itemID string) (held []itemBlockLink, own []heldCitation, read bool, mentioned map[Target]struct{}, err error) {
 	query, args := `
 		select block_id, kind, to_kind, to_id, node_kind is not null from `+tables.refs+` where `+tables.item+` = $1::uuid
-	`, []any{itemID}
+		union all
+		select null, '`+graphstore.TupleMentions+`', mentioned.to_kind, mentioned.to_id, true from (
+			`+identityMentionsRead(`$2`, `$3`, `$4`)+`
+		) mentioned
+	`, []any{itemID, string(kind), itemID, IdentityKinds}
 	if kind == ItemAsk {
 		query = `
 			select block_id, kind, to_kind, to_id, node_kind is not null from ask_block_refs where ask_id = $1::uuid
@@ -1054,27 +1090,30 @@ func heldItemBlockLinks(ctx context.Context, q Queryer, kind ItemKind, tables it
 	}
 	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
+		return nil, nil, false, nil, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
 	}
 	defer rows.Close()
-	held, own = []itemBlockLink{}, []heldCitation{}
+	held, own, mentioned = []itemBlockLink{}, []heldCitation{}, map[Target]struct{}{}
 	for rows.Next() {
 		var blockID *string
 		var link itemBlockLink
 		if err := rows.Scan(&blockID, &link.kind, &link.target.Kind, &link.target.ID, &link.named); err != nil {
-			return nil, nil, false, fmt.Errorf("scan a block mention of %s %s: %w", kind, itemID, err)
+			return nil, nil, false, nil, fmt.Errorf("scan a block mention of %s %s: %w", kind, itemID, err)
 		}
-		if blockID == nil {
+		switch {
+		case blockID == nil && kind != ItemAsk:
+			mentioned[link.target] = struct{}{}
+		case blockID == nil:
 			own = append(own, heldCitation{target: link.target, kind: link.kind, stored: link.named})
-			continue
+		default:
+			link.blockID = *blockID
+			held = append(held, link)
 		}
-		link.blockID = *blockID
-		held = append(held, link)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, false, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
+		return nil, nil, false, nil, fmt.Errorf("read the block mentions of %s %s: %w", kind, itemID, err)
 	}
-	return held, own, read, nil
+	return held, own, read, mentioned, nil
 }
 
 // itemRefRows is the item's own refs rows by target, each with its created_at and source_seq,

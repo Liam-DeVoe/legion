@@ -35,23 +35,24 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // type, the relation and index it names, the index condition it carries - nil when it carries
 // none, which is not the same as an empty one - the condition it tests every row it reads by
 // (Filter) and the one a bitmap heap scan rechecks a row by, the name of the subplan it begins
-// and its place under its own parent, what an analyzed plan measured of it (its loops and the
-// rows each answered, and the rows an index-only scan fetched from the heap, all 0 in a plan
-// explained without ANALYZE), the CTE it scans, and its children.
+// and its place under its own parent, what an analyzed plan measured of it (its loops, the rows
+// each answered and the rows its Filter removed each time, and the rows an index-only scan fetched
+// from the heap, all 0 in a plan explained without ANALYZE), the CTE it scans, and its children.
 type planNode struct {
-	NodeType           string            `json:"Node Type"`
-	RelationName       string            `json:"Relation Name"`
-	IndexName          string            `json:"Index Name"`
-	IndexCond          *string           `json:"Index Cond"`
-	Filter             string            `json:"Filter"`
-	RecheckCond        string            `json:"Recheck Cond"`
-	SubplanName        string            `json:"Subplan Name"`
-	ParentRelationship string            `json:"Parent Relationship"`
-	ActualLoops        float64           `json:"Actual Loops"`
-	ActualRows         float64           `json:"Actual Rows"`
-	HeapFetches        float64           `json:"Heap Fetches"`
-	CTEName            string            `json:"CTE Name"`
-	Plans              []json.RawMessage `json:"Plans"`
+	NodeType            string            `json:"Node Type"`
+	RelationName        string            `json:"Relation Name"`
+	IndexName           string            `json:"Index Name"`
+	IndexCond           *string           `json:"Index Cond"`
+	Filter              string            `json:"Filter"`
+	RecheckCond         string            `json:"Recheck Cond"`
+	SubplanName         string            `json:"Subplan Name"`
+	ParentRelationship  string            `json:"Parent Relationship"`
+	ActualLoops         float64           `json:"Actual Loops"`
+	ActualRows          float64           `json:"Actual Rows"`
+	RowsRemovedByFilter float64           `json:"Rows Removed by Filter"`
+	HeapFetches         float64           `json:"Heap Fetches"`
+	CTEName             string            `json:"CTE Name"`
+	Plans               []json.RawMessage `json:"Plans"`
 
 	// subplan is the subplan this node runs under, which the walk carries down from the node
 	// that began it (nodesUnder), and so is no field of the plan's own JSON.
@@ -66,7 +67,7 @@ func (n planNode) asNode() Node {
 	found := Node{
 		Type: n.NodeType, Relation: n.RelationName, Index: n.IndexName,
 		CTE: n.CTEName, Subplan: n.subplan,
-		Loops: n.ActualLoops, Rows: n.ActualRows,
+		Loops: n.ActualLoops, Rows: n.ActualRows, RemovedByFilter: n.RowsRemovedByFilter,
 		Filter: n.Filter, RecheckCond: n.RecheckCond,
 		HeapFetches: n.HeapFetches,
 	}
@@ -238,12 +239,14 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 // reads its index by, and RecheckCond the one a bitmap heap scan tests a row by where its bitmap
 // cannot vouch for the row (a page the bitmap holds lossily, or an index that answers lossily);
 // each is the plan's own text, empty when the node carries none. Loops is how many times the
-// node ran and Rows how many rows it answered each time; HeapFetches is how many rows an
+// node ran and Rows how many rows it answered each time; RemovedByFilter is how many rows its
+// Filter refused each time, which with Rows is what an index scan read through its index before
+// it filtered them (EXPLAIN reports it per loop, as it does Rows); HeapFetches is how many rows an
 // index-only scan fetched from the heap, since the visibility map did not mark their pages
 // all-visible.
 type Node struct {
 	Type, Relation, Index, CTE, Subplan string
-	Loops, Rows                         float64
+	Loops, Rows, RemovedByFilter        float64
 	Filter, IndexCond, RecheckCond      string
 	HeapFetches                         float64
 }

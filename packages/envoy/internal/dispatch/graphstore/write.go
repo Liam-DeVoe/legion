@@ -123,6 +123,11 @@ type Uncaused struct {
 	// Tuples are the facts the write states, each appended under the event by Caused, the base
 	// attributes its node write stated among them, which stand after the first baseAt of these.
 	Tuples []UncausedTuple
+	// People are the facts of the write that name a person - a mentions tuple from the write's
+	// node to a person its text names - which only ToPerson appends (ErrPersonTupleOutsideToPerson):
+	// QueueCaused hands them to QueueToPerson under the event, after Tuples, so each person's node
+	// is written beside them as every such fact's is.
+	People []Tuple
 	// mark is what the node write left on the rows it made or moved (nodeMark), 0 for a write
 	// that marked none.
 	mark int64
@@ -237,10 +242,21 @@ func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) error {
 		}
 		tuples[index] = tuple
 	}
-	return queueAppend(b, appending{
+	if err := queueAppend(b, appending{
 		tuples: tuples, nodes: write.Nodes, mark: write.mark, baseAt: write.baseAt,
 		cause: &event, sentinel: write.sentinel, own: tuples, appended: write.appended,
-	})
+	}); err != nil {
+		return err
+	}
+	if len(write.People) == 0 {
+		return nil
+	}
+	people := make([]Tuple, len(write.People))
+	for index, tuple := range write.People {
+		tuple.SourceEvent = event
+		people[index] = tuple
+	}
+	return QueueToPerson(b, people)
 }
 
 // The base attributes, as the kind of the tuple that states each spells it. graph_nodes carries a

@@ -176,7 +176,9 @@ var storeWriteCallSites = map[string]string{
 	// of one statement, and Reached is SessionRecorded for an attempt that was sent; each runs
 	// its queued form (QueueAuthored, QueueSessionRecorded, QueueReached) as a batch of its own.
 	// Write, WriteUncaused and Caused run QueueWrite, QueueNodes and QueueCaused the same way,
-	// and TestEveryStoreWriteTakesOneLockOrder proves the order on them.
+	// and TestEveryStoreWriteTakesOneLockOrder proves the order on them. QueueCaused hands the
+	// facts of a write that name a person (Uncaused.People, a mention of one) to QueueToPerson
+	// after the write's own append, which writes the person nodes `do nothing` and their tuples.
 	"graphstore/people.go#Authored":             "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#QueueAuthored":        "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#QueueReached":         "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
@@ -184,6 +186,7 @@ var storeWriteCallSites = map[string]string{
 	"graphstore/people.go#Reached":              "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/people.go#SessionRecorded":      "graphstore#TestAuthoredAndReachedTakeTheStoreLockOrder",
 	"graphstore/write.go#Caused":                "graphstore#TestEveryStoreWriteTakesOneLockOrder",
+	"graphstore/write.go#QueueCaused":           "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"graphstore/write.go#Write":                 "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	"graphstore/write.go#WriteUncaused":         "graphstore#TestEveryStoreWriteTakesOneLockOrder",
 	// Attempted, ToPerson and FromPerson run their queued forms (QueueAttempted, QueueToPerson,
@@ -311,4 +314,10 @@ var storeWriteCallSites = map[string]string{
 	"api/inbox_read.go#commitInboxMarks":  "api#TestEveryReadStateWriteIsATupleFromThePerson",
 	"api/replies.go#putThreadRead":        "api#TestEveryReadStateWriteIsATupleFromThePerson",
 	"api/state.go#putUserAgentState":      "api#TestEveryReadStateWriteIsATupleFromThePerson",
+	// The participation of each person a comment or a message newly mentions in its thread (R4's
+	// mention arm, inboxwrite.MentionParticipation), which the writer that resolves the mention
+	// queues right after that write's record: the person nodes `do nothing` and the tuples, after
+	// every row the record locked. An edit queues the same after what its index states
+	// (editComment, listed above).
+	"api/comment_create.go#queueRecordAndMentions": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 }

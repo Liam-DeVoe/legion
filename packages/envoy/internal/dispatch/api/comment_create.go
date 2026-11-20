@@ -1132,10 +1132,12 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// every attempt of the comment is written (graphstore.QueueAttempted).
 	attemptsOpened := make([]graphstore.Uncaused, len(resolvedMentions))
 	for index, mention := range resolvedMentions {
+		// The row is the projection of the mention's tuples (commentMentionFacts), and says whether
+		// the store holds them (tuples_stored) in the insert that writes it.
 		if err := queueExec(ledger, `
-			insert into comment_mentions (comment_id, target, delivery, resolved_session_id)
-			values ($1, $2, $3, $4)
-		`, comment.ID, mention.Target, mention.Delivery, mention.SessionID); err != nil {
+			insert into comment_mentions (comment_id, target, delivery, resolved_session_id, tuples_stored)
+			values ($1, $2, $3, $4, $5)
+		`, comment.ID, mention.Target, mention.Delivery, mention.SessionID, !stored.unprojected && mentionStored(mention)); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -1192,14 +1194,19 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		s.writeHandlerError(w, err)
 		return
 	}
+	// Beside the identities its body names, which its index states, what the store holds of each
+	// target the comment names as a delivery route and of its urgency, under the same event.
+	if !stored.unprojected {
+		indexed = commentMentionFacts(indexed, comment.ID, resolvedMentions, actor, comment.CreatedAt)
+	}
 	// The comment's thread in the Inbox, planned below and queued once its event is in
 	// (inboxwrite.PlanRecord): a comment whose pointers are stated is passed by the trigger
 	// user_threads_comment, so its thread_logins, which its event's insert reads after the
 	// comment's own insert, name the row its writer is about to hold beside the ones the thread
 	// holds. Its record names the node its head pointer names, whose tuple is queued and not
-	// written (commentRepliesTo). A comment whose pointers are no tuples is the trigger's, as an
-	// older build's is, and the backfill takes it.
-	inbox := commentRepliesTo(inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, project), input.AskID, input.ReplyTo)
+	// written (commentRepliesTo), and reaches each person its text newly mentions. A comment whose
+	// pointers are no tuples is the trigger's, as an older build's is, and the backfill takes it.
+	inbox := commentRepliesTo(inboxwrite.Comment(comment.ID, actor, comment.CreatedAt, owner.IssueKey, owner.ArtifactID, project).ReachesMentioned(indexed), input.AskID, input.ReplyTo)
 	logins := events.ThreadLoginsOf(commentThread(comment))
 	if stored.pointersStored {
 		logins = events.ThreadLoginsOf(commentThread(comment), inbox.KeptLogins()...)
@@ -1313,7 +1320,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			}
 		}
 		if stored.pointersStored {
-			return recording.Queue(b, graphstore.LatestEvent)
+			return queueRecordAndMentions(b, recording, indexed, actor, comment.CreatedAt, graphstore.LatestEvent)
 		}
 		return nil
 	}); err != nil {
@@ -1375,6 +1382,72 @@ func commentRepliesTo(w inboxwrite.Write, askID, replyTo *string) inboxwrite.Wri
 		return w.RepliesTo(graphstore.KindComment, *replyTo)
 	}
 	return w
+}
+
+// commentMentionFacts is indexed, what a comment's index states of the identities its body names
+// (refs.PlanItemIndex), with what the store holds of each target the comment names as a delivery
+// route (R5) appended: a mentions tuple out of the comment's node to each target, a role or a
+// session, a second to the session a role resolved to, and, where it names any target, the
+// comment's urgency (graphstore.TupleDelivery), the one mode validateCommentMentions applied to
+// every target. A mention the index states already, a target the body names, is stated once, and
+// a target or a session past the store's address bound is no tuple (mentionStored). Each is made
+// by author at at, the comment's own.
+func commentMentionFacts(indexed graphstore.Uncaused, commentID string, mentions []ResolvedMention, author model.Actor, at time.Time) graphstore.Uncaused {
+	if len(mentions) == 0 {
+		return indexed
+	}
+	stated := make(map[[2]string]struct{}, len(mentions))
+	for _, held := range indexed.Tuples {
+		if held.Kind == graphstore.TupleMentions && held.FromKind == graphstore.KindComment && held.FromID == commentID {
+			stated[[2]string{held.ToKind, held.ToID}] = struct{}{}
+		}
+	}
+	state := func(kind, id string) {
+		end := [2]string{kind, id}
+		if _, held := stated[end]; held || !graphstore.AddressFits(id) {
+			return
+		}
+		stated[end] = struct{}{}
+		indexed.Tuples = append(indexed.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+			FromKind: graphstore.KindComment, FromID: commentID, Kind: graphstore.TupleMentions,
+			ToKind: kind, ToID: id, At: at, Who: author, Asserted: true,
+		}})
+	}
+	for _, mention := range mentions {
+		if route, err := model.ParseRoute(mention.Target); err == nil {
+			state(route.Kind, route.ID)
+		}
+		if mention.SessionID != nil {
+			state(graphstore.KindSession, *mention.SessionID)
+		}
+	}
+	indexed.Tuples = append(indexed.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+		FromKind: graphstore.KindComment, FromID: commentID, Kind: graphstore.TupleDelivery,
+		ToKind: graphstore.KindValue, ToID: mentions[0].Delivery, At: at, Who: author, Asserted: true,
+	}})
+	return indexed
+}
+
+// mentionStored is whether the store holds a mention's tuples (commentMentionFacts), which its
+// comment_mentions row records (tuples_stored): its target, and the session it resolved to where
+// it resolved to one, within the store's address bound.
+func mentionStored(mention ResolvedMention) bool {
+	route, err := model.ParseRoute(mention.Target)
+	return err == nil && graphstore.AddressFits(route.ID) &&
+		(mention.SessionID == nil || graphstore.AddressFits(*mention.SessionID))
+}
+
+// queueRecordAndMentions queues the record of a comment or a message in its thread (recording,
+// inboxwrite.Recording.Queue), which delivers to each person its text newly mentions, and then, as
+// the writer that resolves those mentions, the participation of each of them in that thread
+// (inboxwrite.MentionParticipation over what its index states, indexed), made by who at at under
+// event: R4's mention arm, after the record's pass over the thread's rows.
+func queueRecordAndMentions(b *store.WriteBatch, recording inboxwrite.Recording, indexed graphstore.Uncaused, who model.Actor, at time.Time, event int64) error {
+	if err := recording.Queue(b, event); err != nil {
+		return err
+	}
+	rootKind, rootID := recording.Root()
+	return graphstore.QueueToPerson(b, inboxwrite.MentionParticipation(rootKind, rootID, indexed, who, at, event))
 }
 
 // commentStoreWrite is what a comment is in the node and tuple store: its node, the facts its row

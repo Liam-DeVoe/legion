@@ -624,10 +624,12 @@ var backlinkArms = map[string][]backlinkArm{
 		{kind: "followed_by", from: `ask_followers f`, toID: `f.session_id`,
 			fromKind: "ask", fromID: `f.ask_id::text`, projected: rowNamesNoNode(`f.node_kind`), tupleKind: graphstore.TupleFollowedBy, projectedIn: "ask_followers"},
 	},
-	// A person, a role and a page are pointed at by mentions alone. The tuples the store holds
-	// of them - authored_by, delivered_to, held_by and part_of - are no arm of graph_edges, so
-	// no count reads one; each entry is present and empty so its kind is counted from the
-	// mention arms rather than refused, as a document's block is.
+	// A person, a role and a page are pointed at by mentions alone - a person's, a session's and a
+	// role's by the identity mentions, which the view's tuple arm answers under its own kinds
+	// (identityMentionArms, read among the mention arms). The other tuples the store holds of them -
+	// authored_by, delivered_to, held_by and part_of - are no arm of graph_edges, so no count reads
+	// one; each entry is present and empty so its kind is counted from the mention arms rather than
+	// refused, as a document's block is.
 	"person": {},
 	"role":   {},
 	"page":   {},
@@ -666,6 +668,28 @@ var backlinkArms = map[string][]backlinkArm{
 			fromKind: "message", fromID: `m.id::text`,
 			projected: rowNamesNoNode(`m.node_kind`), tupleKind: graphstore.TupleRepliesTo, tupleToKind: graphstore.KindBlock, projectedIn: "messages"},
 	},
+}
+
+// identityMentionArms is the store's readings of the mentions of a person, an agent's session or a
+// role (R5): a `mentions` tuple out of a comment, an issue message or a document block, which the
+// store alone holds - no refs or block_refs row names a party (TargetOf), so no table's arm answers
+// one - and the view's identity arm answers while the row of its source carries this release's marker
+// (migration 20261120090001): a comment's row naming its node and holding tuples_stored, a
+// message's or a document block's row naming its node. The count reads each as its tupleSQL alone
+// (mentionBacklinkArms), through graph_tuples_as_of_in keyed by the far end and the kind, and counts
+// a tuple while it is current, the row of its source carries it, and that source is live and
+// visible to the acting credential (liveVisibleNode), so the count beside an identity's list is the
+// rows the list holds.
+func identityMentionArms() []backlinkArm {
+	arm := func(fromKind, table, carried string) backlinkArm {
+		return backlinkArm{kind: graphstore.TupleMentions, fromKind: fromKind,
+			tupleKind: graphstore.TupleMentions, projectedIn: table, carried: carried}
+	}
+	return []backlinkArm{
+		arm(graphstore.KindComment, "comments", pointersStored),
+		arm(graphstore.KindMessage, "messages", ""),
+		arm(BlockNodeKind, "document_blocks", ""),
+	}
 }
 
 // BacklinkKinds is every node kind BacklinkCounts answers for, sorted: the keys of the arm
@@ -765,27 +789,37 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 			and `+currentTuple("r")+` and `+blockRefCarries(graphstore.KindAsk, "r"),
 			liveVisibleNode(graphstore.KindAsk, `r.from_id`)))
 	}
+	// A mention of a person, a session or a role: the view's identity arm answers it by the marker
+	// of its source (migration 20261120090001), its far end a column, so the count reads it among
+	// these arms, once for each source kind (identityMentionArms).
+	if slices.Contains(IdentityKinds, target.kind) && !slices.Contains(excludeKinds, graphstore.TupleMentions) {
+		for _, identity := range identityMentionArms() {
+			arms = append(arms, identity.tupleSQL(target))
+		}
+	}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
-		arms = append(arms,
-			// An item's citations in the store: the current `mentions` tuples out of the item's
-			// node, read through graph_tuples_as_of_in, which leads with the far end and the kind,
-			// each counted only while the refs row of its pair stands holding tuples_stored
-			// (citationCarries), as the view's tuple arm joins it, and held by no block of the item
-			// as its refs row would be (heldByABlock over the tuple's own columns). Its test of the
-			// citing item is the view's state rule and the item kind's predicate out of one read of
-			// its node row (liveVisibleNode).
-			arm(`graph_tuples r`, ` and r.from_kind = '`+string(item)+`' and r.kind = 'mentions' and `+currentTuple("r")+`
+		// An item's citations in the store: the current `mentions` tuples out of the item's node,
+		// read through graph_tuples_as_of_in, which leads with the far end and the kind, each
+		// counted only while the refs row of its pair stands holding tuples_stored
+		// (citationCarries), as the view's tuple arm joins it, and held by no block of the item as
+		// its refs row would be (heldByABlock over the tuple's own columns). Its test of the citing
+		// item is the view's state rule and the item kind's predicate out of one read of its node
+		// row (liveVisibleNode). A mention of a person, a session or a role is no citation: the
+		// view's identity arm answers it by its source's marker instead, whatever refs row names it
+		// (migration 20261120090001), and the count reads it there too (identityMentionArms).
+		if !slices.Contains(IdentityKinds, target.kind) {
+			arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+string(item)+`' and r.kind = 'mentions' and `+currentTuple("r")+`
 				and `+citationCarries("r")+` and not `+heldByABlock("r"),
-				liveVisibleNode(string(item), `r.from_id`)),
-			// One arm per item kind over the links its blocks hold, over the rows that name no
-			// node: <kind>_block_refs_to (to_kind, to_id, (<item>::text)), then the blocks table's
-			// primary key for the join. The join keeps the view's position filter: a link a block
-			// holds is listed while that block is one of the item's current ones, and the count
-			// copies the view's answer rather than correcting it.
-			arm(tables.refs+` r join `+tables.blocks+` b on b.`+tables.item+` = r.`+tables.item+` and b.block_id = r.block_id`,
-				` and b.position is not null and `+rowNamesNoNode(`r.node_kind`), VisibleKind(item.BlockKind(), `r.from_node`, backlinkSeen)),
-		)
+				liveVisibleNode(string(item), `r.from_id`)))
+		}
+		// One arm per item kind over the links its blocks hold, over the rows that name no node:
+		// <kind>_block_refs_to (to_kind, to_id, (<item>::text)), then the blocks table's primary key
+		// for the join. The join keeps the view's position filter: a link a block holds is listed
+		// while that block is one of the item's current ones, and the count copies the view's
+		// answer rather than correcting it.
+		arms = append(arms, arm(tables.refs+` r join `+tables.blocks+` b on b.`+tables.item+` = r.`+tables.item+` and b.block_id = r.block_id`,
+			` and b.position is not null and `+rowNamesNoNode(`r.node_kind`), VisibleKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
 	}
 	return arms
 }

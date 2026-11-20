@@ -330,20 +330,21 @@ func TestTheVersionCountsTheDeliveriesARepliesCaused(t *testing.T) {
 // figure of their own and no difference: participation in a thread whose root names no project
 // (a direct message), participation in an ask that reached the person as who it waits on, and
 // the participation alone that a person's own move of an ask onto themselves states, under an
-// event of that ask they made (inboxwrite.OwnMove); relations into a thread whose row a removal
-// of its document deleted; and a session's participation, which no row of people holds. A
-// participation that none of those explains - among them one in an ask with no delivery beside
-// it under a move somebody else made - and a mark no row holds with no removal after it, is a
-// tuple no row projects, and so is the participation of a mention before T13 states one: none
-// here.
+// event of that ask they made (inboxwrite.OwnMove); participation stated under the event of a
+// mention of the person, which keeps them no row (inboxwrite.MentionParticipation); relations into
+// a thread whose row a removal of its document deleted; and a session's participation, which no
+// row of people holds. A participation that none of those explains - among them one in an ask with
+// no delivery beside it under a move somebody else made - and a mark no row holds with no removal
+// after it, is a tuple no row projects.
 func TestTheThreadCensusCountsEachNarrowingAsAFigure(t *testing.T) {
 	f := newInboxCensus(t)
 	direct, addressed, removed, stray := newUUID(t, f), newUUID(t, f), newUUID(t, f), newUUID(t, f)
-	selfMoved, movedByAnother := newUUID(t, f), newUUID(t, f)
+	selfMoved, movedByAnother, mentioning := newUUID(t, f), newUUID(t, f), newUUID(t, f)
 	f.state(t, []graphstore.Node{
 		f.node(graphstore.KindMessage, direct, ""), f.node(graphstore.KindAsk, addressed, "CENS"),
 		f.node(graphstore.KindComment, removed, "CENS"), f.node(graphstore.KindComment, stray, "CENS"),
 		f.node(graphstore.KindAsk, selfMoved, "CENS"), f.node(graphstore.KindAsk, movedByAnother, "CENS"),
+		f.node(graphstore.KindComment, mentioning, "CENS"),
 		graphstore.SessionNode("census-session", alice, f.clock, graphstore.NoEvent),
 	}, []graphstore.Tuple{
 		tuple(graphstore.KindComment, removed, graphstore.TupleOwnedBy, "artifact", "CENS/notes.md", f.at(), graphstore.NoEvent),
@@ -360,6 +361,9 @@ func TestTheThreadCensusCountsEachNarrowingAsAFigure(t *testing.T) {
 	ownMove := tuple(graphstore.KindPerson, "frank", graphstore.TupleParticipatesIn, graphstore.KindAsk, selfMoved, f.at(), handedToHimself)
 	ownMove.Who = frank
 	opened := f.event(t, "ask.opened", alice, map[string]any{"id": addressed})
+	// alice's comment mentions henry, who writes nothing in its thread: the comment's write states
+	// the mention and henry's participation under its one event.
+	mentioned := f.event(t, "comment.created", alice, map[string]any{"id": mentioning})
 	f.state(t, nil, []graphstore.Tuple{
 		tuple(graphstore.KindPerson, "bob", graphstore.TupleParticipatesIn, graphstore.KindMessage, direct, f.at(), graphstore.NoEvent),
 		tuple(graphstore.KindAsk, addressed, graphstore.TupleDeliveredTo, graphstore.KindPerson, "carol", f.at(), opened),
@@ -367,6 +371,8 @@ func TestTheThreadCensusCountsEachNarrowingAsAFigure(t *testing.T) {
 		ownMove,
 		tuple(graphstore.KindPerson, "dave", graphstore.TupleParticipatesIn, graphstore.KindComment, removed, f.at(), graphstore.NoEvent),
 		tuple(graphstore.KindPerson, "dave", graphstore.TupleReadThrough, graphstore.KindComment, removed, f.at(), graphstore.NoEvent),
+		tuple(graphstore.KindComment, mentioning, graphstore.TupleMentions, graphstore.KindPerson, "henry", f.at(), mentioned),
+		tuple(graphstore.KindPerson, "henry", graphstore.TupleParticipatesIn, graphstore.KindComment, mentioning, f.at(), mentioned),
 	})
 	f.event(t, "artifact.removed", alice, map[string]any{"artifact": map[string]any{"ref_key": "CENS/notes.md"}})
 
@@ -377,7 +383,7 @@ func TestTheThreadCensusCountsEachNarrowingAsAFigure(t *testing.T) {
 			kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
 	}
 	for name, want := range map[string]int64{
-		"no_project": 1, "addressed_alone": 2, "mentioned_alone": 0, "row_removed": 2, "session_authors": 1,
+		"no_project": 1, "addressed_alone": 2, "mentioned_alone": 1, "row_removed": 2, "session_authors": 1,
 	} {
 		if got := narrowed(t, kind, name); got != want {
 			t.Errorf("user_threads reads %d of the narrowing %s, want %d", got, name, want)

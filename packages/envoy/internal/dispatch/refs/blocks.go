@@ -61,6 +61,10 @@ type BlockIndex struct {
 	links  []indexedLink
 	stand  blockStand
 	placed map[string]blockFarEnd
+	// mentioned is, by block id, each identity the store holds a mention of out of that block's
+	// node (blockIdentityMentions), read with the links: what the index appends no mention of
+	// again.
+	mentioned map[string]map[Target]struct{}
 }
 
 // blockStand is the row of document_block_versions that says what a document's blocks stand at,
@@ -117,8 +121,11 @@ type indexedLink struct {
 
 // ReadBlockIndex reads what q's block index holds for artifactID: its blocks, its links read with
 // the predicate the reconciling delete visits them by, each with the block types it points at, so
-// a plan can tell a link whose attribute now names other types, and the version its blocks stand
-// at, all in the read phase of the write that plans the indexing (PlanBlocks).
+// a plan can tell a link whose attribute now names other types, the identities the store holds a
+// mention of out of each block's node, and the version its blocks stand at, all in the read phase
+// of the write that plans the indexing (PlanBlocks). The identities are read in the links'
+// statement, each a row whose far end is an identity's kind, which no block_refs row names
+// (TargetOf); such a row's other columns are placeholders nothing reads.
 func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockIndex, error) {
 	blocks, err := storedBlocks(ctx, q, artifactID)
 	if err != nil {
@@ -127,18 +134,32 @@ func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockInd
 	rows, err := q.Query(ctx, `
 		select block_id, kind, to_kind, to_id, to_types, created_at, source_seq, node_kind, node_address
 		from block_refs where artifact_id = $1
-	`, artifactID)
+		union all
+		select b.block_id, '`+graphstore.TupleMentions+`', mentioned.to_kind, mentioned.to_id, null::text[],
+		       'epoch'::timestamptz, null::bigint, null::text, null::text
+		from document_blocks b
+		cross join lateral (`+identityMentionsRead(`b.node_kind`, `b.node_address`, `$2`)+`) mentioned
+		where b.artifact_id = $1 and b.node_kind is not null
+	`, artifactID, IdentityKinds)
 	if err != nil {
 		return BlockIndex{}, fmt.Errorf("read the block mentions of %s: %w", artifactID, err)
 	}
 	defer rows.Close()
 	var links []indexedLink
+	mentioned := map[string]map[Target]struct{}{}
 	for rows.Next() {
 		var link indexedLink
 		var nodeKind, nodeAddress *string
 		if err := rows.Scan(&link.blockID, &link.kind, &link.target.Kind, &link.target.ID, &link.toTypes,
 			&link.createdAt, &link.sourceSeq, &nodeKind, &nodeAddress); err != nil {
 			return BlockIndex{}, fmt.Errorf("scan a block mention of %s: %w", artifactID, err)
+		}
+		if slices.Contains(IdentityKinds, link.target.Kind) {
+			if mentioned[link.blockID] == nil {
+				mentioned[link.blockID] = map[Target]struct{}{}
+			}
+			mentioned[link.blockID][link.target] = struct{}{}
+			continue
 		}
 		link.named = nodeKind != nil && nodeAddress != nil
 		// A row marked with a node other than its block's - an ask block's shaped, on the ask's
@@ -155,7 +176,7 @@ func ReadBlockIndex(ctx context.Context, q Queryer, artifactID string) (BlockInd
 	if err != nil {
 		return BlockIndex{}, err
 	}
-	return BlockIndex{blocks: blocks, links: links, stand: stand}, nil
+	return BlockIndex{blocks: blocks, links: links, stand: stand, mentioned: mentioned}, nil
 }
 
 // readBlockStand reads the row the revision fence is decided on, and the latest version any
@@ -456,9 +477,10 @@ func PlanBlocks(
 	indexing := BlockIndexing{artifactID: artifactID, refKey: record.RefKey, version: version, versionAt: versionAt, held: index}
 	// The fence decides first, so a pass that loses it plans nothing and writes nothing of its own.
 	if !index.stand.admits(version) {
-		if len(beside.Nodes) > 0 || len(beside.Tuples) > 0 {
+		if len(beside.Nodes) > 0 || len(beside.Tuples) > 0 || len(beside.People) > 0 {
 			indexing.stated = graphstore.PlanUncaused(beside.Nodes, nil)
 			indexing.stated.Tuples = append(indexing.stated.Tuples, beside.Tuples...)
+			indexing.stated.People = append(indexing.stated.People, beside.People...)
 		}
 		return indexing, nil
 	}
@@ -677,13 +699,20 @@ func PlanBlocks(
 			indexing.moved = append(indexing.moved, pair.target)
 		}
 	}
+	// The identities the version's blocks name, each a mention out of the block holding it that
+	// the store does not hold already (blockIdentityMentions): a session's and a role's with the
+	// blocks' other facts, a person's through the store's one writer of a fact that names a person.
+	identities, people, mentioned := blockIdentityMentions(refKey, nodes, fits, located, index.mentioned, versionAt, writer)
+	indexing.stated.Tuples = append(indexing.stated.Tuples, identities...)
+	indexing.stated.People = append(indexing.stated.People, people...)
 	// The typed-node pass's values and authors come last, as its write followed the index's, and
 	// after them the caller's own facts beside the pass.
 	for _, tuple := range typedTuples {
 		indexing.stated.Tuples = append(indexing.stated.Tuples, graphstore.UncausedTuple{Tuple: tuple})
 	}
 	indexing.stated.Tuples = append(indexing.stated.Tuples, beside.Tuples...)
-	indexing.held = BlockIndex{blocks: held, links: heldLinks, stand: index.stand.indexedAt(version), placed: placed}
+	indexing.stated.People = append(indexing.stated.People, beside.People...)
+	indexing.held = BlockIndex{blocks: held, links: heldLinks, stand: index.stand.indexedAt(version), placed: placed, mentioned: mentioned}
 	return indexing, nil
 }
 

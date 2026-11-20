@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -1201,7 +1202,8 @@ func (d *destinations) err(cause error) error {
 // eventDestinations lists item's destinations in the order they are sent and recorded: its owner's
 // topic (item.item.Topic), then - for an event that notifies and is not a targeted message - its
 // owner's route, its claimant route, its primary document's sessions and its author routes, then
-// its follower routes and the previous claimant's notice. It answers the whole reading: the list,
+// the sessions a new comment's mentions name (mentionDeliveries.mentioned), then its follower
+// routes and the previous claimant's notice. It answers the whole reading: the list,
 // and whether a session's copy was held back for a mention still being sent (destinations.leftTo).
 // A session a mention already delivered the comment to is no destination of it, and the batch
 // sends it nothing: that delivery is recorded under the attempt's own receipt (deliveredGraph).
@@ -1246,6 +1248,13 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 		if err := addAuthorRoutes(event, routing, look, d); err != nil {
 			return d, d.err(err)
 		}
+	}
+	// A new comment reaches each session its mentions name (mentionDeliveries.mentioned), on that
+	// session's own topic, as a copy left to the mention (addWorkingSession): none once a mention
+	// of it delivered the comment, held while one is still being sent, and added where each failed,
+	// so a session the comment names and nothing else routes to is still told of it once.
+	for _, sessionID := range slices.Sorted(maps.Keys(d.mentions.mentioned)) {
+		d.addWorkingSession(sessionID, "publish mentioned session", "session:"+sessionID)
 	}
 	if err := addFollowerRoutes(event, look, d); err != nil {
 		return d, d.err(err)

@@ -145,6 +145,13 @@ type mentionDeliveries struct {
 	// the fallback pass publishes or settles it, and the event's own publish skips it
 	// (destinations.addDestination).
 	held map[string]struct{}
+	// mentioned holds each session the comment's mentions name, read off the store's mentions
+	// tuples out of the comment's node (api's commentMentionFacts): a session:<id> it names as a
+	// route or in its body, and the session a role it names resolved to. Each is a destination of
+	// the comment's own event left to the mention (eventDestinations, addWorkingSession): skipped
+	// once a mention of it delivered the comment, held while one is still being sent, and added
+	// where each failed.
+	mentioned map[string]struct{}
 	// unpinned is what the attempts of the comment that name no session yet and whose send is
 	// still coming decide (unpinnedRoleMentions): the roles they target and the state each of
 	// those attempts is in, read here, and the holders those roles resolve to, which the batch
@@ -163,6 +170,7 @@ func newMentionDeliveries() mentionDeliveries {
 		deliveredMentions:  map[string]struct{}{},
 		targetFallbackKeys: map[string]string{},
 		held:               map[string]struct{}{},
+		mentioned:          map[string]struct{}{},
 		unpinned:           newUnpinnedRoleMentions(),
 	}
 }

@@ -85,6 +85,9 @@ type Write struct {
 	// parent is the node the write's head pointer names (RepliesTo), for a write whose record is
 	// planned before its own pointer tuples are written; nil where the record reads them.
 	parent *thread
+	// mentioned is, for a comment or a message, the login of each person a mention of its text
+	// newly names (ReachesMentioned), in the order the text first names them.
+	mentioned []string
 }
 
 // Comment is a comment's write, a reply in the thread its head pointers name.
@@ -124,6 +127,66 @@ func (w Write) WaitingOn(waiting string) Write {
 func (w Write) RepliesTo(kind, id string) Write {
 	w.parent = &thread{kind: kind, id: id}
 	return w
+}
+
+// ReachesMentioned is w, a comment or a message, reaching each person a mention of its text newly
+// names: a mentions tuple to that person among the facts its index states
+// (graphstore.Uncaused.People, refs.PlanItemIndex). The write delivers to each of them beside its
+// thread's other participants (R2's mention arm), and moves the row each holds, in the one
+// ascending-login pass over the thread's rows. Their participation is no fact of the record: the
+// writer that resolves the mention appends it (MentionParticipation, R4's mention arm). A person a
+// mention of the same item named before, whose tuple stands, is no fact of this index, and so is
+// none of them.
+func (w Write) ReachesMentioned(indexed graphstore.Uncaused) Write {
+	mentioned := slices.Clone(w.mentioned)
+	for _, login := range mentionedLogins(indexed) {
+		if !slices.Contains(mentioned, login) {
+			mentioned = append(mentioned, login)
+		}
+	}
+	w.mentioned = mentioned
+	return w
+}
+
+// mentionedLogins is the login of each person a mentions tuple of indexed names, once each, in the
+// order indexed states them.
+func mentionedLogins(indexed graphstore.Uncaused) []string {
+	var logins []string
+	for _, tuple := range indexed.People {
+		if tuple.Kind != graphstore.TupleMentions || tuple.ToKind != graphstore.KindPerson || !tuple.Asserted {
+			continue
+		}
+		if login := model.CanonicalLogin(tuple.ToID); !slices.Contains(logins, login) {
+			logins = append(logins, login)
+		}
+	}
+	return logins
+}
+
+// MentionParticipation is R4's mention arm for the facts indexed states of one comment or message
+// written in the thread whose root is rootKind/rootID (Recording.Root, ThreadRoot): a
+// participates_in from each person a mentions tuple of indexed names but who to that root, made by
+// who at at under event. The writer that resolves the mention appends it through
+// graphstore.QueueToPerson - a comment's or a message's create after its record (Recording.Queue),
+// so it falls after the lock pass over the thread's rows, and an edit beside what its index states
+// - and never Record, which reads a write's author and its deliveries and appends no mention arm.
+// A person who takes part already states the same relation again, which reads as it stood.
+func MentionParticipation(rootKind, rootID string, indexed graphstore.Uncaused, who model.Actor, at time.Time, event int64) []graphstore.Tuple {
+	writer := ""
+	if kind, id, named := graphstore.AuthorOf(who); named && kind == graphstore.KindPerson {
+		writer = id
+	}
+	var taking []graphstore.Tuple
+	for _, login := range mentionedLogins(indexed) {
+		if login == writer {
+			continue
+		}
+		taking = append(taking, graphstore.Tuple{
+			FromKind: graphstore.KindPerson, FromID: login, Kind: graphstore.TupleParticipatesIn,
+			ToKind: rootKind, ToID: rootID, At: at, Who: who, SourceEvent: event, Asserted: true,
+		})
+	}
+	return taking
 }
 
 // Answered is the write of answer to ask, which its writer read before its update (ReadAsk), made
@@ -203,7 +266,8 @@ func (w Write) keptLogin() (string, bool) {
 //     reading it is the marker test passing; no column of a marked row is read to decide anything;
 //  3. for a reply, through graphstore.ToPerson, one delivered_to from the write's node to each
 //     person in that set but A, so a person never draws their own write (outbox's
-//     recipientFilter.keep), beside every delivered_to the catch-up owes and, for a session's
+//     recipientFilter.keep), and to each person but A its text newly mentions
+//     (Write.ReachesMentioned), beside every delivered_to the catch-up owes and, for a session's
 //     reply under a direct conversation, the one to the person who started it (w.Starter);
 //  4. for a reply, the move of each row of T a person of that set but A holds: replied_at,
 //     last_reply_id, version + 1 and dismissed_at cleared, and, for each person of that set but A
@@ -253,9 +317,10 @@ type Recording struct {
 	// clears is, for a session's reply to a message, whether the reply ends the Agent dismissals of
 	// its root, which its write phase reads where it ends them.
 	clears bool
-	// delivered is, for a reply, each person in the thread's participant set but A, by login, and
-	// moved each of them who holds a row of the thread; starter is the person who started a direct
-	// conversation, whom a session's reply reaches beside them.
+	// delivered is, for a reply, each person in the thread's participant set but A, and each person
+	// its text newly mentions but A, by login, and moved each of them who holds a row of the thread;
+	// starter is the person who started a direct conversation, whom a session's reply reaches beside
+	// them.
 	delivered, moved []string
 	starter          string
 	// failClear and failThreads are whether a test armed the failure between the retraction of the
@@ -263,6 +328,12 @@ type Recording struct {
 	// the deliveries and the move of the rows they reach (failpoint.UserThreads), decided as the
 	// record was planned.
 	failClear, failThreads bool
+}
+
+// Root is the root of the thread the record is written in, as (kind, id), as the plan read it
+// (threadOf): what a mention's participation points at (MentionParticipation).
+func (r Recording) Root() (string, string) {
+	return r.thread.kind, r.thread.id
 }
 
 // PlanRecord plans w's record in the write's read phase, in tx, under the owner lock every writer
@@ -320,6 +391,16 @@ func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
 		r.delivered = append(r.delivered, member.login)
 		if member.row {
 			r.moved = append(r.moved, member.login)
+		}
+	}
+	// Each person the text newly mentions is reached too, whether or not they take part.
+	for _, login := range w.mentioned {
+		if login == r.person || slices.Contains(r.delivered, login) {
+			continue
+		}
+		r.delivered = append(r.delivered, login)
+		if index := slices.IndexFunc(members, func(held member) bool { return held.login == login }); index >= 0 && members[index].row {
+			r.moved = append(r.moved, login)
 		}
 	}
 	r.failThreads = failpoint.Planned(ctx, failpoint.UserThreads)
@@ -409,8 +490,8 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 		// 2. Every row of T, locked in one pass.
 		queueThreadLock(b, thread)
 
-		// 3. The write reaches every other participant, and a session's reply the person who
-		// started its direct conversation.
+		// 3. The write reaches every other participant, each person its text newly mentions, and a
+		// session's reply the person who started its direct conversation.
 		deliveries := r.owed.deliveries
 		delivered := func(login string) {
 			deliveries = append(deliveries, graphstore.Tuple{

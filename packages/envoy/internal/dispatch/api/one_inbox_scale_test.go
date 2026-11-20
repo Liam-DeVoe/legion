@@ -239,13 +239,14 @@ type oneInboxPath struct {
 }
 
 // oneInboxWritePaths are the write paths R11 names, each found in the route table by its handler,
-// in the order they are measured: a comment and a mention (createComment), an issue message
-// (createMessage), a broadcast (createBroadcast), a session's direct reply (replyMessage), an ask's
-// answer (answerAsk), a dismissal (dismissInbox), Mark all read (markInboxRead), a thread read
-// (putThreadRead), an agent's Clear and read (putUserAgentState), a snooze (putAskSnooze), and the
-// three writes that move the person an ask waits on: patchIssue, putAskAskedOf and
-// putProjectDefaultAssignee. The inbox writes are the heavy person's, over their own history. The
-// mention names a session: a mention of a person is a write of T13's, which adds that case here.
+// in the order they are measured: a comment and a mention of a session and of a person
+// (createComment), an issue message (createMessage), a broadcast (createBroadcast), a session's
+// direct reply (replyMessage), an ask's answer (answerAsk), a dismissal (dismissInbox), Mark all
+// read (markInboxRead), a thread read (putThreadRead), an agent's Clear and read
+// (putUserAgentState), a snooze (putAskSnooze), and the three writes that move the person an ask
+// waits on: patchIssue, putAskAskedOf and putProjectDefaultAssignee. The inbox writes are the heavy
+// person's, over their own history. The mention of a person names the heavy person, whose node
+// holds the corpus's largest set of deliveries, and delivers to them as it mentions them.
 func oneInboxWritePaths() []oneInboxPath {
 	issue := func(side *oneInboxSide) string { return "/api/v1/issues/" + side.corpus.issue }
 	return []oneInboxPath{
@@ -262,6 +263,13 @@ func oneInboxWritePaths() []oneInboxPath {
 				issue(side)+"/comments", map[string]any{
 					"body": fmt.Sprintf("Reading %d of a mention.", reading), "reply_to": side.corpus.soloRoot,
 					"mentions": []map[string]string{{"target": "session:" + oneInboxSession}},
+				}), http.StatusCreated).took
+		}},
+		{name: "comment-mention-person", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {
+			return oneInboxExpect(t, side.name+": a comment mentioning the heavy person", side.server.call(t, oneInboxSolo, http.MethodPost,
+				issue(side)+"/comments", map[string]any{
+					"body":     fmt.Sprintf("Reading %d of a mention of dispatch://person/%s.", reading, oneInboxHeavy),
+					"reply_to": side.corpus.soloRoot,
 				}), http.StatusCreated).took
 		}},
 		{name: "issue-message", run: func(t *testing.T, side *oneInboxSide, reading int) time.Duration {

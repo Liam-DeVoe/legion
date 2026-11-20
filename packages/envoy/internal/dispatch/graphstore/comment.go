@@ -27,6 +27,11 @@ const (
 // and at the block replies_to_block names.
 const TupleAnswers = "answers"
 
+// TupleDelivery is a comment's urgency: the value tuple out of its node naming the one delivery
+// mode - btw, aside or steer - its writer applied to every target it names as a delivery route
+// (api's validateCommentMentions), which comment_mentions.delivery holds for each of them.
+const TupleDelivery = "delivery"
+
 // CommentPointers is what a comments row says of what its comment answers, each column "" where
 // the row holds null: ReplyTo the root comment of its thread (reply_to), AskID the ask its thread
 // hangs under (ask_id), Answers the comment its writer answered (answers), and RepliesToBlock the

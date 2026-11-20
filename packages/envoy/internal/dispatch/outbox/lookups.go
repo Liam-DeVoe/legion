@@ -577,11 +577,19 @@ var mentionDeliveryQuery = `
 
 // mentionFallbackHoldsQuery lists every destination of every comment in ids a fallback row owns,
 // settled or not: a row settled published or skipped that copy once, so the event's own publish
-// skips the destination for good (mentionDeliveries.held).
+// skips the destination for good (mentionDeliveries.held). In the same statement, and so in no
+// round trip of its own, it lists, marked true, each session a mentions tuple out of each comment's
+// node points at (mentionDeliveries.mentioned), keyed by that node: a mention is appended once and
+// never retracted, so an asserted tuple is one that stands.
 const mentionFallbackHoldsQuery = `
-	select comment_id::text, destination
+	select comment_id::text, destination, false
 	from comment_fallback_copies
 	where comment_id = any($1::text[]::uuid[])
+	union all
+	select distinct t.from_id, t.to_id, true
+	from graph_tuples t
+	where t.from_kind = 'comment' and t.from_id = any($1::text[]) and t.kind = 'mentions'
+	  and t.to_kind = 'session' and t.asserted
 `
 
 // fallbackChoice is which of one comment's attempts names the dedupe key each of its keys'
@@ -716,8 +724,13 @@ func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found 
 		return fmt.Errorf("load the batch's fallback copies: %w", err)
 	}
 	var destination string
-	if _, err := pgx.ForEachRow(held, []any{&commentID, &destination}, func() error {
-		of(commentID).held[destination] = struct{}{}
+	var mentioned bool
+	if _, err := pgx.ForEachRow(held, []any{&commentID, &destination, &mentioned}, func() error {
+		if mentioned {
+			of(commentID).mentioned[destination] = struct{}{}
+		} else {
+			of(commentID).held[destination] = struct{}{}
+		}
 		return nil
 	}); err != nil {
 		return fmt.Errorf("load the batch's fallback copies: %w", err)

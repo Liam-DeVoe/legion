@@ -1064,9 +1064,9 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"dismissal": {tuples: 2, writes: 1}, "snooze": {tuples: 1, writes: 1},
 		"message": {tuples: 3, writes: 2}, "message_relation": {tuples: 2, writes: 2}, "message_pointer": {tuples: 1, writes: 1},
 		"reply": {tuples: 2, writes: 1},
-		// The mention is one tuple to its role and one to the session the role resolved to. The
-		// comment's one refs row is its citation.
-		"mention": {tuples: 1, writes: 2}, "participation": {tuples: 1, writes: 3}, "person_delivery": {tuples: 1, writes: 2},
+		// The mention is one tuple to its role, one to the session the role resolved to and the
+		// comment's delivery value. The comment's one refs row is its citation.
+		"mention": {tuples: 1, writes: 3}, "participation": {tuples: 1, writes: 3}, "person_delivery": {tuples: 1, writes: 2},
 		"citation": {tuples: 2, writes: 1}, "ask_asked_of": {tuples: 4, writes: 1},
 		"body_block": {tuples: 3, writes: 2}, "body_block_gone": {tuples: 1, writes: 1},
 		// The attempts are the mention's and the message's.

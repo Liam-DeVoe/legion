@@ -883,6 +883,10 @@ var indexPasses = map[string]string{
 	// mark its statement stored.
 	"inboxwrite/record.go#Queue":        "the write its caller stored and the event that recorded it, the person an ask it creates waits on, the thread's participates_in tuples, the rows of the thread the marker test passes, and the read mark its own upsert left its writer's row at",
 	"inboxwrite/thread.go#queueKeepRow": "the writer's own row of the thread, as its own upsert leaves it, and the read mark that row stands at",
+	// The participation of each person a comment or a message newly mentions in its thread, which
+	// the writer that resolves the mention queues after that write's record: it reads the mentions
+	// its own index states and the thread root its record read, and states that write's own facts.
+	"api/comment_create.go#queueRecordAndMentions": "the mentions tuples its caller's index states and the thread root that write's record read",
 	// The clear of the Agent dismissals a session's reply ends, as migration 20261105093507's
 	// trigger ends them: it takes the root the reply climbed to `for key share`, then reads the
 	// people whose dismissal row names that root as the rows stand once it holds the root, and the

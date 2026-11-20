@@ -710,6 +710,10 @@ var graphViewArms = []graphViewArm{
 	// reads true: every select item of it is a column, so it is a mention arm to this test, and
 	// mentionBacklinkArms reads graph_tuples for exactly that reason.
 	{table: "graph_tuples"},
+	// The store's arm of a mention of a person, a session or a role (migration 20261120090001),
+	// its kind the literal mentions, so a read of any other kind drops it from its plan, and its
+	// far end a column of its sub-select: the count reads it as identityMentionArms' tupleSQL.
+	{table: "graph_tuples", kind: "mentions"},
 	{table: "document_blocks", fromKind: "block", kind: "part_of", toKind: "artifact"},
 	{table: "comment_blocks", fromKind: "comment_block", kind: "part_of", toKind: "comment"},
 	{table: "message_blocks", fromKind: "message_block", kind: "part_of", toKind: "message"},
@@ -720,18 +724,17 @@ var graphViewArms = []graphViewArm{
 	{table: "comments", fromKind: "comment", kind: "replies_to", toKind: "comment_block"},
 	{table: "comments", fromKind: "comment", kind: "replies_to", toKind: "ask_block"},
 	{table: "messages", fromKind: "message", kind: "replies_to", toKind: "message_block"},
-	// The store's arm of a message's reply to a message's block (migration 20261116114517),
-	// which renders that one relation under its address form: its kind is the literal
-	// replies_to, so a read of any other kind drops it from its plan, and every other select item
-	// is a column of its sub-select, so it reads as the tuple arm does, and the count reads it as
-	// the message_block arm's tupleSQL.
-	{table: "graph_tuples", kind: "replies_to"},
+	// The store's arm of a message's reply to a message's block (migration 20261116114517,
+	// re-stated by 20261120090001), which renders that one relation under its address form: its
+	// kind and its to_kind are the literals replies_to and message_block, so a read of any other
+	// kind drops it from its plan, and the count reads it as the message_block arm's tupleSQL.
+	{table: "graph_tuples", kind: "replies_to", toKind: "message_block"},
 	// The store's arms of a comment's reply to a comment's block and to an ask's part (migration
-	// 20261116124448), each rendering that one relation under its address form and its kind as
-	// the literal replies_to, which read as the arm over a message's block does, and the count
-	// reads each as its block kind's tupleSQL.
-	{table: "graph_tuples", kind: "replies_to"},
-	{table: "graph_tuples", kind: "replies_to"},
+	// 20261116124448, re-stated by 20261120090001), each rendering that one relation under its
+	// address form and its kind and its to_kind as literals, which read as the arm over a
+	// message's block does, and the count reads each as its block kind's tupleSQL.
+	{table: "graph_tuples", kind: "replies_to", toKind: "comment_block"},
+	{table: "graph_tuples", kind: "replies_to", toKind: "ask_block"},
 	// The store's arm of every item's blocks (migration 20261116140008), rendering a comment's, a
 	// message's and an ask's blocks' part_of and links under the item's block address form, chosen
 	// by the address's prefix: every select item is a column of its sub-select, so it reads as the
@@ -766,11 +769,17 @@ func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 	// An arm whose to_kind is a literal is a structural arm, and backlinkArms must declare it
 	// under that kind with that edge kind. They are compared as multisets because one kind can
 	// hold the same edge kind twice: an artifact is anchored_to and owned_by from both asks and
-	// comments.
+	// comments. An arm over graph_tuples whose to_kind is a literal is the store's side of such an
+	// arm, which the count reads through that arm's own tupleSQL: backlinkArms declares it once,
+	// reading the store (its tupleKind), so it is held to that rather than counted twice.
+	stores := map[string]bool{}
 	var declared, viewed []string
 	for kind, arms := range backlinkArms {
 		for _, arm := range arms {
 			declared = append(declared, kind+"/"+arm.kind)
+			if arm.tupleKind != "" {
+				stores[kind+"/"+arm.kind] = true
+			}
 		}
 	}
 	mentionTables := map[string]bool{}
@@ -782,11 +791,17 @@ func TestTheGraphViewGainsNoArmTheBacklinkCountDoesNotKnow(t *testing.T) {
 		mentionTables[match[1]] = false
 	}
 	for _, arm := range got {
-		if arm.toKind != "" {
+		switch _, mention := mentionTables[arm.table]; {
+		case arm.toKind != "" && arm.table == "graph_tuples":
+			if !stores[arm.toKind+"/"+arm.kind] {
+				t.Errorf("the view's store arm renders %s/%s as literals, but backlinkArms declares no arm of that kind reading the store",
+					arm.toKind, arm.kind)
+			}
+		case arm.toKind != "":
 			viewed = append(viewed, arm.toKind+"/"+arm.kind)
-		} else if _, ok := mentionTables[arm.table]; !ok {
+		case !mention:
 			t.Errorf("the view's arm over %s selects its to_kind as a column, but mentionBacklinkArms does not read %s", arm.table, arm.table)
-		} else {
+		default:
 			mentionTables[arm.table] = true
 		}
 		if arm.fromKind != "" && !slices.Contains(nodeKinds, arm.fromKind) {

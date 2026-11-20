@@ -46,13 +46,12 @@ import (
 // database this release was first deployed on holds no row of the release before, and a gate on
 // every run that refused it for that would refuse it for good.
 //
-// comment_mentions is not here yet: the mentions tuples it projects are written from
-// dispatch://INFRA-1152's T13 on, which needs the person address of dispatch://INFRA-1702, and an
-// entry before them would read every comment_mentions row as a row no tuple states. Its entry and
-// its proof land with that writer.
+// comment_mentions is held to the mentions tuples its marked rows project (commentMentionProjection,
+// migration 20261120090000), which this release's comment write states beside each row.
 var inboxProjections = append(append(append([]projection{
 	messageProjection,
 	commentPointerProjection,
+	commentMentionProjection,
 }, itemProjections()...),
 	attemptProjection(commentAttemptCensus), attemptProjection(messageAttemptCensus),
 	publishedDestinationsProjection,
@@ -236,6 +235,62 @@ var commentPointerProjection = projection{
 	populations: createdPopulations(`comments c`, `c.created_at`, `c.tuples_stored`),
 	emptyAgrees: true,
 }
+
+// --- the comment's mentions --------------------------------------------------------------------
+
+// commentMentionProjection is comment_mentions as the projection of what a comment's write states
+// of each target it names as a delivery route (api's commentMentionFacts): a mentions tuple out of
+// the comment's node to the target, a second to the session it resolved to, and the comment's
+// urgency, its delivery value. The store side is those relations of every live comment node stated
+// under the event that caused the node, the comment's own write: a session or a role an edit of the
+// comment newly names is a mention of the store too (R5), stated under the edit's event, which no
+// row of this table projects, since an edit names no delivery route. A person's mention is none of
+// these: it is a delivery to that person, which no comment_mentions row holds.
+var commentMentionProjection = func() projection {
+	routeKind, routeID := routeEnd(`m.target`)
+	return projection{
+		name: "comment_mentions", nodeKind: graphstore.KindComment, table: "comment_mentions",
+		note: "a comment's delivery routes: the row side is every comment_mentions row whose tuples_stored is set, as" +
+			" the triples of its comment's node and mentions the session or role its target routes to, mentions the" +
+			" session resolved_session_id names and delivery its mode, against those relations every live comment" +
+			" node states under the event that caused it",
+		rows: `
+		select 'comment_mention ' || m.comment_id::text || ' ' || m.target, c.node_kind, c.node_address,
+		       stated.kind, stated.to_kind, stated.to_id
+		from comment_mentions m
+		join comments c on c.id = m.comment_id
+		cross join lateral (values
+			('` + graphstore.TupleMentions + `', ` + routeKind + `, ` + routeID + `),
+			('` + graphstore.TupleMentions + `', '` + graphstore.KindSession + `',
+			 case when ` + fits(`m.resolved_session_id`) + ` then m.resolved_session_id end),
+			('` + graphstore.TupleDelivery + `', '` + graphstore.KindValue + `', m.delivery)
+		) stated (kind, to_kind, to_id)
+		where m.tuples_stored and stated.to_id is not null`,
+		tuples: liveHeld(`n.kind = '`+graphstore.KindComment+`'`,
+			`t.kind = '`+graphstore.TupleMentions+`' and t.to_kind in ('`+graphstore.KindSession+`', '`+graphstore.KindRole+`')`,
+			`held.to_id`, `held.source_event = n.source_event`) + `
+		union all
+		select n.kind, n.id, newest.kind, '` + graphstore.KindValue + `', newest.to_id
+		from graph_nodes n
+		cross join lateral (
+			select t.kind, t.to_id, t.asserted from graph_tuples t
+			where t.from_kind = n.kind and t.from_id = n.id and t.to_kind = '` + graphstore.KindValue + `'
+			  and t.kind = '` + graphstore.TupleDelivery + `'
+			order by t.seq desc limit 1
+		) newest
+		where n.kind = '` + graphstore.KindComment + `' and n.state = '` + graphstore.StateLive + `' and newest.asserted`,
+		// A mention of a comment the store leaves out, and a target or a session past the bound,
+		// states no tuple by design (api's mentionStored).
+		pastBound: `
+		select count(*) from comment_mentions m join comments c on c.id = m.comment_id` + commentStoreJoins + `
+		where not (` + commentInTheStore + `) or ` + routeID + ` is null or not ` + fits(`coalesce(m.resolved_session_id, '')`),
+		unmarked: `
+		select count(*) from comment_mentions m join comments c on c.id = m.comment_id` + commentStoreJoins + `
+		where not m.tuples_stored and ` + commentInTheStore + ` and ` + routeID + ` is not null and ` + fits(`coalesce(m.resolved_session_id, '')`),
+		populations: createdPopulations(`comment_mentions m join comments c on c.id = m.comment_id`, `c.created_at`, `m.tuples_stored`),
+		emptyAgrees: true,
+	}
+}()
 
 // --- an item's blocks and their links ----------------------------------------------------------
 
@@ -594,7 +649,7 @@ func userThreadsHeld(extra string) string {
 //     (inboxwrite.OwnMove). A participation with no delivery under anybody else's event is a
 //     difference.
 //   - mentioned_alone: participation stated under the event of a mentions tuple into them, which
-//     keeps no row; T13's writer states it, and before it this reads zero.
+//     keeps no row: the writer that resolves the mention states it (inboxwrite.MentionParticipation).
 //   - row_removed: a relation into a thread whose row the removal of the thread's document deleted,
 //     an artifact.removed of that document appended after the relation's own cause: participation
 //     outlives the row (R4), and a mark stands only where a build of the release before removed

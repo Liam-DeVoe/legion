@@ -379,7 +379,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	const replayedKey = "sizing-replayed-comment"
 	comment := func(name string, sites ...string) []string {
 		return append([]string{name, "api/comment_create.go#writeNode", "api/comment_create.go#caused",
-			"graphstore/people.go#QueueAuthored", "inboxwrite/record.go#Queue"}, sites...)
+			"graphstore/people.go#QueueAuthored", "inboxwrite/record.go#Queue", "api/comment_create.go#queueRecordAndMentions"}, sites...)
 	}
 	return append([]graphcensus.StoreDrive{{
 		Name: "api/issue_create.go#createIssue", Database: r.database,
@@ -454,6 +454,9 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			attemptCounted(append(openedAttempt, graphstore.AttemptClaimedAt)...), map[graphcensus.StoredKind][]string{
 				{graphstore.KindComment, graphstore.TupleAuthoredBy}: {graphstore.TupleAuthoredBy},
 				{graphstore.KindComment, graphstore.TupleAnchoredTo}: {graphstore.TupleAnchoredTo},
+				// The mention of the held session, and the comment's urgency beside it.
+				{graphstore.KindComment, graphstore.TupleMentions}: {"mention"},
+				{graphstore.KindComment, graphstore.TupleDelivery}: {"mention"},
 			}),
 	}, {
 		// The held send's settle, which lets the lane take the next send of that session: the

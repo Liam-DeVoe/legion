@@ -993,38 +993,47 @@ func (s *server) planMessageReply(
 	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&plan.id, &plan.createdAt); err != nil {
 		return plan, err
 	}
-	// The reply's node, in its message's issue's project or between its thread's parties, and its
-	// record in its thread (planSessionReplyStore).
+	// The reply's node, in its message's issue's project or between its thread's parties, then its
+	// own index and references, then its record in its thread, which reaches each person its text
+	// newly mentions (planSessionReplyRecord).
 	var err error
-	if plan.stored, plan.recording, err = planSessionReplyStore(ctx, tx, plan, message, who); err != nil {
+	if plan.stored, err = planSessionReplyNode(ctx, tx, plan, message, who); err != nil {
 		return plan, err
 	}
 	plan.changes, plan.write, plan.indexed, err = s.planPendingItem(
 		ctx, tx, refs.ItemMessage, plan.id, plan.body, refs.PendingSource{IssueKey: message.IssueKey},
 		refs.WrittenItem(plan.stored.node), plan.createdAt, message.IssueKey != nil,
 	)
+	if err != nil {
+		return plan, err
+	}
+	plan.recording, err = planSessionReplyRecord(ctx, tx, plan, plan.stored, message, who)
 	return plan, err
 }
 
-// planSessionReplyStore plans, for the session reply plan holds under parent, the reply's node
-// and the facts its row states (planMessageNode), naming the block the plan names, and its record
-// in its thread (inboxwrite.PlanRecord), which reaches the person who started a direct
-// conversation the reply joins (inboxwrite.Write.Starter). A reply whose row names no node is the
-// trigger's, as an older build's is, and is recorded by nothing here.
-func planSessionReplyStore(
-	ctx context.Context, tx pgx.Tx, plan messageReplyPlan, parent model.Message, who model.Actor,
-) (messageStoreWrite, inboxwrite.Recording, error) {
-	stored, err := planMessageNode(ctx, tx, graphstore.MessageRow{
+// planSessionReplyNode plans, for the session reply plan holds under parent, the reply's node and
+// the facts its row states (planMessageNode), naming the block the plan names.
+func planSessionReplyNode(ctx context.Context, tx pgx.Tx, plan messageReplyPlan, parent model.Message, who model.Actor) (messageStoreWrite, error) {
+	return planMessageNode(ctx, tx, graphstore.MessageRow{
 		ID: plan.id, IssueKey: deref(parent.IssueKey), InReplyTo: parent.ID,
 		RepliesToBlock: deref(plan.block.nodeID()), Target: deref(parent.Target),
 	}, who, plan.createdAt, nil)
-	if err != nil || !stored.projected {
-		return stored, inboxwrite.Recording{}, err
+}
+
+// planSessionReplyRecord plans the record in its thread (inboxwrite.PlanRecord) of the session
+// reply plan holds under parent, whose node and facts are stored: it reaches the person who started
+// a direct conversation the reply joins (inboxwrite.Write.Starter) and each person the reply's text
+// newly mentions, as its index states them (plan.indexed, inboxwrite.Write.ReachesMentioned). A reply
+// whose row names no node is the trigger's, as an older build's is, and is recorded by nothing here.
+func planSessionReplyRecord(
+	ctx context.Context, tx pgx.Tx, plan messageReplyPlan, stored messageStoreWrite, parent model.Message, who model.Actor,
+) (inboxwrite.Recording, error) {
+	if !stored.projected {
+		return inboxwrite.Recording{}, nil
 	}
-	inbox := stored.inbox(model.Message{ID: plan.id, IssueKey: parent.IssueKey, InReplyTo: &parent.ID, CreatedAt: plan.createdAt}, who)
+	inbox := stored.inbox(model.Message{ID: plan.id, IssueKey: parent.IssueKey, InReplyTo: &parent.ID, CreatedAt: plan.createdAt}, who).ReachesMentioned(plan.indexed)
 	inbox.Starter = stored.starter
-	recording, err := inboxwrite.PlanRecord(ctx, tx, inbox)
-	return stored, recording, err
+	return inboxwrite.PlanRecord(ctx, tx, inbox)
 }
 
 func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
@@ -1324,7 +1333,8 @@ func followUpRequested(r *http.Request) (bool, error) {
 // (planMessageReply). A follow-up names no block, and its thread and issue are the first reply's,
 // so the plan's index serves both rows the route can insert; its node's facts and its record
 // name the message it answers, so a follow-up plans those two again under the first reply
-// (planSessionReplyStore). Nothing of the body and nothing of the reply's own row is read here.
+// (planSessionReplyNode, planSessionReplyRecord). Nothing of the body and nothing of the reply's own
+// row is read here.
 func (s *server) insertSessionReply(
 	ctx context.Context, tx pgx.Tx, parent model.Message, actor model.Actor, plan messageReplyPlan,
 ) (model.Message, model.Event, error) {
@@ -1334,7 +1344,10 @@ func (s *server) insertSessionReply(
 	}
 	stored, recording := plan.stored, plan.recording
 	if parent.ID != plan.parent {
-		if stored, recording, err = planSessionReplyStore(ctx, tx, plan, parent, actor); err != nil {
+		if stored, err = planSessionReplyNode(ctx, tx, plan, parent, actor); err != nil {
+			return model.Message{}, model.Event{}, err
+		}
+		if recording, err = planSessionReplyRecord(ctx, tx, plan, stored, parent, actor); err != nil {
 			return model.Message{}, model.Event{}, err
 		}
 	}
@@ -1414,7 +1427,7 @@ func (s *server) insertSessionReply(
 		if err := graphstore.QueueAuthored(b, graphstore.KindMessage, reply.ID, actor, reply.CreatedAt, graphstore.LatestEvent); err != nil {
 			return err
 		}
-		return recording.Queue(b, graphstore.LatestEvent)
+		return queueRecordAndMentions(b, recording, plan.indexed, actor, reply.CreatedAt, graphstore.LatestEvent)
 	})
 	if err != nil {
 		return model.Message{}, model.Event{}, err

@@ -402,9 +402,10 @@ func storeKinds(messagesNamed string) []StoreKind {
 		count: `((select count(*) from sized_comments where replies) + (select count(*) from sized_messages where replies))`,
 	}, {
 		Name: "mention", MovedBy: movedWithInbox, Tuples: 1,
-		Driver: "comment_mentions of the comments written in the window: a mentions tuple for each target, and a" +
-			" second for each role target that resolved to a session",
-		count: `(select count(*) + count(m.resolved_session_id)
+		Driver: "comment_mentions of the comments written in the window: a mentions tuple for each target, a" +
+			" second for each role target that resolved to a session, and the delivery value of each comment" +
+			" that names a target",
+		count: `(select count(*) + count(m.resolved_session_id) + count(distinct m.comment_id)
 			from comment_mentions m join sized_comments c on c.id = m.comment_id)`,
 	}, {
 		// A person's part in a thread, read off user_threads, which holds one row for each person and

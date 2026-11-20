@@ -1350,8 +1350,8 @@ func (s *server) planCommentReply(
 	}
 	// The reply's thread in the Inbox, recorded once its event is in, as a comment's is
 	// (createCommentFor): its record names the node its head pointer names, whose tuple is queued
-	// and not written (commentRepliesTo).
-	plan.inbox = commentRepliesTo(inboxwrite.Comment(plan.id, who, plan.createdAt, comment.IssueKey, comment.ArtifactID, replyProject),
+	// and not written (commentRepliesTo), and reaches each person its text newly mentions.
+	plan.inbox = commentRepliesTo(inboxwrite.Comment(plan.id, who, plan.createdAt, comment.IssueKey, comment.ArtifactID, replyProject).ReachesMentioned(plan.indexed),
 		plan.thread.AskID, plan.thread.ReplyTo)
 	plan.recording, err = inboxwrite.PlanRecord(ctx, tx, plan.inbox)
 	return plan, err
@@ -1717,7 +1717,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if plan.stored.pointersStored {
-			return plan.recording.Queue(b, event.ID)
+			return queueRecordAndMentions(b, plan.recording, plan.indexed, actor, plan.createdAt, event.ID)
 		}
 		return nil
 	}); err != nil {
