@@ -254,23 +254,33 @@ func ownerLockWaiters(t *testing.T, database *store.Store, owner store.Owner) in
 // Both lock-wait probes above count their own database's waiters alone: a waiter on the lock in
 // another database of the server counts for nothing, and one in its own counts once, the control
 // that shows the probe sees a waiter at all. The key and the owner are any: each probe reads the
-// lock it is given. The key's two halves are both nonzero, so the anchor probe counts it only by
-// reading pg_locks' classid and objid both.
+// lock it is given. The key's two halves are both nonzero, and before its own waiter the test's
+// database holds a waiter on each of two other keys, one with the key's high half and one with its
+// low half, which must count for nothing too: so the anchor probe counts the key only by reading
+// pg_locks' classid and objid both.
 func TestTheAnchorWaitsCountTheirOwnDatabasesWaitersAlone(t *testing.T) {
 	const key = int64(3)<<32 | 7
 	owner := store.IssueOwner("probe")
 	for _, probe := range []struct {
-		lock  storetest.Lock
-		count func(*testing.T, *store.Store) int
+		lock   storetest.Lock
+		count  func(*testing.T, *store.Store) int
+		halves []storetest.Lock
 	}{
-		{storetest.AdvisoryLock(key), func(t *testing.T, database *store.Store) int { return anchorRefreshWaiters(t, database, key) }},
-		{storetest.OwnerLock(owner), func(t *testing.T, database *store.Store) int { return ownerLockWaiters(t, database, owner) }},
+		{storetest.AdvisoryLock(key), func(t *testing.T, database *store.Store) int { return anchorRefreshWaiters(t, database, key) },
+			[]storetest.Lock{storetest.AdvisoryLock(int64(3)<<32 | 8), storetest.AdvisoryLock(int64(4)<<32 | 7)}},
+		{storetest.OwnerLock(owner), func(t *testing.T, database *store.Store) int { return ownerLockWaiters(t, database, owner) }, nil},
 	} {
 		t.Run(probe.lock.String(), func(t *testing.T) {
 			database := storetest.Open(t)
 			elsewhere := storetest.Queue(t, storetest.Open(t), probe.lock)
 			if waiting := probe.count(t, database); waiting != 0 {
 				t.Fatalf("the probe counted %d waiters on %s with none in its own database and backend %d waiting in another, want 0", waiting, probe.lock, elsewhere)
+			}
+			for _, half := range probe.halves {
+				beside := storetest.Queue(t, database, half)
+				if waiting := probe.count(t, database); waiting != 0 {
+					t.Fatalf("the probe counted %d waiters on %s with none on it in its own database and backend %d waiting there on %s, which shares one half of its key, want 0", waiting, probe.lock, beside, half)
+				}
 			}
 			here := storetest.Queue(t, database, probe.lock)
 			if waiting := probe.count(t, database); waiting != 1 {

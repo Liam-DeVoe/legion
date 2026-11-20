@@ -28,13 +28,17 @@ import (
 // another clone of its own (Open) among them, and ConnectInListingOrder opens the connections a
 // test needs when the order the server lists holders in matters, so a test shows its read counts
 // its own database's lock and not another's. internal/textcheck's lock_reads_test.go refuses a
-// read of pg_locks or pg_stat_activity in test code that names no database or backend of its own.
+// read of pg_locks or pg_stat_activity in test code whose query block keeps to no database or
+// backend of its own, as that test's comment spells out, with what it cannot see.
 //
-// Every call here to the server has a deadline, each derived from what the call waits for:
+// Every call here to the server but one has a deadline, each derived from what the call waits for:
 // answerWait for a call that waits for no lock, holdWait for HoldOn's lock and queueWait for
-// Queue's waiter. A call past its deadline fails the test naming what it waited for, and HoldOn's
-// failure names the lock's holders, so a server that stopped answering or a lock that never frees
-// is a named failure rather than a test binary that hangs until go test's own timeout.
+// Queue's read of its waiter. A call past its deadline fails the test naming what it waited for,
+// and HoldOn's failure names the lock's holders, so a server that stopped answering or a lock that
+// never frees is a named failure rather than a test binary that hangs until go test's own timeout.
+// One wait has no deadline, by design: Queue's waiter asks for its lock until it is cancelled, by
+// the end of its test's context or by Queue's cleanup, which cancels it before its connection
+// closes; that wait is the plant, and nothing waits on it.
 
 // thisDatabase keeps a read of pg_locks, aliased l, to the rows of the database it runs in.
 const thisDatabase = `l.database = (select oid from pg_database where datname = current_database())`
@@ -138,7 +142,7 @@ func Waiting(ctx context.Context, pool *store.Pool, lock Lock) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, answerWait)
 	defer cancel()
 	var waiting int
-	if err := pool.QueryRow(ctx, `select count(*) from pg_locks l where not l.granted and `+thisDatabase+` and `+lock.match, lock.args...).Scan(&waiting); err != nil {
+	if err := pool.QueryRow(ctx, `select count(*) from pg_locks l where not l.granted and `+thisDatabase+` and (`+lock.match+`)`, lock.args...).Scan(&waiting); err != nil {
 		return 0, fmt.Errorf("count the waiters on %s, waiting at most %s for the answer: %w", lock, answerWait, err)
 	}
 	return waiting, nil
@@ -193,7 +197,7 @@ func readHolders(ctx context.Context, db querier, lock Lock) ([]LockHolder, erro
 	rows, err := db.Query(ctx, `
 		select a.pid, a.state, a.xact_start, a.query
 		from pg_locks l join pg_stat_activity a on a.pid = l.pid
-		where l.granted and a.pid <> pg_backend_pid() and `+thisDatabase+` and `+lock.match+`
+		where l.granted and a.pid <> pg_backend_pid() and `+thisDatabase+` and (`+lock.match+`)
 		order by a.pid
 	`, lock.args...)
 	if err != nil {
@@ -307,7 +311,10 @@ func holdersBeside(t testing.TB, conn *pgx.Conn, lock Lock) string {
 // open: in a run of slots handed out high to low, every connection opened later is listed earlier
 // and has the higher process id, so no one pair is first in both orders. A read that names the
 // holder with the lowest process id meets first a holder whose connection opened before every
-// other (Hold, called before this).
+// other (Hold, called before this), unless the ids wrapped between the two: they start again low
+// once they pass the kernel's pid_max, which on a server that shares its host's process ids comes
+// every few minutes on a busy host. A test that needs that order reads the two ids, as the API's
+// upload lock probe tests do.
 func ConnectInListingOrder(t testing.TB, first, second *store.Store) (*pgx.Conn, *pgx.Conn) {
 	t.Helper()
 	var firsts, seconds []*pgx.Conn
@@ -425,16 +432,16 @@ func closeWithin(conn *pgx.Conn) {
 }
 
 // listingPositions is where pg_stat_activity lists each of conns' backends: the order of the
-// server's backend slots, which pg_stat_get_activity reads them in, counted from 1. A backend that
-// is gone is not in the answer, so its position reads 0.
+// server's backend slots, which pg_stat_get_activity reads them in, counted from 1 by its
+// ordinality, which numbers every backend the function lists before the filter keeps conns'. A
+// backend that is gone is not in the answer, so its position reads 0.
 func listingPositions(ctx context.Context, pool *store.Pool, conns []*pgx.Conn) (map[*pgx.Conn]int64, error) {
 	pids := make([]int32, len(conns))
 	for i, conn := range conns {
 		pids[i] = int32(conn.PgConn().PID())
 	}
 	rows, err := pool.Query(ctx, `
-		with listed as (select pid, row_number() over () as position from pg_stat_get_activity(null))
-		select pid, position from listed where pid = any($1)
+		select pid, ordinality from pg_stat_get_activity(null) with ordinality where pid = any($1)
 	`, pids)
 	if err != nil {
 		return nil, err

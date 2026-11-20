@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -427,6 +429,36 @@ func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string, with
 	}
 }
 
+// plantTries bounds how often plantHoldersElsewhere plants again after a wrap of the server's
+// process ids. A wrap comes once in minutes, and a plant takes about a second, so a second try
+// meets none; a third is margin.
+const plantTries = 3
+
+// plantHoldersElsewhere plants lock, held on then with args, in two other databases of the server,
+// as other tests' writers of an issue with this key hold their own issue's, and opens here, the
+// connection to this test's database that its own transaction will hold the lock on: one holder
+// whose backend has a lower process id than here's, and one that the server lists before here's
+// (storetest.ConnectInListingOrder). So a probe that names one holder, the server's first listed or
+// its lowest process id, meets a planted one before this test's own. Process ids rise as
+// connections open, until they pass the kernel's pid_max and start again low: on a server that
+// shares its host's process ids, as a local one does, they wrap every few minutes on a busy host,
+// and a wrap between the first plant and here's connection would leave here the lower id. So the
+// order is read, not assumed: it plants again while the first plant's id is not below here's, and
+// fails the test after plantTries. It answers the two planted backends and here.
+func plantHoldersElsewhere(t *testing.T, database *store.Store, lock storetest.Lock, then string, args ...any) (lowest, listed uint32, here *pgx.Conn) {
+	t.Helper()
+	for try := range plantTries {
+		lowest = storetest.Hold(t, storetest.Open(t), lock, then, args...)
+		there, conn := storetest.ConnectInListingOrder(t, storetest.Open(t), database)
+		if lowest < conn.PgConn().PID() {
+			return lowest, storetest.HoldOn(t, there, lock, then, args...), conn
+		}
+		t.Logf("plant %d of %d: the first plant's backend %d is not below this test's own, %d: the server's process ids wrapped between them, so plant again", try+1, plantTries, lowest, conn.PgConn().PID())
+	}
+	t.Fatalf("in %d plants the first plant's backend never had a lower process id than this test's own", plantTries)
+	return 0, 0, nil
+}
+
 // The negative control of that fast arm: a transaction of this test's own takes the issue's owner
 // lock and makes the read every upload makes under it (issueStatusRead), which is what
 // pg_stat_activity shows of an upload's transaction parked in Put, and then holds both. The probe
@@ -436,18 +468,15 @@ func probeIssueOwnerLock(t *testing.T, database *store.Store, issue string, with
 //
 // Meanwhile two other databases of the server hold a lock of the same two keys, as other tests'
 // writers of an issue with this key hold their own issue's, here on `select 1`, a statement no
-// upload makes: one on a backend opened before every other here, so with the lowest process id,
-// and one on a backend the server lists before this test's (storetest.ConnectInListingOrder). A
-// probe that read the server's first holder, or its holder with the lowest process id, would
-// name one of them and never fire. The probe must name this test's transaction alone, by its
-// backend.
+// upload makes: one on a backend with a lower process id than this test's, and one on a backend
+// the server lists before this test's (plantHoldersElsewhere). A probe that read the server's first
+// holder, or its holder with the lowest process id, would name one of them and never fire. The
+// probe must name this test's transaction alone, by its backend.
 func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := fileIssue(t, handler)
 	lock := storetest.OwnerLock(store.IssueOwner(issue))
-	lowest := storetest.Hold(t, storetest.Open(t), lock, `select 1`)
-	there, here := storetest.ConnectInListingOrder(t, storetest.Open(t), database)
-	listed := storetest.HoldOn(t, there, lock, `select 1`)
+	lowest, listed, here := plantHoldersElsewhere(t, database, lock, `select 1`)
 	// The lock, which waits out the settlement of the spec document fileIssue wrote, and then the
 	// read an upload's transaction makes under it, so this transaction is the lock's only holder
 	// in this test's database.
@@ -472,18 +501,17 @@ func TestTheUploadLockProbeNamesAnUploadsOwnTransaction(t *testing.T) {
 
 // The fast arm answers for a holder in this test's own database alone. Two other databases of the
 // server hold a lock of the same two keys on the read every upload makes under it, as other
-// tests' uploads parked in Put would, one on a backend opened before every other here and one on
-// a backend the server lists before this test's, while this test's own transaction holds the
-// issue's lock on a statement no upload makes. The probe must name this test's transaction alone
-// and not answer at its fast arm: a probe that read another database would fail
-// TestAnUploadHoldsNoIssueLockWhileTheStoreWrites for an upload that test never made.
+// tests' uploads parked in Put would, one on a backend with a lower process id than this test's
+// and one on a backend the server lists before this test's (plantHoldersElsewhere), while this
+// test's own transaction holds the issue's lock on a statement no upload makes. The probe must
+// name this test's transaction alone and not answer at its fast arm: a probe that read another
+// database would fail TestAnUploadHoldsNoIssueLockWhileTheStoreWrites for an upload that test
+// never made.
 func TestTheUploadLockProbeNamesNoHolderOfAnotherDatabase(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := fileIssue(t, handler)
 	lock := storetest.OwnerLock(store.IssueOwner(issue))
-	lowest := storetest.Hold(t, storetest.Open(t), lock, issueStatusRead, issue)
-	there, here := storetest.ConnectInListingOrder(t, storetest.Open(t), database)
-	listed := storetest.HoldOn(t, there, lock, issueStatusRead, issue)
+	lowest, listed, here := plantHoldersElsewhere(t, database, lock, issueStatusRead, issue)
 	holding := storetest.HoldOn(t, here, lock, `select 1`)
 
 	// A second bounds it: this test's transaction never lets go, so every attempt is refused, and
