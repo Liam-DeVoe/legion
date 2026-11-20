@@ -42,7 +42,7 @@ commit. Create reviewable commits only with
 `jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`, except the resolution of a merge's
 conflicts, which goes into the merge with the `jj squash` the daemon part below names. Before a
 push, read every commit ahead of the base,
-`jj -R "$LEGION_WORKSPACE" log -r '<base branch>@origin..@'` as
+`jj -R "$LEGION_WORKSPACE" log -r "${default}@origin..@"` as
 `skill://legion-worker/references/default-branch-check.md` lists them, since a branch can hold
 more than five commits; push only the existing issue branch, as the daemon part below says.
 
