@@ -645,11 +645,12 @@ func sessionContext() (base brokeraddr.Address, enrollmentID string, signer Sign
 	return base, enrollmentID, signer, nil
 }
 
-// writeVerbatim writes exactly raw, nothing more and nothing less: --json's contract is "the
-// response body verbatim ... one JSON object on stdout and nothing else", so this must never
-// append a newline the broker's own response didn't already end with.
-func writeVerbatim(w io.Writer, raw []byte) {
-	w.Write(raw)
+// writeVerbatim writes exactly the broker's 2xx answer, nothing more and nothing less: --json's
+// contract is "the response body verbatim ... one JSON object on stdout and nothing else", so this
+// must never append a newline the broker's own response didn't already end with. The answer is
+// data the person asked for whole, so it goes through redact.Answer.StreamTo.
+func writeVerbatim(w io.Writer, answer redact.Answer) {
+	_, _ = answer.StreamTo(w)
 }
 
 // nextBackoff advances the backoff the poll loops of this package keep: two seconds, doubling

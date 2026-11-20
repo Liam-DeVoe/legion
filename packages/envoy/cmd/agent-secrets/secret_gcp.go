@@ -25,7 +25,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -150,19 +149,20 @@ var gcpUserinfo = func(ctx context.Context, creds *google.Credentials) (string, 
 		return "", fmt.Errorf("read the Google sign-in's email: %w", err)
 	}
 	defer resp.Body.Close()
+	// Google's words, which can quote the bearer its request carried, are read with the answer's
+	// own record before the remote-text rule reads them (redact.ReadAnswer).
+	answer, err := redact.ReadAnswer(resp, 1<<20)
+	if err != nil {
+		return "", fmt.Errorf("read the Google sign-in's email: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
-		// Google's words, which can quote the bearer its request carried, are read with the
-		// answer's own record before the remote-text rule reads them.
-		body, _ := io.ReadAll(resp.Body)
-		carried := redact.Carried(resp)
-		status := redact.NewRemoteText(resp.Status).WithoutTokens(carried...)
-		said := redact.NewRemoteText(strings.TrimSpace(string(body))).WithoutTokens(carried...)
-		return "", fmt.Errorf("read the Google sign-in's email: %s: %s", status, said)
+		status := redact.NewRemoteText(resp.Status).WithoutTokens(redact.Carried(resp)...)
+		return "", fmt.Errorf("read the Google sign-in's email: %s: %s", status, answer.Words())
 	}
 	var userinfo struct {
 		Email string `json:"email"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&userinfo); err != nil {
+	if err := answer.Decode(&userinfo); err != nil {
 		return "", fmt.Errorf("decode the Google sign-in's email: %w", err)
 	}
 	return userinfo.Email, nil

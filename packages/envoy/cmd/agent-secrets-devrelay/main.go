@@ -181,12 +181,12 @@ func (e *apiError) LogValue() slog.Value { return slog.StringValue(e.Error()) }
 // its raw body; any other status decodes the broker's error envelope into an *apiError, its code
 // and words held with every credential the request carried redacted (redact.Carried), since
 // whatever answers in the broker's place can echo the bearer back.
-func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]byte, error) {
+func (c *apiClient) do(ctx context.Context, method, path string, body any) (redact.Answer, error) {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return nil, err
+			return redact.Answer{}, err
 		}
 		reader = bytes.NewReader(b)
 	}
@@ -194,7 +194,7 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]by
 	// broker's URL carries prints.
 	req, err := http.NewRequestWithContext(ctx, method, c.base.Raw()+path, reader)
 	if err != nil {
-		return nil, c.base.Error(err)
+		return redact.Answer{}, c.base.Error(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
@@ -202,29 +202,28 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) ([]by
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, c.base.Error(err)
+		return redact.Answer{}, c.base.Error(err)
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	answer, err := redact.ReadAnswer(resp, 1<<20)
 	if err != nil {
-		return nil, c.base.Error(err)
+		return redact.Answer{}, c.base.Error(err)
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {
 			Code  redact.RemoteText `json:"code"`
 			Error redact.RemoteText `json:"error"`
 		}
-		_ = json.Unmarshal(raw, &envelope)
-		carried := redact.Carried(resp)
-		return nil, &apiError{Status: resp.StatusCode, base: c.base, code: envelope.Code.WithoutTokens(carried...), reason: envelope.Error.WithoutTokens(carried...)}
+		_ = answer.Decode(&envelope)
+		return redact.Answer{}, &apiError{Status: resp.StatusCode, base: c.base, code: envelope.Code, reason: envelope.Error}
 	}
-	return raw, nil
+	return answer, nil
 }
 
-// writeVerbatim prints raw (a broker response body) followed by a newline, for terminal
-// readability.
-func writeVerbatim(w io.Writer, raw []byte) {
-	w.Write(raw)
+// writeVerbatim prints answer (a broker response body) followed by a newline, for terminal
+// readability: the data the person asked for, through redact.Answer.StreamTo.
+func writeVerbatim(w io.Writer, answer redact.Answer) {
+	_, _ = answer.StreamTo(w)
 	fmt.Fprintln(w)
 }
 
@@ -258,20 +257,22 @@ func cmdMachineApprove(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	ctx := context.Background()
-	lookupRaw, err := client.do(ctx, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": *code})
+	lookup, err := client.do(ctx, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": *code})
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: lookup: %v\n", err)
 		return 1
 	}
+	// State is the broker's word, which an answer in its place can fill with the bearer it was
+	// sent: it is held with the request's record (Decode) and prints through the rule.
 	var rec struct {
-		RecordID string `json:"record_id"`
-		State    string `json:"state"`
+		RecordID string            `json:"record_id"`
+		State    redact.RemoteText `json:"state"`
 	}
-	if err := json.Unmarshal(lookupRaw, &rec); err != nil {
+	if err := lookup.Decode(&rec); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: decode lookup: %v\n", err)
 		return 1
 	}
-	if rec.State != "pending" {
+	if !rec.State.Equal("pending") {
 		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: code %s names a machine login that is %s, not pending\n", *code, rec.State)
 		return 1
 	}
@@ -279,12 +280,12 @@ func cmdMachineApprove(args []string, stdout, stderr io.Writer) int {
 	if *deny {
 		action = "deny"
 	}
-	decideRaw, err := client.do(ctx, http.MethodPost, "/v1/credential-requests/"+url.PathEscape(rec.RecordID)+"/"+action,
+	decided, err := client.do(ctx, http.MethodPost, "/v1/credential-requests/"+url.PathEscape(rec.RecordID)+"/"+action,
 		map[string]any{"approver": c.login, "code": *code})
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets-devrelay machine-approve: %v\n", err)
 		return 1
 	}
-	writeVerbatim(stdout, decideRaw)
+	writeVerbatim(stdout, decided)
 	return 0
 }

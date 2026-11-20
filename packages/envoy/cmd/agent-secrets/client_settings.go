@@ -7,9 +7,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // Settings is GET /v1/settings's exact response shape: the store and namespace every agent secret
@@ -45,12 +46,12 @@ type JudgeKey struct {
 }
 
 func (c *client) Settings(ctx context.Context) (Settings, error) {
-	raw, err := c.do(ctx, http.MethodGet, c.route("/v1/settings"), nil, nil)
+	answer, err := c.do(ctx, http.MethodGet, c.route("/v1/settings"), nil, nil)
 	if err != nil {
 		return Settings{}, err
 	}
 	var settings Settings
-	if err := json.Unmarshal(raw, &settings); err != nil {
+	if err := answer.Decode(&settings); err != nil {
 		return Settings{}, fmt.Errorf("decode settings: %w", err)
 	}
 	return settings, nil
@@ -81,12 +82,12 @@ type Reread struct {
 func (c *client) RereadSecret(ctx context.Context, signer proofSigner, name string) (Reread, error) {
 	path := "/v1/secrets/" + name + "/reread"
 	var status int
-	var raw []byte
+	var answer redact.Answer
 	var err error
 	if signer != nil {
-		status, raw, err = c.doProofStatus(ctx, signer, http.MethodPost, path, nil)
+		status, answer, err = c.doProofStatus(ctx, signer, http.MethodPost, path, nil)
 	} else {
-		status, raw, err = c.doStatus(ctx, http.MethodPost, c.route(path), nil, nil)
+		status, answer, err = c.doStatus(ctx, http.MethodPost, c.route(path), nil, nil)
 	}
 	if err != nil {
 		return Reread{}, err
@@ -95,7 +96,7 @@ func (c *client) RereadSecret(ctx context.Context, signer proofSigner, name stri
 		return Reread{Name: name}, nil
 	}
 	var reread Reread
-	if err := json.Unmarshal(raw, &reread); err != nil {
+	if err := answer.Decode(&reread); err != nil {
 		return Reread{}, fmt.Errorf("decode reread: %w", err)
 	}
 	reread.Told = true

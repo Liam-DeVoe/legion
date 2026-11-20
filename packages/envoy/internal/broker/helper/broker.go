@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptrace"
@@ -1699,40 +1698,41 @@ func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Author
 	return nil
 }
 
-// do sends req and decodes the broker's answer. A failed exchange - the request, or the read of
-// its answer - goes through the address's Error (brokeraddr.Address.Error). A refusal is a
-// BrokerError with the answer's status and code, which the helper acts on, and with the broker's
-// own words (the answer's error) as the address lets them print (brokeraddr.Address.Words):
-// beside an address that is not clean, the broker, or whoever answers for that address, can
-// repeat the credential back in any text of its answer, so the refusal prints as its status alone
-// (BrokerError.withheld), as oauthBrokerError and brokerclient's token exchange print theirs. An
-// accepted answer out cannot be decoded from is an error whose decoder text prints through Words
-// too, since the decoder quotes the answer's text.
+// do sends req and decodes the broker's answer, which it reads through redact.ReadAnswer. A failed
+// exchange - the request, or the read of its answer - goes through the address's Error
+// (brokeraddr.Address.Error). A refusal is a BrokerError with the answer's status and code, which
+// the helper acts on, and with the broker's own words (the answer's error) as the address lets
+// them print: beside an address that is not clean, the broker, or whoever answers for that address,
+// can repeat the credential back in any text of its answer, so the refusal prints as its status
+// alone (BrokerError.withheld), as oauthBrokerError and brokerclient's token exchange print theirs.
+// An accepted answer out cannot be decoded from is an error that names the member that did not
+// decode and quotes no value of the answer (redact.Answer.Decode).
 func (b *Broker) do(req *http.Request, ok []int, out any) error {
 	resp, err := b.httpClient().Do(req)
 	if err != nil {
 		return b.URL.Error(err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	answer, err := redact.ReadAnswer(resp, 1<<20)
 	if err != nil {
 		return b.URL.Error(err)
 	}
-	if !slices.Contains(ok, resp.StatusCode) {
+	if !slices.Contains(ok, answer.Status()) {
+		// The answer's words print with every credential the request carried redacted, as the
+		// answer's own request record names them (its Proof header among them, and the DPoP proof
+		// a transport added), and compare as they came: Decode holds each box with that record.
 		var e struct {
 			Code  redact.RemoteText `json:"code"`
 			Error redact.RemoteText `json:"error"`
 		}
-		_ = json.Unmarshal(data, &e)
-		// The answer's words print with every credential the request carried redacted, as the
-		// answer's own request record names them (redact.Carried: its Proof header among them, and
-		// the DPoP proof a transport added), and compare as they came (RemoteText.WithoutTokens).
-		carried := redact.Carried(resp)
-		return newBrokerError(resp.StatusCode, e.Code.WithoutTokens(carried...), e.Error.WithoutTokens(carried...), !b.URL.Clean())
+		_ = answer.Decode(&e)
+		return newBrokerError(answer.Status(), e.Code, e.Error, !b.URL.Clean())
 	}
-	if out != nil && len(data) > 0 {
-		if err := json.Unmarshal(data, out); err != nil {
-			return fmt.Errorf("the broker's answer is not the JSON the helper reads: %s", b.URL.Words(err.Error()))
+	if out != nil && !answer.Words().IsEmpty() {
+		// Decode's error names the member that did not decode and quotes no value: the decoder's
+		// own quotes it, and an answer in the broker's place can echo the request's proof there.
+		if err := answer.Decode(out); err != nil {
+			return fmt.Errorf("the broker's answer is not the JSON the helper reads: %w", err)
 		}
 	}
 	return nil

@@ -178,7 +178,7 @@ func enrollUnderCredential(ctx context.Context, base brokeraddr.Address, key *ec
 	if err != nil {
 		return "", err
 	}
-	raw, err := newClient(base).doProof(ctx, &launcherKeySigner{key: key, credentialID: credentialID},
+	enrolled, err := newClient(base).doProof(ctx, &launcherKeySigner{key: key, credentialID: credentialID},
 		"POST", "/v1/enrollments", body)
 	if err != nil {
 		return "", fmt.Errorf("register %s's session on this machine: %w", who, err)
@@ -186,7 +186,7 @@ func enrollUnderCredential(ctx context.Context, base brokeraddr.Address, key *ec
 	var answer struct {
 		EnrollmentID string `json:"enrollment_id"`
 	}
-	if err := json.Unmarshal(raw, &answer); err != nil || answer.EnrollmentID == "" {
+	if err := enrolled.Decode(&answer); err != nil || answer.EnrollmentID == "" {
 		return "", fmt.Errorf("the broker registered %s's session but named no enrollment", who)
 	}
 	return answer.EnrollmentID, nil

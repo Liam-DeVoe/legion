@@ -133,17 +133,16 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 	if err != nil {
 		return "", false, err
 	}
-	status, raw, err := c.doProofStatus(ctx, signer, http.MethodPost, "/v1/enrollments", body)
+	status, answer, err := c.doProofStatus(ctx, signer, http.MethodPost, "/v1/enrollments", body)
 	if err != nil {
 		return "", false, err
 	}
 	var result struct {
 		EnrollmentID string `json:"enrollment_id"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		// The decoder's words quote the answer, so they print as the address lets the broker's
-		// own words print (brokeraddr.Address.Words).
-		return "", false, fmt.Errorf("decode enrollment response: %s", c.baseURL.Words(err.Error()))
+	if err := answer.Decode(&result); err != nil {
+		// Decode's error names the member and quotes no value of the answer.
+		return "", false, fmt.Errorf("decode enrollment response: %w", err)
 	}
 	if result.EnrollmentID == "" {
 		return "", false, errors.New("the broker's enrollment answered no enrollment_id")
@@ -326,16 +325,16 @@ func (c *client) TokenLogin(ctx context.Context, token, request string) (string,
 	if err != nil {
 		return "", err
 	}
-	raw, err := c.do(ctx, http.MethodPost, c.route("/v1/launcher-credentials/token"), body, nil)
+	answer, err := c.do(ctx, http.MethodPost, c.route("/v1/launcher-credentials/token"), body, nil)
 	if err != nil {
 		return "", err
 	}
 	var result struct {
 		CredentialID string `json:"credential_id"`
 	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		// As CreatePodEnrollment's decoder error: the answer's words, through Words.
-		return "", fmt.Errorf("decode token login response: %s", c.baseURL.Words(err.Error()))
+	if err := answer.Decode(&result); err != nil {
+		// As CreatePodEnrollment's decoder error: it names the member and quotes no value.
+		return "", fmt.Errorf("decode token login response: %w", err)
 	}
 	if result.CredentialID == "" {
 		return "", errors.New("the broker's token login answered no credential_id")

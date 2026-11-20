@@ -150,3 +150,45 @@ func TestARenewalRefusalPrintsNoCredentialItsPagesReferencesHide(t *testing.T) {
 		})
 	}
 }
+
+// TestARenewalAnswerThatDoesNotDecodePrintsNoPodTokenItEchoes: an answer in the broker's place
+// takes a pod's renewal, 200, and echoes the pod token its body carried into lease_expires_at,
+// which RenewEnrollment decodes as a time. time.Time's error quotes the value; the renewal's error
+// and renewLoop's stderr line name the member that did not decode and hold no part of the token:
+// the client reads the answer through redact.ReadAnswer, whose Decode quotes no value (the review
+// of #4368 round 4, finding 1). Captures agent-secrets.decode-echo and
+// agent-secrets.decode-echo/renew-stderr.
+func TestARenewalAnswerThatDoesNotDecodePrintsNoPodTokenItEchoes(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"lease_expires_at":%q}`, "renewed with "+string(body))
+	}))
+	defer server.Close()
+	base := brokeraddr.New(server.URL)
+	signer := &fileSigner{key: key, enrollmentID: "enr-decode"}
+	_, renewErr := newClient(base).RenewEnrollment(context.Background(), signer, "enr-decode", redacttest.Token)
+	if renewErr == nil {
+		t.Fatal("the renewal took an answer whose lease_expires_at is no time")
+	}
+	file := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(file, []byte(redacttest.Token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stderr bytes.Buffer
+	renewLoop(ctx, newClient(base), signer, "enr-decode", file, &stderr, func(time.Duration) <-chan time.Time {
+		cancel()
+		return nil
+	})
+	redacttest.RequireNone(t, "agent-secrets.decode-echo", renewErr.Error())
+	redacttest.RequireNone(t, "agent-secrets.decode-echo/renew-stderr", stderr.String())
+	if !strings.Contains(renewErr.Error(), "lease_expires_at") {
+		t.Errorf("the renewal's error is %q, want it to name the member that did not decode", renewErr)
+	}
+}
