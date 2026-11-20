@@ -1,4 +1,4 @@
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 
 import { rowsOf } from "../../api/event-refresh";
@@ -40,11 +40,17 @@ function documentWords(text: ArtifactText): string | undefined {
   return words;
 }
 
-/** Whether a comment list of `client`'s cache lists, deleted, a comment anchored in the document
- *  `artifact` by one of `marks`: the comment of one of the inserts the words lie in. The lists are
- *  an issue's (`["comments", key, …]`) and a document's (`["artifact", id, "comments"]`), the
- *  reads of the comments family a delete's correction writes its mark into
- *  (`markCorrectedPost`), which the server answers with the deleted comment in its place. */
+/** Whether `queryKey` names a comment list: an issue's (`["comments", key, …]`) or a document's
+ *  (`["artifact", id, "comments"]`), the reads of the comments family a delete's correction writes
+ *  its mark into (`markCorrectedPost`), which the server answers with the deleted comment in its
+ *  place. */
+function isCommentList(queryKey: QueryKey): boolean {
+  return queryKey[0] === "comments" || (queryKey[0] === "artifact" && queryKey[2] === "comments");
+}
+
+/** Whether a comment list of `client`'s cache (`isCommentList`) lists, deleted, a comment
+ *  anchored in the document `artifact` by one of `marks`: the comment of one of the inserts the
+ *  words lie in. */
 function holdsDeletedInsert(
   client: QueryClient,
   artifact: string,
@@ -55,8 +61,7 @@ function holdsDeletedInsert(
     .getAll()
     .some(
       ({ queryKey, state }) =>
-        (queryKey[0] === "comments" ||
-          (queryKey[0] === "artifact" && queryKey[2] === "comments")) &&
+        isCommentList(queryKey) &&
         rowsOf<Comment>(state.data).some(
           (comment) =>
             comment.anchor !== null &&
@@ -97,16 +102,23 @@ export function useQuoteInDocument(
   anchoredAt: number | undefined
 ): boolean {
   const client = useQueryClient();
+  const hasMarks = insertMarks !== undefined && insertMarks.length > 0;
+  // The first fact reads only the comment lists, and a change to one sends an event for it, so a
+  // draft whose words lie in no insert listens to nothing, and another one to those lists alone.
   const subscribe = useCallback(
-    (changed: () => void) => client.getQueryCache().subscribe(changed),
-    [client]
+    (changed: () => void) =>
+      hasMarks
+        ? client.getQueryCache().subscribe(({ query }) => {
+            if (isCommentList(query.queryKey)) {
+              changed();
+            }
+          })
+        : () => {},
+    [client, hasMarks]
   );
   const insertDeleted = useSyncExternalStore(
     subscribe,
-    () =>
-      insertMarks !== undefined &&
-      insertMarks.length > 0 &&
-      holdsDeletedInsert(client, artifact, insertMarks)
+    () => hasMarks && holdsDeletedInsert(client, artifact, insertMarks)
   );
   const { data: words, dataUpdatedAt } = useQuery({
     ...liveTextQueryOptions(artifact),

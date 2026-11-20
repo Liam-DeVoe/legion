@@ -100,10 +100,8 @@ export function scopeOfBlock(block: CursorBlock | undefined): string | undefined
   if (block === undefined || !block.surface.isConnected) {
     return undefined;
   }
-  const element = [...block.surface.querySelectorAll(`[${BLOCK_ID_ATTRIBUTE}]`)].find(
-    (candidate) => candidate.getAttribute(BLOCK_ID_ATTRIBUTE) === block.id
-  );
-  const text = element === undefined ? "" : blockText(element.textContent ?? "");
+  const element = block.surface.querySelector(`[${BLOCK_ID_ATTRIBUTE}="${CSS.escape(block.id)}"]`);
+  const text = element === null ? "" : blockText(element.textContent ?? "");
   return text === "" ? undefined : `the block “${text}”`;
 }
 

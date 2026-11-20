@@ -1,5 +1,6 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { act, cleanup, waitFor, within } from "@testing-library/react";
+import { cachedKeysHolding } from "../../__tests__/cached-keys-holding";
 import { correction } from "../../__tests__/correction-feed";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -361,13 +362,7 @@ test("after a pending insert's delete whose reads fail again, the Spec tab's lin
     expect(reads.getReferences.mock.calls.length).toBeGreaterThan(asked);
     expect(screen.queryByText(/Changed since you last read/)).not.toBeInTheDocument();
     expect(view.container.textContent).not.toContain(inserted);
-    expect(
-      queryClient
-        .getQueryCache()
-        .getAll()
-        .filter((query) => JSON.stringify(query.state.data ?? null).includes(inserted))
-        .map((query) => query.queryKey)
-    ).toEqual([]);
+    expect(cachedKeysHolding(queryClient, inserted)).toEqual([]);
   } finally {
     cleanup();
     reads.restore();

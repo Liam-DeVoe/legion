@@ -46,10 +46,7 @@ export function insertMarksIn(
   to: number
 ): string[] | undefined {
   const ids: string[] = [];
-  doc.descendants((node, pos) => {
-    if (pos >= to || pos + node.nodeSize <= from) {
-      return false;
-    }
+  doc.nodesBetween(from, to, (node) => {
     if (!node.isText) {
       return true;
     }

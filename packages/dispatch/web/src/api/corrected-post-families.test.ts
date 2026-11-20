@@ -12,6 +12,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { cachedKeysHolding } from "../__tests__/cached-keys-holding";
 import { correction, correctionFeed, DELETION, EDITED_AT } from "../__tests__/correction-feed";
 import { type GraphNode, graphNode } from "../__tests__/graph-fixture";
 import { messageCorrectionFields } from "../__tests__/message-fixture";
@@ -1584,13 +1585,7 @@ for (const row of DROP_ROWS) {
     expect(JSON.stringify(client.getQueryData(row.key))).toContain(INSERTED);
     markCorrectedPost(client, INSERT_DELETE);
     expect(client.getQueryData(row.key)).toBeUndefined();
-    expect(
-      client
-        .getQueryCache()
-        .getAll()
-        .filter((query) => JSON.stringify(query.state.data ?? null).includes(INSERTED))
-        .map((query) => query.queryKey)
-    ).toEqual([]);
+    expect(cachedKeysHolding(client, INSERTED)).toEqual([]);
     expect(client.getQueryData(row.other.key)).toEqual(row.other.answer);
   });
 
@@ -1632,13 +1627,7 @@ test("a part_of read out at a pending insert's delete is given up and asked agai
     await beforeDelete.promise;
     await waitFor(() => expect(client.getQueryState(key)?.fetchStatus).toBe("idle"));
     expect({ answer: client.getQueryData(key), asked }).toEqual({ answer: afterDelete, asked: 2 });
-    expect(
-      client
-        .getQueryCache()
-        .getAll()
-        .filter((query) => JSON.stringify(query.state.data ?? null).includes(INSERTED))
-        .map((query) => query.queryKey)
-    ).toEqual([]);
+    expect(cachedKeysHolding(client, INSERTED)).toEqual([]);
   } finally {
     unsubscribe();
     client.clear();
