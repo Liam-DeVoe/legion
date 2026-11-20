@@ -549,14 +549,16 @@ def shell_c_script(values, k=0):
     return found[0] if found and found[1] and found[0] < len(values) else None
 
 
-def shell_inner_scripts(command):
+def shell_inner_scripts(command, word=shell_command_word):
     """(text, line) of the shell each command hands more shell to: the string after a shell's -c
-    (bash -c, sh -lc, ...), what eval joins, and a heredoc a shell with no script operand reads."""
+    (bash -c, sh -lc, ...), what eval joins, and a heredoc a shell with no script operand reads.
+    word(command) gives the index of the command's program; a reader whose policy passes over more
+    launchers than command_word does (package_installs.py's sudo) gives its own."""
     values, out = command.values(), []
     if values and values[0] == "eval":
         out.append((" ".join(values[1:]), command.words[1].line if len(command.words) > 1 else command.line))
         return out
-    found = shell_args(values, shell_command_word(command))
+    found = shell_args(values, word(command))
     if found is None:
         return out
     j, takes_c = found
@@ -567,18 +569,19 @@ def shell_inner_scripts(command):
     return out
 
 
-def shell_stdin_scripts(commands, index):
+def shell_stdin_scripts(commands, index, word=shell_command_word):
     """(text, line) of the script a shell with no script operand reads from its standard input,
     for commands[index] (of shell_script's list) when that shell is fed by the command before it
     in its pipeline: the heredoc bodies of a `cat` given no file, or the words of an `echo` or the
-    format of a `printf` (`cat <<EOF | bash`, `echo "go list" | sh`)."""
+    format of a `printf` (`cat <<EOF | bash`, `echo "go list" | sh`). word is as
+    shell_inner_scripts takes it, for both the shell and the command that feeds it."""
     command = commands[index]
-    found = shell_args(command.values(), shell_command_word(command))
+    found = shell_args(command.values(), word(command))
     if command.pipe == 0 or found is None or found[1] or found[0] < len(command.words):
         return []
     feeder = next((c for c in reversed(commands[:index]) if c.pipe == command.pipe - 1
                    and c.frames == command.frames and c.parent is command.parent), None)
-    k = shell_command_word(feeder) if feeder is not None else None
+    k = word(feeder) if feeder is not None else None
     if k is None:
         return []
     values = feeder.values()

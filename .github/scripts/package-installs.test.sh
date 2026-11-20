@@ -267,6 +267,39 @@ check "a heredoc a shell reads is read as its script" "$(has "$out" 'runs `apt-g
 check "and nothing of the second step is" "$(lacks "$out" 'step "Forms that install nothing"')"
 check "six refusals in all" "$(is "$(grep -c '::error' <<<"$out")" 6)"
 
+echo "case: a script a shell reads from a pipe, through sudo or not, is read as that shell's script"
+root=$(tree piped)
+one_job "$root" "      - name: Piped forms
+        run: |
+          echo \"apt-get install -y p1\" | sudo bash
+          printf 'apt-get install -y p2\\n' | sudo bash
+          cat <<'EOF' | sudo bash
+          apt-get install -y p3
+          EOF
+          echo \"apt-get install -y p4\" | bash
+          sudo bash -c 'apt-get install -y p5'
+          sudo sh <<'EOF'
+          apt-get install -y p6
+          EOF
+          eval \"apt-get install -y p7\"
+      - name: Pipes that run no install
+        run: |
+          echo 'apt-get install -y q1' | tee notes.txt
+          printf 'apt-get install -y q2\\n' > install.sh"
+run_rule "$root"
+check "echo piped to sudo bash is refused at its line" \
+  "$(has "$out" '::error file=.github/workflows/ci.yaml,line=10::.github/workflows/ci.yaml, job build, step "Piped forms" runs `apt-get install -y p1`')"
+check "printf piped to sudo bash is refused" "$(has "$out" 'step "Piped forms" runs `apt-get install -y p2`')"
+check "a cat of a heredoc piped to sudo bash is refused at the heredoc's line" \
+  "$(has "$out" '::error file=.github/workflows/ci.yaml,line=13::.github/workflows/ci.yaml, job build, step "Piped forms" runs `apt-get install -y p3`')"
+check "echo piped to bash is refused" "$(has "$out" 'step "Piped forms" runs `apt-get install -y p4`')"
+check "sudo bash -c's script is read" "$(has "$out" 'step "Piped forms" runs `apt-get install -y p5`')"
+check "a heredoc sudo sh reads is read at its line" \
+  "$(has "$out" '::error file=.github/workflows/ci.yaml,line=18::.github/workflows/ci.yaml, job build, step "Piped forms" runs `apt-get install -y p6`')"
+check "what eval joins is read" "$(has "$out" 'step "Piped forms" runs `apt-get install -y p7`')"
+check "a pipe into no shell and a printf into a file are no install" "$(lacks "$out" 'step "Pipes that run no install"')"
+check "seven refusals in all" "$(is "$(grep -c '::error' <<<"$out")" 7)"
+
 echo "case: a called file that is missing is refused, and a tree with nothing to read is UNKNOWN"
 root=$(tree missing)
 write "$root" .github/workflows/ci.yaml <<'YAML'

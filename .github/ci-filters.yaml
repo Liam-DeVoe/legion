@@ -930,6 +930,8 @@ package_installs_test: &package_installs_test
   - '.github/scripts/test-lib.sh'
   - '.github/scripts/package-installs.test.sh'
   - '.github/scripts/package_installs.py'
+  - '.github/scripts/source_shell.py'
+  - '.github/scripts/source_scan.py'
 go_tagged_tests_test: &go_tagged_tests_test
   - *ci_router
   - *ci_filters_data

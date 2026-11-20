@@ -2647,6 +2647,8 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("package_installs_test", "Test the package install rule", f"{SCRIPTS}/package-installs.test.sh", [
         (f"{SCRIPTS}/package_installs.py", "the rule under test"),
+        (f"{SCRIPTS}/source_shell.py", "package_installs.py reads each run: text with it, from its own directory"),
+        (f"{SCRIPTS}/source_scan.py", "source_shell.py imports it, from the same directory"),
     ]),
     harness("go_tagged_tests_test", "Test the build-tag test lister", f"{SCRIPTS}/go-tagged-tests.test.sh", [
         (f"{SCRIPTS}/go-tagged-tests.sh", "the script under test"),

@@ -35,19 +35,20 @@ out, because the three archives download in 8 to 9 s and an entry would add abou
 cache store GitHub evicts from (the reasons .github/workflows/dispatch-browser.yaml's
 multiprocess job gives at its step of that name). One with no `timeout-minutes` is refused.
 
-How a `run:` is read: as bash splits it into simple commands. Quotes, backslashes and continued
-lines are joined into words; `;`, `&&`, `||`, `|`, `&`, a newline, `(`, `$(...)` and backticks end
-or open a command, and a `$(...)` inside double quotes is read as the command it is; a `#` that
-starts a word starts a comment; `${...}` and `${{ ... }}` stay inside their word. A heredoc's body
-is skipped, unless the command that reads it is a shell with no script operand, whose body is read
-as its script; the script of `bash -c` or `sh -c` is read the same way. In front of the command
-word, NAME=value settings, the reserved words (if, then, do, ...) and the wrappers sudo, env,
-timeout, nice, nohup, time, command, exec, xargs and stdbuf are passed over, with their options.
+How a `run:` is read: by the shell reader the offline checks share (source_shell.py's
+shell_script), as bash splits it into simple commands, a `$(...)` or backticks inside a word read
+as commands of their own and a heredoc's body as no command. The script a shell is handed is read
+the same way (source_shell.py's shell_inner_scripts and shell_stdin_scripts): the string after
+its -c, what eval joins, a heredoc it reads with no script operand, and what an echo, a printf or
+a cat of a heredoc pipes into it (`echo "apt-get install -y tmux" | sudo bash`). In front of the
+command word, NAME=value settings and the wrappers sudo, env, timeout, nice, nohup, time,
+command, exec, xargs and stdbuf are passed over, with their options: that list is this rule's,
+and the reader is given it, so `sudo bash -c ...` hands its script on as `bash -c ...` does.
 
 Its limits, each a form it reads as no install: a command word built at run time ("$tool" with tool
-set to apt-get, eval of a string), and a script a step runs (a repository script that runs apt-get
-is not followed; apt-cache.sh is the one script here that does). It is a check of what the steps
-say, as check-go-offline.sh is of its own.
+set to apt-get, eval of a variable), and a script a step runs (a repository script that runs
+apt-get is not followed; apt-cache.sh is the one script here that does). It is a check of what the
+steps say, as check-go-offline.sh is of its own.
 
 The interface: check(root) gives (problems, summary), as go_offline_jobs.py's does: problems is a
 (path, line, message) for each refusal, and summary one line of what was read, which starts
@@ -68,6 +69,8 @@ from pathlib import Path
 
 import yaml
 
+from source_shell import ShCommand, shell_inner_scripts, shell_script, shell_stdin_scripts
+
 ROOT_WORKFLOW = ".github/workflows/ci.yaml"
 CACHE_SCRIPT = ".github/scripts/apt-cache.sh"
 
@@ -81,8 +84,6 @@ APT_READS = {
 # The apt options that take the next word as their value.
 APT_VALUE_OPTIONS = {"-o", "-c", "-t", "--option", "--config-file", "--target-release"}
 PLAYWRIGHT = {"playwright", "playwright-core"}
-SHELLS = {"bash", "sh", "dash", "zsh"}
-RESERVED = {"if", "then", "elif", "else", "do", "while", "until", "!", "{", "}", "fi", "done", "time"}
 # Wrappers: the command they run is a later word. Each maps to the options that take a value.
 WRAPPERS = {
     "sudo": {"-u", "-g", "-p", "-C", "-D", "-h", "-r", "-t", "-U", "-T", "--user", "--group",
@@ -138,233 +139,20 @@ def load(path: Path):
     return yaml.load(path.read_text(), Loader=_Loader)
 
 
-# --- Reading a run: text as shell.
+# --- Reading a run: text as shell, through the shared reader.
 @dataclass
 class Command:
-    line: int  # 1-based, within the text
-    words: list[str]
+    line: int  # 0-based, within the text
+    words: list[str]  # each word with its quotes removed and its expansions as written (ShWord.source)
 
 
-class _Lexer:
-    """Splits shell text into simple commands, as the module's docstring says."""
-
-    def __init__(self, text: str, line: int = 1):
-        self.text, self.i, self.line = text, 0, line
-        self.commands: list[Command] = []
-
-    def run(self, stop: str | None = None) -> None:
-        t = self.text
-        words: list[str] = []
-        word: list[str] = []
-        started = False  # a word is open, even an empty quoted one
-        first = self.line
-        heredocs: list[tuple[str, bool, list[str]]] = []
-        skip_next = False  # the next word is a redirection's target
-
-        def end_word():
-            nonlocal word, started, skip_next, first
-            if started:
-                if skip_next:
-                    skip_next = False
-                else:
-                    if not words:
-                        first = self.line
-                    words.append("".join(word))
-            word, started = [], False
-
-        def end_command():
-            nonlocal words
-            end_word()
-            if words:
-                self.commands.append(Command(first, words))
-            words = []
-
-        while self.i < len(t):
-            c = t[self.i]
-            nxt = t[self.i + 1] if self.i + 1 < len(t) else ""
-            if stop and c == stop:
-                self.i += 1
-                break
-            if c == "\\":
-                if nxt == "\n":
-                    self.i += 2
-                    self.line += 1
-                    continue
-                word.append(nxt)
-                started = True
-                self.i += 2
-                continue
-            if c == "'":
-                end = t.find("'", self.i + 1)
-                end = len(t) if end < 0 else end
-                chunk = t[self.i + 1:end]
-                self.line += chunk.count("\n")
-                word.append(chunk)
-                started = True
-                self.i = end + 1
-                continue
-            if c == '"':
-                self.i += 1
-                started = True
-                while self.i < len(t) and t[self.i] != '"':
-                    d = t[self.i]
-                    if d == "\\" and self.i + 1 < len(t):
-                        if t[self.i + 1] == "\n":
-                            self.line += 1
-                        else:
-                            word.append(t[self.i + 1])
-                        self.i += 2
-                        continue
-                    if d == "$" and t.startswith("$((", self.i):
-                        self._skip_balanced("((", "))", word)
-                        continue
-                    if d == "$" and t.startswith("$(", self.i):
-                        self.i += 2
-                        self.run(stop=")")
-                        word.append("$(...)")
-                        continue
-                    if d == "`":
-                        self.i += 1
-                        self.run(stop="`")
-                        word.append("`...`")
-                        continue
-                    if d == "\n":
-                        self.line += 1
-                    word.append(d)
-                    self.i += 1
-                self.i += 1
-                continue
-            if c == "$" and t.startswith("$((", self.i):
-                self._skip_balanced("((", "))", word)
-                started = True
-                continue
-            if c == "$" and nxt == "(":
-                self.i += 2
-                self.run(stop=")")
-                word.append("$(...)")
-                started = True
-                continue
-            if c == "$" and nxt == "{":
-                self._skip_balanced("{", "}", word)
-                started = True
-                continue
-            if c == "`":
-                self.i += 1
-                self.run(stop="`")
-                word.append("`...`")
-                started = True
-                continue
-            if c == "#" and not started:
-                end = t.find("\n", self.i)
-                self.i = len(t) if end < 0 else end
-                continue
-            if c in " \t\r":
-                end_word()
-                self.i += 1
-                continue
-            if c == "\n":
-                end_command()
-                self.i += 1
-                self.line += 1
-                for delimiter, strip, owner in heredocs:
-                    self._heredoc(delimiter, strip, owner)
-                heredocs = []
-                continue
-            if c in ";&|":
-                end_command()
-                while self.i < len(t) and t[self.i] in ";&|":
-                    self.i += 1
-                continue
-            if c == "(":
-                end_command()
-                self.i += 1
-                self.run(stop=")")
-                continue
-            if c == ")":
-                end_command()
-                self.i += 1
-                continue
-            if c == "<" and nxt == "<" and not t.startswith("<<<", self.i):
-                end_word()
-                self.i += 2
-                strip = self.i < len(t) and t[self.i] == "-"
-                if strip:
-                    self.i += 1
-                while self.i < len(t) and t[self.i] in " \t":
-                    self.i += 1
-                m = re.match(r"""(['"]?)([^\s'";&|<>()]+)\1""", t[self.i:])
-                if m:
-                    self.i += m.end()
-                    heredocs.append((m.group(2), strip, words))
-                continue
-            if c in "<>":
-                end_word()
-                while self.i < len(t) and t[self.i] in "<>&":
-                    self.i += 1
-                # A target on the operator (`2>&1`, `>/dev/null`) is one word with it.
-                if self.i < len(t) and t[self.i] not in " \t\n":
-                    while self.i < len(t) and t[self.i] not in " \t\n;&|()":
-                        self.i += 1
-                else:
-                    skip_next = True
-                continue
-            word.append(c)
-            started = True
-            self.i += 1
-        end_command()
-
-    def _skip_balanced(self, opener: str, closer: str, word: list[str]) -> None:
-        depth, start = 0, self.i
-        self.i += 1  # the $
-        while self.i < len(self.text):
-            if self.text.startswith(opener, self.i):
-                depth += 1
-                self.i += len(opener)
-                continue
-            if self.text.startswith(closer, self.i):
-                depth -= 1
-                self.i += len(closer)
-                if depth == 0:
-                    break
-                continue
-            if self.text[self.i] == "\n":
-                self.line += 1
-            self.i += 1
-        word.append(self.text[start:self.i])
-
-    def _heredoc(self, delimiter: str, strip: bool, owner: list[str]) -> None:
-        """Passes over a heredoc's body, which starts at the current position; reads it as a
-        script when the command that reads it is a shell with no script operand."""
-        t, body_line, body = self.text, self.line, []
-        while self.i < len(t):
-            end = t.find("\n", self.i)
-            end = len(t) if end < 0 else end
-            current = t[self.i:end]
-            self.i = min(end + 1, len(t))
-            self.line += 1
-            if (current.lstrip("\t") if strip else current) == delimiter:
-                break
-            body.append(current)
-        program = command_word(owner)
-        if program and Path(program[0]).name in SHELLS and all(w.startswith("-") for w in program[1:]):
-            sub = _Lexer("\n".join(body), body_line)
-            sub.run()
-            self.commands.extend(sub.commands)
-
-
-def commands(text: str) -> list[Command]:
-    lexer = _Lexer(text)
-    lexer.run()
-    return lexer.commands
-
-
-def command_word(words: list[str]) -> list[str]:
-    """The words from the command word on: NAME=value settings, reserved words and wrappers, with
-    their options, passed over."""
+def program_index(words: list[str]) -> int | None:
+    """The index of the command word: NAME=value settings and the wrappers, with their options,
+    passed over; None when nothing is left."""
     k = 0
     while k < len(words):
         w = words[k]
-        if ASSIGNMENT.match(w) or w in RESERVED:
+        if ASSIGNMENT.match(w):
             k += 1
             continue
         name = Path(w).name
@@ -379,32 +167,25 @@ def command_word(words: list[str]) -> list[str]:
             if name == "nice" and k < len(words) and re.fullmatch(r"-?\d+", words[k]):
                 k += 1
             continue
-        return words[k:]
-    return []
-
-
-def shell_script_of(words: list[str]) -> str | None:
-    """The script of `bash -c SCRIPT` (any shell, -c alone or in a cluster such as -ec)."""
-    program = command_word(words)
-    if not program or Path(program[0]).name not in SHELLS:
-        return None
-    for k, w in enumerate(program[1:], start=1):
-        if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", w):
-            return program[k + 1] if k + 1 < len(program) else None
-        if not w.startswith("-"):
-            return None
+        return k
     return None
 
 
-def all_commands(text: str, line: int = 1) -> list[Command]:
-    """Every simple command of the text, with each `sh -c` script read too."""
+def _program(command: ShCommand) -> int | None:
+    """program_index of a shared-reader command, the form source_shell.py's helpers take."""
+    return program_index([w.source() for w in command.words])
+
+
+def all_commands(text: str, line: int = 0) -> list[Command]:
+    """Every simple command of the text, the commands of each $(...) and `...` included, and those
+    of each script a shell is handed: the string after its -c, what eval joins, a heredoc it reads
+    with no script operand, and what the command before it in a pipeline feeds it."""
     found = []
-    for cmd in commands(text):
-        cmd = Command(cmd.line + line - 1, cmd.words)
-        found.append(cmd)
-        script = shell_script_of(cmd.words)
-        if script is not None:
-            found.extend(all_commands(script, cmd.line))
+    commands = shell_script(text, line)
+    for index, command in enumerate(commands):
+        found.append(Command(command.line, [w.source() for w in command.words]))
+        for inner, inner_line in shell_inner_scripts(command, _program) + shell_stdin_scripts(commands, index, _program):
+            found.extend(all_commands(inner, inner_line))
     return found
 
 
@@ -516,10 +297,11 @@ def check_steps(path: str, where: str, steps, scan: Scan, actions: dict) -> None
         start = step.text_lines.get("run", step.lines.get("run", 1))
         label = f"{path}, {where}, step {step_label(step, index)}"
         for cmd in all_commands(run):
-            program = command_word(cmd.words)
-            if not program:
+            k = program_index(cmd.words)
+            if k is None:
                 continue
-            line = start + cmd.line - 1
+            program = cmd.words[k:]
+            line = start + cmd.line
             shown = " ".join(program)
             apt = apt_command(program)
             if apt is not None and apt not in APT_READS:
