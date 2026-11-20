@@ -12,9 +12,10 @@ import { readerStep } from "./reader-steps";
  * proves the answer from the expression's automaton. This is its pure JavaScript build
  * (`recheck/lib/browser`), which runs in this process: no worker, no Java and no native binary.
  * Its own deadline is off (`timeout: null`), so a loaded machine slows the answer and never
- * changes it.
+ * changes it. The check reads only the expression's source and flags, so a `RegExp` and an
+ * expression given as those two alone are read the same.
  */
-function verdict(expression: RegExp) {
+function verdict(expression: { readonly flags: string; readonly source: string }) {
   return checkSync(expression.source, expression.flags, { checker: "automaton", timeout: null });
 }
 
@@ -31,11 +32,21 @@ test.each(
 // calls vulnerable. The unfurl cards once matched a body against the first, which splits a body
 // of repeated schemes every way it can and ran for minutes in V8; the trim once cut a
 // reference's closing run with the second, and a mention's trailing `_` and `-` with the third
-// (`trimmedMention`), each of which reads a run again from every position in it.
+// (`trimmedMention`), each of which reads a run again from every position in it. Each is given as
+// its source and flags, not as a `RegExp`: nothing here runs one, and CodeQL's js/redos reports a
+// literal of the first wherever it stands, run or not.
 test.each([
-  ["a body of references", /^(?:(?:dispatch:\/\/|https?:\/\/)\S+\s*)+$/, { type: "exponential" }],
-  ["the end of a reference", /[),.;:!?]+$/, { degree: 2, type: "polynomial" }],
-  ["the end of a mention", /[_-]+$/, { degree: 2, type: "polynomial" }],
+  [
+    "a body of references",
+    { flags: "", source: String.raw`^(?:(?:dispatch:\/\/|https?:\/\/)\S+\s*)+$` },
+    { type: "exponential" },
+  ],
+  [
+    "the end of a reference",
+    { flags: "", source: "[),.;:!?]+$" },
+    { degree: 2, type: "polynomial" },
+  ],
+  ["the end of a mention", { flags: "", source: "[_-]+$" }, { degree: 2, type: "polynomial" }],
 ] as const)("the check calls the old expression for %s vulnerable", (_name, expression, complexity) => {
   expect(verdict(expression)).toMatchObject({
     checker: "automaton",

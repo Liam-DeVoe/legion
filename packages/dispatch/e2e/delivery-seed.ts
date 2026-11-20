@@ -96,11 +96,13 @@ export const FIXTURE_WINDOW = { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20
 
 /** The measures fixture: the prototype fixture's 14 population pull requests and 8 deploy runs,
  *  each run's production job (`widgets-release / widgets-release`) and failed jobs, and the four
- *  issues of `project` (the row's own key, `rowKey("ACME")`, e2e/test.ts), issue 103 the one open
- *  P0 with neither a claim nor a route. Every run is a push on main. Its expected measures are
- *  the prototype's own computeDora with each deploy derived by its own containment (LEGION-567
- *  slice 2 plan, "How the expected values are produced"). */
-export async function seedMeasuresFixture(project: string): Promise<void> {
+ *  issues of `project`, issue 103 the one open P0 with neither a claim nor a route. `project` is
+ *  the key of the project the issues are in: a real-stack row passes its own (`rowKey("ACME")`,
+ *  e2e/test.ts), and the docs media harness (docs/site/media/harness.ts) takes `ACME`. Every run
+ *  is a push on main. Its expected measures are the prototype's own computeDora with each deploy
+ *  derived by its own containment (LEGION-567 slice 2 plan, "How the expected values are
+ *  produced"). */
+export async function seedMeasuresFixture(project = "ACME"): Promise<void> {
   await sql(
     SETTINGS,
     `INSERT INTO projects (key, name, default_assignee) VALUES ('${project}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,

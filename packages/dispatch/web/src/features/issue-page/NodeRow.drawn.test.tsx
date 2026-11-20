@@ -394,7 +394,8 @@ test("an answered ask draws the answer in its own row, word for word", () => {
     const line = view.container.querySelector("[data-node-answer]");
     expect(line?.querySelector("[data-page-chrome]")?.textContent).toBe("Answer");
     expect(line?.querySelector("[data-answer-author]")?.textContent).toBe("alice");
-    expect(line?.querySelector("[data-answer-author] svg")?.getAttribute("data-glyph")).toBe(
+    expect(line?.querySelector("[data-answer-author] svg")).toHaveAttribute(
+      "data-glyph",
       "author-person"
     );
     expect(line?.querySelector("[data-answer-text]")?.textContent).toBe(text);
@@ -1458,9 +1459,10 @@ test("a press on an option of a closed row picks it and opens the row in one", a
     if (option === null) throw new Error("the closed row draws no option to press");
     await user.click(option);
     await waitFor(() => {
-      expect(
-        view.container.querySelector('[data-pick-option="1024 px"]')?.getAttribute("aria-pressed")
-      ).toBe("true");
+      expect(view.container.querySelector('[data-pick-option="1024 px"]')).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      );
       expect(
         view.container.querySelector("[data-node-body]"),
         "the press picked the option and left the row closed"
@@ -1494,7 +1496,7 @@ test("a child issue's row draws its title, its facts and its key as the tag", ()
     expect(view.container.querySelector("[data-child-facts]")?.textContent).toContain("CORE-3");
     const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
     expect(tag?.textContent).toBe("CORE-2");
-    expect(tag?.querySelector("a")?.getAttribute("href")).toBe("/issues/CORE-2");
+    expect(tag?.querySelector("a")).toHaveAttribute("href", "/issues/CORE-2");
     expect(view.container.querySelector("[data-node-author]")).toBeNull();
     expect(view.container.querySelector("[data-node-time]")).toBeNull();
   } finally {
@@ -1789,7 +1791,7 @@ test("a press on Keep open or Let close leaves the focus where it is", async () 
       expect(document.activeElement, `a press on ${control.textContent} took the focus`).toBe(held);
       await user.pointer({ keys: "[/MouseLeft]", target: control });
       expect(pressed, `the press on ${control.textContent} did nothing`).toEqual([true]);
-      expect(document.activeElement).toBe(held);
+      expect(held).toHaveFocus();
     } finally {
       view.unmount();
     }

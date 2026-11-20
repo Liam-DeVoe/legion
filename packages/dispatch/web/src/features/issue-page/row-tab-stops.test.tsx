@@ -162,7 +162,7 @@ test("a cut statement with a hidden link gives that link no tab stop while cut, 
       hidden?.hasAttribute("tabindex"),
       "the link the cut hid has no tab stop once the words are whole"
     ).toBe(false);
-    expect(shown?.hasAttribute("tabindex")).toBe(false);
+    expect(shown).not.toHaveAttribute("tabindex");
   } finally {
     view.unmount();
     near.restore();
@@ -195,7 +195,11 @@ test("NodeFacts keeps its copy controls out of the tab order, and in it with tab
       });
       await waitFor(() => {
         expect(outOfTabOrder(late)).toBe(!tabStops);
-        expect(late.hasAttribute("tabindex")).toBe(!tabStops);
+        if (tabStops) {
+          expect(late).not.toHaveAttribute("tabindex");
+        } else {
+          expect(late).toHaveAttribute("tabindex");
+        }
       });
     } finally {
       view.unmount();
@@ -278,7 +282,7 @@ test("useOutOfTabOrder takes an element that scrolls out of the tab order, a lat
         ].map(outOfTabOrder)
       ).toEqual([true, true, true]);
     });
-    expect(view.container.querySelector("[data-visible]")?.hasAttribute("tabindex")).toBe(false);
+    expect(view.container.querySelector("[data-visible]")).not.toHaveAttribute("tabindex");
   } finally {
     view.unmount();
   }

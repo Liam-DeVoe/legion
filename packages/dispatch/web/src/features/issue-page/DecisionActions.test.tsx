@@ -183,11 +183,10 @@ test("a Change being written comes back with its words when the body opens again
       field instanceof HTMLTextAreaElement ? field.value : "",
       "the words typed before the body closed did not come back"
     ).toBe("Keep one preset.");
-    expect(
-      screen
-        .getByRole("button", { name: CONTROL_LABELS.change_decision })
-        .getAttribute("aria-expanded")
-    ).toBe("true");
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.change_decision })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
     expect(document.activeElement, "the form that came back took the caret").not.toBe(field);
   } finally {
     body.unmount();
@@ -214,11 +213,10 @@ test("a Change sent and left before Dispatch answers comes back closed", async (
       screen.queryByLabelText(CONTROL_LABELS.your_change),
       "the sent Change came back open, with Send to press again"
     ).toBeNull();
-    expect(
-      screen
-        .getByRole("button", { name: CONTROL_LABELS.change_decision })
-        .getAttribute("aria-expanded")
-    ).toBe("false");
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.change_decision })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
   } finally {
     body.unmount();
     createComment.mockRestore();
