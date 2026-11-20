@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -374,7 +375,9 @@ func requireLiveLeakCheckInstalls(t *testing.T, reader sandbox.LeakCheckReader) 
 		t.Fatalf("the runtime's read of the stand-in check: %v", err)
 	}
 	dir := filepath.Join(t.TempDir(), "leak-check")
-	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: served.Tag, Body: served.Body}); err != nil {
+	// The test process reaps no child it did not start, so the install's run starts as cmd.Start
+	// starts it (procgroup.NoReaper); a pod's launcher passes its guard's starter instead.
+	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: served.Tag, Body: served.Body, Start: procgroup.NoReaper}); err != nil {
 		t.Fatalf("the launcher's install of the stand-in check: %v", err)
 	}
 	if installed, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + leakCheckTag}, dir); err != nil || installed == "" {
