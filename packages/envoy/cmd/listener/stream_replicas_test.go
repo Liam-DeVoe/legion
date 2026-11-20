@@ -117,7 +117,7 @@ func TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStar
 	bustest.RequireFirstStartAtOneCopyAndNoSecondWrite(t, uri, streams, func() {
 		t.Helper()
 		listener := startListenerProcess(t, binary, uri, machineID,
-			"ENVOY_WEBHOOKS=github", "ENVOY_GITHUB_WEBHOOK_SECRET=replicas-secret", "ENVOY_REVIEWER_APP_ID=1")
+			"ENVOY_WEBHOOKS=github", "ENVOY_GITHUB_WEBHOOK_SECRET=replicas-secret", "ENVOY_VERDICT_APP_ID=1")
 		listener.waitHealthy(t)
 		listener.Terminate(t)
 		listener.WaitExit(t, "SIGTERM")

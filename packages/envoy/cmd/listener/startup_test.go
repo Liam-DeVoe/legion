@@ -51,7 +51,7 @@ func TestTheV1APIIsServedWhileAnotherTaskHoldsTheDurable(t *testing.T) {
 	old, _ := durableHeldElsewhere(t, uri, "listener-"+machineID)
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), machineID,
-		"ENVOY_WEBHOOKS=github", "ENVOY_GITHUB_WEBHOOK_SECRET="+secret, "ENVOY_REVIEWER_APP_ID=1")
+		"ENVOY_WEBHOOKS=github", "ENVOY_GITHUB_WEBHOOK_SECRET="+secret, "ENVOY_VERDICT_APP_ID=1")
 	listener.WaitForOutput(t, "subscribe failed, retrying")
 
 	body := []byte(`{"ref":"refs/heads/main","after":"` + strings.Repeat("b", 40) + `","before":"` + strings.Repeat("a", 40) + `",` +
@@ -406,7 +406,7 @@ func TestTheListenerStartsOverKeysAnEarlierListenerStored(t *testing.T) {
 }
 
 // githubWebhookEnv mounts the listener's GitHub webhook route, the one route that uses the CI store.
-var githubWebhookEnv = []string{"ENVOY_WEBHOOKS=github", "ENVOY_GITHUB_WEBHOOK_SECRET=ci-route-secret", "ENVOY_REVIEWER_APP_ID=1"}
+var githubWebhookEnv = []string{"ENVOY_WEBHOOKS=github", "ENVOY_GITHUB_WEBHOOK_SECRET=ci-route-secret", "ENVOY_VERDICT_APP_ID=1"}
 
 // seedDueCIRecord creates the CI bucket as the listener creates it and stores one commit of
 // owner/repo#number at sha whose checks finished a minute ago and have not settled, so any

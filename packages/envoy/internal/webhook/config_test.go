@@ -9,41 +9,74 @@ import (
 
 func TestLoadWebhookConfig(t *testing.T) {
 	cases := []struct {
-		name              string
-		env               map[string]string
-		wantGitHub        bool
-		wantSlack         bool
-		wantGhostW        bool
-		wantReviewerAppID string
-		wantErr           bool
+		name             string
+		env              map[string]string
+		wantGitHub       bool
+		wantSlack        bool
+		wantGhostW       bool
+		wantVerdictAppID string
+		wantErr          string // "" for no error, else text the error holds
 	}{
 		{name: "empty ENVOY_WEBHOOKS", env: map[string]string{"ENVOY_WEBHOOKS": ""}},
 		{name: "unset ENVOY_WEBHOOKS", env: map[string]string{}},
 		{
-			name:    "github enabled without reviewer app ID → error",
+			name:    "github enabled without verdict app ID → error",
 			env:     map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s"},
-			wantErr: true,
+			wantErr: "ENVOY_VERDICT_APP_ID required when github enabled",
 		},
 		{
-			name:              "github enabled with secret and reviewer app ID",
-			env:               map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_REVIEWER_APP_ID": "app123"},
-			wantGitHub:        true,
-			wantReviewerAppID: "app123",
+			name:             "github enabled with secret and verdict app ID",
+			env:              map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_VERDICT_APP_ID": "5341240"},
+			wantGitHub:       true,
+			wantVerdictAppID: "5341240",
 		},
 		{
-			name: "github reviewer app ID is trimmed",
+			name:             "a verdict app ID with a leading zero is read as GitHub spells the number",
+			env:              map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_VERDICT_APP_ID": "05341240"},
+			wantGitHub:       true,
+			wantVerdictAppID: "5341240",
+		},
+		{
+			name:    "a verdict app ID that is no number → error naming it",
+			env:     map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_VERDICT_APP_ID": "app123"},
+			wantErr: `ENVOY_VERDICT_APP_ID="app123"`,
+		},
+		{
+			name:    "a former app ID that is no number → error naming the former name",
+			env:     map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_REVIEWER_APP_ID": "0"},
+			wantErr: `ENVOY_REVIEWER_APP_ID="0"`,
+		},
+		{
+			name: "github verdict app ID is trimmed",
 			env: map[string]string{
 				"ENVOY_WEBHOOKS":              "github",
 				"ENVOY_GITHUB_WEBHOOK_SECRET": "s",
-				"ENVOY_REVIEWER_APP_ID":       " 12345 ",
+				"ENVOY_VERDICT_APP_ID":        " 12345 ",
 			},
-			wantGitHub:        true,
-			wantReviewerAppID: "12345",
+			wantGitHub:       true,
+			wantVerdictAppID: "12345",
+		},
+		{
+			name:             "the former ENVOY_REVIEWER_APP_ID is read while ENVOY_VERDICT_APP_ID is unset",
+			env:              map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_REVIEWER_APP_ID": " 5341243 "},
+			wantGitHub:       true,
+			wantVerdictAppID: "5341243",
+		},
+		{
+			name: "ENVOY_VERDICT_APP_ID wins over the former name",
+			env: map[string]string{
+				"ENVOY_WEBHOOKS":              "github",
+				"ENVOY_GITHUB_WEBHOOK_SECRET": "s",
+				"ENVOY_VERDICT_APP_ID":        "5341240",
+				"ENVOY_REVIEWER_APP_ID":       "5341243",
+			},
+			wantGitHub:       true,
+			wantVerdictAppID: "5341240",
 		},
 		{
 			name:    "github enabled without secret → error",
 			env:     map[string]string{"ENVOY_WEBHOOKS": "github"},
-			wantErr: true,
+			wantErr: "ENVOY_GITHUB_WEBHOOK_SECRET",
 		},
 		{
 			name:      "slack enabled with secret",
@@ -53,12 +86,12 @@ func TestLoadWebhookConfig(t *testing.T) {
 		{
 			name:    "slack enabled without secret → error",
 			env:     map[string]string{"ENVOY_WEBHOOKS": "slack"},
-			wantErr: true,
+			wantErr: "ENVOY_SLACK_SIGNING_SECRET",
 		},
 		{
 			name:    "ghostwispr enabled without secret → error",
 			env:     map[string]string{"ENVOY_WEBHOOKS": "ghostwispr"},
-			wantErr: true,
+			wantErr: "ENVOY_GHOSTWISPR_SIGNING_SECRET",
 		},
 		{
 			name: "ghostwispr enabled with secret",
@@ -75,9 +108,9 @@ func TestLoadWebhookConfig(t *testing.T) {
 				"ENVOY_GITHUB_WEBHOOK_SECRET":     "s",
 				"ENVOY_SLACK_SIGNING_SECRET":      "s",
 				"ENVOY_GHOSTWISPR_SIGNING_SECRET": "s",
-				"ENVOY_REVIEWER_APP_ID":           "app123",
+				"ENVOY_VERDICT_APP_ID":            "5341240",
 			},
-			wantGitHub: true, wantSlack: true, wantGhostW: true, wantReviewerAppID: "app123",
+			wantGitHub: true, wantSlack: true, wantGhostW: true, wantVerdictAppID: "5341240",
 		},
 		{
 			name: "whitespace trimming",
@@ -85,42 +118,43 @@ func TestLoadWebhookConfig(t *testing.T) {
 				"ENVOY_WEBHOOKS":              " github , slack ",
 				"ENVOY_GITHUB_WEBHOOK_SECRET": "s",
 				"ENVOY_SLACK_SIGNING_SECRET":  "s",
-				"ENVOY_REVIEWER_APP_ID":       "app123",
+				"ENVOY_VERDICT_APP_ID":        "5341240",
 			},
-			wantGitHub: true, wantSlack: true, wantReviewerAppID: "app123",
+			wantGitHub: true, wantSlack: true, wantVerdictAppID: "5341240",
 		},
 		{
 			name:    "unknown provider → error",
 			env:     map[string]string{"ENVOY_WEBHOOKS": "unknown"},
-			wantErr: true,
+			wantErr: "unknown webhook provider",
 		},
 		{
 			name:    "github with whitespace-only secret → error",
 			env:     map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "  "},
-			wantErr: true,
+			wantErr: "ENVOY_GITHUB_WEBHOOK_SECRET",
 		},
 		{
 			name:    "slack with whitespace-only secret → error",
 			env:     map[string]string{"ENVOY_WEBHOOKS": "slack", "ENVOY_SLACK_SIGNING_SECRET": "  \t "},
-			wantErr: true,
+			wantErr: "ENVOY_SLACK_SIGNING_SECRET",
 		},
 		{
-			name:    "github with whitespace-only reviewer app ID → error",
-			env:     map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_REVIEWER_APP_ID": "  "},
-			wantErr: true,
+			name:    "github with whitespace-only verdict app ID → error",
+			env:     map[string]string{"ENVOY_WEBHOOKS": "github", "ENVOY_GITHUB_WEBHOOK_SECRET": "s", "ENVOY_VERDICT_APP_ID": "  "},
+			wantErr: "ENVOY_VERDICT_APP_ID required when github enabled",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("ENVOY_VERDICT_APP_ID", "")
 			t.Setenv("ENVOY_REVIEWER_APP_ID", "")
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
 			cfg, err := LoadWebhookConfig()
-			if tc.wantErr {
-				if err == nil {
-					t.Fatal("expected error, got nil")
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want an error holding %q", err, tc.wantErr)
 				}
 				return
 			}
@@ -136,8 +170,8 @@ func TestLoadWebhookConfig(t *testing.T) {
 			if (cfg.GhostWispr != nil) != tc.wantGhostW {
 				t.Errorf("GhostWispr enabled = %v, want %v", cfg.GhostWispr != nil, tc.wantGhostW)
 			}
-			if cfg.GitHub != nil && cfg.GitHub.ReviewerAppID != tc.wantReviewerAppID {
-				t.Errorf("GitHub.ReviewerAppID = %q, want %q", cfg.GitHub.ReviewerAppID, tc.wantReviewerAppID)
+			if cfg.GitHub != nil && cfg.GitHub.VerdictAppID != tc.wantVerdictAppID {
+				t.Errorf("GitHub.VerdictAppID = %q, want %q", cfg.GitHub.VerdictAppID, tc.wantVerdictAppID)
 			}
 		})
 	}
@@ -193,7 +227,7 @@ func TestLoadWebhookConfigRefusesGhostWisprWithoutASecret(t *testing.T) {
 			for _, k := range []string{"ENVOY_GHOSTWISPR_SIGNING_SECRET", "ENVOY_SLACK_SIGNING_SECRET", "ENVOY_GITHUB_WEBHOOK_SECRET"} {
 				t.Setenv(k, "")
 			}
-			t.Setenv("ENVOY_REVIEWER_APP_ID", "1")
+			t.Setenv("ENVOY_VERDICT_APP_ID", "1")
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
@@ -263,7 +297,7 @@ func TestLoadWebhookConfigRepositoryRenames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("ENVOY_WEBHOOKS", "github")
 			t.Setenv("ENVOY_GITHUB_WEBHOOK_SECRET", "s")
-			t.Setenv("ENVOY_REVIEWER_APP_ID", "app123")
+			t.Setenv("ENVOY_VERDICT_APP_ID", "5341240")
 			t.Setenv("ENVOY_GITHUB_REPOSITORY_RENAMES", tc.renames)
 
 			cfg, err := LoadWebhookConfig()

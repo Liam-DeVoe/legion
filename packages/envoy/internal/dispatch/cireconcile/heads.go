@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -388,15 +389,15 @@ func (r *Reconciler) recordHead(ctx context.Context, writer Writer, head pullHea
 // listing is one of the two check listings a head's record is written from, as recordListing
 // walks either of them: the event name contracts.GithubCIObservation maps its objects under, the
 // store call an observation of it is written with, how a WARN about one of them names it, and
-// whether its observations go through the review App's rule, which reads a check's name and so
+// whether its observations go through the verdict App's rule, which reads a check's name and so
 // is the runs' alone. A head's commit statuses are the third listing, which maps and writes
 // through calls of its own (recordStatuses).
 type listing struct {
 	event string
 	write func(context.Context, Writer, contracts.CIObservation) (bool, error)
-	// what and label are how a failed write names this listing and the object it could not
-	// write: `did not record a check run` with the run's own name under `check`, `did not
-	// record a check suite` with the suite's id under `suite`.
+	// what and label are how a failed write, and a WARN or DEBUG line about one of them, names
+	// this listing and its object: `did not record a check run` with the run's own name under
+	// `check`, `did not record a check suite` with the suite's id under `suite`.
 	what    string
 	label   string
 	nameOf  func(contracts.CIObservation) string
@@ -450,10 +451,10 @@ func (r *Reconciler) record(ctx context.Context, writer Writer, head pullHead, r
 // recordStatuses writes each commit status of the pages GitHub answered 200 with whose state the
 // record keeps, and answers what recordListing answers for a listing. A pending status maps to
 // no observation (contracts.GithubStatusObservation) and is not recorded, so a context that stays
-// pending holds no head back. A status goes through no review App rule: a status named for a
-// verdict check is an entry of its own and never stands for that check. cistore answers a status
-// its bounds refuse as no change and no error, so every failed write here is one a later pass
-// might make land.
+// pending holds no head back. A status goes through no verdict App rule: a status named for a
+// verdict check, legion-verdict among them, is an entry of its own and never stands for that
+// check. cistore answers a status its bounds refuse as no change and no error, so every failed
+// write here is one a later pass might make land.
 func (r *Reconciler) recordStatuses(ctx context.Context, writer Writer, head pullHead, pages []pageOf[object]) (wanted int, changedRecord, ok bool) {
 	ok = true
 	for _, page := range pages {
@@ -506,6 +507,17 @@ func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pull
 			if observation.Status != "completed" {
 				continue
 			}
+			// The verdict App's own check suite and legion-verdict run are no CI result
+			// (contracts.VerdictAppsOwn), so the pass leaves them out of the record as the
+			// listener does; another App's legion-verdict run the verdict rule below drops.
+			if contracts.VerdictAppsOwn(observation, r.VerdictAppID) {
+				if r.Logger.Enabled(ctx, slog.LevelDebug) {
+					r.Logger.Debug("ci: left out the verdict App's own "+of.what,
+						of.label, of.nameOf(observation), "app_id", observation.AppID,
+						"repository", head.repository(), "pr", head.number, "sha", head.sha)
+				}
+				continue
+			}
 			if of.verdict && !r.recordVerdict(observation, head) {
 				continue
 			}
@@ -528,22 +540,22 @@ func (r *Reconciler) recordListing(ctx context.Context, writer Writer, head pull
 	return wanted, changedRecord, ok
 }
 
-// recordVerdict reports whether a check run is one to record under the review App's rule, which
-// every run but a verdict check is: a verdict check (`tester`, `architect`) is recorded only
-// when the review App created it, and none at all while DISPATCH_REVIEWER_APP_ID is unset
-// (contracts.ReviewerVerdictDecision). A run the rule drops is named at WARN, since a verdict a
-// person can see on the pull request reaching no record is a thing to be able to read.
+// recordVerdict reports whether a check run is one to record under the verdict App's rule, which
+// every run but a verdict check is: a verdict check (`legion-verdict`, `tester`, `architect`) is
+// recorded only when the verdict App created it, and none at all while DISPATCH_VERDICT_APP_ID is
+// unset (contracts.ReviewerVerdictDecision). A run the rule drops is named at WARN, since a
+// verdict a person can see on the pull request reaching no record is a thing to be able to read.
 func (r *Reconciler) recordVerdict(observation contracts.CIObservation, head pullHead) bool {
-	switch contracts.ReviewerVerdictDecision(observation.CheckName, observation.AppID, r.ReviewerAppID) {
-	case contracts.VerdictNoReviewerApp:
-		r.Logger.Warn("ci reconcile dropped a verdict check: DISPATCH_REVIEWER_APP_ID is not set",
+	switch contracts.ReviewerVerdictDecision(observation.CheckName, observation.AppID, r.VerdictAppID) {
+	case contracts.VerdictNoVerdictApp:
+		r.Logger.Warn("ci reconcile dropped a verdict check: DISPATCH_VERDICT_APP_ID is not set",
 			"check", observation.CheckName, "app_id", observation.AppID,
 			"repository", head.repository(), "pr", head.number)
 		return false
 	case contracts.VerdictUntrusted:
 		r.Logger.Warn("ci reconcile ignored a verdict check another App created",
 			"check", observation.CheckName, "app_id", observation.AppID,
-			"expected_app_id", r.ReviewerAppID, "repository", head.repository(), "pr", head.number)
+			"expected_app_id", r.VerdictAppID, "repository", head.repository(), "pr", head.number)
 		return false
 	}
 	return true

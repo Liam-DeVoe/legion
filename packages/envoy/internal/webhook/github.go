@@ -86,14 +86,15 @@ var (
 	githubHandleDeadline = 15 * time.Second
 )
 
-// GitHubHandler returns the HTTP handler for GitHub webhook events.
-func GitHubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder) http.HandlerFunc {
-	return githubHandler(secret, mentionTrigger, reviewerAppID, publisher, ci, newBodyBudget(githubBodyBudget))
+// GitHubHandler returns the HTTP handler for GitHub webhook events. verdictAppID is the verdict
+// App's id (contracts.ReviewerVerdictDecision, contracts.GithubCIObservations).
+func GitHubHandler(secret, mentionTrigger, verdictAppID string, publisher Publisher, ci CIRecorder) http.HandlerFunc {
+	return githubHandler(secret, mentionTrigger, verdictAppID, publisher, ci, newBodyBudget(githubBodyBudget))
 }
 
 // githubHandler is GitHubHandler reading bodies against the given budget. Each handler remembers
 // the failed deliveries it has logged (failedDeliveries).
-func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publisher, ci CIRecorder, bodies *bodyBudget) http.HandlerFunc {
+func githubHandler(secret, mentionTrigger, verdictAppID string, publisher Publisher, ci CIRecorder, bodies *bodyBudget) http.HandlerFunc {
 	failures := newFailedDeliveries(githubFailuresKept, githubFailureAge)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -139,9 +140,13 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 			return
 		}
 		if githubEvent(event) {
-			log.Printf("github sender login=%s type=%s delivery=%s event=%s",
+			// The target is the resource whose webhook sent the delivery, for an App's webhook
+			// integration and the App's id, so the line names which App's webhook delivers.
+			log.Printf("github sender login=%s type=%s target_type=%s target_id=%s delivery=%s event=%s",
 				githubSenderField(payload, "login"),
 				githubSenderField(payload, "type"),
+				r.Header.Get("X-GitHub-Hook-Installation-Target-Type"),
+				r.Header.Get("X-GitHub-Hook-Installation-Target-ID"),
 				delivery, event)
 		}
 		// Records and publishes end with the request and at its write deadline (extendDeadlines).
@@ -151,7 +156,7 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 		// settled checks envelope for each commit whose suites and check runs are done. A finished
 		// Actions job on the default branch, of a run with no pull request, records nothing and is
 		// published below.
-		if obs := contracts.GithubCIObservations(event, payload); len(obs) > 0 {
+		if obs := contracts.GithubCIObservations(event, payload, verdictAppID); len(obs) > 0 {
 			for _, o := range obs {
 				if o.CheckName == "" {
 					if err := ci.RecordSuite(answer, o); err != nil {
@@ -160,12 +165,12 @@ func githubHandler(secret, mentionTrigger, reviewerAppID string, publisher Publi
 					}
 					continue
 				}
-				switch contracts.ReviewerVerdictDecision(o.CheckName, o.AppID, reviewerAppID) {
-				case contracts.VerdictNoReviewerApp:
-					log.Printf("WARN github ci verdict dropped: ENVOY_REVIEWER_APP_ID is not configured check=%q app_id=%q pr=%s", o.CheckName, o.AppID, o.Number)
+				switch contracts.ReviewerVerdictDecision(o.CheckName, o.AppID, verdictAppID) {
+				case contracts.VerdictNoVerdictApp:
+					log.Printf("WARN github ci verdict dropped: ENVOY_VERDICT_APP_ID is not configured check=%q app_id=%q pr=%s", o.CheckName, o.AppID, o.Number)
 					continue
 				case contracts.VerdictUntrusted:
-					log.Printf("WARN github ci verdict ignored: untrusted publisher check=%q app_id=%q expected_app_id=%q pr=%s", o.CheckName, o.AppID, reviewerAppID, o.Number)
+					log.Printf("WARN github ci verdict ignored: untrusted publisher check=%q app_id=%q expected_app_id=%q pr=%s", o.CheckName, o.AppID, verdictAppID, o.Number)
 					continue
 				}
 				if err := ci.Record(answer, o); err != nil {

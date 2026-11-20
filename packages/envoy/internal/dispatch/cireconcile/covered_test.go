@@ -16,7 +16,7 @@ const unrenamedRow = "zed/other"
 // renamed_to stand for every row would leave every repository but that one out of the pass —
 // no head read, no record mended, no settlement — for as long as any rename is recorded.
 func TestEveryMappingIsReadWhenAnotherNamesARename(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.mapRenamedRepository(renamedAwayRow, rowRepository)
 	h.mapRepository(unrenamedRow)
@@ -101,7 +101,7 @@ func (h *harness) collateMappingsAsADeploymentDoes() {
 // reached it, the pass after the cursor seeks past it -- and the pass that reaches the end of
 // the order records that the cycle covered it.
 func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.collateMappingsAsADeploymentDoes()
 	mapped := []struct {
 		row, repository string
@@ -169,7 +169,7 @@ func TestEveryCoveredRepositoryIsReadHoweverTheDatabaseCollatesTheNames(t *testi
 // never delivered there would hold the head short of a check for ever -- and silently, since
 // nothing ever asked GitHub about that repository to skip it.
 func TestAHeadSettlesInARepositoryOnlyAnIssueNames(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.issueInRepository(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,

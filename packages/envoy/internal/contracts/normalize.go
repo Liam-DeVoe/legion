@@ -123,7 +123,11 @@ type CIObservation struct {
 // count (CheckRunCount), which only this mapping reads: GithubCIObservation is
 // shared with Dispatch's CI reconcile, which records only completed suites and
 // so would store no count.
-func GithubCIObservations(event string, body map[string]any) []CIObservation {
+//
+// The verdict App's own check suites and legion-verdict runs are no CI result
+// (VerdictAppsOwn), so they map to nothing, in every action, and the listener
+// logs a line for each one left out.
+func GithubCIObservations(event string, body map[string]any, verdictAppID string) []CIObservation {
 	numbers := githubCIPullRequests(event, body)
 	if len(numbers) == 0 {
 		// A check suite GitHub runs on a pull request's head carries that head's ref even when it
@@ -144,6 +148,16 @@ func GithubCIObservations(event string, body map[string]any) []CIObservation {
 	}
 	if event == "check_suite" {
 		obs.CheckRunCount = githubCount(object["latest_check_runs_count"])
+	}
+	if VerdictAppsOwn(obs, verdictAppID) {
+		if obs.CheckName == "" {
+			log.Printf("ci: left out the verdict App's own check suite suite=%s app_id=%s action=%s repo=%s/%s sha=%s pr=%s",
+				obs.SuiteID, obs.AppID, stringValue(body["action"]), owner, repo, obs.SHA, strings.Join(numbers, ","))
+		} else {
+			log.Printf("ci: left out the verdict App's own legion-verdict run check_run=%d app_id=%s repo=%s/%s sha=%s pr=%s",
+				obs.CheckRunID, obs.AppID, owner, repo, obs.SHA, strings.Join(numbers, ","))
+		}
+		return nil
 	}
 	out := make([]CIObservation, 0, len(numbers))
 	for _, number := range numbers {
@@ -298,38 +312,92 @@ func GithubStatusObservation(object map[string]any, owner, repo, number, sha str
 	}, true
 }
 
+// LegionVerdictCheck is the check run the Legion daemon writes on a head from its verdict.
+const LegionVerdictCheck = "legion-verdict"
+
 // ReviewerVerdict is what the shared rule says about one check run's name and the App that
-// created it, against the review App's id.
+// created it, against the verdict App's id.
 type ReviewerVerdict int
 
 const (
-	// VerdictNotAVerdict: the check is not a verdict check (`tester`, `architect`); record it.
+	// VerdictNotAVerdict: the check is not a verdict check (`legion-verdict`, `tester`,
+	// `architect`); record it.
 	VerdictNotAVerdict ReviewerVerdict = iota
-	// VerdictNoReviewerApp: a verdict check while the review App's id is unset; drop it.
-	VerdictNoReviewerApp
+	// VerdictNoVerdictApp: a verdict check while the verdict App's id is unset; drop it.
+	VerdictNoVerdictApp
 	// VerdictUntrusted: a verdict check another App created; drop it.
 	VerdictUntrusted
-	// VerdictTrusted: a verdict check the review App created; record it.
+	// VerdictTrusted: a verdict check the verdict App created.
 	VerdictTrusted
 )
 
 // ReviewerVerdictDecision decides one check run: a verdict check says a review passed or failed,
-// so it is recorded only when the review App created it. The caller logs what it drops; the rule
+// so it counts only when the verdict App created it. The caller logs what it drops; the rule
 // itself logs nothing, so every caller of it decides alike.
 //
 // The rule is about check runs only. A check suite has no name, and its recorder runs before the
-// gate, so a suite never goes through it.
-func ReviewerVerdictDecision(checkName, appID, reviewerAppID string) ReviewerVerdict {
-	if checkName != "tester" && checkName != "architect" {
+// gate, so a suite never goes through it. A commit status carries no App, so a status named for a
+// verdict check never stands in for one: it is an entry of its own kind, and never goes through
+// the rule.
+func ReviewerVerdictDecision(checkName, appID, verdictAppID string) ReviewerVerdict {
+	switch checkName {
+	case LegionVerdictCheck, "tester", "architect":
+	default:
 		return VerdictNotAVerdict
 	}
-	if reviewerAppID == "" {
-		return VerdictNoReviewerApp
+	if verdictAppID == "" {
+		return VerdictNoVerdictApp
 	}
-	if appID != reviewerAppID {
+	if appID != verdictAppID {
 		return VerdictUntrusted
 	}
 	return VerdictTrusted
+}
+
+// VerdictAppsOwn reports whether an observation is the verdict App's own output rather than a CI
+// result, and so no part of a head's CI record: a check suite the verdict App created, in any
+// state, or a legion-verdict run it created. GitHub makes the App a check suite on every push,
+// queued until the App writes a run in it, which a record that kept it would never settle past;
+// and the legion-verdict run is the daemon's own write, which would wake a role a second time.
+// A legion-verdict run of any other App is no verdict (ReviewerVerdictDecision), so no
+// legion-verdict run reaches a record at all. With no verdict App id nothing is the App's own.
+func VerdictAppsOwn(observation CIObservation, verdictAppID string) bool {
+	if verdictAppID == "" || observation.AppID != verdictAppID {
+		return false
+	}
+	return observation.CheckName == "" || observation.CheckName == LegionVerdictCheck
+}
+
+// VerdictAppSetting reads the verdict App's id from a program's settings, through get: the
+// setting named current, or, while that is unset or blank, the one named former, which a
+// deployment configured before the verdict App took its name still sets. It answers the trimmed
+// value and the name of the setting it was read from, current when neither holds one, so a
+// refusal of the value names the variable the operator set.
+func VerdictAppSetting(get func(string) string, current, former string) (value, name string) {
+	if value = strings.TrimSpace(get(current)); value != "" {
+		return value, current
+	}
+	if value = strings.TrimSpace(get(former)); value != "" {
+		return value, former
+	}
+	return "", current
+}
+
+// VerdictAppID is VerdictAppSetting's value as the text of the number GitHub's own objects carry
+// an App's id as: "" when neither setting holds one, and a refusal naming the setting it was read
+// from for a value that is no positive decimal number. A leading zero is dropped, so a value
+// written with one still matches the app.id of the App's own checks. The listener and Dispatch
+// read their verdict App through it, so one value is one App in both.
+func VerdictAppID(get func(string) string, current, former string) (string, error) {
+	raw, name := VerdictAppSetting(get, current, former)
+	if raw == "" {
+		return "", nil
+	}
+	id, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil || id == 0 {
+		return "", fmt.Errorf("%s=%q (expected the verdict App's numeric ID)", name, raw)
+	}
+	return strconv.FormatUint(id, 10), nil
 }
 
 func GithubIsBotSender(body map[string]any) bool {
@@ -442,10 +510,14 @@ func SlackEnvelopes(input SlackEnvelopeInput) []Envelope {
 // Push to tag v1.0.0:     push.tag.v1_0_0 (dots sanitized to underscores)
 // workflow_run:            workflow.<filename>.<action>
 // Actions job finished:   job.<run_id>.completed (a check_run on the default branch, of a run with no pull request)
+// Merge queue group:      merge_group (the pull request's number is in the payload, read from head_ref)
 // Returns empty string for events that should not be routed (e.g. push to refs that aren't heads or tags).
 func githubTopic(owner string, repo string, event string, body map[string]any) string {
 	if runID, _, ok := githubActionsJob(event, body); ok {
 		return GithubJobSubject(owner, repo, runID, "completed")
+	}
+	if event == "merge_group" {
+		return GithubMergeGroupSubject(owner, repo)
 	}
 	if event == "push" {
 		refType, refName, ok := githubPushRefSegments(body)
@@ -553,6 +625,7 @@ var githubEventKinds = map[string]string{
 	"issue_comment":               "comment",
 	"pull_request_review":         "review",
 	"pull_request_review_comment": "comment",
+	"merge_group":                 GithubMergeGroupKind,
 }
 
 // githubJobKind is the kind a finished Actions job on the default branch, of a run with no pull
@@ -676,6 +749,22 @@ var githubActionsJobURL = regexp.MustCompile(`^https://github\.com/[^/]+/[^/]+/a
 // because the CI store keys a record by the number as it is written, and `refs/pull/007/head`
 // would key a second record beside the one the webhook's own pull_requests list keys.
 var githubPullHeadRef = regexp.MustCompile(`^refs/pull/([1-9][0-9]*)/head$`)
+
+// githubMergeGroupRef is the head_ref GitHub gives a merge queue's group: the queue's branch for
+// the base branch, which may hold a slash itself, named for the pull request it adds and the base
+// commit it was built on. The number is read as githubPullHeadRef reads one, so a group names the
+// pull request by the number its own webhooks carry.
+var githubMergeGroupRef = regexp.MustCompile(`^refs/heads/gh-readonly-queue/.+/pr-([1-9][0-9]*)-[0-9a-f]+$`)
+
+// githubMergeGroupNumber is the pull request a merge group's head_ref names, and "" for a ref that
+// names none.
+func githubMergeGroupNumber(body map[string]any) string {
+	match := githubMergeGroupRef.FindStringSubmatch(nestedString(body, "merge_group", "head_ref"))
+	if match == nil {
+		return ""
+	}
+	return match[1]
+}
 
 // githubActionsJob reports whether a webhook is a finished GitHub Actions job on the repository's
 // default branch, of a run with no pull request, and its run and job ids: a completed check_run
@@ -882,6 +971,18 @@ func githubSummary(event string, body map[string]any) string {
 			status += "/" + conclusion
 		}
 		summary = fmt.Sprintf("job %s run %s %s", first(nestedString(body, "check_run", "name"), 90), runID, status)
+	case "merge_group":
+		group := repository
+		if number := githubMergeGroupNumber(body); number != "" {
+			group += "#" + number
+		}
+		summary = fmt.Sprintf(
+			"merge group %s: %s into %s (%s)",
+			action,
+			group,
+			strings.TrimPrefix(nestedString(body, "merge_group", "base_ref"), "refs/heads/"),
+			shortSHA(nestedString(body, "merge_group", "head_sha")),
+		)
 	default:
 		summary = fmt.Sprintf("%s %s", event, action)
 	}
@@ -1082,6 +1183,18 @@ func githubPayload(event string, body map[string]any) string {
 			"completed_at": nestedString(body, "check_run", "completed_at"),
 			"head_sha":     nestedString(body, "check_run", "head_sha"),
 			"url":          nestedString(body, "check_run", "html_url"),
+		}
+	case "merge_group":
+		// The Legion daemon writes legion-verdict on the group's head_sha from the verdict of the
+		// pull request head_ref names. A ref that names none leaves number out.
+		data = map[string]string{
+			"kind":     GithubMergeGroupKind,
+			"action":   action,
+			"repo":     repo,
+			"head_sha": nestedString(body, "merge_group", "head_sha"),
+			"head_ref": nestedString(body, "merge_group", "head_ref"),
+			"base_ref": nestedString(body, "merge_group", "base_ref"),
+			"number":   githubMergeGroupNumber(body),
 		}
 	default:
 		return ""

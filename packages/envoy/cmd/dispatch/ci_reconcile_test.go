@@ -26,9 +26,9 @@ const (
 	ciReconcileName       = "Widgets"
 	ciReconcileRepository = ciReconcileOwner + "/" + ciReconcileName
 	ciReconcileHeadSHA    = "abcdef1234567890abcdef1234567890abcdef12"
-	// ciReconcileReviewerApp is DISPATCH_REVIEWER_APP_ID for the process, the App that created
+	// ciReconcileVerdictApp is DISPATCH_VERDICT_APP_ID for the process, the App that created
 	// the `tester` check run below; a pass that never read the variable would drop that run.
-	ciReconcileReviewerApp = "5341243"
+	ciReconcileVerdictApp = "5341240"
 )
 
 // The CI reconcile pass is a loop of the real envoy-dispatch binary, so this proves it there:
@@ -37,7 +37,7 @@ const (
 // lookup, the token mint and the four reads one pass makes, and one repo_projects row for the
 // repository it serves. The process's own log is the evidence: the duty loop's leased pass under
 // the ci-reconcile lease, and the pass's own INFO line with the one record it changed -- the one
-// head's record, which an ordinary completed check run, the review App's `tester` verdict and
+// head's record, which an ordinary completed check run, the verdict App's `tester` verdict and
 // the head's check suite all write.
 func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 	database := storetest.Open(t)
@@ -53,7 +53,7 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 			"DISPATCH_APP_CLIENT_ID":   "Iv1.cireconcile",
 			"DISPATCH_APP_PEM_B64":     pemText,
 			"DISPATCH_GITHUB_API_BASE": github.URL,
-			"DISPATCH_REVIEWER_APP_ID": ciReconcileReviewerApp,
+			"DISPATCH_VERDICT_APP_ID":  ciReconcileVerdictApp,
 			// Five minutes is longer than any test may wait for a pass.
 			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",
 		},
@@ -150,7 +150,7 @@ func startCIReconcileGitHub(t *testing.T) *httptest.Server {
 				"id": 12, "name": "tester", "head_sha": ciReconcileHeadSHA,
 				"status": "completed", "conclusion": "success",
 				"completed_at": "2026-01-02T03:04:06Z",
-				"app":          map[string]any{"id": ciReconcileReviewerApp},
+				"app":          map[string]any{"id": ciReconcileVerdictApp},
 			},
 		}})
 	})

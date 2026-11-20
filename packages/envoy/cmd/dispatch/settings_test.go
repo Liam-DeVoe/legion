@@ -1150,16 +1150,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("not an integer: err = %v, want a refusal naming DISPATCH_APP_ID", err)
 			}
 		},
-		"DISPATCH_REVIEWER_APP_ID": func(t *testing.T) {
-			if boot := resolveWith(t, nil); boot.ReviewerAppID != "" {
-				t.Errorf("unset: ReviewerAppID = %q, want empty, which records no verdict check", boot.ReviewerAppID)
+		"DISPATCH_VERDICT_APP_ID": func(t *testing.T) {
+			if boot := resolveWith(t, nil); boot.VerdictAppID != "" {
+				t.Errorf("unset: VerdictAppID = %q, want empty, which records no verdict check", boot.VerdictAppID)
 			}
-			boot := resolveWith(t, map[string]string{"DISPATCH_REVIEWER_APP_ID": " 5341243 "})
-			if boot.ReviewerAppID != "5341243" {
-				t.Errorf("ReviewerAppID = %q, want %q", boot.ReviewerAppID, "5341243")
+			boot := resolveWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": " 5341240 "})
+			if boot.VerdictAppID != "5341240" {
+				t.Errorf("VerdictAppID = %q, want %q", boot.VerdictAppID, "5341240")
 			}
-			for _, value := range []string{"x", "0", "-1", "5341243x", "5 341 243"} {
-				refusedWith(t, map[string]string{"DISPATCH_REVIEWER_APP_ID": value}, "DISPATCH_REVIEWER_APP_ID")
+			for _, value := range []string{"x", "0", "-1", "5341240x", "5 341 240"} {
+				refusedWith(t, map[string]string{"DISPATCH_VERDICT_APP_ID": value}, "DISPATCH_VERDICT_APP_ID")
 			}
 			// Its reader: the pass main starts, which compares a verdict check's app.id against
 			// this id. The pass this builds runs nothing, so the rate limits it would read make
@@ -1167,13 +1167,19 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			_, url := testnats.Start(t)
 			_, pemText := githubapptest.Key(t)
 			reconciler, err := ciReconciler(startDispatchStream(t, []string{url}, nil), &store.Store{},
-				&auth.AppConfig{ClientID: "Iv1.reviewer", PEM: pemText}, "", boot.ReviewerAppID, cireconcile.Interval, &registeredInstance{})
+				&auth.AppConfig{ClientID: "Iv1.verdict", PEM: pemText}, "", boot.VerdictAppID, cireconcile.Interval, &registeredInstance{})
 			if err != nil || reconciler == nil {
 				t.Fatalf("build the CI reconcile pass: %+v, %v", reconciler, err)
 			}
-			if reconciler.ReviewerAppID != "5341243" {
-				t.Errorf("the pass's ReviewerAppID = %q, want %q", reconciler.ReviewerAppID, "5341243")
+			if reconciler.VerdictAppID != "5341240" {
+				t.Errorf("the pass's VerdictAppID = %q, want %q", reconciler.VerdictAppID, "5341240")
 			}
+		},
+		"DISPATCH_REVIEWER_APP_ID": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_REVIEWER_APP_ID": " 5341243 "}); boot.VerdictAppID != "5341243" {
+				t.Errorf("VerdictAppID = %q, want %q read from the former name", boot.VerdictAppID, "5341243")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_REVIEWER_APP_ID": "x"}, "DISPATCH_REVIEWER_APP_ID")
 		},
 		"DISPATCH_APP_SLUG": func(t *testing.T) {
 			app, _, err := loadAppCredentials(envGetter(map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env", "DISPATCH_APP_SLUG": "table-slug"}), t.TempDir())

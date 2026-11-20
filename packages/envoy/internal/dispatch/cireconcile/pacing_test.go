@@ -104,7 +104,7 @@ func text(t *testing.T, line map[string]any, name string) string {
 // minutes of a 5-minute interval and logged nothing until it was over, so the loop looked dead
 // for 26 minutes and the pass held its lease for every one of them.
 func TestAPassEndsOnItsBoundAndTheNextTakesTheCursorUpThere(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// Forty-five open pull requests are three pages of twenty, twenty and five.
 	h.listHeads(heads(45)...)
@@ -171,7 +171,7 @@ func TestAPassEndsOnItsBoundAndTheNextTakesTheCursorUpThere(t *testing.T) {
 // A run at a page a pass's bound stopped short of is recorded by the pass after it, and a pass
 // that reaches the last page of the order ends there rather than reading the first page again.
 func TestAPageThePassDidNotReachIsReadByTheNextPass(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHeads(heads(45)...)
 	h.reconciler.PassTimeout = 2 * time.Second
@@ -207,7 +207,7 @@ func TestAPageThePassDidNotReachIsReadByTheNextPass(t *testing.T) {
 // interval. The work is the heads a query cannot answer whole, which are the only heads read
 // over REST at all.
 func TestTheGapComesFromTheWorkThePassExpects(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
@@ -253,7 +253,7 @@ func TestTheGapComesFromTheWorkThePassExpects(t *testing.T) {
 // The gap never goes below the floor, however much work the pass has: the secondary limit the
 // floor sits inside is the App's, and this pass is not the only reader the App pays for.
 func TestTheGapNeverGoesBelowTheFloor(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHeads(head(7), head(8), head(9), head(10), head(11), head(12))
 	for _, pull := range []fakePull{head(7), head(8), head(9), head(10), head(11), head(12)} {
@@ -284,7 +284,7 @@ func TestTheGapNeverGoesBelowTheFloor(t *testing.T) {
 // reads at Pace rather than minutes apart, so a head opened between two passes is still read at
 // the pace the deployment asked for.
 func TestTheGapNeverGrowsPastTheConfiguredPace(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	h.github.refuseChecks(gitHubRepository, headSHA)
@@ -312,7 +312,7 @@ func TestTheGapNeverGrowsPastTheConfiguredPace(t *testing.T) {
 // then divides by zero. A pass panics into nothing -- its loop recovers none of it -- so the
 // process would go down with it.
 func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	h.reconciler.Pace = RequestPace
@@ -347,7 +347,7 @@ func TestAPassWithNoWorkExpectedOfItPacesItselfAtTheFloor(t *testing.T) {
 // thing between one query and the next and the arithmetic is the pass's own.
 func TestQueriesGoOneAtATimeInsideGitHubsGraphQLBudget(t *testing.T) {
 	const answersIn = 150 * time.Millisecond
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// Sixty-one open pull requests are four pages, which is four queries and three waits.
 	h.listHeads(heads(61)...)
@@ -458,7 +458,7 @@ func requireConditional(t *testing.T, h *harness, from int, line map[string]any)
 // The head keeps its ETags through the cut, so that read is conditional and GitHub answers 304
 // to it, which is what the reads of it that did finish before the limit are worth.
 func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHeads(head(7), head(8), head(9))
 	for _, pull := range []fakePull{head(7), head(8), head(9)} {
@@ -549,7 +549,7 @@ func (l *boundRecordLimits) Record(ctx context.Context, scope string, wait time.
 // it. Neither holds where the limit's write runs on the pass's own time, or where the bound is
 // read before GitHub's answer.
 func TestALimitAnsweredAsTheBoundFallsIsALimit(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHeads(head(7), head(8))
 	h.github.refuseChecks(gitHubRepository, head(7).sha)
@@ -614,7 +614,7 @@ func TestAHeadCutShortKeepsItsETags(t *testing.T) {
 		},
 	} {
 		t.Run(cut.name, func(t *testing.T) {
-			h := newHarness(t, reviewerAppID)
+			h := newHarness(t, verdictAppID)
 			h.mapRepository(rowRepository)
 			h.listHeads(head(7), head(8))
 			h.github.refuseChecks(gitHubRepository, head(7).sha)
@@ -660,7 +660,7 @@ func TestAHeadCutShortKeepsItsETags(t *testing.T) {
 // it would read all of them in full -- in production, 752 heads of the 833 that answer 304
 // today.
 func TestASecondCycleReadsEveryHeadConditionally(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// Twenty-five heads are two pages, and every one of them is read over REST, so a pass cut
 	// short between the pages leaves the second page's heads to the pass after it.
@@ -709,7 +709,7 @@ func TestASecondCycleReadsEveryHeadConditionally(t *testing.T) {
 // of the last repository records that it completed. The bound is checked between the heads of
 // a page for that reason, and what it leaves behind is the cursor the next pass takes up.
 func TestAPassCutShortInsideAPageStopsAtTheHeadItWasWriting(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// One page, so the pass is cut short on the last page of the last repository: the pass that
 	// reaches the end of the order closes the cycle and records that it completed, and this one
@@ -784,7 +784,7 @@ func TestABoundThatFallsOnAPagesLastHeadEndsThePassThere(t *testing.T) {
 		laterRepository = "Acme/Zinc"
 		laterID         = 4343
 	)
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.mapRepository(laterRow)
 	h.github.setRepository(laterRow, laterRepository, laterID)
@@ -848,7 +848,7 @@ func TestABoundThatFallsOnAPagesLastHeadEndsThePassThere(t *testing.T) {
 // completed -- and closes the cycle, which forgets nothing it should but leaves the head whose
 // writes failed to the cycle after.
 func TestABoundThatFallsOnTheLastHeadOfTheOrderIsNoCompletePass(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	all := heads(3)
 	h.listHeads(all...)

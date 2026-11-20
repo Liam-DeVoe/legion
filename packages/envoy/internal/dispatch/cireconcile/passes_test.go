@@ -187,7 +187,7 @@ func waitForRow(t *testing.T, pool *store.Pool, instance string) int64 {
 // and it is run under its lease exactly as the loop runs it (duty.Exclusive), so the lease the
 // read asks about is held by the pass itself.
 func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
@@ -226,7 +226,7 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 // just expired, and a write made on it would land nowhere, leaving a row that reads as a pass
 // that vanished -- the one state that must mean a process died.
 func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
@@ -277,7 +277,7 @@ func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
 // back to the listing, and is cut short at the second head of that page. The pass after it
 // reads from exactly the number the row names.
 func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	// Forty-five heads are three pages of a query, and three windows of the REST listing.
 	all := heads(45)
@@ -346,7 +346,7 @@ func TestThePassRecordNamesTheAddressTheNextPassTakesUp(t *testing.T) {
 // holds back the page it is reading until the test cancels the context the pass was handed,
 // which is what the loop's own context does when the process is told to stop.
 func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
@@ -387,7 +387,7 @@ func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
 // route answers still holds both -- which is the whole reason the counts are in Postgres rather
 // than only in a container log the restart rotated away.
 func TestTheRecordSurvivesARestartOfTheProcessThatWroteIt(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	before := registerProcess(t, h.pool, 0)
@@ -424,7 +424,7 @@ func TestTheRecordSurvivesARestartOfTheProcessThatWroteIt(t *testing.T) {
 // nowhere else: the passes are the only writer of this table, so there is nothing to tidy
 // between two of them.
 func TestRowsPastTheRetentionArePrunedByThePassThatEnds(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	instance := registerProcess(t, h.pool, 0)
@@ -462,7 +462,7 @@ func TestRowsPastTheRetentionArePrunedByThePassThatEnds(t *testing.T) {
 // running a pass of its own, so the only thing that can decide the open row is that it is no
 // longer the newest.
 func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLease(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	killed := registerProcess(t, h.pool, 0)
@@ -510,7 +510,7 @@ func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLeas
 // killed process is live, the lease is held and the row is the newest, and the pass reads as
 // running for ever.
 func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	was := processes.LiveWindow
 	processes.LiveWindow = time.Second
 	t.Cleanup(func() { processes.LiveWindow = was })
@@ -546,7 +546,7 @@ func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *te
 // signing keys do not match, so the first pass of a process can run before its instance id
 // exists -- and a row naming no process could be read neither as running nor as ended.
 func TestAPassBeforeItsProcessIsRegisteredRecordsNothing(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	h.reconciler.Instance = func() string { return "" }

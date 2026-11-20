@@ -5,6 +5,9 @@ import { PROJECT_KEY_PATTERN } from "./dispatch-tools";
 import {
   agentSubject,
   dispatchIssueSubject,
+  GITHUB_MERGE_GROUP_KIND,
+  githubMergeGroupSubject,
+  githubSubject,
   legacyAgentSubject,
   legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
@@ -33,15 +36,16 @@ const builders: Record<string, (...args: string[]) => string> = {
   legacyAgentSubject: (session = "") => legacyAgentSubject(session),
   roleSubject: (project = "", role = "") => roleSubject(project, role),
   legionWakeSubject: (token = "") => legionWakeSubject(token),
+  githubMergeGroupSubject: (owner = "", repo = "") => githubMergeGroupSubject(owner, repo),
 };
 
 const fixture = JSON.parse(
   readFileSync(path.join(import.meta.dir, "../fixtures/subject-project.json"), "utf8")
 ) as { builders: BuilderCase[] };
 
-test("each builder of a project's message names writes the shared fixture's name", () => {
-  // Seven rows when this was written: a read that finds none passes while covering nothing.
-  expect(fixture.builders.length).toBeGreaterThanOrEqual(7);
+test("each builder of a message name writes the shared fixture's name", () => {
+  // Eight rows when this was written: a read that finds none passes while covering nothing.
+  expect(fixture.builders.length).toBeGreaterThanOrEqual(8);
   for (const row of fixture.builders) {
     const build = builders[row.fn];
     expect(build, `the fixture names a builder, ${row.fn}, this test does not know`).toBeDefined();
@@ -56,6 +60,15 @@ test("the old issue form names the key alone, the new one its project first", ()
   expect(dispatchIssueSubject("INFRA", "INFRA-12", ">")).toBe(
     "notifications.dispatch.issue.INFRA.INFRA-12.>"
   );
+});
+
+test("a merge group is published under its repository's merge_group kind", () => {
+  expect(GITHUB_MERGE_GROUP_KIND).toBe("merge_group");
+  const subject: "notifications.github.acme.widgets.merge_group" = githubMergeGroupSubject(
+    "acme",
+    "widgets"
+  );
+  expect(subject).toBe(githubSubject("acme", "widgets", GITHUB_MERGE_GROUP_KIND));
 });
 
 test("no project is a token no project key can be", () => {

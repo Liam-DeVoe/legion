@@ -13,8 +13,10 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"log"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -812,10 +814,12 @@ func TestGitHubHandlerSubIssuesFixture(t *testing.T) {
 	}
 }
 
-// TestGitHubHandlerMergeGroup asserts GitHub's merge-queue event is acknowledged with 200 and
-// neither published nor recorded: a merge group names no pull request head, and it is no event
-// the listener normalizes, so it is published nowhere. The fixture is production-shaped from
-// GitHub's documented merge_group payload; the signature check still refuses it unsigned.
+// TestGitHubHandlerMergeGroup asserts GitHub's merge-queue event is published on the repository's
+// merge_group topic and recorded nowhere: the Legion daemon writes legion-verdict on the group's
+// head_sha from it. The payload names the action, the group's head_sha, head_ref and base_ref, and
+// the pull request number read from head_ref (gh-readonly-queue/<base>/pr-<number>-<base sha>).
+// The fixture is production-shaped from GitHub's documented merge_group payload; the signature
+// check still refuses it unsigned.
 func TestGitHubHandlerMergeGroup(t *testing.T) {
 	checksRequested, err := os.ReadFile(filepath.Join("testdata", "merge_group_checks_requested.json"))
 	if err != nil {
@@ -838,15 +842,16 @@ func TestGitHubHandlerMergeGroup(t *testing.T) {
 		body       []byte
 		signature  string // "" signs the body with the handler's secret
 		wantStatus int
+		wantAction string // "" publishes nothing
 	}{
-		{name: "checks_requested is acknowledged and not published", body: checksRequested, wantStatus: 200},
-		{name: "destroyed is acknowledged and not published", body: destroyed, wantStatus: 200},
+		{name: "checks_requested is published on the merge_group topic", body: checksRequested, wantStatus: 200, wantAction: "checks_requested"},
+		{name: "destroyed is published on the merge_group topic", body: destroyed, wantStatus: 200, wantAction: "destroyed"},
 		{name: "an unsigned merge_group is still refused", body: checksRequested, signature: "sha256=invalid", wantStatus: 401},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pub := &mockPublisher{}
 			recorder := &mockRecorder{}
-			handler := GitHubHandler("s", "@legion", "", pub, recorder)
+			handler := GitHubHandler("s", "@legion", "5341240", pub, recorder)
 			req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(string(tc.body)))
 			req.Header.Set("X-GitHub-Delivery", fmt.Sprintf("d-merge-group-%d", i))
 			req.Header.Set("X-GitHub-Event", "merge_group")
@@ -860,6 +865,70 @@ func TestGitHubHandlerMergeGroup(t *testing.T) {
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tc.wantStatus, rec.Body.String())
 			}
+			if n := len(recorder.calls) + len(recorder.suiteCalls); n != 0 {
+				t.Errorf("recorder calls = %d, want 0", n)
+			}
+			if tc.wantAction == "" {
+				if len(pub.published) != 0 {
+					t.Fatalf("published = %d, want 0; first topic %q", len(pub.published), pub.published[0].Topic)
+				}
+				return
+			}
+			if len(pub.published) != 1 {
+				t.Fatalf("published = %d, want 1", len(pub.published))
+			}
+			published := pub.published[0]
+			if want := "notifications.github.sjawhar.legion.merge_group"; published.Topic != want {
+				t.Errorf("Topic = %q, want %q", published.Topic, want)
+			}
+			var payload map[string]string
+			if err := json.Unmarshal([]byte(published.Payload), &payload); err != nil {
+				t.Fatalf("payload %q is not a JSON object of strings: %v", published.Payload, err)
+			}
+			want := map[string]string{
+				"kind":     "merge_group",
+				"action":   tc.wantAction,
+				"repo":     "sjawhar/legion",
+				"head_sha": "9e1c7d2a4b6f8e0c1d3a5b7c9e1f2a4b6c8d0e2f",
+				"head_ref": "refs/heads/gh-readonly-queue/main/pr-1050-7f60bbfb57cb2a1d0e9f8a7b6c5d4e3f2a1b0c9d",
+				"base_ref": "refs/heads/main",
+				"number":   "1050",
+			}
+			if !maps.Equal(payload, want) {
+				t.Errorf("payload = %v, want %v", payload, want)
+			}
+		})
+	}
+}
+
+// TestGitHubHandlerStatus asserts a commit status is answered 200 and published and recorded
+// nowhere, whatever its context: one named legion-verdict is no verdict, and the daemon reads the
+// status it writes over from GitHub rather than from the bus.
+func TestGitHubHandlerStatus(t *testing.T) {
+	for _, context := range []string{"legion-verdict", "ci/build"} {
+		t.Run(context, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`{
+				"id": 42147483647,
+				"sha": "9e1c7d2a4b6f8e0c1d3a5b7c9e1f2a4b6c8d0e2f",
+				"name": "acme/widgets",
+				"context": %q,
+				"state": "failure",
+				"branches": [],
+				"sender": {"login": "example-ci-review[bot]", "type": "Bot"},
+				"repository": {"name": "widgets", "owner": {"login": "acme"}, "full_name": "acme/widgets"}
+			}`, context))
+			pub := &mockPublisher{}
+			recorder := &mockRecorder{}
+			handler := GitHubHandler("s", "@legion", "5341240", pub, recorder)
+			req := httptest.NewRequest("POST", "/webhook/github", bytes.NewReader(body))
+			req.Header.Set("X-GitHub-Delivery", "d-status-"+context)
+			req.Header.Set("X-GitHub-Event", "status")
+			req.Header.Set("X-Hub-Signature-256", githubSign("s", body))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+			}
 			if len(pub.published) != 0 {
 				t.Errorf("published = %d, want 0; first topic %q", len(pub.published), pub.published[0].Topic)
 			}
@@ -867,6 +936,58 @@ func TestGitHubHandlerMergeGroup(t *testing.T) {
 				t.Errorf("recorder calls = %d, want 0", n)
 			}
 		})
+	}
+}
+
+// TestGitHubSenderLineNamesTheWebhookApp asserts the line each sender-logged delivery writes names
+// the resource whose webhook sent it, from GitHub's X-GitHub-Hook-Installation-Target-Type and
+// X-GitHub-Hook-Installation-Target-ID headers: for an App's webhook, integration and the App's
+// id, so a read of the listener's log tells which App's webhook delivers. A delivery without the
+// headers names neither value, and the line keeps both keys.
+func TestGitHubSenderLineNamesTheWebhookApp(t *testing.T) {
+	logtest.Keep(t)
+	log.SetFlags(0)
+	body := []byte(`{
+		"action": "created",
+		"issue": {"number": 42, "title": "test issue"},
+		"comment": {"body": "just a comment", "user": {"login": "octocat"}},
+		"sender": {"login": "octocat", "type": "User"},
+		"repository": {"name": "widgets", "owner": {"login": "acme"}, "full_name": "acme/widgets"}
+	}`)
+	post := func(delivery string, headers map[string]string) string {
+		t.Helper()
+		logged := &logtest.Buffer{}
+		log.SetOutput(logged)
+		handler := GitHubHandler("s", "@legion", "5341240", &mockPublisher{}, &mockRecorder{})
+		req := httptest.NewRequest("POST", "/webhook/github", bytes.NewReader(body))
+		req.Header.Set("X-GitHub-Delivery", delivery)
+		req.Header.Set("X-GitHub-Event", "issue_comment")
+		req.Header.Set("X-Hub-Signature-256", githubSign("s", body))
+		for name, value := range headers {
+			req.Header.Set(name, value)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		}
+		for _, line := range strings.Split(logged.String(), "\n") {
+			if strings.HasPrefix(line, "github sender ") {
+				return line
+			}
+		}
+		t.Fatalf("no github sender line in %q", logged.String())
+		return ""
+	}
+	line := post("d-target", map[string]string{
+		"X-GitHub-Hook-Installation-Target-Type": "integration",
+		"X-GitHub-Hook-Installation-Target-ID":   "5341240",
+	})
+	if want := "github sender login=octocat type=User target_type=integration target_id=5341240 delivery=d-target event=issue_comment"; line != want {
+		t.Errorf("line = %q, want %q", line, want)
+	}
+	if line := post("d-no-target", nil); line != "github sender login=octocat type=User target_type= target_id= delivery=d-no-target event=issue_comment" {
+		t.Errorf("line without the headers = %q, want both target keys with no value", line)
 	}
 }
 
@@ -1003,110 +1124,159 @@ func TestGitHubHandlerCIRecordsObservations(t *testing.T) {
 	})
 }
 
-func TestGitHubHandlerFiltersReviewerVerdicts(t *testing.T) {
-	const (
-		secret        = "s"
-		reviewerAppID = "12345"
-	)
-	checkRun := func(name, appID string) string {
-		return fmt.Sprintf(`{
-			"action": "completed",
-			"check_run": {
-				"id": 987654321,
-				"name": %q,
-				"status": "completed",
-				"conclusion": "success",
-				"head_sha": "deadbeef",
-				"app": {"id": %s},
-				"pull_requests": [{"number": 42}]
-			},
-			"repository": {"name": "legion", "owner": {"login": "sjawhar"}, "full_name": "sjawhar/legion"}
-		}`, name, appID)
-	}
-	post := func(t *testing.T, handler http.HandlerFunc, body string) *httptest.ResponseRecorder {
-		t.Helper()
-		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(body))
-		req.Header.Set("X-GitHub-Delivery", "d-reviewer-verdict")
-		req.Header.Set("X-GitHub-Event", "check_run")
-		req.Header.Set("X-Hub-Signature-256", githubSign(secret, []byte(body)))
-		rr := httptest.NewRecorder()
-		handler.ServeHTTP(rr, req)
-		if rr.Code != 200 {
-			t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
-		}
-		return rr
-	}
+// listenerCI posts check_run and check_suite deliveries to a handler configured with the verdict
+// App, and answers what it recorded and what it logged.
+type listenerCI struct {
+	t       *testing.T
+	handler http.HandlerFunc
+	pub     *mockPublisher
+	rec     *mockRecorder
+	logged  *logtest.Buffer
+}
 
+const (
+	// verdictAppID is the verdict App's id as the handler takes it, and actionsAppID another App's.
+	verdictAppID = "5341240"
+	actionsAppID = "15368"
+)
+
+func newListenerCI(t *testing.T, verdictApp string) *listenerCI {
+	t.Helper()
+	logtest.Keep(t)
+	logged := &logtest.Buffer{}
+	log.SetOutput(logged)
+	log.SetFlags(0)
+	ci := &listenerCI{t: t, pub: &mockPublisher{}, rec: &mockRecorder{}, logged: logged}
+	ci.handler = GitHubHandler("s", "@legion", verdictApp, ci.pub, ci.rec)
+	return ci
+}
+
+// post delivers one CI event whose object carries fields, for sjawhar/legion#42.
+func (ci *listenerCI) post(event, action string, fields map[string]any) {
+	ci.t.Helper()
+	object := map[string]any{"head_sha": "deadbeef", "pull_requests": []any{map[string]any{"number": 42}}}
+	maps.Copy(object, fields)
+	body, err := json.Marshal(map[string]any{
+		"action":     action,
+		event:        object,
+		"repository": map[string]any{"name": "legion", "owner": map[string]any{"login": "sjawhar"}, "full_name": "sjawhar/legion"},
+	})
+	if err != nil {
+		ci.t.Fatalf("marshal the %s: %v", event, err)
+	}
+	req := httptest.NewRequest("POST", "/webhook/github", bytes.NewReader(body))
+	req.Header.Set("X-GitHub-Delivery", "d-"+event)
+	req.Header.Set("X-GitHub-Event", event)
+	req.Header.Set("X-Hub-Signature-256", githubSign("s", body))
+	rr := httptest.NewRecorder()
+	ci.handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		ci.t.Fatalf("status = %d, want 200; body = %s", rr.Code, rr.Body.String())
+	}
+	if len(ci.pub.published) != 0 {
+		ci.t.Fatalf("a CI event was published: %+v", ci.pub.published)
+	}
+}
+
+// run delivers one completed check run of name, created by app, whose id GitHub's JSON carries as
+// a number.
+func (ci *listenerCI) run(name, app string) {
+	ci.t.Helper()
+	ci.post("check_run", "completed", map[string]any{
+		"id": 987654321, "name": name, "status": "completed", "conclusion": "success", "app": map[string]any{"id": json.Number(app)},
+	})
+}
+
+// A run named legion-verdict, tester or architect is a verdict, which the listener takes only from
+// the verdict App, and none while that App is unset; every other run is recorded from any App. The
+// verdict App's own legion-verdict run is the daemon's output rather than a CI result, so it is
+// left out of the record too, and so the listener's record holds no legion-verdict run at all.
+// Each run left out is logged.
+func TestLegionVerdictRunsNeverReachTheListenersRecord(t *testing.T) {
 	for _, name := range []string{"tester", "architect"} {
-		t.Run("right-App "+name+" verdict is recorded without raw publication", func(t *testing.T) {
-			pub := &mockPublisher{}
-			rec := &mockRecorder{}
-			handler := GitHubHandler(secret, "@legion", reviewerAppID, pub, rec)
-			post(t, handler, checkRun(name, reviewerAppID))
-
-			if len(pub.published) != 0 {
-				t.Fatalf("published = %d, want 0", len(pub.published))
-			}
-			if len(rec.calls) != 1 {
-				t.Fatalf("recorder calls = %d, want 1", len(rec.calls))
-			}
-			if got := rec.calls[0]; got.CheckName != name || got.Conclusion != "success" {
-				t.Fatalf("unexpected recorded verdict: %+v", got)
+		t.Run("the verdict App's "+name+" is recorded", func(t *testing.T) {
+			ci := newListenerCI(t, verdictAppID)
+			ci.run(name, verdictAppID)
+			if len(ci.rec.calls) != 1 || ci.rec.calls[0].CheckName != name || ci.rec.calls[0].Conclusion != "success" {
+				t.Fatalf("recorded %+v, want the one %s verdict", ci.rec.calls, name)
 			}
 		})
 	}
-
-	t.Run("wrong-App tester verdict is dropped", func(t *testing.T) {
-		pub := &mockPublisher{}
-		rec := &mockRecorder{}
-		handler := GitHubHandler(secret, "@legion", reviewerAppID, pub, rec)
-		post(t, handler, checkRun("tester", "98765"))
-		if len(rec.calls) != 0 {
-			t.Fatalf("recorder calls = %d, want 0 for wrong-App tester", len(rec.calls))
+	t.Run("the verdict App's legion-verdict is left out", func(t *testing.T) {
+		ci := newListenerCI(t, verdictAppID)
+		ci.run("legion-verdict", verdictAppID)
+		if len(ci.rec.calls) != 0 {
+			t.Fatalf("recorded %+v, want nothing", ci.rec.calls)
 		}
-		if len(pub.published) != 0 {
-			t.Fatalf("published = %d, want 0 for wrong-App tester", len(pub.published))
+		if !strings.Contains(ci.logged.String(), "ci: left out the verdict App's own legion-verdict run") {
+			t.Fatalf("log %q names no run left out", ci.logged.String())
 		}
 	})
-
-	t.Run("missing reviewer App ID drops bare verdict", func(t *testing.T) {
-		pub := &mockPublisher{}
-		rec := &mockRecorder{}
-		handler := GitHubHandler(secret, "@legion", "", pub, rec)
-		post(t, handler, checkRun("tester", reviewerAppID))
-		if len(rec.calls) != 0 {
-			t.Fatalf("recorder calls = %d, want 0 without a reviewer App ID", len(rec.calls))
+	for _, name := range []string{"legion-verdict", "tester"} {
+		t.Run("another App's "+name+" is dropped", func(t *testing.T) {
+			ci := newListenerCI(t, verdictAppID)
+			ci.run(name, actionsAppID)
+			if len(ci.rec.calls) != 0 {
+				t.Fatalf("recorded %+v, want nothing", ci.rec.calls)
+			}
+			if want := fmt.Sprintf("WARN github ci verdict ignored: untrusted publisher check=%q app_id=%q expected_app_id=%q", name, actionsAppID, verdictAppID); !strings.Contains(ci.logged.String(), want) {
+				t.Fatalf("log %q does not hold %q", ci.logged.String(), want)
+			}
+		})
+	}
+	t.Run("no verdict is recorded while the verdict App is unset", func(t *testing.T) {
+		ci := newListenerCI(t, "")
+		ci.run("tester", verdictAppID)
+		if len(ci.rec.calls) != 0 {
+			t.Fatalf("recorded %+v, want nothing without a verdict App id", ci.rec.calls)
 		}
-		if len(pub.published) != 0 {
-			t.Fatalf("published = %d, want 0 without a reviewer App ID", len(pub.published))
+		if !strings.Contains(ci.logged.String(), "WARN github ci verdict dropped: ENVOY_VERDICT_APP_ID is not configured") {
+			t.Fatalf("log %q names no dropped verdict", ci.logged.String())
 		}
 	})
-
-	t.Run("ordinary CI check is recorded from another App", func(t *testing.T) {
-		pub := &mockPublisher{}
-		rec := &mockRecorder{}
-		handler := GitHubHandler(secret, "@legion", reviewerAppID, pub, rec)
-		post(t, handler, checkRun("unit-tests", "98765"))
-		if len(rec.calls) != 1 {
-			t.Fatalf("recorder calls = %d, want 1", len(rec.calls))
-		}
-		if got := rec.calls[0].CheckName; got != "unit-tests" {
-			t.Fatalf("recorded check name = %q, want unit-tests", got)
-		}
-		if len(pub.published) != 0 {
-			t.Fatalf("published = %d, want 0", len(pub.published))
+	t.Run("an ordinary check is recorded from another App", func(t *testing.T) {
+		ci := newListenerCI(t, verdictAppID)
+		ci.run("unit-tests", actionsAppID)
+		if len(ci.rec.calls) != 1 || ci.rec.calls[0].CheckName != "unit-tests" {
+			t.Fatalf("recorded %+v, want unit-tests", ci.rec.calls)
 		}
 	})
 }
 
+// A check suite the verdict App created is recorded in no action: GitHub makes one, queued, on
+// each push, and it would hold the head from settling until the daemon wrote a run in it. Each
+// suite left out is logged. Another App's suite is recorded as before.
+func TestVerdictAppSuitesNeverReachTheListenersRecord(t *testing.T) {
+	for _, action := range []string{"requested", "rerequested", "completed"} {
+		t.Run(action, func(t *testing.T) {
+			ci := newListenerCI(t, verdictAppID)
+			suite := func(app string) map[string]any {
+				status := "queued"
+				if action == "completed" {
+					status = "completed"
+				}
+				return map[string]any{"id": 900, "status": status, "updated_at": "2026-11-20T03:00:00Z", "app": map[string]any{"id": json.Number(app)}}
+			}
+			ci.post("check_suite", action, suite(verdictAppID))
+			if len(ci.rec.suiteCalls) != 0 {
+				t.Fatalf("recorded %+v, want the verdict App's suite left out", ci.rec.suiteCalls)
+			}
+			if want := "ci: left out the verdict App's own check suite suite=900 app_id=" + verdictAppID + " action=" + action; !strings.Contains(ci.logged.String(), want) {
+				t.Fatalf("log %q does not hold %q", ci.logged.String(), want)
+			}
+			ci.post("check_suite", action, suite(actionsAppID))
+			if len(ci.rec.suiteCalls) != 1 || ci.rec.suiteCalls[0].AppID != actionsAppID {
+				t.Fatalf("recorded %+v, want another App's suite", ci.rec.suiteCalls)
+			}
+		})
+	}
+}
+
 // A check run GitHub names no pull request for is attributed by its check suite's head branch:
 // the handler records it under the pull request refs/pull/<n>/head names, and records nothing for
-// a suite on any other branch. A verdict so attributed passes the reviewer gate like any other.
+// a suite on any other branch. A verdict so attributed passes the verdict rule like any other.
 func TestGitHubHandlerAttributesACheckRunByItsSuiteHeadBranch(t *testing.T) {
-	const (
-		secret        = "s"
-		reviewerAppID = "12345"
-	)
+	const secret = "s"
 	checkRun := func(t *testing.T, name, appID string, suite map[string]any) string {
 		t.Helper()
 		run := map[string]any{
@@ -1136,11 +1306,11 @@ func TestGitHubHandlerAttributesACheckRunByItsSuiteHeadBranch(t *testing.T) {
 		}
 		return string(body)
 	}
-	post := func(t *testing.T, reviewerApp, body string) (*mockPublisher, *mockRecorder) {
+	post := func(t *testing.T, verdictApp, body string) (*mockPublisher, *mockRecorder) {
 		t.Helper()
 		pub := &mockPublisher{}
 		rec := &mockRecorder{}
-		handler := GitHubHandler(secret, "@legion", reviewerApp, pub, rec)
+		handler := GitHubHandler(secret, "@legion", verdictApp, pub, rec)
 		req := httptest.NewRequest("POST", "/webhook/github", strings.NewReader(body))
 		req.Header.Set("X-GitHub-Delivery", "d-head-branch")
 		req.Header.Set("X-GitHub-Event", "check_run")
@@ -1155,7 +1325,7 @@ func TestGitHubHandlerAttributesACheckRunByItsSuiteHeadBranch(t *testing.T) {
 	pullHead := map[string]any{"id": 900, "head_branch": "refs/pull/7/head"}
 
 	t.Run("a run on a pull head ref is recorded under its number", func(t *testing.T) {
-		pub, rec := post(t, reviewerAppID, checkRun(t, "unit-tests", "98765", pullHead))
+		pub, rec := post(t, verdictAppID, checkRun(t, "unit-tests", "98765", pullHead))
 		if len(rec.calls) != 1 {
 			t.Fatalf("recorder calls = %d, want 1", len(rec.calls))
 		}
@@ -1181,7 +1351,7 @@ func TestGitHubHandlerAttributesACheckRunByItsSuiteHeadBranch(t *testing.T) {
 		{name: "no check suite at all", suite: nil},
 	} {
 		t.Run("a run on "+head.name+" records nothing", func(t *testing.T) {
-			pub, rec := post(t, reviewerAppID, checkRun(t, "unit-tests", "98765", head.suite))
+			pub, rec := post(t, verdictAppID, checkRun(t, "unit-tests", "98765", head.suite))
 			if n := len(rec.calls) + len(rec.suiteCalls); n != 0 {
 				t.Fatalf("recorder calls = %d, want 0: %+v", n, rec.calls)
 			}
@@ -1191,19 +1361,19 @@ func TestGitHubHandlerAttributesACheckRunByItsSuiteHeadBranch(t *testing.T) {
 		})
 	}
 
-	t.Run("a verdict on a pull head ref is recorded only for the review App", func(t *testing.T) {
-		_, rec := post(t, reviewerAppID, checkRun(t, "tester", reviewerAppID, pullHead))
+	t.Run("a verdict on a pull head ref is recorded only for the verdict App", func(t *testing.T) {
+		_, rec := post(t, verdictAppID, checkRun(t, "tester", verdictAppID, pullHead))
 		if len(rec.calls) != 1 {
 			t.Fatalf("recorder calls = %d, want 1", len(rec.calls))
 		}
 		if got := rec.calls[0]; got.Number != "7" || got.CheckName != "tester" {
 			t.Fatalf("recorded verdict = %+v", got)
 		}
-		if _, other := post(t, reviewerAppID, checkRun(t, "tester", "98765", pullHead)); len(other.calls) != 0 {
+		if _, other := post(t, verdictAppID, checkRun(t, "tester", "98765", pullHead)); len(other.calls) != 0 {
 			t.Fatalf("another App's verdict was recorded: %+v", other.calls)
 		}
-		if _, unset := post(t, "", checkRun(t, "tester", reviewerAppID, pullHead)); len(unset.calls) != 0 {
-			t.Fatalf("a verdict was recorded without a review App id: %+v", unset.calls)
+		if _, unset := post(t, "", checkRun(t, "tester", verdictAppID, pullHead)); len(unset.calls) != 0 {
+			t.Fatalf("a verdict was recorded without a verdict App id: %+v", unset.calls)
 		}
 	})
 }

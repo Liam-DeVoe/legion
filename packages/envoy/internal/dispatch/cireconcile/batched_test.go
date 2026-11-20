@@ -68,7 +68,7 @@ type batched struct {
 
 func newBatched(t *testing.T) *batched {
 	t.Helper()
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.mapRepository(refusedRow)
 	h.github.setRepository(refusedRow, refusedRepository, refusedRepositoryID)
@@ -269,7 +269,7 @@ func TestTheSecondPassReadsEveryOverflowHeadConditionally(t *testing.T) {
 // over it. Counting it here would leave the line reporting a head that nothing will ever read,
 // and a cycle whose heads were all read would still look short of one.
 func TestAListedPullRequestWithNoHeadCommitIsNoHeadKnown(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHeads(head(7), fakePull{number: 8, sha: ""})
 	// GitHub refuses the query for the repository's one page, so its heads are listed and read
@@ -301,7 +301,7 @@ func TestARefusedPullRequestWithNoHeadIsReadOverREST(t *testing.T) {
 		"the head commit": func(h *harness, sha string) { h.github.nullHeadCommit(gitHubRepository, sha) },
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := newHarness(t, reviewerAppID)
+			h := newHarness(t, verdictAppID)
 			h.mapRepository(rowRepository)
 			refused, answered := head(7), head(8)
 			h.listHeads(refused, answered)

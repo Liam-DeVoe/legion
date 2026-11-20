@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/ghrename"
 )
 
@@ -20,7 +21,9 @@ type WebhookConfig struct {
 type GitHubWebhook struct {
 	Secret         string
 	MentionTrigger string
-	ReviewerAppID  string
+	// VerdictAppID is the verdict App's id, ENVOY_VERDICT_APP_ID: the App whose verdict check runs
+	// the listener records and whose own check suites it leaves out of the CI record.
+	VerdictAppID string
 	// RepositoryRenames is each repository GitHub renamed, as ENVOY_GITHUB_REPOSITORY_RENAMES
 	// configures it: the listener publishes a copy of every envelope of the current repository
 	// under the former name, so a session that subscribed before the rename keeps hearing about
@@ -67,14 +70,17 @@ func LoadWebhookConfig() (*WebhookConfig, error) {
 			if err != nil {
 				return nil, fmt.Errorf("ENVOY_GITHUB_REPOSITORY_RENAMES: %w", err)
 			}
-			reviewerAppID := strings.TrimSpace(os.Getenv("ENVOY_REVIEWER_APP_ID"))
-			if reviewerAppID == "" {
-				return nil, fmt.Errorf("ENVOY_REVIEWER_APP_ID required when github enabled")
+			verdictAppID, err := contracts.VerdictAppID(os.Getenv, "ENVOY_VERDICT_APP_ID", "ENVOY_REVIEWER_APP_ID")
+			if err != nil {
+				return nil, err
+			}
+			if verdictAppID == "" {
+				return nil, fmt.Errorf("ENVOY_VERDICT_APP_ID required when github enabled")
 			}
 			cfg.GitHub = &GitHubWebhook{
 				Secret:            secret,
 				MentionTrigger:    trigger,
-				ReviewerAppID:     reviewerAppID,
+				VerdictAppID:      verdictAppID,
 				RepositoryRenames: renames,
 			}
 		case "slack":

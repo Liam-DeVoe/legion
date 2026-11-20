@@ -385,6 +385,28 @@ export function githubJobSubject(
   return `${githubRepositoryPrefix(owner, repo)}.job.${sanitizeSubjectSegment(String(runId))}.${action}`;
 }
 
+/** The kind a merge queue's `merge_group` event is published under, after its repository. */
+export const GITHUB_MERGE_GROUP_KIND = "merge_group" as const;
+
+/**
+ * A merge queue's group of one repository: Envoy publishes each `merge_group` event here, its
+ * payload naming the action, the group's `head_sha`, `head_ref` and `base_ref`, and the pull request
+ * `number` read from `head_ref` (`gh-readonly-queue/<base>/pr-<number>-<base sha>`). A consumer
+ * takes the repository from the payload's `repo`, as for every GitHub subject.
+ */
+export type GithubMergeGroupSubject<
+  Owner extends string = string,
+  Repo extends string = string,
+> = GithubSubject<Owner, Repo, typeof GITHUB_MERGE_GROUP_KIND>;
+
+export function githubMergeGroupSubject<Owner extends string, Repo extends string>(
+  owner: Owner,
+  repo: Repo
+): GithubMergeGroupSubject<Owner, Repo>;
+export function githubMergeGroupSubject(owner: string, repo: string) {
+  return githubSubject(owner, repo, GITHUB_MERGE_GROUP_KIND);
+}
+
 export const GHOSTWISPR_TOPIC_PREFIX = "notifications.ghostwispr." as const;
 
 export type GhostWisprSubject<
@@ -429,6 +451,7 @@ export type Subject =
   | GithubPushSubject
   | GithubWorkflowSubject
   | GithubJobSubject
+  | GithubMergeGroupSubject
   | SlackSubject
   | SlackThreadSubject
   | GhostWisprSubject

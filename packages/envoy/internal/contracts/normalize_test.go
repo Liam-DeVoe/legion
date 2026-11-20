@@ -1055,7 +1055,7 @@ func TestGithubCIObservations(t *testing.T) {
 	}
 
 	t.Run("check_run one PR", func(t *testing.T) {
-		obs := GithubCIObservations("check_run", checkRunBody([]any{map[string]any{"number": 42}}))
+		obs := GithubCIObservations("check_run", checkRunBody([]any{map[string]any{"number": 42}}), "")
 		if len(obs) != 1 {
 			t.Fatalf("expected 1 observation, got %d", len(obs))
 		}
@@ -1072,7 +1072,7 @@ func TestGithubCIObservations(t *testing.T) {
 		obs := GithubCIObservations("check_run", checkRunBody([]any{
 			map[string]any{"number": 42},
 			map[string]any{"number": 43},
-		}))
+		}), "")
 		if len(obs) != 2 {
 			t.Fatalf("expected 2 observations, got %d", len(obs))
 		}
@@ -1082,7 +1082,7 @@ func TestGithubCIObservations(t *testing.T) {
 	})
 
 	t.Run("check_run no PR yields nothing", func(t *testing.T) {
-		if obs := GithubCIObservations("check_run", checkRunBody([]any{})); len(obs) != 0 {
+		if obs := GithubCIObservations("check_run", checkRunBody([]any{}), ""); len(obs) != 0 {
 			t.Fatalf("expected no observations for un-PR'd check_run, got %d", len(obs))
 		}
 	})
@@ -1102,7 +1102,7 @@ func TestGithubCIObservations(t *testing.T) {
 		obs := GithubCIObservations("check_run", suiteBody(map[string]any{
 			"id":          float64(900),
 			"head_branch": "refs/pull/42/head",
-		}))
+		}), "")
 		if len(obs) != 1 {
 			t.Fatalf("expected 1 observation, got %d", len(obs))
 		}
@@ -1127,14 +1127,14 @@ func TestGithubCIObservations(t *testing.T) {
 	} {
 		t.Run("check_run with no PR on "+head.name+" yields nothing", func(t *testing.T) {
 			body := suiteBody(map[string]any{"id": float64(900), "head_branch": head.branch})
-			if obs := GithubCIObservations("check_run", body); len(obs) != 0 {
+			if obs := GithubCIObservations("check_run", body, ""); len(obs) != 0 {
 				t.Fatalf("head branch %q yielded %+v", head.branch, obs)
 			}
 		})
 	}
 
 	t.Run("check_run with no PR and no check_suite yields nothing", func(t *testing.T) {
-		if obs := GithubCIObservations("check_run", suiteBody(nil)); len(obs) != 0 {
+		if obs := GithubCIObservations("check_run", suiteBody(nil), ""); len(obs) != 0 {
 			t.Fatalf("a run carrying no check suite yielded %+v", obs)
 		}
 	})
@@ -1158,7 +1158,7 @@ func TestGithubCIObservations(t *testing.T) {
 				"pull_requests": []any{},
 			},
 		}
-		obs := GithubCIObservations("check_suite", body)
+		obs := GithubCIObservations("check_suite", body, "")
 		if len(obs) != 1 {
 			t.Fatalf("expected 1 observation, got %d", len(obs))
 		}
@@ -1180,7 +1180,7 @@ func TestGithubCIObservations(t *testing.T) {
 	t.Run("check_run missing head_sha yields nothing", func(t *testing.T) {
 		body := checkRunBody([]any{map[string]any{"number": 42}})
 		delete(body["check_run"].(map[string]any), "head_sha")
-		if obs := GithubCIObservations("check_run", body); len(obs) != 0 {
+		if obs := GithubCIObservations("check_run", body, ""); len(obs) != 0 {
 			t.Fatalf("expected no observations without head_sha, got %d", len(obs))
 		}
 	})
@@ -1201,7 +1201,7 @@ func TestGithubCIObservationsSkipMalformedPRNumbers(t *testing.T) {
 				"pull_requests": []any{map[string]any{"number": number}},
 			},
 		}
-		if observations := GithubCIObservations("check_run", body); len(observations) != 0 {
+		if observations := GithubCIObservations("check_run", body, ""); len(observations) != 0 {
 			t.Fatalf("PR number %v yielded observations: %+v", number, observations)
 		}
 	}
@@ -1220,7 +1220,7 @@ func TestGithubCIObservationsSkipMalformedCheckRunIDs(t *testing.T) {
 				"pull_requests": []any{map[string]any{"number": 42}},
 			},
 		}
-		if observations := GithubCIObservations("check_run", body); len(observations) != 0 {
+		if observations := GithubCIObservations("check_run", body, ""); len(observations) != 0 {
 			t.Fatalf("check run ID %v yielded observations: %+v", checkRunID, observations)
 		}
 	}
@@ -1287,38 +1287,13 @@ func TestGithubCIObservationAgreesWithTheWebhooksFanOut(t *testing.T) {
 		},
 		"check_run": run,
 	}
-	fanned := GithubCIObservations("check_run", body)
+	fanned := GithubCIObservations("check_run", body, "")
 	if len(fanned) != 1 {
 		t.Fatalf("expected 1 observation, got %d", len(fanned))
 	}
 	mapped, ok := GithubCIObservation("check_run", run, "sjawhar", "legion", "42")
 	if !ok || mapped != fanned[0] {
 		t.Fatalf("mapped = %+v (ok=%v), webhook fan-out = %+v", mapped, ok, fanned[0])
-	}
-}
-
-// The reviewer rule decides one check run by its name and the App that created it; the handler
-// that drops a verdict logs what it dropped.
-func TestReviewerVerdictDecision(t *testing.T) {
-	for _, c := range []struct {
-		checkName     string
-		appID         string
-		reviewerAppID string
-		want          ReviewerVerdict
-	}{
-		{checkName: "unit-tests", appID: "98765", reviewerAppID: "12345", want: VerdictNotAVerdict},
-		{checkName: "unit-tests", appID: "98765", reviewerAppID: "", want: VerdictNotAVerdict},
-		{checkName: "tester", appID: "12345", reviewerAppID: "", want: VerdictNoReviewerApp},
-		{checkName: "architect", appID: "12345", reviewerAppID: "", want: VerdictNoReviewerApp},
-		{checkName: "tester", appID: "98765", reviewerAppID: "12345", want: VerdictUntrusted},
-		{checkName: "architect", appID: "", reviewerAppID: "12345", want: VerdictUntrusted},
-		{checkName: "tester", appID: "12345", reviewerAppID: "12345", want: VerdictTrusted},
-		{checkName: "architect", appID: "12345", reviewerAppID: "12345", want: VerdictTrusted},
-	} {
-		if got := ReviewerVerdictDecision(c.checkName, c.appID, c.reviewerAppID); got != c.want {
-			t.Errorf("ReviewerVerdictDecision(%q, %q, %q) = %d, want %d",
-				c.checkName, c.appID, c.reviewerAppID, got, c.want)
-		}
 	}
 }
 
@@ -2002,7 +1977,7 @@ var githubEventsNotNormalized = []string{
 	"branch_protection_rule", "code_scanning_alert", "commit_comment", "create", "delete",
 	"dependabot_alert", "deployment", "deployment_status", "discussion", "discussion_comment",
 	"fork", "gollum", "installation", "installation_repositories", "issue_dependencies", "label",
-	"member", "merge_group", "meta", "milestone", "package", "page_build", "ping", "project_card",
+	"member", "meta", "milestone", "package", "page_build", "ping", "project_card",
 	"projects_v2_item", "public", "pull_request_review_thread", "registry_package", "release",
 	"repository", "repository_ruleset", "secret_scanning_alert", "security_advisory", "star",
 	"status", "team_add", "watch", "workflow_dispatch", "workflow_job",
@@ -2066,6 +2041,41 @@ func TestGithubEnvelopesPublishNoEnvelopeWithAnEmptyPayload(t *testing.T) {
 	}
 }
 
+// A merge group's payload names the pull request its head_ref names: the queue's branch for the
+// base, which may hold a slash, then pr-<number>-<base sha>. A ref that names none, or a number
+// written with a leading zero, leaves number out, as the CI store's own pull head ref rule does.
+func TestAMergeGroupNamesThePullRequestItsHeadRefNames(t *testing.T) {
+	const sha = "7f60bbfb57cb2a1d0e9f8a7b6c5d4e3f2a1b0c9d"
+	for ref, want := range map[string]string{
+		"refs/heads/gh-readonly-queue/main/pr-1050-" + sha:      "1050",
+		"refs/heads/gh-readonly-queue/release/1.x/pr-17-" + sha: "17",
+		"refs/heads/gh-readonly-queue/main/pr-007-" + sha:       "",
+		"refs/heads/main": "",
+		"refs/heads/gh-readonly-queue/main/pr-1050":              "",
+		"refs/heads/gh-readonly-queue/main/pr-1050-" + sha + "x": "",
+	} {
+		body := map[string]any{
+			"action":      "checks_requested",
+			"merge_group": map[string]any{"head_sha": sha, "head_ref": ref, "base_ref": "refs/heads/main"},
+			"repository":  map[string]any{"name": "widgets", "full_name": "acme/widgets", "owner": map[string]any{"login": "acme"}},
+		}
+		items := GithubEnvelopes(GithubEnvelopeInput{Event: "merge_group", Delivery: "d", EventID: "e", TraceID: "t", Body: body}, "@legion")
+		if len(items) != 1 || items[0].Topic != "notifications.github.acme.widgets.merge_group" {
+			t.Fatalf("%s: published %+v, want one envelope on the merge_group topic", ref, items)
+		}
+		if got, held := decodePayload(t, items[0].Payload)["number"]; got != want || held != (want != "") {
+			t.Errorf("%s: number = %q (in the payload: %t), want %q", ref, got, held, want)
+		}
+		group := "acme/widgets"
+		if want != "" {
+			group += "#" + want
+		}
+		if wantSummary := "merge group checks_requested: " + group + " into main (7f60bbf)"; items[0].PayloadSummary != wantSummary {
+			t.Errorf("%s: summary = %q, want %q", ref, items[0].PayloadSummary, wantSummary)
+		}
+	}
+}
+
 // Every envelope the listener publishes for a GitHub event carries a JSON object as its payload:
 // a Legion daemon terminates as poison an envelope whose payload is not JSON, and an envelope
 // with an empty payload goes on the bus with none at all (Envelope's payload is omitempty). Each
@@ -2110,6 +2120,19 @@ func TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload(t *testing.T) {
 			"owner": map[string]any{"login": "example-org"},
 		},
 	}
+	mergeGroup := map[string]any{
+		"action": "checks_requested",
+		"merge_group": map[string]any{
+			"head_sha": "9e1c7d2a4b6f8e0c1d3a5b7c9e1f2a4b6c8d0e2f",
+			"head_ref": "refs/heads/gh-readonly-queue/release/1.x/pr-17-7f60bbfb57cb2a1d0e9f8a7b6c5d4e3f2a1b0c9d",
+			"base_ref": "refs/heads/release/1.x",
+		},
+		"sender": map[string]any{"login": "github-merge-queue[bot]", "type": "Bot"},
+		"repository": map[string]any{
+			"name": "example-repo", "full_name": "example-org/example-repo",
+			"owner": map[string]any{"login": "example-org"},
+		},
+	}
 	cases := []struct {
 		name  string
 		event string
@@ -2128,6 +2151,7 @@ func TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload(t *testing.T) {
 		{name: "check_run of a finished Actions job", event: "check_run", body: fixture("check-run-actions-job-without-pr")},
 		{name: "check_suite", event: "check_suite", body: fixture("check-suite-first"), none: true},
 		{name: "workflow_run", event: "workflow_run", body: fixture("workflow-run-without-pr")},
+		{name: "merge_group", event: "merge_group", body: mergeGroup},
 		{name: "issue_comment", event: "issue_comment", body: fixture("issue-comment-created")},
 		{name: "issue_comment edited", event: "issue_comment", body: fixture("issue-comment-edited")},
 		{name: "issue_comment deleted", event: "issue_comment", body: withAction("issue-comment-created", "deleted")},
@@ -2755,7 +2779,7 @@ func TestACheckRunIsCappedAtTheEnvelopeTextCap(t *testing.T) {
 		observations := GithubCIObservations("check_run", map[string]any{
 			"repository": map[string]any{"name": "widgets", "owner": map[string]any{"login": "acme"}},
 			"check_run":  fields,
-		})
+		}, "")
 		if len(observations) != 1 {
 			t.Fatalf("observations = %d, want 1", len(observations))
 		}

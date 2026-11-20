@@ -2,15 +2,13 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
-	"strconv"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -19,23 +17,15 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 )
 
-// reviewerAppID is DISPATCH_REVIEWER_APP_ID as a reconcile pass takes it: the text of the number
-// GitHub's own check run objects carry under app.id, which the pass compares a verdict check's
-// App against (contracts.ReviewerVerdictDecision). Unset it is empty, and the pass then records
-// no `tester` or `architect` check run at all. Anything but a positive decimal number refuses
-// startup naming the variable, as DISPATCH_APP_ID's own reader does (auth.LoadAppFromEnv).
-func reviewerAppID(env settingValues) (string, error) {
-	raw := strings.TrimSpace(env.get("DISPATCH_REVIEWER_APP_ID"))
-	if raw == "" {
-		return "", nil
-	}
-	id, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil || id == 0 {
-		return "", fmt.Errorf("DISPATCH_REVIEWER_APP_ID=%q (expected the review App's numeric ID)", raw)
-	}
-	// The number as GitHub spells it, so a value written with a leading zero still matches the
-	// app.id of the checks the review App posted.
-	return strconv.FormatUint(id, 10), nil
+// verdictAppID is DISPATCH_VERDICT_APP_ID as a reconcile pass takes it, read from the former
+// DISPATCH_REVIEWER_APP_ID while it is unset (contracts.VerdictAppID): the text of the number
+// GitHub's own check run objects carry under app.id, which the pass compares a verdict check's App
+// against (contracts.ReviewerVerdictDecision) and leaves that App's own check suites out of the
+// record by. Unset it is empty, and the pass then records no verdict check run at all. Anything
+// but a positive decimal number refuses startup naming the variable it was read from, as
+// DISPATCH_APP_ID's own reader does (auth.LoadAppFromEnv).
+func verdictAppID(env settingValues) (string, error) {
+	return contracts.VerdictAppID(env.get, "DISPATCH_VERDICT_APP_ID", "DISPATCH_REVIEWER_APP_ID")
 }
 
 // registeredInstance carries this process's row in the registry of live server processes from
@@ -80,7 +70,7 @@ func (r *registeredInstance) get() string {
 // instance is the holder the registration fills in (registeredInstance), which each pass records
 // its row under: the loop starts before the process is registered, so a pass has to ask for the
 // id rather than be handed it.
-func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, reviewer string,
+func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase, verdictApp string,
 	interval time.Duration, instance *registeredInstance) (*cireconcile.Reconciler, error) {
 	if natsClient == nil {
 		return nil, nil
@@ -109,14 +99,14 @@ func ciReconciler(natsClient *bus.Client, database *store.Store, app *auth.AppCo
 		return writer, nil
 	}
 	return &cireconcile.Reconciler{
-		Pool:          database.Pool,
-		GitHub:        github,
-		Limits:        limits,
-		Open:          open,
-		ReviewerAppID: reviewer,
-		Logger:        slog.Default(),
-		Pace:          cireconcile.RequestPace,
-		PassTimeout:   interval,
-		Instance:      instance.get,
+		Pool:         database.Pool,
+		GitHub:       github,
+		Limits:       limits,
+		Open:         open,
+		VerdictAppID: verdictApp,
+		Logger:       slog.Default(),
+		Pace:         cireconcile.RequestPace,
+		PassTimeout:  interval,
+		Instance:     instance.get,
 	}, nil
 }

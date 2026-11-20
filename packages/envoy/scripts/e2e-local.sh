@@ -366,7 +366,7 @@ PORT="${E2E_PORT:-0}" \
   NATS_URLS="$nats_url" \
   ENVOY_WEBHOOKS=github \
   ENVOY_GITHUB_WEBHOOK_SECRET="$webhook_secret" \
-  ENVOY_REVIEWER_APP_ID=1 \
+  ENVOY_VERDICT_APP_ID=1 \
   ENVOY_CI_DEBOUNCE=250ms \
   "$listener_binary" >"$listener_log_file" 2>&1 &
 listener_pid=$!

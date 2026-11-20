@@ -11,7 +11,7 @@ import (
 // after it asks again, finds the App and settles the head. A pass that held the answer for
 // good would leave such a repository unread until the process restarted.
 func TestARepositoryTheAppIsInstalledOnLaterIsReadOnceTheAnswerLapses(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	// The clock is this test's own, read by the pass on the test's goroutine: the answer is
 	// held for an hour, which no test waits out.
 	now := time.Now()
@@ -78,7 +78,7 @@ func TestARepositoryTheAppIsInstalledOnLaterIsReadOnceTheAnswerLapses(t *testing
 // held such a failure for AbsentAppRecheck would leave the repository unread for an hour over one
 // failed request.
 func TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.issueInRepository(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
@@ -129,7 +129,7 @@ func TestALookupGitHubFailedToAnswerIsAskedAgainAtTheNextPass(t *testing.T) {
 // the ETags of a head the order has left are: what the Reconciler keeps follows the
 // repositories mappings and issues name now, not every one an issue has ever named.
 func TestTheAnswerHeldAboutARepositoryTheOrderHasLeftIsForgotten(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.issueInRepository(uninstalledRow)
 	h.listHead()

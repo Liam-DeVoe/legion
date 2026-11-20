@@ -2683,7 +2683,7 @@ environment, in this order:
 | `ENVOY_SENDER_MESSAGE_BURST` | `senderMessageBurst`, when set |
 | `ENVOY_NATS_REPLICAS` | `natsReplicas` |
 | `ENVOY_WEBHOOKS` | `webhooks`, joined with commas, when it lists one |
-| `ENVOY_GITHUB_MENTION_TRIGGER`, `ENVOY_REVIEWER_APP_ID` | `mentionTrigger`, `reviewerAppId`, with `github` |
+| `ENVOY_GITHUB_MENTION_TRIGGER`, `ENVOY_VERDICT_APP_ID` | `mentionTrigger`, `verdictAppId`, with `github` |
 
 ECS injects its secrets from their ARNs: `ENVOY_GITHUB_WEBHOOK_SECRET` with `github`,
 `ENVOY_SLACK_SIGNING_SECRET` with `slack`, `ENVOY_API_TOKEN`, and `NATS_NKEY_SEED` with
@@ -2723,7 +2723,7 @@ Its outputs are `serviceArn`, `serviceName`, `logGroupName`, `taskDefinitionArn`
 | `apiTokenSecretVersionId` | required | The token's secret version. The component only orders the task definition after it, so pass your `SecretVersion`'s `versionId` output: a literal orders nothing. |
 | `seedSecretArn` | unset | The secret holding the seed of the NATS user the listener connects as. Unset, it connects with none. |
 | `webhooks` | required | The webhooks the listener serves: `["github", "slack"]`, or `[]` for none. With `[]` the container carries no webhook's setting or secret, and the listener mounts no webhook route. This version takes no other list. |
-| `githubWebhookSecretArn`, `reviewerAppId`, `mentionTrigger` | with `github` | Required while `webhooks` lists `github`, refused while it does not. |
+| `githubWebhookSecretArn`, `verdictAppId`, `mentionTrigger` | with `github` | Required while `webhooks` lists `github`, refused while it does not. |
 | `slackSigningSecretArn` | with `slack` | Required while `webhooks` lists `slack`, refused while it does not. |
 | `clusterArn`, `executionRoleArn`, `taskRoleArn` | required | The ECS cluster and the task's two roles. |
 | `executionRoleName` | required | The execution role's name, which the read policies attach to. |
@@ -2761,7 +2761,7 @@ the input:
   `-cluster_listen` or `-routes`, and a `configHeader` line holding a line break; an empty
   `subnetIds`; an empty `tailnetTags`; a `baseTags` holding `service`.
 - `aws:WebhookListener`: a `webhooks` not given at all (give `[]` for a listener with no webhook);
-  a webhook's input missing while `webhooks` lists it (a blank `reviewerAppId` or `mentionTrigger`
+  a webhook's input missing while `webhooks` lists it (a blank `verdictAppId` or `mentionTrigger`
   counts as missing) or given while it does not, each input checked before the list; then a
   `webhooks` other than `[]` or exactly `["github", "slack"]`, then a `senderMessagesPerMinute`
   outside 1 to 60000, a `senderMessageBurst` below 1 or one without `senderMessagesPerMinute`; an
@@ -2969,7 +2969,7 @@ listener = envoy_infra.aws.WebhookListener(
     webhooks=["github", "slack"],
     github_webhook_secret_arn=arn + "github-webhook",
     slack_signing_secret_arn=arn + "slack-signing",
-    reviewer_app_id="1234567",
+    verdict_app_id="1234567",
     mention_trigger="@legion",
     cluster_arn=cluster_arn,
     execution_role_arn=execution_role_arn,
@@ -3078,7 +3078,7 @@ authorization {
 ### webhook-listener-env
 
 ```text
-envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--reviewer-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
+envoy-infra render webhook-listener-env --machine-id <id> --nats-url <url>... [--webhook <name>]... [--verdict-app-id <id>] [--mention-trigger <t>] --listen-host <h> --nats-replicas <n> [--sender-messages-per-minute <n>] [--sender-message-burst <n>]
 ```
 
 Prints `aws:WebhookListener`'s container environment, one `KEY=value` line per variable in the
@@ -3086,7 +3086,7 @@ container's order. The secrets ECS injects are not printed. It refuses what the 
 these inputs, and a value holding a line break, which no line could carry:
 
 ```text
-$ envoy-infra render webhook-listener-env --machine-id example-fargate --nats-url nats://example-bus.example-namespace.internal.example:4222 --webhook github --webhook slack --reviewer-app-id 1234567 --mention-trigger @legion --listen-host 0.0.0.0 --nats-replicas 1
+$ envoy-infra render webhook-listener-env --machine-id example-fargate --nats-url nats://example-bus.example-namespace.internal.example:4222 --webhook github --webhook slack --verdict-app-id 1234567 --mention-trigger @legion --listen-host 0.0.0.0 --nats-replicas 1
 PORT=9020
 ENVOY_LISTEN_HOST=0.0.0.0
 ENVOY_MACHINE_ID=example-fargate
@@ -3095,14 +3095,14 @@ ENVOY_ALLOW_REMOTE_NATS=1
 ENVOY_NATS_REPLICAS=1
 ENVOY_WEBHOOKS=github,slack
 ENVOY_GITHUB_MENTION_TRIGGER=@legion
-ENVOY_REVIEWER_APP_ID=1234567
+ENVOY_VERDICT_APP_ID=1234567
 ```
 
 With no `--webhook`, it prints no `ENVOY_WEBHOOKS` line and no GitHub lines, as the component writes
-none for `webhooks: []`, and refuses `--reviewer-app-id` and `--mention-trigger`.
+none for `webhooks: []`, and refuses `--verdict-app-id` and `--mention-trigger`.
 
-Without `--reviewer-app-id`, it prints
-`refused: --reviewer-app-id: reviewerAppId is required with webhook "github"` and exits 2.
+Without `--verdict-app-id`, it prints
+`refused: --verdict-app-id: verdictAppId is required with webhook "github"` and exits 2.
 
 `--sender-messages-per-minute` and `--sender-message-burst` set `senderMessagesPerMinute` and
 `senderMessageBurst`. Each prints its variable, `ENVOY_SENDER_MESSAGES_PER_MINUTE` or

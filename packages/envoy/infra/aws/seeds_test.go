@@ -334,9 +334,9 @@ func listenerSeedRows() []seedRow[envoyaws.WebhookListenerArgs] {
 		}},
 		{input: "region", set: func(a *A, s bool) string { a.Region = pick(s, testSeed, "example-region-2"); return a.Region }},
 		{input: "webhooks[1]", set: func(a *A, s bool) string { a.Webhooks[1] = pick(s, testSeed, "slack"); return a.Webhooks[1] }},
-		{input: "reviewerAppId", set: func(a *A, s bool) string {
-			a.ReviewerAppId = pulumi.StringRef(pick(s, testSeed, "7654321"))
-			return *a.ReviewerAppId
+		{input: "verdictAppId", set: func(a *A, s bool) string {
+			a.VerdictAppId = pulumi.StringRef(pick(s, testSeed, "7654321"))
+			return *a.VerdictAppId
 		}},
 		{input: "cloudMapServiceName", set: func(a *A, s bool) string {
 			a.CloudMapServiceName = pick(s, lowerSeed, "example-other-hooks")

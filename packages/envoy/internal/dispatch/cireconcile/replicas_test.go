@@ -16,7 +16,7 @@ import (
 // compare-and-swap of an observation GitHub already holds -- so what the lease saves is the
 // App's budget.
 func TestOneProcessServesEachPeriod(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
@@ -60,7 +60,7 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 // installations, not a process, and warns that requests sent inside a limit may get the
 // integration banned.
 func TestARecordedLimitStopsEveryProcess(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	// GitHub refuses the head's Checks fields to a query, so the pass reads it over REST, which
@@ -109,7 +109,7 @@ func TestARecordedLimitStopsEveryProcess(t *testing.T) {
 // line, saying it was rate-limited, under which scope, and when GitHub will take a request again.
 // An alarm reads the pass by that line alone.
 func TestTheStopIsInThePassLine(t *testing.T) {
-	h := newHarness(t, reviewerAppID)
+	h := newHarness(t, verdictAppID)
 	h.mapRepository(rowRepository)
 	h.listHead()
 	h.github.refuseChecks(gitHubRepository, headSHA)

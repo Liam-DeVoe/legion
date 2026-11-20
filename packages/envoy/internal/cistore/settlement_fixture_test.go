@@ -66,10 +66,10 @@ type fixtureRun struct {
 // group is a list of check names. Passed is compared only where the fixture writes it, since
 // listener-rules.json leaves it out; an absent failed, cancelled or skipped group is an empty one.
 type settlementFixture struct {
-	ReviewerAppID string                       `json:"reviewerAppId"`
-	CheckRuns     []map[string]json.RawMessage `json:"checkRuns"`
-	Statuses      []map[string]any             `json:"statuses"`
-	Settlement    struct {
+	VerdictAppID string                       `json:"verdictAppId"`
+	CheckRuns    []map[string]json.RawMessage `json:"checkRuns"`
+	Statuses     []map[string]any             `json:"statuses"`
+	Settlement   struct {
 		CheckRuns []fixtureRun    `json:"check_runs"`
 		Failed    []fixtureName   `json:"failed"`
 		Cancelled []fixtureName   `json:"cancelled"`
@@ -102,7 +102,7 @@ type fixtureHead struct {
 // packages/contracts/fixtures/checks-settlement/listener-rules.json says (settlesAsTheFixtureSays):
 // the settlement names each check's highest-id run with GitHub's conclusion word of that run, an
 // unknown future word passed on as it is, its name cut as the store keys it, the failed, cancelled
-// and skipped checks, a tester or architect run only from the reviewer App, and each terminal
+// and skipped checks, a tester or architect run only from the verdict App, and each terminal
 // status with its state and its created_at, apart from the check runs. The Legion daemon's pass
 // that built a settlement from this fixture went with its own periodic reads of GitHub
 // (dispatch://INFRA-714 R1). A rule changed here and not in the listener fails this test, and a
@@ -138,7 +138,7 @@ func TestTheListenerSettlesACapturedHeadAsItsFixtureSays(t *testing.T) {
 
 // settlesAsTheFixtureSays delivers a fixture's check runs and statuses on head and fails unless
 // the listener settles them as the fixture says. Each run is delivered as its check_run webhook
-// through the real handler, configured with the fixture's reviewer App, into the real CI store;
+// through the real handler, configured with the fixture's verdict App, into the real CI store;
 // each status the reconcile's mapping keeps is recorded by a writer of the same bucket, and the
 // states of the statuses it keeps none of are wantUnrecorded. The summary loop's settlement must
 // name the fixture's check_runs entries, each with its name, its run's id and GitHub's conclusion
@@ -188,7 +188,7 @@ func settlesAsTheFixtureSays(t *testing.T, fixture settlementFixture, head fixtu
 		t.Fatalf("open the reconcile's writer: %v", err)
 	}
 	const secret = "s"
-	handler := webhook.GitHubHandler(secret, "@legion", fixture.ReviewerAppID, client, store)
+	handler := webhook.GitHubHandler(secret, "@legion", fixture.VerdictAppID, client, store)
 	loopCtx, loopCancel := context.WithCancel(ctx)
 	defer loopCancel()
 	cistore.StartSummaryLoop(loopCtx, store, client, 300*time.Millisecond, 20*time.Millisecond, metrics.New().NewGauge("held", ""), logging.New("fixture"))
