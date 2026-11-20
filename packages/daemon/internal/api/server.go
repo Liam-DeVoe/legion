@@ -282,6 +282,11 @@ type Options struct {
 	// claim route `POST /legion/v1/claims/activity` writes. Nil answers that route 500 and
 	// changes nothing else.
 	ClaimActivity ClaimActivityStore
+	// GateRegistrationRead is told of each register_gate call once every Dispatch read it makes
+	// is made and before its fact is applied: the issue it registers, on the route's own context
+	// and goroutine, so the registration waits for it to return. It is a test's seam alone, to act
+	// on Dispatch between a registration's reads and its commit; nil, the daemon's, tells no one.
+	GateRegistrationRead func(ctx context.Context, issue string)
 	// Pause is the project's pause service (internal/pause's Service), which the four pause and
 	// resume routes act through and whose flag the claim routes read to refuse a turn while the
 	// project is paused (refusedWhilePaused). Nil is a daemon with no workflow, which has no pause:
@@ -387,6 +392,8 @@ type server struct {
 	roleHoldersChanged func(ctx context.Context, c supervise.Claim) error
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
+	// gateRead is Options.GateRegistrationRead.
+	gateRead func(ctx context.Context, issue string)
 	// pause is Options.Pause, nil for a daemon with no workflow.
 	pause PauseService
 	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
@@ -458,6 +465,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		roleHoldersChanged: opts.RoleHoldersChanged,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
+		gateRead:           opts.GateRegistrationRead,
 		pause:              opts.Pause,
 		readiness:          opts.Ready,
 		log:                opts.Log,
@@ -901,9 +909,14 @@ func statementBound(bound time.Duration) int64 {
 // served every issue without `assignments` (withoutAssignments); a caller below
 // entryTimesContract, the contract that added the two times of the task that entry was queued
 // as and the arms of the architect-stalled reading that hold for a root, is served it without
-// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); and a caller
-// below pauseContract, the contract that added the project's pause, is served it without
-// `paused` and `lastPause` (withoutPause).
+// `entryQueuedAt`, `entryConfirmedAt` and `architectStalls` (withoutEntryTimes); a caller below
+// pauseContract, the contract that added the project's pause, is served it without `paused` and
+// `lastPause` (withoutPause); and a caller below gateBasisContract, the contract that let a root's
+// gated step stand open on an ancestor's approval or wait on an ancestor's approval request,
+// served each root whether its tree runs and added the phase awaiting_children, is served it
+// without `treeRuns`, without the `gatedSteps` of an issue any step of which reads
+// `open_on_basis` or `pending_on_basis`, and with an issue in awaiting_children read as
+// `admitted` and that held word as `children_first` (withoutGateBasis).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -993,20 +1006,24 @@ type stateNarrowing struct {
 // stateNarrowings are the narrowings, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
 // order is the history of the route and nothing a strip depends on, so a row added at the end
-// needs no reading of the rows before it. Three rows do touch one key, and they are the reason
-// this sentence names them rather than claiming none: waitingLineContract's row drops the
-// issues' `waitingLine` whole, whyAndLineFieldsContract's takes the members that contract added
-// from inside that same field, `kind` among them, and waitingOnIssueContract's takes `kind` from
-// the members of one kind. They still do not depend on their order, because each takes something
-// out and none puts anything back or reads what another left: a caller below the lowest is
-// served no `waitingLine` at all whichever runs first, the later ones then finding the key gone
-// and doing nothing; a caller between the lowest and the middle one keeps the field with its
-// `place` and its `length` alone, which no word of `kind` is left in; and a caller below only
-// the highest keeps every field but that one word. A later row that takes something out of a
-// field an earlier row drops whole is sound on those same terms; one that puts a key back, or
-// reads what an earlier row left, is not, and this table is the wrong shape for it. The order is
-// kept beyond that so a reader of this table and a reader of version.go walk the contracts the
-// same way.
+// needs no reading of the rows before it. Some rows do touch one key, and they are the reason
+// this sentence names them rather than claiming none. Three touch the issues' `waitingLine`:
+// waitingLineContract's row drops it whole, whyAndLineFieldsContract's takes the members that
+// contract added from inside it, `kind` among them, and waitingOnIssueContract's takes `kind`
+// from the members of one kind. Two touch the issues' `gatedSteps`: gatedStepsContract's row
+// drops it whole, and gateBasisContract's takes it off the issues one of whose steps stands on
+// an ancestor's basis. And two touch `admission.held`: heldContract's row drops it whole, and
+// gateBasisContract's writes `children_first` over the `awaiting_children` of its members. They
+// still do not depend on their order, because each takes something out or puts an older word in
+// a newer one's place, and none puts a key back or reads what another left: a caller below the
+// lowest row of a key is served no such key at all whichever runs first, the later rows then
+// finding it gone and doing nothing; a caller between the lowest and the middle row of
+// `waitingLine` keeps the field with its `place` and its `length` alone, which no word of `kind`
+// is left in; and a caller below only the highest row of a key keeps every part of it but what
+// that row takes or rewrites. A later row that takes something out of a field an earlier row
+// drops whole is sound on those same terms; one that puts a key back, or reads what an earlier
+// row left, is not, and this table is the wrong shape for it. The order is kept beyond that so a
+// reader of this table and a reader of version.go walk the contracts the same way.
 var stateNarrowings = []stateNarrowing{
 	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
 	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},
@@ -1033,6 +1050,9 @@ var stateNarrowings = []stateNarrowing{
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 	{entryTimesContract, carriesEntryTimes, withoutEntryTimes, "the issues' entryQueuedAt, entryConfirmedAt and architectStalls"},
 	{pauseContract, carriesPause, withoutPause, "paused and lastPause"},
+	{gateBasisContract, carriesGateBasis, withoutGateBasis, "the issues' treeRuns, the gatedSteps " +
+		"of every issue with a step open or pending on an ancestor's basis, and the awaiting_children " +
+		"phase and held word read as admitted and children_first"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -1168,10 +1188,10 @@ const phaseEntriesContract = 94
 // one measure: a caller served the movement without the quiet time beside it, or the other way
 // about, would hold half of what one read of the tree said. Every later row of stateNarrowings
 // stands above it — waitingOnIssueContract's, whose strip takes a word of the line's `kind` and
-// no key, then mergeWaitContract's, assignmentsContract's and entryTimesContract's, the last
-// this daemon's own contract — so a caller from it up is served the measure, and none of what a
-// later row adds until it reaches that row's contract (123, INFRA-3146's contract, moves no
-// shape of the state).
+// no key, then mergeWaitContract's, assignmentsContract's, entryTimesContract's, pauseContract's
+// and gateBasisContract's, the last this daemon's own contract — so a caller from it up is served
+// the measure, and none of what a later row adds until it reaches that row's contract (123,
+// INFRA-3146's contract, moves no shape of the state).
 const quietTimeContract = 111
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
@@ -1181,7 +1201,12 @@ const quietTimeContract = 111
 // INFRA-3146's 123 among them, reads `kind` with a `z.enum` of the four words before it, which
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
-// optional.
+// optional. mergeWaitContract, assignmentsContract, entryTimesContract, pauseContract and
+// gateBasisContract stand above it, so a caller in a pod at 132 through 188 is served the word and
+// neither `treeRuns` nor the gated steps of an issue a step of which stands on a basis, one at 132
+// through 177 no `paused` or `lastPause` either, one at 132 through 145 no `entryQueuedAt`,
+// `entryConfirmedAt` or `architectStalls` either, one at 132 through 140 no `assignments` either,
+// and one at 132 no `mergeWait` either.
 const waitingOnIssueContract = 132
 
 // mergeWaitContract is the daemon contract that added `mergeWait`, what a reviewing issue's
@@ -1225,6 +1250,32 @@ const entryTimesContract = 146
 // did not ask for it rather than what keeps such a caller reading at all. The two are one band: a
 // state carries one of them at most, and both describe the one pause record.
 const pauseContract = 178
+
+// gateBasisContract is the daemon contract that let a root's gated step stand open on an
+// ancestor's approval or wait on an ancestor's approval request (version.go's 189,
+// dispatch://INFRA-3320, R1 and R2), and served each root whether its tree runs. It added the
+// gated step's `basis` and the two status words `open_on_basis` and `pending_on_basis`, and each
+// root's `treeRuns`. A plugin before it is served the state without `treeRuns`, which one built
+// before sjawhar/legion#2788 would refuse the whole body for and one built after strips; and
+// without the `gatedSteps` of every issue any step of which reads one of the two words, since a
+// plugin of any contract from gatedStepsContract on reads `status` with an enum of the four words
+// before them and refuses the whole body for a fifth, and no word of those four is true of such a
+// step: `waiting` would send its architect to ask a person for an approval of its own, and
+// `approved` names a person's approval no person gave. The issue keeps every other key, and its
+// `designGate` among them. The same contract added the phase awaiting_children and the held word
+// of that name (R13), which a plugin before it knows neither of, so it is served them as
+// `admitted` and `children_first`, the values the wait replaced (withoutGateBasis). It is the
+// highest of the bands, this daemon's own contract, so of the pods whose claims record a contract
+// only one at it is served the basis, `treeRuns` and the two words; a pod whose claims record none
+// and a caller in no pod are served the state as it is (stateFor). pauseContract stands right
+// below it, and the two rows touch no key of each other's: withoutPause takes the state's `paused`
+// and `lastPause`, and withoutGateBasis takes `treeRuns` and some `gatedSteps` and reads the phase
+// and the held word, so a caller at 178 through 188 is served the pause and none of this
+// contract's keys and words. entryTimesContract stands below pauseContract, and no row of the
+// three reads a key another takes, so a caller at 146 through 177 is served both times and
+// `architectStalls` and neither the pause nor this contract's, and a caller below 146 none of the
+// three.
+const gateBasisContract = 189
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1569,6 +1620,77 @@ func withoutEntryTimes(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// carriesGateBasis is whether any issue of state carries `treeRuns` or a gated step on an
+// ancestor's basis (issueStandsOnBasis), the two things gateBasisContract added, or a value this
+// contract's value pass narrows for an older caller: an issue in phase awaiting_children, or a
+// held entry whose reason is awaiting_children (withoutGateBasis rewrites both). The projection
+// writes `treeRuns` on every root it records, so this is all but always true; it is asked rather
+// than answered true so that a state with no root is served as it is.
+func carriesGateBasis(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.TreeRuns != nil || issueStandsOnBasis(issue) || issue.Phase == phase.AwaitingChildren {
+			return true
+		}
+	}
+	return slices.ContainsFunc(state.Admission.Held, heldOnChildren)
+}
+
+// issueStandsOnBasis is whether any gated step of issue reads `open_on_basis` or
+// `pending_on_basis`. It is what both the question asked of the whole state and the strip below
+// read, so the two never part company over which issue loses its gated steps.
+func issueStandsOnBasis(issue Issue) bool {
+	return slices.ContainsFunc(issue.GatedSteps, func(step GatedStepView) bool {
+		return step.Status == GatedStepOpenOnBasis || step.Status == GatedStepPendingOnBasis
+	})
+}
+
+// heldOnChildren is whether held is a held entry whose reason is awaiting_children, which both the
+// question asked of the whole state and the strip below read.
+func heldOnChildren(held HeldIssue) bool {
+	return held.Reason == record.HeldAwaitingChildren
+}
+
+// withoutGateBasis is state with no issue carrying `treeRuns`, and no issue carrying
+// `gatedSteps` whose steps stand on an ancestor's basis (issueStandsOnBasis), which is everything
+// gateBasisContract added to the route: a step's `basis` rides only on a step of those two words.
+// Every other issue keeps its gated steps whole.
+//
+// This contract's value pass rides on the same row, since both strip for the same caller: an issue
+// in phase awaiting_children reads `admitted` and a held entry whose reason is awaiting_children
+// reads `children_first` (dispatch://INFRA-3320 R13). A caller below this contract knows neither
+// word — its phase enum and its held words are the ones before this change — so it is served the
+// value the wait replaced: `admitted` names no worker's phase, which is what R13 gives such a
+// caller, and `children_first` is the held word a started parent's wait took over. No other
+// strictly read value can carry the phase: `heldFrom` is null in awaiting_children (the shape
+// check) and a hold never comes from it, and no task is queued for a phase no role works, so
+// `pendingTask.phase` cannot name it either. The issue map and the held list are copied, so the
+// state the source answered is left as it was.
+func withoutGateBasis(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.TreeRuns = nil
+		if issueStandsOnBasis(issue) {
+			issue.GatedSteps = nil
+		}
+		if issue.Phase == phase.AwaitingChildren {
+			issue.Phase = phase.Admitted
+		}
+		issues[key] = issue
+	}
+	state.Issues = issues
+	if slices.ContainsFunc(state.Admission.Held, heldOnChildren) {
+		held := make([]HeldIssue, len(state.Admission.Held))
+		for i, h := range state.Admission.Held {
+			if heldOnChildren(h) {
+				h.Reason = record.HeldChildrenFirst
+			}
+			held[i] = h
+		}
+		state.Admission.Held = held
+	}
 	return state
 }
 

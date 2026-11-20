@@ -737,7 +737,10 @@ func (s *server) retryStart(w http.ResponseWriter, r *http.Request, m *supervise
 // while the fresh session has started the claim before it gets here and answers success with
 // the refusal named in it (freshSession). A restart that leaves the issue held relaunched
 // nothing (a lingering tree's members stay where they stood), so it is refused naming the issue
-// rather than reported as a restart.
+// rather than reported as a restart. So is one that moved the issue to awaiting_children: a
+// Dispatch child of it is open, so the workflow started no phase of it and holds the start
+// instead (workflow's awaitChildren, dispatch://INFRA-3320 R9), and the answer says that the issue
+// waits on its children, naming them through the reason the held start keeps.
 func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c supervise.Claim, fresh bool) (status int, refusal string, restarted bool) {
 	if !isPhaseWorker(c.Role) || s.pool == nil || s.roleFor == nil {
 		return 0, "", false
@@ -773,6 +776,10 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 	}
 	if after != nil && after.Phase == phase.Held {
 		return http.StatusConflict, fmt.Sprintf("%s is still held after the retry of its phase %s, so nothing relaunched %s: its tree lingers, and a lingering tree's members stay where they stood", c.Issue, working, token), true
+	}
+	if after != nil && after.Phase == phase.AwaitingChildren && after.ChildrenWait != nil {
+		return http.StatusConflict, fmt.Sprintf("%s waits on its open children after the retry of its phase %s, so no phase of it was started for %s: the retry moved it to awaiting_children, holding the start of %s (%s), and the daemon goes back to that start by itself once no Dispatch child of %s is open",
+			c.Issue, working, token, after.ChildrenWait.Start, after.ChildrenWait.Reason, c.Issue), true
 	}
 	s.log.Info("api: a retry restarted a phase", "claim", token, "issue", c.Issue, "phase", working)
 	return http.StatusAccepted, "", true

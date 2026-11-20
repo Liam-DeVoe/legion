@@ -630,6 +630,11 @@ jobs:
               - 'packages/envoy/natsgrant/*'
               # The cobra conformance harness cmd/legion's tests drive the built legion with.
               - 'packages/envoy/clitest/*'
+              # dispatchblocks is the one public door onto the Dispatch server's own document
+              # reader, which register_gate reads an ancestor's requirement blocks and a root's
+              # checks with (packages/daemon/internal/api): internal/dispatch/pmdoc is in the
+              # daemon's build through it as well.
+              - 'packages/envoy/dispatchblocks/*'
               # dispatchbody is the one public door onto the Dispatch server's own block
               # splitter, which the daemon refuses a close reason or a READY packet the server
               # would refuse with (packages/daemon/internal/api): internal/dispatch/itemblocks
@@ -896,6 +901,10 @@ jobs:
               - 'packages/daemon/internal/workspace/*'
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/brokerclient/*'
+              # packages/envoy/dispatchblocks reads a document version's typed blocks with the
+              # server's own reader, which register_gate's basis check reads (packages/daemon/
+              # internal/api): the document parser under it comes with it.
+              - 'packages/envoy/dispatchblocks/*'
               # packages/envoy/dispatchbody answers whether Dispatch would refuse a body with the
               # server's own splitter, which the close route and the merger's READY completion
               # hold their text to (packages/daemon/internal/api): the splitter, the document
@@ -1096,9 +1105,11 @@ jobs:
               - '!packages/daemon/internal/daemon/live_issue_proof_test.go'
               - '!packages/daemon/internal/daemon/localruntime_live_test.go'
               - '!packages/daemon/internal/daemon/merge_wait_readable_live_test.go'
+              - '!packages/daemon/internal/daemon/parent_waits_live_test.go'
               - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
               - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
               - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
+              - '!packages/daemon/internal/daemon/register_gate_basis_live_test.go'
               - '!packages/daemon/internal/daemon/review_range_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
@@ -1144,6 +1155,7 @@ jobs:
               - 'packages/daemon/**'
               - *dispatch_server
               - 'packages/envoy/natsgrant/*'
+              - 'packages/envoy/dispatchblocks/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testport/*'
@@ -1196,9 +1208,11 @@ jobs:
               - '!packages/daemon/internal/daemon/live_issue_proof_test.go'
               - '!packages/daemon/internal/daemon/localruntime_live_test.go'
               - '!packages/daemon/internal/daemon/merge_wait_readable_live_test.go'
+              - '!packages/daemon/internal/daemon/parent_waits_live_test.go'
               - '!packages/daemon/internal/daemon/phase_entry_converge_live_test.go'
               - '!packages/daemon/internal/daemon/plan_ratings_live_test.go'
               - '!packages/daemon/internal/daemon/provider_error_retry_live_test.go'
+              - '!packages/daemon/internal/daemon/register_gate_basis_live_test.go'
               - '!packages/daemon/internal/daemon/review_range_live_test.go'
               - '!packages/daemon/internal/daemon/role_prompt_rule_live_test.go'
               - '!packages/daemon/internal/daemon/share_volumes_live_test.go'
@@ -2453,9 +2467,11 @@ jobs:
               - 'packages/envoy-client/src/**'
               # extensions/legion-role-claim.test.ts:46 reaches the Envoy plugin's own test helper
               # for a registration answer (packages/envoy-client/test/subscribe-answer.ts), which
-              # packages/pi-shared/test/omp-harness.ts:17 imports too, so the tsc program of this
-              # package compiles that file and the tests read it.
+              # packages/pi-shared/test/omp-harness.ts:17 imports too, and src/tools.test.ts its
+              # fake Dispatch (packages/envoy-client/test/fake-dispatch.ts), so the tsc program of
+              # this package compiles both files and the tests read them.
               - 'packages/envoy-client/test/subscribe-answer.ts'
+              - 'packages/envoy-client/test/fake-dispatch.ts'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
@@ -2485,9 +2501,12 @@ jobs:
               - 'packages/daemon/internal/**'
               # daemon-pane.go compiles the daemon module, which reaches these envoy packages:
               # the migration identifier rule, the generated session timings the daemon reads
-              # through their one public package, and the Dispatch body check the close route and
+              # through their one public package, the Dispatch body check the close route and
               # the merger's READY completion make with the server's own splitter
-              # (packages/envoy/dispatchbody, and the parser and contracts under it).
+              # (packages/envoy/dispatchbody, and the parser and contracts under it), and the
+              # document reader register_gate's basis check reads blocks with
+              # (packages/envoy/dispatchblocks).
+              - 'packages/envoy/dispatchblocks/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/contracts/*'
               # internal/contracts mints an envelope's ids through it (message_envelope.go).
@@ -3835,6 +3854,7 @@ jobs:
               - '!packages/envoy/cmd/natsprobe/**/*_test.go'
               - '!packages/envoy/cmd/natstail/**/*_test.go'
               - '!packages/envoy/cmd/spec-check/**/*_test.go'
+              - '!packages/envoy/dispatchblocks/**/*_test.go'
               - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/**/*_test.go'
@@ -4246,6 +4266,7 @@ jobs:
               - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/clitest/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
+              - '!packages/envoy/dispatchblocks/**/*_test.go'
               - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/**/*_test.go'
@@ -4517,6 +4538,10 @@ jobs:
               - 'packages/daemon/internal/workspace/*'
               - 'packages/envoy/brokeraddr/*'
               - 'packages/envoy/brokerclient/*'
+              # packages/envoy/dispatchblocks reads a document version's typed blocks with the
+              # server's own reader, which register_gate's basis check reads (packages/daemon/
+              # internal/api): the document parser under it comes with it.
+              - 'packages/envoy/dispatchblocks/*'
               # packages/envoy/dispatchbody answers whether Dispatch would refuse a body with the
               # server's own splitter, which the close route and the merger's READY completion
               # hold their text to (packages/daemon/internal/api): the splitter, the document
@@ -4790,6 +4815,7 @@ jobs:
               - '!packages/envoy/brokeraddr/**/*_test.go'
               - '!packages/envoy/clitest/**/*_test.go'
               - '!packages/envoy/cmd/**/*_test.go'
+              - '!packages/envoy/dispatchblocks/**/*_test.go'
               - '!packages/envoy/dispatchbody/**/*_test.go'
               - '!packages/envoy/going/**/*_test.go'
               - '!packages/envoy/infra/aws/**/*_test.go'
@@ -4903,6 +4929,7 @@ jobs:
               - 'packages/envoy/clitest/**'
               - 'packages/envoy/cmd/**'
               - 'packages/envoy/deploy/**'
+              - 'packages/envoy/dispatchblocks/**'
               - 'packages/envoy/dispatchbody/**'
               - 'packages/envoy/docker/**'
               - 'packages/envoy/docs/**'

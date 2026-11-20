@@ -382,6 +382,11 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // head the merge names is final and no push from it is code on its way (classify.CodeOnItsWay). A
 // merge that names no head leaves the recorded head and its pushes.
 //
+// A merge also ends a parent's debt of a forward merge of its children's work
+// (record.Issue.ForwardMergeOwed): there is no branch left to merge the default branch into, so
+// the return from a wait on the children keeps the path of a merged pull request
+// (dispatch://INFRA-3320 R12).
+//
 // In reviewing, after the architect's notice, the merge settles the review round (settleRound):
 // an approval that stands on the head the pull request merged at ends the round and moves the
 // issue to accepting, since a merged pull request leaves the round nothing to wait on
@@ -409,6 +414,12 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
+	}
+	if issue.ForwardMergeOwed {
+		issue.ForwardMergeOwed = false
+		if err := e.store.PutIssue(ctx, tx, *issue); err != nil {
+			return intake.Result{}, err
+		}
 	}
 	if awaitsMerge(*issue) {
 		return intake.Result{}, e.closeMergedTelling(ctx, tx, *issue, pr)

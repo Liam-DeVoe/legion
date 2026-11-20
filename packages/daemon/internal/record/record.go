@@ -262,6 +262,27 @@ type Issue struct {
 	// that queues the notice, and PutIssue keeps the stored value as it does for moved_at: every
 	// pass that records an issue holds a copy read before its own telling.
 	TreeStalledToldAt *time.Time
+	// ViewOf is the ancestor whose requirement blocks the issue's spec is a view on (the view
+	// fact of dispatch://INFRA-3320 R4): the nearest reviewed ancestor that marks requirement
+	// blocks, written at each registration of the issue's spec step, "" where there is none. It
+	// belongs to the issue whose documents were read, so a step a hand-over carries to a child
+	// carries none.
+	ViewOf string
+	// ChildrenWait is the phase start a parent held when it entered awaiting_children, nil in every
+	// other phase: the two change together, as Awaiting and awaiting_person do.
+	ChildrenWait *ChildrenWait
+	// ForwardMergeOwed is whether the parent still owes a forward merge of its children's work. It
+	// is set whenever a parent enters awaiting_children (workflow's awaitChildren), and after the
+	// return every task of the implementing phase that owes it asks for the merge (workflow's
+	// withForwardMerge). Writing such a task clears nothing: the flag stays set until the
+	// implementer completes that round (workflow's settleForwardMerge), and a merged pull request
+	// clears it too (dispatch://INFRA-3320 R12). It outlives the phase, so PutIssue carries it on
+	// every write.
+	ForwardMergeOwed bool
+	// ChildrenWaitedAt is when the parent last moved into awaiting_children, nil for a parent that
+	// never did. It outlives the phase, which the late-completion guard needs: it refuses a
+	// completion of a phase whose entry was raised before this moment (workflow's leftItsPhase).
+	ChildrenWaitedAt *time.Time
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -398,6 +419,22 @@ const (
 	// person's own note, kept on the ask's mirror row (RootAsk.Decline).
 	AnsweredByDecline Answer = "declined"
 )
+
+// ChildrenWait is the phase start a parent held when it entered awaiting_children because a
+// Dispatch child of it was still open (Issue.ChildrenWait), nil in every other phase: the two
+// change together, as Hold and held do. Start is the phase whose start was held — planning,
+// implementing, testing, reviewing or accepting; Task the task its transition wrote and Reason
+// that transition's reason, which the return names (dispatch://INFRA-3320 R12); and Since when
+// the wait on the children began. The daemon resumes the parent from this when no open child is
+// left (workflow's ReturnFromChildren): a held planning or implementing starts that phase, and a
+// held testing, reviewing or accepting starts implementing in its place, unless the pull request
+// merged during the wait, when the start goes back as it was held.
+type ChildrenWait struct {
+	Start  phase.Phase
+	Task   string
+	Reason string
+	Since  time.Time
+}
 
 // ParkedDecision is a person's decision on a tree nobody in it could hear, which the daemon
 // relayed to the controller (a parked-decision notice) or kept for a root that waits for its slot
@@ -692,6 +729,22 @@ type PhaseRow struct {
 	// re-entered without one, so a fence on the count would refuse the case the route exists to
 	// take.
 	EntryMovedBack bool
+	// EntryFrom is the phase the start that raised that entry moved the issue from, written beside
+	// the four fields above in the same transaction (workflow's start and enter): the phase a
+	// transition left, and awaiting_children for the return from a wait on the children. It is
+	// "" where no move raised the entry: the promotion's start of a mid-phase worker a re-admitted
+	// tree brings back, which hands the role the phase it already stands in, and every row a
+	// daemon upgraded in place found. Like the entry it is never reset: ClearGeneration leaves it
+	// with the number it belongs to.
+	//
+	// The admission pass and the release of a hold read it (workflow's acceptedEntry, through
+	// StopForChildren and retryPhase): an entry raised by a move out of retro or merging — a role's
+	// move back after the daemon accepted the issue — is no start the rule on a parent's open
+	// children holds, since that rule holds only the starts each from a phase before retro
+	// (dispatch://INFRA-3320 R9), so the pass leaves a parent standing on such an entry where it
+	// stands, and a retry restarts the held phase on it. The role's next entry, raised by a move
+	// from a phase before retro, ends that.
+	EntryFrom phase.Phase
 }
 
 // Completed says whether the role completed its current phase: its completion reported a commit
@@ -978,9 +1031,9 @@ type PullRequest struct {
 	// ask that replaces the one the record holds - of a new head whose conflict was confirmed, or
 	// of the same head asked again on a phase entry - carries that ask's Earlier, and the ask
 	// itself, its head and the head that landed, once it landed.
-	// What clears it: any transition into implementing, the issue leaving the workflow, and a new
-	// generation (Store.ClearGeneration), since it is an ask of the run before. That ends the
-	// stretch of work, Earlier with it.
+	// What clears it: any transition into implementing, a move into awaiting_children, the issue
+	// leaving the workflow, and a new generation (Store.ClearGeneration), since it is an ask of the
+	// run before. That ends the stretch of work, Earlier with it.
 	//
 	// Who reads it: Engine.mergeForward, which asks once for each head, so a later confirmed
 	// conflict or a transition at the head it names sends nothing (an ask made in implementing
@@ -1463,6 +1516,16 @@ func StepWords() string {
 // reason. An approval clears the told record and a changes request clears the approval, so the two
 // marks never stand together: the one that is set is the gate's newest applied review
 // (classify.LatestReview).
+//
+// A step can also stand open on an ancestor's approval rather than on a person's approval of the
+// issue's own document (dispatch://INFRA-3320, R1 to R3), or wait, closed, on an ancestor's open
+// approval request: Basis records either. While a basis stands, ApprovedVersion is the version the
+// root registered and ApprovedMark is empty, so every reader of whether the step is open
+// (GateOpen) reads it open with no rule of its own; a person's approval of an earlier version of
+// the issue's own document is held apart in KeptPerson, and every reader that names a person's
+// approval reads ApprovedByPerson rather than ApprovedVersion. The transitions are written once,
+// in gate_basis.go (OpenOnBasis, PendOnBasis, OpenPendingBasis, CloseBasis, EndPendingBasis) and
+// in classify.ApplyDesignGateEvent, and no caller sets the three fields itself.
 type DesignGate struct {
 	Issue string
 	// Step is the document of Issue this gate holds, and the second half of the record's key: one
@@ -1475,8 +1538,9 @@ type DesignGate struct {
 	ToldChangesVersion *int
 	ToldChangesReason  string
 	ToldChangesMark    EventMark
-	// EverOpened records that a human approved the gate's document version at some point in this
-	// generation of the issue, whether or not the gate stands open now. Nothing else remembers it:
+	// EverOpened records that the gate's document version was approved at some point in this
+	// generation of the issue, by a human or by the ancestor's approval a basis opened it on,
+	// whether or not the gate stands open now. Nothing else remembers it:
 	// classify.DesignGateOpen is point-in-time, reading the approval against LatestVersion as both
 	// stand, and a changes request clears ApprovedVersion, so a gate that opened and was sent back
 	// reads exactly like one that never opened. Under the children-first rule a root stays at
@@ -1486,6 +1550,82 @@ type DesignGate struct {
 	// root's architect writes its spec again: the mark belongs to the generation whose approval it
 	// records.
 	EverOpened bool
+	// Basis is the ancestor's approval the step stands open on (OnBasis), or, while its Pending is
+	// set, the ancestor's approval request the step waits on with the step closed
+	// (PendingOnBasis). It is nil for a step no basis opened or waits on, which is every step
+	// registered without one, and for a step whose basis has ended.
+	Basis *GateBasis
+	// KeptPerson is a person's approval of an earlier version of the issue's own document, held
+	// apart while a basis stands, so no reader shows that person's review beside a version they
+	// did not approve. It is what the step falls back to when the basis ends (CloseBasis), and nil
+	// whenever no basis stands.
+	KeptPerson *PersonApproval
+	// RestsOn is every ancestor a basis has opened this step on in this generation, in the order
+	// the bases first opened it, nil for a step no basis has opened: each ancestor's sign-off waits
+	// on the issue from then until the generation ends, whether the step is open or closed later
+	// (R8), so a root that rests on a far ancestor and then registers on a nearer one rests on
+	// both. Only a re-admission takes them away, by clearing the generation's rows, and
+	// Store.PutGate keeps each one written. A step pending on an ancestor rests on that ancestor
+	// through its basis instead, and stops resting on it when the wait ends without opening
+	// (RestsOnIssue).
+	RestsOn []string
+	// BasisMoves is how many times the step's basis has moved in this generation: a basis set on a
+	// step that had none, a change of the ancestor, its document, the version or the request a
+	// pending basis waits on (an opening on the person's answer included), and the end of a basis.
+	// Store.PutGate counts each write that makes such a move and no other, and a write never sets
+	// it; a re-admission clears it with the generation's rows. It is the row's own reading of
+	// whether its basis has moved, which a register_gate fact's id names (api's gateRegister), so a
+	// call made again over a step whose basis a registration moved since is a fact of its own, and
+	// one made again over a step whose basis its first attempt left as it was is not. It is no count
+	// of changes requests: a person's changes request on the basis document moves no basis (R3).
+	BasisMoves int
+}
+
+// GateBasis is an ancestor's approval that a step of a root stands open on, or the ancestor's
+// approval request the step waits on while Pending is set: what the root's architect registered
+// (register_gate's basis) and the daemon's own time of that registration.
+type GateBasis struct {
+	// Issue is the ancestor, and ArtifactID its primary document.
+	Issue      string
+	ArtifactID string
+	// Version is the version of the ancestor's document a person approved, or, while pending, the
+	// version the open request asks a person to approve.
+	Version int
+	// Approval is where Dispatch recorded the person's approval of Version in the ancestor's own
+	// event log, and Approver who gave it as Dispatch names an actor (`user:<login>`). Both are
+	// zero while the basis is pending. The mark is a place in another issue's log than the root's
+	// own reviews, so no rule compares the two (classify.LatestReview reads KeptPerson instead).
+	Approval EventMark
+	Approver string
+	// Serves is the ancestor's requirement references the root's checks serve, as the
+	// registration named them (`dispatch://<KEY>/spec#b-<id>@v<N>`); nil for none.
+	Serves []string
+	// Reason is the architect's reason for the registration, and Session the architect session
+	// that made it.
+	Reason  string
+	Session string
+	// RegisteredAt is the daemon's own time of the registration: the moment the waiting line
+	// takes for a step a basis opened (TreeGate.OpenedAt). A registration of the same step again on
+	// the same basis, standing open or pending on the same request at the same version, keeps the
+	// first one's time, so that moment does not move (workflow's registeredBasis). It is never zero
+	// (Store.PutGate refuses a basis without it).
+	RegisteredAt time.Time
+	// Pending is the open approval request the step waits on, nil for a basis that stands.
+	Pending *PendingBasis
+}
+
+// PendingBasis is the ancestor's open approval request a step waits on: Ask is its id, which the
+// request's close finds the step by (Store.GatesByPendingAsk).
+type PendingBasis struct {
+	Ask string
+}
+
+// PersonApproval is a person's approval of one version of an issue's own document and where
+// Dispatch recorded it in that issue's event log (DesignGate.ApprovedByPerson,
+// DesignGate.KeptPerson).
+type PersonApproval struct {
+	Version int
+	Mark    EventMark
 }
 
 // SpecGate is the DesignStepSpec row of gates, nil when the issue holds none. Every reader that
@@ -1707,6 +1847,9 @@ type Store interface {
 	// IssuesOf is the record of each of keys that is an issue of project, by key, leaving out a key
 	// with no record; no keys read nothing.
 	IssuesOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]Issue, error)
+	// IssuesByKey is the record of each of keys, whatever its project, by key, leaving out a key
+	// with no record; no keys read nothing. It is Issue for many keys in one query.
+	IssuesByKey(ctx context.Context, tx pgx.Tx, keys []string) ([]Issue, error)
 	// AncestorsOf is the record of each of keys and of every issue above it on the chain of
 	// recorded parents, by key, for the issues of project; it walks the chain in one query
 	// whatever its depth. It is what the waiting line's pass reads of the issues its live read
@@ -2040,8 +2183,22 @@ type Store interface {
 	// GatesForArtifact is every gate registered on artifactID, in issue order: the document owner's
 	// gate and each copy a hand-over carried to a child of its tree. Each row carries its own step.
 	GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error)
+	// GatesForBasisArtifact is every gate whose basis names artifactID as the ancestor's document,
+	// in issue and then step order: the steps it stands open on and the steps pending on a request
+	// of it, of every tree. A step whose basis has ended is not among them.
+	GatesForBasisArtifact(ctx context.Context, tx pgx.Tx, artifactID string) ([]DesignGate, error)
+	// GatesByPendingAsk is every gate pending on ask, the ancestor's open approval request, in
+	// issue and then step order, of every tree.
+	GatesByPendingAsk(ctx context.Context, tx pgx.Tx, ask string) ([]DesignGate, error)
+	// GatesRestingOn is every gate that rests on one of ancestors in this generation
+	// (DesignGate.RestsOnIssue), in issue and then step order, of every tree: each a basis on
+	// such an ancestor opened at some point, and each whose basis names one now, standing or
+	// pending. It is one query whatever the number of ancestors.
+	GatesRestingOn(ctx context.Context, tx pgx.Tx, ancestors ...string) ([]DesignGate, error)
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
-	// written as DesignStepSpec (Postgres.PutGate).
+	// written as DesignStepSpec (Postgres.PutGate). A basis it carries names its ancestor, the
+	// ancestor's document and version and the daemon's time of the registration, and a pending
+	// one its request, or the write is refused.
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
 	// RootAsk is the mirror row of ask on issue, nil when it has none.
 	RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*RootAsk, error)

@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The `sign_off` and `request_backward_move` descriptions name `WAITING_ON_CHILDREN`, the refusal
+  of an issue that waits in `awaiting_children` while a Dispatch child of it is open.
+custom:
+    Issue: pr4592
