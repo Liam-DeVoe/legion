@@ -306,10 +306,10 @@ func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 		return n
 	}
 
-	taken, inRelease, err := store.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, at, 0)
-	if err != nil || taken || !inRelease {
-		t.Fatalf("the delivery wake before the stop records the role = taken %t, in a release %t, %v; want nothing taken and the release named: the teardown is about to take the pod",
-			taken, inRelease, err)
+	wake, err := store.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, 1, at, 0)
+	if err != nil || wake.Taken || !wake.InRelease {
+		t.Fatalf("the delivery wake before the stop records the role = %+v, %v; want nothing taken and the release named: the teardown is about to take the pod",
+			wake, err)
 	}
 	if n := resumes(); n != 0 {
 		t.Fatalf("pod_resumes holds %d resumes after the delivery wake in the release, want none", n)
@@ -318,10 +318,10 @@ func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 	// The stops record their roles. The mark still stands, and the wake still takes nothing.
 	stoppedByTheRelease(t, store, claim.RoleImplementer, boundary)
 	stoppedByTheRelease(t, store, claim.RoleArchitect, stop)
-	taken, inRelease, err = store.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, at, 0)
-	if err != nil || taken || !inRelease {
-		t.Fatalf("the delivery wake after the stops record their roles = taken %t, in a release %t, %v; want nothing taken and the release named",
-			taken, inRelease, err)
+	wake, err = store.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, 1, at, 0)
+	if err != nil || wake.Taken || !wake.InRelease {
+		t.Fatalf("the delivery wake after the stops record their roles = %+v, %v; want nothing taken and the release named",
+			wake, err)
 	}
 	if n := resumes(); n != 0 {
 		t.Fatalf("pod_resumes holds %d resumes after the delivery wake in the release, want none", n)
@@ -337,9 +337,9 @@ func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 	if err := store.ClearIssueRelease(ctx, "legion", rootIssue); err != nil {
 		t.Fatalf("clear the release's mark: %v", err)
 	}
-	taken, inRelease, err = store.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, at.Add(2*time.Minute), 0)
-	if err != nil || !taken || inRelease {
-		t.Fatalf("the delivery wake once the teardown finished = taken %t, in a release %t, %v; want the wake taken", taken, inRelease, err)
+	wake, err = store.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, 1, at.Add(2*time.Minute), 0)
+	if err != nil || !wake.Taken || wake.InRelease || wake.StartQueued {
+		t.Fatalf("the delivery wake once the teardown finished = %+v, %v; want the wake taken", wake, err)
 	}
 	if n := resumes(); n != 1 {
 		t.Fatalf("pod_resumes holds %d resumes after the wake, want the wake's one", n)

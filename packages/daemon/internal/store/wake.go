@@ -159,12 +159,26 @@ func (s *Store) TakePodWake(ctx context.Context, project, issue string, token cl
 	return taken, err
 }
 
+// DeliveryWake is what one delivery wake did (Store.TakeDeliveryWake): whether it took the wake,
+// and, where it took none, why the row waits.
+type DeliveryWake struct {
+	// Taken is whether this call took the wake.
+	Taken bool
+	// InRelease is a release mark of the issue that stands: the call takes nothing until the
+	// release ends.
+	InRelease bool
+	// StartQueued is a start that brings the role back, queued in the outbox (StartQueued): the
+	// call takes nothing, and that start resumes the role.
+	StartQueued bool
+}
+
 // TakeDeliveryWake takes the wake of the outbox's delivery wake (internal/daemon's
 // wakeForDelivery) in a transaction of its own: the wake for a notice, a hook prompt, a
 // merge-queue removal or a merge forward's message that found the role it is for released. While
-// a release mark of issue stands, it writes nothing and answers inRelease. Otherwise it takes the
-// wake as PodRecords.TakePodWake does, held by the pause PodRecords.PauseOfWake reads, and answers
-// whether this call took it.
+// a release mark of issue stands, it writes nothing and answers InRelease. While a start that
+// brings the role back at generation is queued, it writes nothing and answers StartQueued.
+// Otherwise it takes the wake as PodRecords.TakePodWake does, held by the pause
+// PodRecords.PauseOfWake reads, and answers whether this call took it.
 //
 // The delivery wake waits for any release of the issue that still stands, not only for one that
 // recorded the role. Its resume runs in process (supervise.RequestRuleResume), so no `start` row
@@ -179,11 +193,22 @@ func (s *Store) TakePodWake(ctx context.Context, project, issue string, token cl
 // The mark is read with the take's own lock (lockReleaseMark), in the take's own transaction, so
 // nothing can come between the read and the take. A release's record or cancel that has not
 // committed makes the read wait until it commits. Once the teardown clears the mark, the next call
-// takes the wake against the release the teardown recorded. Once a cancel clears it, the next
-// call takes the wake in the pod that stayed.
+// takes the wake against the release the teardown recorded.
+//
+// A cancel clears the mark too, and in the same transaction it queues a start for each claim it
+// resumes (CancelIssueRelease). The claim reads `released` until that start runs, but its pod
+// never went away. A wake taken then would record a resume, paired with the newest release
+// recorded before it, for a pod that no release took, and the records would count that pod's
+// return. So the call reads, after the mark, whether a start that brings the role back is queued,
+// as a listener's wake does (workflow's listenerWakeReleased), and takes nothing while one is. The
+// cancel committed before this read began, so the read sees the cancel's start. The row waits,
+// the start resumes the role in the pod that stayed, and the row's next attempt finds the claim
+// live and hands its delivery over. A start the workflow's wake queued is such a start too: that
+// wake recorded its resume, and its start brings the role back.
 //
 // token is the claim the wake brings back, and the role it names is the role woken: a token that
-// names no role is an error. mark is the pause that held the outbox row the wake is taken for
+// names no role is an error. generation is the issue's generation, which a start that brings the
+// role back names. mark is the pause that held the outbox row the wake is taken for
 // (record.OutboxRow.HeldByPause, which the resume writes on every row its pause holds), 0 for a
 // row no pause held. PodRecords.PauseOfWake reads which pause holds the wake from the token and
 // the mark. A project's pause holds a row, whatever its due time, and the row runs, and wakes its
@@ -195,25 +220,30 @@ func (s *Store) TakePodWake(ctx context.Context, project, issue string, token cl
 // wait out.
 //
 // project is the project token the claim-keyed tables hold, as it is for TakePodWake.
-func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, token claim.Token, at time.Time, mark int64) (taken, inRelease bool, err error) {
+func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, token claim.Token, generation uint64, at time.Time, mark int64) (DeliveryWake, error) {
 	role, ok := token.Role()
 	if !ok {
-		return false, false, fmt.Errorf("take a delivery wake of %s: claim token %q names no role", issue, token)
+		return DeliveryWake{}, fmt.Errorf("take a delivery wake of %s: claim token %q names no role", issue, token)
 	}
 	records := &PodRecords{store: s, project: project}
-	err = s.Tx(ctx, func(tx pgx.Tx) error {
+	var wake DeliveryWake
+	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		wake = DeliveryWake{}
 		var err error
-		if inRelease, err = lockReleaseMark(ctx, tx, project, issue); err != nil || inRelease {
+		if wake.InRelease, err = lockReleaseMark(ctx, tx, project, issue); err != nil || wake.InRelease {
+			return err
+		}
+		if wake.StartQueued, err = startQueued(ctx, tx, issue, role, generation); err != nil || wake.StartQueued {
 			return err
 		}
 		pause, _, err := records.PauseOfWake(ctx, tx, issue, token, mark)
 		if err != nil {
 			return err
 		}
-		taken, err = records.TakePodWake(ctx, tx, issue, role, pods.WakeDelivery, at, pause)
+		wake.Taken, err = records.TakePodWake(ctx, tx, issue, role, pods.WakeDelivery, at, pause)
 		return err
 	})
-	return taken, inRelease, err
+	return wake, err
 }
 
 // ReleasedClaimsIn is every released claim of issue, in a transaction of its own: what the
@@ -673,7 +703,7 @@ func claimInRelease(ctx context.Context, tx pgx.Tx, where, project, value, what 
 // slot, over the outer table `outbox`, unaliased. Four rows have that shape: the row a wake queues
 // (workflow's wakeRow), the row a cancelled release queues for each claim it suspended
 // (CancelIssueRelease), a root architect's entry start, and a production check's look.
-// StartQueued reads each of them.
+// StartQueued reads each of them but the look.
 const resumeStartRow = `outbox.kind = 'supervise' and outbox.payload->>'op' = 'start'
 	and coalesce(outbox.payload->>'phase', '') = '' and coalesce(outbox.payload->>'needsSlot', '') <> 'true'`
 
@@ -687,19 +717,28 @@ const resumeStartRow = `outbox.kind = 'supervise' and outbox.payload->>'op' = 's
 // (retellWakesUnderRelease, retellWakesUnderPause).
 const wakeStartRow = resumeStartRow + ` and coalesce(outbox.payload->>'wakeKind', '') <> ''`
 
-// StartQueued is whether the outbox holds a `start` of issue's role at generation that names no
-// phase and waits for no admission slot (resumeStartRow). Rows of that shape come from a cancelled
+// StartQueued is whether the outbox holds a `start` that brings issue's role back at generation:
+// a start of that role and generation that names no phase, waits for no admission slot
+// (resumeStartRow) and looks at no production check. Rows of that shape come from a cancelled
 // release (its resume of each claim it suspended: CancelIssueRelease, the daemon outbox's
-// releaseResume), a wake (workflow's wakeRow), an architect start (admission, and the resume of an
-// awaited root) and a production check's look. Such a row meets no phase fence and waits for no
-// slot. When it runs, the outbox's start executor resumes a suspended claim of that role
-// (supervise.RequestRuleResume), so a role with one queued is coming back. The one exception is a
-// production check's look: it is fenced on its check and look, and finishes without acting when
-// its look ended before it ran. A row the outbox has finished is deleted, so every row this reads
-// is still to run.
+// releaseResume), a wake (workflow's wakeRow) and an architect start (admission, and the resume
+// of an awaited root). Such a row meets no phase fence and waits for no slot. When it runs, the
+// outbox's start executor resumes a suspended claim of that role (supervise.RequestRuleResume),
+// so a role with one queued is coming back. A production check's look has the same shape, but it
+// is fenced on its check and look, and it finishes without acting when its look ended before it
+// ran. So a look is not counted: a wake that read it as the role coming back would take nothing,
+// and the role would stay released when the look starts nothing. A row the outbox has finished is
+// deleted, so every row this reads is still to run.
 func (p *PodRecords) StartQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error) {
+	return startQueued(ctx, tx, issue, role, generation)
+}
+
+// startQueued is StartQueued through tx, which the delivery wake reads in its own transaction too
+// (Store.TakeDeliveryWake).
+func startQueued(ctx context.Context, tx pgx.Tx, issue string, role claim.Role, generation uint64) (bool, error) {
 	var queued bool
 	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where issue = $1 and `+resumeStartRow+`
+		and coalesce(outbox.payload->>'checkLook', '') = ''
 		and payload @> jsonb_build_object('role', $2::text, 'generation', $3::bigint))`,
 		issue, string(role), int64(generation)).Scan(&queued); err != nil {
 		return false, fmt.Errorf("read whether a start of %s's %s is queued: %w", issue, role, err)

@@ -178,6 +178,10 @@ const (
 	// StoppedByPause: a project's pause stopped the session and kept its pod, its workspace and
 	// its unpushed work as they were (decision 16 of dispatch://INFRA-3759).
 	StoppedByPause
+	// stoppedByCancelledRelease: an idle release stopped the session and was cancelled, so the pod
+	// never went away (TakenOverWakeTask). No wake is taken so: a wake's task names this stop only
+	// when a cancel retells it.
+	stoppedByCancelledRelease
 )
 
 // WakeTask is the one task a woken role is given, the sentence its first turn reads before
@@ -228,10 +232,15 @@ func WakeTask(kind, detail string, stop WakeStop) string {
 }
 
 // wakeWords are the words of WakeTask that name what stopped the session: the preamble, the
-// words for the time the woken role was away, and the words for its backstop.
+// words for the time the woken role was away, and the words for its backstop. A release that was
+// cancelled stopped the session and kept the pod, so its time away is the pause's words, which
+// say that the session was stopped, and its backstop is the release's, which armed it.
 func wakeWords(stop WakeStop) (preamble, away, backstop string) {
-	if stop == StoppedByPause {
+	switch stop {
+	case StoppedByPause:
 		return pauseWakePreamble, pauseAway, pauseBackstop
+	case stoppedByCancelledRelease:
+		return cancelledWakePreamble, pauseAway, releaseBackstop
 	}
 	return wakePreamble, releaseAway, releaseBackstop
 }
@@ -298,6 +307,24 @@ func PausedWakeTask(kind, task string) string {
 // inverse of PausedWakeTask.
 func ReleasedWakeTask(kind, task string) string {
 	return retellWakeTask(kind, task, StoppedByPause, StoppedByRelease)
+}
+
+// TakenOverWakeTask is the task of a wake's start that a cancel of an idle release keeps for a
+// role whose claim a close, a linger or an operator took over after the wake
+// (store.CancelIssueRelease, store.ReleaseCancelPause.TakenOverWakeTask): kind is the kind of the
+// wake's resume, which the cancel deletes, and task is the task the start carries. The start is
+// the start of the path that took the claim over. It finishes without acting under a close or a
+// linger, and it runs when an operator resumes the claim. WakeTask wrote its task for a session an
+// idle release stopped (StoppedByRelease), and it says that the pod was released. The cancel made
+// that false: the release did not finish, and the pod never went away. So the answer is the same
+// wake and detail under a cancelled release's words: cancelledWakePreamble, the words of a
+// stopped session for the time away, and the release's words for the backstop. The wake's own
+// sentences stay, a message wake's among them, because the role reads this start's task when it
+// comes back. The review round's sentences that the queue appended stay too. A task that does not
+// begin with wakePreamble says nothing of a release that took the pod, and the answer is that task
+// as it is.
+func TakenOverWakeTask(kind, task string) string {
+	return retellWakeTask(kind, task, StoppedByRelease, stoppedByCancelledRelease)
 }
 
 // retellWakeTask is task, which WakeTask wrote for a wake of kind whose session from stopped, as

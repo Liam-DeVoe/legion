@@ -189,7 +189,8 @@ type outbox struct {
 // of a pause's hold of a pod a deletion took. The delivery wake's take waits for any release of
 // the issue that still stands, not only for one that recorded the role
 // (store.Store.TakeDeliveryWake): the delivery wake resumes its claim in process, and that resume
-// does not wait for the release's teardown, as a workflow wake's `start` does.
+// does not wait for the release's teardown, as a workflow wake's `start` does. It takes nothing
+// either while a start that brings the role back is queued, such as a cancel's resume.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
@@ -205,7 +206,7 @@ type outboxTrees interface {
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
-	TakeDeliveryWake(ctx context.Context, project, issue string, token claim.Token, at time.Time, mark int64) (taken, inRelease bool, err error)
+	TakeDeliveryWake(ctx context.Context, project, issue string, token claim.Token, generation uint64, at time.Time, mark int64) (store.DeliveryWake, error)
 	OpenPodResume(ctx context.Context, project, issue string, role claim.Role) (id, pause int64, found bool, err error)
 	CancelPodBackstopsOf(ctx context.Context, project, issue string, role claim.Role) error
 	ReleasedClaimsIn(ctx context.Context, project, issue string) ([]supervise.Claim, error)
@@ -3329,10 +3330,14 @@ func (r *outbox) issueSandboxName(issue string) string {
 // as the launch the pause owes that role, and the pause's resume runs its start. The task of that
 // start becomes the task of a wake of a role the pause stopped (workflow.PausedWakeTask), since the
 // release took no pod. While the project runs, the cancel drops that wake and its start instead,
-// and the role's resume carries what the role must still read of it (releaseResume).
+// and the role's resume carries what the role must still read of it (releaseResume). A wake of a
+// role whose claim a close, a linger or an operator took over is resumed by no cancel, and the
+// cancel keeps its start for that path. That start's task becomes the task of the same wake in
+// the words of a release that did not finish (workflow.TakenOverWakeTask), paused or not.
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, nil, record.OutOfWorkflow,
-		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole, WakeTask: workflow.PausedWakeTask},
+		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole, WakeTask: workflow.PausedWakeTask,
+			TakenOverWakeTask: workflow.TakenOverWakeTask},
 		r.releaseResume(issue, tree))
 	if err != nil {
 		return err

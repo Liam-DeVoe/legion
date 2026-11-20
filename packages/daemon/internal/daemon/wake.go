@@ -42,9 +42,10 @@ const (
 	// attempts, each logged at debug, where its backoff's 64 s would make about 57 of them.
 	parkedWakeBound = 5 * time.Minute
 	// deliveryWakeInRelease is how long a delivery row waits before it reads its role again while
-	// a release of its issue's pod still stands (wakeForDelivery). It is the delay a listener's
-	// wake report takes to read a release again (workflow's wakeRetryInRelease), and the teardown
-	// it waits for is one row of the issue's lifecycle lane.
+	// a release of its issue's pod still stands, or while a start that brings the role back is
+	// queued (wakeForDelivery). It is the delay a listener's wake report takes to read a release
+	// again (workflow's wakeRetryInRelease), and the teardown or the start it waits for is one row
+	// of the issue's lanes.
 	deliveryWakeInRelease = 30 * time.Second
 	// A wake that has not reached the woken role's first turn within workflow.StrandedReleaseWake
 	// is the same fact two passes read: this one warns about it and marks it (R5), and the
@@ -299,12 +300,13 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // Once the teardown has cleared the mark, the row's next attempt takes the wake against the
 // release the teardown recorded and resumes the role in the new pod. A cancel clears the mark too,
 // but it resumes no claim itself. It queues a start for each claim it resumes
-// (store.Store.CancelIssueRelease), and the claim reads released until that start runs. An attempt
-// in that time takes the wake and resumes the role here, in the same pod, which the release never
-// took. The cancel's start then finds the claim no longer suspended, so it resumes nothing and
-// only delivers the task it carries, if any. An attempt after that start ran finds the claim live
-// and publishes. A claim the cancel did not resume is still released, and the attempt wakes it in
-// the same pod.
+// (store.Store.CancelIssueRelease), and the claim reads released until that start runs, though its
+// pod never went away. While such a start is queued, the call takes nothing and answers the same
+// routine wait, whose text names the start: a wake taken then would record a resume of a pod that
+// no release took, and the records would count that pod's return. The start resumes the role in
+// the same pod, and the row's next attempt finds the claim live and publishes. A start a workflow
+// wake queued holds the row the same way: that start brings the role back. A claim the cancel did
+// not resume is still released with no start queued, and the attempt wakes it in the same pod.
 //
 // The role's one open resume is what makes the wake one wake however often the row retries, so a
 // notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
@@ -345,14 +347,19 @@ func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail 
 	if !wakeable {
 		return false, time.Time{}, nil
 	}
-	taken, inRelease, err := r.trees.TakeDeliveryWake(ctx, r.project, issue.Key, token, r.now().UTC(), mark)
+	wake, err := r.trees.TakeDeliveryWake(ctx, r.project, issue.Key, token, issue.Generation, r.now().UTC(), mark)
 	if err != nil {
 		return false, time.Time{}, err
 	}
-	if inRelease {
+	if wake.InRelease {
 		return false, time.Time{}, routineWaiting{err: wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
 			fmt.Sprintf("a wake for %s waits for the release of %s's pod to finish", detail, issue.Key))}
 	}
+	if wake.StartQueued {
+		return false, time.Time{}, routineWaiting{err: wait.Until(r.now().UTC().Add(deliveryWakeInRelease),
+			fmt.Sprintf("a wake for %s waits for the start queued for %s's %s, which brings the role back", detail, issue.Key, held.Role))}
+	}
+	taken := wake.Taken
 	// A wake the role's open resume refused is a pod already on its way back — unless no resume
 	// of that claim ever ran. This take commits before the resume it leads to, and that resume is
 	// in process rather than a row of the take's own transaction (the workflow's wakes queue a

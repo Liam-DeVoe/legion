@@ -703,6 +703,44 @@ func TestAReleasedWakeTaskIsTheInverseOfAPausedWakeTask(t *testing.T) {
 	}
 }
 
+// A woken role's wake text is true (dispatch://INFRA-3589, R3): a cancel of an idle release keeps
+// the wake's start of a role whose claim a close, a linger or an operator took over, and the role
+// reads that start's task when the operator resumes it. The release took no pod. So the task
+// becomes the same wake and detail under a cancelled release's words: its preamble says that the
+// release did not finish and the role goes on in the same pod, a message wake says the message
+// came while the session was stopped, and the wake's own sentences and those the queue appended
+// stay. A task that does not begin with the release's preamble is left as it is.
+func TestATakenOverWakeTaskIsTheTaskOfAWakeOfACancelledRelease(t *testing.T) {
+	const appended = " The review round's two sentences follow the wake's task."
+	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
+		"Your session, your workspace and any work you had not pushed are as you left them. "
+	for _, tc := range []struct{ kind, detail, says string }{
+		{kind: pods.WakeChecks, detail: "head1 failed build", says: "The wake is a CI settlement on your pull request's head: head1 failed build."},
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer",
+			says: "role topic (legion-LEGION-208-implementer) while your session was stopped. A message that Envoy kept for your role reaches this session"},
+		{kind: pods.WakeAgentMessage, detail: "session-1",
+			says: "sent to your session (session-1) while your session was stopped. A message that Envoy or Dispatch stored for your session reaches this session"},
+		{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due",
+			says: "The wake is the release's backstop running out: the backstop armed for LEGION-208's implementer came due."},
+		{kind: pods.WakeDelivery, detail: "a notice of LEGION-208", says: "The wake is delivery: a notice of LEGION-208."},
+	} {
+		for _, suffix := range []string{"", appended} {
+			released := WakeTask(tc.kind, tc.detail, StoppedByRelease) + suffix
+			got := TakenOverWakeTask(tc.kind, released)
+			if !strings.HasPrefix(got, cancelled) || !strings.Contains(got, tc.says) || !strings.HasSuffix(got, suffix) ||
+				strings.Contains(got, "had been released") || strings.Contains(got, "while your pod was gone") {
+				t.Errorf("TakenOverWakeTask(%s, %q) = %q, want it to begin %q, say %q, end %q, and say nothing of a pod that went away",
+					tc.kind, released, got, cancelled, tc.says, suffix)
+			}
+		}
+	}
+	for _, task := range []string{"", "Implement LEGION-208.", WakeTask(pods.WakeChecks, "head1 failed build", StoppedByPause)} {
+		if got := TakenOverWakeTask(pods.WakeChecks, task); got != task {
+			t.Errorf("TakenOverWakeTask(%s, %q) = %q, want the task as it is: it says nothing of a release that took the pod", pods.WakeChecks, task, got)
+		}
+	}
+}
+
 // R2 of dispatch://INFRA-3589: a wake that comes during a release is applied again, never dropped
 // in silence. A CI settlement and a backstop reach the woken role only through the wake's task,
 // so a cancel that drops such a wake hands its task to the role's resume. A wake of a role that a

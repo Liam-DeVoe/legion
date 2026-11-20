@@ -30,6 +30,14 @@ body: |-
   the release, as it does for a phase's start; it no longer passes over that start as a wake's
   own. A notice, hook prompt, merge-queue removal message or merge-forward message for a released
   role of a pod that a release is still stopping waits in its outbox row until the release ends.
+  Such a message for a role whose release was cancelled waits too, until the cancel's start
+  brings the role back in the same pod, and the release records no longer count a pod return for
+  it. When a close, a linger or an operator took over a woken role's claim before its release
+  was cancelled, that wake's resume is no longer recorded either, and the wake's start, which the
+  role reads when an operator resumes it, says that the release did not finish and the role goes
+  on in the same pod, not that its pod was released. A message to a released role
+  whose only queued start is a production check's look now wakes the role: the look can end
+  without starting it.
   A waiting retry logs
   `an intake fact waits and is applied again after its delay` at info.
 time: 2026-11-16T18:39:58Z

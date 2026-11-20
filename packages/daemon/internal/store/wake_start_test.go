@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -201,4 +203,120 @@ func TestARetellRewritesNoEntryStartAndNoCheckLook(t *testing.T) {
 			t.Errorf("queued starts after the cancel = %q, want %q: only the kept wakes' own starts are told again", got, want)
 		}
 	})
+}
+
+// The class search of dispatch://INFRA-3589 at 45fc14a3, entry 40. A production check's look has
+// the shape of a start that brings its role back (resumeStartRow), but it is fenced on its check
+// and its look, and it finishes without acting when its look ended before it ran. A listener's
+// wake that read it as the role coming back would take nothing (workflow's listenerWakeReleased),
+// and the role would stay released when the look starts nothing. So StartQueued counts no look.
+// A cancel's resume of the same role at the same generation is such a start, and it counts.
+func TestAStartQueuedIsNoProductionChecksLook(t *testing.T) {
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	records := podRecords(t, st)
+	queued := func() bool {
+		t.Helper()
+		var queued bool
+		inTx(t, st, func(tx pgx.Tx) error {
+			var err error
+			queued, err = records.StartQueued(context.Background(), tx, rootIssue, claim.RoleImplementer, 1)
+			return err
+		})
+		return queued
+	}
+	queueSupervise(t, st, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer,
+		Generation: 1, Task: lookTask, CheckLook: 1, CheckOpenedAt: time.Now().UTC().Add(-time.Hour)})
+	if queued() {
+		t.Error("StartQueued = true with only a production check's look of the implementer queued, want false: the look can finish without acting, and the role would stay released")
+	}
+	queueSupervise(t, st, record.SuperviseRequest{Op: "start", Tree: rootIssue, Role: claim.RoleImplementer, Generation: 1})
+	if !queued() {
+		t.Error("StartQueued = false with a cancel's resume of the implementer queued, want true: that start brings the role back")
+	}
+}
+
+// The class search of dispatch://INFRA-3589 at 45fc14a3, entry 41. A wake of a role of the mark's
+// set was taken under the mark, and then an operator suspended that role's claim, which cancels
+// the release (releaseOvertaken). The cancel resumes only the claims still suspended as
+// `released`, so it neither drops nor holds that wake. The release took no pod, so the wake's
+// resume is no pod's return: the cancel deletes it (dropTakenOverWakes). Left behind, it pairs
+// with the release recorded before the wake, and the records count a pod return for that release.
+// The wake's own start stays, for the operator's resume to run.
+func TestACancelDeletesTheResumeOfAWakeWhoseClaimAnOperatorTookOver(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+	rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+	at := time.Now().UTC()
+	recordRelease(t, st, at.Add(-2*time.Hour))
+	boundary, stop, _ := releaseTwoRolesThroughTheStore(t, st)
+	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
+	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
+	if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeChecks, at, 0); err != nil || !taken {
+		t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
+	}
+	queueWakeStart(t, st, claim.RoleImplementer, pods.WakeChecks)
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
+
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
+	if err != nil || !slices.Equal(cancelled.Resumed, []claim.Role{claim.RoleArchitect}) {
+		t.Fatalf("CancelIssueRelease = %+v, %v; want the architect alone resumed: the operator holds the implementer", cancelled, err)
+	}
+	if n := pauseCount(t, st, `select count(*)::int from pod_resumes where issue = $1 and role = 'implementer'`, rootIssue); n != 0 {
+		t.Errorf("the implementer's resumes after the cancel = %d, want none: the release took no pod, so its wake brought none back", n)
+	}
+	want := []string{"implementer||the wake's task|" + pods.WakeChecks + "||", "architect|||||"}
+	if got := startsOfTheRoot(t, st); !slices.Equal(got, want) {
+		t.Errorf("queued starts after the cancel = %q, want %q: the wake's start stays for the operator's resume, and the architect gets the cancel's resume",
+			got, want)
+	}
+}
+
+// The kept start of TestACancelDeletesTheResumeOfAWakeWhoseClaimAnOperatorTookOver was written for
+// a session a release stopped, and its task says that the release took the pod. The release took
+// none, and the role reads that task when the operator resumes it (R3 of dispatch://INFRA-3589:
+// the woken role's wake text is true). So the cancel rewrites that task in the same transaction,
+// through the workflow's rule (ReleaseCancelPause.TakenOverWakeTask), told the kind of the wake's
+// resume, whether the project runs or is paused. Only that task changes: the start keeps its wake
+// kind and the rest of its payload, and the cancel's other starts keep theirs. The store does not
+// import the workflow, so the rule here is a stand-in; the workflow's
+// TestATakenOverWakeTaskIsTheTaskOfAWakeOfACancelledRelease holds its words.
+func TestACancelRetellsTheKeptStartOfAWakeWhoseClaimAnOperatorTookOver(t *testing.T) {
+	for _, paused := range []bool{false, true} {
+		t.Run(map[bool]string{false: "the project runs", true: "the project is paused"}[paused], func(t *testing.T) {
+			st := migratedStore(t)
+			ctx := context.Background()
+			openRunningTree(t, st)
+			rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+			rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+			boundary, stop, _ := releaseTwoRolesThroughTheStore(t, st)
+			stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
+			stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
+			if taken, err := st.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeRoleMessage, time.Now().UTC(), 0); err != nil || !taken {
+				t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
+			}
+			queueWakeStart(t, st, claim.RoleImplementer, pods.WakeRoleMessage)
+			rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
+			if paused {
+				pauseLegion(t, st, time.Now().UTC())
+			}
+			retold := func(kind, task string) string { return "the cancelled release's " + kind + " wake: " + task }
+			kept := func(kind, task string) string { return "the pause's " + kind + " wake: " + task }
+
+			if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+				ReleaseCancelPause{At: time.Now().UTC(), WakeTask: kept, TakenOverWakeTask: retold}); err != nil {
+				t.Fatalf("CancelIssueRelease: %v", err)
+			}
+			want := []string{"implementer||the cancelled release's " + pods.WakeRoleMessage + " wake: the wake's task|" + pods.WakeRoleMessage + "||"}
+			if !paused {
+				want = append(want, "architect|||||")
+			}
+			if got := startsOfTheRoot(t, st); !slices.Equal(got, want) {
+				t.Errorf("queued starts after the cancel = %q, want %q: the kept start of the role the operator took over is told in the words of a release that did not finish",
+					got, want)
+			}
+		})
+	}
 }

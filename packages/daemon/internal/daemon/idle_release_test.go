@@ -982,6 +982,82 @@ func TestADeliveryWakeWaitsForTheTeardownOfAReleaseThatRecordedItsRole(t *testin
 	}
 }
 
+// The class search of dispatch://INFRA-3589 at 45fc14a3, entries 33 and 42. A cancel of a release
+// queues a start for each claim it resumes and resumes none itself, so the claim reads `released`
+// until that start runs, and its pod never went away (store.CancelIssueRelease). A delivery for
+// that role in that time takes no wake: a wake would record a resume of a pod that no release
+// took, and the records would count that pod's return. The row waits 30 seconds, as a routine
+// wait, while the start is queued. The start resumes the role in the same pod, and the row's next
+// attempt finds the claim live and publishes, so the role still gets its delivery.
+func TestADeliveryWakeAfterACancelWaitsForTheCancelsStartAndRecordsNoResume(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key); err != nil {
+		t.Fatalf("hold the teardown back: %v", err)
+	}
+	rig.drain(t)
+	if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) {
+		t.Fatalf("the claim = %s by %s and the mark stands = %t, want it released under a release still running",
+			got.State, got.SuspendedBy, rig.marked(t))
+	}
+	// The issue's run moves on, so the teardown cancels the release and queues the claim's resume.
+	if _, err := rig.pool.Exec(ctx, `update issues set generation = 2 where key = $1`, rig.issue.Key); err != nil {
+		t.Fatalf("move the issue's generation on: %v", err)
+	}
+	var teardown record.OutboxRow
+	if err := rig.pool.QueryRow(ctx, `select id, kind, issue, payload from outbox where issue = $1 and kind = 'issue_release'`,
+		rig.issue.Key).Scan(&teardown.ID, &teardown.Kind, &teardown.Issue, &teardown.Payload); err != nil {
+		t.Fatalf("read the teardown row: %v", err)
+	}
+	if err := rig.runner.execute(ctx, teardown); err != nil {
+		t.Fatalf("run the teardown: %v", err)
+	}
+	// The lane deletes a row it finished, and the cancel's start waits for the teardown row until
+	// then (record's outboxInOrder).
+	if _, err := rig.pool.Exec(ctx, `delete from outbox where id = $1`, teardown.ID); err != nil {
+		t.Fatalf("finish the teardown row: %v", err)
+	}
+	if got := rig.machine.Claim(); rig.marked(t) || !got.Released() {
+		t.Fatalf("after the teardown the mark stands = %t and the claim = %s by %s; want the release cancelled and the claim released until the cancel's start runs",
+			rig.marked(t), got.State, got.SuspendedBy)
+	}
+
+	resumes := len(rig.rt.CallsOf("Resume"))
+	earliest := rig.runner.now().Add(30 * time.Second)
+	woken, turn, err := rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
+	latest := rig.runner.now().Add(30 * time.Second)
+	at, until := wait.UntilAt(err)
+	var routine interface{ Routine() bool }
+	if woken || !turn.IsZero() || !until || at.Before(earliest) || at.After(latest) || !errors.As(err, &routine) || !routine.Routine() ||
+		!strings.Contains(err.Error(), "waits for the start queued for "+rig.issue.Key+"'s implementer") {
+		t.Fatalf("the wake while the cancel's start is queued = %t, %s, %v; want no wake and a routine wait of 30 seconds for that start",
+			woken, turn, err)
+	}
+	if records := rig.records(t); len(records.Resumes) != 0 {
+		t.Fatalf("resumes after the wake that waited = %+v, want none: the release took no pod", records.Resumes)
+	}
+	if got := rig.machine.Claim(); !got.Released() || len(rig.rt.CallsOf("Resume")) != resumes {
+		t.Fatalf("the claim after the wake that waited = %s by %s, resumes %d; want it released, for the cancel's start to resume",
+			got.State, got.SuspendedBy, len(rig.rt.CallsOf("Resume"))-resumes)
+	}
+
+	// The cancel's start runs and resumes the role in the pod that stayed. The row's next attempt
+	// finds the claim live: it wakes nothing and hands its delivery over.
+	rig.drain(t)
+	if got := rig.machine.Claim(); got.Released() {
+		t.Fatalf("the claim after the cancel's start = %s by %s with the rows %v queued, want it resumed", got.State, got.SuspendedBy, rig.rows(t))
+	}
+	woken, turn, err = rig.runner.wakeForDelivery(ctx, rig.token, "a notice of "+rig.issue.Key, 0)
+	if err != nil || woken || !turn.IsZero() {
+		t.Fatalf("the wake once the cancel's start ran = %t, %s, %v; want no wait: the claim is live, and the delivery goes to it", woken, turn, err)
+	}
+	if records := rig.records(t); len(records.Resumes) != 0 {
+		t.Fatalf("resumes after the cancel's start = %+v, want none: the release took no pod", records.Resumes)
+	}
+}
+
 // A finished release arms the backstop of its open phase's worker, unless a wake of that worker
 // came after the release recorded it: that wake's start already brings the worker back in the
 // new pod, and a backstop for it could never act (armBackstops).
