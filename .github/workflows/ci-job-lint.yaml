@@ -238,13 +238,22 @@ jobs:
       # .github/workflows/ci-caches.yaml's fetch-lint job fills: the runner's architecture, the Go
       # version and the hash of the module files that fetch reads in the root workspace, of its
       # fetch file and of go-fetch.sh. A pull request that changes those files restores the newest
-      # entry by prefix, and the fetch then downloads only what moved.
+      # entry by prefix, and the fetch then downloads only what moved. Only a push to main fills
+      # the family, so a change before its first fill, or after GitHub evicted its entries, finds
+      # none; the second restore key then takes main's newest go-envoy entry of this runner's
+      # architecture, which holds every module archive this fetch reads, so the fetch downloads
+      # nothing. The path names the build cache as that entry was saved with: a restore matches
+      # only an entry saved with the same paths, and the family's own fill saves both too.
       - if: inputs.changes-result == 'success' && inputs.go_notices != 'true'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-lint-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/lint.txt', '.github/scripts/go-fetch.sh') }}
-          restore-keys: ${{ format('go-fetch-lint-{0}-{1}-', runner.os, runner.arch) }}
+          restore-keys: |
+            ${{ format('go-fetch-lint-{0}-{1}-', runner.os, runner.arch) }}
+            ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
       # The test below builds natsfloor while it runs, with GOPROXY=off
       # (@legion/test-fixtures/go-command): a fetch inside a test fails it whenever the module
       # proxy does, on a change that touched nothing it tests. This step fetches that build's

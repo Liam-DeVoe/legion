@@ -74,9 +74,10 @@ jobs:
   private-names-port:
     runs-on: ubuntu-24.04-arm
     # The harness takes 71 s on a machine whose Go build cache is warm, the build of ./cmd/legion
-    # included (measured when the harness got a job of its own). This job restores no build cache,
-    # so every run compiles that command's 1,217 packages from nothing; 20 minutes is many times
-    # the cold build and the 148 cases after it, and still fails a hung case well inside the hour.
+    # included (measured when the harness got a job of its own). Its own cache family holds no
+    # build cache, so a run that restores it compiles that command's 1,217 packages from nothing;
+    # 20 minutes is many times the cold build and the 148 cases after it, and still fails a hung
+    # case well inside the hour.
     timeout-minutes: 20
 
     steps:
@@ -96,12 +97,23 @@ jobs:
       # .github/workflows/ci-caches.yaml's fetch-private-names-port job fills: the runner's
       # architecture, the Go version and the hash of the module files that fetch reads in the root
       # workspace, of its fetch file and of go-fetch.sh. A pull request that changes those files
-      # restores the newest entry by prefix, and the fetch then downloads only what moved.
+      # restores the newest entry by prefix, and the fetch then downloads only what moved. Only a
+      # push to main fills the family, so a change before its first fill, or after GitHub evicted
+      # its entries, finds none; the second restore key then takes main's newest go-daemon entry of
+      # this runner's architecture, which a push to main fills with typecheck's vet of the daemon
+      # module: it holds every module archive this fetch reads and the objects of the daemon's
+      # packages, so the fetch downloads nothing and the harness's build compiles little. The path
+      # names the build cache as that entry was saved with: a restore matches only an entry saved
+      # with the same paths, and the family's own fill saves both too.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-private-names-port-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/private-names-port.txt', '.github/scripts/go-fetch.sh') }}
-          restore-keys: ${{ format('go-fetch-private-names-port-{0}-{1}-', runner.os, runner.arch) }}
+          restore-keys: |
+            ${{ format('go-fetch-private-names-port-{0}-{1}-', runner.os, runner.arch) }}
+            ${{ format('go-daemon-{0}-{1}-', runner.os, runner.arch) }}
 
       # The harness builds ./cmd/legion from the module cache alone (GOPROXY=off), since a fetch
       # while it runs fails it whenever the module proxy or the checksum database does, on a

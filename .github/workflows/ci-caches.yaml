@@ -563,24 +563,29 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-infra-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/envoy-infra-go.txt', '.github/go-fetch/envoy-smoke.txt', 'packages/envoy/infra/gcp/testdata/live-tools.txt', 'scripts/go-third-party-notices-tools.txt', '.github/scripts/go-fetch.sh') }}
 
-  # The five go-fetch families: each holds what one job's fetch step fetches and nothing else,
-  # ~/go/pkg/mod without a build cache, for the five jobs of ci.yaml that have a fetch step and
-  # restore no family above: text-checks, lint, test, private-names-port and dispatch-two-builds.
-  # Each family above that holds those modules holds its own readers' build cache too
-  # (go-envoy-infra, go-daemon and go-envoy hold 0.17 to 1.4 GB on main), which these five jobs
-  # would download to read a few hundred of its modules. A module cache that one of these fetches
-  # leaves on an empty runner is 48 MB (lint), 70 MB (test), 202 MB (dispatch-two-builds), 253 MB
-  # (text-checks) and 328 MB (private-names-port) as a zstd tar, measured on a devbox; go-envoy's
-  # 165 MB took 2 to 3 s to restore in run 44433142648's arm64 jobs. A job of its own for each
-  # family, on the one runner its reader runs on and with the Go that reader sets up: each fill
-  # runs its readers' fetch files in the module cache of a fresh runner, so the entry holds exactly
-  # what their fetch steps fetch, and a restore of it leaves those steps nothing to download. Each
-  # key carries the hash of the module files that fetch reads, of its fetch files and of
-  # go-fetch.sh, as every Go family's does: a fetch reads the module graph, so an entry keyed on
-  # the Go version alone would hold the versions of the push that filled it, and its reader would
-  # fetch on every run what moved since. The superseded job below deletes the entry each fill
-  # replaced, so each job names its key and whether it filled it under the output names that job
-  # reads.
+  # The five go-fetch families: each holds what one job's fetch step fetches and nothing else, for
+  # the five jobs of ci.yaml that have a fetch step and restore no family above: text-checks, lint,
+  # test, private-names-port and dispatch-two-builds. Each family above that holds those modules
+  # holds its own readers' build cache too (go-envoy-infra, go-daemon and go-envoy hold 0.17 to 1.4
+  # GB on main), which these five jobs would download on every run to read a few hundred of its
+  # modules. A module cache that one of these fetches leaves on an empty runner is 48 MB (lint), 70
+  # MB (test), 202 MB (dispatch-two-builds), 253 MB (text-checks) and 328 MB (private-names-port) as
+  # a zstd tar, measured on a devbox; go-envoy's 165 MB took 2 to 3 s to restore in run
+  # 44433142648's arm64 jobs. Each entry is saved with the two paths every family above is saved
+  # with, ~/go/pkg/mod and ~/.cache/go-build, though a fetch compiles nothing and leaves next to
+  # nothing in the second: a restore matches only an entry saved with the same paths, and each of
+  # the five jobs restores, where its own family has no entry (before this workflow's first fill of
+  # it on main, or after GitHub evicted it), main's entry of the family above that holds most of
+  # what its fetch reads: go-envoy-test for text-checks and dispatch-two-builds, go-envoy for lint
+  # and test, go-daemon for private-names-port. A job of its own for each family, on the one
+  # runner its reader runs on and with the Go that reader sets up: each fill runs its readers'
+  # fetch files in the module cache of a fresh runner, so the entry holds exactly what their fetch
+  # steps fetch, and a restore of it leaves those steps nothing to download. Each key carries the
+  # hash of the module files that fetch reads, of its fetch files and of go-fetch.sh, as every Go
+  # family's does: a fetch reads the module graph, so an entry keyed on the Go version alone would
+  # hold the versions of the push that filled it, and its reader would fetch on every run what
+  # moved since. The superseded job below deletes the entry each fill replaced, so each job names
+  # its key and whether it filled it under the output names that job reads.
   #
   # go-fetch-text-checks: text-checks' fetch, in both workspaces (packages/envoy/infra/go.work binds
   # that module and packages/envoy; the root go.work binds packages/envoy and packages/daemon),
@@ -608,7 +613,9 @@ jobs:
       - id: go-fetch-text-checks
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-text-checks-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/text-checks.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
 
@@ -619,7 +626,9 @@ jobs:
       - if: steps.go-fetch-text-checks.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-text-checks-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/text-checks.txt', '.github/scripts/go-fetch.sh') }}
 
   # go-fetch-lint: lint's fetch for the natsfloor build of its NATS pin scan, in the root
@@ -645,7 +654,9 @@ jobs:
       - id: go-fetch-lint
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-lint-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/lint.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
 
@@ -656,7 +667,9 @@ jobs:
       - if: steps.go-fetch-lint.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-lint-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/lint.txt', '.github/scripts/go-fetch.sh') }}
 
   # go-fetch-test: the test job's fetch for the listener and natsfloor builds its e2e library
@@ -681,7 +694,9 @@ jobs:
       - id: go-fetch-test
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/test.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
 
@@ -692,7 +707,9 @@ jobs:
       - if: steps.go-fetch-test.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/test.txt', '.github/scripts/go-fetch.sh') }}
 
   # go-fetch-private-names-port: that job's fetch for the `legion` build its harness makes, in
@@ -717,7 +734,9 @@ jobs:
       - id: go-fetch-private-names-port
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-private-names-port-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/private-names-port.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
 
@@ -728,7 +747,9 @@ jobs:
       - if: steps.go-fetch-private-names-port.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-private-names-port-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/private-names-port.txt', '.github/scripts/go-fetch.sh') }}
 
   # go-fetch-dispatch-two-builds: the fetches of that file's two jobs, dispatch-two-builds and
@@ -754,7 +775,9 @@ jobs:
       - id: go-fetch-dispatch-two-builds
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-dispatch-two-builds-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-two-builds-same.txt', '.github/go-fetch/dispatch-two-builds.txt', '.github/scripts/go-fetch.sh') }}
           lookup-only: true
 
@@ -767,7 +790,9 @@ jobs:
       - if: steps.go-fetch-dispatch-two-builds.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-dispatch-two-builds-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/dispatch-two-builds-same.txt', '.github/go-fetch/dispatch-two-builds.txt', '.github/scripts/go-fetch.sh') }}
 
   # The entries the hashed fills above superseded - every Go family's: go-daemon's, go-notices',

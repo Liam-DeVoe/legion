@@ -29,12 +29,12 @@ name: CI job text-checks
 # docs/, a skill under skills/, the committed extract beside the code it pins - and Go's test
 # cache keys on neither, so a cached pass would say nothing about the text as it now stands.
 #
-# The job restores no build cache. Each of the six Go cache families
+# The job restores no family's build cache of its own. Each of the six Go cache families
 # .github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs lists that
 # holds one is filled for a job that builds a whole module's binaries or test binaries, and this
 # job builds five packages: measured here, the four calls this job ran before the supervise pins
-# joined it take 4 minutes 4 seconds with an empty build cache and 34 seconds with a warm one,
-# which is less than the download and extraction of any of those families would cost it. The
+# joined it take 4 minutes 4 seconds with an empty build cache and 34 seconds with a warm one, and
+# the one build cache it reads is go-envoy-test's, where its own entry is missing (below). The
 # fifth call is the slowest of them: on the pod where those four take 6 minutes 23 seconds
 # cold the five take 8 minutes 3 seconds, a quarter more, and 86 s of that is the run itself, where
 # TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState type-checks internal/supervise from
@@ -46,9 +46,10 @@ name: CI job text-checks
 # the standard library - because its checker's importer reads source rather than export data
 # (table_test.go:99). The timeout below still leaves the job about three times its cold run.
 # setup-go caches nothing either (`cache: false`), as in every job of ci.yaml. What the job does
-# restore is go-fetch-text-checks, a module cache alone: what the fetch step below fetches
-# (.github/go-fetch/text-checks.txt) and nothing else, which ci-caches.yaml's fetch-text-checks
-# job fills from the same file, so that step finds every module there and downloads none.
+# restore is go-fetch-text-checks: what the fetch step below fetches
+# (.github/go-fetch/text-checks.txt), which ci-caches.yaml's fetch-text-checks job fills from the
+# same file, so that step finds every module there and downloads none. Where that family has no
+# entry, the restore takes main's go-envoy-test entry instead (the restore step says why).
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -104,12 +105,24 @@ jobs:
       # .github/workflows/ci-caches.yaml's fetch-text-checks job fills: the runner's architecture,
       # the Go version and the hash of the module files of both workspaces that fetch reads, of
       # its fetch file and of go-fetch.sh. A pull request that changes those files restores the
-      # newest entry by prefix, and the fetch then downloads only what moved.
+      # newest entry by prefix, and the fetch then downloads only what moved. Only a push to main
+      # fills the family, so a change before its first fill, or after GitHub evicted its entries,
+      # finds none; the second restore key then takes main's newest go-envoy-test entry of this
+      # runner's architecture, which a push to main fills for envoy-go. It holds 142 of the 427
+      # module archives the fetch reads and the objects of every test binary of packages/envoy,
+      # which the envoy text checks and the Dispatch API's source guards then compile from, so
+      # the fetch downloads only what it lacks. The path names the build cache as that entry was
+      # saved with: a restore matches only an entry saved with the same paths, and the family's
+      # own fill saves both too.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-text-checks-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('packages/envoy/infra/go.work', 'packages/envoy/infra/go.work.sum', 'packages/envoy/infra/go.mod', 'packages/envoy/infra/go.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'go.work', 'go.work.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/text-checks.txt', '.github/scripts/go-fetch.sh') }}
-          restore-keys: ${{ format('go-fetch-text-checks-{0}-{1}-', runner.os, runner.arch) }}
+          restore-keys: |
+            ${{ format('go-fetch-text-checks-{0}-{1}-', runner.os, runner.arch) }}
+            ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
       # Every go step below reads the module cache alone (GOPROXY=off, this file's env): the test
       # binaries' own builds, and the infra text checks' two import checks (internal/textcheck's
       # moduleDeps), which list the whole import graph of ./core and ./gcp, and the copy-lock

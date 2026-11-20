@@ -669,8 +669,8 @@ jobs:
       - name: Typecheck the plan ratings read test
         run: bunx tsc --noEmit -p scripts/e2e/lib
 
-      # Go, and no build cache: the go-daemon entry holds what compiling packages/daemon leaves
-      # behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps that
+      # Go, and no build cache of its own: the go-daemon entry holds what compiling packages/daemon
+      # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps that
       # compiled it. What runs go here is the held-port build of the envoy listener and the pin
       # scanner's build of natsfloor below, the CI-filter check's go list over a scratch module and
       # the build-tag lister, none of which that entry is filled for. The daemon's go.mod is still
@@ -680,16 +680,26 @@ jobs:
         with:
           go-version-file: packages/daemon/go.mod
           cache: false
-      # go-fetch-test: the modules of the fetch below, about 70 MB and no build cache, under the
-      # key .github/workflows/ci-caches.yaml's fetch-test job fills: the runner's architecture, the
-      # Go version and the hash of the module files that fetch reads in the root workspace, of its
+      # go-fetch-test: the modules of the fetch below, about 70 MB, under the key
+      # .github/workflows/ci-caches.yaml's fetch-test job fills: the runner's architecture, the Go
+      # version and the hash of the module files that fetch reads in the root workspace, of its
       # fetch file and of go-fetch.sh. A pull request that changes those files restores the newest
-      # entry by prefix, and the fetch then downloads only what moved.
+      # entry by prefix, and the fetch then downloads only what moved. Only a push to main fills
+      # the family, so a change before its first fill, or after GitHub evicted its entries, finds
+      # none; the second restore key then takes main's newest go-envoy entry of this runner's
+      # architecture, which a push to main fills with the build of the listener and natsd: it holds
+      # every module archive this fetch reads and the listener's objects, so the fetch downloads
+      # nothing. The path names the build cache as that entry was saved with: a restore matches
+      # only an entry saved with the same paths, and the family's own fill saves both too.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/go/pkg/mod
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
           key: go-fetch-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ hashFiles('go.work', 'go.work.sum', 'packages/envoy/go.mod', 'packages/envoy/go.sum', 'packages/daemon/go.mod', 'packages/daemon/go.sum', '.github/go-fetch/test.txt', '.github/scripts/go-fetch.sh') }}
-          restore-keys: ${{ format('go-fetch-test-{0}-{1}-', runner.os, runner.arch) }}
+          restore-keys: |
+            ${{ format('go-fetch-test-{0}-{1}-', runner.os, runner.arch) }}
+            ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
 
       # held-port.test.ts and nats-image.test.ts build the listener and natsfloor while they run,
       # with GOPROXY=off (@legion/test-fixtures/go-command): a fetch inside a test fails it
