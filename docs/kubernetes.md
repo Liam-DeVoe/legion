@@ -2990,6 +2990,7 @@ Every answer a project's other experiments drew is in that table alone, so the r
 A release at contract 187 tells every workflow role's pane and pod `LEGION_ROLE_IDENTITIES`, the git identity of each role of the issue.
 Its value is one JSON object from each role to the `name` and `email` that role's App commits as, keys sorted.
 The daemon writes it from the identities it already resolves for each role.
+A launch whose other App's lease cannot be minted still happens: its table holds the roles of its own App alone, the daemon logs a warning naming the claim, that App and the error, and the step leaves the author of a commit whose trailer names a role left out as it is.
 The controller gets none, and `legion controller start` drops one it inherits.
 The push step of `legion jj` reads it before each `jj git push`, and gives each commit the push sends the author of the role that the commit's first `Legion-Role` trailer names ([Worker image](#worker-image)).
 The variable is the daemon's own under both runtimes, so `runtime.kubernetes.pod.env` and `runtime.tmux.pane_env` are refused for setting it, and so is a provider key of that name.

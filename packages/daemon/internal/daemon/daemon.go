@@ -393,6 +393,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
 		plan.identity = workflow.identity
+		plan.knownIdentity = workflow.knownIdentity
 		plan.repository = workflow.issueRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
 		plan.owner = workflow.owningArchitect
@@ -761,6 +762,9 @@ type plan struct {
 	// repository it works, from the workflow's token source (workflowRuntime.identity, which maps
 	// the record's repository to the one GitHub serves); nil without one.
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
+	// knownIdentity is the bot identity of a role's App that the workflow's token source already
+	// holds, read with no mint (workflowRuntime.knownIdentity); nil without a workflow.
+	knownIdentity func(role claim.Role) (runtime.GitIdentity, bool)
 	// repository is the repository an issue works and its default branch
 	// (workflowRuntime.issueRepository: its record's, or the project's default for an issue the
 	// workflow does not record); nil without a workflow.
@@ -1635,7 +1639,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Store:   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs: specs{
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
-			identity: p.identity, repository: p.repository, owner: p.owner,
+			identity: p.identity, knownIdentity: p.knownIdentity, repository: p.repository, owner: p.owner, log: log,
 			appOwners:   p.appOwners(cfg.Runtime.Name),
 			designSteps: cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,

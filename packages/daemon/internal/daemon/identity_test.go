@@ -19,8 +19,9 @@ import (
 
 // A pane commits as its role's App, minted for the owner of the repository its issue works: the
 // launch carries the six git identity variables every worker pane gets and the table of every
-// role's identity (runtime.RoleIdentitiesVariable), each asked for that same repository, nothing
-// else of the Apps, and a launch whose identity cannot be resolved does not happen.
+// role's identity (runtime.RoleIdentitiesVariable), asked once per App, the claim's own first,
+// each for that same repository, nothing else of the Apps, and a launch whose own identity cannot
+// be resolved does not happen.
 func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 	stateDir := t.TempDir()
 	token, err := claim.NewToken("s1", "S1-1", claim.RoleImplementer)
@@ -52,10 +53,11 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 	if err != nil || spec.Repository != ghrepo.MustParse("zeta/tools") {
 		t.Fatalf("SpawnSpec = %q, %v; want zeta/tools, the runtime's to locate the workspace from", spec.Repository, err)
 	}
-	// The claim's own role first, as before the table, then each other role of claim.Roles.
-	want := []string{"implementer on zeta/tools", "architect on zeta/tools", "planner on zeta/tools", "tester on zeta/tools", "reviewer on zeta/tools", "merger on zeta/tools"}
+	// The claim's own role first, as before the table, then the other App's first role of
+	// claim.Roles, whose identity is that App's other roles' too.
+	want := []string{"implementer on zeta/tools", "architect on zeta/tools"}
 	if !slices.Equal(asked, want) {
-		t.Errorf("identity asked for %q, want the claim's own role and then each other role of claim.Roles, each on the recorded repository alone, %q: the owner its lease is minted for is identity's own to decide", asked, want)
+		t.Errorf("identity asked for %q, want the claim's own role and then one role of the other App, each on the recorded repository alone, %q: the owner its lease is minted for is identity's own to decide", asked, want)
 	}
 	identity := map[string]string{
 		"JJ_USER": bot.Name, "JJ_EMAIL": bot.Email,

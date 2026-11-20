@@ -1,13 +1,18 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"maps"
 	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -644,8 +649,12 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	fixtureenv.Unset(t, "LEGION_STALL_ARCHITECT_AFTER", "LEGION_REFUSAL_COOLDOWN_MAX_MS")
 
 	bot := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"}
+	var asked []claim.Role
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-		identity: func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) { return bot, nil }}
+		identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+			asked = append(asked, role)
+			return bot, nil
+		}}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
 		t.Fatal(err)
@@ -664,6 +673,11 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	})
 	if !maps.Equal(spec.Env, want) {
 		t.Errorf("the worker's Env = %v, want the seven passthrough variables the daemon holds beside the git identity and the role identities, %v", spec.Env, want)
+	}
+	// One identity per App, the claim's own first: the implementer's, then the architect's for
+	// the review App's four roles (specs.roleIdentities).
+	if want := []claim.Role{claim.RoleImplementer, claim.RoleArchitect}; !slices.Equal(asked, want) {
+		t.Errorf("identity asked for %q, want %q: the claim's own role, then one role of the other App", asked, want)
 	}
 
 	// The controller's launch is told the same seven — the stall limits after the fork, the
@@ -691,7 +705,9 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 // as its own App mints it (appauth.AppRoleFor: the review App for the architect, the planner, the
 // tester and the reviewer, the implement App for the implementer and the merger), asked for the
 // repository the launch works, whatever role the launch is: the push step of `legion jj` reads it
-// to set each commit's author from its Legion-Role trailer. The controller's launch carries none.
+// to set each commit's author from its Legion-Role trailer. Each App is asked once, the claim's
+// own first, for the claim's own role and then the other App's first role of claim.Roles, since a
+// role of an App commits as that App's one identity. The controller's launch carries none.
 func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
@@ -702,14 +718,18 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 		appauth.Implement: {Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"},
 	}
 	repository := ghrepo.MustParse("zeta/tools")
+	var asked []claim.Role
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
 		repository: func(context.Context, string) (ghrepo.Repository, string, error) { return repository, "main", nil },
-		identity: func(_ context.Context, role claim.Role, asked ghrepo.Repository) (runtime.GitIdentity, error) {
-			if asked != repository {
-				t.Errorf("identity asked for the %s on %s, want the repository the launch works, %s", role, asked, repository)
+		identity: func(_ context.Context, role claim.Role, at ghrepo.Repository) (runtime.GitIdentity, error) {
+			if at != repository {
+				t.Errorf("identity asked for the %s on %s, want the repository the launch works, %s", role, at, repository)
 			}
+			asked = append(asked, role)
 			return apps[appauth.AppRoleFor(role)], nil
 		}}
+	// The first role of claim.Roles each App's claims ask of the other App.
+	otherAsked := map[appauth.AppRole]claim.Role{appauth.Review: claim.RoleImplementer, appauth.Implement: claim.RoleArchitect}
 	const table = `{"architect":{"name":"legion-review[bot]","email":"8+legion-review[bot]@users.noreply.github.com"},` +
 		`"implementer":{"name":"legion-implement[bot]","email":"9+legion-implement[bot]@users.noreply.github.com"},` +
 		`"merger":{"name":"legion-implement[bot]","email":"9+legion-implement[bot]@users.noreply.github.com"},` +
@@ -721,9 +741,13 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		asked = nil
 		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role})
 		if err != nil {
 			t.Fatalf("the %s's SpawnSpec: %v", role, err)
+		}
+		if want := []claim.Role{role, otherAsked[appauth.AppRoleFor(role)]}; !slices.Equal(asked, want) {
+			t.Errorf("the %s's launch asked identity for %q, want %q: its own role, then one role of the other App", role, asked, want)
 		}
 		if got := spec.Env[runtime.RoleIdentitiesVariable]; got != table {
 			t.Errorf("the %s's LEGION_ROLE_IDENTITIES = %q, want every role's identity, %q", role, got, table)
@@ -741,38 +765,291 @@ func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
 	}
 }
 
-// A launch whose table cannot be built does not happen: a failed mint of any role's identity, not
-// only of the claim's own, fails the launch with an error that names the role whose identity
-// failed and carries the mint's error, as a failed mint of the claim's own role does.
-func TestALaunchWhoseOtherAppCannotBeMintedFails(t *testing.T) {
+// A launch whose other App's identity cannot be minted still happens: a claim of either App
+// commits as its own App's identity, and its table holds its own App's roles alone. The other
+// App's roles are left out, which the push step reads as roles with no identity, so a commit
+// whose trailer names one keeps its author. The other App is asked once rather than once per
+// role, and the daemon logs one warning naming the claim, that App and the mint's error.
+func TestALaunchWhoseOtherAppCannotBeMintedCarriesItsOwnAppsRoles(t *testing.T) {
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
-	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
-	if err != nil {
-		t.Fatal(err)
+	apps := map[appauth.AppRole]runtime.GitIdentity{
+		appauth.Review:    {Name: "legion-review[bot]", Email: "8+legion-review[bot]@users.noreply.github.com"},
+		appauth.Implement: {Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"},
 	}
-	c := supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: claim.RoleImplementer}
 	refused := errors.New("the App lease could not be minted")
-	for _, failing := range claim.Roles {
-		if failing == c.Role {
-			continue
+	for _, role := range claim.Roles {
+		own, other := appauth.AppRoleFor(role), appauth.Implement
+		if own == appauth.Implement {
+			other = appauth.Review
 		}
-		t.Run(string(failing), func(t *testing.T) {
+		t.Run(string(role), func(t *testing.T) {
+			token, err := claim.NewToken("s1", "S1-2", role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var asked []claim.Role
+			var logged bytes.Buffer
 			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
-				identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
-					if role == failing {
+				log: slog.New(slog.NewJSONHandler(&logged, nil)),
+				identity: func(_ context.Context, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+					asked = append(asked, asking)
+					if appauth.AppRoleFor(asking) == other {
 						return runtime.GitIdentity{}, refused
 					}
-					return runtime.GitIdentity{Name: "legion-" + string(role) + "[bot]", Email: string(role) + "@users.noreply.github.com"}, nil
+					return apps[own], nil
 				}}
-			spec, err := s.SpawnSpec(context.Background(), c)
-			if err == nil {
-				t.Fatalf("SpawnSpec = %v, want a failure: the %s's identity could not be minted", spec.Env, failing)
+			spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role})
+			if err != nil {
+				t.Fatalf("SpawnSpec = %v, want the launch: a failed mint of the %s App fails no launch of the %s", err, other, role)
 			}
-			if !errors.Is(err, refused) || !strings.Contains(err.Error(), string(failing)) {
-				t.Errorf("SpawnSpec = %v, want the mint's error, naming the %s", err, failing)
+			for name, value := range apps[own].Env() {
+				if spec.Env[name] != value {
+					t.Errorf("the launch's %s = %q, want %q: the %s commits as its own App's identity", name, spec.Env[name], value, role)
+				}
+			}
+			ownRoles := map[claim.Role]runtime.GitIdentity{}
+			for _, r := range claim.Roles {
+				if appauth.AppRoleFor(r) == own {
+					ownRoles[r] = apps[own]
+				}
+			}
+			if got, want := spec.Env[runtime.RoleIdentitiesVariable], runtime.RoleIdentities(ownRoles); got != want {
+				t.Errorf("LEGION_ROLE_IDENTITIES = %q, want the %s App's roles alone, %q", got, own, want)
+			}
+			if len(asked) != 2 || asked[0] != role || appauth.AppRoleFor(asked[1]) != other {
+				t.Errorf("identity asked for %q, want the %s and then one role of the %s App, once", asked, role, other)
+			}
+			var warnings []map[string]any
+			for line := range strings.Lines(logged.String()) {
+				var record map[string]any
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatalf("the launch logged %q, which is no JSON record: %v", line, err)
+				}
+				warnings = append(warnings, record)
+			}
+			if len(warnings) != 1 {
+				t.Fatalf("the launch logged %d records, want one warning:\n%s", len(warnings), logged.String())
+			}
+			if w := warnings[0]; w["level"] != "WARN" || w["claim"] != string(token) || w["app"] != string(other) || w["error"] != refused.Error() {
+				t.Errorf("the launch logged %v, want one warning naming the claim %s, the %s App and the mint's error %q", w, token, other, refused)
+			}
+		})
+	}
+}
+
+// A launch whose context ends while the other App is being minted fails with that mint's error,
+// naming the claim, as one whose context ends during its own mint does, and logs no warning: an
+// ended context is no failure of the other App, so it is never read as one (roleIdentities).
+func TestALaunchWhoseContextEndsDuringTheOtherAppsMintFails(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	apps := map[appauth.AppRole]runtime.GitIdentity{
+		appauth.Review:    {Name: "legion-review[bot]", Email: "8+legion-review[bot]@users.noreply.github.com"},
+		appauth.Implement: {Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"},
+	}
+	for _, ending := range []struct {
+		name string
+		want error
+		// launch is the launch's context, and what the other App's mint does with it before it
+		// answers that context's error, as a mint the context ended does.
+		launch func() (ctx context.Context, during func(), stop func())
+	}{
+		{name: "cancelled during the mint", want: context.Canceled, launch: func() (context.Context, func(), func()) {
+			ctx, cancel := context.WithCancel(context.Background())
+			return ctx, cancel, cancel
+		}},
+		{name: "past its deadline during the mint", want: context.DeadlineExceeded, launch: func() (context.Context, func(), func()) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			return ctx, func() { <-ctx.Done() }, cancel
+		}},
+	} {
+		for _, role := range claim.Roles {
+			own := appauth.AppRoleFor(role)
+			t.Run(ending.name+"/"+string(role), func(t *testing.T) {
+				token, err := claim.NewToken("s1", "S1-2", role)
+				if err != nil {
+					t.Fatal(err)
+				}
+				ctx, during, stop := ending.launch()
+				defer stop()
+				var logged bytes.Buffer
+				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
+					log: slog.New(slog.NewJSONHandler(&logged, nil)),
+					identity: func(ctx context.Context, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+						if app := appauth.AppRoleFor(asking); app != own {
+							during()
+							return runtime.GitIdentity{}, fmt.Errorf("mint the %s App lease for %s: %w", app, asking, ctx.Err())
+						}
+						return apps[own], nil
+					}}
+				spec, err := s.SpawnSpec(ctx, supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role})
+				if err == nil {
+					t.Fatalf("SpawnSpec = %v, want a failure: the launch's context ended during the other App's mint", spec.Env)
+				}
+				if !errors.Is(err, ending.want) || !strings.Contains(err.Error(), string(token)) {
+					t.Errorf("SpawnSpec = %v, want the mint's error, %v, naming the claim %s", err, ending.want, token)
+				}
+				if logged.Len() != 0 {
+					t.Errorf("the launch logged %s, want nothing: an ended context is no failure of the other App", logged.String())
+				}
+			})
+		}
+	}
+}
+
+// launchTokens is a token source whose every write lease carries its App's identity (identities),
+// and which records each App it mints for, in order. Like every other test's token source, it
+// answers no known-identity read.
+type launchTokens struct {
+	identities map[appauth.AppRole]runtime.GitIdentity
+	minted     []appauth.AppRole
+}
+
+func (l *launchTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	l.minted = append(l.minted, role)
+	return appauth.Lease{Token: string(role) + "-app-token-for-" + owner, Identity: l.identities[role]}, nil
+}
+
+func (l *launchTokens) ReadToken(_ context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
+	return appauth.Lease{}, fmt.Errorf("a launch asks the %s App for no read token", role)
+}
+
+// knownLaunchTokens is launchTokens that also answers appauth.KnownIdentities for the Apps known
+// names, as appauth.Manager does once a lease of the App fetched its identity, and records each
+// App it is asked about, in order.
+type knownLaunchTokens struct {
+	*launchTokens
+	known map[appauth.AppRole]bool
+	read  []appauth.AppRole
+}
+
+func (k *knownLaunchTokens) KnownIdentity(role appauth.AppRole) (runtime.GitIdentity, bool) {
+	k.read = append(k.read, role)
+	if !k.known[role] {
+		return runtime.GitIdentity{}, false
+	}
+	return k.identities[role], true
+}
+
+// A launch takes the other App's identity the daemon already holds (appauth.KnownIdentities, read
+// through workflowRuntime.knownIdentity) and mints that App no lease: the table holds all six
+// roles, each its own App's identity, the claim's own App is minted for the claim's own identity
+// even though its identity is known too, and the other App is read once and never minted. Where
+// the source does not know the other App's identity yet, or answers no such read at all, as every
+// other fake does, the other App is minted once, after the claim's own.
+func TestALaunchTakesTheOtherAppsKnownIdentityWithNoMint(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	apps := map[appauth.AppRole]runtime.GitIdentity{
+		appauth.Review:    {Name: "legion-review[bot]", Email: "8+legion-review[bot]@users.noreply.github.com"},
+		appauth.Implement: {Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"},
+	}
+	every := map[claim.Role]runtime.GitIdentity{}
+	for _, role := range claim.Roles {
+		every[role] = apps[appauth.AppRoleFor(role)]
+	}
+	table := runtime.RoleIdentities(every)
+	for _, role := range claim.Roles {
+		own, other := appauth.AppRoleFor(role), appauth.Implement
+		if own == appauth.Implement {
+			other = appauth.Review
+		}
+		t.Run(string(role), func(t *testing.T) {
+			token, err := claim.NewToken("s1", "S1-2", role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			launch := func(name string, tokens appauth.Tokens) {
+				t.Helper()
+				w := &workflowRuntime{tokens: tokens}
+				s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
+					repository: func(context.Context, string) (ghrepo.Repository, string, error) {
+						return ghrepo.MustParse("zeta/tools"), "main", nil
+					},
+					identity: w.identity, knownIdentity: w.knownIdentity}
+				spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role})
+				if err != nil {
+					t.Fatalf("%s: SpawnSpec: %v", name, err)
+				}
+				if got := spec.Env[runtime.RoleIdentitiesVariable]; got != table {
+					t.Errorf("%s: LEGION_ROLE_IDENTITIES = %q, want all six roles, %q", name, got, table)
+				}
+				if spec.Env["JJ_USER"] != apps[own].Name || spec.Env["JJ_EMAIL"] != apps[own].Email {
+					t.Errorf("%s: the %s commits as %q <%s>, want its own App's identity, %+v", name, role, spec.Env["JJ_USER"], spec.Env["JJ_EMAIL"], apps[own])
+				}
+			}
+
+			known := &knownLaunchTokens{launchTokens: &launchTokens{identities: apps}, known: map[appauth.AppRole]bool{own: true, other: true}}
+			launch("both Apps known", known)
+			if want := []appauth.AppRole{own}; !slices.Equal(known.minted, want) {
+				t.Errorf("both Apps known: minted %q, want %q: the claim's own identity is a mint's, and the other App's is known", known.minted, want)
+			}
+			if want := []appauth.AppRole{other}; !slices.Equal(known.read, want) {
+				t.Errorf("both Apps known: read the known identity of %q, want %q: the other App once, and the claim's own App's roles take its own identity", known.read, want)
+			}
+
+			unknown := &knownLaunchTokens{launchTokens: &launchTokens{identities: apps}, known: map[appauth.AppRole]bool{own: true}}
+			launch("the other App not yet known", unknown)
+			if want := []appauth.AppRole{own, other}; !slices.Equal(unknown.minted, want) {
+				t.Errorf("the other App not yet known: minted %q, want %q", unknown.minted, want)
+			}
+
+			plain := &launchTokens{identities: apps}
+			launch("a source with no known-identity read", plain)
+			if want := []appauth.AppRole{own, other}; !slices.Equal(plain.minted, want) {
+				t.Errorf("a source with no known-identity read: minted %q, want %q", plain.minted, want)
+			}
+		})
+	}
+}
+
+// A launch whose own App's lease cannot be minted does not happen, whatever the daemon knows of
+// either App's identity: the claim's own identity is a mint's (identity), never the known read,
+// and its failure fails the launch, carrying the mint's error and naming the claim, before the
+// other App is asked anything.
+func TestALaunchWhoseOwnAppCannotBeMintedFails(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	refused := errors.New("the App lease could not be minted")
+	for _, role := range claim.Roles {
+		own := appauth.AppRoleFor(role)
+		t.Run(string(role), func(t *testing.T) {
+			token, err := claim.NewToken("s1", "S1-2", role)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var asked []claim.Role
+			var read []claim.Role
+			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
+				identity: func(_ context.Context, asking claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+					asked = append(asked, asking)
+					if appauth.AppRoleFor(asking) == own {
+						return runtime.GitIdentity{}, refused
+					}
+					return runtime.GitIdentity{Name: "legion-" + string(asking) + "[bot]", Email: string(asking) + "@users.noreply.github.com"}, nil
+				},
+				knownIdentity: func(reading claim.Role) (runtime.GitIdentity, bool) {
+					read = append(read, reading)
+					return runtime.GitIdentity{Name: "legion-" + string(reading) + "[bot]", Email: string(reading) + "@users.noreply.github.com"}, true
+				}}
+			spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role})
+			if err == nil {
+				t.Fatalf("SpawnSpec = %v, want a failure: the %s's own App could not be minted", spec.Env, role)
+			}
+			if !errors.Is(err, refused) || !strings.Contains(err.Error(), string(token)) {
+				t.Errorf("SpawnSpec = %v, want the mint's error, naming the claim %s", err, token)
+			}
+			if want := []claim.Role{role}; !slices.Equal(asked, want) || len(read) != 0 {
+				t.Errorf("identity asked for %q and the known identity read for %q, want %q and nothing: the claim's own mint comes first and its failure ends the launch", asked, read, want)
 			}
 		})
 	}

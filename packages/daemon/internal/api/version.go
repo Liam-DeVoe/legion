@@ -2460,8 +2460,10 @@ package api
 // (runtime.ReadRoleIdentities) to set the author of each commit a push sends from the role its
 // first `Legion-Role` trailer names. The daemon puts it in every worker's spec.Env
 // (specs.workerSpawnSpec), which the tmux runtime passes as a pane's -e pair and the Sandbox runtime
-// in a role's start command; a failed mint of any role's identity fails the launch, naming that
-// role. The controller's launch carries none, and `legion controller start` drops one it inherits.
+// in a role's start command; a failed mint of the claim's own App's lease fails the launch, and a
+// failed mint of the other App's fails none: that launch's table holds its own App's roles alone,
+// and the daemon logs a warning naming the claim, that App and the error. The controller's launch
+// carries none, and `legion controller start` drops one it inherits.
 // An operator's `runtime.tmux.pane_env`, `runtime.kubernetes.pod.env` and provider keys may not
 // name it (runtime.PaneVariableRefusal, sandbox's podVariables). A role process of an earlier
 // release has no table, and its step does nothing; the reader passes over a field of an identity
