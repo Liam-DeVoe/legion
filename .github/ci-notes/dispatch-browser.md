@@ -9,7 +9,7 @@ In the text moved here, "this file" and "this workflow" refer to the workflow,
 `.github/workflows/dispatch-browser.yaml`, and "this file's head" to its head comment, which is the
 first sections below.
 
-## The suite, its three lanes and the budget rule every job follows
+## The suite, its two lanes and the budget rule every job follows
 
 Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
@@ -21,18 +21,13 @@ the fake-embedder job and the containerised visual review take one each, and one
 joins what the shard and alone legs wrote into a single report and publishes the run's flake
 rate.
 
-Three lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
+Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
 fake-embedder job, which holds a check of the pull request it is on; `full` runs every
 parallel project, the three `-alone` ones, the two-process job, the visual review and that
 same embedder job, over every row. So an unlabelled pull request pays for the rows that
 answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
-run pay for the rest, each of which has the wall time for them. `references` runs the
-`chromium` project over every row of the eleven spec files the reference framework's
-Verification document names and the nine of the reading list's walk, on the four shard
-machines and the merge job alone, so a pull request that changes the reference framework
-gets those rows from CI at its head rather than from a run by hand. It gates nothing:
-.github/ci-notes/ci.md#the-reference-rows-preview-and-why-it-gates-nothing says why.
+run pay for the rest, each of which has the wall time for them.
 
 A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
 gives: `services:` is a job-level key and a composite action's step keys do not include
@@ -72,6 +67,26 @@ checkout, and the merge job's `actions: read` (it reads the run's jobs through t
 dispatch-references job and dispatch-browser-nightly.yaml's full job each declare the first two:
 neither call passes `ci-ok-changes`, so the report step skips there and no check is posted.
 
+## The third lane, references, and the lane prefix every artifact name takes
+
+`references` runs the `chromium` project over every row of the eleven spec files the
+reference framework's Verification document names and the nine of the reading list's walk,
+with main's parse-count walk beside them, on the four shard machines and the merge job alone,
+so a pull request that changes the reference framework gets those rows from CI at its head
+rather than from a run by hand. It gates nothing:
+.github/ci-notes/ci.md#the-reference-rows-preview-job-what-it-runs-and-why-it-gates-nothing
+says why. The lane's spec files are written in one place, the `references)` arm of
+.github/scripts/dispatch-browser-shard-suite.sh, the script the shard job's browser step runs.
+
+Two lanes can run in one workflow run - the references lane beside the pull-request lane, on
+a pull request that selects both callers - and an artifact name is unique within a run, so
+every artifact this file uploads or downloads is named under the lane's prefix,
+ARTIFACT_LANE in the `env:` and nowhere else: `dispatch-references` for the references
+lane and `dispatch-browser` for the other two, and the merge job reads only its own lane's
+legs. The other two lanes' names are what they were before the references lane existed, but
+for the binaries artifact, `dispatch-browser-e2e-binaries` now where it was
+`dispatch-e2e-binaries`, so that every name takes the prefix in the one form.
+
 ## Why GOPROXY falls through to direct
 
 A `|` between proxy entries makes a go command fall through to the next source after ANY error,
@@ -81,21 +96,17 @@ go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches t
 straight from the source and checks them against go.sum, so this is a second path, not a weaker
 check.
 
-## Why every artifact name takes the lane's prefix
+## Why ARTIFACT_LANE is written once, in the workflow's env
 
-Two lanes can run in one workflow run - the references lane beside the pull-request lane, on
-a pull request that selects both callers - and an artifact name is unique within a run, so
-every artifact this file uploads or downloads is named under the lane's prefix,
-ARTIFACT_LANE in the workflow's `env:` and nowhere else: `dispatch-references` for the
-references lane and `dispatch-browser` for the other two, and the merge job reads only its own
-lane's legs. The other two lanes' names are what they were before the references lane existed,
-but for the binaries artifact, `dispatch-browser-e2e-binaries` now where it was
-`dispatch-e2e-binaries`, so that every name takes the prefix in the one form.
-
-Every upload and download reads it as `${{ env.ARTIFACT_LANE }}`, and the one run: step that
-needs it reads "$ARTIFACT_LANE" from its environment, so the condition is written once and an
-artifact that reads it cannot take the other lane's name. A workflow's own `env:` may read
-`inputs` (GitHub's context availability table: `env` takes github, secrets, inputs and vars).
+The prefix of every artifact name of this run's lane, for the reason
+.github/ci-notes/dispatch-browser.md#the-third-lane-references-and-the-lane-prefix-every-artifact-name-takes
+gives. Every upload and download of dispatch-browser.yaml reads it as
+`${{ env.ARTIFACT_LANE }}`, and the one run: step that needs it, "Take the newest attempt of
+each leg's blob report", reads "$ARTIFACT_LANE" from its environment, so the condition is
+written there once and an artifact that reads it cannot take the other lane's name. A
+workflow's own `env:` may read `inputs` (GitHub's context availability table: `env` takes
+github, secrets, inputs and vars). .github/scripts/ci_filter_coverage.py's ENV_ALLOWED names
+it, since go reads no such name.
 
 ## Why the binaries job builds what the suite runs
 
@@ -521,15 +532,14 @@ artifact holds the same two entries under the same names, which is what
 .github/scripts/dispatch-browser-latest-blobs.sh and the merge job read.
 
 The name's prefix is the lane's, ARTIFACT_LANE of the workflow's `env:`, for the reason
-.github/ci-notes/dispatch-browser.md#why-every-artifact-name-takes-the-lanes-prefix gives: the
-references lane can run in the same run as the pull-request lane, so its three uploads here are
-`dispatch-references-…` and the other two lanes' are `dispatch-browser-…` as before. The merge
-job downloads and selects under the same prefix.
+this file's head gives: the references lane can run in the same run as the pull-request
+lane, so its three uploads here are `dispatch-references-…` and the other two lanes' are
+`dispatch-browser-…` as before. The merge job downloads and selects under the same prefix.
 
 ## What the shard job collects after a run
 
 What the run left behind: in the job's own log, where a reader of a failed row looks
-first, and collected into the one directory the `dispatch-browser-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}` artifact takes. A failed row's
+first, and collected into the one directory the `${{ env.ARTIFACT_LANE }}-record-shard-${{ matrix.shard }}-${{ github.run_attempt }}` artifact takes. A failed row's
 trace says what the browser saw; these say what its stack's own servers did, which is
 where a stack-only failure (a port, a migration, a server that never came up) is legible.
 CI read `docker logs dispatch-e2e-files` for the store before this job ran in a
@@ -742,7 +752,7 @@ the shard job's upload of this name is and for the reason it gives.
 ## What the alone job collects after a run
 
 What the run left behind: the stack's own server logs, in the job's own log and collected
-into the one directory the `dispatch-browser-record-alone-${{ matrix.project }}-${{ github.run_attempt }}` artifact takes, beside the sampler's two files, which
+into the one directory the `${{ env.ARTIFACT_LANE }}-record-alone-${{ matrix.project }}-${{ github.run_attempt }}` artifact takes, beside the sampler's two files, which
 the browser step already wrote there. No file store runs on this machine, so there is no
 store log to collect.
 
@@ -814,7 +824,7 @@ connections read, which takes the two-minute floor until runs of it are measured
 the stack's container and builds the stall library, and its four runs since took 118 s,
 114 s, 96 s and 106 s (runs 44480885813, 44501665975, 44528268121 and 44549420195), inside
 the 202 s its 4 min derives from. With budgets on the steps, the
-`if: failure()` upload of `dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
+`if: failure()` upload of `${{ env.ARTIFACT_LANE }}-multiprocess-test-results-${{ github.run_attempt }}` still runs, which a cancelled job skips.
 
 The move into this workflow changed none of that: the job runs the same steps on the same
 machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
@@ -932,10 +942,11 @@ This job is where it runs.
 
 On the pull-request and full lanes, where the alone and multiprocess jobs run on `full`
 alone: this is one Chromium install and two rows of about 90 s, and it holds a check of the
-pull request it is on (the bar's embedding count) rather than a clock reading or a
-second server shape. A lane that skipped it would leave the claim unread until the merge
-queue. Not on `references`: that lane runs eleven named spec files and e2e/search-tiers.e2e.ts
-is none of them, and this job's check stays the pull-request lane's, which runs it.
+pull request it is on (the bar's embedding count) rather than a clock reading or a second
+server shape. A lane that skipped it would leave the claim unread until the merge queue. Not
+on `references`, which its `if:` holds it off: that lane runs the spec files its arm of
+.github/scripts/dispatch-browser-shard-suite.sh names, and e2e/search-tiers.e2e.ts is none of
+them, and this job's check stays the pull-request lane's, which runs it.
 
 Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
 shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`

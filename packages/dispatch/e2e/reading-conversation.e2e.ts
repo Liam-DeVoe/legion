@@ -1,9 +1,15 @@
+import type { Locator } from "@playwright/test";
+
 import { createAsk, createComment, createHandoff, createIssueArtifact, createMessage } from "./api";
+import { nodeRow, openIssue, READER, rowWords } from "./issue-page-g";
+import { withIssuePage } from "./issue-page-option";
 import {
   expectReadsReferences,
+  formReadings,
   READING_LEAD,
   READING_SESSION_ID,
   READING_SESSION_TITLE,
+  type ReadingWorld,
   readingQuestionBlock,
   readingText,
   scopedTo,
@@ -15,15 +21,17 @@ import { expect, test } from "./test";
 /**
  * The reading list's walk (`e2e/reading-rows.ts`) across an issue's own pages:
  * the Activity tab's event body and an event's line, the three turns of the Conversation tab, the
- * quote above a reply and a handoff card's body there, and a decision on the Decisions tab. Each
- * row writes the one reading text into the record its surface shows, through the API as an agent
- * or a person writes it, reaches the surface the way its row of `DISPATCH_READING_SURFACES` says,
- * and reads there every form a text names a node by, drawn through the one renderer (R6).
+ * quote above a reply and a handoff card's body there, a decision on the Decisions tab, and a
+ * comment's row on the new issue page. Each row writes the one reading text into the record its
+ * surface shows, through the API as an agent or a person writes it, reaches the surface the way
+ * its row of `DISPATCH_READING_SURFACES` says, and reads there every form a text names a node by,
+ * drawn through the one renderer (R6).
  *
  * Every surface here is a record a reader reads, so each reference is a link, but for the quote
  * above a reply: the quote is the link to its parent's turn, so the references inside it draw as
  * their names and link nothing. A handoff is no record of the reference graph, so a `#id` in
- * its words names nothing, and its driver holds the other five forms.
+ * its words names nothing, and its driver holds the other five forms. A row of the new page reads
+ * no question map, so a `#id` in its words is drawn as written, and its driver holds the rest.
  */
 
 /** The agent session these rows write as, so a write is never the reader's own. */
@@ -219,3 +227,47 @@ test("issue-decision: a decision's paragraph draws every form of a stored refere
   // its one block body, which is where the stored text is.
   await expectReadsReferences(card.locator(`div${RENDERED_BODY}`), world, "link");
 });
+
+// SLOW(>=2s): seeds the reading world and the reader's comment, then one cold load of the new
+// issue page, whose names of what the comment cites come last (`useIssueTree.ts`).
+test("node-row-words: a comment's row on the new issue page draws every form but a question id through the renderer", async ({
+  page,
+}) => {
+  const world = await seedReadingWorld();
+  // A person's comment is a node of the outline; a thread no person wrote in is the history's
+  // and draws no row (`agents-only.ts`), so the text is the reader's own.
+  const comment = await createComment(world.host.key, { body: readingText(world) });
+
+  await withIssuePage(page.context(), READER);
+  await openIssue(page, world.host.key);
+
+  // The row's words are in no link or button, so the comment draws as a block of the renderer
+  // with its references linked (`RowText.tsx`).
+  await expectRowReadsForms(rowWords(nodeRow(page, comment.id)), world);
+});
+
+/**
+ * Holds a row's words on the new issue page to what R8 says of each form they carry: a link that
+ * reads as its node's name and opens that node, and nothing left as written. The row names a bare
+ * key, an address and a short id with a link pass of its own, from the page's one batched read
+ * of what its references point at (`row-references.ts`), and marks each with the reference as it
+ * reads it (`data-row-reference`) rather than the renderer's `data-dispatch-ref`, which the
+ * reading's own links - a dashboard URL, a party, a worded link - carry; so each form is found by
+ * its link's name, whichever drew it. A short id is linked as its address writes it, which the
+ * dashboard's own route resolves to its comment (`e2e/prefix-links.e2e.ts`).
+ */
+async function expectRowReadsForms(scope: Locator, world: ReadingWorld): Promise<void> {
+  for (const { form, opens, reads, unread, written } of formReadings(world)) {
+    const link = scope.getByRole("link", { exact: true, name: reads });
+    await expect(link, `the ${form} reads as its node's name`).toHaveCount(1);
+    const prefix = written.slice(written.lastIndexOf("/") + 1);
+    await expect(link, `the ${form} opens its node`).toHaveAttribute(
+      "href",
+      form === "short-id" ? `/issues/${world.keyed.key}/comments/${prefix}` : opens
+    );
+    if (unread !== undefined) {
+      await expect(scope, `the ${form} is not left as written`).not.toContainText(unread);
+    }
+  }
+  await expect(scope).not.toContainText("dispatch://");
+}

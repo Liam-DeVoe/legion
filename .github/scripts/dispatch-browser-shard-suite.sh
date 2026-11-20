@@ -11,8 +11,8 @@
 # is the `--shard` numerator below, and it names the blob report this leg writes, the row count
 # file beside it and the title of the sampler's readings. <lane> is the run's lane, the
 # workflow's own `${{ inputs.lane }}`, `pull-request`, `full` or `references`: it decides which
-# projects run, whether the run is held to the `@pr` rows and, on `references`, which spec files
-# run, and an unknown one ends this script below.
+# projects run, whether the run is held to the `@pr` rows and whether it is held to the
+# references lane's spec files, and an unknown one ends this script below.
 # <connections> is the connection limit each stack's Postgres must allow, which the binaries job
 # reads and hands on as `${{ needs.binaries.outputs.connections }}`, because this job's container
 # has no Go to compute it with; it becomes DISPATCH_E2E_PG_CONNECTIONS below.
@@ -137,11 +137,11 @@ case "$lane" in
     # filter, a regular expression matched against a spec's absolute path, and each
     # matches the one file of that name under e2e/ and no other. A file added to this
     # list joins .github/ci-filters.yaml's `dispatch_references` filter, which names these
-    # files and what they test: .github/scripts/check-ci-filters.sh fails naming an entry
-    # here that filter does not match, read from packages/dispatch, this script's working
-    # directory. A reading spec this list does not name runs on no pull request, so the
-    # walk's gate reads this arm the same way and fails naming it
-    # (packages/dispatch/e2e/__tests__/reading-walk.test.ts).
+    # files and what they test: .github/scripts/check-ci-filters.sh (rule 22) fails naming
+    # an entry here that filter does not match, read from the directory of the
+    # dispatch-browser.yaml step that runs this script. A reading spec this list does not
+    # name runs on no pull request, so the walk's gate reads this arm the same way and
+    # fails naming it (packages/dispatch/e2e/__tests__/reading-walk.test.ts).
     projects="--project=chromium"
     lane_grep=""
     lane_files="e2e/bare-references.e2e.ts e2e/btw.e2e.ts e2e/mention-composer.e2e.ts
@@ -169,10 +169,9 @@ esac
 # node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2136,
 # under the `if (!projectNames)` at :2135), and every lane above names its own: four in
 # the pull-request lane, ten in the full one and one in the references one. The
-# `default: false` each `-alone`
-# project carries (the three entries of `aloneProjects` in e2e/playwright.config.ts) is
-# what keeps them out of a run that names no project, which this is not. The alone job
-# names them, one machine each.
+# `default: false` each `-alone` project carries (the three entries of `aloneProjects` in
+# e2e/playwright.config.ts) is what keeps them out of a run that names no project, which
+# this is not. The alone job names them, one machine each.
 #
 # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
 # read from the list reporter's `Running N tests using M workers` line, which the merge

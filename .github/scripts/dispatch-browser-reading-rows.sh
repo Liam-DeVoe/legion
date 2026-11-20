@@ -10,13 +10,13 @@
 # <download conclusion> is what the step "Download every leg's blob report" concluded, the merge
 # job's `${{ steps.download-blobs.conclusion }}`: the missing-blob message below reads it,
 # a refused download being why no blob arrived for any leg. <lane> is the run's lane, the
-# workflow's own `${{ inputs.lane }}`, which decides whose jobs of this run the reading takes
-# (below). GH_TOKEN is the run's own
+# workflow's own `${{ inputs.lane }}`: it says which caller's jobs of this run are this lane's,
+# as the filter below says. GH_TOKEN is the run's own
 # `${{ github.token }}`, which the step's `env:` gives this script for the read of this run's
 # jobs. It is never an argument: an argument is on the process's command line, which every
 # process of the runner can read in /proc while the step runs.
 #
-# The conclusion is an argument rather than a key of the step's `env:`, for the reason
+# The conclusion and the lane are arguments rather than keys of the step's `env:`, for the reason
 # .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
 # gives: a step `env:` key outside ci_filter_coverage.py's ENV_ALLOWED drops that job
 # out of check-ci-filters.sh's reduction of what a go command compiles. GH_TOKEN is in that set,
@@ -37,7 +37,7 @@
 # dispatch-browser-run-reads.sh reads for this run's jobs.
 #
 # Run from the repository root, with those five set:
-#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh success full
+#   GH_TOKEN=<token> .github/scripts/dispatch-browser-reading-rows.sh success pull-request
 # CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows".
 set -euo pipefail
 
@@ -113,8 +113,8 @@ lane=$2
 # their printed rows against a merged report that holds none of them. A run with no
 # dispatch-references job holds no such name, so the other lanes read what they read
 # before. The name is that ci.yaml job's id, which carries no `name:`. Written back to
-# the same file, so reading three takes the same jobs. A read that failed left no list to
-# filter, and the check below says so, so the filter's own failure ends nothing here.
+# the same file, so reading three takes the same jobs. A read that left no file jq can
+# read is left as it is, for the check below to name.
 if own=$(jq --arg lane "$lane" \
   '[.[] | select((.name | startswith("dispatch-references / ")) == ($lane == "references"))]' "$jobs"); then
   printf '%s\n' "$own" > "$jobs"

@@ -27,6 +27,7 @@ import {
 } from "./inbox-threads";
 import { sql } from "./psql";
 import { sqlLiteral } from "./seed";
+import { expandedState } from "./settled";
 import { expect, type Page, type Request, test } from "./test";
 import { asUser } from "./users";
 
@@ -234,13 +235,13 @@ function listedRows(page: Page): Promise<string[]> {
 }
 
 /** Narrows the page's own Type filter to the value named `label`, or takes that value off again:
- *  the option toggles. */
+ *  the option toggles. The bar's Filter control and the Type trigger each say whether what they
+ *  open is open, read once the page has drawn them (`expandedState`). */
 async function toggleType(page: Page, label: string): Promise<void> {
-  if ((await page.locator("[data-inbox-filter-fields]").count()) === 0) {
-    await page.locator("[data-inbox-filter]").click();
-  }
+  const filter = page.locator("[data-inbox-filter]");
+  if ((await expandedState("the Inbox's Filter", filter)) === "shut") await filter.click();
   const trigger = page.getByRole("button", { name: "Filter by type" });
-  if ((await trigger.getAttribute("aria-expanded")) !== "true") await trigger.click();
+  if ((await expandedState("the Type filter", trigger)) === "shut") await trigger.click();
   await page
     .getByRole("listbox", { name: "Type options" })
     .getByRole("option", { name: new RegExp(`^${label}, `) })
@@ -369,8 +370,13 @@ test("the inbox lists everything that reached a person in one list", async ({ br
     for (const row of expected) {
       const listed = page.locator(`[data-inbox-row="${row.id}"]`);
       await expect(listed, `${row.id}'s first line`).toContainText(row.firstLine);
-      const href = (await listed.locator("[data-inbox-owner]").first().getAttribute("href")) ?? "";
-      expect(row.href(href), `${row.id}'s link ${href}`).toBe(true);
+      // The owner link names the thread at its root once the row has drawn it, read until it does.
+      const owner = listed.locator("[data-inbox-owner]").first();
+      await expect
+        .poll(async () => row.href((await owner.getAttribute("href")) ?? ""), {
+          message: `${row.id}'s link opens its thread at the root`,
+        })
+        .toBe(true);
       await selectRow(page, row.id);
       await expect(inboxPane(page), `${row.id}'s author in the reading pane`).toContainText(
         row.author

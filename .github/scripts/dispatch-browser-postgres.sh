@@ -5,7 +5,7 @@
 # Who runs it, and why it is a script: the "Read the lanes' PostgreSQL and time its provider"
 # step of .github/workflows/dispatch-browser.yaml's shard job and the step of that name in its
 # alone job. The two jobs repeat their step lists for the reason
-# .github/ci-notes/dispatch-browser.md#the-suite-its-three-lanes-and-the-budget-rule-every-job-follows
+# .github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows
 # gives - a composite action carries neither `timeout-minutes` nor `services:` - but that
 # reason is a composite action's and not a script's: a step that calls a script keeps its own
 # `timeout-minutes`. So this body is written once, both steps call it, and a fix here is a fix

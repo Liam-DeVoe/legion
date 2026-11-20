@@ -329,19 +329,20 @@
 #      nothing would say so,
 #  22. a spec file the `references` lane of .github/workflows/dispatch-browser.yaml runs - an entry
 #      of the `lane_files="..."` that .github/scripts/dispatch-browser-shard-suite.sh, the script
-#      its shard job's browser step runs, sets in its `references)` arm, read as a path from that
-#      step's working directory - that .github/ci-filters.yaml's dispatch_references filter does
-#      not match, naming the entry and the path: that filter starts the job calling the lane, so a
-#      spec file it misses is a change to the lane's own rows that starts no run of them. A
-#      dispatch-browser.yaml where no step or more than one runs that script, a script with no
-#      such arm or with one that lists no file, and a filters file without that filter, fail
-#      too, rather than holding the filter to nothing.
+#      its shard job's browser step runs, sets in its `references)` arm, read as a path from the
+#      working directory of the step that runs the script - that .github/ci-filters.yaml's
+#      dispatch_references filter does not match, naming the entry and the path: that filter
+#      starts the job calling the lane, so a spec file it misses is a change to the lane's own rows
+#      that starts no run of them. A script with no such arm, with two, or with one that lists no
+#      file, a dispatch-browser.yaml that runs the script from no step or from two directories,
+#      and a filters file without that filter, fail too, rather than holding the filter to
+#      nothing.
 #
-# Rules 1, 6, 9 and 17 name .github/ci-filters.yaml in their refusals, the file the filters are
-# in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That file
-# is read once per run, and a run that cannot read it stops there, naming the file and whether it
-# is absent or there and refusing the open: every job is selected by a filter of it, so a run that
-# read none would hold every filter to nothing.
+# Rules 1, 6, 9, 17 and 22 name .github/ci-filters.yaml in their refusals, the file the filters
+# are in, and rule 8 names it as the file holding the filter a workflow's paths must equal. That
+# file is read once per run, and a run that cannot read it stops there, naming the file and
+# whether it is absent or there and refusing the open: every job is selected by a filter of it, so
+# a run that read none would hold every filter to nothing.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of

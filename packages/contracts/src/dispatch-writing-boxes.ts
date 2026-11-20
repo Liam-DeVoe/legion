@@ -474,12 +474,16 @@ const WRITING_BOXES: readonly Omit<DispatchWritingBoxRow, "hint">[] = [
     reach: "Reply",
     write: "comment",
   },
-  // The issue's Decisions panel: a change is a comment anchored to the decision it quotes.
+  // The issue's Decisions panel, and a decision's row on the new issue page: a change is a
+  // comment anchored to the decision it quotes.
   {
     box: "decisions-change",
     covered: true,
     delivers: true,
-    files: ["packages/dispatch/web/src/features/issue/DecisionsPanel.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
+      "packages/dispatch/web/src/features/issue-page/DecisionActions.tsx",
+    ],
     issueRows: true,
     reach: "Your change",
     write: "comment",

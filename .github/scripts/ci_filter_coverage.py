@@ -2084,12 +2084,12 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate
 
 # ---------------------------------------------------------------- the references lane's spec files
 # dispatch-browser.yaml's `references` lane runs the spec files that one shell variable of the
-# shard suite script lists - the script the shard job's browser step runs, which holds that
-# step's body - and the filters file's dispatch_references filter is what starts the job calling
-# that lane. The arm is read from the script with comments and blank lines aside (script_lines),
-# so a comment that spells an assignment is no entry.
+# script its shard job's browser step runs lists, and .github/ci-filters.yaml's
+# dispatch_references filter is what starts the job calling that lane. The arm is read from that
+# script with comments and blank lines aside (script_lines), so a comment that spells an
+# assignment is no entry.
 BROWSER_WORKFLOW = ".github/workflows/dispatch-browser.yaml"
-SHARD_SUITE = ".github/scripts/dispatch-browser-shard-suite.sh"
+LANE_SCRIPT = ".github/scripts/dispatch-browser-shard-suite.sh"
 REFERENCES_FILTER = "dispatch_references"
 REFERENCES_ARM = re.compile(r"^references\)$(.*?)^;;$", re.M | re.S)
 LANE_FILES = re.compile(r'^lane_files="([^"]*)"', re.M)
@@ -2099,43 +2099,58 @@ def check_references_lane(filters: dict, quantifiers: dict, problems: list[Annot
     """Rule 22: every spec file the references lane runs is one the dispatch_references filter
     matches. That filter names less than its job reads on purpose (EXCLUDED holds it to no gate's
     reads), but the lane's own spec files are the least it must name: a spec file it misses is a
-    change to the lane's own rows that starts no run of the lane, and nothing fails. The lane is
-    the `references)` arm of SHARD_SUITE, and each entry is a path from the directory of the step
-    of BROWSER_WORKFLOW that runs that script, which is where Playwright reads it, and is held to
-    the filter as the repository path it names there. A tree without that workflow or that script
-    holds no such lane; one where no step or more than one runs the script, or whose script sets
-    lane_files in no `references)` arm, or in an arm that lists no file, fails, rather than holding
-    the filter to nothing. Returns the report lines."""
-    if not (REPO / BROWSER_WORKFLOW).is_file() or not (REPO / SHARD_SUITE).is_file():
+    change to the lane's own rows that starts no run of the lane, and nothing fails. The entries
+    are the lane_files LANE_SCRIPT sets in its `references)` arm. Each is a path from the directory
+    of the step of BROWSER_WORKFLOW that runs that script, which is where Playwright reads it, and
+    is held to the filter as the repository path it names there. A tree without that workflow
+    holds no such lane; one whose script is absent, sets lane_files in no `references)` arm, in
+    more than one, or in an arm that lists no file, or whose workflow runs the script from no
+    step or from steps of two directories, fails, rather than holding the filter to nothing.
+    Returns the report lines."""
+    if not (REPO / BROWSER_WORKFLOW).is_file():
         return []
-    browser = load_repository_yaml(REPO / BROWSER_WORKFLOW) or {}
-    held = (f"so {FILTERS_FILE}'s filter {REFERENCES_FILTER} cannot be held to the spec files the references "
-            f"lane runs")
-    steps = [(f'job {job_id} step "{step_label(step)}"', step_workdir(browser, job or {}, step))
-             for job_id, job in (browser.get("jobs") or {}).items()
-             for step in (job or {}).get("steps") or []
-             if SHARD_SUITE in "\n".join(script_lines(str((step or {}).get("run", ""))))]
-    if len(steps) != 1:
-        problems.append(error(BROWSER_WORKFLOW, f"{len(steps)} steps of {BROWSER_WORKFLOW} run {SHARD_SUITE} "
-                                                f"({'; '.join(where for where, _ in steps) or 'none'}), where this "
-                                                f"check reads the one whose directory the lane's entries are read "
-                                                f"from, {held}"))
+    held = (f"so {FILTERS_FILE}'s filter {REFERENCES_FILTER} cannot be held to the spec files the references lane "
+            f"runs")
+    if not (REPO / LANE_SCRIPT).is_file():
+        problems.append(error(BROWSER_WORKFLOW, f"{LANE_SCRIPT}, the script whose `references)` arm lists the spec "
+                                                f"files {BROWSER_WORKFLOW}'s references lane runs, is absent, {held}"))
         return []
-    where, workdir = steps[0]
-    arm = REFERENCES_ARM.search("\n".join(script_lines((REPO / SHARD_SUITE).read_text())))
-    listed = LANE_FILES.search(arm.group(1)) if arm else None
-    if not listed:
-        problems.append(error(SHARD_SUITE, f"{SHARD_SUITE} sets no lane_files=\"...\" in a `references)` arm, "
-                                           f"{held}"))
+    arms = REFERENCES_ARM.findall("\n".join(script_lines(read_repository_text(REPO / LANE_SCRIPT))))
+    lists = [listed.group(1).split() for listed in (LANE_FILES.search(arm) for arm in arms) if listed]
+    if not lists:
+        problems.append(error(LANE_SCRIPT, f"{LANE_SCRIPT} sets lane_files=\"...\" in no `references)` arm of its "
+                                           f"script, {held}"))
         return []
-    entries = listed.group(1).split()
+    if len(lists) > 1:
+        problems.append(error(LANE_SCRIPT, f"{LANE_SCRIPT} sets lane_files in {len(lists)} `references)` arms, "
+                                           f"where this check reads one, {held}"))
+        return []
+    entries = lists[0]
     if not entries:
-        problems.append(error(SHARD_SUITE, f"{SHARD_SUITE} sets lane_files to no spec file in its `references)` "
+        problems.append(error(LANE_SCRIPT, f"{LANE_SCRIPT} sets lane_files to no spec file in its `references)` "
                                            f"arm, {held}"))
         return []
+    browser = load_repository_yaml(REPO / BROWSER_WORKFLOW) or {}
+    runs = [(f'job {job_id} step "{step_label(step or {})}"', step_workdir(browser, job or {}, step or {}))
+            for job_id, job in (browser.get("jobs") or {}).items()
+            for step in (job or {}).get("steps") or []
+            if names_script(browser, job or {}, step or {}, LANE_SCRIPT)]
+    if not runs:
+        problems.append(error(BROWSER_WORKFLOW, f"no step of {BROWSER_WORKFLOW} runs {LANE_SCRIPT}, so the "
+                                                f"directory its references lane's spec files are read from is "
+                                                f"unknown, {held}"))
+        return []
+    if len({workdir for _, workdir in runs}) > 1:
+        problems.append(error(BROWSER_WORKFLOW, f"{len(runs)} steps of {BROWSER_WORKFLOW} run {LANE_SCRIPT} from "
+                                                f"more than one directory "
+                                                f"({'; '.join(f'{where} from {workdir}' for where, workdir in runs)}), "
+                                                f"where this check reads one, {held}"))
+        return []
+    where, workdir = runs[0]
     if REFERENCES_FILTER not in filters:
-        problems.append(error(FILTERS_FILE, f"{FILTERS_FILE} has no filter {REFERENCES_FILTER}, which must match "
-                                            f"every spec file {SHARD_SUITE}'s references lane runs ({where})"))
+        problems.append(error(FILTERS_FILE, f"{FILTERS_FILE} holds no filter {REFERENCES_FILTER}, which must match "
+                                            f"every spec file the references lane of {LANE_SCRIPT} runs ({where} "
+                                            f"of {BROWSER_WORKFLOW} runs it)"))
         return []
     matcher = PathsFilter(filters[REFERENCES_FILTER], quantifiers[REFERENCES_FILTER])
     unmatched = 0
@@ -2144,12 +2159,12 @@ def check_references_lane(filters: dict, quantifiers: dict, problems: list[Annot
         if matcher.covers(path):
             continue
         unmatched += 1
-        problems.append(error(SHARD_SUITE, f"{SHARD_SUITE} runs {entry} in the references lane (lane_files), from "
-                                           f"{where}'s directory, which {FILTERS_FILE}'s filter {REFERENCES_FILTER} "
-                                           f"does not match as {path}, so a change to that spec file starts no run "
-                                           f"of the lane that runs it; add '{path}' to the filter, or take the "
-                                           f"entry out of lane_files"))
-    return [f"{SHARD_SUITE} references lane: {len(entries)} spec files, {unmatched} unmatched by filter "
+        problems.append(error(LANE_SCRIPT, f"{LANE_SCRIPT} runs {entry} in the references lane (lane_files, run "
+                                           f"from {workdir} by {where} of {BROWSER_WORKFLOW}), which {FILTERS_FILE}'s "
+                                           f"filter {REFERENCES_FILTER} does not match as {path}, so a change to that "
+                                           f"spec file starts no run of the lane that runs it; add '{path}' to the "
+                                           f"filter, or take the entry out of lane_files"))
+    return [f"{LANE_SCRIPT} references lane: {len(entries)} spec files, {unmatched} unmatched by filter "
             f"{REFERENCES_FILTER}"]
 
 

@@ -1,6 +1,7 @@
 name: Dispatch browser suite
 
-# why: .github/ci-notes/dispatch-browser.md#the-suite-its-three-lanes-and-the-budget-rule-every-job-follows
+# why: .github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows
+# why: .github/ci-notes/dispatch-browser.md#the-third-lane-references-and-the-lane-prefix-every-artifact-name-takes
 on:
   workflow_call:
     inputs:
@@ -9,12 +10,12 @@ on:
           Which projects run, and over which rows: `pull-request` for `chromium`, `iphone`
           and the two stubbed projects, held to the rows tagged `@pr`; `full` for every
           project, the `-alone` ones and the two-process job among them, over every row; or
-          `references` for `chromium` alone, over every row of the twenty spec files the shard
-          job's browser step names, on the shard and merge jobs alone. The shard job reads it
-          for the projects it runs; no job reads it for a
-          browser to install any more, since the image the shard and alone jobs run in carries
-          all three engines. Any other value fails the shard job's browser step by name, before
-          it starts a row.
+          `references` for `chromium` alone, over every row of the twenty-one spec files the
+          `references)` arm of .github/scripts/dispatch-browser-shard-suite.sh names, on the
+          shard and merge jobs alone. The shard job reads it for the projects it runs; no job
+          reads it for a browser to install any more, since the image the shard and alone jobs
+          run in carries all three engines. Any other value fails the shard job's browser step
+          by name, before it starts a row.
         type: string
         required: true
       ci-ok-changes:
@@ -28,7 +29,7 @@ on:
 env:
   # why: .github/ci-notes/dispatch-browser.md#why-goproxy-falls-through-to-direct
   GOPROXY: https://proxy.golang.org|direct
-  # why: .github/ci-notes/dispatch-browser.md#why-every-artifact-name-takes-the-lanes-prefix
+  # why: .github/ci-notes/dispatch-browser.md#why-artifact_lane-is-written-once-in-the-workflows-env
   ARTIFACT_LANE: ${{ inputs.lane == 'references' && 'dispatch-references' || 'dispatch-browser' }}
 
 jobs:

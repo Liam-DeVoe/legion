@@ -1387,7 +1387,7 @@ dispatch_ui:
   - *ci_router
   - *ci_filters_data
   - '.github/workflows/ci-job-dispatch-ui.yaml'
-  # why: .github/ci-notes/ci.md#dispatch_ui-the-shard-suite-script-whose-references-arm-the-reading-walk-reads
+  # why: .github/ci-notes/ci.md#dispatch_ui-the-script-whose-references-arm-lists-the-references-lanes-spec-files
   - '.github/scripts/dispatch-browser-shard-suite.sh'
   - *bun_install
   - 'packages/dispatch/**'
@@ -3256,10 +3256,14 @@ private_names_port:
   # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
   - '!**/*_test.go'
   # END generated
-# why: .github/ci-notes/ci.md#dispatch_references-the-reference-rows-preview-a-filter-narrower-than-its-job-on-purpose
+# why: .github/ci-notes/ci.md#dispatch_references-the-reference-rows-preview-dispatch-references-the-eleven-spec-files
 dispatch_references:
+  # why: .github/ci-notes/ci.md#dispatch_references-the-workflow-that-holds-the-lanes-jobs-and-the-script-that-holds-its-spec-files
   - '.github/workflows/dispatch-browser.yaml'
   - '.github/scripts/dispatch-browser-shard-suite.sh'
+  - '.github/scripts/dispatch-browser-reading-rows.sh'
+  - '.github/scripts/dispatch-browser-latest-blobs.sh'
+  # why: .github/ci-notes/ci.md#dispatch_references-the-eleven-spec-files-and-the-helpers-only-they-share
   - 'packages/dispatch/e2e/bare-references.e2e.ts'
   - 'packages/dispatch/e2e/btw.e2e.ts'
   - 'packages/dispatch/e2e/mention-composer.e2e.ts'
@@ -3295,6 +3299,7 @@ dispatch_references:
   - 'packages/dispatch/web/src/features/agent-view/AgentThread.tsx'
   - 'packages/dispatch/web/src/features/agent-view/ReferenceTriggers.tsx'
   - 'packages/dispatch/web/src/features/issue/DecisionsPanel.tsx'
+  - 'packages/dispatch/web/src/features/issue-page/DecisionActions.tsx'
   - 'packages/dispatch/web/src/features/issue/CreateIssueDialog.tsx'
   - 'packages/dispatch/web/src/features/architecture/AttachmentLists.tsx'
   - 'packages/dispatch/web/src/features/priorities/PriorityDescription.tsx'
@@ -3302,6 +3307,7 @@ dispatch_references:
   - 'packages/contracts/src/dispatch-text-references*.ts'
   - 'packages/contracts/src/dispatch-writing-boxes.ts'
   - 'packages/contracts/src/dispatch-reading-surfaces.ts'
+  # why: .github/ci-notes/ci.md#dispatch_references-the-server-side-of-references
   - 'packages/envoy/internal/dispatch/text/**'
   - 'packages/envoy/internal/dispatch/refs/**'
   - 'packages/envoy/internal/dispatch/pmdoc/**'
