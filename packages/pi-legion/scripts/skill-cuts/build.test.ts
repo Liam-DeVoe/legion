@@ -7,13 +7,20 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
 import {
   type BuildIo,
+  currentBranch,
   DROP_REASONS,
   type DropReason,
+  EXIT,
   fileHash,
   main,
+  messageOf,
+  pullTranscript,
   RESTATE_WINDOWS,
+  readTranscript,
   removeSecrets,
   SECRET_REMOVED,
+  SPOOL_CHUNK,
+  STOP_AFTER_SESSIONS,
 } from "./build";
 import { type Case, loadCases, pathHash } from "./cases";
 import {
@@ -27,6 +34,7 @@ import {
 } from "./copies";
 import { mtimeRange } from "./countsql";
 import { blindOrder } from "./judge";
+import { psqlRows } from "./psql-rows";
 import { READER_TRIES } from "./readers";
 import {
   messageSse,
@@ -2422,4 +2430,260 @@ test("removeSecrets takes out each secret shape and counts it, and leaves plain 
   for (const [text, expected, removed] of cases) {
     expect(removeSecrets(text)).toEqual({ text: expected, removed });
   }
+});
+
+/** The entries of `text` and the messages of its branch, read whole: as the builder read a
+ *  transcript before it read one from a spool, line by line. */
+function readWhole(text: string): { entries: SessionEntry[]; messages: SessionMessage[] } {
+  const lines = text.split("\n");
+  const entries: SessionEntry[] = [];
+  for (const [index, line] of lines.entries()) {
+    if (line.trim() === "") continue;
+    let value: Record<string, unknown>;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      if (index === lines.length - 1) break;
+      throw new Error(`line ${index + 1} is not JSON`);
+    }
+    const message = value.message as { content?: unknown } | undefined;
+    if (typeof message?.content === "string") {
+      message.content = [{ type: "text", text: message.content }];
+    }
+    entries.push(SessionEntry.parse(value));
+  }
+  return { entries, messages: currentBranch(entries).flatMap((entry) => messageOf(entry) ?? []) };
+}
+
+test("a transcript read from its spool, in chunks of any size, gives the entries, branch and messages its whole text gives, and holds no message's text", () => {
+  const dir = path.join(scratch, "spools");
+  mkdirSync(dir, { recursive: true });
+  // Every made-up session, and one with a line of characters of 2 to 4 bytes, a line that ends
+  // "\r\n", and a last line still being written.
+  const texts = Object.keys(SESSIONS).map((name) => ({ name, text: sessionText(name) }));
+  const note = { type: "custom", customType: "note", data: "é 日本 🎉 ".repeat(9) };
+  texts.push({
+    name: "written",
+    text: `${sessionText("good")}${JSON.stringify(note)}\r\n{"type":"message","message":{"ro`,
+  });
+  for (const { name, text } of texts) {
+    const file = path.join(dir, `${name}.jsonl`);
+    writeFileSync(file, text);
+    let whole: ReturnType<typeof readWhole>;
+    try {
+      whole = readWhole(text);
+    } catch (error) {
+      // The broken session: the same line is refused, whatever the chunk.
+      for (const chunk of [7, SPOOL_CHUNK]) {
+        expect(() => readTranscript(file, chunk)).toThrow((error as Error).message);
+      }
+      continue;
+    }
+    for (const chunk of [7, 4096, SPOOL_CHUNK]) {
+      const t = readTranscript(file, chunk);
+      expect({ name, chunk, messages: t.items.map((_, index) => t.message(index)) }).toEqual({
+        name,
+        chunk,
+        messages: whole.messages,
+      });
+      expect(t.branch.map((entry) => entry.id)).toEqual(
+        currentBranch(whole.entries).map((entry) => entry.id)
+      );
+      // Each entry of the branch reads back whole; the entries held hold no message's text.
+      const branch = currentBranch(whole.entries);
+      expect(branch.map((_, at) => t.entry(at))).toEqual(branch);
+      expect(t.entries).toHaveLength(whole.entries.length);
+      expect(JSON.stringify(t.entries)).not.toContain(LINE);
+      expect(JSON.stringify(t.items)).not.toContain(LINE);
+    }
+  }
+  expect(texts.map((each) => each.name)).toContain("broken");
+});
+
+/** A sessions file of `count` sessions no store holds, each with no path. */
+function absentSessions(file: string, count: number): string {
+  const lines = Array.from({ length: count }, (_, n) => ({
+    store: "store_a",
+    hash: fileHash(`/sessions/absent-${n}.jsonl`),
+  }));
+  writeFileSync(
+    path.join(setupDir, file),
+    lines.map((line) => `${JSON.stringify(line)}\n`).join("")
+  );
+  return path.join(setupDir, file);
+}
+
+interface Stopped {
+  rule: string;
+  sessions: number;
+  cases: number;
+  spentUsd: number;
+  projectedUsd: number | null;
+}
+
+const stoppedOf = (out: string): Stopped | null =>
+  (JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as { stopped: Stopped | null }).stopped;
+
+test("the stop rule stops a build with no case once --stop-after-sessions are decided (unbounded projection), and a run that goes on stops again at once, reading nothing", async () => {
+  const sessions = absentSessions("absent.jsonl", STOP_AFTER_SESSIONS + 5);
+  const out = path.join(scratch, "stop-sessions", "cases.jsonl");
+  const lines: string[] = [];
+  const args = buildArgs(sessions, out, "1", "--max", "15", "--concurrency", "1");
+  expect(await main(args, io(lines))).toBe(
+    EXIT.stoppedByCost
+  );
+  const stopped = {
+    rule: "stop-projected-usd",
+    sessions: STOP_AFTER_SESSIONS,
+    cases: 0,
+    spentUsd: 0,
+    projectedUsd: null,
+  };
+  expect(stoppedOf(out)).toEqual(stopped);
+  const summary = summaryOf(out);
+  expect(summary.sessions).toHaveLength(STOP_AFTER_SESSIONS);
+  expect(summary.drops).toEqual({ "not-in-store": STOP_AFTER_SESSIONS });
+  expect(lines.join("\n")).toContain(
+    `build-cases: stopped by --stop-projected-usd: ${STOP_AFTER_SESSIONS} sessions decided, 0 cases, $0.0000 of readers spent, projected unbounded to --max 15 cases`
+  );
+  expect(existsSync(`${out}.spool`)).toBe(false);
+
+  const from = recorder.requests.length;
+  const logged = readFileSync(psqlLog, "utf8").length;
+  const again: string[] = [];
+  expect(await main(args, io(again))).toBe(
+    EXIT.stoppedByCost
+  );
+  expect(again.join("")).toContain(`${STOP_AFTER_SESSIONS} sessions decided there (0 cases)`);
+  expect(recorder.requests.length).toBe(from);
+  expect(readFileSync(psqlLog, "utf8").length).toBe(logged);
+  expect(stoppedOf(out)).toEqual(stopped);
+  expect(summaryOf(out).sessions).toHaveLength(STOP_AFTER_SESSIONS);
+}, 60_000);
+
+test("the stop rule stops a build with no case as soon as --stop-zero-case-usd is spent, before --stop-after-sessions are decided", async () => {
+  const names = ["no-step", "audit-breaks", "audit-not-governed", "no-common", "not-served"];
+  const sessions = sessionsFile("stop-usd.jsonl", names);
+  const out = path.join(scratch, "stop-usd", "cases.jsonl");
+  const lines: string[] = [];
+  const args = buildArgs(sessions, out, "1", "--concurrency", "1", "--stop-zero-case-usd", "0.0001");
+  expect(await main(args, io(lines))).toBe(EXIT.stoppedByCost);
+  const summary = summaryOf(out);
+  const stopped = stoppedOf(out);
+  // It stops after the first session that spent, a drop like those before it.
+  const spentAt = summary.sessions.findIndex((each) => each.readerUsd > 0);
+  expect(spentAt).toBe(summary.sessions.length - 1);
+  expect(summary.sessions.length).toBeLessThan(names.length);
+  expect(summary.sessions.every((each) => each.outcome === "dropped")).toBe(true);
+  expect(stopped).toEqual({
+    rule: "stop-zero-case-usd",
+    sessions: summary.sessions.length,
+    cases: 0,
+    spentUsd: summary.readerSpend.usd,
+    projectedUsd: null,
+  });
+  expect(stopped?.spentUsd).toBeGreaterThanOrEqual(0.0001);
+}, 60_000);
+
+test("the stop rule stops a build whose cost projected to --max cases passes --stop-projected-usd, and leaves one under the bound alone", async () => {
+  const sessions = sessionsFile("stop-projected.jsonl", ["good", "secret", "skill-md-only"]);
+  const bounds = (usd: string) => [
+    "--max",
+    "5",
+    "--concurrency",
+    "1",
+    "--stop-after-sessions",
+    "2",
+    "--stop-projected-usd",
+    usd,
+  ];
+  const over = path.join(scratch, "stop-over", "cases.jsonl");
+  expect(await main(buildArgs(sessions, over, "1", ...bounds("0.0001")), io([]))).toBe(
+    EXIT.stoppedByCost
+  );
+  const summary = summaryOf(over);
+  const spentUsd = summary.readerSpend.usd;
+  expect(stoppedOf(over)).toEqual({
+    rule: "stop-projected-usd",
+    sessions: 2,
+    cases: 2,
+    spentUsd,
+    projectedUsd: (5 * spentUsd) / 2,
+  });
+  expect(summary.casesBuilt).toBe(2);
+  expect(loadCases(over, old)).toHaveLength(2);
+
+  const under = path.join(scratch, "stop-under", "cases.jsonl");
+  expect(await main(buildArgs(sessions, under, "1", ...bounds("1000")), io([]))).toBe(EXIT.ok);
+  expect(stoppedOf(under)).toBeNull();
+  expect(summaryOf(under).casesBuilt).toBe(3);
+}, 60_000);
+
+test("build-cases refuses a stop bound that is no number, before any read", async () => {
+  const sessions = sessionsFile("stop-refused.jsonl", ["good"]);
+  const out = path.join(scratch, "stop-refused", "cases.jsonl");
+  const from = recorder.requests.length;
+  for (const [flag, value] of [
+    ["--stop-projected-usd", "-1"],
+    ["--stop-zero-case-usd", "x"],
+    ["--stop-after-sessions", "2.5"],
+  ]) {
+    const lines: string[] = [];
+    expect(await main(buildArgs(sessions, out, "1", `${flag}=${value}`), io(lines))).toBe(
+      EXIT.refused
+    );
+    expect(lines.join("\n")).toContain(`${flag} ${value} is not`);
+  }
+  expect(recorder.requests.length).toBe(from);
+  expect(existsSync(out)).toBe(false);
+});
+
+test("the pull reads the store command's output row by row with psqlRows' checks and faults, and reports a failing command first", async () => {
+  const dir = path.join(scratch, "pull-output");
+  mkdirSync(dir, { recursive: true });
+  const row = (o: number, c: string) => ` ${JSON.stringify({ o, c })}`;
+  const outputs = [
+    ["part", "-----", row(-1, ""), row(0, "a\n"), "(2 rows)", ""],
+    ["part", "-----", row(-1, ""), row(0, "a\n"), "(2 rows)"],
+    ["no rule here", "(0 rows)"],
+    ["-----", row(-1, ""), "(1 row)"],
+    [" a | b", "---+---", row(-1, ""), "(1 row)"],
+    ["part", "-----", row(-1, ""), "(2 rows)"],
+    ["part", "-----", row(-1, ""), "(1 row)", "more"],
+    ["part", "-----", " nope", "(1 row)"],
+    ["part", "-----", "", row(-1, ""), "(1 row)"],
+    ["part", "-----", row(-1, ""), "", ""],
+  ].map((lines) => lines.join("\n"));
+  for (const [n, output] of outputs.entries()) {
+    const file = path.join(dir, `${n}.txt`);
+    writeFileSync(file, output);
+    const command = path.join(dir, `${n}.sh`);
+    writeFileSync(command, `#!/bin/sh\ncat '${file}'\n`);
+    chmodSync(command, 0o755);
+    const spool = path.join(dir, `${n}.jsonl`);
+    let fault: string | undefined;
+    try {
+      psqlRows(output);
+    } catch (error) {
+      fault = (error as Error).message;
+    }
+    if (fault === undefined) {
+      expect(await pullTranscript(command, "store_a", "/sessions/x.jsonl", spool)).toEqual({
+        bytes: 2,
+        calls: 1,
+      });
+      expect(readFileSync(spool, "utf8")).toBe("a\n");
+    } else {
+      expect({ n, error: await pullTranscript(command, "store_a", "/x", spool).catch(String) }).toEqual(
+        { n, error: `Error: ${fault}` }
+      );
+    }
+  }
+  // A command that fails is reported as failing, whatever it printed.
+  const failing = path.join(dir, "failing.sh");
+  writeFileSync(failing, "#!/bin/sh\necho 'not a table'\necho 'psql: error: gone' >&2\nexit 3\n");
+  chmodSync(failing, 0o755);
+  expect(
+    await pullTranscript(failing, "store_a", "/x", path.join(dir, "failing.jsonl")).catch(String)
+  ).toBe("Error: the store command exited 3: psql: error: gone");
 });

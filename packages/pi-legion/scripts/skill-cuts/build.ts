@@ -28,14 +28,25 @@
  * `--max` cases are built, or the readers' dollars at list price reach `--budget-usd`, when no
  * further reader call starts and the build stops (exit 3) with what it has.
  *
+ * **The stop rule** (the architect's, 2026-11-20T19:07:23Z; `stopBy`): before the build reads a
+ * further session, after each session decided, it stops (exit 4) as soon as
+ * `--stop-zero-case-usd` (STOP_ZERO_CASE_USD unless given) is spent with no case built; or, once
+ * at least `--stop-after-sessions` (STOP_AFTER_SESSIONS) are decided, when the cost projected to
+ * `--max` cases from its own cases and spend so far (max × spent ÷ cases, unbounded with no case)
+ * passes `--stop-projected-usd` (STOP_PROJECTED_USD). The summary's `stopped` then holds `{rule,
+ * sessions, cases, spentUsd, projectedUsd}` (`projectedUsd` null when unbounded); the sessions
+ * still open are recorded `not-needed`, and every drop keeps its reason. A run that goes on
+ * checks the rule after the sessions the earlier runs decided, before it reads any, so a build
+ * the rule stopped stops again at once with the same bounds. The projection needs `--max`.
+ *
  * Up to `--concurrency` sessions (BUILD_CONCURRENCY unless given) are open at once: pulled (one
  * store query at a time across them) and read, the gateway taking as many calls at once. A
  * session's outcome is decided in the seeded order, a session that finished waiting for those
  * before it, so the cases kept are the first `--max` cases of that order, as one session at a time
- * would keep them, and no more than that many sessions' text is held. Once the build ends (at
- * `--max`, or at the budget), each session still open is stopped before its next reader call and
- * recorded with what it spent, as `not-needed` (or as stopped by the budget). With more than one
- * session open, a session before the one that reached the budget can be stopped by it too.
+ * would keep them. Once the build ends (at `--max`, at the budget, or by the stop rule), each
+ * session still open is stopped before its next reader call and recorded with what it spent, as
+ * `not-needed` (or as stopped by the budget). With more than one session open, a session before
+ * the one that reached the budget can be stopped by it too.
  *
  * **Going on.** The summary records the run's inputs: the cut, the skill, the seed, and the
  * SHA-256 of `--old`'s files, the sessions file, the copies files read and the count's query
@@ -49,9 +60,18 @@
  * moment; a case line the summary does not record (a kill between the two) is left out when the
  * build goes on, and its session is read again. For each session:
  *
- * 1. Its transcript is pulled by path with pull.sql, PULL_PAGE parts a call, paging by offset, and
- *    joined with psql-rows.ts's `pullText`. Its lines are parsed as transcript.ts's entries; the
- *    text after the last newline, a line still being written, is left out when it does not parse.
+ * 1. Its transcript is pulled by path with pull.sql, PULL_PAGE parts a call, paging by offset,
+ *    into a file of its own (`<out>.spool/`, removed once the session is decided), each part
+ *    written as its row comes, with the checks of psql-rows.ts's `psqlRows` and `pullText`; so
+ *    one row is held at a time, however long the file. It is read from there line by line
+ *    (`readTranscript`), each line parsed as transcript.ts's entry; the text after the last
+ *    newline, a line still being written, is left out when it does not parse. Only the entries
+ *    the builder reads whole are held whole (`heldWhole`: the header, a `session_init`, model and
+ *    thinking changes, context resets, a system prompt's digest, Envoy role claims); every other
+ *    entry is held light, with where its line is, a message with its roles, tool calls and
+ *    `[Skill file: …]` line, and is read whole again only where a check or a reader needs it (the
+ *    reader's windows, the reads it offers, the case's messages, the compaction before the step).
+ *    So a session holds its entries' light forms and what its case and windows need, not its file.
  * 2. The session's messages are those of its current branch (the parent chain of its last entry),
  *    in order, as Oh My Pi 18.18.6 gives them to the model: each `message` (less an assistant
  *    message it leaves out: one marked `retryRecovery`, or an error with no content), each
@@ -263,14 +283,18 @@
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -328,7 +352,7 @@ import {
   stepText,
 } from "./judge";
 import { firstMessageLoad } from "./load";
-import { PullRow, psqlRows, pullText } from "./psql-rows";
+import { PullRow, psqlRows } from "./psql-rows";
 import {
   AuditAnswer,
   CaseAnswer,
@@ -342,10 +366,63 @@ import {
   type TasksInput,
 } from "./readers";
 
-/** Exit statuses. */
-export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3 } as const;
+/** Exit statuses: `stopped` at `--budget-usd`, `stoppedByCost` by the stop rule (`stopBy`). */
+export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3, stoppedByCost: 4 } as const;
 /** The most sessions build-cases reads at once, unless `--concurrency` says otherwise. */
 export const BUILD_CONCURRENCY = 4;
+/** The stop rule's bounds, unless `--stop-projected-usd`, `--stop-after-sessions` and
+ *  `--stop-zero-case-usd` say otherwise (the architect's rule, 2026-11-20T19:07:23Z). */
+export const STOP_PROJECTED_USD = 200;
+export const STOP_AFTER_SESSIONS = 40;
+export const STOP_ZERO_CASE_USD = 60;
+
+/** The bounds of the stop rule of one build. */
+interface StopRule {
+  readonly projectedUsd: number;
+  readonly afterSessions: number;
+  readonly zeroCaseUsd: number;
+}
+
+/** Why the stop rule stopped a build, as its summary records it: the rule (its flag's name), the
+ *  sessions decided and the cases built then, the readers' dollars spent, and the projected cost
+ *  to `--max` cases (null when no case is built, so it is unbounded). */
+interface RuleStop {
+  readonly rule: "stop-projected-usd" | "stop-zero-case-usd";
+  readonly sessions: number;
+  readonly cases: number;
+  readonly spentUsd: number;
+  readonly projectedUsd: number | null;
+}
+
+/**
+ * The stop rule of a build of at most `max` cases, once `sessions` are decided, `cases` of them
+ * cases, and `spentUsd` is spent: it stops as soon as `zeroCaseUsd` is spent with no case; and,
+ * once at least `afterSessions` are decided, when the cost projected to `max` cases from the
+ * build's own cases and spend so far (max × spent ÷ cases; with no case, unbounded) passes
+ * `projectedUsd`. A build with no `--max`, or one that has its `max` cases, is not stopped by the
+ * projection.
+ */
+export function stopBy(
+  rule: StopRule,
+  state: { sessions: number; cases: number; spentUsd: number },
+  max: number
+): RuleStop | undefined {
+  const { sessions, cases, spentUsd } = state;
+  if (cases === 0 && spentUsd >= rule.zeroCaseUsd) {
+    return { rule: "stop-zero-case-usd", sessions, cases, spentUsd, projectedUsd: null };
+  }
+  if (sessions < rule.afterSessions || !Number.isFinite(max) || cases >= max) return undefined;
+  const projected = cases === 0 ? Number.POSITIVE_INFINITY : (max * spentUsd) / cases;
+  if (projected <= rule.projectedUsd) return undefined;
+  return {
+    rule: "stop-projected-usd",
+    sessions,
+    cases,
+    spentUsd,
+    projectedUsd: Number.isFinite(projected) ? projected : null,
+  };
+}
+
 /** The most windows of a session the case reader reads, one call each, until it proposes a step. */
 export const READER_WINDOWS = 6;
 /** The most messages the case reader reads from the skill's read on. */
@@ -471,6 +548,16 @@ export interface BuildIo {
 /** A command's refusal of its arguments, before any store read or model call. */
 class Refused extends Error {}
 
+/** The directory a build pulls transcripts into, `<out>.spool`, made empty: one file for each
+ *  session open, removed once the session is decided, and the directory once the build ends. A
+ *  build that is killed leaves it for the next run of the same `--out`, which empties it. */
+function spoolDir(out: string): string {
+  const dir = `${out}.spool`;
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /** Writes `text` to `file` whole: into a fresh file beside it that is then renamed over it. */
 function writeWhole(file: string, text: string): void {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -586,24 +673,160 @@ async function storeRows(command: string, db: string, query: string): Promise<un
   return psqlRows(stdout);
 }
 
-/** The text of the file `filePath` of the store `db`, pulled PULL_PAGE parts a call, and the calls
- *  it took. */
+/**
+ * Runs `query` as storeRows does and gives each row to `visit` as the command prints it, one line
+ * at a time, so no more than one row's text is held. The output is checked as psql-rows.ts's
+ * `psqlRows` checks it, with the same faults, and the command's failure is reported before a fault
+ * of its output, as storeRows reports it; a throw of `visit` comes after both, and no row is given
+ * after it. Returns the rows the table holds.
+ */
+async function eachStoreRow(
+  command: string,
+  db: string,
+  query: string,
+  visit: (row: unknown) => void
+): Promise<number> {
+  const child = Bun.spawn([command, db], {
+    stdin: new Blob([query]),
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const stderr = new Response(child.stderr).text();
+  let line = 0;
+  let rule = -1;
+  let footer = -1;
+  let blank = -1;
+  let rows = 0;
+  let fault: string | undefined;
+  let visitFault: unknown;
+  const take = (text: string) => {
+    line += 1;
+    if (fault !== undefined) return;
+    if (rule < 0) {
+      if (!/^-[-+]*$/.test(text)) return;
+      if (line === 1) fault = "psql output: no header rule (a line of dashes under a header)";
+      else if (!/^-+$/.test(text)) fault = `psql output line ${line}: the table has more than one column`;
+      else rule = line;
+      return;
+    }
+    const trimmed = text.trim();
+    if (footer >= 0) {
+      if (trimmed !== "") fault = `psql output line ${line}: text after the table's footer`;
+      return;
+    }
+    if (blank >= 0 && trimmed !== "") {
+      fault = `psql output line ${blank}: not one JSON value: ""`;
+      return;
+    }
+    const counted = /^\((\d+) rows?\)$/.exec(text);
+    if (counted) {
+      if (Number(counted[1]) !== rows) {
+        fault = `psql output line ${line}: the footer gives ${Number(counted[1])} rows, the table holds ${rows}`;
+      } else footer = line;
+      return;
+    }
+    if (trimmed === "") {
+      blank = line;
+      return;
+    }
+    let row: unknown;
+    try {
+      row = JSON.parse(trimmed);
+    } catch {
+      fault = `psql output line ${line}: not one JSON value: ${JSON.stringify(trimmed.slice(0, 120))}`;
+      return;
+    }
+    rows += 1;
+    if (visitFault !== undefined) return;
+    try {
+      visit(row);
+    } catch (error) {
+      visitFault = error;
+    }
+  };
+  let carry: Buffer[] = [];
+  for await (const chunk of child.stdout) {
+    const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    let from = 0;
+    for (;;) {
+      const newline = bytes.indexOf(0x0a, from);
+      if (newline < 0) break;
+      const piece = bytes.subarray(from, newline);
+      take((carry.length === 0 ? piece : Buffer.concat([...carry, piece])).toString("utf8"));
+      carry = [];
+      from = newline + 1;
+    }
+    if (from < bytes.length) carry.push(bytes.subarray(from));
+  }
+  if (carry.length > 0) take(Buffer.concat(carry).toString("utf8"));
+  const code = await child.exited;
+  if (code !== 0) {
+    const first = (await stderr).split("\n").find((each) => each.trim() !== "") ?? "";
+    throw new Error(`the store command exited ${code}: ${first.slice(0, 300)}`);
+  }
+  if (fault !== undefined) throw new Error(fault);
+  if (rule < 0) throw new Error("psql output: no header rule (a line of dashes under a header)");
+  if (footer < 0) throw new Error("psql output: no footer (N rows) after the table");
+  if (visitFault !== undefined) throw visitFault;
+  return rows;
+}
+
+/** Pulls the file `filePath` of the store `db` into the file `spool`, PULL_PAGE parts a call, each
+ *  part written as its row comes (`eachStoreRow`), so one row is held at a time however long the
+ *  file. Returns the bytes it wrote and the calls it took. It checks the rows as psql-rows.ts's
+ *  `pullText` does: each row `{"o", "c"}`, no offset twice, and each part starting where the text
+ *  before it ends; the rows come in offset order (pull.sql's ORDER BY), and one that does not is
+ *  refused. */
 export async function pullTranscript(
   command: string,
   db: string,
-  filePath: string
-): Promise<{ text: string; calls: number }> {
-  const rows: unknown[] = [];
-  let after = -2;
-  let calls = 0;
-  for (;;) {
-    const page = await storeRows(command, db, pullSql(filePath, after));
-    calls += 1;
-    rows.push(...page);
-    if (page.length < PULL_PAGE) break;
-    after = PullRow.parse(page[page.length - 1]).o;
+  filePath: string,
+  spool: string
+): Promise<{ bytes: number; calls: number }> {
+  const fd = openSync(spool, "w");
+  try {
+    let after = -2;
+    let calls = 0;
+    let rows = 0;
+    let seen = -2;
+    let next = 0;
+    let bytes = 0;
+    const write = (row: unknown) => {
+      rows += 1;
+      const parsed = PullRow.safeParse(row);
+      if (!parsed.success) {
+        throw new Error(
+          `pull row ${rows} is not {"o": <offset>, "c": <text>}: ${parsed.error.message}`
+        );
+      }
+      const piece = parsed.data;
+      if (piece.o === seen) throw new Error(`pull rows give offset ${piece.o} twice`);
+      if (piece.o < seen) {
+        throw new Error(`pull rows: the part at offset ${piece.o} comes after the one at ${seen}`);
+      }
+      seen = piece.o;
+      const text = Buffer.from(piece.c, "utf8");
+      if (piece.o >= 0) {
+        if (piece.o !== next) {
+          throw new Error(
+            `pull rows: the part at offset ${piece.o} does not start where the text before it ends (${next})`
+          );
+        }
+        next += text.length;
+      }
+      for (let at = 0; at < text.length; ) at += writeSync(fd, text, at);
+      bytes += text.length;
+    };
+    for (;;) {
+      const page = await eachStoreRow(command, db, pullSql(filePath, after), write);
+      calls += 1;
+      if (page < PULL_PAGE) break;
+      after = seen;
+    }
+    return { bytes, calls };
+  } finally {
+    closeSync(fd);
   }
-  return { text: pullText(rows), calls };
 }
 
 /** The file hash count.sql and sessions.sql name a file by: md5 of its path, 16 hex characters. */
@@ -639,31 +862,83 @@ async function resolvePaths(
 // ---------------------------------------------------------------------------------------------
 // The transcript
 
-/** The entries of a transcript's text. The text after its last newline is a line still being
- *  written when it does not parse, and is left out; any other line that is not one entry throws.
- *  A message's string `content` is made one text block, as Oh My Pi reads it. */
-export function transcriptEntries(text: string): SessionEntry[] {
-  const lines = text.split("\n");
-  const entries: SessionEntry[] = [];
-  for (const [index, line] of lines.entries()) {
-    if (line.trim() === "") continue;
-    let value: unknown;
-    try {
-      value = JSON.parse(line);
-    } catch (error) {
-      if (index === lines.length - 1) break;
-      throw new Error(`line ${index + 1} is not JSON: ${messageFor(error)}`);
-    }
-    if (isRecord(value) && isRecord(value.message) && typeof value.message.content === "string") {
-      value.message.content = [{ type: "text", text: value.message.content }];
-    }
-    const parsed = SessionEntry.safeParse(value);
-    if (!parsed.success) {
-      throw new Error(`line ${index + 1} is not a transcript entry: ${parsed.error.message}`);
-    }
-    entries.push(parsed.data);
+/** The most bytes the transcript reader reads from a spool at once. */
+export const SPOOL_CHUNK = 1 << 20;
+
+/** The entry of a transcript line whose JSON is `value`, the line's number `line`: a message's
+ *  string `content` made one text block, as Oh My Pi reads it. Throws when it is no entry. */
+function entryOf(value: unknown, line: number): SessionEntry {
+  if (isRecord(value) && isRecord(value.message) && typeof value.message.content === "string") {
+    value.message.content = [{ type: "text", text: value.message.content }];
   }
-  return entries;
+  const parsed = SessionEntry.safeParse(value);
+  if (!parsed.success) {
+    throw new Error(`line ${line} is not a transcript entry: ${parsed.error.message}`);
+  }
+  return parsed.data;
+}
+
+/** Each line of the file `file` in order, split at each newline as `text.split("\n")` splits it:
+ *  its text, its number, and the offset and length of its bytes. The file is read `chunk` bytes
+ *  at a time, so one chunk and one line are held. The text after the last newline, when there is
+ *  any, comes last, with `last` set. */
+function eachLine(
+  file: string,
+  chunk: number,
+  visit: (text: string, line: number, offset: number, length: number, last: boolean) => void
+): void {
+  const fd = openSync(file, "r");
+  try {
+    const buffer = Buffer.alloc(chunk);
+    let carry: Buffer[] = [];
+    let carried = 0;
+    let start = 0;
+    let position = 0;
+    let line = 0;
+    for (;;) {
+      const read = readSync(fd, buffer, 0, chunk, position);
+      if (read === 0) break;
+      position += read;
+      let from = 0;
+      for (;;) {
+        const newline = buffer.indexOf(0x0a, from);
+        if (newline < 0 || newline >= read) break;
+        const piece = buffer.subarray(from, newline);
+        const bytes = carried === 0 ? piece : Buffer.concat([...carry, piece]);
+        line += 1;
+        visit(bytes.toString("utf8"), line, start, bytes.length, false);
+        start += bytes.length + 1;
+        carry = [];
+        carried = 0;
+        from = newline + 1;
+      }
+      if (from < read) {
+        carry.push(Buffer.from(buffer.subarray(from, read)));
+        carried += read - from;
+      }
+    }
+    if (carried > 0) {
+      visit(Buffer.concat(carry).toString("utf8"), line + 1, start, carried, true);
+    }
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** The bytes `length` of the file `file` from `offset`. */
+function bytesAt(file: string, offset: number, length: number): Buffer {
+  const bytes = Buffer.alloc(length);
+  const fd = openSync(file, "r");
+  try {
+    for (let at = 0; at < length; ) {
+      const read = readSync(fd, bytes, at, length - at, offset + at);
+      if (read === 0) throw new Error(`${file} ends before byte ${offset + length}`);
+      at += read;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return bytes;
 }
 
 /** The entries of the session's current branch, root first: the parent chain of its last entry
@@ -707,7 +982,7 @@ function leftOutAssistant(message: SessionMessage): boolean {
 }
 
 /** The message the model reads for `entry`, or undefined for an entry it reads none of. */
-function messageOf(entry: SessionEntry): SessionMessage | undefined {
+export function messageOf(entry: SessionEntry): SessionMessage | undefined {
   if (entry.type === "message" && entry.message !== undefined) {
     return entry.message.role === "assistant" && leftOutAssistant(entry.message)
       ? undefined
@@ -737,26 +1012,146 @@ function messageOf(entry: SessionEntry): SessionMessage | undefined {
   return undefined;
 }
 
-/** One message of the branch, and its entry's place in the branch. */
+/** Where a line is in a spool: its offset, its length in bytes and its number. */
+interface LineAt {
+  readonly offset: number;
+  readonly length: number;
+  readonly line: number;
+}
+
+/** One message of the branch: its light form (`slimMessage`), its entry's place in the branch,
+ *  and its line in the spool. */
 interface Item {
-  readonly message: SessionMessage;
+  readonly slim: SessionMessage;
   readonly at: number;
+  readonly line: LineAt;
 }
 
-/** A transcript, read: its branch and the messages of it, in order. */
-interface Timeline {
+/** A transcript read from its spool (`readTranscript`). Only the entries the builder reads whole
+ *  are held whole (`heldWhole`); every other entry is light, its type, id, parent, time and custom
+ *  type, and is read again from the spool when it is wanted whole. */
+interface Transcript {
+  /** Every entry, in order, whole or light. */
+  readonly entries: readonly SessionEntry[];
+  /** The session's current branch of `entries`. */
   readonly branch: readonly SessionEntry[];
+  /** The branch's messages, in order. */
   readonly items: readonly Item[];
+  /** The whole message of item `index`, read again from the spool. */
+  readonly message: (index: number) => SessionMessage;
+  /** The whole entry of the branch at `at`. */
+  readonly entry: (at: number) => SessionEntry | undefined;
 }
 
-function timeline(entries: readonly SessionEntry[]): Timeline {
+/** Whether a transcript holds `entry` whole: an entry the builder reads beyond its type, id,
+ *  parent and time without asking for it (the header, a subagent's `session_init`, a model or
+ *  thinking level change, a context reset, a recorded system prompt's digest and an Envoy role
+ *  claim). A message's entry, a compaction and every other kind are held light. */
+function heldWhole(entry: SessionEntry): boolean {
+  switch (entry.type) {
+    case "session":
+    case "session_init":
+    case "model_change":
+    case "thinking_level_change":
+    case "reset_boundary":
+      return true;
+    case "custom":
+      return entry.customType === "system-prompt-digest" || entry.customType === "envoy-role-claim";
+    default:
+      return false;
+  }
+}
+
+/** `message` with only what a scan of every message of a session reads (skillReads, shownReads,
+ *  judge.ts's skillReadResults, and the roles sessionRole looks for): its role, tool, call id,
+ *  error mark and custom type; each tool call, a `read` with its arguments and any other without;
+ *  and, for a tool result, its first block, holding only the `[Skill file: …]` line it starts
+ *  with. */
+function slimMessage(message: SessionMessage): SessionMessage {
+  const content = message.content?.flatMap((block, n) => {
+    if (block.type === "toolCall") {
+      return [
+        {
+          type: "toolCall",
+          id: block.id,
+          name: block.name,
+          ...(block.name === "read" ? { arguments: block.arguments } : {}),
+        },
+      ];
+    }
+    if (n !== 0 || message.role !== "toolResult") return [];
+    const header = skillHeaderPath(block.text ?? "");
+    return [{ type: block.type, ...(header === undefined ? {} : { text: `[Skill file: ${header}]\n` }) }];
+  });
+  return {
+    role: message.role,
+    toolName: message.toolName,
+    toolCallId: message.toolCallId,
+    isError: message.isError,
+    customType: message.customType,
+    ...(content === undefined ? {} : { content }),
+  };
+}
+
+/**
+ * The transcript in the file `spool`, read line by line (`eachLine`, `chunk` bytes at a time): the
+ * text after its last newline is a line still being written when it does not parse, and is left
+ * out; any other line that is not one entry throws. An entry `heldWhole` names is held whole; any
+ * other is held light, with where its line is, and a message's with its light form
+ * (`slimMessage`), so a session's memory follows its number of entries, not their text.
+ */
+export function readTranscript(spool: string, chunk = SPOOL_CHUNK): Transcript {
+  const entries: SessionEntry[] = [];
+  const lines = new Map<SessionEntry, { line: LineAt; slim: SessionMessage | undefined }>();
+  eachLine(spool, chunk, (text, line, offset, length, last) => {
+    if (text.trim() === "") return;
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch (error) {
+      if (last) return;
+      throw new Error(`line ${line} is not JSON: ${messageFor(error)}`);
+    }
+    const entry = entryOf(value, line);
+    if (heldWhole(entry)) {
+      entries.push(entry);
+      return;
+    }
+    const light: SessionEntry = {
+      type: entry.type,
+      id: entry.id,
+      parentId: entry.parentId,
+      timestamp: entry.timestamp,
+      ...(entry.customType === undefined ? {} : { customType: entry.customType }),
+    };
+    const message = messageOf(entry);
+    entries.push(light);
+    lines.set(light, {
+      line: { offset, length, line },
+      slim: message === undefined ? undefined : slimMessage(message),
+    });
+  });
   const branch = currentBranch(entries);
   const items: Item[] = [];
-  for (const [at, entry] of branch.entries()) {
-    const message = messageOf(entry);
-    if (message !== undefined) items.push({ message, at });
+  for (const [at, each] of branch.entries()) {
+    const held = lines.get(each);
+    if (held?.slim !== undefined) items.push({ slim: held.slim, at, line: held.line });
   }
-  return { branch, items };
+  const whole = ({ offset, length, line }: LineAt): SessionEntry =>
+    entryOf(JSON.parse(bytesAt(spool, offset, length).toString("utf8")), line);
+  const message = (index: number): SessionMessage => {
+    const item = items[index];
+    if (item === undefined) throw new Error(`the transcript has no message ${index}`);
+    const read = messageOf(whole(item.line));
+    if (read === undefined) throw new Error(`line ${item.line.line} of the transcript holds no message`);
+    return read;
+  };
+  const entryAt = (at: number): SessionEntry | undefined => {
+    const light = branch[at];
+    const held = light === undefined ? undefined : lines.get(light);
+    return held === undefined ? light : whole(held.line);
+  };
+  return { entries, branch, items, message, entry: entryAt };
 }
 
 /** The read calls of `messages`, by call id: their target. */
@@ -836,19 +1231,22 @@ function shownReads(messages: readonly SessionMessage[]): ShownRead[] {
 /** The lines of each base file in `files` that a successful read of it in `reads` holds whole
  *  (its text after the `[Skill file: …]` line; each line trimmed, as the builder's check of a
  *  proposed line compares them; blank lines aside), each with its number in the base file. A file
- *  no read holds a line of is not offered. */
+ *  no read holds a line of is not offered. `message` gives a read's whole message by its index. */
 function offeredFiles(
   files: readonly { readonly path: string; readonly text: string }[],
   reads: readonly SkillRead[],
-  messages: readonly SessionMessage[]
+  message: (index: number) => SessionMessage
 ): CaseInput["files"] {
+  const texts = new Map(
+    reads
+      .filter((read) => read.ok)
+      .map((read): [number, string] => [read.index, message(read.index).content?.[0]?.text ?? ""])
+  );
   return files.flatMap((file) => {
     const held = new Set(
       reads
         .filter((read) => read.ok && read.file === file.path)
-        .flatMap((read) =>
-          textLines(stripSkillHeader(messages[read.index]?.content?.[0]?.text ?? ""))
-        )
+        .flatMap((read) => textLines(stripSkillHeader(texts.get(read.index) ?? "")))
         .map((line) => line.trim())
     );
     const lines = textLines(file.text).flatMap((text, index) =>
@@ -994,7 +1392,7 @@ const CompactionEntry = z.looseObject({
  *  A drop when a skill read (at `firstReadAt`) precedes that compaction or reset, or when the
  *  compaction is of a kind this file does not rebuild. */
 function messagesBefore(
-  t: Timeline,
+  t: Transcript,
   stepAt: number,
   firstReadAt: number
 ): { messages: SessionMessage[] } | { drop: DropReason; detail: string } {
@@ -1006,10 +1404,12 @@ function messagesBefore(
       break;
     }
   }
-  const before = (from: number) =>
-    t.items.filter((item) => item.at > from && item.at < stepAt).map((item) => item.message);
+  /** Each item whose entry is in the branch from `from` (inclusive) to `to`, whole. */
+  const whole = (from: number, to: number) =>
+    t.items.flatMap((item, index) => (item.at >= from && item.at < to ? [t.message(index)] : []));
+  const before = (from: number) => whole(from + 1, stepAt);
   if (boundary < 0) return { messages: before(-1) };
-  const entry = t.branch[boundary];
+  const entry = t.entry(boundary);
   if (firstReadAt < boundary) {
     return {
       drop: "read-before-compaction",
@@ -1046,9 +1446,7 @@ function messagesBefore(
     warning: entry.warning,
     timestamp: entryTime(entry),
   });
-  const keptMessages = t.items
-    .filter((item) => item.at >= kept && item.at < boundary)
-    .map((item) => item.message);
+  const keptMessages = whole(kept, boundary);
   return { messages: [summary, ...keptMessages, ...before(boundary)] };
 }
 
@@ -2147,7 +2545,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
   "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl>\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl>";
 
@@ -2317,24 +2715,26 @@ interface SessionRecord {
   audit?: { verdict: string; reason: string };
 }
 
-/** The case of one session's transcript `text`, or why it gives none. Adds what the reader spent
- *  and what its restatement check read to `record`. Throws NotNeeded before a reader call once
- *  `session.stopped` is set. */
+/** The case of one session's transcript, pulled into the file `spool`, or why it gives none.
+ *  Adds what the reader spent and what its restatement check read to `record`. Throws NotNeeded
+ *  before a reader call once `session.stopped` is set. The transcript is read from the spool
+ *  line by line, and a message is read whole only where a check or a reader needs it. */
 async function caseOf(
   run: CaseRun,
   store: { readonly name: string; readonly context: string },
   transcriptPath: string,
-  text: string,
+  spool: string,
   record: SessionRecord,
   session: { readonly stopped: boolean }
 ): Promise<Outcome> {
   const drop = (reason: DropReason, detail: string): Outcome => ({ drop: reason, detail });
-  let entries: SessionEntry[];
+  let t: Transcript;
   try {
-    entries = transcriptEntries(text);
+    t = readTranscript(spool);
   } catch (error) {
     return drop("unparseable", messageFor(error));
   }
+  const { entries } = t;
   const header = entries.find((entry) => entry.type === "session");
   const sessionStart = header?.timestamp;
   if (
@@ -2343,8 +2743,8 @@ async function caseOf(
   ) {
     return drop("no-header", "no session line with an ISO timestamp");
   }
-  const t = timeline(entries);
-  const allMessages = t.items.map((item) => item.message);
+  // Every message, light: what the scans of the whole session read.
+  const allMessages = t.items.map((item) => item.slim);
   const reads = skillReads(allMessages, run.skill);
   const first = reads.find((read) => read.ok);
   if (first === undefined) {
@@ -2419,7 +2819,18 @@ async function caseOf(
       }
     );
   } else if (project !== undefined) {
-    const found = sessionRole(t.branch, allMessages, transcriptPath);
+    // sessionRole reads the text of the first user message, of the first custom message and of
+    // each Envoy message; those are read whole, the rest stay light.
+    const firstUser = allMessages.findIndex((message) => message.role === "user");
+    const firstCustom = allMessages.findIndex((message) => message.role === "custom");
+    const roleMessages = allMessages.map((message, index) =>
+      index === firstUser ||
+      index === firstCustom ||
+      (message.role === "custom" && message.customType === "envoy-message")
+        ? t.message(index)
+        : message
+    );
+    const found = sessionRole(t.branch, roleMessages, transcriptPath);
     if ("detail" in found) return drop("no-role", found.detail);
     context = `${store.context}:${found.role}`;
     evidence.push({ item: `role ${found.role}`, source: found.how });
@@ -2446,7 +2857,7 @@ async function caseOf(
   // reads of the skill's files held, among the messages it reads. A session with none gives no
   // case, and no reader reads it.
   const readsInReach = reads.filter((read) => read.ok && read.index < readable.length);
-  const offered = offeredFiles(run.files, readsInReach, allMessages);
+  const offered = offeredFiles(run.files, readsInReach, t.message);
   if (offered.length === 0) {
     const read = [...new Set(readsInReach.map((each) => each.file))];
     return drop(
@@ -2473,7 +2884,7 @@ async function caseOf(
   try {
     reachable = await caseProfile(run, {
       ...profileInput,
-      reads: shownReads(readable.map((item) => item.message)),
+      reads: shownReads(readable.map((item) => item.slim)),
     });
   } catch (error) {
     return drop("profile-failed", messageFor(error));
@@ -2510,7 +2921,7 @@ async function caseOf(
     ) {
       const item = readable[index];
       if (item === undefined) break;
-      const each = shown(index, item.message);
+      const each = shown(index, t.message(index));
       if (windowMessages.length > 0 && chars + each.text.length > READER_CHARS) break;
       chars += each.text.length;
       windowMessages.push(each);
@@ -2529,7 +2940,7 @@ async function caseOf(
     ) {
       const item = t.items[index];
       if (item === undefined || item.at <= boundary) break;
-      const each = shown(index, item.message);
+      const each = shown(index, t.message(index));
       if (earlier.length > 0 && earlierChars + each.text.length > READER_EARLIER_CHARS) break;
       earlierChars += each.text.length;
       earlier.unshift(each);
@@ -2571,7 +2982,7 @@ async function caseOf(
     return drop("step-not-after-read", `step ${stepIndex}, read result ${first.index}`);
   }
   const stepItem = t.items[stepIndex];
-  if (stepItem === undefined || stepItem.message.role !== "assistant") {
+  if (stepItem === undefined || stepItem.slim.role !== "assistant") {
     return drop("no-step", `message ${stepIndex} is no assistant message`);
   }
 
@@ -2661,7 +3072,7 @@ async function caseOf(
   const secrets = scrubbed({
     messages,
     systemPrompt: init?.systemPrompt,
-    realStep: stepItem.message,
+    realStep: t.message(stepIndex),
     violatingStep: {
       role: "assistant",
       content: [
@@ -2871,6 +3282,9 @@ async function reprofileCases(
     "max",
     "budget-usd",
     "concurrency",
+    "stop-projected-usd",
+    "stop-after-sessions",
+    "stop-zero-case-usd",
   ]) {
     if (values[flag] !== undefined) {
       throw new Refused(
@@ -3174,6 +3588,9 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       max: { type: "string" },
       "budget-usd": { type: "string" },
       concurrency: { type: "string" },
+      "stop-projected-usd": { type: "string" },
+      "stop-after-sessions": { type: "string" },
+      "stop-zero-case-usd": { type: "string" },
     },
     BUILD_CASES_USAGE
   );
@@ -3197,6 +3614,30 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     values.concurrency === undefined ? BUILD_CONCURRENCY : Number(values.concurrency);
   if (values.concurrency !== undefined && (!/^\d+$/.test(values.concurrency) || concurrency < 1)) {
     throw new Refused(`--concurrency ${values.concurrency} is not a whole number of 1 or more`);
+  }
+  const dollars = (flag: string, text: string | undefined, otherwise: number): number => {
+    if (text === undefined) return otherwise;
+    const usd = Number(text);
+    if (text.trim() === "" || !(usd >= 0)) {
+      throw new Refused(`--${flag} ${text} is not a number of dollars of 0 or more`);
+    }
+    return usd;
+  };
+  const stopRule: StopRule = {
+    projectedUsd: dollars("stop-projected-usd", values["stop-projected-usd"], STOP_PROJECTED_USD),
+    afterSessions:
+      values["stop-after-sessions"] === undefined
+        ? STOP_AFTER_SESSIONS
+        : Number(values["stop-after-sessions"]),
+    zeroCaseUsd: dollars("stop-zero-case-usd", values["stop-zero-case-usd"], STOP_ZERO_CASE_USD),
+  };
+  if (
+    values["stop-after-sessions"] !== undefined &&
+    !/^\d+$/.test(values["stop-after-sessions"])
+  ) {
+    throw new Refused(
+      `--stop-after-sessions ${values["stop-after-sessions"]} is not a whole number`
+    );
   }
   const config = configFrom(given.config);
   const cut = config.cuts.find((each) => each.id === given.cut);
@@ -3258,10 +3699,25 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     return next;
   };
 
+  // A run that goes on checks the stop rule on what the earlier runs decided before it reads the
+  // store at all, so a build the rule stopped stops again at once.
+  const stopAtOnce =
+    prior === undefined
+      ? undefined
+      : stopBy(
+          stopRule,
+          {
+            sessions: decided.size,
+            cases: [...decided.values()].filter((each) => each.caseRecord !== undefined).length,
+            spentUsd: priorSpend.usd,
+          },
+          max
+        );
+
   // Paths for the candidates that lack one and are not decided yet, per store.
   const paths = new Map<string, string>();
   let sessionQueries = prior?.sessionQueries ?? 0;
-  for (const store of config.stores) {
+  for (const store of stopAtOnce === undefined ? config.stores : []) {
     const hashes = order
       .filter(
         (each) => each.store === store.name && each.path === undefined && !decided.has(keyOf(each))
@@ -3295,7 +3751,11 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   const caseRecords: Record<string, unknown>[] = [];
   const sessions: SessionRecord[] = [];
   let casesBuilt = 0;
+  // The sessions decided so far, the earlier runs' among them, for the stop rule.
+  let decidedSessions = 0;
   let stopped: string | undefined;
+  let ruleStop: RuleStop | undefined;
+  const spools = spoolDir(given.out);
   const write = () => {
     const drops: Partial<Record<DropReason, number>> = {};
     let pulls = 0;
@@ -3328,8 +3788,11 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
             max: Number.isFinite(max) ? max : null,
             budgetUsd: budgetUsd ?? null,
             concurrency,
+            stopProjectedUsd: stopRule.projectedUsd,
+            stopAfterSessions: stopRule.afterSessions,
+            stopZeroCaseUsd: stopRule.zeroCaseUsd,
           },
-          stopped: stopped ?? null,
+          stopped: ruleStop ?? stopped ?? null,
           sessionsTried: sessions.length,
           casesBuilt,
           drops,
@@ -3372,39 +3835,42 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     };
     const wanted = { stopped: false };
     const transcriptPath = candidate.path ?? paths.get(`${store.name}\0${candidate.hash}`);
+    const spool = path.join(spools, `${store.name}-${candidate.hash}.jsonl`);
     const outcome = async (): Promise<Outcome> => {
       if (transcriptPath === undefined) {
         return { drop: "not-in-store", detail: "sessions.sql gave no row of this hash" };
       }
       record.pathHash = pathHash(transcriptPath);
-      let pulled: { text: string; calls: number };
+      let pulled: { bytes: number; calls: number };
       try {
         pulled = await oneAtATime(() => {
           if (wanted.stopped) throw new NotNeeded();
-          return pullTranscript(config.psqlCommand, store.name, transcriptPath);
+          return pullTranscript(config.psqlCommand, store.name, transcriptPath, spool);
         });
       } catch (error) {
         if (error instanceof NotNeeded) throw error;
         return { drop: "pull-failed", detail: messageFor(error) };
       }
       record.pulls = pulled.calls;
-      if (pulled.text === "") return { drop: "pull-failed", detail: "the pull returned no row" };
-      return caseOf(run, store, transcriptPath, pulled.text, record, wanted);
+      if (pulled.bytes === 0) return { drop: "pull-failed", detail: "the pull returned no row" };
+      return caseOf(run, store, transcriptPath, spool, record, wanted);
     };
-    const worked = outcome().then(
-      (each): Worked => ({ outcome: each }),
-      (error: unknown): Worked =>
-        error instanceof NotNeeded
-          ? { notNeeded: true }
-          : error instanceof BudgetSpent
-            ? { budget: error }
-            : { error }
-    );
+    const worked = outcome()
+      .finally(() => rmSync(spool, { force: true }))
+      .then(
+        (each): Worked => ({ outcome: each }),
+        (error: unknown): Worked =>
+          error instanceof NotNeeded
+            ? { notNeeded: true }
+            : error instanceof BudgetSpent
+              ? { budget: error }
+              : { error }
+      );
     return { record, wanted, worked };
   };
 
   // At most `concurrency` sessions are open (being read, or read and waiting for those before
-  // them), so no more than that many sessions' text is held. Their outcomes are decided in the
+  // them), each pulled into its spool file and read from there. Their outcomes are decided in the
   // seeded order, as one at a time would decide them, so the cases kept are the first --max
   // cases of that order. Once the build ends, each session still open is stopped before its next
   // reader call, and recorded with what it spent.
@@ -3433,12 +3899,27 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     const kept = decided.get(keyOf(candidate));
     if (kept !== undefined) {
       sessions.push(kept.record);
+      decidedSessions += 1;
       if (kept.caseRecord !== undefined) {
         caseRecords.push(kept.caseRecord);
         casesBuilt += 1;
       }
       continue;
     }
+    // The stop rule, before the build reads on: after each session decided, and, in a run that
+    // goes on, on those the earlier runs decided (`stopAtOnce`).
+    ruleStop =
+      stopAtOnce ??
+      stopBy(
+        stopRule,
+        {
+          sessions: decidedSessions,
+          cases: casesBuilt,
+          spentUsd: addSpend(priorSpend, run.gateway.spend()).usd,
+        },
+        max
+      );
+    if (ruleStop !== undefined) break;
     fill();
     const session = open.get(position);
     if (session === undefined) throw new Error(`session ${position + 1} was not opened`);
@@ -3448,6 +3929,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     const store = record.store;
     if ("error" in worked || "notNeeded" in worked) {
       await closeOpen("not-needed");
+      rmSync(spools, { recursive: true, force: true });
       // The session whose turn it is was never told to stop.
       throw "error" in worked ? worked.error : new Error(`session ${position + 1} was stopped`);
     }
@@ -3462,6 +3944,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     }
     const { outcome } = worked;
     sessions.push(record);
+    decidedSessions += 1;
     if ("drop" in outcome) {
       record.outcome = "dropped";
       record.reason = outcome.drop;
@@ -3505,7 +3988,8 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   }
   const left = open.size > 0;
   if (left) await closeOpen("not-needed");
-  if (left || prior !== undefined) write();
+  rmSync(spools, { recursive: true, force: true });
+  if (left || prior !== undefined || ruleStop !== undefined) write();
   // A run that goes on with a smaller --max than the earlier one records fewer cases; the cases
   // file keeps only those (after the summary, so a kill between leaves lines the next run drops).
   if (prior !== undefined) {
@@ -3520,6 +4004,14 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   if (stopped !== undefined) {
     io.err(`build-cases: stopped: ${stopped}`);
     return EXIT.stopped;
+  }
+  if (ruleStop !== undefined) {
+    const projected =
+      ruleStop.projectedUsd === null ? "unbounded" : `$${ruleStop.projectedUsd.toFixed(4)}`;
+    io.err(
+      `build-cases: stopped by --${ruleStop.rule}: ${ruleStop.sessions} sessions decided, ${ruleStop.cases} cases, $${ruleStop.spentUsd.toFixed(4)} of readers spent, projected ${projected} to --max ${Number.isFinite(max) ? max : "(none)"} cases`
+    );
+    return EXIT.stoppedByCost;
   }
   return EXIT.ok;
 }
@@ -4056,6 +4548,10 @@ async function buildControlTasks(
     for (const [hash, filePath] of resolved.paths) paths.set(`${store.name}\0${hash}`, filePath);
   }
 
+  // Each session is pulled into one spool file, read from there, and the file is pulled over by
+  // the next session.
+  const spools = spoolDir(given.out);
+  const spool = path.join(spools, "session.jsonl");
   const gateway = readerGateway(config, given["key-file"]);
   const spend = () => addSpend(priorSpend, gateway.spend());
   const sessions: ControlRecord[] = [];
@@ -4098,22 +4594,23 @@ async function buildControlTasks(
       return no("not-in-store", "sessions.sql gave no row of this hash");
     const hashOfPath = pathHash(transcriptPath);
     record.pathHash = hashOfPath;
-    let pulled: { text: string; calls: number };
+    let pulled: { bytes: number; calls: number };
     try {
-      pulled = await pullTranscript(config.psqlCommand, candidate.store, transcriptPath);
+      pulled = await pullTranscript(config.psqlCommand, candidate.store, transcriptPath, spool);
     } catch (error) {
       return no("pull-failed", messageFor(error));
     }
     record.pulls = pulled.calls;
-    let entries: SessionEntry[];
+    let t: Transcript;
     try {
-      entries = transcriptEntries(pulled.text);
+      t = readTranscript(spool);
     } catch (error) {
       return no("unparseable", messageFor(error));
     }
-    const messages = timeline(entries).items.map((item) => item.message);
-    const request = messages.find((message) => message.role === "user");
-    const reply = messages.find((message) => message.role === "assistant");
+    const userAt = t.items.findIndex((item) => item.slim.role === "user");
+    const replyAt = t.items.findIndex((item) => item.slim.role === "assistant");
+    const request = userAt < 0 ? undefined : t.message(userAt);
+    const reply = replyAt < 0 ? undefined : t.message(replyAt);
     const text = request === undefined ? "" : messageText(request);
     if (request === undefined || reply === undefined || text.trim() === "") {
       return no("no first request", "the session has no user message with text, or no reply");
@@ -4243,6 +4740,7 @@ async function buildControlTasks(
     dropped,
   });
   rmSync(foundFile, { force: true });
+  rmSync(spools, { recursive: true, force: true });
   io.out(
     `build-tasks: ${tasks.length} control tasks from ${sessions.length} sessions tried, ${dropped.length} left out whose first step the skill does not govern; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
   );

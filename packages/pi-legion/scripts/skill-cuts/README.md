@@ -208,7 +208,7 @@ sessions whose file's head names no model; `notQueried`, those no models query h
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> \
   --skill <name> --old <skill dir at the cut's base> --sessions <sessions.jsonl> --seed <n> \
   --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] \
-  [--concurrency <n>]
+  [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
@@ -255,14 +255,36 @@ case's evidence. The summary records, per session, the check's messages read bes
 read, its windows, and the audit. `--budget-usd` stops the build once its readers cost that much at
 list price (exit 3). The case file holds real session text, so it stays outside the repository.
 
+The stop rule (the architect's, 2026-11-20T19:07:23Z) stops a skill's build (exit 4) as soon as
+`--stop-zero-case-usd` dollars (60 unless given) are spent with no case built, or, once at least
+`--stop-after-sessions` sessions (40) are decided, when the cost projected to `--max` cases from
+the build's own cases and spend passes `--stop-projected-usd` dollars (200): projected = max ×
+spent ÷ cases, unbounded with no case, so a build with no case after 40 sessions stops. It is
+checked after each session decided, before the build reads another, and the projection needs
+`--max`. The summary's `stopped` then holds `{rule, sessions, cases, spentUsd, projectedUsd}`
+(`rule` the flag's name, `projectedUsd` null when unbounded); the sessions still open are
+`not-needed`, and each drop keeps its reason. A run that goes on checks the rule on the sessions
+the earlier runs decided before it reads the store, so a build the rule stopped stops again at
+once with the same bounds.
+
+Each session's transcript is pulled into a file of its own beside the output (`<out>.spool/`,
+removed once the session is decided, and the directory once the build ends), one row of the
+pull's output at a time, and read from there line by line. Only the entries the builder reads
+whole are held whole (the header, a `session_init`, model and thinking changes, context resets, a
+system prompt's digest, Envoy role claims); every other entry is held light (a message with its
+roles, tool calls and `[Skill file: …]` line) and read whole again only where a check or a reader
+needs it (the reader's windows, the reads it offers, the case's messages, the compaction before
+the step). So a session's memory follows its number of entries and what its case needs, not the
+length of its file.
+
 `--concurrency <n>` (4 unless given) lets `build-cases` read up to n sessions at once; the store is
 still read one query at a time, and the gateway takes n calls at once. Each session's outcome is
 decided and written in the seeded order, a session that finished first waiting for those before
 it, so the cases kept are the first `--max` cases of that order, as one session at a time would
-keep them. At most n sessions are open (being read, or read and waiting), so no more than n
-sessions' text is held at once. When the build ends, each session still open is stopped before
-its next reader call and recorded with what it spent, as `not-needed` (or, at the budget, as
-stopped by it).
+keep them. At most n sessions are open (being read, or read and waiting), so at most n spool files
+are there at once. When the build ends, each session still open is stopped before its next
+reader call and recorded with what it spent, as `not-needed` (or, at the budget, as stopped by
+it).
 
 A stopped build goes on where it stopped. The summary records the run's inputs: the cut, the
 skill, the seed, and the SHA-256 of `--old`'s files, the sessions file, the copies files read and
