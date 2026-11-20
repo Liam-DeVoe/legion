@@ -781,8 +781,8 @@ listener_pid1="${server_pid[listener]}"
 grep -q '^go build -o ' "$go_calls1" ||
   fail "instance 1 built nothing through the fake go, so a run that records no go call proves nothing"
 # (s) Only --project-access runs the airlock's stands, so a run without it builds none.
-if grep -q 'dev-airlock-stands' "$go_calls1"; then
-  fail "instance 1, run without --project-access, built dev-airlock-stands: $(cat "$go_calls1")"
+if grep -q 'dev-proxy-stands' "$go_calls1"; then
+  fail "instance 1, run without --project-access, built the stands (cmd/dev-proxy-stands): $(cat "$go_calls1")"
 fi
 declare -A port1=()
 for name in "${!process_port[@]}"; do port1["$name"]="${process_port[$name]}"; done
