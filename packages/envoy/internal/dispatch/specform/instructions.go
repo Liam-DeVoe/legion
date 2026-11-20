@@ -101,9 +101,10 @@ func instructionBreaks(line string, judge *wayJudge) []broken {
 		if condition, ok := conditionSentence(sentence, words, commas); ok {
 			ways[2] = wayOut{original, said(condition)}
 		}
-		ways = judge.offered(original, false, ruleInstructions, original, ways)
+		given := judge.offered(original, false, ruleInstructions, original, ways)
 		quoted := strings.TrimRight(said(sentence[second:min(len(sentence), second+instructionQuote)]), ".!?")
-		found = append(found, broken{rule: ruleInstructions, detail: instructionsDetail(quoted, words[second], keep, ways), ways: ways})
+		found = append(found, broken{rule: ruleInstructions, ways: given.ways,
+			detail: given.said(instructionsDetail(quoted, words[second], keep, given.ways))})
 	}
 	return found
 }

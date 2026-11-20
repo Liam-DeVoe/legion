@@ -1,6 +1,7 @@
 package specform
 
 import (
+	"fmt"
 	"maps"
 	"strings"
 	"testing"
@@ -132,6 +133,47 @@ func TestAWayOutStaysWhereTheOtherFindingsStayAsTheyWere(t *testing.T) {
 		}
 		if !maps.Equal(got, test.ways) {
 			t.Errorf("%q: the ways out offered of each rule are %v, want %v", test.body, got, test.ways)
+		}
+	}
+}
+
+// The judge reads the ways out of the first maxJudgedInSentence findings of one sentence, so it
+// reads a sentence a bounded number of times however many findings it holds. A finding after them
+// is still refused and named, and its detail says that Dispatch offers no way out of it, not that
+// none exists (pastNote). Control: the eighth finding of the sentence gives its ways out.
+func TestAFindingPastTheEighthOfASentenceIsRefusedWithNoWayOutOffered(t *testing.T) {
+	var words, names []string
+	for index := 1; index <= maxJudgedInSentence+1; index++ {
+		words = append(words, fmt.Sprintf("a%d.B", index))
+		names = append(names, fmt.Sprintf("a%d@example.com", index))
+	}
+	for _, test := range []struct {
+		rule  Rule
+		body  string
+		names []string
+		base  func(name string) string
+	}{
+		{ruleStopNoSpace, "Dispatch reads " + strings.Join(words, " ") + " at boot.", words,
+			func(word string) string { return stopNoSpaceAnd(word, "") }},
+		{rulePerson, "Dispatch mails " + strings.Join(names, " ") + " each day.", names,
+			func(name string) string { return personBreak(name, offer{}).detail }},
+	} {
+		var details []string
+		for _, each := range Check(planted(), Input{Texts: []Text{statement(test.body)}}) {
+			if each.Rule == test.rule {
+				details = append(details, each.Detail)
+			}
+		}
+		if len(details) != len(test.names) {
+			t.Fatalf("%q: %d findings of %s, want %d: %q", test.body, len(details), test.rule, len(test.names), details)
+		}
+		last := len(details) - 1
+		const note = ". Dispatch offers ways out for the first 8 findings of a sentence, so it offers none for this one, though one can exist"
+		if want := test.base(test.names[last]) + note; details[last] != want {
+			t.Errorf("%q: the finding after the %dth is %q, want %q", test.body, maxJudgedInSentence, details[last], want)
+		}
+		if eighth := details[last-1]; strings.Contains(eighth, note) || eighth == test.base(test.names[last-1]) {
+			t.Errorf("%q: the %dth finding is %q, want its ways out and no note", test.body, maxJudgedInSentence, eighth)
 		}
 	}
 }

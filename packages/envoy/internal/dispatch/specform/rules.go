@@ -656,17 +656,17 @@ func personWays(name string) [maxWays]wayOut {
 
 // personBreak is the break of the rule person for name. An email address is the one form of both
 // a person and the user and host of a remote command with no path, such as "scp report.txt
-// deploy@build.example.com:", so its detail says so and gives the ways out of a remote path that it
-// is given (ways, personWays), written from them: a path after the colon, or the user and the host
-// apart.
-func personBreak(name string, ways [maxWays]wayOut) broken {
+// deploy@build.example.com:", so its detail says so and gives the ways out of a remote path of the
+// offer that it is given (personWays, wayJudge.offered), written from them: a path after the colon,
+// or the user and the host apart.
+func personBreak(name string, given offer) broken {
 	user, _, found := strings.Cut(name, "@")
 	if !found || user == "" {
 		return broken{rule: rulePerson, detail: fmt.Sprintf("it names a person: %q", name)}
 	}
 	detail := fmt.Sprintf("it names a person: %q. Dispatch reads an address user@host with no path after it as the address of a person", name)
 	var paths, options []string
-	for _, way := range ways[:2] {
+	for _, way := range given.ways[:2] {
 		if way != (wayOut{}) {
 			paths = append(paths, way.to)
 		}
@@ -674,13 +674,13 @@ func personBreak(name string, ways [maxWays]wayOut) broken {
 	if len(paths) > 0 {
 		options = append(options, "write the path after the colon, such as "+strings.Join(paths, " or "))
 	}
-	if ways[2] != (wayOut{}) {
-		options = append(options, "write the user and the host apart, such as "+ways[2].to)
+	if given.ways[2] != (wayOut{}) {
+		options = append(options, "write the user and the host apart, such as "+given.ways[2].to)
 	}
 	if len(options) > 0 {
 		detail += ". For a remote path, " + strings.Join(options, ", or ")
 	}
-	return broken{rule: rulePerson, ways: ways, detail: detail}
+	return broken{rule: rulePerson, ways: given.ways, detail: given.said(detail)}
 }
 
 // referenceAt is the reference that starts at offset of line, as the server's reference grammar

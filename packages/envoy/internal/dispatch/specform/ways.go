@@ -1,6 +1,7 @@
 package specform
 
 import (
+	"fmt"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -10,11 +11,34 @@ import (
 
 // maxJudgedInSentence is how many findings of one sentence the judge of the ways out reads the
 // ways out of (wayJudge.offered). A stop with no space after it and the address of a person can
-// stand many times in one sentence, and each reading of a way out reads the whole sentence, so a
-// finding past this many of one sentence names its rule and its place, and gives no way out. So
-// the work of the judge stays in proportion to the text (the work table's rows of many stops and
-// many addresses of a person in one sentence).
+// stand many times in one sentence, and each reading of a way out reads the whole sentence, so the
+// judge reads one sentence at most this many times for each way out a finding can give, and the
+// work of a judgment stays in proportion to its text (the work table's rows of many stops and many
+// addresses of a person in one sentence). A finding past this many of one sentence is still
+// refused and named, and its detail says that Dispatch offers no way out of it (pastNote).
 const maxJudgedInSentence = 8
+
+// pastNote is what the detail of a finding past the first maxJudgedInSentence findings of its
+// sentence says, so the writer knows that Dispatch offers no way out of it, not that none exists.
+var pastNote = fmt.Sprintf("Dispatch offers ways out for the first %d findings of a sentence, so it offers none for this one, though one can exist",
+	maxJudgedInSentence)
+
+// offer is the ways out that a judge offers a finding (ways), and whether the finding stands past
+// the first maxJudgedInSentence findings of its sentence, whose ways out the judge did not read
+// (past).
+type offer struct {
+	ways [maxWays]wayOut
+	past bool
+}
+
+// said is detail, the detail of the finding of the offer, with pastNote after it for a finding
+// past the findings whose ways out the judge reads.
+func (o offer) said(detail string) string {
+	if o.past {
+		return detail + ". " + pastNote
+	}
+	return detail
+}
 
 // wayJudge offers a way out of a finding only where the text that it writes gives no finding that
 // the text does not give, word for word, and one finding fewer of the finding's own rule
@@ -36,7 +60,7 @@ type wayJudge struct {
 	count int
 	verbs ste.Verbs
 	units map[unitKey]*judgedUnit
-	given map[wayKey][maxWays]wayOut
+	given map[wayKey]offer
 }
 
 // unitKey is a sentence that the judge reads, or the address of a link or an image (address),
@@ -88,36 +112,39 @@ func (j *wayJudge) told(count int, own ste.Verbs, held []ste.Verbs) {
 	}
 }
 
-// offered is ways, the ways out of a finding of rule whose ways out change from in unit, the
-// sentence that holds it, or the address that holds it (address), with a zero wayOut in place of
-// each that passes no reading (passes). A finding past maxJudgedInSentence of its sentence, and one
-// whose sentence is not known (unit ""), gives none. A nil judge offers ways as they are, and so
-// does each judge a finding that gives none.
-func (j *wayJudge) offered(unit string, address bool, rule Rule, from string, ways [maxWays]wayOut) [maxWays]wayOut {
+// offered is the offer of ways, the ways out of a finding of rule whose ways out change from in
+// unit, the sentence that holds it, or the address that holds it (address), with a zero wayOut in
+// place of each that passes no reading (passes). A finding past maxJudgedInSentence of its
+// sentence gives none, and its offer says so (past); so does one whose sentence is not known (unit
+// ""), with no word of it. A nil judge offers ways as they are, and so does each judge a finding
+// that gives none.
+func (j *wayJudge) offered(unit string, address bool, rule Rule, from string, ways [maxWays]wayOut) offer {
 	if j == nil || ways == ([maxWays]wayOut{}) {
-		return ways
+		return offer{ways: ways}
 	}
 	key := wayKey{rule, from}
-	if kept, ok := j.given[key]; ok {
-		return kept
+	if given, ok := j.given[key]; ok {
+		return given
 	}
-	var kept [maxWays]wayOut
+	var given offer
 	if unit != "" {
 		read := unitKey{unit, address}
-		if state := j.unit(read); state.judged < maxJudgedInSentence {
+		state := j.unit(read)
+		given.past = state.judged >= maxJudgedInSentence
+		if !given.past {
 			state.judged++
 			for index, way := range ways {
 				if way != (wayOut{}) && j.passes(state, read, rule, way) {
-					kept[index] = way
+					given.ways[index] = way
 				}
 			}
 		}
 	}
 	if j.given == nil {
-		j.given = map[wayKey][maxWays]wayOut{}
+		j.given = map[wayKey]offer{}
 	}
-	j.given[key] = kept
-	return kept
+	j.given[key] = given
+	return given
 }
 
 // unit is the judge's reading of unit, read once.

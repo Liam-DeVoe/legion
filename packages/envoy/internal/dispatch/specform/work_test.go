@@ -84,7 +84,7 @@ func workRows(race bool) []workRow {
 // that breaks no rule. A row's n is the larger of two: twice the least n at which the walk that the
 // row is for, made a walk for each pair, still failed the bound when its n was searched at steps of
 // about 1.41, and the n at which the row's smaller window lasts about 110 ms on the machine of 288
-// cores, so that it passes cputest.MinWindow on a machine somewhat faster. Each of the thirteen
+// cores, so that it passes cputest.MinWindow on a machine somewhat faster. Each of the fourteen
 // walks failed its rows in 5 of 5 runs at the table's n, each walk broken in turn: ste-lint's
 // count of a column from the start of the line (many semicolons, many phrasal verbs, many
 // marketing adjectives, many nominalizations); the list of distinct addresses and titles, read
@@ -103,13 +103,19 @@ func workRows(race bool) []workRow {
 // read of a sentence's words again at each word (one long procedure sentence, one sentence of many
 // spans of code); and its split of a sentence into one sentence for each instruction, read again
 // from each instruction to the end of the sentence (one sentence of many instructions, also after
-// a condition). A row's smaller text can be shorter than 16 KB, which Go's regexp reads a faster
-// way, so that its growth is up to about 1.3 times more; the worst growth of the table (workScale)
-// holds that. A walk for each pair whose step is a comparison of a few nanoseconds needs units
-// that cost little else: so the footnotes of the rows "many footnotes" and "one statement that
-// refers to many footnotes", and the statements of the first, hold a word or two each, and the row
-// of purpose lines of one id times the reader alone (read), since the walk that it is for is the
-// reader's, and the judgment of each line costs several times the reading of it.
+// a condition); and the judge of the ways out (wayJudge), made to read the ways out of every
+// finding of one sentence where it reads those of maxJudgedInSentence (8) findings at most (many
+// stops with no space in one sentence, many addresses of a person in one sentence). That bound
+// keeps the work of a sentence's ways out at most 8 readings of the sentence for each way out a
+// finding can give, so the work of a judgment stays linear in its text, and each finding past it
+// is still refused and named. A row's smaller text can be shorter than 16 KB, which Go's regexp
+// reads a faster way, so that its growth is up to about 1.3 times more; the worst growth of the
+// table (workScale) holds that. A walk for each pair whose step is a comparison of a few
+// nanoseconds needs units that cost little else: so the footnotes of the rows "many footnotes" and
+// "one statement that refers to many footnotes", and the statements of the first, hold a word or
+// two each, and the row of purpose lines of one id times the reader alone (read), since the walk
+// that it is for is the reader's, and the judgment of each line costs several times the reading of
+// it.
 func workTable() []workRow {
 	context := planted("ada.lovelace@example.com")
 	const id = "0195f3c2-7b1d-7c3e-9a4f-2b6d8e1f0a37"
@@ -212,9 +218,9 @@ func workTable() []workRow {
 		{"many short lines", ruleSentences, 280, checked(KindStatement, "", "Dispatch keeps it.\n", "")},
 		{"one long sentence", ruleSentenceWords, 1_100, checked(KindStatement, "Dispatch keeps ", "word ", "it.")},
 		{"many stops with no space after them", ruleStopNoSpace, 1_200, checked(KindClaim, "Dispatch reads ", "a.B ", "now.")},
-		{"many stops with no space in one sentence, each in a word of its own", ruleStopNoSpace, 200,
+		{"many stops with no space in one sentence, each in a word of its own", ruleStopNoSpace, 50,
 			extracted(units(requirement, " a%d.B", end))},
-		{"many addresses of a person in one sentence", rulePerson, 200, extracted(units(requirement, " a%d@example.com", end))},
+		{"many addresses of a person in one sentence", rulePerson, 12, extracted(units(requirement, " a%d@example.com", end))},
 		{"one word of many stops", "", 5_900, checked(KindClaim, "Dispatch reads ", ".", "A now.")},
 		{"many semicolons", "ste100-semicolon", 4_100, checked(KindClaim, "Dispatch keeps it", ";", " and waits.")},
 		{"many phrasal verbs", "ste100-phrasal-verb", 1_500, checked(KindClaim, "Legion will ", "spin up ", "the job.")},
@@ -268,11 +274,11 @@ func workTable() []workRow {
 			extracted(func(n int) string { return procedureCheck("Run the test with " + strings.Repeat("word ", n) + "now.") })},
 		{"one sentence of many spans of code", ruleInstructions, 1_000,
 			extracted(func(n int) string { return procedureCheck("Run " + strings.Repeat("`x` and ", n) + "read the log.") })},
-		{"one sentence of many instructions", ruleInstructions, 300,
+		{"one sentence of many instructions", ruleInstructions, 200,
 			extracted(func(n int) string {
 				return procedureCheck("Run the test, " + strings.Repeat("read the log, ", n) + "send the report.")
 			})},
-		{"one sentence of many instructions after a condition", ruleInstructions, 300,
+		{"one sentence of many instructions after a condition", ruleInstructions, 200,
 			extracted(func(n int) string {
 				return procedureCheck("If the run fails, " + strings.Repeat("read the log, ", n) + "send the report.")
 			})},

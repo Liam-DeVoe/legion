@@ -88,21 +88,21 @@ func stopNoSpaceWays(word string) [maxWays]wayOut {
 	return [maxWays]wayOut{{word, spacedStops(word)}, {word, "`" + word + "`"}}
 }
 
-// stopNoSpaceBreak is the break of the rule stop-no-space for word: the place, and each way out
-// that it is given (ways, stopNoSpaceWays), written from them.
-func stopNoSpaceBreak(word string, ways [maxWays]wayOut) broken {
+// stopNoSpaceBreak is the break of the rule stop-no-space for word: the place, and each way out of
+// the offer that it is given (stopNoSpaceWays, wayJudge.offered), written from them.
+func stopNoSpaceBreak(word string, given offer) broken {
 	detail := fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence", word)
 	var options []string
-	if ways[0] != (wayOut{}) {
+	if given.ways[0] != (wayOut{}) {
 		options = append(options, "put a space after the stop")
 	}
-	if ways[1] != (wayOut{}) {
+	if given.ways[1] != (wayOut{}) {
 		options = append(options, "put the name in code font")
 	}
 	if len(options) > 0 {
 		detail += ". " + capitalized(strings.Join(options, ", or "))
 	}
-	return broken{rule: ruleStopNoSpace, ways: ways, detail: detail}
+	return broken{rule: ruleStopNoSpace, ways: given.ways, detail: given.said(detail)}
 }
 
 // spacedStops is word with a space after each stop that joinedStop reads, after its closing marks.

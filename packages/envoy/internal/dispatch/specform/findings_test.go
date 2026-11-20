@@ -90,7 +90,7 @@ func TestAPersonsNameIsTheNameOfOnePerson(t *testing.T) {
 	} {
 		var want []Finding
 		if test.want != "" {
-			want = []Finding{finding(test.text, "person", personBreak(test.want, personWays(test.want)).detail)}
+			want = []Finding{finding(test.text, "person", personBreak(test.want, offer{ways: personWays(test.want)}).detail)}
 		}
 		if got := Check(planted(test.people...), Input{Texts: []Text{test.text}}); !sameFindings(got, want) {
 			t.Errorf("%s: Check(%q) =\n%#v\nwant\n%#v", test.name, test.text.Body, got, want)
