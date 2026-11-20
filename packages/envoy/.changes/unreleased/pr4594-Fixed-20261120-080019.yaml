@@ -1,0 +1,20 @@
+kind: Fixed
+body: |-
+  A registration the listener answers `503`, because another writer outran every plan it made or
+  because its session entry could not be written, now sets the session's consumer filter back to
+  the topics the bucket holds, even when its plans spent the registration's 3.5 s store budget.
+  The listener made that write before the `503` and within that budget. On a loaded bus the
+  write met the budget's deadline (`session consumer filter update failed`, `context deadline
+  exceeded`), and the consumer kept the filter of a plan nothing stored until the session's next
+  heartbeat. That is up to 90 s without the topic the other writer stored. The write now runs
+  after the `503`, and the listener's stop waits for it. Each write of a session consumer's filter
+  that the listener checks against the stored row now has a budget of its own, 5 s from when it
+  holds the session's lock, whatever the call before it left: the check after a registration, the
+  repair after a consumer delete, the correction after a relay restart, an unsubscribe's
+  refollow, and the write above. A client that gives up on an unsubscribe no longer leaves the
+  consumer filtered on the topics it removed. A registration's retry can wait up to 5 s behind
+  such a write for the same session. A consumer delete can hold that session's lock for about
+  10 s.
+time: 2026-11-20T08:00:19Z
+custom:
+    Issue: pr4594
