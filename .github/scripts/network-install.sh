@@ -29,12 +29,13 @@
 #     what says which it was.
 #   * Any other exit is the command's own, and it is not tried again: the client of every kind
 #     below exits with one status for an answer it could not read and for a fault of the change
-#     under test, so no status says "network". bun exits 1 both when the registry refuses the
-#     connection and when bun.lock disagrees with package.json; docker pull exits 1 for a refused
-#     connection and for a manifest the registry does not hold; apt-get exits 100 for a mirror it
-#     could not read and for a package no index lists. A second attempt of such a failure fails
-#     the same way, and an error that blamed the network would send its reader to re-run a change
-#     that needs a fix.
+#     under test, so no status says "network". Measured on 2026-11-20: bun 1.4.4 exits 1 both
+#     when the registry refuses the connection and when bun.lock disagrees with package.json;
+#     docker pull exits 1 both for a refused connection and for a digest the registry does not
+#     hold; apt-get update exits 0 when the mirror refuses it (it warns and keeps the lists it
+#     had), and apt-get install then exits 100, as it does for a package no index lists. A
+#     second attempt of such a failure fails the same way, and an error that blamed the network
+#     would send its reader to re-run a change that needs a fix.
 #   * Every attempt prints one line: its number, how it ended and how long it took. When none
 #     succeeded, one `::error::` names the kind, the command and how each attempt ended, and says
 #     whether the network or the command itself is what failed; the script exits 1.

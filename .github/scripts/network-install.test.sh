@@ -174,7 +174,7 @@ while read -r kind bound; do
     "$(is "$(<"$work/timeout.args")" "--kill-after=15 $bound $standin $work/real-$kind.count ok")"
 done <<<"$expected"
 check "--bounds prints that table, with three attempts, the 15 s and the 10 s pause" \
-  "$(is "$(seam_off && "$script" --bounds)" "$(sed 's/$/ 3 15 10/' <<<"$expected")")"
+  "$(is "$(seam_off && "$script" --bounds)" $'apt 60 3 15 10\nbun 120 3 15 10\ndocker 120 3 15 10\nplaywright 60 3 15 10')"
 
 echo "case: the real pause between attempts, with the seam unset but for the bound"
 : > "$work/sleep.args"
