@@ -25,23 +25,30 @@ const heldLinkLock = 4209012
 // request (lockLinkedPullRequests), B waits for A to commit, and its check then reads A's row:
 // the PATCH is refused with 409 EXTERNAL_LINK_TAKEN naming the first issue, and the create
 // answers the first issue as the issue of owner/repo#7, as it does for a link stored before it.
+//
+// The first issue is in project OTHER and the second in CORE, which acme/tools maps to, so no
+// owner lock the two writes would share (an issue's, or the create's of its project) orders B
+// behind A: only the lock of the pull request can. In one project the create waits on A's lock
+// of the project, and the case then passes with the lock of the pull request taken away.
 func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
 	for _, second := range []string{"patch", "create"} {
 		t.Run(second, func(t *testing.T) {
 			handler, database := newTestHandlerWithStore(t)
 			ctx := context.Background()
-			if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "CORE", "name": "Core"}, "alice"); response.Code != http.StatusCreated {
-				t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+			for _, project := range []string{"OTHER", "CORE"} {
+				if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": project, "name": project}, "alice"); response.Code != http.StatusCreated {
+					t.Fatalf("create project %s: status=%d body=%s", project, response.Code, response.Body.String())
+				}
 			}
 			// The create for acme/tools#7 takes its project from the repository's mapping.
 			if response := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/tools", map[string]any{"project": "CORE"}, "alice"); response.Code != http.StatusOK {
 				t.Fatalf("map acme/tools to CORE: status=%d body=%s", response.Code, response.Body.String())
 			}
 			keys := []string{}
-			for _, title := range []string{"One", "Two"} {
-				response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": "CORE", "title": title}, "alice")
+			for _, project := range []string{"OTHER", "CORE"} {
+				response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{"project": project, "title": "An issue of " + project}, "alice")
 				if response.Code != http.StatusCreated {
-					t.Fatalf("create %q: status=%d body=%s", title, response.Code, response.Body.String())
+					t.Fatalf("create an issue of %s: status=%d body=%s", project, response.Code, response.Body.String())
 				}
 				keys = append(keys, decodeBody[model.Issue](t, response).Key)
 			}
