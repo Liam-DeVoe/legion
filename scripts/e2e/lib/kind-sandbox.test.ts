@@ -9,7 +9,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 // on 2026-11-20 failed at their `cluster` check with `failed to bind host port 127.0.0.1:46243/tcp:
 // address already in use` and `Bind for 127.0.0.1:35659 failed: port is already allocated`, before
 // any of the proof ran. Here a stand-in kind fails its first creates that way, or in docker's
-// wording before version 28 (`Error starting userland proxy: … bind: address already in use`), and
+// userland proxy's wording (`Error starting userland proxy: … bind: address already in use`), and
 // a stand-in kubectl answers the node reads that follow a create.
 const work = temporaryDirectory("kind-sandbox");
 const lib = join(import.meta.dir, "kind-sandbox.sh");
@@ -39,6 +39,11 @@ create)
     echo 'docker: Error response from daemon: failed to create task for container: no space left on device' >&2
     echo '' >&2
     echo "Run 'docker run --help' for more information" >&2
+    exit 1
+  fi
+  if [ -n "\${KIND_QUIET_FAILURE:-}" ]; then
+    echo 'Creating cluster "legion-test" ...' >&2
+    echo 'the docker daemon did not answer' >&2
     exit 1
   fi
   ;;
@@ -172,7 +177,7 @@ describe("kind_sandbox_create", () => {
     );
   });
 
-  test("a create docker's userland proxy refuses, as docker before version 28 words it, is made again too", () => {
+  test("a create docker's userland proxy refuses, in that proxy's own words, is made again too", () => {
     const created = create({ KIND_PROXY_FAILURES: "1" });
     expect(created.status).toBe(0);
     expect(created.kind).toEqual([
@@ -194,5 +199,14 @@ describe("kind_sandbox_create", () => {
       'FAIL kind could not create cluster legion-test: ERROR: failed to create cluster: command "docker run --name legion-test-control-plane" failed with error: exit status 125 docker: Error response from daemon: failed to create task for container: no space left on device\n'
     );
     expect(created.output).not.toContain("trying again");
+  });
+
+  test("a create that fails printing no ERROR or docker line fails the run naming kind's last line, under the callers' pipefail", () => {
+    const created = create({ KIND_QUIET_FAILURE: "1" });
+    expect(created.status).toBe(1);
+    expect(created.kind).toEqual([created.createCall]);
+    expect(created.output).toContain(
+      "FAIL kind could not create cluster legion-test: the docker daemon did not answer\n"
+    );
   });
 });

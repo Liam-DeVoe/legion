@@ -6961,7 +6961,7 @@ Each item below names a function, then what it does.
   creates the cluster `NAME`, its kubeconfig a file of `WORK` (`kind_kubeconfig`) and its context `kind-NAME` (`kind_context`);
   labels its one node (`kind_node`) `legion.dev/pool=legion`, the pool the runtime places every pod on;
   creates the `legion` namespace and checks kind's `standard` storage class;
-  kind picks the API server's host port as one free when it looks, and on a busy host another socket can take it before docker binds it, so a create kind fails on a host port bind is made again, the cluster deleted by its name first, up to `kind_sandbox_create_tries` (3) tries, each retry named; a create that fails for any other reason ends the run, naming kind's last line (`lib/kind-sandbox.test.ts`)
+  kind picks the API server's host port as one free when it looks, and on a busy host another socket can take it before docker binds it, so a create kind fails on a host port bind (docker's `address already in use` or `port is already allocated`) is made again, the cluster deleted by its name first, up to `kind_sandbox_create_tries` (3) tries, each retry named; kind's own exit decides each try, whether or not the caller sets pipefail; a create that fails for any other reason ends the run, naming kind's `ERROR:` and docker's `docker:` lines, or kind's last line where it printed neither (`lib/kind-sandbox.test.ts`)
 
 - `kind_k ARGS…`
 

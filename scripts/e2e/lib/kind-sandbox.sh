@@ -12,12 +12,13 @@
 # alone, so the caller's kubeconfig and its current context are never read. kind picks the API
 # server's host port as one free when it looks, and on a busy host another socket can take it
 # before docker binds it. Docker refuses that bind with `address already in use` where another
-# process holds the port (`failed to bind host port …` since docker 28, `Error starting userland
-# proxy: … bind: …` before it) and `port is already allocated` where another container does (both
+# process holds the port (`failed to bind host port …`, or `Error starting userland proxy: … bind:
+# …` in that proxy's words) and `port is already allocated` where another container does (both
 # seen from controller-sweep-kind.sh on 2026-11-20); those two phrases are the stable part. A create
 # kind fails on either is made again, the cluster deleted by its name first, up to
 # kind_sandbox_create_tries tries, each retry named by a note; a create that fails for any other
-# reason fails the run, naming kind's `ERROR:` and docker's `docker:` lines (lib/kind-sandbox.test.ts).
+# reason fails the run, naming kind's `ERROR:` and docker's `docker:` lines, or kind's last line
+# where it printed neither (lib/kind-sandbox.test.ts).
 # The verdict of each create is kind's own exit (PIPESTATUS), whether or not the caller sets pipefail.
 # kind_sandbox_install_agent_sandbox WORK applies Agent Sandbox's release manifest at the version
 # internal/runtime/sandbox speaks, pinned by sha256, and waits for its controller.
@@ -58,7 +59,7 @@ kind_sandbox_create() {
       break
     fi
     if ! bind=$(grep -m 1 -E 'address already in use|port is already allocated' "$log"); then
-      said=$(grep -E '^(ERROR|docker): ' "$log" | paste -sd ' ' -)
+      said=$(grep -E '^(ERROR|docker): ' "$log" | paste -sd ' ' -) || true
       fail "kind could not create cluster $kind_cluster: ${said:-$(grep -v '^[[:space:]]*$' "$log" | tail -n 1)}"
     fi
     [ "$try" -lt "$kind_sandbox_create_tries" ] ||
