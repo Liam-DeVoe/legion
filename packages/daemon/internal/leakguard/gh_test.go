@@ -302,9 +302,7 @@ func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {
 // input they name. The entries that answer nothing are the tables' boundary, and each is a call
 // that must not be refused over a file nobody named. A file option given `-` and a field given
 // `@-` name no file but standard input, which the tables answer apart (sent, GhSent.StdinSent),
-// for the guard to read as GhRequest.Sent says. A GhSent written as a literal, as a caller in
-// another package writes one, can set StdinUse and no other field of standard input: it sends
-// that input where StdinUse is a known use, and the zero GhSent sends none.
+// for the guard to read as GhRequest.Sent says.
 func TestTheFilesAGhCallWouldSend(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -451,22 +449,12 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 		{name: "an option with no value at all", args: []string{"pr", "comment", "1", "--body-file"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := readGhArgv(tc.args); !slices.Equal(got.sent.Files, tc.want) || got.sent.StdinUse != tc.stdin || got.sent.StdinSent() != tc.sent {
+			if got := readGhArgv(tc.args); !slices.Equal(got.sent.Files, tc.want) || got.sent.stdinUse != tc.stdin || got.sent.StdinSent() != tc.sent {
 				t.Fatalf("readGhArgv(%q) read the files %v and standard input %v, sent %t; want %v and %v, sent %t",
-					tc.args, got.sent.Files, got.sent.StdinUse, got.sent.StdinSent(), tc.want, tc.stdin, tc.sent)
+					tc.args, got.sent.Files, got.sent.stdinUse, got.sent.StdinSent(), tc.want, tc.stdin, tc.sent)
 			}
 		})
 	}
-	t.Run("a literal of a known use of standard input", func(t *testing.T) {
-		for _, use := range []StdinUse{StdinRequestBody, StdinField, StdinText} {
-			if !(&GhSent{StdinUse: use}).StdinSent() {
-				t.Errorf("GhSent{StdinUse: %v} sends no standard input, want it sent", use)
-			}
-		}
-		if (&GhSent{}).StdinSent() {
-			t.Error("the zero GhSent sends standard input, want none")
-		}
-	})
 }
 
 // The files the caller parsed are the files read, and the table is not consulted for a caller
@@ -598,7 +586,7 @@ func TestGhAPIGraphQLStandardInputIsReadByTheFieldsThatTakeIt(t *testing.T) {
 		// field's `@-`, and then `--input -`, in the order cmd/legion's ghSentFiles reads them.
 		sent := stdinParse("--field", graphQLQuery, StdinField)
 		sent.UsesStdin(StdinRequestBody)
-		if sent.StdinUse != StdinUnknown || !sent.StdinSent() {
+		if sent.stdinUse != StdinUnknown || !sent.StdinSent() {
 			t.Fatalf("the parse %+v names a use of standard input, or sends none, so this row proves nothing", sent)
 		}
 		call := func(query string) GhRequest {
@@ -635,8 +623,8 @@ func TestGhStandardInputIsReadAsTheCommandUsesIt(t *testing.T) {
 		{"gh pr create's -F", []string{"pr", "create", "-F", "-"}, StdinText, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if argv := readGhArgv(tc.args); argv.sent.StdinUse != tc.use || !slices.Equal(argv.sent.stdinFields, tc.fields) || argv.sent.Files != nil {
-				t.Fatalf("readGhArgv(%q) read standard input as %v, by the fields %q, and the files %v; want %v, by %q, and no file", tc.args, argv.sent.StdinUse, argv.sent.stdinFields, argv.sent.Files, tc.use, tc.fields)
+			if argv := readGhArgv(tc.args); argv.sent.stdinUse != tc.use || !slices.Equal(argv.sent.stdinFields, tc.fields) || argv.sent.Files != nil {
+				t.Fatalf("readGhArgv(%q) read standard input as %v, by the fields %q, and the files %v; want %v, by %q, and no file", tc.args, argv.sent.stdinUse, argv.sent.stdinFields, argv.sent.Files, tc.use, tc.fields)
 			}
 			cleared(t, ghFieldCall(t, GhRequest{Args: tc.args, Stdin: strings.NewReader(escaped)}))
 			reports(t, refusal(t, ghFieldCall(t, GhRequest{Args: tc.args, Stdin: strings.NewReader(plain)})).Lines, stdin+": "+leakguardtest.PairClass)

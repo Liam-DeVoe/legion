@@ -34,9 +34,7 @@ type GhRequest struct {
 	//
 	// Nil is a caller that parsed nothing, and the guard then reads all of it from the argv with
 	// tables of its own (readGhArgv). `legion gh` hands nil only for a command its parse finds
-	// sends nothing: `gh --version` alone, `gh` with no command, a group with no leaf, a leaf
-	// whose help is asked for, by `--help` or by a `-h` no option of the leaf takes, and `gh
-	// help`, with a command or without (cmd/legion's ghTarget.sent). So in this binary the
+	// sends nothing (cmd/legion's ghTarget.sent lists those commands). So in this binary the
 	// tables are the fail-closed answer for a future caller that hands the guard bare arguments,
 	// not a path any write takes today.
 	//
@@ -231,7 +229,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 	records := call.records
 	if len(answer.Stdin) > 0 {
 		stdin := Record{Label: "the gh call's standard input", Text: string(answer.Stdin)}
-		records = append(records, stdinRecords(stdin, sent.StdinUse, sent.stdinFields, call.graphQL)...)
+		records = append(records, stdinRecords(stdin, sent.stdinUse, sent.stdinFields, call.graphQL)...)
 	}
 	for _, named := range sent.Files {
 		text, err := readGhFile(named)
@@ -675,9 +673,9 @@ func (argv *ghArgv) readOther(args []string) {
 type GhSent struct {
 	// Files are the files named, each once, in the order they were named.
 	Files []GhFile
-	// StdinUse is the use the call makes of standard input: the first use named, and
+	// stdinUse is the use the call makes of standard input: the first use named, and
 	// StdinUnknown where none is or where a second that differs from it is (UsesStdin).
-	StdinUse StdinUse
+	stdinUse StdinUse
 	// stdinNamed is whether any use of standard input is named, which tells a first use from a
 	// second.
 	stdinNamed bool
@@ -719,19 +717,16 @@ func (sent *GhSent) Names(option, path, field string, use StdinUse) {
 func (sent *GhSent) UsesStdin(use StdinUse) {
 	switch {
 	case !sent.stdinNamed:
-		sent.StdinUse, sent.stdinNamed = use, true
-	case sent.StdinUse != use:
-		sent.StdinUse = StdinUnknown
+		sent.stdinUse, sent.stdinNamed = use, true
+	case sent.stdinUse != use:
+		sent.stdinUse = StdinUnknown
 	}
 }
 
-// StdinSent is whether the call sends its standard input to GitHub as content, which decides
-// whether GhCall reads it (GhRequest.Sent): true where any use of it is named (UsesStdin), and
-// true where StdinUse is a known use however it got there, since StdinUse is the one field of
-// standard input another package can set: a GhSent written there as a literal with a known use
-// sends its input too. The zero GhSent sends none.
+// StdinSent is whether any use of standard input is named (UsesStdin): whether the call sends its
+// standard input to GitHub as content, which decides whether GhCall reads it (GhRequest.Sent).
 func (sent *GhSent) StdinSent() bool {
-	return sent.stdinNamed || sent.StdinUse != StdinUnknown
+	return sent.stdinNamed
 }
 
 // argument records args[i], as it was written, as "the gh call's argument <i>".
@@ -740,7 +735,7 @@ func (argv *ghArgv) argument(args []string, i int) {
 }
 
 // stdinRecords is the records of record, the call's buffered standard input, by the use the call
-// makes of it (StdinUse), and fields, the names of the fields whose value it is
+// makes of it (GhSent.UsesStdin), and fields, the names of the fields whose value it is
 // (GhSent.stdinFields). As the request body it is read as JSON (jsonBody). As text it is one
 // record: a body option's input is the body. Of no known use it is read both ways, the raw record
 // and the strings of a JSON document beside it, which errs toward reading more.

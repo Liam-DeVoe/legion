@@ -3036,8 +3036,8 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 
 // ghSentBy is the leakguard.GhSent that steps build, each in turn, on the zero value: calls of
 // its exported methods Names and UsesStdin (sentNames, sentUsesStdin), the two ghSentFiles builds
-// its answer with. Its fields of standard input past StdinUse are leakguard's own and no literal
-// here can set them, so an answer to compare whole is built so.
+// its answer with. Its fields of standard input are leakguard's own and no literal here can set
+// them, so an answer to compare whole is built so.
 func ghSentBy(steps ...func(*leakguard.GhSent)) *leakguard.GhSent {
 	sent := &leakguard.GhSent{}
 	for _, step := range steps {
