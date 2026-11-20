@@ -1549,7 +1549,7 @@ func readCompactionEntries(t *testing.T, path string) []compactionEntry {
 func (r *claimCompactionLive) paneSetting(token claim.Token, key string) json.RawMessage {
 	t := r.t
 	t.Helper()
-	out, err := r.paneOmp(token, "config", "get", key, "--json").Output()
+	out, err := r.paneOmpOutput(token, "config", "get", key, "--json")
 	if err != nil {
 		t.Fatalf("read %s under %s's overlays: %v", key, token, err)
 	}
@@ -1572,7 +1572,7 @@ type paneModel struct {
 func (r *claimCompactionLive) paneModels(token claim.Token) []paneModel {
 	t := r.t
 	t.Helper()
-	out, err := r.paneOmp(token, "models", "--json").Output()
+	out, err := r.paneOmpOutput(token, "models", "--json")
 	if err != nil {
 		t.Fatalf("list the models under %s's overlays: %v", token, err)
 	}
@@ -1595,6 +1595,20 @@ func (r *claimCompactionLive) paneOmp(token claim.Token, args ...string) *exec.C
 		"PI_CONFIG_FILES=" + strings.Join(r.overlays[token], ":"), "TMPDIR=" + os.Getenv("TMPDIR"),
 	}
 	return cmd
+}
+
+// paneOmpOutput runs paneOmp and answers its standard output, or an error that carries Oh My
+// Pi's own error output, which is where it says why it failed: an exit status alone named
+// nothing in the one run of step 1 whose read failed (openProofProfile has the cause).
+func (r *claimCompactionLive) paneOmpOutput(token claim.Token, args ...string) ([]byte, error) {
+	cmd := r.paneOmp(token, args...)
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return out, fmt.Errorf("omp %s: %w\n%s", strings.Join(args, " "), err, stderr.String())
+	}
+	return out, nil
 }
 
 // ---- the Oh My Pi profile and the overlays -----------------------------------------------------------
