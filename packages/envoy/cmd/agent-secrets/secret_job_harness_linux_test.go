@@ -156,24 +156,23 @@ func (s *promptShell) nextReadWait(ms int64) {
 }
 
 // setupOutranDeadline is what the helper prints when its prompt, given a deadline inside the
-// entry (AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY), reached its first check of that deadline only
-// after it had passed, before it read anything: the machine stalled across the moment between
-// the helper setting the deadline and the prompt's first read. With
-// AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ it prints it too when the reader's first wait after
-// the input began only once the deadline had passed, so that there is no zero read at the
-// deadline to interrupt.
+// entry (AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY) whose zero read at the deadline it interrupts
+// (AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ), began its first wait after the input only once the
+// deadline had passed, so that there is no zero read at the deadline to interrupt: the input came,
+// or the reader got to that wait, more than the deadline after the prompt's first wait. A stall
+// before that first wait uses none of the deadline (the helper's clock stands still until then).
 const setupOutranDeadline = "SETUP_OUTRAN_DEADLINE"
 
 // stallRetries runs scenario in a new shell, and again in another when it answers false: it does
-// so when the helper printed setupOutranDeadline, a run that says nothing of the prompt. A third
-// such run fails the test.
+// so when the helper printed setupOutranDeadline, a run that says nothing of the interrupted zero
+// read. A third such run fails the test.
 func stallRetries(t *testing.T, scenario func(s *promptShell) bool) {
 	t.Helper()
 	for attempt := 1; !scenario(newPromptShell(t)); attempt++ {
 		if attempt == 3 {
-			t.Fatalf("the machine stalled past the value deadline before the prompt's first read in %d runs", attempt)
+			t.Fatalf("the value deadline passed before the reader's first wait after the input in %d runs", attempt)
 		}
-		t.Logf("run %d: the machine stalled past the value deadline before the prompt's first read; running it again", attempt)
+		t.Logf("run %d: the value deadline passed before the reader's first wait after the input; running it again", attempt)
 	}
 }
 
@@ -398,25 +397,21 @@ func TestPromptJobHelper(t *testing.T) {
 	// AGENT_SECRETS_JOB_INTERRUPT_WATCH interrupts every wait for the signal watcher's event that
 	// could block (pollWatch's EINTR), each after 5 ms with no event, as a stream of signals would:
 	// an event already there still ends the wait, so a signal sent to the helper still acts. It
-	// prints WATCH_INTERRUPTED=<n>, the count of waits it interrupted, before RETURNED. With a
-	// deadline, the prompt's clock (promptNow) starts only at the first wait it interrupts: the
-	// deadline is the window after that wait began, so a machine that stalls the helper before the
-	// prompt's wait for the foreground uses none of it up, and a prompt that answers the deadline
-	// has been through at least one interrupted wait. Only the reader's goroutine calls pollWatch
-	// and promptNow.
+	// prints WATCH_INTERRUPTED=<n>, the count of waits it interrupted, before RETURNED.
 	interruptWatch, watchInterrupted := os.Getenv("AGENT_SECRETS_JOB_INTERRUPT_WATCH") != "", 0
-	var firstInterrupted time.Time // the zero time until a wait is interrupted
-	if interruptWatch {
-		pollWatch = func(fds []unix.PollFd, timeout int) (int, error) {
-			if n, err := unix.Poll(fds, 0); n != 0 || err != nil || timeout == 0 {
-				return n, err
+	// firstWait is the moment the prompt first waited: its first read (readTerminal), or its first
+	// wait for the watcher's event that could block (pollWatch with a bound other than zero and no
+	// event already there); the zero time until then. A deadline's clock runs from it (below), and
+	// onFirstWait, where set, runs there. Only the reader's goroutine calls readTerminal, pollWatch
+	// and promptNow, so only it touches these.
+	var firstWait time.Time
+	var onFirstWait func()
+	waits := func() {
+		if firstWait.IsZero() {
+			firstWait = time.Now()
+			if onFirstWait != nil {
+				onFirstWait()
 			}
-			if firstInterrupted.IsZero() {
-				firstInterrupted = time.Now()
-			}
-			time.Sleep(5 * time.Millisecond)
-			watchInterrupted++
-			return 0, unix.EINTR
 		}
 	}
 	reference := os.Getenv("AGENT_SECRETS_JOB_REFERENCE")
@@ -458,22 +453,26 @@ func TestPromptJobHelper(t *testing.T) {
 		}
 	}
 	// AGENT_SECRETS_JOB_DEADLINE gives the read a deadline that long after it starts, as a create's
-	// window does, and names it so in the timeout's message. AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY
-	// places that deadline inside the entry: the reader's first wait lasts until input comes,
-	// however late, so the entry is under way when the deadline passes; its first wait after that
-	// input lasts until the deadline has passed, where it has not, and then ends with nothing read,
-	// as an entry, typed or pasted, that falls quiet across the deadline does. The helper decides
-	// that by the deadline, not by the wait's bound. It prints DEADLINE_PASSED then, and READING_ON
-	// at the reader's next wait, if it waits again: a read with a bound other than zero, so not
-	// that zero read tried again after a signal interrupted it, before the prompt has acted on the
-	// deadline, where input the test sends on READING_ON would come as if in time. Where the input
-	// itself came after the deadline, the reader is already reading on, and it prints both at once.
-	// With AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE it prints DEADLINE_REACHED once the deadline has
-	// passed, so a test can send its input after it. With AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ
-	// that zero read at the deadline is interrupted instead (EINTR), as a signal that comes then
-	// would interrupt it, and the helper prints DEADLINE_READ_INTERRUPTED: the reader then tries the
-	// wait again, and a retry that waited the bound its read began with read the input the test
-	// sends on READING_ON as if it had come in time.
+	// window does, and names it so in the timeout's message. The deadline's clock (promptNow)
+	// stands still from the moment the helper sets it until the prompt's first wait (firstWait),
+	// and runs from there: a machine that stalls the helper before that wait uses none of the
+	// deadline, so the prompt reaches its first check of the deadline before it has passed.
+	// AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY places that deadline inside the entry: the reader's
+	// first wait lasts until input comes, however late, so the entry is under way when the
+	// deadline passes; its first wait after that input lasts until the deadline has passed, where
+	// it has not, and then ends with nothing read, as an entry, typed or pasted, that falls quiet
+	// across the deadline does. The helper decides that by the deadline on the prompt's clock, not
+	// by the wait's bound. It prints DEADLINE_PASSED then, and READING_ON at the reader's next
+	// wait, if it waits again: a read with a bound other than zero, so not that zero read tried
+	// again after a signal interrupted it, before the prompt has acted on the deadline, where input
+	// the test sends on READING_ON would come as if in time. Where the input itself came after the
+	// deadline, the reader is already reading on, and it prints both at once. With
+	// AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE it prints DEADLINE_REACHED once the deadline has passed,
+	// so a test can send its input after it. With AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ that
+	// zero read at the deadline is interrupted instead (EINTR), as a signal that comes then would
+	// interrupt it, and the helper prints DEADLINE_READ_INTERRUPTED: the reader then tries the wait
+	// again, and a retry that waited the bound its read began with read the input the test sends
+	// on READING_ON as if it had come in time.
 	var window time.Duration
 	if d := os.Getenv("AGENT_SECRETS_JOB_DEADLINE"); d != "" {
 		var err error
@@ -518,9 +517,8 @@ func TestPromptJobHelper(t *testing.T) {
 			}
 		}
 	}
-	reads := 0
 	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
-		reads++
+		waits()
 		if stopRead {
 			// The preceding read included Ctrl-Z. Reaching the next read means feed has
 			// handled it, unlike READ_SOME, which is printed before feed sees the bytes.
@@ -547,8 +545,8 @@ func TestPromptJobHelper(t *testing.T) {
 			// The reader's first wait after input: decided by the deadline itself, not by the
 			// wait's bound, which inside a paste that began after the deadline is maxPasteDrain.
 			held = true
-			if time.Until(deadline) > 0 {
-				time.Sleep(time.Until(deadline))
+			if left := deadline.Sub(promptNow()); left > 0 {
+				time.Sleep(left)
 				timeout = 0
 				fmt.Println("DEADLINE_PASSED")
 				if interruptDeadlineRead {
@@ -575,28 +573,34 @@ func TestPromptJobHelper(t *testing.T) {
 		return n, err
 	}
 	label := &labelCheck{}
-	if window != 0 {
-		deadline = time.Now().Add(window)
-		if interruptWatch {
-			set := deadline.Add(-window)
-			promptNow = func() time.Time {
-				if firstInterrupted.IsZero() {
-					return set
-				}
-				return set.Add(time.Since(firstInterrupted))
+	if window != 0 || interruptWatch {
+		pollWatch = func(fds []unix.PollFd, timeout int) (int, error) {
+			if n, err := unix.Poll(fds, 0); n != 0 || err != nil || timeout == 0 {
+				return n, err
 			}
+			waits()
+			if !interruptWatch {
+				return unix.Poll(fds, timeout)
+			}
+			time.Sleep(5 * time.Millisecond)
+			watchInterrupted++
+			return 0, unix.EINTR
+		}
+	}
+	if window != 0 {
+		set := time.Now()
+		deadline = set.Add(window)
+		promptNow = func() time.Time {
+			if firstWait.IsZero() {
+				return set
+			}
+			return set.Add(time.Since(firstWait))
 		}
 		if os.Getenv("AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE") != "" {
-			time.AfterFunc(time.Until(deadline), func() { fmt.Println("DEADLINE_REACHED") })
+			onFirstWait = func() { time.AfterFunc(window, func() { fmt.Println("DEADLINE_REACHED") }) }
 		}
 	}
 	value, err := readSecretValue("DEMO_KEY", "agent-secrets secret set DEMO_KEY", deadline, label)
-	if midEntry && reads == 0 && errors.Is(err, errValueTimedOut) {
-		// The prompt reached its first check of the deadline only after the deadline had passed,
-		// before it read at all: the machine stalled between the helper setting the deadline and
-		// the prompt's first read, and this run says nothing of the entry (stallRetries).
-		fmt.Println(setupOutranDeadline)
-	}
 	if interruptWatch {
 		fmt.Printf("WATCH_INTERRUPTED=%d\n", watchInterrupted)
 	}

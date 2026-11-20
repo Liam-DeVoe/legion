@@ -24,23 +24,28 @@ import (
 
 // TestPromptEndsAtTheValueDeadline: a prompt handed a deadline (a create's value read) that gets
 // nothing gives up at the deadline, with errValueTimedOut and no line, and gives the terminal back
-// with echo on, as any other end of the prompt does.
+// with echo on, as any other end of the prompt does. The deadline's clock stands still until the
+// prompt's first wait for input and runs from there (clockFromFirstWait), where the reader's own
+// goroutine reads that echo is off: a machine that holds this process longer than the deadline,
+// before that wait or after it, neither uses the deadline up before the prompt waits nor ends the
+// prompt before echo off is seen.
 func TestPromptEndsAtTheValueDeadline(t *testing.T) {
 	_, terminal := openPTY(t) // openPTY's cleanup holds the controller open for the whole test
 	deadline := time.Now().Add(500 * time.Millisecond)
 	answer := make(chan promptRead, 1)
+	waited := clockFromFirstWait(t, func() time.Time { return deadline.Add(-500 * time.Millisecond) }, nil)
 	go func() {
 		line, err := readHidden(terminal, deadline, nil, nil)
 		answer <- promptRead{line, err}
 	}()
-	awaitEchoOff(t, terminal)
+	awaitFirstWait(t, waited, answer)
 	select {
 	case got := <-answer:
 		if got.line != nil || !errors.Is(got.err, errValueTimedOut) {
 			t.Fatalf("readHidden = %q, %v; want no line and errValueTimedOut", got.line, got.err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the prompt was still reading 10s on, past its 500ms deadline")
+	case <-time.After(promptJobWait):
+		t.Fatalf("the prompt was still reading %s after its first wait began, past its 500ms deadline", promptJobWait)
 	}
 	if lflag(t, terminal)&unix.ECHO == 0 {
 		t.Fatal("the prompt left echo off at its deadline")
@@ -51,23 +56,30 @@ func TestPromptEndsAtTheValueDeadline(t *testing.T) {
 // entry has been typed refuses the entry, but the prompt keeps the terminal: it says so at once
 // (onDiscard, with errValueTimedOut), reads the rest of the entry to the line's end, and only then
 // answers errValueTimedOut, so what is typed after the deadline is neither echoed nor left for the
-// shell. The rest is typed once the prompt has either said so or answered, whichever comes first,
-// so a prompt that gives the entry up at the deadline shows the rest reaching the shell. The
-// pseudo-terminal is not this process's controlling terminal, so no key of it sends a signal: the
-// reason the notice reads names no interrupt key, and no open paste.
+// shell. The entry's first part is queued at the prompt's first wait for input, before the
+// deadline's clock starts there (clockFromFirstWait), so the entry is under way when the deadline
+// passes however long the machine holds this process. The rest is typed once the prompt has either
+// said so or answered, whichever comes first, so a prompt that gives the entry up at the deadline
+// shows the rest reaching the shell. The pseudo-terminal is not this process's controlling
+// terminal, so no key of it sends a signal: the reason the notice reads names no interrupt key, and
+// no open paste.
 func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 	controller, terminal := openPTY(t)
 	deadline := time.Now().Add(2 * time.Second)
 	noticed := make(chan error, 1)
 	answer := make(chan promptRead, 1)
+	const head = "fakehead-"
+	waited := clockFromFirstWait(t, func() time.Time { return deadline.Add(-2 * time.Second) }, func(fd int) {
+		if _, err := controller.Write([]byte(head)); err != nil {
+			t.Error(err)
+		}
+		awaitQueued(t, fd, len(head))
+	})
 	go func() {
 		line, err := readHidden(terminal, deadline, nil, func(reason error) { noticed <- reason })
 		answer <- promptRead{line, err}
 	}()
-	awaitEchoOff(t, terminal)
-	if _, err := controller.Write([]byte("fakehead-")); err != nil {
-		t.Fatal(err)
-	}
+	awaitFirstWait(t, waited, answer)
 	var early *promptRead
 	select {
 	case reason := <-noticed:
@@ -77,8 +89,8 @@ func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 		}
 	case got := <-answer:
 		early = &got
-	case <-time.After(10 * time.Second):
-		t.Fatal("the prompt neither refused the entry nor answered 10s on, past its 2s deadline")
+	case <-time.After(promptJobWait):
+		t.Fatalf("the prompt neither refused the entry nor answered %s after its first wait began, past its 2s deadline", promptJobWait)
 	}
 	if _, err := controller.Write([]byte("FAKETAIL\r")); err != nil {
 		t.Fatal(err)
@@ -88,8 +100,8 @@ func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 		select {
 		case read := <-answer:
 			got = &read
-		case <-time.After(10 * time.Second):
-			t.Fatal("the prompt had not answered 10s after the entry's line ended")
+		case <-time.After(promptJobWait):
+			t.Fatalf("the prompt had not answered %s after the entry's line ended", promptJobWait)
 		}
 	}
 	if got.line != nil || !errors.Is(got.err, errValueTimedOut) {
@@ -98,6 +110,67 @@ func TestPromptAtTheValueDeadlineMidEntryReadsTheEntryToItsEnd(t *testing.T) {
 	if n := unread(t, terminal); n != 0 || bytes.Contains(shown(t, controller), []byte("FAKETAIL")) {
 		t.Fatalf("the rest of the entry reached the shell: %d bytes left unread, or it was echoed", n)
 	}
+}
+
+// firstWait is what clockFromFirstWait saw at the reader's first wait for input: the moment it
+// began, from which the prompt's clock runs, and whether the reader had turned echo off by then.
+type firstWait struct {
+	at      time.Time
+	echoOff bool
+}
+
+// clockFromFirstWait replaces the prompt's clock (promptNow) for the rest of t with one that stands
+// at start() until the reader's first wait for input (readTerminal), and runs as the machine's own
+// clock from the moment that wait begins: a value deadline set from start then counts from the
+// prompt's first wait, so a machine that holds the process between the setting of the deadline and
+// that wait uses none of it. typed, unless it is nil, runs at that wait on the reader's goroutine,
+// with the terminal's fd, before the clock starts: what it writes is queued before the deadline can
+// pass. It answers a channel that gets the first wait's facts once. Only the reader's goroutine
+// calls promptNow, start and readTerminal.
+func clockFromFirstWait(t *testing.T, start func() time.Time, typed func(fd int)) <-chan firstWait {
+	t.Helper()
+	restoreNow, real := promptNow, readTerminal
+	t.Cleanup(func() { promptNow, readTerminal = restoreNow, real })
+	var began time.Time // the zero time until the reader's first wait
+	promptNow = func() time.Time {
+		if began.IsZero() {
+			return start()
+		}
+		return start().Add(time.Since(began))
+	}
+	waited := make(chan firstWait, 1)
+	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
+		if began.IsZero() {
+			if typed != nil {
+				typed(fd)
+			}
+			mode, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+			began = time.Now()
+			waited <- firstWait{at: began, echoOff: err == nil && mode.Lflag&unix.ECHO == 0}
+		}
+		return real(fd, wake, buf, timeout)
+	}
+	return waited
+}
+
+// awaitFirstWait waits for the reader's first wait for input (clockFromFirstWait) and answers when
+// it began. It fails t where the reader answered before it (the clock stands still until then, so
+// no deadline can have passed), never reached it within promptJobWait, or had not turned echo off
+// by then.
+func awaitFirstWait[T any](t *testing.T, waited <-chan firstWait, answer <-chan T) time.Time {
+	t.Helper()
+	select {
+	case w := <-waited:
+		if !w.echoOff {
+			t.Fatal("the reader began to wait for input with echo still on")
+		}
+		return w.at
+	case got := <-answer:
+		t.Fatalf("the reader answered %+v before its first wait for input", got)
+	case <-time.After(promptJobWait):
+		t.Fatalf("the reader had not begun to wait for input %s on", promptJobWait)
+	}
+	return time.Time{}
 }
 
 // stillPromptClock replaces the prompt's clock (promptNow) for the rest of t with one that stands
@@ -419,7 +492,13 @@ func TestWaitBoundEndsAWaitAtItsMomentNeverBefore(t *testing.T) {
 // closes only once the window is over - is not stored: the prompt reads that paste through its
 // closing mark, and the create then refuses the value as one that did not come in time, never
 // calling AddSecretVersion, deletes the empty secret it made, asks the broker to reread the name,
-// and exits 1 naming the window and the command to run again.
+// and exits 1 naming the window and the command to run again. The window's clock stands still
+// until the prompt's first wait for input and runs from there (clockFromFirstWait), so a machine
+// that holds this process between the create's asking the store and that wait uses none of the
+// window; the line is queued at that wait, and the paste opens at the drain's first wait, so each
+// comes where the test places it however slowly this test runs. The create counts its window from
+// before the store is asked to make the secret (runCreate), so the test learns where the window
+// began from the deadline the create hands the prompt.
 func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	controller, terminal := openPTY(t)
 	const window = 2 * time.Second
@@ -432,16 +511,28 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 	broker := startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 	useTerminal(t)
 	stdinTerminal = func(io.Reader) (int, bool) { return terminal, true }
-	readHidden = readHiddenAtTerminal
+	var asked time.Time // where the window began; set and read on the create's goroutine, the reader's
+	readHidden = func(fd int, deadline time.Time, prompt func(), onDiscard func(error)) ([]byte, error) {
+		asked = deadline.Add(-window)
+		return readHiddenAtTerminal(fd, deadline, prompt, onDiscard)
+	}
+	write := func(fd int, text string) {
+		if _, err := controller.Write([]byte(text)); err != nil {
+			t.Error(err)
+		}
+		awaitQueued(t, fd, len(text))
+	}
 	real := readTerminal
 	t.Cleanup(func() { readTerminal = real })
-	// draining closes at the reader's first wait after the read that ended the line: the drain of
-	// what follows the line. The terminal turns the typed carriage return into a line feed.
+	// draining closes at the reader's first wait after the read that ended the line, the drain of
+	// what follows the line, once the paste's opening mark is queued there. The terminal turns the
+	// typed carriage return into a line feed.
 	draining := make(chan struct{})
 	lineEnded, drainSeen := false, false
 	readTerminal = func(fd, wake int, buf []byte, timeout int) (int, error) {
 		if lineEnded && !drainSeen {
 			drainSeen = true
+			write(fd, "\x1b[200~")
 			close(draining)
 		}
 		n, err := real(fd, wake, buf, timeout)
@@ -450,6 +541,7 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 		}
 		return n, err
 	}
+	waited := clockFromFirstWait(t, func() time.Time { return asked }, func(fd int) { write(fd, "typed-value\r") })
 	type result struct {
 		stderr string
 		code   int
@@ -459,20 +551,12 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 		_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
 		done <- result{stderr, code}
 	}()
-	awaitEchoOff(t, terminal)
-	// The create asked the store for the secret before the prompt turned echo off, so its window
-	// is over by then.
-	windowEnds := time.Now().Add(window)
-	if _, err := controller.Write([]byte("typed-value\r")); err != nil {
-		t.Fatal(err)
-	}
+	// The window ends, on the prompt's clock, window after its first wait began.
+	windowEnds := awaitFirstWait(t, waited, done).Add(window)
 	select {
 	case <-draining:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the prompt never drained what follows the line")
-	}
-	if _, err := controller.Write([]byte("\x1b[200~")); err != nil {
-		t.Fatal(err)
+	case <-time.After(promptJobWait):
+		t.Fatalf("the prompt had not drained what follows the line %s on", promptJobWait)
 	}
 	time.Sleep(time.Until(windowEnds) + 300*time.Millisecond)
 	if _, err := controller.Write([]byte("\x1b[201~")); err != nil {
@@ -486,8 +570,8 @@ func TestGCPSecretCreateStoresNoValueThatEndsPastItsWindow(t *testing.T) {
 		if !regexp.MustCompile(`Enter the value by \d\d:\d\d:\d\d \S+, 2s after the create, or nothing is stored\.\nValue for NEW_TEST: `).MatchString(got.stderr) {
 			t.Fatalf("stderr %q; want the prompt to name the time its value must come by, then its label", got.stderr)
 		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the create had not ended 20s after the paste closed")
+	case <-time.After(promptJobWait):
+		t.Fatalf("the create had not ended %s after the paste closed", promptJobWait)
 	}
 	if calls := fake.called(); slices.Contains(calls, "AddSecretVersion") {
 		t.Fatalf("Secret Manager calls %v; want no AddSecretVersion for a value that ended past its window", calls)
