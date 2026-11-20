@@ -1,10 +1,3 @@
-// The walk loads the listener and every package it imports from source and builds a call graph
-// over the whole program, which takes tens of seconds and more than a gigabyte, and the race
-// detector multiplies both. So the race build leaves this file out, as the daemon's launcher walk
-// does (packages/daemon/internal/launcher/childstarts_test.go), and envoy-go's plain run runs it.
-
-//go:build !race
-
 package main
 
 import (
@@ -86,8 +79,6 @@ var heldFreshContexts = map[string]heldFresh{
 		"the life of a connection, which no request is made under: requests are bound to it and end at its end, the drop"},
 	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.PubOpt] -> context.Background": {1,
 		"the wrapper's fallback for a publish whose options carry no context; every publish envoy makes passes nats.Context(ctx) (sendStored's callers), which callContext returns, and the stored publish row reads it at run time"},
-	"github.com/sjawhar/envoy/cmd/listener.publishDeliveryException -> context.Background": {1,
-		"the fallback for a delivery handler's outcome, which carries no context and holds no lock; the handover's refusal report, the one outcome made under a lock, carries the walk's marked context (keptRoleForwardAllowed sets deliveryOutcome.ctx)"},
 }
 
 // A context a function makes from context.Background() or context.TODO() while its caller holds a

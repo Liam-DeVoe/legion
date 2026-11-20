@@ -107,6 +107,9 @@ func (f *roleForwarder) enqueue(forward roleForward) {
 // publish is sessionID's worker: it publishes the holder's queued forwards in order, hands each
 // one's wait to a goroutine of its own, and ends once the queue is empty.
 func (f *roleForwarder) publish(sessionID string) {
+	// The role lane's forwarder holds no lock across a forward and answers no caller, so its
+	// forwards and their outcomes run under a context of its own; each keeps its own bound.
+	ctx := context.Background()
 	subject := contracts.LegacyAgentSubject(sessionID)
 	for {
 		f.mu.Lock()
@@ -121,19 +124,18 @@ func (f *roleForwarder) publish(sessionID string) {
 		f.queues[sessionID] = queue[1:]
 		f.mu.Unlock()
 
-		// The role lane's forwarder holds no lock across a forward.
-		wait, err := f.cfg.forwardRole(context.Background(), subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
+		wait, err := f.cfg.forwardRole(ctx, subject, forward.forwarded(), forward.msgID(subject), roleForwardTimeout)
 		if err != nil {
-			f.finish(forward, err)
+			f.finish(ctx, forward, err)
 			continue
 		}
-		go func() { f.finish(forward, wait()) }()
+		go func() { f.finish(ctx, forward, wait()) }()
 	}
 }
 
-// finish reports forward's outcome and frees its slot.
-func (f *roleForwarder) finish(forward roleForward, err error) {
-	finishRoleForward(f.cfg, forward, err)
+// finish reports forward's outcome, under ctx, and frees its slot.
+func (f *roleForwarder) finish(ctx context.Context, forward roleForward, err error) {
+	finishRoleForward(ctx, f.cfg, forward, err)
 	<-f.slots
 	f.pending.Done()
 }

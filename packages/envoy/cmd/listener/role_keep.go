@@ -669,12 +669,12 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 // forwards it once a resolution finds the role's holder live (keepForNextHolder). A keep that kept
 // nothing is reported false, and the caller's own give-up, its exception, its metric and its line,
 // stands exactly as it was.
-func keepRoleLaneMessage(cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, reason roleKeepReason, holder string) bool {
+func keepRoleLaneMessage(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, reason roleKeepReason, holder string) bool {
 	kept, ok := keepForNextHolder(cfg, role, item)
 	if !ok {
 		return false
 	}
-	applyDeliveryOutcome(cfg, item, deliveryOutcome{
+	applyDeliveryOutcome(ctx, cfg, item, deliveryOutcome{
 		metricStatus: roleKeptDeliveryStatus,
 		log: func(logger *logging.Logger) {
 			logger.DeliveryLog(slog.LevelInfo, "listener kept role message for the role's next holder",
@@ -1326,7 +1326,7 @@ func walkKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, 
 		// envoy_messages_delivered_total, recorded in the dedupe cache, and logged on the role
 		// forward's own line, with the role, the copy's sender and the time the copy was kept
 		// beside it.
-		finishRoleForward(cfg, handed, forwarded,
+		finishRoleForward(ctx, cfg, handed, forwarded,
 			slog.String("role", role),
 			slog.String("source_session", item.SourceSession),
 			slog.String("dedupe_key", forward.DedupeKey),
@@ -1875,6 +1875,5 @@ func keptRoleForwardAllowed(ctx context.Context, cfg listenerDeliveryHandlerConf
 	outcome := refusedRoleForwardOutcome(verdict, item, holder, keptRoleRefusalLines,
 		slog.String("role", role),
 		slog.String("source_session", item.SourceSession))
-	outcome.ctx = ctx
-	return verdict, func() { applyDeliveryOutcome(cfg, item, outcome) }
+	return verdict, func() { applyDeliveryOutcome(ctx, cfg, item, outcome) }
 }
