@@ -131,6 +131,10 @@ export function DecisionList({
   const region = useRef<HTMLElement>(null);
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
   const [tops, setTops] = useState<ReadonlyMap<string, number>>(() => new Map());
+  // How tall the region stands, the bottom of its lowest card, read where the tops are, so it
+  // follows a card the moment the card resizes, as the anchored comments' region does
+  // (`ThreadList.tsx`): read at render, it held a card's height from the last render.
+  const [bottom, setBottom] = useState(0);
   const measure = useCallback(() => {
     const origin = region.current === null ? undefined : regionOrigin(region.current);
     const next = new Map<string, number>();
@@ -155,6 +159,7 @@ export function DecisionList({
         ? current
         : next
     );
+    setBottom(previousBottom);
   }, [blockPlacements, decisions]);
   useLayoutEffect(() => {
     measure();
@@ -169,11 +174,6 @@ export function DecisionList({
   if (decisions.length === 0) {
     return null;
   }
-  const bottom = Math.max(
-    ...decisions.map(
-      (item) => (tops.get(item.id) ?? 0) + (cardRefs.current.get(item.id)?.offsetHeight ?? 0) + 8
-    )
-  );
   return (
     <section aria-label="Decisions" className="relative" ref={region} style={{ minHeight: bottom }}>
       {decisions.map((item) => (
