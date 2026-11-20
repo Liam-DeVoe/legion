@@ -1333,6 +1333,7 @@ pi_legion:
   - 'packages/pi-shared/test/**'
   - 'packages/envoy-client/src/**'
   - 'packages/envoy-client/test/subscribe-answer.ts'
+  - 'packages/envoy-client/test/keyed-layer.ts'
   - 'packages/broker-client/**'
   - 'packages/contracts/src/**'
   - 'packages/test-fixtures/src/**'
