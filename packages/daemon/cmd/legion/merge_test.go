@@ -1073,3 +1073,30 @@ func TestLegionMergeMakesNothingWhenAnotherMergeOfTheParentsAppears(t *testing.T
 		t.Errorf("legion merge = %d, want 0 or 3\nstdout:\n%s\nstderr:\n%s", code, stdout.String(), stderr.String())
 	}
 }
+
+// A carrier a killed run left is a visible head, and a role can build on it: a commit of its own
+// work on the carrier, git's merged tree, which is not the working copy. The next run removes
+// the carrier, but no abandon of its may reach the role's work (jjmerge's remove: "no abandon
+// here reaches the repository's own work"): the run refuses, naming the commit, or leaves it
+// visible with its file.
+func TestLegionMergeKeepsARolesWorkOnALeftoverCarrier(t *testing.T) {
+	r := newMergeRepo(t)
+	r.minimalCase(2)
+	carrier := r.git("commit-tree", r.gitTree(mergeFirst, "main"), "-m", "a carrier a killed run in default left")
+	r.git("update-ref", "refs/heads/legion-merge-default-0123456789abcdef-g", carrier)
+	r.jj("git", "import")
+	r.jj("new", carrier, "-m", "the role's work on git's tree")
+	if err := os.WriteFile(filepath.Join(r.ws, "work"), []byte("the role's work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.jj("status")
+	// By its commit id, which still names the commit once it is hidden.
+	work := r.id("@")
+	r.workOn("base")
+	code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+	if got := r.template(work, "hidden"); got != "false" {
+		t.Errorf("legion merge = %d, and the role's commit %s on the leftover carrier is hidden: its work was abandoned\nstdout:\n%s\nstderr:\n%s", code, work, stdout, stderr)
+	} else if got := r.show(work, "work"); got != "the role's work\n" {
+		t.Errorf("the role's commit %s holds %q at work, want its own file", work, got)
+	}
+}
