@@ -302,8 +302,10 @@ echo "gone_ms=$(<"$gone")"`);
   });
 
   test("a process that ignores SIGTERM is still there at the deadline, named, and gone given SIGKILL", () => {
+    // The stand-in ignores TERM from its trap on, and keeps that across its exec, so the case waits
+    // until it runs `sleep`: a TERM sent before the trap would end it at once on a loaded machine.
     const r = bash(`bash -c 'trap "" TERM; exec sleep 30' & b=$!; started+=("$b")
-sleep 0.3
+for _ in $(seq 1 600); do [ "$(cat "/proc/$b/comm" 2>/dev/null)" = sleep ] && break; sleep 0.05; done
 deadline=$((EPOCHSECONDS + 2))
 kill_gone TERM "$deadline" "$b"; echo "rc=$?"
 echo "ended_ms=$(now_ms)"; echo "deadline=$deadline"; echo "pid=$b"
@@ -347,9 +349,10 @@ kill -CONT "$parent"`);
   // stop_label (envoy-session-delivery.sh), replace-blocks.sh's stop_instance and dev-stack.test.sh's
   // cleanup wait on before their next step meets the group's port, session or directory.
   test("a process group whose member drains for 2 s after SIGTERM is gone, every member, when the wait returns", () => {
-    const r =
-      bash(`setsid bash -c 'trap "sleep 2; exit 0" TERM; while :; do sleep 0.1; done' & g=$!; started+=("$g")
-until [ "$(awk '{print $5}' "/proc/$g/stat" 2>/dev/null)" = "$g" ]; do sleep 0.05; done
+    // The member writes READY once its TERM trap is set: a TERM before it would end it at once.
+    const r = bash(`ready=$(mktemp -u "$DIR/ready.XXXXXX")
+setsid bash -c 'trap "sleep 2; exit 0" TERM; : >"$1"; while :; do sleep 0.1; done' leader "$ready" & g=$!; started+=("$g")
+until [ "$(awk '{print $5}' "/proc/$g/stat" 2>/dev/null)" = "$g" ] && [ -e "$ready" ]; do sleep 0.05; done
 start=$(now_ms)
 kill_gone TERM "$END" "-$g"; echo "rc=$?"
 echo "ms=$(($(now_ms) - start))"
