@@ -4501,10 +4501,12 @@ Each item below names a path with its method and identity, then its purpose.
   not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); the route's row in `internal/dispatch/api/routes_table.go` (`GET /api/v1`) and `patchIssue` in `internal/dispatch/api/issue_patch.go` give each field's rules.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
-  With `DISPATCH_LEGION_STATUS_SCOPE` on, three writes of a Legion issue need a credential that holds the `person` scope or `legion-status`: a status write, the removal of its `legion` label, and a move after which it is no longer a Legion issue.
-  A Legion issue carries the `legion` label, in any letter case, or is under an issue that carries it, and Dispatch judges the issue before the call and after it.
-  Any other credential is `403 LEGION_STATUS_SCOPE_REQUIRED`, with an `insufficient_scope` challenge naming `legion-status`, and the call changes nothing.
-  A Legion daemon's own broker token holds `legion-status`, and the shared token, a personal token without `person` and a project's other broker tokens hold neither scope.
+
+  - With `DISPATCH_LEGION_STATUS_SCOPE` on, three writes of a Legion issue need a credential that holds the `person` scope or `legion-status`: a status write, the removal of its `legion` label, and a move after which it is no longer a Legion issue.
+    A Legion issue carries the `legion` label, in any letter case, or is under an issue that carries it, and Dispatch judges the issue before the call and after it.
+    Any other credential is `403 LEGION_STATUS_SCOPE_REQUIRED`, with an `insufficient_scope` challenge naming `legion-status`, and the call changes nothing.
+    A Legion daemon's own broker token holds `legion-status`, and the shared token, a personal token without `person` and a project's other broker tokens hold neither scope.
+
   With `DISPATCH_PARENT_STATUS_RULE` on, a `status` or a `parent` that leaves a parent's status out of line with its children's is `409 PARENT_STATUS_CONFLICT` `{code, error, issues}`, as `POST /api/v1/issues/{key}/status-change` (below) describes it.
   The `PATCH` judges only the pairs it changes: a new status judges the issue with its parent and with each direct child, and a new parent judges the issue with that parent.
   A status the issue already has changes no pair, so it is not judged.
