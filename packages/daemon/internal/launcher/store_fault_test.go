@@ -433,10 +433,14 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 		// refuseFrom is the first of the proxy's dials it refuses, 0 for none: the proof dial is
 		// the first, the child's own the second, the launcher's ask at the exit the third; signIn
 		// refuses them as an instance refuses a sign-in, a fault of the configuration's, rather
-		// than as a database that is down. send is what the proxied child writes on its connection.
+		// than as a database that is down, and refuseOnce refuses refuseFrom alone. send is what
+		// the proxied child writes on its connection, and report what it writes on its standard
+		// error before it exits.
 		refuseFrom int32
 		signIn     bool
+		refuseOnce bool
 		send       string
+		report     string
 		// shell, when set, is the child, run by /bin/sh; omp runs the pinned Oh My Pi. reported, when
 		// set, is what the child's report of its failed open must name, so the case is one the
 		// report could decide.
@@ -458,6 +462,9 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 		"control: under the proxy, the store answers a child that fails": {proxied: true, code: 1},
 		"control: under the proxy, the instance refuses the pinned Oh My Pi's sign-in after the proof dial": {proxied: true, omp: true,
 			refuseFrom: 2, signIn: true, reported: connectionFailed, code: 1},
+		"control: under the proxy, the instance refuses the child's own sign-in and answers the launcher's ask, the child reporting its connection closed": {proxied: true,
+			refuseFrom: 2, refuseOnce: true, signIn: true, code: 1,
+			report: "Error: " + ompsessions.DSNFileVariable + " names its file, but the session database could not be opened: Connection closed before the connection was established (ERR_POSTGRES_CONNECTION_FAILED)"},
 		"control, a replay of the pinned Oh My Pi's line: under the proxy, the sign-in refused after the proof dial": {proxied: true,
 			refuseFrom: 2, signIn: true, shell: reports(closed), code: 1},
 		"under a URL file, the store refuses the pinned Oh My Pi and the launcher": {omp: true, code: 1,
@@ -498,7 +505,7 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 				}
 				var dials atomic.Int32
 				dialer.check = func() error {
-					if n := dials.Add(1); tc.refuseFrom > 0 && n >= tc.refuseFrom {
+					if n := dials.Add(1); tc.refuseFrom > 0 && (n == tc.refuseFrom || n > tc.refuseFrom && !tc.refuseOnce) {
 						return refused
 					}
 					return nil
@@ -509,7 +516,7 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 				if tc.shell == "" && !tc.omp {
 					command := g.childStart(1, filepath.Join(t.TempDir(), "marker"), nil)
 					argv = []string{command.Argv[0], "-test.run=^TestLauncherStoreChild$"}
-					env = append(append(command.Env, launcherStoreChildEnv+"=1", storeChildSendEnv+"="+tc.send), env...)
+					env = append(append(command.Env, launcherStoreChildEnv+"=1", storeChildSendEnv+"="+tc.send, storeChildReportEnv+"="+tc.report), env...)
 				}
 			} else {
 				g = newRig(t)
@@ -543,11 +550,13 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 }
 
 // launcherStoreChildEnv marks the test binary re-executed as a child that dials its session store
-// as Oh My Pi does, through its generation's proxy (TestLauncherStoreChild), and storeChildSendEnv
-// is what that child writes on its connection.
+// as Oh My Pi does, through its generation's proxy (TestLauncherStoreChild), storeChildSendEnv is
+// what that child writes on its connection, and storeChildReportEnv what it writes on its standard
+// error before it exits.
 const (
 	launcherStoreChildEnv = "LEGION_LAUNCHER_STORE_CHILD"
 	storeChildSendEnv     = "LEGION_LAUNCHER_STORE_CHILD_SEND"
+	storeChildReportEnv   = "LEGION_LAUNCHER_STORE_CHILD_REPORT"
 )
 
 func init() {
@@ -556,8 +565,9 @@ func init() {
 
 // TestLauncherStoreChild is a child that dials its session store through the socket of its
 // generation's proxy (LEGION_LAUNCHER_SOCKET), writes what storeChildSendEnv holds, waits until the
-// connection ends or two seconds pass, and exits 1, as Oh My Pi does on a store that fails it. Run
-// as a test of its own, outside a launcher, it does nothing.
+// connection ends or two seconds pass, writes the line storeChildReportEnv holds, if any, on its
+// standard error, and exits 1, as Oh My Pi does on a store that fails it. Run as a test of its own,
+// outside a launcher, it does nothing.
 func TestLauncherStoreChild(t *testing.T) {
 	if os.Getenv(launcherStoreChildEnv) == "" {
 		return
@@ -567,6 +577,9 @@ func TestLauncherStoreChild(t *testing.T) {
 		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 		_, _ = io.Copy(io.Discard, conn)
 		_ = conn.Close()
+	}
+	if line := os.Getenv(storeChildReportEnv); line != "" {
+		_, _ = os.Stderr.WriteString(line + "\n")
 	}
 	os.Exit(1)
 }
