@@ -438,8 +438,8 @@ type parentStatusConflictBody struct {
 // Error names each issue that holds the rule with its status, so a client that reads no issues
 // still shows them. Each issue is a sentence of its own.
 func (conflict *parentStatusConflict) Error() string {
-	sentences := make([]string, 0, len(conflict.issues)+2)
-	sentences = append(sentences, "this change would leave a parent's status out of line with its children's.")
+	var text strings.Builder
+	text.WriteString("this change would leave a parent's status out of line with its children's.")
 	for _, issue := range conflict.issues {
 		of := issue.of
 		if of == "" {
@@ -449,10 +449,10 @@ func (conflict *parentStatusConflict) Error() string {
 		if issue.Relation == relationParent {
 			kin = "the parent of"
 		}
-		sentences = append(sentences, fmt.Sprintf("%s (%s) is %s %s and %s.", issue.Key, issue.Status, kin, of, issue.reason))
+		fmt.Fprintf(&text, " %s (%s) is %s %s and %s.", issue.Key, issue.Status, kin, of, issue.reason)
 	}
-	sentences = append(sentences, "A parent is done only when each child is done, and while a child is in work, its parent is in work.")
-	return strings.Join(sentences, " ")
+	text.WriteString(" A parent is done only when each child is done, and while a child is in work, its parent is in work.")
+	return text.String()
 }
 
 // body is the conflict as writeHandlerError answers it.

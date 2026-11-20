@@ -104,7 +104,7 @@ func fixMoveComment(move fixMove) string {
 // fixComments is every comment that the fix leaves over the fixture, in the order of its writes:
 // each unlink's, then each move's. ACME-79 has two, its unlink's and its move's.
 func fixComments() []string {
-	comments := make([]string, 0, len(fixUnlinks)+len(fixMoves))
+	var comments []string
 	for _, unlink := range fixUnlinks {
 		comments = append(comments, fixUnlinkComment(unlink))
 	}
