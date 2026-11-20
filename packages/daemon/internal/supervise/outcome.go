@@ -35,8 +35,9 @@ import (
 //
 // The guards that are not outcome questions stay at their sites: the lifecycle
 // check before a relaunch and before a retirement (checkLaunch), an operator's suspension held
-// over a retirement (suspendHeld), the last retirement's fail, and the death budget's state guard
-// (chargeDeath).
+// over a retirement (suspendHeld), the last retirement's fail, the death budget's state guard
+// (chargeDeath), and the end of a process that never registered as the session its claim records
+// with no file (endUncharged), which asks which process ended.
 func Charges(o runtime.Outcome) bool {
 	switch o {
 	case runtime.OutcomeAgentBusy:
