@@ -71,7 +71,7 @@ function payloadStrings(event: DispatchEvent, key: string): readonly string[] | 
 }
 
 /** Whether `login` is the signed-in viewer's, compared as the server compares logins. */
-function isViewer(login: string | undefined, viewer: string | undefined): boolean {
+export function isViewer(login: string | undefined, viewer: string | undefined): boolean {
   return (
     login !== undefined &&
     viewer !== undefined &&
@@ -80,8 +80,9 @@ function isViewer(login: string | undefined, viewer: string | undefined): boolea
 }
 
 /** A list read's rows, as the reader that holds the query wrote them; none for a query with no
- *  list (an error, or not loaded). */
-function rowsOf<Row>(data: unknown): readonly Row[] {
+ *  list (an error, or not loaded), or a read of another shape. The caller names the rows' type
+ *  (`Row`): a cached answer is the one its own read returned. */
+export function rowsOf<Row>(data: unknown): readonly Row[] {
   return Array.isArray(data) ? (data as Row[]) : [];
 }
 
@@ -1560,10 +1561,9 @@ function addressUnder(address: string, owner: string, next: string): boolean {
  *  server's read of the event log attaches to every ask event carrying `approval`), each the
  *  document the ask is on. Four events carry none, and name the document by its id alone, which
  *  no address is written with: a new version, a comment's edit written before `artifact_slug`
- *  existed, the
- *  edit of a question asked of the document as a whole, with no anchor, no block and no
- *  approval, and a document version's rewording of a block ask, whose event the document's
- *  settlement writes without `block_artifact`. */
+ *  existed, the edit of a question asked of the document as a whole, with no anchor, no block
+ *  and no approval, and a document version's rewording of a block ask, whose event the
+ *  document's settlement writes without `block_artifact`. */
 function projectDocumentSlug(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "artifact.created":
@@ -1756,8 +1756,12 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * fails keeps the answer it would have replaced, so a post's correction writes its own marks
  * into each answer the cache holds as it arrives (`markCorrectedPost`): a read that then fails
  * names a deleted post by the deleted line and an edited one with its mark. An answer that a
- * read already out at the correction lands was composed before it and carries neither, and a
- * refetch of it that fails keeps it.
+ * read already out at an event lands was composed before it, and a refetch of it that fails
+ * keeps it, which stands for every refresh but a correction's own facts: the feed puts each
+ * answer it marks over every read of that query still out, and reads the query again
+ * (`replaceQueryData`), and keeps a correction while a read out at its arrival of a query it
+ * marked nothing in is out, writing its marks into the answer that read lands (`keepCorrection`
+ * in `corrected-post.ts`).
  */
 function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
   switch (event.type) {

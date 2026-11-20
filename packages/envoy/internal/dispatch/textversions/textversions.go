@@ -35,7 +35,7 @@ type event struct {
 // version is one row of search_text_versions as the rules decide it, before the batch's insert
 // makes its vector (insertVersions).
 type version struct {
-	Kind       string  // "issue", "comment", "message" or "ask"
+	Kind       string  // kindIssue, kindComment, kindMessage or kindAsk
 	ID         string  // the issue's key, or the comment's, message's or ask's uuid
 	IssueKey   *string // nil for a comment or an ask on a project document
 	ProjectKey string
@@ -69,10 +69,6 @@ type version struct {
 	// them yet.
 	SpecArtifactID *string
 	SpecVersion    *int32
-	// SpecSize is the size in bytes of the primary document version an artifact.version names
-	// (its payload's version.size), the markdown the row's vector is made from, which a batch
-	// counts; 0 on every other row.
-	SpecSize int64
 }
 
 // latestVersion answers an item's latest version, in the table or earlier in the batch, or nil

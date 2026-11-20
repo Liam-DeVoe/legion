@@ -11,8 +11,9 @@ import type { DispatchEvent } from "./types";
 // old words. GET /api/v1/reference-targets names a comment or a message by its id, whatever owner
 // its address is written under (the server reads `dispatch://<KEY>/comment/<id>` by the id alone),
 // so a page on CORE-2 whose text cites a CORE-1 comment as `dispatch://CORE-2/comment/<id>` holds
-// that comment's words under a CORE-2 address. The narrow rule (`namesReadsNaming`) refreshes only
-// the addresses under the event's own owner, so that read is never read again after the delete.
+// that comment's words under a CORE-2 address. So the refresh (`namesReadsNaming`) matches such an
+// address by the post's whole id, whatever owner it is written under, as the server reads it; a
+// rule keyed by the event's own owner alone would never read that names read again.
 
 const commentID = "11111111-2222-4333-8444-555555555555";
 const messageID = "66666666-7777-4888-9999-aaaaaaaaaaaa";

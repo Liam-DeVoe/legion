@@ -12,6 +12,7 @@ import {
 } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import type { PostDeletion } from "../refs/post-marks";
 import { refetchFailedOnFocus } from "../refs/reference-target";
 import {
   buildIssueTree,
@@ -114,6 +115,10 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
 /** The references the page publishes as edited until the batched name read answers: none, and
  *  the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
 const NO_EDITED_TARGETS: ReadonlySet<string> = new Set();
+
+/** The references the page publishes as deleted until the batched name read answers: none, and
+ *  the same empty map on every render, as `NO_TARGET_NAMES` is the same empty map. */
+const NO_DELETED_TARGETS: ReadonlyMap<string, PostDeletion> = new Map();
 
 /**
  * The set of addresses a names read answered last: `refs` while its read under them holds an
@@ -388,19 +393,26 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // name, as a gone one has none, and a link draws it as written and links nothing where it
   // reads a gone one's own, which the names alone would not tell it. And beside them go the
   // references whose post its author edited, which a link marks ` · edited` after it cuts the
-  // name to its own length, so no cut takes the mark. A chip's name is read from the issue, the
-  // documents' blocks and the names alone (`treeContext`), so the map and the sets are built
-  // from those and nothing else: an answer of any other read - an ask, a comment, the coverage,
-  // the reader's login - publishes nothing new, which would draw every link beside the tree
-  // again. Until the names answer there is nothing to publish.
-  const { ambiguous, edited, names } = useMemo(
+  // name to its own length, so no cut takes the mark, and those whose post its author deleted,
+  // by the delete, which a row's words draw as the deleted line with its actor named as the page
+  // names an author. A chip's name is read from the issue, the documents' blocks and the names
+  // alone (`treeContext`), so the maps and the sets are built from those and nothing else: an
+  // answer of any other read - an ask, a comment, the coverage, the reader's login - publishes
+  // nothing new, which would draw every link beside the tree again. Until the names answer there
+  // is nothing to publish.
+  const { ambiguous, deleted, edited, names } = useMemo(
     () =>
       named === undefined
-        ? { ambiguous: NO_AMBIGUOUS_TARGETS, edited: NO_EDITED_TARGETS, names: NO_TARGET_NAMES }
+        ? {
+            ambiguous: NO_AMBIGUOUS_TARGETS,
+            deleted: NO_DELETED_TARGETS,
+            edited: NO_EDITED_TARGETS,
+            names: NO_TARGET_NAMES,
+          }
         : targetNaming({ documents: documents.blocks, issue, targets: named }),
     [documents.blocks, issue, named]
   );
-  usePublishReferenceNames(names, ambiguous, edited);
+  usePublishReferenceNames(names, ambiguous, edited, deleted);
   const root = useMemo(
     () =>
       named === undefined || named === first

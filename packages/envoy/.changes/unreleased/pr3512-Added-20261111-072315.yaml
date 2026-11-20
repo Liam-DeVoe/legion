@@ -5,7 +5,9 @@ body: |-
   GET /api/v1/messages/{id}/history give the bodies an edit or a delete replaced; a delete writes an
   entry of its own, and a deleted post's entries carry no body. A deleted post keeps its place in
   its thread and gives its body to no read: the events written before the delete keep their
-  payloads in the event log, and every read of them gives the post's marks and no body. The
+  payloads in the event log, and every read of them gives the post's marks and no body. The delete
+  of a comment whose accepted suggestion named a document version after its body renames that
+  version, and its comment.deleted event names the version and its new name (renamed_version). The
   comment PATCH, which before took a person's edit alone and refused one on a closed
   issue, now takes its author's edit, an agent's included, on an open or a closed issue. Each
   route's own description, which GET /api/v1 serves, states its rules. A repeat under an

@@ -435,9 +435,10 @@ func newExchangeFixtureWithoutPerson(t *testing.T, f *signInFixture) *exchangeFi
 // recordCredential is oauth.ExchangeConfig.MachineCredentials over the fixture's own database:
 // the launcher credential a trade mints, written in the exchange's transaction exactly as
 // cmd/broker writes it (its machineCredentials: enroll.Service.IssueTokenLoginTx, with a key
-// another live credential holds, or a live read token is bound to, answered
-// oauth.ErrMachineKeyTaken), so the token row that names it has a row to name and the trade
-// meets the same refusals. IssueTokenLoginTx reads nothing of its service's fields.
+// another live credential holds answered oauth.ErrMachineKeyTaken, and a key a live read token is
+// bound to answered oauth.ErrMachineKeyBindsReadToken), so the token row that names it has a row
+// to name and the trade meets the same refusals. IssueTokenLoginTx reads nothing of its service's
+// fields.
 func recordCredential(ctx context.Context, cred oauth.MachineCredential) (string, error) {
 	tx, ok := oauthstore.TxFrom(ctx)
 	if !ok {
@@ -449,6 +450,9 @@ func recordCredential(ctx context.Context, cred oauth.MachineCredential) (string
 	})
 	if enroll.KeyHeld(err) {
 		return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
+	}
+	if errors.Is(err, enroll.ErrKeyBindsReadToken) {
+		return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyBindsReadToken, err)
 	}
 	if err != nil {
 		return "", err

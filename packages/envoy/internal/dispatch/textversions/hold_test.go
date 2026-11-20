@@ -49,7 +49,7 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 		time.Sleep(300 * time.Millisecond)
 	}
 	awaitRows(t, database, ids, 30*time.Second, func() { holders.sample(t, database) })
-	if got := holders.changes(); len(got) != 1 || got[0] != firstHolder {
+	if got := holders.read; len(got) != 1 || got[0] != firstHolder {
 		t.Fatalf("while both fills ran the cursor row named %v; want the first's holder %s alone", got, firstHolder)
 	}
 	if second.logged(batchMessage) {
@@ -70,7 +70,7 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	})
 	t.Logf("the standby wrote the next events %v after the holder died", time.Since(died).Round(time.Millisecond))
 	holders.sample(t, database)
-	got := holders.changes()
+	got := holders.read
 	if len(got) != 2 || got[0] != firstHolder || got[1] == firstHolder {
 		t.Fatalf("the cursor row named %v in turn; want the first's holder %s, then the second's, and never the first's again",
 			got, firstHolder)
@@ -141,9 +141,9 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	}
 }
 
-// TestTheFillWritesNothingUntilTheServerListens holds Listening open for 5 s with events written
-// and the fill woken: it writes no row, no cursor row and no hold. Once Listening closes, the rows
-// come.
+// TestTheFillWritesNothingUntilTheServerListens holds Serving open for 5 s with events written and
+// the fill woken: it writes no row, no cursor row and no hold. Once Serving closes, as it does once
+// the server listens and is admitted to the registry of live server processes, the rows come.
 func TestTheFillWritesNothingUntilTheServerListens(t *testing.T) {
 	database := storetest.Open(t)
 	seedTheIssue(t, database)
@@ -157,7 +157,7 @@ func TestTheFillWritesNothingUntilTheServerListens(t *testing.T) {
 
 	time.Sleep(5 * time.Second)
 	if rows := countRows(t, database); rows != 0 {
-		t.Fatalf("before the server listens the fill wrote %d rows", rows)
+		t.Fatalf("before the process serves the fill wrote %d rows", rows)
 	}
 	var cursors, holds int
 	if err := database.Pool.QueryRow(t.Context(), `
@@ -166,10 +166,10 @@ func TestTheFillWritesNothingUntilTheServerListens(t *testing.T) {
 		t.Fatalf("read the cursor row and the hold: %v", err)
 	}
 	if cursors != 0 || holds != 0 {
-		t.Fatalf("before the server listens the fill wrote %d cursor rows and %d holds; want none", cursors, holds)
+		t.Fatalf("before the process serves the fill wrote %d cursor rows and %d holds; want none", cursors, holds)
 	}
 
-	close(fill.listening)
+	close(fill.serving)
 	awaitRows(t, database, ids, 30*time.Second, nil)
 }
 
@@ -219,40 +219,40 @@ func (r *renewalsApart) TraceQueryStart(ctx context.Context, conn *pgx.Conn, dat
 func (r *renewalsApart) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // fillProcess is the fill one serving process runs (Run), on a store of the test's own, so two of
-// them take turns on the hold through the database as two processes do. Its listening is the
-// server's, open until the test closes it where startFill did not; its events wake is the test's,
+// them take turns on the hold through the database as two processes do. Its serving is the
+// process's, open until the test closes it where startFill did not; its events wake is the test's,
 // signalled where the listener hub's wake on the events channel would be.
 type fillProcess struct {
-	db        *store.Store
-	listening chan struct{}
-	events    chan struct{}
-	logs      *storetest.LockedLog
-	cancel    context.CancelFunc
-	stopped   chan struct{}
+	db      *store.Store
+	serving chan struct{}
+	events  chan struct{}
+	logs    *storetest.LockedLog
+	cancel  context.CancelFunc
+	stopped chan struct{}
 }
 
-// startFill runs the fill on db, woken for a released hold by released, with the server listening
-// already when listening is set, and stops it once the test ends.
-func startFill(t *testing.T, db *store.Store, released <-chan struct{}, listening bool) *fillProcess {
+// startFill runs the fill on db, woken for a released hold by released, with the process serving
+// already when serving is set, and stops it once the test ends.
+func startFill(t *testing.T, db *store.Store, released <-chan struct{}, serving bool) *fillProcess {
 	t.Helper()
 	process := &fillProcess{
-		db:        db,
-		listening: make(chan struct{}),
-		events:    make(chan struct{}, 1),
-		logs:      &storetest.LockedLog{},
-		stopped:   make(chan struct{}),
+		db:      db,
+		serving: make(chan struct{}),
+		events:  make(chan struct{}, 1),
+		logs:    &storetest.LockedLog{},
+		stopped: make(chan struct{}),
 	}
-	if listening {
-		close(process.listening)
+	if serving {
+		close(process.serving)
 	}
 	config := Config{
-		Leases:    storetest.Leases(t, db.Pool),
-		Horizon:   events.NewHorizon(db.Pool),
-		Latency:   sessionanswers.NewLatency(time.Now),
-		Listening: process.listening,
-		Events:    process.events,
-		Released:  released,
-		Logger:    slog.New(slog.NewJSONHandler(process.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Leases:   storetest.Leases(t, db.Pool),
+		Horizon:  events.NewHorizon(db.Pool),
+		Latency:  sessionanswers.NewLatency(time.Now),
+		Serving:  process.serving,
+		Events:   process.events,
+		Released: released,
+		Logger:   slog.New(slog.NewJSONHandler(process.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	process.cancel = cancel
@@ -376,8 +376,9 @@ func awaitRows(t *testing.T, database *store.Store, ids []int64, within time.Dur
 	}
 }
 
-// cursorHolders is the cursor row's holder as the test read it, each change of it once, in order.
+// cursorHolders is the cursor row's holder as the test read it.
 type cursorHolders struct {
+	// read is the holders read, each change once, in order: a holder that came back is read twice.
 	read []string
 }
 
@@ -397,9 +398,4 @@ func (h *cursorHolders) sample(t *testing.T, database *store.Store) {
 	if holder != "" && (len(h.read) == 0 || h.read[len(h.read)-1] != holder) {
 		h.read = append(h.read, holder)
 	}
-}
-
-// changes is the holders read, each change once, in order: a holder that came back is read twice.
-func (h *cursorHolders) changes() []string {
-	return h.read
 }

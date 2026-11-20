@@ -130,10 +130,10 @@ func (s *Store) PersonSignIns(ctx context.Context, person string) ([]PersonSignI
 }
 
 // RevokePersonSignInTx ends sign-in id of person in tx and answers the box key thumbprint it
-// revoked and how many of that person's live access tokens it ended with it. A row already
-// revoked is revoked again by nobody: it answers an empty thumbprint, no tokens and no error,
-// as revoking a machine login twice answers the same. An id no sign-in of that person has is
-// ErrNoSignIn, so one person cannot learn another's ids by trying them.
+// revoked and how many of that person's live access tokens end with it. A row already revoked is
+// revoked again by nobody: it answers an empty thumbprint, no tokens and no error, as revoking a
+// machine login twice answers the same. An id no sign-in of that person has is ErrNoSignIn, so
+// one person cannot learn another's ids by trying them.
 //
 // It takes tx rather than the pool because ending the sign-in is only half of it: the launcher
 // credential that sign-in's trades mint is ended in the same transaction
@@ -147,6 +147,13 @@ func (s *Store) PersonSignIns(ctx context.Context, person string) ([]PersonSignI
 // the person it names and the key it is bound to, which together are this sign-in and no other,
 // so the person's sign-ins on their other boxes keep every token they hold. Only access tokens
 // are ended, because an exchanged trade is answered no refresh token at all.
+//
+// A token a read trade of the sign-in narrowed to reading is bound to its holder's key, not to the
+// box key, and names the launcher credential on the box key instead: it is live only while that
+// credential is (oauthstore's narrowedLive), so it ends when the caller revokes the credential,
+// and nothing here writes it. The count takes in each such token that is live now, so it is
+// every token the revoke ends: the ones this statement ends, and the read tokens that end with
+// the credential.
 func RevokePersonSignInTx(ctx context.Context, tx pgx.Tx, id, person string) (string, int, error) {
 	var found, ended int
 	var thumbprint *string
@@ -161,8 +168,15 @@ func RevokePersonSignInTx(ctx context.Context, tx pgx.Tx, id, person string) (st
 			where active and (request #>> '{session,extra,person}', request #>> '{session,jwk_thumbprint}')
 				in (select person, thumbprint from revoked)
 			returning 1
+		), narrowed as (
+			select 1 from oauth_narrowed_access_tokens n
+			join launcher_credentials c on c.id = n.credential_id
+			where c.key_thumbprint in (select thumbprint from revoked) and c.revoked_at is null and c.expires_at > now()
+				and n.active and n.expires_at > now()
+				and (n.subject_signature is null or exists (select 1 from oauth_access_tokens subject
+					where subject.signature = n.subject_signature and subject.active and subject.expires_at > now()))
 		)
-		select (select count(*) from target), (select count(*) from tokens),
+		select (select count(*) from target), (select count(*) from tokens) + (select count(*) from narrowed),
 			(select thumbprint from revoked)`, id, person).Scan(&found, &ended, &thumbprint)
 	if err != nil {
 		return "", 0, err

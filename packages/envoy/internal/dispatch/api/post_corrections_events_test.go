@@ -338,9 +338,10 @@ func TestEveryEventOfADeletedMessageGivesNoBodyAndKeepsTheReplysFrozenPreview(t 
 // ruling of 2026-11-16, and chk-events: "the payload of each delete event carries no body"). A
 // reply's own creation froze a preview of the post it answers, which the event log keeps. Its
 // delete is a new event, written after the fact, so it writes no new copy of that other post's
-// text: comment.deleted of a reply carries reply_block null, and message.deleted of a reply
-// carries no reply_body and no reply_block text, for a plain reply and for one naming a block,
-// with the parent still standing. The control is the reply's creation, which keeps the preview.
+// text: comment.deleted and message.deleted of a reply carry no reply_body and no reply_block
+// text, for a plain reply and for one naming a block, with the parent still standing; a block
+// reply's reply_block keeps the fields that name the block and route the event. The control is
+// the reply's creation, which keeps the preview.
 func TestAReplysDeleteEventCarriesNoTextOfThePostItAnswers(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A reply's delete event", "A spec")

@@ -11,6 +11,7 @@ import { markCorrectedPost } from "./corrected-post";
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
 import { inboxQuery } from "./queries";
+import { hearLiveEvent } from "./query-client";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
 import type { AuthenticatedUser, DispatchEvent, EventType } from "./types";
 
@@ -129,7 +130,7 @@ export function prependEventToLog(queryClient: QueryClient, event: DispatchEvent
 // Leading window for a burst: a cold-start replay or a flurry of events on one issue is handed to
 // the refresh scheduler (`api/query-refresh.ts`) as one batch, 100ms after the first event of the
 // burst - later events join the pending batch but do not extend the window.
-const BATCH_WINDOW_MS = 100;
+export const BATCH_WINDOW_MS = 100;
 
 // A whole-cache refresh reaches every query the app holds, the GitHub proxy queries included,
 // and two callers ask for one: an event this client cannot parse, and a gap in the feed that its
@@ -338,13 +339,14 @@ export function useEventFeed({
         const event = raw as DispatchEvent;
         try {
           prependEventToLog(queryClient, event);
+          const viewer = queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login;
+          // A write's own event ends its hold on its queries' reads, so the refresh this event asks
+          // for, and every read after it, is asked past the hold (`hearLiveEvent`).
+          hearLiveEvent(queryClient, event, viewer);
           // Written now, ahead of the batch's refresh, whose stale mark a write would clear: a
           // read of the post whose refetch fails keeps the answer this marks.
           markCorrectedPost(queryClient, event);
-          const targets = eventRefreshTargets(
-            event,
-            queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login
-          );
+          const targets = eventRefreshTargets(event, viewer);
           markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
           queueRefresh(targets);
         } catch (error) {

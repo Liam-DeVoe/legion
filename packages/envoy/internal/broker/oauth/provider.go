@@ -132,6 +132,12 @@ var ErrLoginEnded = errors.New("the machine login has ended")
 // Any other error from it is a 500 server_error.
 var ErrMachineKeyTaken = errors.New("another live machine login holds this key")
 
+// ErrMachineKeyBindsReadToken is the ExchangeConfig.MachineCredentials error (wrapped or not)
+// that refuses a trade invalid_grant because a live read token is bound to the key the request's
+// DPoP proof presented, and a read token's key signs no launcher proof
+// (enroll.ErrKeyBindsReadToken). Its hint names the read token and the cure, a new key.
+var ErrMachineKeyBindsReadToken = errors.New("a live read token is bound to this key")
+
 // ErrSignInRevoked and ErrSignInMachineChanged are the two ExchangeConfig.PersonSignIns errors
 // (wrapped or not) that refuse a person's trade invalid_grant: that person has revoked the
 // sign-in this box key belongs to, and the sign-in this box key belongs to was made on another

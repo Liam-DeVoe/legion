@@ -251,6 +251,8 @@ const KNOWN_BROKER_REFUSAL_PATTERNS: readonly RegExp[] = [
   "The machine login the subject token belongs to has ended\\.",
   "The machine login has ended\\.",
   "Another live machine login holds the key this proof was signed with\\. A (?:machine makes a key of its own|sign-in makes a box key of its own)\\.",
+  // The same two trades refused a key a live read token is bound to.
+  "A live read token is bound to the key this proof was signed with\\. Make a new key\\.",
   `${PERSON_SLOT} is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on\\.`,
   `The token names a project its person cannot see: ${PROJECT_SLOT}\\.`,
   `The subject token was refused: its entry names the project ${PROJECT_SLOT}, which its person ${PERSON_SLOT} cannot see\\.`,

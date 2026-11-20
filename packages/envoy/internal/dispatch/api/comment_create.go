@@ -47,6 +47,21 @@ type commentInput struct {
 	Actor *model.Actor `json:"actor"`
 }
 
+// storedSuggestion is a suggestion as the create writes it into the row's suggestion column: the
+// suggestion itself, and the kind its mark recorded when the comment was made (docs.SuggestionKind:
+// "insert", "replace" or "delete"; the mark a quote anchor writes is a replace). An insert's mark
+// wraps the words the suggestion itself put in the document, so its anchor's quote is a copy of
+// the comment's own text, and the delete reads the kind to empty that quote once the mark is gone
+// and answers no kind (deleteComment). Only the delete reads it, by its key; every other read
+// decodes the column into model.Suggestion, which has no kind and drops it, so no answer and no
+// event carries it. An accept or a reject writes the column back from model.Suggestion, without
+// the kind, once the suggestion is decided and the delete no longer reads it. A suggestion with no
+// anchor has no mark and stores no kind.
+type storedSuggestion struct {
+	model.Suggestion
+	Kind string `json:"kind,omitempty"`
+}
+
 // askReplyTurn is who holds the turn once an ask reply by actor is posted: a human's
 // reply always hands it to the agent; a session's reply hands it to the human unless
 // the request marks it a progress note (turn "agent").
@@ -844,7 +859,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	var suggestionJSON any
 	if input.Suggestion != nil {
 		suggestion = &model.Suggestion{ReplaceWith: input.Suggestion.ReplaceWith}
-		suggestionJSON, err = encodeJSON(suggestion)
+		suggestionJSON, err = encodeJSON(storedSuggestion{Suggestion: *suggestion, Kind: projectionKind})
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

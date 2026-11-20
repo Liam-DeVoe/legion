@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// SlowRead and SlowWithin are R3's threshold for the keyword fill (textversions): the fill pauses
+// SlowRead and SlowWithin are the keyword fill's pause threshold (textversions): the fill pauses
 // while Dispatch takes more than SlowRead, 800 ms, to answer an agent's answers read
 // (GET /api/v1/agents/{session_id}/answers), and continues once no read has taken that long, or
 // run that long, for SlowWithin.

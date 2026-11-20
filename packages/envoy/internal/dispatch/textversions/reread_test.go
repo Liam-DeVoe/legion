@@ -112,7 +112,7 @@ func requireVersion(t *testing.T, database *store.Store, event int64, kind, id, 
 	}
 	if gotKind != kind || gotID != id || gotBody != body || bodyFrom != bodyFromEvent || !vectorOfBody {
 		t.Fatalf("event %d started %s %s with body %q from %s (its vector that of %q: %v), want %s %s with body %q from the event",
-			event, gotKind, gotID, cutText(gotBody), bodyFrom, cutText(body), vectorOfBody, kind, id, cutText(body))
+			event, gotKind, gotID, abridged(gotBody, 80), bodyFrom, abridged(body, 80), vectorOfBody, kind, id, abridged(body, 80))
 	}
 }
 

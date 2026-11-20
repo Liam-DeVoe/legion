@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -239,6 +240,17 @@ type DepsInput struct {
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
+	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token for
+	// the listener's audience (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE), which every listener call
+	// reads and presents in EnvoyToken's place (envoy.WithAccountTokenFile); empty presents
+	// EnvoyToken. It is the one credential the listener takes a send's role mark from.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is the audience of the identity token the metadata server mints for
+	// Dispatch's Google Cloud machine (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE), which every
+	// listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); empty presents none.
+	// With neither it nor EnvoyAccountTokenFile, Dispatch presents no identity and refuses every
+	// send for a role (envoy.ErrNoListenerIdentity).
+	EnvoyGoogleAudience string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
 	EnvoyTimeout time.Duration
@@ -332,6 +344,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
+		if input.EnvoyAccountTokenFile != "" {
+			options = append(options, envoy.WithAccountTokenFile(input.EnvoyAccountTokenFile))
+		}
+		if input.EnvoyGoogleAudience != "" {
+			options = append(options, envoy.WithGoogleIdentity(input.EnvoyGoogleAudience))
+		}
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
 		}
@@ -392,7 +410,14 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}, nil
 }
 
-// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...).
+// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...). Each entry is
+// trimmed, and its repository is read as a mapping's path is (refs.ParseGitHubRepo: lower-cased,
+// one trailing `.git` trimmed, and held to the names GitHub allows in that form), so the seed
+// stores no mapping the settings route refuses: `acme/.git=KEY`, which reads as `acme/`, a
+// mapping no request reaches, or `acme/..=KEY`. Nothing more is trimmed, so a space before the
+// `=` stays in the name and `acme/x =KEY` is refused. Such an entry is refused, naming it, and the
+// boot with it: one whose repository GitHub's rule refuses with that rule's own words, any other
+// with the form an entry takes.
 func ParseRepoProjects(raw string) (map[string]string, error) {
 	projects := make(map[string]string)
 	if strings.TrimSpace(raw) == "" {
@@ -405,10 +430,14 @@ func ParseRepoProjects(raw string) (map[string]string, error) {
 		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !projectKeyPattern.MatchString(project) {
 			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
 		}
-		canonical, _, err := externalRef(repo + "#1")
-		if err != nil {
+		owner, name, err := refs.ParseGitHubRepo(repo)
+		switch {
+		case errors.Is(err, refs.ErrNotGitHubRepo):
+			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q: %w", part, err)
+		case err != nil:
 			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
 		}
+		canonical := owner + "/" + name
 		if _, exists := projects[canonical]; exists {
 			return nil, fmt.Errorf("duplicate DISPATCH_REPO_PROJECTS repository %q", canonical)
 		}
@@ -542,6 +571,11 @@ type server struct {
 	// that. Only a test sets it, so a body that stalls is the test's choice rather than a minute of
 	// wall clock.
 	drainReadLimit time.Duration
+	// resultsClock replaces the clock GET /api/v1/issues/{key}/results reads each moment from
+	// (resultsNow); nil, which every server the deployment builds leaves it, means time.Now. Only a
+	// test sets it, so a read past the span an answer is believed for is the test's choice rather
+	// than a wait of that span on the wall clock.
+	resultsClock func() time.Time
 	// repeatFoundInFlight is called when the keyed layer finds a repeat's key held by a first
 	// request still running, before it reads a byte of the repeat's body; nil, which every server
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
@@ -1074,9 +1108,10 @@ type apiError struct {
 	code    string
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
-	// that carries none. Only a refusal that knows when the caller may come back sets it
-	// (brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and both deletes' 409
-	// DELETE_CONTENDED); writeHandlerError writes the header.
+	// that carries none. Only a refusal that knows when the caller may come back sets it:
+	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, both deletes' 409
+	// DELETE_CONTENDED, and linkedReadRefusal's 502 for a linked repository's read GitHub
+	// rate-limited with a wait. writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
@@ -1180,9 +1215,10 @@ func (s *server) refuseChangedLogin(handler http.HandlerFunc) http.HandlerFunc {
 // optionalActor resolves the request's caller. The authentication scheme decides the credential
 // before anything reads a token: RFC 9449 Section 7.2 refuses a DPoP-bound token presented under
 // any other scheme, so a broker-issued token reaches Dispatch under DPoP alone and a DPoP
-// presentation is never retried as another kind. Each branch names that caller on the request's
-// access-log line (accesslog.Note), which costs the line what the authentication already
-// resolved and never a lookup of its own.
+// presentation is never retried as another kind. Which credential a request presents is
+// credentialOf's to say, which the read-only gate reads too (resolvePersonalToken). Each branch
+// names that caller on the request's access-log line (accesslog.Note), which costs the line what
+// the authentication already resolved and never a lookup of its own.
 func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	// The caller may already be decided: a keyed write resolves before its handler
 	// (keyedWrites), and a DPoP presentation is decided once a request however many layers
@@ -1191,22 +1227,20 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	if caller, ok := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); ok {
 		return caller.actor, caller.human, caller.err
 	}
-	if _, presented := brokertoken.Presented(r); presented {
+	presented, token := s.credentialOf(r)
+	switch presented {
+	case credentialBrokerToken:
 		return s.brokerTokenActor(r)
-	}
-	if token, present := auth.BearerToken(r); present {
-		if token == "" {
-			return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
-		}
-		if auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens) {
-			accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
-			// A credential that holds no scope, not the absence of one: the deployment's one
-			// shared token is nobody's, so it acts as no person.
-			return model.Actor{Credential: scopelessCredential}, false, nil
-		}
-		if s.deps.OIDC != nil && oidc.LooksLikeJWT(token) {
-			return s.serviceTokenActor(r, token)
-		}
+	case credentialNoBearer:
+		return model.Actor{}, false, errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
+	case credentialSharedToken:
+		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
+		// A credential that holds no scope, not the absence of one: the deployment's one
+		// shared token is nobody's, so it acts as no person.
+		return model.Actor{Credential: scopelessCredential}, false, nil
+	case credentialServiceToken:
+		return s.serviceTokenActor(r, token)
+	case credentialPersonalToken:
 		actor, err := s.personalTokenActor(r.Context(), token)
 		if err != nil {
 			return model.Actor{}, false, err
@@ -1217,6 +1251,7 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 		accesslog.Note(r.Context(), accesslog.KindToken, *actor.Owner)
 		return actor, false, nil
 	}
+	// What is left is credentialSignIn: no Authorization header, or a blank one.
 	if s.deps.Identity == nil {
 		return model.Actor{}, false, errorf(http.StatusInternalServerError, "IDENTITY_ERROR", "identity service unavailable")
 	}
@@ -1228,6 +1263,53 @@ func (s *server) optionalActor(r *http.Request) (model.Actor, bool, error) {
 	// A person at a browser is the person, so their cookie holds every scope and names no agent
 	// that acted for them. The cookie proved the login, so the actor is Proven.
 	return model.Actor{Kind: "user", ID: login, Credential: personCredential, Proven: true}, true, nil
+}
+
+// credentialKind is the credential a request presents, as credentialOf names it.
+type credentialKind int
+
+const (
+	// credentialSignIn is a request with no Authorization header, or a blank one, whose caller is
+	// whoever the deployment's sign-in (Deps.Identity) reads it as, or nobody.
+	credentialSignIn credentialKind = iota
+	// credentialBrokerToken is an access token the secrets broker issued, under the DPoP scheme.
+	credentialBrokerToken
+	// credentialNoBearer is an Authorization header Dispatch reads no token from: a scheme other
+	// than Bearer and DPoP, or either with no token. No credential matches it.
+	credentialNoBearer
+	// credentialSharedToken is the deployment's shared agent token (DISPATCH_AGENT_TOKEN).
+	credentialSharedToken
+	// credentialServiceToken is a bearer shaped as a JWT, where Dispatch verifies service-account
+	// tokens (Deps.OIDC).
+	credentialServiceToken
+	// credentialPersonalToken is every other bearer, which only a personal token can be
+	// (personalTokenActor).
+	credentialPersonalToken
+)
+
+// credentialOf names the credential r presents, with the bearer token it carries where
+// optionalActor reads one, in the order optionalActor resolves them. It is the one place that
+// order is written: optionalActor resolves a request by it, and the read-only gate resolves a
+// personal token before the route does by it too (resolvePersonalToken), so the two cannot
+// disagree about which request presents one. It reads r's Authorization header and compares its
+// bearer with the shared token's values (auth.MatchesSharedAgentToken, which logs a value on its
+// way out), and asks no store, no sign-in and no verifier.
+func (s *server) credentialOf(r *http.Request) (credentialKind, string) {
+	if _, presented := brokertoken.Presented(r); presented {
+		return credentialBrokerToken, ""
+	}
+	token, present := auth.BearerToken(r)
+	switch {
+	case !present:
+		return credentialSignIn, ""
+	case token == "":
+		return credentialNoBearer, ""
+	case auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens):
+		return credentialSharedToken, ""
+	case s.deps.OIDC != nil && oidc.LooksLikeJWT(token):
+		return credentialServiceToken, token
+	}
+	return credentialPersonalToken, token
 }
 
 // The two credentials every request of their kind shares. Each is a fact of the deployment
@@ -1461,17 +1543,20 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 //   - A broker-issued token is already decided by decideBrokerToken, which runs outside it and
 //     carries its decision on the context (resolvedCallerKey); verifying it again would present
 //     the request's DPoP proof twice, and a proof is single use.
-//   - A personal token (presentsPersonalToken) is decided nowhere before the handler, so the gate
-//     resolves it once through optionalActor and carries the result on the context, its error
-//     included, as decideBrokerToken carries its own (resolvePersonalToken). Every layer behind it
-//     then reads that result rather than looking the token up again, so a token that did not
-//     resolve is answered by the layer that answers it today, with the same refusal.
+//   - A personal token is decided nowhere before the handler, so the gate resolves it once
+//     through optionalActor and carries the result on the context, its error included, as
+//     decideBrokerToken carries its own (resolvePersonalToken). It knows a personal token by the
+//     classifier optionalActor resolves by (credentialOf), so it resolves every request
+//     optionalActor would resolve as one. Every layer behind it then reads that result rather
+//     than looking the token up again, so a token that did not resolve is answered by the layer
+//     that answers it today, with the same refusal.
 //   - A cookie, the deployment's shared token and a service-account JWT are never read-only, so
 //     the gate resolves none of them: a cookie request costs it a context read and a look at an
 //     Authorization header it does not carry, and the gate writes no people row.
 //
-// Then a caller whose credential is read-only and carries a cut (model.Credential.Cut) is
-// answered 403 AS_OF_TOKEN_NOT_SERVED, naming the cut and the row, on GET /ws/live and on every
+// Then a caller whose credential is read-only (readOnlyCredential, which a results read reads the
+// caller by too) and carries a cut (model.Credential.Cut) is answered 403
+// AS_OF_TOKEN_NOT_SERVED, naming the cut and the row, on GET /ws/live and on every
 // read but GET /api/v1/whoami and the rows of kind answers (asOfAnswers), and next does not run:
 // such a row holds no answer at a past time, and it must not answer the token with the present.
 // The socket is refused for its cut first, since a socket delivers the present as it changes.
@@ -1491,8 +1576,8 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 	refusesACut := name == liveSocketRoute || (read && entry.AsOf != asOfAnswers && name != whoamiRoute)
 	noPastAnswer := "; " + name + " holds no past answer"
 	return func(w http.ResponseWriter, r *http.Request) {
-		r, caller := s.resolvePersonalToken(r)
-		credential := caller.readOnlyCredential()
+		r = s.resolvePersonalToken(r)
+		credential := readOnlyCredential(r.Context())
 		if credential == nil {
 			next(w, r)
 			return
@@ -1528,35 +1613,28 @@ func cutText(cut time.Time) string {
 	return cut.UTC().Format(time.RFC3339Nano)
 }
 
-// resolvePersonalToken is r with its personal token resolved and carried on its context
-// (resolvedCallerKey), its refusal included, where r presents one and nothing has decided its
-// caller yet; any other r is answered as it is. It answers the caller r's context then carries,
-// the zero resolvedCaller where none is decided. optionalActor answers a later call with what this
-// carried, so the token is looked up once a request, as a DPoP proof is presented once. A server
-// with no store holds no personal token, so it resolves none here, and a row that takes no
+// resolvePersonalToken is r with its personal token resolved through optionalActor and carried on
+// its context (resolvedCallerKey), its refusal included, where nothing has decided r's caller yet,
+// the server has a store, and r presents a personal token as optionalActor reads it
+// (credentialOf); any other r is answered as it is. optionalActor answers a later call with what
+// this carried, so the token is looked up once a request, as a DPoP proof is presented once. A
+// server with no store holds no personal token, so it resolves none here, and a row that takes no
 // credential answers as it did before the gate rather than reach for a store it lacks.
-func (s *server) resolvePersonalToken(r *http.Request) (*http.Request, resolvedCaller) {
-	if caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided || s.deps.Store == nil || !s.presentsPersonalToken(r) {
-		return r, caller
+//
+// It resolves no other credential, though optionalActor would resolve any: none other can be
+// read-only and undecided here, and resolving one would change the rows that take no credential
+// (GET /api/v1, GET /api/v1/schema/blocks), which never resolve their caller. A sign-in is read
+// from the store, and some sign-ins record their person (Deps.Identity); the shared token and a
+// service-account token name their caller on the access-log line, and the second is verified.
+func (s *server) resolvePersonalToken(r *http.Request) *http.Request {
+	if _, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); decided || s.deps.Store == nil {
+		return r
+	}
+	if presented, _ := s.credentialOf(r); presented != credentialPersonalToken {
+		return r
 	}
 	actor, human, err := s.optionalActor(r)
-	caller := resolvedCaller{actor: actor, human: human, err: err}
-	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, caller)), caller
-}
-
-// presentsPersonalToken answers whether optionalActor resolves r's credential as a personal token
-// (personalTokenActor): a bearer that is not empty, not the deployment's shared token and, where
-// service-account tokens are verified, not a JWT, on a request that presents no broker-issued
-// token. It reads the request's headers and nothing else, in optionalActor's order.
-func (s *server) presentsPersonalToken(r *http.Request) bool {
-	if _, presented := brokertoken.Presented(r); presented {
-		return false
-	}
-	token, present := auth.BearerToken(r)
-	if !present || token == "" || auth.MatchesSharedAgentToken(r, token, s.deps.AgentTokens) {
-		return false
-	}
-	return s.deps.OIDC == nil || !oidc.LooksLikeJWT(token)
+	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human, err: err}))
 }
 
 // asOfGate is the one place a request's as_of query parameter is read: register wraps every row
@@ -1595,8 +1673,8 @@ func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) h
 	answers := entry.AsOf == asOfAnswers
 	notServed := asOfParameter + ": " + name + " holds no history; it answers the present only"
 	return func(w http.ResponseWriter, r *http.Request) {
-		caller, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
-		if credential := caller.readOnlyCredential(); credential != nil && !credential.Cut.IsZero() {
+		_, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
+		if credential := readOnlyCredential(r.Context()); credential != nil && !credential.Cut.IsZero() {
 			if answers {
 				serveAtCut(w, r, name, asof.CutAt(credential.Cut), next)
 				return

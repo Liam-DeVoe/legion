@@ -87,12 +87,13 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 	}
 }
 
-// TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon holds the fill to R3's bound where
-// nothing announces the moment the horizon moves: with the fill caught up, a transaction that
-// holds a transaction id and writes no event stays open while three events commit, so the horizon
-// stands below them, and then ends with no notification. The fill reads the horizon again on its
-// own, 1 s and then up to 8 s apart, and the three events have their rows within 60 s of the
-// moment Horizon.Await answers an id at or above them: under the fill's hold, and with no holder.
+// TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon holds the fill to 60 s from the moment
+// the horizon passes an event to the event's rows, where nothing announces the moment the horizon
+// moves: with the fill caught up, a transaction that holds a transaction id and writes no event
+// stays open while three events commit, so the horizon stands below them, and then ends with no
+// notification. The fill reads the horizon again on its own, 1 s and then up to 8 s apart, and
+// the three events have their rows within 60 s of the moment Horizon.Await answers an id at or
+// above them: under the fill's hold, and with no holder.
 func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 	for _, held := range []bool{true, false} {
 		name := "under its hold"
@@ -109,7 +110,7 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 			holder := uuid.Nil
 			if held {
 				holder = takeFillHold(t, database)
-				fill.holder, fill.holdName = holder, fillHoldName
+				fill.holder = holder
 			}
 			ctx := t.Context()
 			commitComment(t, database, broker, theIssue)
@@ -278,13 +279,13 @@ func TestAFillThatLostItsHoldWritesNothing(t *testing.T) {
 	}
 	ctx := t.Context()
 	holder := uuid.New()
-	hold, err := duty.TryHold(ctx, database.Pool, fillHoldName, holder, fillHoldOptions)
+	hold, err := duty.TryHold(ctx, database.Pool, fillHoldName, holder, holdOptions)
 	if err != nil || hold == nil {
 		t.Fatalf("take the fill's hold: %v, %v", hold, err)
 	}
 	t.Cleanup(func() { _ = hold.Release(context.Background()) })
 	fill := testFiller(database, events.NewHorizon(database.Pool), io.Discard)
-	fill.holder, fill.holdName, fill.maxEvents = holder, fillHoldName, 14
+	fill.holder, fill.maxEvents = holder, 14
 	var afterFirst cursorRow
 	var rowsAfterFirst int
 	fill.rest = func(ctx context.Context, _ time.Duration) error {
@@ -294,7 +295,7 @@ func TestAFillThatLostItsHoldWritesNothing(t *testing.T) {
 		if err := hold.Lapse(ctx); err != nil {
 			t.Fatalf("let the fill's hold lapse: %v", err)
 		}
-		taken, err := duty.TryHold(ctx, database.Pool, fillHoldName, uuid.New(), fillHoldOptions)
+		taken, err := duty.TryHold(ctx, database.Pool, fillHoldName, uuid.New(), holdOptions)
 		if err != nil || taken == nil {
 			t.Fatalf("another holder takes the lapsed hold: %v, %v", taken, err)
 		}
@@ -355,15 +356,12 @@ func TestAFillStopsAtAnEventItsRulesCannotRead(t *testing.T) {
 	}
 }
 
-// fillHoldOptions are the fill hold's TTL, renewal and margin: those of the delivery intakes.
-var fillHoldOptions = duty.HoldOptions{TTL: 15 * time.Second, Renew: 5 * time.Second, Margin: 2 * time.Second}
-
 // takeFillHold takes the fill's hold for a new holder, released once the test ends, and answers
 // the holder.
 func takeFillHold(t *testing.T, database *store.Store) uuid.UUID {
 	t.Helper()
 	holder := uuid.New()
-	hold, err := duty.TryHold(t.Context(), database.Pool, fillHoldName, holder, fillHoldOptions)
+	hold, err := duty.TryHold(t.Context(), database.Pool, fillHoldName, holder, holdOptions)
 	if err != nil || hold == nil {
 		t.Fatalf("take the fill's hold: %v, %v", hold, err)
 	}
@@ -662,16 +660,9 @@ func readCursorRow(t *testing.T, database *store.Store) cursorRow {
 	return row
 }
 
-// The messages of the fill's lines the tests read.
-const (
-	batchMessage = "dispatch: the keyword fill wrote a batch"
-	resetMessage = "dispatch: the event log was reset under the keyword fill's cursor; the fill emptied its table and starts again from the first event"
-)
-
 // logLine is what the tests read of one line a fill logged.
 type logLine struct {
 	Msg    string `json:"msg"`
-	Events int    `json:"events"`
 	First  int64  `json:"first_event"`
 	Cursor int64  `json:"cursor"`
 }

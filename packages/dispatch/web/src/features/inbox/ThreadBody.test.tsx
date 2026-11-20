@@ -289,27 +289,34 @@ test("a comment thread's card draws the quote it is anchored to and the thread w
   expect(turns[1]?.hasAttribute("data-inbox-thread-unread")).toBe(true);
 });
 
+// Only a message on an issue takes an edit or a delete (409 NOT_AN_ISSUE_MESSAGE), so the thread
+// is an issue's message conversation: an Agent thread's messages are on no issue.
 test("an inbox thread marks an edited message and reads a deleted one as deleted", async () => {
-  spy("listAgents", [session]);
-  spy("listAgentMessages", [
+  spy("getIssue", { closed_at: null } as unknown as IssueDetails);
+  const onIssue = { issue_key: "CORE-1", target: null };
+  spy("listIssueMessages", [
     {
       message: message("message-1", "Have a look at the build", {
+        ...onIssue,
         edited_at: "2026-10-12T00:30:00Z",
       }),
       replies: [
         message("reply-1", "", {
-          author: { id: "planner", kind: "session" },
+          ...onIssue,
+          author: { id: "bob", kind: "user" },
           created_at: "2026-10-12T01:00:00Z",
           deleted_at: "2026-10-12T01:05:00Z",
-          deleted_by: { id: "planner", kind: "session" },
+          deleted_by: { id: "bob", kind: "user" },
           in_reply_to: "message-1",
         }),
       ],
     } satisfies MessageRead,
   ]);
-  renderCard(plannerAgentRow());
+  renderCard(
+    commentRow({ kind: "message", ref: "/issues/CORE-1?message=message-1", thread_id: "message-1" })
+  );
 
-  const body = await screen.findByTestId("inbox-thread-agent");
+  const body = await screen.findByTestId("inbox-thread-message");
   await waitFor(() => expect(body.textContent).toContain("Have a look at the build"));
   const turns = [...body.querySelectorAll("[data-inbox-thread-turn]")];
   expect(turns[0]?.textContent).toContain("edited");
@@ -387,74 +394,6 @@ test("a comment thread whose root is deleted draws no box, and keeps the reply t
       send: false,
     },
     discarded: false,
-  });
-});
-
-// A message its author deleted takes no reply (409 POST_DELETED), so an Agent card's box answers
-// the newest message of its thread that still stands, and its Send goes there. A thread none of
-// whose messages stands draws no box, as a comment thread draws none under a deleted root, and a
-// reply the reader typed in the box before the deletes is drawn itself, with Discard my draft.
-test("an Agent card's box answers the newest message that still stands, and a thread with none draws no box", async () => {
-  const user = userEvent.setup();
-  spy("listAgents", [session]);
-  const planner = { id: "planner", kind: "session" } as const;
-  const deletedBy = (author: Message["author"]) => ({
-    deleted_at: "2026-10-12T03:00:00Z",
-    deleted_by: author,
-  });
-  const answer = message("reply-1", "Looked at it.", {
-    author: planner,
-    created_at: "2026-10-12T01:00:00Z",
-    in_reply_to: "message-1",
-  });
-  const followUp = message("reply-2", "", {
-    ...deletedBy(planner),
-    author: planner,
-    created_at: "2026-10-12T02:00:00Z",
-    in_reply_to: "reply-1",
-  });
-  const list = spyOn(api, "listAgentMessages").mockResolvedValue([
-    { message: message("message-1", "Have a look at the build"), replies: [answer, followUp] },
-  ]);
-  restores.push(list);
-  const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
-    async (_session, input) => message("sent", input.body)
-  );
-  restores.push(createAgentMessage);
-  const client = renderCard(plannerAgentRow());
-  const card = await screen.findByTestId("inbox-thread-agent");
-  const field = () => within(card).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-
-  await user.click(await within(card).findByRole("textbox", { name: "Comment" }));
-  await user.paste("Ship it.");
-  await user.click(within(card).getByRole("button", { name: "Send" }));
-  await waitFor(() => expect(createAgentMessage).toHaveBeenCalledTimes(1));
-  await waitFor(() => expect(field().value).toBe(""));
-  const typed = "Raise it to five.";
-  await user.click(field());
-  await user.paste(typed);
-
-  list.mockResolvedValue([
-    {
-      message: message("message-1", "", deletedBy({ id: "alice", kind: "user" })),
-      replies: [{ ...answer, ...deletedBy(planner), body: "" }, followUp],
-    },
-  ]);
-  await act(() => client.invalidateQueries());
-  await waitFor(() => expect(card.querySelector("[data-inbox-agent-composer]")).toBeNull());
-  expect({
-    box: within(card).queryByRole("textbox", { name: "Comment" }) !== null,
-    lines: within(card)
-      .queryAllByRole("status")
-      .map((status) => status.textContent ?? "")
-      .filter((text) => text.includes(typed)),
-    sent: createAgentMessage.mock.calls.map(([sessionId, input]) => [sessionId, input.in_reply_to]),
-  }).toEqual({
-    box: false,
-    lines: [
-      `The message by Planner that your reply answered was deleted, so it takes no reply. Your reply is kept here:${typed}`,
-    ],
-    sent: [["planner", "reply-1"]],
   });
 });
 

@@ -658,7 +658,10 @@ func main() {
 	if discovered.GoogleIdentities != nil {
 		googleCallers = api.GoogleTokens{Verifier: discovered.GoogleIdentities}
 	}
-	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate,
+	// detached counts the rereads the API runs after answering 202, which srv.Shutdown does not
+	// wait for; the stop sequence waits for them (brokerStop.WaitDetached).
+	detached := &api.Detached{}
+	api.Register(mux, api.Deps{PublicURL: cfg.PublicURL, RereadRate: rereadRate, Detached: detached,
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
@@ -807,7 +810,7 @@ func main() {
 	}
 	stop(context.Background(), brokerStop{
 		Drain: drain, DrainNow: drainNow, Draining: draining.Store,
-		Shutdown: srv.Shutdown, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
+		Shutdown: srv.Shutdown, WaitDetached: detached.Wait, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
 		EndServing: started.EndServing, CloseStore: st.Close,
 		Log: slog.Default(),
 	})
@@ -1432,9 +1435,9 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 // together. Both trades that mint one come through here — a machine's own, which carries its
 // fleet's service and no person, and a person's sign-in on such a machine, which carries that
 // person as its operator — so there is one way a credential is minted and not two. A key
-// another live credential holds, and a key a live read token is bound to
-// (enroll.ErrKeyBindsReadToken), is oauth.ErrMachineKeyTaken, which the exchange answers
-// invalid_grant.
+// another live credential holds is oauth.ErrMachineKeyTaken, and a key a live read token is bound
+// to (enroll.ErrKeyBindsReadToken) is oauth.ErrMachineKeyBindsReadToken; the exchange answers
+// each invalid_grant with a hint of its own.
 func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
 	return func(ctx context.Context, cred oauth.MachineCredential) (string, error) {
 		tx, ok := oauthstore.TxFrom(ctx)
@@ -1453,6 +1456,9 @@ func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
 		})
 		if enroll.KeyHeld(err) {
 			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
+		}
+		if errors.Is(err, enroll.ErrKeyBindsReadToken) {
+			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyBindsReadToken, err)
 		}
 		if err != nil {
 			return "", err

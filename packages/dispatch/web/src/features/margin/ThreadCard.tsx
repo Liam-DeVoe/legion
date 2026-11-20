@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import type { Suggestion } from "../../api/types";
 import { Pill } from "../../components/Pill";
 import { QueryError } from "../../components/QueryError";
+import { useCopyFeedback } from "../../hooks/useCopyFeedback";
 import {
   borderDefault,
   calloutDangerBorder,
@@ -30,7 +31,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useHeldSend, useHeldSends, useHeldSendsUnder } from "../conversation/held-sends";
-import { DraftOffer, KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
+import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { KeptReply } from "../conversation/KeptReply";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
@@ -279,10 +280,13 @@ function CommentBody({
 /**
  * The edit the reader kept for a comment its author has since deleted. Dispatch saves no edit of
  * a deleted post (`409 POST_DELETED`), so the card opens no editor over one (`editing`): the
- * comment reads as deleted where its body was, never as an empty field or the words it had, and
- * the edit waits under it as the reader's own - a save Dispatch refused or the reader stopped, or
- * what the editor held as the delete came, which it kept for the comment as it went
- * (`useKeptDrafts`' `awayName`) - with Discard my edit, which drops it where it is kept. Nothing
+ * comment reads as deleted where its body was, never as an empty field or the words it had. The
+ * edit waits as the reader's own - a save Dispatch refused or the reader stopped, or what the
+ * editor held as the delete came, which it kept for the comment as it went (`useKeptDrafts`'
+ * `awayName`) - and the card says it is kept in this browser, drawing none of its words: an edit
+ * is mostly the words of the comment it was written over, and the delete took those off every
+ * surface (INFRA-1523, R3). Copy my edit puts the whole edit on the clipboard, and a copy the
+ * browser refuses says so and keeps the edit; Discard my edit drops it where it is kept. Nothing
  * is saved meanwhile, and a save still out draws nothing until Dispatch answers it.
  */
 function DeletedCommentEdit({ commentId }: { commentId: string }): ReactNode {
@@ -290,6 +294,7 @@ function DeletedCommentEdit({ commentId }: { commentId: string }): ReactNode {
   const store = useHeldSends();
   const held = useHeldSend(mutationKey);
   const unsent = useUnsentDrafts();
+  const { copy, status } = useCopyFeedback();
   const name = composerNameOf(mutationKey);
   // An edit's address is the comment its send name names, so its draft is kept for no reply and
   // no words of a document.
@@ -300,18 +305,38 @@ function DeletedCommentEdit({ commentId }: { commentId: string }): ReactNode {
   const draft = refused?.draft.draft ?? (held === undefined ? kept?.draft : undefined);
   if (draft === undefined) return null;
   return (
-    <div className="mt-2">
-      <DraftOffer
-        body={draft.body}
-        drop={{
-          label: "Discard my edit",
-          press: () => {
+    <div className="mt-2 space-y-2">
+      <div className={`space-y-1 text-sm ${textMutedOnSurfaceMuted}`} role="status">
+        <p>
+          This comment was deleted, and Dispatch saves no edit of a deleted comment. Your unsaved
+          edit is kept in this browser.
+        </p>
+        {status === "copied" ? <p>Your edit is copied.</p> : null}
+        {typeof status === "object" ? (
+          <p className={dangerText}>
+            Your edit was not copied: this browser refused the clipboard. It is still kept here.
+          </p>
+        ) : null}
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <button
+          className={`text-sm font-medium ${linkText} ${linkHoverText}`}
+          onClick={() => copy(draft.body)}
+          type="button"
+        >
+          Copy my edit
+        </button>
+        <button
+          className={`text-sm font-medium underline ${dangerText}`}
+          onClick={() => {
             if (refused !== undefined) store.discard(mutationKey);
             else unsent.forgetAway(name, { anchor: undefined, replyTo: null });
-          },
-        }}
-        lead="This comment was deleted, and Dispatch saves no edit of a deleted comment. Your edit is kept here:"
-      />
+          }}
+          type="button"
+        >
+          Discard my edit
+        </button>
+      </div>
     </div>
   );
 }

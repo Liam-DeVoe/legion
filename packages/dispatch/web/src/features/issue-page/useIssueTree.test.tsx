@@ -21,11 +21,13 @@ import type {
   IssueDetails,
   ReferenceTarget,
 } from "../../api/types";
+import type { PostDeletion } from "../refs/post-marks";
 import type { TreeNode } from "./issue-tree";
 import { NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import {
   ReferenceNamesProvider,
   useKnownAmbiguousReferences,
+  useKnownDeletedReferences,
   useKnownEditedReferences,
   useKnownReferenceName,
   useKnownReferenceNames,
@@ -571,10 +573,62 @@ test("the page publishes an edited post a comment cites by its words, among the 
   }
 });
 
-/** What one surface publishes: the names it read, the references it read as ambiguous, and the
- *  references among the names it read edited, none where absent. */
+// R3 of dispatch://INFRA-1523, and INFRA-1196's decision 342: the page publishes a deleted post a
+// comment cites by its deleted line, and the post among the deleted references by its delete, so
+// a row's words draw the line with its actor named as the page names an author.
+test("the page publishes a deleted post a comment cites by its deleted line, among the deleted references", async () => {
+  const cited = `dispatch://${KEY}/comment/c0ffee00`;
+  const deletion = { at: "2026-11-05T02:00:00Z", by: { id: "alice", kind: "user" } };
+  const stubs = stubTreeReads(
+    async (refs) => ({
+      targets: namedTargets(refs).targets.map(
+        (target): ReferenceTarget =>
+          target.ref === cited
+            ? {
+                ...target,
+                deleted_at: deletion.at,
+                deleted_by: deletion.by,
+                kind: "comment",
+                name: "",
+              }
+            : target
+      ),
+    }),
+    { comments: [{ ...comment, body: `Read ${cited} first.` }] }
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>
+      <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+    </QueryClientProvider>
+  );
+  try {
+    const view = renderHook(
+      () => {
+        useIssueTree(issue);
+        return {
+          deleted: useKnownDeletedReferences(),
+          name: useKnownReferenceName(cited),
+          task: useKnownReferenceName(TASK_REF),
+        };
+      },
+      { wrapper }
+    );
+    await waitFor(() => expect([...view.result.current.deleted]).toEqual([[cited, deletion]]));
+    expect(view.result.current.name).toBe("Deleted by alice");
+    // A target nobody deleted is published by its name and left out of the map.
+    expect(view.result.current.task).toBe(NODE_TYPE_NAMES.plan_task);
+    view.unmount();
+  } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+/** What one surface publishes: the names it read, the references it read as ambiguous, the
+ *  references among the names it read edited, and those it read deleted, none where absent. */
 interface Published {
   readonly ambiguous: ReadonlySet<string>;
+  readonly deleted?: ReadonlyMap<string, PostDeletion>;
   readonly edited?: ReadonlySet<string>;
   readonly names: ReadonlyMap<string, string>;
 }
@@ -582,19 +636,26 @@ interface Published {
 /** What a link under the provider read on its latest render. */
 interface Seen {
   ambiguous?: ReadonlySet<string>;
+  deleted?: ReadonlyMap<string, PostDeletion>;
   edited?: ReadonlySet<string>;
   names?: ReadonlyMap<string, string>;
 }
 
 /** A surface that publishes `published` for as long as it is mounted. */
 function Publisher({ published }: { readonly published: Published }): ReactNode {
-  usePublishReferenceNames(published.names, published.ambiguous, published.edited);
+  usePublishReferenceNames(
+    published.names,
+    published.ambiguous,
+    published.edited,
+    published.deleted
+  );
   return null;
 }
 
 /** A link under the provider, which writes what it reads into `seen` on every render. */
 function Reader({ seen }: { readonly seen: Seen }): ReactNode {
   seen.ambiguous = useKnownAmbiguousReferences();
+  seen.deleted = useKnownDeletedReferences();
   seen.edited = useKnownEditedReferences();
   seen.names = useKnownReferenceNames();
   return null;
@@ -702,6 +763,55 @@ test("the edited mark a link reads is the one of the publisher whose name stands
 
   view.rerender(surfaces({ page: false, sheet: false }));
   expect(seen.edited).toEqual(new Set());
+  view.unmount();
+});
+
+// A name and its delete come from one read, as a name and its edit mark do. Where two surfaces
+// name one post, the delete of the one whose name stands - the last to publish - stands with it:
+// the page read a comment standing, and the sheet, publishing after it, read it deleted, so a
+// row's words draw the sheet's deleted line from its delete. A post the sheet named standing,
+// which the page read deleted before, is read standing. Once the sheet closes, the page's names
+// and its own map stand again.
+test("the delete a link reads is the one of the publisher whose name stands", () => {
+  const deleted = `dispatch://${KEY}/comment/c0ffee00`;
+  const restored = `dispatch://${KEY}/comment/c0ffee01`;
+  const deletion = { at: "2026-11-05T02:00:00Z", by: { id: "alice", kind: "user" } };
+  const page: Published = {
+    ambiguous: new Set(),
+    deleted: new Map([[restored, deletion]]),
+    names: new Map([
+      [deleted, "Hold the deploy."],
+      [restored, "Deleted by alice"],
+    ]),
+  };
+  const sheet: Published = {
+    ambiguous: new Set(),
+    deleted: new Map([[deleted, deletion]]),
+    names: new Map([
+      [deleted, "Deleted by alice"],
+      [restored, "Ship it."],
+    ]),
+  };
+  const seen: Seen = {};
+  const surfaces = (mounted: { readonly page: boolean; readonly sheet: boolean }) => (
+    <ReferenceNamesProvider>
+      {mounted.page && <Publisher published={page} />}
+      {mounted.sheet && <Publisher published={sheet} />}
+      <Reader seen={seen} />
+    </ReferenceNamesProvider>
+  );
+
+  const view = render(surfaces({ page: true, sheet: true }));
+  expect(seen.names?.get(deleted)).toBe("Deleted by alice");
+  expect(seen.deleted).toEqual(new Map([[deleted, deletion]]));
+
+  // The sheet closes: the page's own map stands, as it published it.
+  view.rerender(surfaces({ page: true, sheet: false }));
+  expect(seen.names?.get(deleted)).toBe("Hold the deploy.");
+  expect(seen.deleted).toBe(page.deleted);
+
+  view.rerender(surfaces({ page: false, sheet: false }));
+  expect(seen.deleted).toEqual(new Map());
   view.unmount();
 });
 

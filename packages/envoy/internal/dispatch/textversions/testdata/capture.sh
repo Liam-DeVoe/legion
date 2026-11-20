@@ -20,18 +20,19 @@
 # asof/testdata/capture.sh uses too; its header says what they keep and what they replace.
 set -euo pipefail
 
-# The event types that can start a version of an item's searchable text (rules version 1).
-fill_types="issue.created issue.updated issue.closed artifact.version comment.created comment.answered comment.edited message.created message.answered ask.opened ask.edited ask.answered"
+# The event types that can start a version of an item's searchable text (rules version 2).
+fill_types="issue.created issue.updated issue.closed artifact.version comment.created comment.answered comment.edited comment.deleted message.created message.answered message.edited message.deleted ask.opened ask.edited ask.answered"
 
 # expected reads the version a redacted event starts as the first event of its item: its kind
-# and id, its issue, its text (an issue's title, a post's body, an ask's question), an ask's
-# options and answer, the issue's primary document and its version, and whether the event cut
-# the body, each as the event carries it and null where it carries none. An issue.created's
-# version holds version 1 of the issue's primary document, which the create writes and which
-# gets no event of its own; an artifact.version's is the version it names, of the issue its
-# envelope names. Read in Go, a body_truncated of null is false. It is null for an event that
-# starts no version: an artifact.version of no issue (a project's document, never an issue's
-# primary one) and a message of no issue, which the keyword table leaves out.
+# and id, its issue, its text (an issue's title, a post's body, an ask's question, and empty text
+# for the delete of a post, whose event carries no body), an ask's options and answer, the
+# issue's primary document and its version, and whether the event cut the body, each as the
+# event carries it and null where it carries none. An issue.created's version holds version 1 of
+# the issue's primary document, which the create writes and which gets no event of its own; an
+# artifact.version's is the version it names, of the issue its envelope names. Read in Go, a
+# body_truncated of null is false. It is null for an event that starts no version: an
+# artifact.version of no issue (a project's document, never an issue's primary one) and a message
+# of no issue, which the keyword table leaves out.
 read -r -d '' expected <<'JQ' || true
 .type as $type | .payload as $p
 | if $type == "issue.created" or $type == "issue.updated" or $type == "issue.closed" then
@@ -44,6 +45,10 @@ read -r -d '' expected <<'JQ' || true
   elif $type == "artifact.version" then
     {kind: "issue", id: .issue_key, issue_key: .issue_key, title_or_body: null, options: null,
      answer: null, spec_artifact_id: $p.artifact_id, spec_version: $p.version.number,
+     body_truncated: null}
+  elif $type == "comment.deleted" or $type == "message.deleted" then
+    {kind: ($type | split(".")[0]), id: $p.id, issue_key: $p.issue_key, title_or_body: "",
+     options: null, answer: null, spec_artifact_id: null, spec_version: null,
      body_truncated: null}
   elif ($type | startswith("comment.")) or ($type | startswith("message.")) then
     {kind: ($type | split(".")[0]), id: $p.id, issue_key: $p.issue_key, title_or_body: $p.body,

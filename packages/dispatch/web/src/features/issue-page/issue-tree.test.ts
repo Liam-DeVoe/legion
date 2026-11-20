@@ -2150,6 +2150,50 @@ test("a chip naming a deleted comment or message draws the deleted line and carr
   }
 });
 
+// R3 of dispatch://INFRA-1523, and INFRA-1196's decision 342: beside the deleted line it publishes
+// as a deleted post's name, the page publishes the delete itself (`targetNaming`'s `deleted`), so
+// a row's words draw that line with its actor named as the page names an author, where the name
+// holds the actor as no registry knows it. A post that stands is not among them, and neither is
+// a block of a deleted post, which is gone and named by nothing.
+test("the page publishes a deleted comment or message by its delete, and no post that stands", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const deletion = { at: "2026-11-05T12:00:00Z", by: { id: "alice", kind: "user" } };
+  for (const kind of ["comment", "message"] as const) {
+    const ref = `dispatch://${KEY}/${kind}/${kind}-9`;
+    const block = `${ref}#b-p1`;
+    const standing = `dispatch://${KEY}/${kind}/${kind}-8`;
+    const reads = {
+      decisions: decisions([
+        {
+          ...decision("d1", "Keep it.", []),
+          links: [linkTo(ref, kind), linkTo(block, "block"), linkTo(standing, kind)],
+        },
+      ]),
+      issue: issueDetails([spec, made]),
+      targets: [
+        { deleted_at: deletion.at, deleted_by: deletion.by, gone: false, kind, name: "", ref },
+        {
+          deleted_at: deletion.at,
+          deleted_by: deletion.by,
+          gone: true,
+          kind: "block",
+          name: "",
+          ref: block,
+        },
+        { gone: false, kind, name: "Ship it.", ref: standing },
+      ],
+    };
+
+    const naming = targetNaming(reads);
+    expect([...naming.names], kind).toEqual([
+      [ref, "Deleted by alice"],
+      [standing, "Ship it."],
+    ]);
+    expect([...naming.deleted], kind).toEqual([[ref, deletion]]);
+  }
+});
+
 // R2 of dispatch://INFRA-1523: a chip naming a comment or a message its author edited, or a
 // block of one, is named by its words alone and carries when it was edited; the page publishes
 // those words as its name and the reference among the edited ones, so a link cuts the words to

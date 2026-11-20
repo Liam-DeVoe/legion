@@ -15,16 +15,18 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent (check c-reach, case a): transaction A
-// writes an event and stays open while B's later event commits. The horizon stands below A's
-// event, so a pass of the fill writes neither, and the reach it stores and the reach a read
-// computes stay before A's start; once A commits and before the fill writes its event they still
-// do. Once the fill runs, the reach passes both starts and both events have their rows.
+// TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent holds the reach before the start of a
+// transaction that wrote an event and is still open: transaction A writes an event and stays open
+// while B's later event commits. The horizon stands below A's event, so a pass of the fill writes
+// neither, and the reach it stores and the reach a read computes stay before A's start; once A
+// commits and before the fill writes its event they still do. Once the fill runs, the reach passes
+// both starts and both events have their rows.
 func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
 	a, aStart := beginTransaction(t, database)
 	defer a.Rollback(context.Background())
+	pastTheMargin(t, database, aStart)
 	aEvent := appendCommentEvent(t, a, broker, "comment.created", uuid.NewString(), "The audit starts on Tuesday.", aStart)
 	b := commitComment(t, database, broker, otherIssue)
 	if _, err := fill.pass(ctx); err != nil {
@@ -45,17 +47,19 @@ func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
 	awaitReachPast(t, database, aStart, b.startedAt)
 }
 
-// TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing (check c-reach, case b):
-// transaction A begins and has written nothing while B's event commits, and the fill writes B's
-// event, which the horizon passes since A holds no transaction id. The reach stays before A's
-// start all the same, since A can still write an event that carries it; once A writes one and
-// commits, and before the fill writes it, the reach still does. Once the fill runs, the reach
-// passes both starts and both events have their rows.
+// TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing holds the reach before the start
+// of an open transaction that has written no event yet: transaction A begins and has written
+// nothing while B's event commits, and the fill writes B's event, which the horizon passes since
+// A holds no transaction id. The reach stays before A's start all the same, since A can still
+// write an event that carries it; once A writes one and commits, and before the fill writes it,
+// the reach still does. Once the fill runs, the reach passes both starts and both events have
+// their rows.
 func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T) {
 	database, broker, fill := reachFixture(t)
 	ctx := t.Context()
 	a, aStart := beginTransaction(t, database)
 	defer a.Rollback(context.Background())
+	pastTheMargin(t, database, aStart)
 	b := commitComment(t, database, broker, otherIssue)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill while A is open: %v", err)
@@ -74,7 +78,8 @@ func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T)
 	awaitReachPast(t, database, aStart, b.startedAt)
 }
 
-// TestTheReachStaysBeforeACommittedEventTheFillHasNotWritten (check c-reach, case c): A begins
+// TestTheReachStaysBeforeACommittedEventTheFillHasNotWritten holds the reach before the start of a
+// committed event the fill has not written, though the cursor stands past a later one: A begins
 // first and B second, B's event commits, and then A's, which draws the later id and carries the
 // earlier start. A batch up to the horizon a pass read before A committed writes B's event and
 // not A's, so the cursor stands past an event whose start is later than A's; the reach it stores
@@ -85,6 +90,7 @@ func TestTheReachStaysBeforeACommittedEventTheFillHasNotWritten(t *testing.T) {
 	ctx := t.Context()
 	a, aStart := beginTransaction(t, database)
 	defer a.Rollback(context.Background())
+	pastTheMargin(t, database, aStart)
 	b := commitComment(t, database, broker, otherIssue)
 	safe, err := fill.horizon.Await(ctx)
 	if err != nil {
@@ -145,6 +151,7 @@ func TestTheReachStaysBeforeANoInheritMembersOpenTransaction(t *testing.T) {
 	member := storeAs(t, database, login, password)
 	held, heldStart := beginTransaction(t, member)
 	defer held.Rollback(context.Background())
+	pastTheMargin(t, database, heldStart)
 	b := commitComment(t, database, broker, otherIssue)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill while the member's transaction is open: %v", err)
@@ -242,6 +249,26 @@ func reachFixture(t *testing.T) (*store.Store, *events.Broker, *filler) {
 		t.Fatalf("catch the fill up: %v", err)
 	}
 	return database, broker, fill
+}
+
+// pastTheMargin waits until the database's clock is more than a second past start. A reach is
+// never later than T0 - 1 s (store.ComputeTextVersionsReach), so a reach read within a second of
+// start stays before it whatever the computation reads; past that margin only start's own
+// transaction, or an event that carries it, holds the reach before start, which is what the
+// reach tests prove.
+func pastTheMargin(t *testing.T, database *store.Store, start time.Time) {
+	t.Helper()
+	past := start.Add(time.Second + 100*time.Millisecond)
+	for {
+		var now time.Time
+		if err := database.Pool.QueryRow(t.Context(), `select clock_timestamp()`).Scan(&now); err != nil {
+			t.Fatalf("read the database's clock: %v", err)
+		}
+		if now.After(past) {
+			return
+		}
+		time.Sleep(past.Sub(now))
+	}
 }
 
 // requireReachBefore holds the reach the fill stored, and the reach a read computes now

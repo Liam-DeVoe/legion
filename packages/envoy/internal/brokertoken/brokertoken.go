@@ -497,35 +497,36 @@ const (
 // ProjectScopeNone, a Scope that is the one word ScopeRead, a service, no person, no projects and
 // no cut, and oauthwire.ProjectScopeReadNone is held to the same but may carry a cut. A token of
 // oauthwire.ProjectScopeReadNamed or oauthwire.ProjectScopeReadPerson holds the one word
-// ScopeRead, and a read-person token that names its person may hold ScopeRead and then
-// oauthwire.ScopePerson, the order the broker grants them in; sessionCaller holds its projects
-// to its base word's rules. An answer carrying none or a narrowed word in any other shape is no
-// session's token, and so is one whose Scope holds the word read, or that names a cut, beside the
-// project scope named or person, and one that names a cut beside none: no broker mints any of
-// them, since a cut needs a trade that asks for read, which mints a narrowed word, and read
-// beside a project scope that writes would let a token meant to read write.
+// ScopeRead, and a read-person token that names its person may hold ScopeRead and
+// oauthwire.ScopePerson; sessionCaller holds its projects to its base word's rules. An answer
+// carrying none or a narrowed word in any other shape is no session's token, and so is one whose
+// Scope holds the word read, or that names a cut, beside the project scope named or person, and
+// one that names a cut beside none: no broker mints any of them, since a cut needs a trade that
+// asks for read, which mints a narrowed word, and read beside a project scope that writes would
+// let a token meant to read write.
 //
-// Scope is read as RFC 7662 spells it, words separated by spaces, one word at a time and with
-// no slice built of them, because this runs on every request a verifier decides, an answer
-// served from the cache included.
+// Scope is read as RFC 7662 spells it, words separated by spaces, and as the set of words RFC 6749
+// (section 3.3) makes it: the order of its words means nothing, so read person and person read
+// are one scope. A word named twice is no set the broker grants, and no read-only shape. It is
+// read one word at a time and with no slice built of them, because this runs on every request a
+// verifier decides, an answer served from the cache included.
 func shapeOf(answer Introspection) tokenShape {
-	// first and second are the scope's first two words, which a narrowed token's scope is read
-	// from: read alone, or read and then person.
-	words, read, first, second := 0, false, "", ""
+	// reads and persons count the two words a narrowed token's scope is made of, and other is any
+	// word besides them.
+	reads, persons, other := 0, 0, false
 	for word := range strings.FieldsSeq(answer.Scope) {
-		words++
-		if word == ScopeRead {
-			read = true
-		}
-		switch words {
-		case 1:
-			first = word
-		case 2:
-			second = word
+		switch word {
+		case ScopeRead:
+			reads++
+		case oauthwire.ScopePerson:
+			persons++
+		default:
+			other = true
 		}
 	}
-	readAlone := words == 1 && first == ScopeRead
-	readPerson := words == 2 && first == ScopeRead && second == oauthwire.ScopePerson
+	read := reads > 0
+	readAlone := reads == 1 && persons == 0 && !other
+	readPerson := reads == 1 && persons == 1 && !other
 	switch answer.ProjectScope {
 	case ProjectScopeNamed, ProjectScopePerson:
 		if read || answer.AsOf != "" {

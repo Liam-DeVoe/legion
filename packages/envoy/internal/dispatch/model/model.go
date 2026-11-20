@@ -80,14 +80,17 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// ReadOnly is a credential that may only read: a broker-issued token that holds the scope
-	// read (brokertoken.Caller.ReadOnly), which the secrets broker minted from a read entry or
-	// narrowed to reading because its trade asked for read. Dispatch answers it 403
-	// READ_ONLY_TOKEN on every route it does not serve such a token on (refuseReadOnlyToken),
+	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
+	// its verifier decided is read-only (brokertoken.Caller.ReadOnly), which the secrets broker
+	// minted from a read entry or narrowed to reading because its trade asked for read; and a
+	// read-only personal token, a row of agent_read_tokens, which a person made holding read
+	// alone or beside person (personalTokenActor in internal/dispatch/api). Dispatch answers it
+	// 403 READ_ONLY_TOKEN on every route it does not serve such a token on (refuseReadOnlyToken),
 	// before anything else the route does. The scope itself is not among Scopes: those are what a
 	// route can require of a credential, and read meets no route's requirement; it narrows what
 	// this credential may call rather than widening it. whoami lists it as ScopeRead after
-	// Scopes. False for every other credential.
+	// Scopes. False for every other credential: a cookie, the deployment's shared token, a
+	// service-account token, and a broker-issued or personal token that may write.
 	ReadOnly bool
 	// Cut is the past time a read-only credential reads at (brokertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
@@ -1354,7 +1357,8 @@ type ArtifactReviewEventPayload struct {
 
 // CheckBasisNamed, CheckBasisPullRequest and CheckBasisBranch are the kinds of thing a check's
 // results are compared with: the one commit a reader named in `at`, the head of a pull request
-// Dispatch holds for the check's issue, and a branch of the check's issue's repository.
+// Dispatch holds for the check's issue, and a branch of the check's issue's repository or, for
+// one result, of a repository the issue links a pull request in (CheckBasis.Repo).
 const (
 	CheckBasisNamed       = "named"
 	CheckBasisPullRequest = "pull_request"
@@ -1410,9 +1414,16 @@ const (
 
 // CheckBasis is one commit or branch a check's results are compared with. Commit is set for a
 // `named` and a `pull_request` basis, Branch for a `branch` one, and PullRequest is the number
-// of the pull request whose head the commit is.
+// of the pull request whose head the commit is. Repo is the `owner/repo` of a basis in a linked
+// repository, one the check's issue links a pull request in and does not resolve to: the head
+// of a pull request the issue links there, and a branch of it that a result whose commit is
+// that repository's stands at (CheckResult.CommitRepo). It is empty for every other basis,
+// which is of the repository the check's issue resolves to or is the commit a reader named, so
+// a reader can tell pull request #7 or branch main of the linked repository from those of the
+// issue's own.
 type CheckBasis struct {
 	Kind        string          `json:"kind" enum:"named,pull_request,branch"`
+	Repo        string          `json:"repo,omitempty"`
 	Commit      string          `json:"commit,omitempty"`
 	Branch      string          `json:"branch,omitempty"`
 	PullRequest *int            `json:"pull_request,omitempty"`
@@ -1439,11 +1450,17 @@ type CheckPassStands struct {
 // ResultCommitStands is where one result's commit stands against what its check compared with:
 // CommitAtBasis with the basis it matched, CommitOtherCommit, or CommitUnknown with the reason
 // (ReasonRepositoryUnreadable, ReasonReadFailed). It says nothing about the check's words,
-// which CheckResult.CheckWordsMoved answers on its own.
+// which CheckResult.CheckWordsMoved answers on its own. Repo is the `owner/repo` of the linked
+// repository an other_commit or unknown answer is about: the one the result's commit is taken to
+// be of (CheckResult.CommitRepo), one the check's issue links a pull request in and does not
+// resolve to, which decided the answer, so a reader names that repository and not the issue's
+// own. It is empty for every answer about the issue's own repository, and for at_basis, whose
+// basis names a linked repository itself (CheckBasis.Repo).
 type ResultCommitStands struct {
 	Answer string      `json:"answer" enum:"at_basis,other_commit,unknown"`
 	Basis  *CheckBasis `json:"basis,omitempty"`
 	Reason string      `json:"reason,omitempty" enum:"repository_unreadable,read_failed"`
+	Repo   string      `json:"repo,omitempty"`
 }
 
 // CheckResultRetracted is the retraction one result carries on a read of the results
@@ -1484,6 +1501,18 @@ type CheckResult struct {
 	Actor           Actor     `json:"actor"`
 	CreatedAt       time.Time `json:"created_at"`
 	EventSeq        *int64    `json:"event_seq,omitempty"`
+	// CommitRepo is the linked repository the record route took CommitSHA to be of
+	// (check_results.commit_repo), one the check's issue links a pull request in and does not
+	// resolve to: one with an open or merged linked pull request that GitHub said holds the
+	// commit, and no other. A linked read that did not answer, where no repository was shown to
+	// hold the commit, and a failed read of the issue's links store no row at all. It is nil for
+	// every other result: a commit of the issue's own repository, a commit whose read there did
+	// not answer and that no linked repository was shown to hold, and a result nothing was asked
+	// about. The results read compares a branch check's result with that repository's branches,
+	// reads a `before_merge` result's pull requests through it, and decides such a result by it
+	// where it is set, and names it in CommitStands.Repo where it decided an other_commit or
+	// unknown answer. It is no part of the wire shape.
+	CommitRepo *string `json:"-"`
 	// ObservedTree is the ProseMirror tree Observed is shown as, present only on the results read
 	// for a caller that sent `Dispatch-Trees: 1`.
 	ObservedTree DisplayTree `json:"observed_tree,omitempty"`
@@ -3229,6 +3258,23 @@ type CommentEventPayload struct {
 	// root), read in the write's own transaction (events.ThreadLogins). Absent on every other
 	// comment event.
 	ThreadLogins []string `json:"thread_logins,omitzero"`
+	// RenamedVersion is carried by comment.deleted alone, of a comment whose accepted suggestion
+	// named a document version after the comment's body: that version as the delete renamed it
+	// (api's renameAcceptedVersion), so a reader holding the document's versions gives it the name
+	// every read of them now gives. Its name quotes the suggestion's quote and replacement, the
+	// document's own text since the accept, and none of the comment's body. Absent on every other
+	// comment event, on a delete that renamed no version, and on an event a server older than the
+	// field wrote.
+	RenamedVersion *RenamedVersion `json:"renamed_version,omitempty"`
+}
+
+// RenamedVersion is a document version the delete of a comment renamed
+// (CommentEventPayload.RenamedVersion): its document, its number, and the name (Version.Summary)
+// the delete gave it.
+type RenamedVersion struct {
+	ArtifactID string `json:"artifact_id"`
+	Number     int    `json:"number"`
+	Summary    string `json:"summary"`
 }
 
 // Message is a short update, optionally linked to an issue and threaded under another message.
