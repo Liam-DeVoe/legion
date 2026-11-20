@@ -137,25 +137,45 @@ type projectResolver func(ctx context.Context, q queryer, r *http.Request) (stri
 // projectResolverFor is the resolver a route's address calls for, read from the shape of its
 // pattern, and whether the pattern names an object at all. Every row the table classes
 // scopeProject has one; undecidableWrites holds the table to that and register refuses to
-// mount a table that breaks it, so a mounted scopeProject row always resolves.
+// mount a table that breaks it, so a mounted scopeProject row always resolves. An issue, an ask,
+// a comment and a message the reviewer holds resolve to the project of the held text
+// (orHeldProject).
 func (s *server) projectResolverFor(pattern string) (projectResolver, bool) {
 	switch {
 	case addresses(pattern, "/api/v1/issues/{key}"):
-		return s.projectOfIssue, true
+		return orHeldProject(s.projectOfIssue, "key"), true
 	case addresses(pattern, "/api/v1/projects/{key}"):
 		return s.projectOfProject, true
 	case addresses(pattern, "/api/v1/artifacts/{id}"):
 		return s.projectOfArtifact, true
 	case addresses(pattern, "/api/v1/asks/{id}"):
-		return s.projectOfAsk, true
+		return orHeldProject(s.projectOfAsk, "id"), true
 	case addresses(pattern, "/api/v1/comments/{id}"):
-		return s.projectOfComment, true
+		return orHeldProject(s.projectOfComment, "id"), true
 	case addresses(pattern, "/api/v1/messages/{id}"):
-		return s.projectOfMessage, true
+		return orHeldProject(s.projectOfMessage, "id"), true
 	case addresses(pattern, "/api/v1/results/{id}"):
 		return s.projectOfCheckResult, true
 	}
 	return nil, false
+}
+
+// orHeldProject is resolve, falling back, for an address that resolves to no project, to the
+// project of the held text the path value param names that has not posted: no row of its own
+// table holds it yet, and a write that names it is kept beside it (awaitHeldTarget) or held
+// beside it (reviewWrite) to run in that project once it posts. Its post writes the row and marks
+// the held row posted in one transaction, so no id resolves both ways.
+func orHeldProject(resolve projectResolver, param string) projectResolver {
+	return func(ctx context.Context, q queryer, r *http.Request) (string, error) {
+		project, err := resolve(ctx, q, r)
+		if err != nil || project != "" {
+			return project, err
+		}
+		return scanProjectKey(q.QueryRow(ctx, `
+			select coalesce(project, '') from held_texts
+			where id = $1 and state in ('reviewing', 'awaiting_writer', 'posting') and kind <> 'decision_block'
+		`, r.PathValue(param)))
+	}
 }
 
 // addresses answers whether pattern addresses the object prefix names: that object itself, or

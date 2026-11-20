@@ -78,7 +78,7 @@ func TestEachBreakOfWhatARewriteKeepsIsNotApplied(t *testing.T) {
 	if got := Preserve(Record{Text: ask}, "", kept); got != nil {
 		t.Errorf("a rewrite that keeps every rule: %v", got)
 	}
-	// An option's id is the server's (optionWords), so Preserve weighs none: a rewrite, which
+	// An option's id is the server's (OptionWords), so Preserve weighs none: a rewrite, which
 	// writes no id, of an ask whose options carry the part ids a read shows keeps every rule.
 	read := pictureAsk()
 	read.Options[0].ID, read.Options[1].ID = "b-2", "b-3"

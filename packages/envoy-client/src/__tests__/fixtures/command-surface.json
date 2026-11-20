@@ -35,7 +35,8 @@
           "path": "/api/v1/projects/CORE/architecture-sources/acme/infra/sync",
           "headers": {
             "Accept": "application/json",
-            "Authorization": "Bearer secret"
+            "Authorization": "Bearer secret",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": null
         }
@@ -69,7 +70,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "markdown": "# Design\n"
@@ -81,7 +83,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -166,7 +169,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -213,7 +217,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -368,7 +373,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -473,7 +479,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -639,7 +646,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -710,7 +718,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -770,7 +779,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -837,7 +847,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -884,7 +895,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -976,7 +988,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1034,7 +1047,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1178,7 +1192,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1253,7 +1268,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1340,7 +1356,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1587,7 +1604,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "title": "Retry failed webhook deliveries"
@@ -1622,7 +1640,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1676,7 +1695,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1742,7 +1762,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1780,7 +1801,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {
@@ -1859,7 +1881,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "state": "approved"
@@ -1908,7 +1931,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "body": "DSP-1: the rota is nowhere written down. Please write it up.",
@@ -1987,7 +2011,8 @@
           "headers": {
             "Accept": "application/json",
             "Authorization": "Bearer secret",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "Dispatch-Accepts-Kept-Write": "1"
           },
           "body": {
             "actor": {

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,11 +10,12 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -28,7 +30,8 @@ import (
 // the hold reserved (heldPostFrom); and every other write that names a held text by its path (a
 // document, a result, a handoff, a claim or an update of a held issue; an edit, an answer or a
 // resolution of a held ask, comment or message), which is held beside that text and runs right
-// after it posts (awaitHeldTarget, Decision 4 of INFRA-3231's plan).
+// after it posts (awaitHeldTarget, Decision 4 of INFRA-3231's plan), for a client that reads the
+// answer such a write gets (contracts.AcceptsKeptWriteHeader).
 
 // heldCaller is the caller of a kept write: the actor optionalActor resolved, with the credential
 // it presented, and whether a person signed in at a browser made it. A replay presents it as the
@@ -144,18 +147,20 @@ func (a *replayAnswer) Write(b []byte) (int, error) {
 	return a.body.Write(b)
 }
 
-// replayRefusal is a replayed route's answer as an error: its own status, code and message.
+// refusal is a replayed route's answer as an error: its own status, code and message.
 func (a *replayAnswer) refusal() *apiError {
 	var body errorBody
 	_ = json.Unmarshal(a.body.Bytes(), &body)
-	return &apiError{status: a.status, code: cmpOr(body.Code, "HELD_REPLAY"), message: cmpOr(body.Error, strings.TrimSpace(a.body.String()))}
+	return &apiError{status: a.status, code: cmp.Or(body.Code, "HELD_REPLAY"), message: cmp.Or(body.Error, strings.TrimSpace(a.body.String()))}
 }
 
-func cmpOr(a, b string) string {
-	if a != "" {
-		return a
+// writeTo answers w with what the replayed route answered: its headers, its status and its body.
+func (a *replayAnswer) writeTo(w http.ResponseWriter) {
+	for key, values := range a.header {
+		w.Header()[key] = values
 	}
-	return b
+	w.WriteHeader(a.status)
+	_, _ = w.Write(a.body.Bytes())
 }
 
 // runReplay runs replay through the server's own routes as its caller, with held, the held text's
@@ -229,7 +234,10 @@ func (a *replayAnswer) isDryRunPass() bool {
 // decoded body, which holds body, the reply's text, and subject where it stands. A reply the
 // reviewer holds is kept whole and posts by running the reply route again under the id the hold
 // reserved; one it reviews after the post is reviewed once the handler committed it. A reply the
-// post of a held one runs again is reviewed already and recorded already, and goes on.
+// post of a held one runs again is reviewed already and recorded already, and goes on. A reply
+// held while the same writer's earlier reply to the same delivery is held waits on that one
+// (heldReplyBefore), so the two post in the order the writer wrote them, whichever review ends
+// first.
 func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model.Actor, input any, kind reviewer.Kind, body string, subject reviewer.Subject) (*postedReview, bool) {
 	if heldPostFrom(r.Context()) != nil {
 		return nil, true
@@ -281,10 +289,42 @@ func (s *server) reviewReply(w http.ResponseWriter, r *http.Request, actor model
 	}
 	write := replay.reviewed(kind)
 	write.subject.IssueKey = subject.IssueKey
+	parent, err := s.heldReplyBefore(ctx, method+" "+route, subject)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return nil, false
+	}
 	s.holdWrite(w, r, actor, write, heldWriteOf{
-		route: method + " " + route, reader: reader, project: project, reviewed: true, event: event,
+		route: method + " " + route, reader: reader, project: project, parent: parent, reviewed: true, event: event,
 	})
 	return nil, false
+}
+
+// heldReplyBefore is the newest held reply on route, which has not posted, that subject's writer
+// wrote to the delivery subject answers (its InReplyTo message or its ReplyTo comment); nil where
+// there is none. A reply is held beside it, waiting on it (depends_on), so the first posts as the
+// delivery's reply and the next as what the reply route makes of a second text on an answered
+// delivery: a follow-up, or the stored reply. Each review runs once the reply before it posted
+// (claimHeldReview).
+func (s *server) heldReplyBefore(ctx context.Context, route string, subject reviewer.Subject) (*heldParent, error) {
+	if subject.Writer == "" {
+		return nil, nil
+	}
+	rows, err := s.loadHeldRows(ctx, `route = $1 and writer = $2 and state in ('reviewing', 'awaiting_writer', 'posting')
+		order by seq desc`, route, subject.Writer)
+	if err != nil {
+		return nil, fmt.Errorf("read the writer's held replies: %w", err)
+	}
+	for _, row := range rows {
+		var replay heldReplay
+		if !isReplay(row.request) || json.Unmarshal(row.request, &replay) != nil {
+			continue
+		}
+		if replay.Subject.InReplyTo == subject.InReplyTo && replay.Subject.ReplyTo == subject.ReplyTo {
+			return &heldParent{id: row.id, state: row.state, reader: row.reader, project: row.project}, nil
+		}
+	}
+	return nil, nil
 }
 
 // The project of the text a reply answers: messageProjectQuery a message's, the project of its
@@ -359,7 +399,19 @@ var heldTargetSelf = map[string]string{
 // posted: the write is kept whole with its caller (heldReplay), answered 202 with the `held`
 // object, and runs through this route right after the held text posts, in the order the writes
 // came. Any other write goes to handler. A route whose path names no such text, a read, and a
-// route of heldTargetSelf are not wrapped.
+// route of heldTargetSelf are not wrapped. A person signed in at a browser learns nothing of a
+// held text: their write is the route's own, which finds no such text and answers as it does with
+// the reviewer off, as a person's read is (answerHeldRead).
+//
+// Only a session's write whose client says it reads that 202 (contracts.AcceptsKeptWriteHeader:
+// 1, which the agents' DispatchClient sends on every write) is kept. The 202 carries none of the
+// route's own shape, and a client built before the header reads it as that shape all the same:
+// `dispatch result`, `artifact` and `claim` threw a TypeError reading a field it lacks; `claim
+// --release`, `handoff-write`, `edit-ask` and `resolve-comment` printed `undefined`; `resolve-ask`
+// failed, though the write was kept; and a retry of any of them kept a second write. So a
+// session's write without the header is answered 409 HELD_TEXT with the held id and the step to
+// take, in the shape of a session's read of a held text (answerHeldRead), which every client shows
+// as a refusal, and nothing is kept: the write runs when it is sent again after the text posts.
 func (s *server) awaitHeldTarget(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
 	name := route.Method + " " + route.Pattern
 	param, held := awaitsHeldTarget(route.Method, route.Pattern)
@@ -380,6 +432,21 @@ func (s *server) awaitHeldTarget(route apiRoute, handler http.HandlerFunc) http.
 			handler(w, r)
 			return
 		}
+		// The caller is resolved again by the write's own path (captureCaller, or the handler), whose
+		// resolution names it on the access-log line.
+		if _, human, err := s.optionalActor(unloggedResolution(r)); err != nil || human {
+			handler(w, r)
+			return
+		}
+		if r.Header.Get(contracts.AcceptsKeptWriteHeader) != "1" {
+			WriteJSON(w, http.StatusConflict, heldTextError{
+				Error: "held text " + parent.id + " has not posted, and this client does not read the answer of a write " +
+					"Dispatch keeps beside it: run the write again after the text posts, or update the plugin so Dispatch " +
+					"can keep the write and run it right after the text posts",
+				Code: "HELD_TEXT", HeldID: parent.id,
+			})
+			return
+		}
 		s.holdRequest(w, r, name, parent)
 	}
 }
@@ -392,16 +459,15 @@ func awaitsHeldTarget(method, pattern string) (string, bool) {
 	return param, method != http.MethodGet && param != "" && heldTargetSelf[method+" "+pattern] == ""
 }
 
-// init gives every write awaitHeldTarget holds its 202 answer in the route shapes, so the
-// OpenAPI document names it where it can come.
-func init() {
-	for name, shape := range routeShapes {
-		method, pattern, _ := strings.Cut(name, " ")
-		if _, held := awaitsHeldTarget(method, pattern); held {
-			shape.Also = append(slices.Clone(shape.Also), routeAnswer{Status: http.StatusAccepted, Body: heldDeferred{}})
-			routeShapes[name] = shape
-		}
+// keptAnswers are the answers awaitHeldTarget gives a write of method and pattern beside its
+// route's own: 202 with the `held` object to a client that reads it, and 409 HELD_TEXT to any
+// other; none for a write it does not wrap. The OpenAPI emitter reads them beside the route's
+// shape (routeShapes), so the document names them where they can come.
+func keptAnswers(method, pattern string) []routeAnswer {
+	if _, held := awaitsHeldTarget(method, pattern); !held {
+		return nil
 	}
+	return []routeAnswer{{Status: http.StatusAccepted, Body: heldDeferred{}}, {Status: http.StatusConflict, Body: heldTextError{}}}
 }
 
 // heldDeferred is the answer of a write held beside a held text: the id it is kept under, and
@@ -452,7 +518,16 @@ func (s *server) holdRequest(w http.ResponseWriter, r *http.Request, route strin
 		return
 	}
 	id := uuid.NewString()
-	if _, err := s.deps.Store.Pool.Exec(ctx, `
+	// The kept write is the request's own write: it commits in a transaction of the shared pool,
+	// whose commit step marks the request's Idempotency-Key with it, so a repeat after a crash is
+	// answered KEY_COMMITTED and keeps no second write (keyed_write_guard_test.go).
+	tx, err := s.begin(ctx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
 		insert into held_texts (id, kind, route, request, original, actor, writer, reader, project, state,
 			reviewed, outcome, depends_on, person_typed)
 		values ($1, 'request', $2, $3, '{}', $4, nullif($5, ''), nullif($6, ''), nullif($7, ''), 'posting',
@@ -461,30 +536,40 @@ func (s *server) holdRequest(w http.ResponseWriter, r *http.Request, route strin
 		s.writeHandlerError(w, err)
 		return
 	}
+	if err := tx.Commit(ctx); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// Its parent may have posted while this write was kept beside it.
 	s.detached.goDetached(s.postReady)
+	// The answer is no shape of the route's: its client said it reads it (awaitHeldTarget).
 	WriteJSON(w, http.StatusAccepted, heldDeferred{ID: id, Held: heldState{State: heldPosting, WaitsOn: parent.id}})
 }
 
-// postReplay runs the kept write of row, the held text's post (held): a reply's route takes the
-// held row in its own transaction and marks it posted there; any other write's row is marked
-// posted once its route answered 2xx, in a transaction of its own on ctx, the post context
-// (postHeld says why). A route's 4xx is the post's refusal.
+// postReplay runs the kept write of row, the held text's post (held), and marks row posted in the
+// transaction of the write itself, so the write and its mark commit together or not at all and
+// the write runs once: a reply's route takes the held row in its own transaction and marks it
+// there (heldPost.lock, finish), and any other write's route takes markKeptWritePosted as the
+// commit step of each transaction it opens on ctx, the post context (postHeld says why). A route
+// that answered 2xx having written nothing has its row marked after it, in a transaction of its
+// own, since running it again writes nothing either. A route's 4xx is the post's refusal.
 func (s *server) postReplay(ctx context.Context, row heldRow, replay heldReplay, held *heldPost) error {
+	if row.kind == heldRequestKind {
+		ctx = store.WithBeforeCommit(ctx, markKeptWritePosted(row.id, &atomic.Bool{}))
+	}
 	answer, err := s.runReplay(ctx, replay, held)
 	if err != nil {
 		return err
 	}
 	switch {
 	case answer.status >= 200 && answer.status < 300:
+		ctx = store.WithoutBeforeCommit(ctx)
 		tx, err := s.begin(ctx)
 		if err != nil {
 			return err
 		}
 		defer tx.Rollback(ctx)
-		if _, err := tx.Exec(ctx, `
-			update held_texts set state = 'posted', posted_at = now(), claimed_at = null, updated_at = now()
-			where id = $1 and state = 'posting'`, row.id); err != nil {
+		if _, err := tx.Exec(ctx, postedHeldSQL, row.id, heldPosting); err != nil {
 			return err
 		}
 		return tx.Commit(ctx)
@@ -492,6 +577,47 @@ func (s *server) postReplay(ctx context.Context, row heldRow, replay heldReplay,
 		return answer.refusal()
 	}
 	return fmt.Errorf("the kept write %s answered %d: %s", row.route, answer.status, strings.TrimSpace(answer.body.String()))
+}
+
+// markKeptWritePosted is the commit step (store.BeforeCommit) of each transaction the route of
+// the kept write id opens while its post runs it: the first transaction that wrote - it holds the
+// ROW EXCLUSIVE lock a write takes on a table other than held_texts, as markRequestKeyCommitted
+// reads it - marks the held row posted in that same transaction, so the write and the mark commit
+// together or not at all, and a process that stops after the commit leaves no row for the sweep to
+// run again. A transaction that finds the row no longer posting (a second post took it past
+// staleClaim and posted it first, or it failed) is refused with errHeldNotPosting and its write
+// rolls back, so the write runs once. A transaction that only read marks nothing, and once marked
+// takes no step.
+func markKeptWritePosted(id string, marked *atomic.Bool) store.BeforeCommit {
+	return func(ctx context.Context, tx pgx.Tx) error {
+		if marked.Load() {
+			return nil
+		}
+		var wrote, posted bool
+		if err := tx.QueryRow(ctx, `
+			with wrote as (
+				select txid_current_if_assigned() is not null and exists (
+					select 1 from pg_locks l join pg_class c on c.oid = l.relation
+					where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.mode = 'RowExclusiveLock'
+						and c.relkind in ('r', 'p') and c.oid <> 'held_texts'::regclass
+				) as yes
+			), posted as (
+				update held_texts set state = 'posted', posted_at = now(), claimed_at = null, updated_at = now()
+				where id = $1 and state = 'posting' and (select yes from wrote)
+				returning 1
+			)
+			select (select yes from wrote), exists (select 1 from posted)`, id).Scan(&wrote, &posted); err != nil {
+			return fmt.Errorf("mark kept write %s posted: %w", id, err)
+		}
+		if !wrote {
+			return nil
+		}
+		if !posted {
+			return errHeldNotPosting
+		}
+		marked.Store(true)
+		return nil
+	}
 }
 
 // replayAnswerOf is the answer a held reply's write gets: the reply route's own shape, built

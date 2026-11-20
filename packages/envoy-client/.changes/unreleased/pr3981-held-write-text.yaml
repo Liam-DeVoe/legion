@@ -1,6 +1,6 @@
 kind: Added
 body: |-
-  A write that Dispatch's reviewer holds no longer reads as posted. The first line of
+  A write that Dispatch's reviewer holds reads as held: the first line of
   `dispatch ask`, `dispatch comment`, `dispatch suggest`, `dispatch message`, `dispatch issue`,
   and of `dispatch issue-update` for its closing reason, says that the text is held for review,
   with its kind, its id and its state, and names `dispatch held <id>`. Where Dispatch gives them,

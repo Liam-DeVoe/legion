@@ -5395,6 +5395,11 @@ export interface components {
       /** @enum {string} */
       state: "posted";
     };
+    HeldTextError: {
+      code: string;
+      error: string;
+      held_id: string;
+    };
     HoldPersistenceInput: {
       duration: string;
     };
@@ -8885,6 +8890,15 @@ export interface operations {
           "application/json": components["schemas"]["HeldDeferred"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8930,6 +8944,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8979,6 +9002,15 @@ export interface operations {
           "application/json": components["schemas"]["HeldDeferred"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9024,6 +9056,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9106,6 +9147,15 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9152,6 +9202,15 @@ export interface operations {
         };
         content?: never;
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9197,6 +9256,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9482,6 +9550,15 @@ export interface operations {
           "application/json": components["schemas"]["HeldDeferred"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9527,6 +9604,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9648,6 +9734,15 @@ export interface operations {
           "application/json": components["schemas"]["HeldDeferred"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9689,6 +9784,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9787,6 +9891,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11035,6 +11148,15 @@ export interface operations {
           "application/json": components["schemas"]["HeldDeferred"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -11131,6 +11253,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11262,7 +11393,8 @@ export interface operations {
           "application/json":
             | components["schemas"]["EditPreconditionError"]
             | components["schemas"]["EditLostError"]
-            | components["schemas"]["AmbiguousTargetError"];
+            | components["schemas"]["AmbiguousTargetError"]
+            | components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11347,6 +11479,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11518,7 +11659,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["IssueClaimedError"];
+          "application/json":
+            | components["schemas"]["IssueClaimedError"]
+            | components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11574,7 +11717,9 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["IssueClaimedError"];
+          "application/json":
+            | components["schemas"]["IssueClaimedError"]
+            | components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11802,6 +11947,15 @@ export interface operations {
           "application/json": components["schemas"]["HeldDeferred"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -11921,6 +12075,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12116,6 +12279,15 @@ export interface operations {
           "application/json": components["schemas"]["HeldDeferred"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12240,6 +12412,15 @@ export interface operations {
           "application/json": components["schemas"]["HeldDeferred"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12359,6 +12540,15 @@ export interface operations {
           "application/json": components["schemas"]["HeldDeferred"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12441,6 +12631,15 @@ export interface operations {
           "application/json": components["schemas"]["HeldDeferred"];
         };
       };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12487,6 +12686,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HeldDeferred"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12564,6 +12772,15 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HeldTextError"];
+        };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
@@ -16207,6 +16424,7 @@ export type HeldOption = components["schemas"]["HeldOption"];
 export type HeldRead = components["schemas"]["HeldRead"];
 export type HeldState = components["schemas"]["HeldState"];
 export type HeldStateInput = components["schemas"]["HeldStateInput"];
+export type HeldTextError = components["schemas"]["HeldTextError"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];

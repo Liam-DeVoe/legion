@@ -243,13 +243,14 @@ func (p *pacedReader) Read(ctx context.Context, cands []candidates.Candidate) ([
 
 func (p *pacedReader) Calls() int64 { return p.inner.Calls() }
 
-// optionWords is options as a model call reads and writes them: each option's label and
+// OptionWords is options as a model call reads and writes them: each option's label and
 // description, with no id, and an empty list where there are none, so JSON shows [] and never
 // null. An option's id is the server's, not the text's: the ask's row holds none, the part index
 // gives each option one on a read (refs.AskPartIDs), and an edit that rewords an option in its
 // place keeps it (itemblocks.Align). So a rewrite keeps an ask's options by their labels, their
-// number and their order (Preserve), and no model reads or writes an id.
-func optionWords(options []model.AskOption) []model.AskOption {
+// number and their order (Preserve), and no model reads or writes an id; a held ask that posts the
+// reviewer's rewrite takes its options so (the api package's withRewrite).
+func OptionWords(options []model.AskOption) []model.AskOption {
 	words := make([]model.AskOption, len(options))
 	for i, option := range options {
 		words[i] = model.AskOption{Label: option.Label, Description: option.Description}

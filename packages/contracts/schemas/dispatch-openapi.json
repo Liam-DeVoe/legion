@@ -2578,6 +2578,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2643,6 +2653,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -2717,6 +2737,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2785,6 +2815,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -2906,6 +2946,16 @@
           },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2972,6 +3022,16 @@
           },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -3037,6 +3097,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -3445,6 +3515,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -3512,6 +3592,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -3690,6 +3780,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -3748,6 +3848,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -3905,6 +4015,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -5974,6 +6094,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -6130,6 +6260,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -6349,6 +6489,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/AmbiguousTargetError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HeldTextError"
                     }
                   ]
                 }
@@ -6489,6 +6632,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -6776,7 +6929,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueClaimedError"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueClaimedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HeldTextError"
+                    }
+                  ]
                 }
               }
             }
@@ -6852,7 +7012,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/IssueClaimedError"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/IssueClaimedError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HeldTextError"
+                    }
+                  ]
                 }
               }
             }
@@ -7193,6 +7360,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -7401,6 +7578,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -7711,6 +7898,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -7888,6 +8085,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -8059,6 +8266,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -8182,6 +8399,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -8255,6 +8482,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/HeldDeferred"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
                 }
               }
             }
@@ -8370,6 +8607,16 @@
           },
           "204": {
             "description": "No Content"
+          },
+          "409": {
+            "description": "Conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HeldTextError"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -22527,6 +22774,25 @@
         "required": [
           "state",
           "reason"
+        ],
+        "type": "object"
+      },
+      "HeldTextError": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "held_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "code",
+          "held_id"
         ],
         "type": "object"
       },

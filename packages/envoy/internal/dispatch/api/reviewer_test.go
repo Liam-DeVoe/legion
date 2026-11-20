@@ -694,7 +694,8 @@ func TestTheReviewerPostsAsWrittenWhenTheModelFails(t *testing.T) {
 }
 
 // A second write naming a held issue as its parent succeeds at once and runs after the parent
-// posts, as do a claim, an update and a document of the held issue.
+// posts, as do a claim, an update and a document of the held issue, from a client that reads a
+// kept write's answer (asKeptWriter).
 func TestAWriteNamingAHeldIssueRunsAfterItPosts(t *testing.T) {
 	rig := newReviewRig(t, ReviewerConfig{Issues: ReviewHold, WriterWindow: time.Minute}, nil)
 	parent := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues", map[string]any{
@@ -710,9 +711,9 @@ func TestAWriteNamingAHeldIssueRunsAfterItPosts(t *testing.T) {
 	if child.Held.WaitsOn != parent.ID {
 		t.Fatalf("the child waits on %q, want %s", child.Held.WaitsOn, parent.ID)
 	}
-	claim := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+parent.ID+"/claim", map[string]any{}), "the claim")
-	update := rig.held(rig.asWriter(http.MethodPatch, "/api/v1/issues/"+parent.ID, map[string]any{"labels": []string{"held"}}), "the update")
-	document := rig.held(rig.asWriter(http.MethodPost, "/api/v1/issues/"+parent.ID+"/artifacts", map[string]any{
+	claim := rig.held(rig.asKeptWriter(http.MethodPost, "/api/v1/issues/"+parent.ID+"/claim", map[string]any{}), "the claim")
+	update := rig.held(rig.asKeptWriter(http.MethodPatch, "/api/v1/issues/"+parent.ID, map[string]any{"labels": []string{"held"}}), "the update")
+	document := rig.held(rig.asKeptWriter(http.MethodPost, "/api/v1/issues/"+parent.ID+"/artifacts", map[string]any{
 		"name": "notes", "content": "The notes.\n",
 	}), "the document")
 	for _, waiting := range []heldWriteAnswer{claim, update, document} {

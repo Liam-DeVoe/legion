@@ -787,7 +787,10 @@ the issue's messages for the reason, then close with one that points at it). The
 
 A write whose path names a text Dispatch's reviewer holds and that has not posted (an issue, an
 ask, a comment or a message) is kept by Dispatch and runs right after that text posts: Dispatch
-answers it `202` with `{id, held}` alone, `held.waits_on` naming the held text. Three kinds of
+answers it `202` with `{id, held}` alone, `held.waits_on` naming the held text. Dispatch keeps such
+a write only for a client that says it reads that `202`: every write the client sends carries
+`Dispatch-Accepts-Kept-Write: 1` (`DISPATCH_ACCEPTS_KEPT_WRITE_HEADER`), and Dispatch answers a
+write without it `409 HELD_TEXT` with the held id and keeps nothing. Three kinds of
 write are not kept so: a new ask, comment or message on a held issue, which the reviewer holds
 under an id of its own and answers `201` in its whole shape with `held` beside it; a reply to a
 delivered message or mention, and a delivery's resend or accept; and a result's dry run

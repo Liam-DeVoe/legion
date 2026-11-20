@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
+import { DISPATCH_ACCEPTS_KEPT_WRITE_HEADER, IDEMPOTENCY_KEY_HEADER } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
@@ -24,7 +24,10 @@ import { DispatchClient, forgetKeyedLayerMemory } from "../dispatch-http";
 // a session's read of a held issue 409 HELD_TEXT (`answerHeldRead`, held_routes.go), so its
 // update is never sent. Each row drives the `dispatch` command against a stub Dispatch that
 // answers as Dispatch does, as `dispatch-review.test.ts` does; the last rows read the client
-// alone.
+// alone. Dispatch keeps such a write only for a client that says it reads that 202, with
+// `Dispatch-Accepts-Kept-Write: 1`, which `DispatchClient` sends on every write, and answers any
+// other 409 HELD_TEXT (`awaitHeldTarget`); the stub does the same, so each kept row also shows
+// the header was sent.
 
 const makeDirectory = temporaryDirectories("kept-write");
 
@@ -61,9 +64,20 @@ interface Recorded {
 
 const requests: Recorded[] = [];
 
-/** Dispatch's answer to a write it keeps beside the held issue, with `headers`. */
-const kept = (headers: Record<string, string> = {}) =>
-  Response.json(KEPT, { status: 202, headers });
+/** Dispatch's answer to `request`, a write it keeps beside the held issue, with `headers`: the
+ *  kept write's 202 to a client that says it reads it, and 409 HELD_TEXT, keeping nothing, to any
+ *  other (`awaitHeldTarget`). */
+const kept = (request: Request, headers: Record<string, string> = {}) =>
+  request.headers.get(DISPATCH_ACCEPTS_KEPT_WRITE_HEADER) === "1"
+    ? Response.json(KEPT, { status: 202, headers })
+    : Response.json(
+        {
+          error: `held text ${HELD_ISSUE} has not posted, and this client does not read the answer of a write Dispatch keeps beside it`,
+          code: "HELD_TEXT",
+          held_id: HELD_ISSUE,
+        },
+        { status: 409, headers }
+      );
 
 const server = Bun.serve({
   port: 0,
@@ -100,9 +114,9 @@ const server = Bun.serve({
         return Response.json({ markdown: body.markdown }, { headers: echo });
       case "POST /api/v1/issues/DSP-1/results":
       case "DELETE /api/v1/issues/DSP-1/claim":
-        return kept(echo);
+        return kept(request, echo);
       case "POST /api/v1/issues/DSP-1/artifacts":
-        return kept();
+        return kept(request);
       // A message and an ask on a held issue are held beside it under ids of their own, answered
       // 201 with the route's whole shape and `held` (`reviewWrite`), never kept as above.
       case "POST /api/v1/issues/DSP-1/messages":

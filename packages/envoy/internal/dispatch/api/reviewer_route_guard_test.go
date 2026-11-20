@@ -3,12 +3,15 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // The held-target guard (Decision 4 of INFRA-3231's plan): every write whose path names an issue,
@@ -57,9 +60,12 @@ func TestEveryWriteNamingAHeldTextTakesPartOrSaysWhyNot(t *testing.T) {
 }
 
 // TestEveryWriteNamingAHeldTextIsAcceptedAndKept walks every write awaitHeldTarget holds with
-// the id of a held issue, ask, comment or message in its path: each answers 202 with the held
-// text it waits on and is kept beside it. The three creates of heldTargetSelf on a held issue are
-// held by the reviewer's hook under ids of their own (201).
+// the id of a held issue, ask, comment or message in its path, sent by the writer session: from a
+// client that reads a kept write's answer (contracts.AcceptsKeptWriteHeader) each answers 202 with
+// the held text it waits on and is kept beside it; from any other it answers 409 HELD_TEXT with
+// the held id and the step to take, and nothing is kept. The three creates of heldTargetSelf on a
+// held issue are held by the reviewer's hook under ids of their own (201). A person's write is the
+// route's own (TestAPersonsWriteOnAHeldTextIsAnsweredAsIfNoTextWereThere).
 func TestEveryWriteNamingAHeldTextIsAcceptedAndKept(t *testing.T) {
 	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, Issues: ReviewHold, Comments: ReviewHold, Messages: ReviewHold, WriterWindow: time.Hour}, nil)
 	targets := map[string]string{
@@ -77,11 +83,12 @@ func TestEveryWriteNamingAHeldTextIsAcceptedAndKept(t *testing.T) {
 			t.Fatalf("hold the fixture %s: %v", id, err)
 		}
 	}
-	fill := func(pattern string) string {
-		path := pattern
+	// fill is pattern with every path value filled in, and the held text it names.
+	fill := func(pattern string) (path, held string) {
+		path = pattern
 		for prefix, id := range targets {
 			if path == prefix || strings.HasPrefix(path, prefix+"/") {
-				path = strings.Replace(path, "{"+heldTargetParam(prefix)+"}", id, 1)
+				path, held = strings.Replace(path, "{"+heldTargetParam(prefix)+"}", id, 1), id
 				break
 			}
 		}
@@ -90,22 +97,49 @@ func TestEveryWriteNamingAHeldTextIsAcceptedAndKept(t *testing.T) {
 		} {
 			path = strings.ReplaceAll(path, placeholder, value)
 		}
-		return path
+		return path, held
+	}
+	send := func(method, target string, readsKept bool) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, target, strings.NewReader(`{"actor":{"kind":"session","id":"`+heldWriter+`"}}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer agent-token")
+		if readsKept {
+			request.Header.Set(contracts.AcceptsKeptWriteHeader, "1")
+		}
+		response := httptest.NewRecorder()
+		rig.handler.ServeHTTP(response, request)
+		return response
 	}
 	for _, route := range heldTargetWrites() {
 		name := route.Method + " " + route.Pattern
 		if _, takesPart := awaitsHeldTarget(route.Method, route.Pattern); !takesPart {
 			continue
 		}
+		// A row that needs the person scope (routeScopes) is refused to the writer session's token
+		// before it is read further; a person's write there is the route's own, as everywhere.
+		if len(route.OAuthScopes) > 0 {
+			continue
+		}
 		t.Run(name, func(t *testing.T) {
-			target := fill(route.Pattern)
-			response := dispatchRequest(t, rig.handler, route.Method, target, map[string]any{}, "alice")
+			target, held := fill(route.Pattern)
+			refused := send(route.Method, target, false)
+			if refused.Code != http.StatusConflict {
+				t.Fatalf("%s %s from a client that does not read a kept write: %d %s, want 409", route.Method, target, refused.Code, refused.Body.String())
+			}
+			if refusal := decodeBody[heldTextError](t, refused); refusal.Code != "HELD_TEXT" || refusal.HeldID != held ||
+				!strings.Contains(refusal.Error, "run the write again after the text posts, or update the plugin") {
+				t.Fatalf("the refusal of a client that does not read a kept write: %+v, want HELD_TEXT naming %s and the step", refusal, held)
+			}
+			if kept := countRows(t, rig.database, `select count(*) from held_texts where kind = 'request' and route = $1`, name); kept != 0 {
+				t.Fatalf("%d writes kept for a client that does not read a kept write, want none", kept)
+			}
+			response := send(route.Method, target, true)
 			if response.Code != http.StatusAccepted {
 				t.Fatalf("%s %s: %d %s, want 202", route.Method, target, response.Code, response.Body.String())
 			}
 			answer := decodeBody[heldDeferred](t, response)
 			row := rig.heldRow(answer.ID)
-			if answer.Held.WaitsOn == "" || row.dependsOn != answer.Held.WaitsOn || row.kind != heldRequestKind || row.route != name {
+			if answer.Held.WaitsOn != held || row.dependsOn != answer.Held.WaitsOn || row.kind != heldRequestKind || row.route != name {
 				t.Fatalf("the kept write: answer %+v row depends on %q kind %s route %s", answer, row.dependsOn, row.kind, row.route)
 			}
 		})

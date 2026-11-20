@@ -364,7 +364,7 @@ func (s *server) runPostedReview(ctx context.Context, review postedReview, id st
 	if len(reviewed.Findings) == 0 {
 		return
 	}
-	if gone, _ := s.writerGone(ctx, review.subject.Writer); gone {
+	if s.writerGone(ctx, review.subject.Writer) {
 		return
 	}
 	frame := reviewer.FindingsFrame{
@@ -480,8 +480,7 @@ func (s *server) heldFindings(ctx context.Context, row heldRow, reviewed reviewe
 		notApplied = reviewed.NotApplied.Reason
 	}
 	row.findings, row.rewrite, row.notApplied = reviewed.Findings, reviewed.Rewrite, notApplied
-	gone, _ := s.writerGone(ctx, row.writer)
-	if gone {
+	if s.writerGone(ctx, row.writer) {
 		if _, err := s.deps.Store.Pool.Exec(ctx, `
 			update held_texts set findings = $3, rewrite = $4, not_applied = nullif($5, ''), updated_at = now()
 			where id = $1 and revision = $2 and state = 'reviewing'`, row.id, row.revision, findings, rewrite, notApplied); err != nil {
@@ -535,20 +534,20 @@ func (s *server) actUnedited(ctx context.Context, row heldRow, why string) {
 
 // writerGone reports whether writer, a held text's writer session, has gone: Envoy has no record
 // of it, or reads it gone. A process with no listener configured reaches no session, so its
-// writers are gone too. known is false where the listener did not answer, which the caller reads
-// as a writer still running: the window then decides.
-func (s *server) writerGone(ctx context.Context, writer string) (gone, known bool) {
+// writers are gone too. A listener that did not answer reads as a writer still running: the window
+// then decides.
+func (s *server) writerGone(ctx context.Context, writer string) bool {
 	if writer == "" || s.deps.Envoy == nil {
-		return true, true
+		return true
 	}
 	session, err := s.deps.Envoy.Session(ctx, writer)
 	switch {
 	case errors.Is(err, dispatchenvoy.ErrNotFound):
-		return true, true
+		return true
 	case err != nil:
-		return false, false
+		return false
 	}
-	return session.State == dispatchenvoy.StateGone, true
+	return session.State == dispatchenvoy.StateGone
 }
 
 // sendFindingsFrame sends writer the turn frame says, as Dispatch's system actor, through the
@@ -627,9 +626,10 @@ const (
 
 // sweepHeld is one pass of the reviewer's sweep, which one process runs every
 // ReviewerSweepInterval under its lease (cmd/dispatch). It fails the held texts that wait on one
-// that failed; reviews again each text a stopped process left in review; posts, as
-// DISPATCH_REVIEWER_UNEDITED says, each text whose writer has not acted in time or whose writer
-// session has gone; and posts every decided text whose turn has come.
+// that failed; reviews again each text a stopped process left in review, once the text it waits
+// on, if any, has posted (claimHeldReview); posts, as DISPATCH_REVIEWER_UNEDITED says, each text
+// whose writer has not acted in time or whose writer session has gone; and posts every decided
+// text whose turn has come.
 func (s *server) sweepHeld(ctx context.Context) {
 	if s.deps.Store == nil {
 		return
@@ -639,9 +639,11 @@ func (s *server) sweepHeld(ctx context.Context) {
 	}
 	stale := intervalOf(s.deps.Reviewer.staleClaim())
 	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select id from held_texts
-		where state = 'reviewing' and coalesce(claimed_at, updated_at) < now() - $1::interval
-		order by seq limit 50`, stale)
+		select h.id from held_texts h
+		where h.state = 'reviewing' and coalesce(h.claimed_at, h.updated_at) < now() - $1::interval
+			and (h.depends_on is null or exists (
+				select 1 from held_texts p where p.id = h.depends_on and p.state = 'posted'))
+		order by h.seq limit 50`, stale)
 	if err == nil {
 		var ids []string
 		for rows.Next() {
@@ -666,7 +668,7 @@ func (s *server) sweepHeld(ctx context.Context) {
 		case row.deadline != nil && !row.deadline.After(time.Now()):
 			s.actUnedited(ctx, row, "the writer did not act within the time it had")
 		default:
-			if gone, known := s.writerGone(ctx, row.writer); gone && known {
+			if s.writerGone(ctx, row.writer) {
 				s.actUnedited(ctx, row, "the writer session stopped running")
 			}
 		}

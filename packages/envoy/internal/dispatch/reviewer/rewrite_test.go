@@ -15,7 +15,7 @@ import (
 // rewriteReply is a rewrite's reply holding text, as the schema has a reply write it.
 func rewriteReply(t *testing.T, text Text) string {
 	t.Helper()
-	return asJSON(t, map[string]any{"body": text.Body, "options": optionWords(text.Options), "multiple": text.Multiple})
+	return asJSON(t, map[string]any{"body": text.Body, "options": OptionWords(text.Options), "multiple": text.Multiple})
 }
 
 // A rewrite reads the writer's answer when one came, and the record alone when none did, and

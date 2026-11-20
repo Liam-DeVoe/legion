@@ -1357,7 +1357,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// A replay of a callback that already posted its reply writes nothing and answers the stored
 	// reply as it is, with no ask_waiting_on: that names whom the ask waits on once a reply is its
 	// newest, which a replayed reply need no longer be. Writing nothing, it records no writing
-	// check row.
+	// check row. A held reply's dry run answers it so too (finishRepeat), rather than hold it.
 	if attempt.ReplyID != nil {
 		dropWritingCheck(r)
 		reply, err := s.loadComment(r.Context(), tx, *attempt.ReplyID)
@@ -1369,7 +1369,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		if err := held.finish(r.Context(), tx); err != nil {
+		if err := held.finishRepeat(r.Context(), tx); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

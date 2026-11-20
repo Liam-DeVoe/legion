@@ -1061,6 +1061,10 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	// postedID is the reply this request posted, which the reviewer reads after the post where
 	// its setting is after; "" where it posted none.
 	postedID := ""
+	// finish is the held reply's mark of its row (held_texts.go): finishRepeat where this request
+	// posts nothing on an attempt already answered, so a held reply's dry run answers the stored
+	// reply as the route does with the reviewer off, rather than hold a repeat.
+	finish := held.finish
 	switch {
 	case attempt.ReplyID != nil:
 		if followUp && input.InReplyToBlock != nil {
@@ -1092,6 +1096,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			// A retry of the answer, or a follow-up already posted, writes nothing, and records no
 			// writing check row.
 			dropWritingCheck(r)
+			finish = held.finishRepeat
 		}
 		response = read
 		if posted != nil {
@@ -1145,7 +1150,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		response, events, status = replyRead{shapedMessage: newShapedMessage(reply, wantsDisplayTrees(r))}, append(events, answered), http.StatusCreated
 		postedID = reply.ID
 	}
-	if err := held.finish(r.Context(), tx); err != nil {
+	if err := finish(r.Context(), tx); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

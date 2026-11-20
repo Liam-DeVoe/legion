@@ -26,7 +26,7 @@ var (
 
 // textSchema is a text of kind as a reply writes it: an ask's or a decision block's question,
 // options and choice, an issue's title and spec, and any other kind's body. An option is its
-// label and its description, with no id: an option's id is the server's (optionWords).
+// label and its description, with no id: an option's id is the server's (OptionWords).
 func textSchema(kind Kind) map[string]any {
 	switch {
 	case kind.asks():

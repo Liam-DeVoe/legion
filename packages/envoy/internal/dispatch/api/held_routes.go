@@ -167,7 +167,7 @@ func (s *server) answerHeldRead(route apiRoute, handler http.HandlerFunc) http.H
 		if err := s.deps.Store.Pool.QueryRow(r.Context(), `
 			select exists (
 				select 1 from held_texts
-				where id = $1 and state not in ('posted', 'failed') and kind not in ('request', 'decision_block'))`,
+				where id = $1 and state in ('reviewing', 'awaiting_writer', 'posting') and kind not in ('request', 'decision_block'))`,
 			id).Scan(&isHeld); err != nil || !isHeld {
 			handler(w, r)
 			return
@@ -354,11 +354,7 @@ func (s *server) editHeldDecisionBlock(w http.ResponseWriter, r *http.Request, r
 		return
 	}
 	if answer.status >= 300 {
-		for key, values := range answer.header {
-			w.Header()[key] = values
-		}
-		w.WriteHeader(answer.status)
-		_, _ = w.Write(answer.body.Bytes())
+		answer.writeTo(w)
 		return
 	}
 	updated, err := s.loadHeld(r.Context(), s.deps.Store.Pool, row.id, false)
@@ -545,15 +541,17 @@ func (s *server) repeatedHeldPost(ctx context.Context, tx queryer, id string, ac
 // answerHeldFrame takes a reply to the frame Dispatch sent a held text's writer
 // (sendFindingsFrame), which names the held text's id where a delivered message's id stands: the
 // reply is the writer's answer, kept with the held text, and writes no message row and no event.
-// It reports whether id is a held text's, having answered the request; a held text's writer alone
-// replies to it.
+// It reports whether id is a held text's that has not posted, having answered the request; a held
+// text's writer alone replies to it. A held message or reply that has posted is a message under
+// the same id, delivered as any other, so a reply to it is its recipient's, which the route takes
+// as it takes any reply.
 func (s *server) answerHeldFrame(w http.ResponseWriter, r *http.Request, actor model.Actor, input messageReplyInput) bool {
 	if s.deps.Reviewer == nil || s.deps.Store == nil {
 		return false
 	}
 	ctx := r.Context()
 	row, err := s.loadHeld(ctx, s.deps.Store.Pool, r.PathValue("id"), false)
-	if err != nil {
+	if err != nil || row.state == heldPosted || row.state == heldFailed {
 		return false
 	}
 	if !row.isWriter(actor) {

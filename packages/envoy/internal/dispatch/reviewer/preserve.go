@@ -41,7 +41,7 @@ const (
 	// KeepOptionOrder: the order of an ask's options.
 	KeepOptionOrder Keep = "option_order"
 	// KeepOptionLabels: each option's label, byte for byte. An option's id is the server's, which
-	// an edit that keeps the labels and their order keeps (optionWords), so a rewrite has none.
+	// an edit that keeps the labels and their order keeps (OptionWords), so a rewrite has none.
 	KeepOptionLabels Keep = "option_labels"
 	// KeepChoice: an ask's single or multiple choice.
 	KeepChoice Keep = "choice"
@@ -332,7 +332,7 @@ func keepFenceLines(was, now string) *NotApplied {
 }
 
 // keepOptions weighs a rewrite's options and choice against the ask's: their number, their
-// order and each label. Their ids are the server's (optionWords), so neither side's are weighed.
+// order and each label. Their ids are the server's (OptionWords), so neither side's are weighed.
 func keepOptions(original, rewrite Text) *NotApplied {
 	was, now := original.Options, rewrite.Options
 	if len(now) != len(was) {

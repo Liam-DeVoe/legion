@@ -87,6 +87,7 @@ import type {
 import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
+  DISPATCH_ACCEPTS_KEPT_WRITE_HEADER,
   DISPATCH_GENERATED_TEXT_HEADER,
   DISPATCH_PERSON_TYPED_HEADER,
   everyBuildReadsSearch,
@@ -1111,8 +1112,8 @@ function reachesDispatch(status: number): boolean {
   return status >= 500;
 }
 
-/** Whether `method` is a read, a GET or a HEAD: the request `holdWrites` sends and `personTyped`
- *  marks nothing on (`#holdUnlessRead`, `#personTypedHeader`). */
+/** Whether `method` is a read, a GET or a HEAD: the request `holdWrites` sends and the write
+ *  headers mark nothing on (`#holdUnlessRead`, `#writeHeaders`). */
 function isReadMethod(method: string): boolean {
   return method === "GET" || method === "HEAD";
 }
@@ -2417,12 +2418,16 @@ export class DispatchClient {
     }
   }
 
-  /** `DISPATCH_PERSON_TYPED_HEADER` for a request that is not a GET or a HEAD from a client made
-   *  with `personTyped`, and nothing otherwise. */
-  #personTypedHeader(method: string): Readonly<Record<string, string>> {
-    return this.#personTyped && !isReadMethod(method)
-      ? { [DISPATCH_PERSON_TYPED_HEADER]: "1" }
-      : {};
+  /** The headers every request that is not a GET or a HEAD carries, and nothing for a read:
+   *  `DISPATCH_ACCEPTS_KEPT_WRITE_HEADER`, since this client reads the `202` of a write Dispatch
+   *  keeps beside a held text (`DispatchWriteKept`), which Dispatch answers `409 HELD_TEXT` to a
+   *  write without it; and `DISPATCH_PERSON_TYPED_HEADER` from a client made with `personTyped`. */
+  #writeHeaders(method: string): Readonly<Record<string, string>> {
+    if (isReadMethod(method)) return {};
+    return {
+      [DISPATCH_ACCEPTS_KEPT_WRITE_HEADER]: "1",
+      ...(this.#personTyped ? { [DISPATCH_PERSON_TYPED_HEADER]: "1" } : {}),
+    };
   }
 
   /** One request of a read, a PUT or a DELETE (`#send`), presenting the credential for it, and
@@ -2452,7 +2457,7 @@ export class DispatchClient {
       headers: {
         Accept: accept,
         ...(body === undefined ? {} : { "Content-Type": body.type }),
-        ...this.#personTypedHeader(method),
+        ...this.#writeHeaders(method),
         ...presented,
       },
       signal: limit,
@@ -2494,8 +2499,9 @@ export class DispatchClient {
    * runs the keyed layer; Dispatch's own refusal with no echo sets aside what the process
    * remembers, and the write asks `/healthz` afresh.
    * `extraHeaders` go on every attempt beside the client's own. A client made with `holdWrites`
-   * sends nothing and throws `DispatchWriteHeld` here, and one made with `personTyped` marks every
-   * attempt with `DISPATCH_PERSON_TYPED_HEADER`.
+   * sends nothing and throws `DispatchWriteHeld` here; every attempt carries the write headers
+   * (`#writeHeaders`), `DISPATCH_PERSON_TYPED_HEADER` among them for a client made with
+   * `personTyped`.
    */
   async #write(
     method: string,
@@ -2511,7 +2517,7 @@ export class DispatchClient {
     const { key, progress } = write;
     const headers: Record<string, string> = {
       ...extraHeaders,
-      ...this.#personTypedHeader(method),
+      ...this.#writeHeaders(method),
       Accept: accept,
       [IDEMPOTENCY_KEY_HEADER]: key,
     };

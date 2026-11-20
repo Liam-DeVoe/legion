@@ -12,6 +12,10 @@ body: |-
   A session that reads a held ask, comment, message or issue by its usual route gets
   `409 HELD_TEXT`, with the held id.
   A write that names a held text, such as a reply to it, a child issue or a claim, is accepted and
-  stored. It runs right after the held text posts, in the order the writes came. A create of a kind
-  the reviewer holds answers `201` in its usual shape; any other such write answers
-  `202 {id, held}`.
+  stored. It runs right after the held text posts, in the order the writes came, and a text the
+  reviewer reads among them is reviewed once the held text has posted. A create of a kind the
+  reviewer holds answers `201` in its usual shape. Any other such write answers `202 {id, held}`
+  when its request carries `Dispatch-Accepts-Kept-Write: 1`, which the agents' `DispatchClient`
+  sends on every write; a session's write without the header gets `409 HELD_TEXT` with the held
+  id, and nothing is kept. A person's write on a held text's path is answered as if no such text
+  existed, as a person's read is.

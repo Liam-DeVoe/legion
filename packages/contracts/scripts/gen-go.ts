@@ -5,6 +5,7 @@ import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
   DEFAULT_ISSUE_PAGE_LIMIT,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_ACCEPTS_KEPT_WRITE_HEADER,
   DISPATCH_GENERATED_TEXT_HEADER,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
@@ -642,6 +643,13 @@ const GeneratedTextHeader = ${JSON.stringify(DISPATCH_GENERATED_TEXT_HEADER)}
 // Generated from DISPATCH_PERSON_TYPED_HEADER in packages/contracts so the server and the command
 // name it once.
 const PersonTypedHeader = ${JSON.stringify(DISPATCH_PERSON_TYPED_HEADER)}
+
+// AcceptsKeptWriteHeader is the request header (1) the agents' DispatchClient puts on every write:
+// it reads the 202 {id, held} of a write the server keeps beside a held text. The server keeps
+// such a write only for a request that carries it, and answers any other 409 HELD_TEXT. Generated
+// from DISPATCH_ACCEPTS_KEPT_WRITE_HEADER in packages/contracts so the server and the client name
+// it once.
+const AcceptsKeptWriteHeader = ${JSON.stringify(DISPATCH_ACCEPTS_KEPT_WRITE_HEADER)}
 
 // IdempotencyKeyMax is the longest key and IdempotencyKeyPattern a whole one. Generated from
 // IDEMPOTENCY_KEY_MAX and IDEMPOTENCY_KEY_PATTERN in packages/contracts so the server's refusal and

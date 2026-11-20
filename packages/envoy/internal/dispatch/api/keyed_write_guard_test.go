@@ -91,6 +91,12 @@ var keyedWriteGuardAllowed = map[string]string{
 	"docs.Service.releaseConditionalEdit": "writes the queue's own count after the edit, which no key marks",
 }
 
+// keyedRouteWrappers are the functions routeHandler (server.go) wraps a keyed route's handler in,
+// inside the keyed layer, that make a write of their own in place of the handler's: the guard walks
+// every handler each returns as it walks a route's. awaitHeldTarget keeps a write beside a held
+// text it names (holdRequest), which is the request's own write and must mark its key.
+var keyedRouteWrappers = []string{"api.server.awaitHeldTarget"}
+
 // keyedWriteOffence is one statement a keyed route's handler can reach that commits a write outside
 // the transactions the commit mark hooks.
 type keyedWriteOffence struct {
@@ -164,7 +170,8 @@ func writingCallOf(functions []string) *regexp.Regexp {
 // write made as a bare pool statement commits on its own and marks nothing; the process dying after
 // it, before the answer is kept, leaves a key a repeat takes over, and the write is made twice.
 //
-// It reads each route's handler from the routes table and follows it through the copy-lock guard's
+// It reads each route's handler from the routes table, and each handler a wrapper of
+// keyedRouteWrappers returns, and follows it through the copy-lock guard's
 // graph (TestCopyLockComesBeforeEveryPendingRowAndEvent says how a call is resolved) through
 // everything the handler runs while its commit step is live: its own calls, a go statement's, and
 // the functions it hands a Go method (errgroup, WaitGroup) or anything else, since a handler that
@@ -219,6 +226,8 @@ func TestTheKeyedWriteGuardSeesWhatItGuards(t *testing.T) {
 		"api.server.createCommentFor", "api.server.deliverResolvedCommentMention",
 		"api.server.recordCommentDeliveryResolution", "api.server.createStoredMessage",
 		"api.server.recordPendingMessageDelivery", "architecture.Importer.touch",
+		// A write kept beside a held text, behind awaitHeldTarget (keyedRouteWrappers).
+		"api.server.holdRequest",
 	} {
 		if !guard.reaches(function) {
 			t.Errorf("the guard does not follow a keyed handler to %s", function)
@@ -304,6 +313,18 @@ func newKeyedWriteGuard(t *testing.T) *keyedWriteGuard {
 		}
 		return false
 	})
+	for _, wrapper := range keyedRouteWrappers {
+		walked := false
+		for _, fn := range graph.functions {
+			if strings.HasPrefix(fn.name, "the function literal at ") && strings.HasSuffix(fn.name, " in "+wrapper) {
+				guard.walk(fn)
+				walked = true
+			}
+		}
+		if !walked {
+			t.Fatalf("the guard finds no handler %s returns (keyedRouteWrappers)", wrapper)
+		}
+	}
 	return guard
 }
 

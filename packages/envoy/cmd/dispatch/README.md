@@ -3595,8 +3595,11 @@ It is built whenever the reviewer's model group (`DISPATCH_REVIEWER_MODEL_*`) is
 
 - `after` posts the text at once and reviews it after the post (`reviewed_after`); its findings go to the writer the same way, and nothing more happens when the writer does not act.
 
-- A write that names a held text (a child issue, an ask, a comment or a message on a held issue, a reply to a held comment, ask or message, and any other write whose path names a held issue, ask, comment or message: a document, a result, a handoff, a claim, an update, an answer) is accepted, stored beside it, and runs right after it posts, in the order the writes came.
-  A create of a kind the reviewer holds answers `201` in its own shape under an id reserved for it; any other write answers `202 {id, held}`.
+- A write that names a held text (a child issue, an ask, a comment or a message on a held issue, a reply to a held comment, ask or message, and any other write whose path names a held issue, ask, comment or message: a document, a result, a handoff, a claim, an update, an answer) is accepted, stored beside it, and runs right after it posts, in the order the writes came; a text the reviewer reads among them is reviewed once the text it waits on has posted.
+  A create of a kind the reviewer holds answers `201` in its own shape under an id reserved for it; any other write answers `202 {id, held}` to a session whose client sends `Dispatch-Accepts-Kept-Write: 1`, as the agents' `DispatchClient` does on every write, and `409 HELD_TEXT` with the held id to any other session, keeping nothing: a client built before the header reads the `202` as the route's own answer. A person's write is the route's own, which finds no such text, as a person's read is.
+  The kept write marks itself posted in its own transaction, so it runs once.
+  A second reply of a session to the same delivery, held while its first is held, waits on the first, so the two post in the order the session wrote them.
+  A post refused for anything its route answers below 500 (a quote anchor gone from the document among them) fails the held text, and every text that waits on it, at once.
 
 - A model call of the reviewer, of Rewrite or of Define whose reply is not the object its schema names, or one the component cannot use (a definition of no words), asks again, two more tries at most.
   Each try waits for the pacer and is paid for.

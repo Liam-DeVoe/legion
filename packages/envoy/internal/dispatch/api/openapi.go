@@ -5,8 +5,9 @@
 // type for it, and a shape that changes cannot quietly disagree with the handler that answers it.
 //
 // Nothing here reads the database or opens a listener, as WriteRouteIndex needs neither: the table
-// with its test hooks in, routeShapes beside it and reflection over the Go types are the whole
-// input. `envoy-dispatch openapi` prints it and `--check` holds the committed artifact to it.
+// with its test hooks in, routeShapes beside it, the answers a write naming a held text gets
+// (keptAnswers) and reflection over the Go types are the whole input. `envoy-dispatch openapi`
+// prints it and `--check` holds the committed artifact to it.
 package api
 
 import (
@@ -277,7 +278,8 @@ func openAPIRequestBodyTypes() (map[reflect.Type]bool, []reflect.Type) {
 		if shape.Held {
 			reach(heldState{}, response, nil)
 		}
-		for _, answer := range slices.Concat(shape.Also, shape.Refusals) {
+		method, pattern, _ := strings.Cut(name, " ")
+		for _, answer := range slices.Concat(shape.Also, shape.Refusals, keptAnswers(method, pattern)) {
 			reach(answer.Body, response, nil)
 		}
 	}
@@ -909,6 +911,13 @@ func (e *openAPIEmitter) responses(route apiRoute, shape routeShape) (*openapi31
 	}
 	for _, refusal := range shape.Refusals {
 		if err := add(refusal.Status, refusal.Body); err != nil {
+			return nil, err
+		}
+	}
+	// A write that names a held text by its path is kept beside it, 202, for a client that reads
+	// that answer, and refused 409 HELD_TEXT for any other (awaitHeldTarget, held_replay.go).
+	for _, kept := range keptAnswers(route.Method, route.Pattern) {
+		if err := add(kept.Status, kept.Body); err != nil {
 			return nil, err
 		}
 	}

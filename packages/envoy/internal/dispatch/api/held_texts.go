@@ -29,7 +29,8 @@ import (
 // the writer and the sweep make; and the post, which runs the kind's own create path with the
 // stored request, the recorded actor and the reserved id, in one transaction that also marks the
 // held row posted. A held text that a later write names as its parent or as the text it answers
-// has that write held beside it, posted right after it in the order the writes came.
+// has that write held beside it, reviewed once it posts where the reviewer reads that write, and
+// posted right after it in the order the writes came.
 
 // The states of a held text (held_texts.state).
 const (
@@ -257,7 +258,7 @@ func (s *server) heldParentOf(ctx context.Context, names []string) (*heldParent,
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select id, state, coalesce(reader, ''), coalesce(project, '')
 		from held_texts
-		where id = any($1) and state not in ('posted', 'failed') and kind <> 'decision_block'
+		where id = any($1) and state in ('reviewing', 'awaiting_writer', 'posting') and kind <> 'decision_block'
 		order by seq desc limit 1`, named).Scan(&parent.id, &parent.state, &parent.reader, &parent.project)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -287,8 +288,9 @@ type heldWriteOf struct {
 // and its review started; one it does not waits, decided, for its parent to post. A text that
 // waits on no held text first runs its whole write in a transaction that is rolled back (dryRunHeld),
 // so a write its own path refuses is refused now, as with the reviewer off, and never fails at
-// its post. The answer carries the advice the write's own answer carries (heldAdvice), worked out
-// before the id is reserved.
+// its post; a reply its route answers with no new text is answered so now, and nothing is held.
+// The answer carries the advice the write's own answer carries (heldAdvice), worked out before
+// the id is reserved, and, for a new issue, the assignee its post writes (heldIssueAssignee).
 func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.Actor, write reviewedWrite, of heldWriteOf) {
 	ctx := r.Context()
 	request, err := json.Marshal(write.request)
@@ -314,17 +316,21 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 			s.writeHandlerError(w, err)
 			return
 		}
-		if refused := ran.refused; refused != nil {
-			for key, values := range refused.header {
-				w.Header()[key] = values
-			}
-			w.WriteHeader(refused.status)
-			_, _ = w.Write(refused.body.Bytes())
+		if own := ran.answered; own != nil {
+			own.writeTo(w)
 			return
 		}
 		dry = &ran
 	}
 	advice := s.heldAdvice(r, write, actor, dry, of.parent)
+	answered := write
+	if create, isIssue := write.request.(issueCreate); isIssue {
+		if create.Assignee, err = s.heldIssueAssignee(ctx, create, actor); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		answered.request = create
+	}
 	tx, err := s.begin(ctx)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -368,13 +374,16 @@ func (s *server) holdWrite(w http.ResponseWriter, r *http.Request, actor model.A
 		event := of.event
 		event.Outcome = reviewHeld
 		s.recordWritingCheck(ctx, event)
+		// A text that waits on a held text is reviewed once that text posts (claimHeldReview,
+		// afterHeldPost); this start takes it at once where the text posted before this row was
+		// committed, and nothing otherwise.
 		s.startReview(id)
 	} else {
 		// Its parent may have posted while this write was held beside it.
 		s.detached.goDetached(s.postReady)
 	}
 	answer := heldState{State: state, WaitsOn: dependsOn}
-	WriteJSON(w, http.StatusCreated, heldAnswerOf(write, id, actor, writtenAt, answer, wantsDisplayTrees(r), advice))
+	WriteJSON(w, http.StatusCreated, heldAnswerOf(answered, id, actor, writtenAt, answer, wantsDisplayTrees(r), advice))
 }
 
 // reserveIssueNumber takes the next number of project's sequence, as an issue create takes it,
@@ -396,6 +405,46 @@ func reserveIssueNumber(ctx context.Context, tx pgx.Tx, project string) (int, er
 	return number, err
 }
 
+// heldIssueAssignee is the assignee the post of create, a new issue the reviewer holds, writes
+// (writeIssue): the person it names, else defaultAssignee's chain read as it stands now - the
+// person actor acts for, the parent's assignee, the project's default assignee. A parent that is
+// itself a held issue, which no issues row holds yet, gives the assignee its own post writes.
+func (s *server) heldIssueAssignee(ctx context.Context, create issueCreate, actor model.Actor) (*string, error) {
+	if create.Assignee != nil {
+		return create.Assignee, nil
+	}
+	if login, acts := actorPerson(actor); acts {
+		return &login, nil
+	}
+	var parentAssignee *string
+	if create.Parent != "" {
+		err := s.deps.Store.Pool.QueryRow(ctx, `select assignee from issues where key = $1`, create.Parent).Scan(&parentAssignee)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			parent, err := s.loadHeld(ctx, s.deps.Store.Pool, create.Parent, false)
+			if err != nil {
+				return nil, err
+			}
+			write, err := parent.write()
+			if err != nil {
+				return nil, err
+			}
+			if parentCreate, isIssue := write.request.(issueCreate); isIssue {
+				if parentAssignee, err = s.heldIssueAssignee(ctx, parentCreate, parent.actor); err != nil {
+					return nil, err
+				}
+			}
+		case err != nil:
+			return nil, err
+		}
+	}
+	var projectDefault string
+	if err := s.deps.Store.Pool.QueryRow(ctx, `select default_assignee from projects where key = $1`, create.Project).Scan(&projectDefault); err != nil {
+		return nil, err
+	}
+	return defaultAssignee(actor, parentAssignee, projectDefault), nil
+}
+
 // heldState is the `held` object a held write's answer carries beside the write's own shape.
 type heldState struct {
 	// State is the held text's state: reviewing, awaiting_writer, posting, posted or failed.
@@ -407,34 +456,21 @@ type heldState struct {
 }
 
 // heldAnswer is a write's answer with the `held` object merged into it, as advice is merged
-// (advisedResponse): the write's own shape, built from the held row, and what holds it.
+// (mergedJSON): the write's own shape, built from the held row, and what holds it.
 type heldAnswer struct {
 	payload any
 	held    heldState
 }
 
 func (answer heldAnswer) MarshalJSON() ([]byte, error) {
-	payload, err := json.Marshal(answer.payload)
-	if err != nil {
-		return nil, err
-	}
-	if len(payload) < 2 || payload[0] != '{' || payload[len(payload)-1] != '}' {
-		return nil, errors.New("a held write's answer must be a JSON object")
-	}
-	held, err := json.Marshal(answer.held)
-	if err != nil {
-		return nil, err
-	}
-	separator := []byte(`"held":`)
-	if len(payload) > 2 {
-		separator = []byte(`,"held":`)
-	}
-	return slices.Concat(payload[:len(payload)-1], separator, held, []byte("}")), nil
+	return mergedJSON(answer.payload, "held", answer.held)
 }
 
 // heldAnswerOf is the answer a held write gets: today's response shape for its kind, built from
-// what the hold stored under the reserved id, with the `held` object. advice, where not nil, is the
-// advice the write's own answer carries (heldAdvice), merged in as that answer merges it.
+// what the hold stored under the reserved id, with the `held` object. A new issue is in triage, as
+// every create files it, under the assignee its create names (holdWrite sets the one its post
+// writes). advice, where not nil, is the advice the write's own answer carries (heldAdvice),
+// merged in as that answer merges it.
 func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Time, held heldState, trees bool, advice any) heldAnswer {
 	var payload any = map[string]string{"id": id}
 	switch create := write.request.(type) {
@@ -468,7 +504,7 @@ func heldAnswerOf(write reviewedWrite, id string, actor model.Actor, at time.Tim
 			labels = []string{}
 		}
 		issue := model.Issue{
-			Key: id, Project: create.Project, Number: number, Title: create.Title, Status: "open",
+			Key: id, Project: create.Project, Number: number, Title: create.Title, Status: model.IssueStatusTriage,
 			Priority: create.Priority, Labels: labels, Assignee: create.Assignee, BlockedBy: create.Blockers,
 			CreatedBy: &actor, CreatedAt: at, UpdatedAt: at,
 		}
@@ -551,12 +587,13 @@ func (s *server) heldAdvice(r *http.Request, write reviewedWrite, actor model.Ac
 	return nil
 }
 
-// heldDryRun is what a held write's dry run found (dryRunHeld): refused, the answer the route of a
-// write kept whole refused it with; otherwise advice, the write advice the write's own answer
-// would carry (nil where its path gives none), and markdown, a new issue's spec as its seed would
-// store it.
+// heldDryRun is what a held write's dry run found (dryRunHeld): answered, the answer the route of
+// a reply kept whole gave in place of a pass (a refusal, or the stored reply of an attempt already
+// answered), which the write gets as its own; otherwise advice, the write advice the write's own
+// answer would carry (nil where its path gives none), and markdown, a new issue's spec as its seed
+// would store it.
 type heldDryRun struct {
-	refused  *replayAnswer
+	answered *replayAnswer
 	advice   *writeAdvice
 	markdown string
 }
@@ -564,7 +601,10 @@ type heldDryRun struct {
 // dryRunHeld runs write as actor's under id in a transaction it rolls back before the commit
 // (heldPost's dry run), so every check the kind's own path makes refuses it now. A kind's create
 // path answers its refusal as an error, and a write that passed with the advice it would have
-// answered; a reply kept whole answers its refusal as its route answered it, in refused.
+// answered. A reply kept whole passes where its route ends the dry run (errHeldDryRun), and any
+// other answer of its route is the reply's own, in answered: a refusal, or a reply to an attempt
+// already answered, which writes nothing and answers the stored reply as it does with the reviewer
+// off (the reply routes' finishRepeat), so nothing is held for it.
 func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (heldDryRun, error) {
 	ctx := s.postContext()
 	held := &heldPost{id: id, dryRun: true}
@@ -602,12 +642,8 @@ func (s *server) dryRunHeld(write reviewedWrite, actor model.Actor, id string) (
 			return heldDryRun{}, err
 		case answer.isDryRunPass():
 			return heldDryRun{}, nil
-		case answer.status >= 200 && answer.status < 300:
-			// The route answered with no new text: a reply to an attempt already answered, which
-			// its post answers the same way.
-			return heldDryRun{}, nil
 		}
-		return heldDryRun{refused: answer}, nil
+		return heldDryRun{answered: answer}, nil
 	default:
 		return heldDryRun{}, fmt.Errorf("a held write of %T has no path to run", write.request)
 	}
@@ -737,13 +773,29 @@ func (h *heldPost) finish(ctx context.Context, tx pgx.Tx) error {
 	return err
 }
 
+// finishRepeat is finish for a reply route's answer to an attempt already answered, which writes
+// no text and answers the stored reply: a held reply's post marks its row posted with it, as
+// finish does, and a dry run goes on to that answer rather than end as a pass, so the reply is
+// answered as it is with the reviewer off (dryRunHeld passes it back) and no text is held for it.
+func (h *heldPost) finishRepeat(ctx context.Context, tx pgx.Tx) error {
+	if h != nil && h.dryRun {
+		return nil
+	}
+	return h.finish(ctx, tx)
+}
+
 // claimHeldReview takes the held text id for a review: it must be in review, with no review
-// holding it or one held past staleClaim.
+// holding it or one held past staleClaim, and the held text it waits on, if any, must have posted.
+// A text whose parent has not posted is read in a record that misses that parent (a new ask, a
+// comment or a child on a held issue), so its review waits for the parent's post, which starts it
+// (afterHeldPost).
 func (s *server) claimHeldReview(ctx context.Context, id string) (heldRow, bool, error) {
 	row, err := scanHeld(s.deps.Store.Pool.QueryRow(ctx, `
-		update held_texts set claimed_at = now()
-		where id = $1 and state = 'reviewing'
-			and (claimed_at is null or claimed_at < now() - $2::interval)
+		update held_texts h set claimed_at = now()
+		where h.id = $1 and h.state = 'reviewing'
+			and (h.claimed_at is null or h.claimed_at < now() - $2::interval)
+			and (h.depends_on is null or exists (
+				select 1 from held_texts p where p.id = h.depends_on and p.state = 'posted'))
 		returning `+heldColumns, id, intervalOf(s.deps.Reviewer.staleClaim())))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return heldRow{}, false, nil
@@ -807,7 +859,7 @@ func (s *server) postReady() {
 				and (h.depends_on is null or p.state = 'posted')
 				and not exists (
 					select 1 from held_texts e
-					where e.depends_on = h.depends_on and e.seq < h.seq and e.state not in ('posted', 'failed'))
+					where e.depends_on = h.depends_on and e.seq < h.seq and e.state in ('reviewing', 'awaiting_writer', 'posting'))
 			order by h.seq limit 50`, intervalOf(s.deps.Reviewer.staleClaim()))
 		if err != nil {
 			if ctx.Err() == nil {
@@ -841,14 +893,17 @@ func (s *server) postReady() {
 // postHeld posts the held text id, which is decided: it takes the row for the post, runs the
 // kind's create path with the stored request (the reviewer's rewrite in its wording where the
 // outcome is rewrite_posted), the recorded actor and the reserved id, and reports whether it
-// posted. A post the create path refuses fails the held text with the refusal, and its writer is
+// posted. A post refused - any error its route would answer below 500 (handlerRefusalOf): the
+// create path's own refusal, and a document's (a quote anchor gone, a document too large, a row
+// gone), which no later post changes - fails the held text with the refusal, and its writer is
 // told (failHeld); any other failure leaves it for the sweep to post again.
 //
 // Each of its writes commits in a transaction of the shared pool. ctx is the post context
 // (postContext), which carries no request's Idempotency-Key, so those transactions take no commit
-// step: the post is the held text's own work, which the reviewer's sweep makes when no request
-// does, and never a write of the request that set it off, PUT /api/v1/held/{id}/state's among
-// them.
+// step of a request's: the post is the held text's own work, which the reviewer's sweep makes when
+// no request does, and never a write of the request that set it off, PUT /api/v1/held/{id}/state's
+// among them. The one step a post's transaction takes is its own mark of a kept write's row
+// (postReplay).
 func (s *server) postHeld(ctx context.Context, id string) bool {
 	row, err := s.claimHeldPost(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -861,26 +916,26 @@ func (s *server) postHeld(ctx context.Context, id string) bool {
 		return false
 	}
 	err = s.runHeldPost(ctx, row)
-	var refused *apiError
 	switch {
 	case err == nil:
 		s.afterHeldPost(ctx, row)
 		return true
 	case errors.Is(err, errHeldNotPosting):
 		return false
-	case errors.As(err, &refused) && refused.status < http.StatusInternalServerError:
+	}
+	if refusal := handlerRefusalOf(err); refusal.status < http.StatusInternalServerError {
+		refused := refusal.apiError()
 		slog.Warn("dispatch: a held text's post was refused", "text", row.id, "code", refused.code, "error", refused.message)
 		s.failHeld(ctx, row, refused)
 		return false
-	default:
-		if ctx.Err() == nil {
-			slog.Warn("dispatch: post a held text", "text", row.id, "error", err)
-		}
-		if releaseErr := s.releaseHeldPost(context.WithoutCancel(ctx), row.id); releaseErr != nil {
-			slog.Warn("dispatch: release a held text's post", "text", row.id, "error", releaseErr)
-		}
-		return false
 	}
+	if ctx.Err() == nil {
+		slog.Warn("dispatch: post a held text", "text", row.id, "error", err)
+	}
+	if releaseErr := s.releaseHeldPost(context.WithoutCancel(ctx), row.id); releaseErr != nil {
+		slog.Warn("dispatch: release a held text's post", "text", row.id, "error", releaseErr)
+	}
+	return false
 }
 
 // claimHeldPost takes the held text id for its post: it must be posting, with no post holding it
@@ -986,10 +1041,10 @@ func (s *server) tellNearCopy(ctx context.Context, row heldRow, copies []model.D
 // listener built before #2903 answers 400 to (commentExpectsReply says why).
 func (s *server) tellWriter(ctx context.Context, frame systemFrame, about string) {
 	told := "its writer was told"
-	switch gone, known := s.writerGone(ctx, frame.writer); {
+	switch {
 	case frame.writer == "":
 		told = "its writer was not told: it has no writer session"
-	case gone && known:
+	case s.writerGone(ctx, frame.writer):
 		told = "its writer was not told: its writer session has gone"
 	default:
 		if err := s.sendSystemFrame(ctx, frame); err != nil {
@@ -1096,9 +1151,12 @@ func (s *server) runHeldPost(ctx context.Context, row heldRow) error {
 	return nil
 }
 
-// afterHeldPost is what follows a held text's post: a text the reviewer did not read before it
-// posted is reviewed after the post where its kind's setting says so.
+// afterHeldPost is what follows a held text's post: each held text in review that waits on it has
+// its review started, which waited for this post (claimHeldReview, reviewDependents); and a text
+// the reviewer did not read before it posted is reviewed after the post where its kind's setting
+// says so.
 func (s *server) afterHeldPost(ctx context.Context, row heldRow) {
+	s.reviewDependents(ctx, row.id)
 	if row.reviewed || row.reader == "" || row.kind == heldRequestKind || s.deps.Reviewer.setting(reviewer.Kind(row.kind)) == ReviewOff {
 		return
 	}
@@ -1121,19 +1179,34 @@ func (s *server) afterHeldPost(ctx context.Context, row heldRow) {
 	s.reviewPosted(ctx, &postedReview{kind: write.kind, text: write.text, subject: subject, event: event}, row.id)
 }
 
+// reviewDependents starts the review of each held text in review that waits on id, a held text
+// that has posted, in the order they were held.
+func (s *server) reviewDependents(ctx context.Context, id string) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select id from held_texts where depends_on = $1 and state = 'reviewing' order by seq`, id)
+	if err == nil {
+		var dependents []string
+		if dependents, err = pgx.CollectRows(rows, pgx.RowTo[string]); err == nil {
+			for _, dependent := range dependents {
+				s.startReview(dependent)
+			}
+			return
+		}
+	}
+	if ctx.Err() == nil {
+		slog.Warn("dispatch: read the held texts in review that wait on a posted one", "text", id, "error", err)
+	}
+}
+
 // withRewrite is write with the wording of rewrite in place of its own: an ask's question and
 // options, an issue's title and spec, a comment's or a message's body. The options keep no id: a
-// stored ask's option ids are the index's to mint.
+// stored ask's option ids are the index's to mint (reviewer.OptionWords).
 func withRewrite(write reviewedWrite, rewrite reviewer.Text) reviewedWrite {
 	switch create := write.request.(type) {
 	case askCreate:
 		create.Question = rewrite.Body
 		if rewrite.Options != nil {
-			options := make([]model.AskOption, len(rewrite.Options))
-			for i, option := range rewrite.Options {
-				options[i] = model.AskOption{Label: option.Label, Description: option.Description}
-			}
-			create.Options = options
+			create.Options = reviewer.OptionWords(rewrite.Options)
 		}
 		return create.reviewed()
 	case issueCreate:
@@ -1191,7 +1264,7 @@ func (s *server) failWaitingOnFailed(ctx context.Context) ([]heldOrphan, error) 
 		set state = 'failed', detail = 'the held text it waits on, ' || p.id || ', failed to post',
 			claimed_at = null, updated_at = now()
 		from held_texts p
-		where p.id = h.depends_on and p.state = 'failed' and h.state not in ('posted', 'failed')
+		where p.id = h.depends_on and p.state = 'failed' and h.state in ('reviewing', 'awaiting_writer', 'posting')
 		returning h.id, h.kind, coalesce(h.writer, ''), p.id`)
 	if err != nil {
 		return nil, err
