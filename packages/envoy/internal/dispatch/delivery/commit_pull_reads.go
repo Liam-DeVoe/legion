@@ -142,9 +142,11 @@ func (c *CommitPullReads) Settle(repoFull, sha string, now time.Time) {
 // its title and URL, never its body), so the bound holds each memory to a few megabytes at most.
 // A memory at the bound whose every answer still stands drops the answer it learned longest ago
 // for each new commit (readOnlyAnswers.keep). That is the one place a read-only read may ask
-// GitHub where a writer's stored row would answer: a dropped answer costs one more GitHub read of
-// that commit. An answer that holds pull requests stands for good, as a branch's yes does, so a
-// process whose read-only reads have learned this many commits drops one for every new commit.
+// GitHub where a writer's stored row would answer: a dropped answer is read from GitHub again
+// when its commit is read again. An answer that holds pull requests stands for good, as a
+// branch's yes does, so once a process's read-only reads name more commits than the bound holds,
+// the memory drops one for every new commit, and those extra GitHub reads repeat on every read-only
+// read, where a writer's stored rows answer them.
 // The memory counts every drop on the process's metrics (CommitPullAnswers.CountDrops,
 // Branches.CountReadOnlyDrops) and logs one WARN when it first drops one, and no other until it
 // has fallen below the bound.
@@ -243,7 +245,7 @@ func (a *readOnlyAnswers[K, V]) makeRoomLocked(now time.Time) {
 		return
 	}
 	a.full = true
-	slog.Warn("dispatch: a read-only results read's memory of GitHub's answers reached its bound with every answer still standing, so it drops the answer learned longest ago for each new one, and each answer dropped costs one more GitHub read if its commit is read again; every drop is counted on the process's metrics, and this is not logged again until the memory has fallen below its bound",
+	slog.Warn("dispatch: a read-only results read's memory of GitHub's answers reached its bound with every answer still standing, so it drops the answer learned longest ago for each new one, and each dropped answer is read from GitHub again when its commit is read again, so past the bound those extra reads repeat on every read-only read; every drop is counted on the process's metrics, and this is not logged again until the memory has fallen below its bound",
 		"bound", ReadOnlyAnswerBound, "dropped", fmt.Sprintf("%+v", oldest), "learned", learned)
 }
 
