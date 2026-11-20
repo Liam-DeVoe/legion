@@ -375,7 +375,7 @@ func (r *outbox) holdForRelease(ctx context.Context, row record.OutboxRow) {
 	if row.LastError != cause.Error() {
 		level = slog.LevelInfo
 	}
-	r.logWait(ctx, level, row, cause)
+	r.logWait(ctx, level, row, cause.Error())
 	nextAt := r.now().UTC().Add(releaseHoldSpacing)
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		return r.records.HoldOutbox(ctx, tx, row.ID, row.LeaseToken, nextAt, cause.Error())
