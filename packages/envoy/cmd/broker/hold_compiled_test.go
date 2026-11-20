@@ -54,30 +54,43 @@ type holdAnswer struct {
 	said    string
 }
 
-// holdPlace is one place cmd/broker/main.go hands the hold gate to, as a person's credential
-// reaches it through the compiled broker: what a failure names it, the line of main.go that hands
-// it the gate, which is what the place's control deletes, and the probe that drives it once for a
-// person and answers what it did.
+// holdPlace is one place of the broker a wiring line of the hold in cmd/broker/main.go reaches, as
+// a person's credential, or Dispatch asking about a person, reaches it through the compiled broker:
+// what a failure names it, the line of main.go that wires it, which is what the place's control
+// deletes, whether that line hands the place the hold gate, and the probe that drives it once for
+// a person and answers what it did. A place the line hands the gate refuses a person the broker
+// holds; every other place serves them as it serves anyone.
 type holdPlace struct {
 	name   string
 	wiring string
+	gated  bool
 	probe  func(r *holdRig, t *testing.T, p *holdPerson) holdAnswer
 }
 
-// holdPlaces is every place main hands the gate to. A wiring line of the hold that main gains is
-// one more row: the place, the line, and a probe that reads the place through the binary; a
-// setting that line reads goes in holdRig.env.
+// holdPlaces is every place a wiring line of the hold in main reaches: each place main hands the
+// gate to, and the person-access route Dispatch asks at a sign-out. A wiring line of the hold that
+// main gains is one more row: the place, the line, whether it hands the place the gate, and a
+// probe that reads the place through the binary; a setting that line reads goes in holdRig.env.
 func holdPlaces() []holdPlace {
 	return []holdPlace{
-		{name: "a session route (POST /v1/grants/{id}/values)", wiring: "api.Deps's Hold: holdGate", probe: (*holdRig).readGrantValues},
-		{name: "a launcher route (POST /v1/enrollments)", wiring: "api.Deps's Hold: holdGate", probe: (*holdRig).enrolUnderTheLogin},
-		{name: "a token exchange (the machine login's token traded for a session's)", wiring: "exchangeConfig.Hold = holdGate", probe: (*holdRig).tradeTheMachineToken},
-		{name: "a device-code redemption", wiring: "exchangeConfig.Hold = holdGate", probe: (*holdRig).redeemADeviceCode},
-		{name: "introspection (POST /v1/oauth/introspect as Dispatch)", wiring: "exchangeConfig.Hold = holdGate", probe: (*holdRig).introspectTheSessionToken},
-		{name: "an approval-page decision", wiring: "approval.Config's Hold: holdGate", probe: (*holdRig).decideOnThePage},
-		{name: "an airlock request", wiring: "airlockproxy.Options's Hold: holdGate", probe: (*holdRig).askThroughTheAirlock},
+		{name: "a session route (POST /v1/grants/{id}/values)", wiring: "api.Deps's Hold: holdGate", gated: true, probe: (*holdRig).readGrantValues},
+		{name: "a launcher route (POST /v1/enrollments)", wiring: "api.Deps's Hold: holdGate", gated: true, probe: (*holdRig).enrolUnderTheLogin},
+		{name: "a token exchange (the machine login's token traded for a session's)", wiring: "exchangeConfig.Hold = holdGate", gated: true, probe: (*holdRig).tradeTheMachineToken},
+		{name: "a device-code redemption", wiring: "exchangeConfig.Hold = holdGate", gated: true, probe: (*holdRig).redeemADeviceCode},
+		{name: "introspection (POST /v1/oauth/introspect as Dispatch)", wiring: "exchangeConfig.Hold = holdGate", gated: true, probe: (*holdRig).introspectTheSessionToken},
+		{name: "an approval-page decision", wiring: "approval.Config's Hold: holdGate", gated: true, probe: (*holdRig).decideOnThePage},
+		{name: "an airlock request", wiring: "airlockproxy.Options's Hold: holdGate", gated: true, probe: (*holdRig).askThroughTheAirlock},
+		{name: "the person-access route (GET /v1/person-access as Dispatch)", wiring: "api.Deps's Exchange: exchangePolicy", probe: (*holdRig).countExchangeEntries},
 	}
 }
+
+// The two pod accounts the token exchange lists (BROKER_EXCHANGE_ACCOUNTS), one acting for each
+// person, so exactly one entry of the exchange names each of them, which is what the person-access
+// route counts.
+const (
+	adaExchangeAccount = "system:serviceaccount:example-ns:example-ada-worker"
+	bobExchangeAccount = "system:serviceaccount:example-ns:example-bob-worker"
+)
 
 // holdPerson is one person of this test, their two secrets, and what the first boot leaves them
 // holding, each made while Dispatch holds nobody: a machine login (its key, its launcher
@@ -185,8 +198,9 @@ func newHoldRig(t *testing.T) *holdRig {
 
 // env is the broker's configuration at one boot: the approval fixture's, with its sign-in, the
 // machine-login page that turns the device grant on, the airlock, a lease and an access token
-// that outlive the whole run, and, for a boot with the hold on, the Dispatch stand-in as
-// BROKER_PROJECT_ACCESS_URL and the file holding the one bearer it takes.
+// that outlive the whole run, a token exchange whose entries name each person once, and, for a
+// boot with the hold on, the Dispatch stand-in as BROKER_PROJECT_ACCESS_URL and the file holding
+// the one bearer it takes.
 func (r *holdRig) env(holdOn bool) []string {
 	env := append(r.f.baseEnv(r.databaseURL, r.public.URL), r.f.signInEnv()...)
 	env = append(env, r.airlock...)
@@ -194,6 +208,8 @@ func (r *holdRig) env(holdOn bool) []string {
 		"BROKER_MACHINE_LOGIN_URL="+testMachineLoginURL,
 		"BROKER_LEASE_SECONDS=3600",
 		"BROKER_ACCESS_TOKEN_SECONDS=3600",
+		"BROKER_EXCHANGE_K8S_AUDIENCE="+exchangeAudience,
+		"BROKER_EXCHANGE_ACCOUNTS="+adaExchangeAccount+"="+project+"="+ada+" "+bobExchangeAccount+"="+project+"="+bob,
 	)
 	if holdOn {
 		env = append(env, "BROKER_PROJECT_ACCESS_URL="+r.dispatch.URL, "BROKER_PROJECT_ACCESS_TOKEN_FILE="+r.accessFile)
@@ -432,16 +448,39 @@ func (r *holdRig) askThroughTheAirlock(t *testing.T, p *holdPerson) holdAnswer {
 	return holdAnswer{answeredNeither, said}
 }
 
+// countExchangeEntries is Dispatch asking what p holds that outlives their browser (GET
+// /v1/person-access): served when the answer names p and counts the one exchange entry that names
+// them. The route asks no hold, so it answers alike whether the broker holds p or not.
+func (r *holdRig) countExchangeEntries(t *testing.T, p *holdPerson) holdAnswer {
+	t.Helper()
+	status, body := r.client.UI(t, http.MethodGet, "/v1/person-access?person="+url.QueryEscape(p.login), nil)
+	said := fmt.Sprintf("GET /v1/person-access answered %d %s, where one exchange entry names %s", status, strings.TrimSpace(string(body)), p.login)
+	var answer struct {
+		Person          string `json:"person"`
+		ExchangeEntries *int   `json:"exchange_entries"`
+	}
+	if status == http.StatusOK && json.Unmarshal(body, &answer) == nil && answer.Person == p.login &&
+		answer.ExchangeEntries != nil && *answer.ExchangeEntries == 1 {
+		return holdAnswer{answeredServed, said}
+	}
+	return holdAnswer{answeredNeither, said}
+}
+
 // expectAtEachPlace drives every place for p through the broker booted now and fails t, naming the
-// place and the line of main that hands it the gate, at each that does not answer want; while says
-// what is true of this boot.
-func (r *holdRig) expectAtEachPlace(t *testing.T, while string, p *holdPerson, want string) {
+// place and the line of main that wires it, at each that does not answer as it should: held where
+// the line hands the place the gate and the broker holds p, served everywhere else. holdsThem says
+// whether the broker booted now holds p, and while what is true of this boot.
+func (r *holdRig) expectAtEachPlace(t *testing.T, while string, p *holdPerson, holdsThem bool) {
 	t.Helper()
 	for _, place := range holdPlaces() {
+		want := answeredServed
+		if holdsThem && place.gated {
+			want = answeredHeld
+		}
 		got := place.probe(r, t, p)
 		t.Logf("%s, %s at %s: %s", while, p.login, place.name, got.said)
 		if got.outcome != want {
-			t.Errorf("%s, the compiled broker %s %s at %s, want %s: %s. main.go hands this place the gate in %s",
+			t.Errorf("%s, the compiled broker %s %s at %s, want %s: %s. main.go wires this place in %s",
 				while, verbOf(got.outcome), p.login, place.name, want, got.said, place.wiring)
 		}
 	}
@@ -463,7 +502,8 @@ func verbOf(outcome string) string {
 // the gate to, a session route, a launcher route, a token exchange, a device-code redemption, an
 // approval-page decision and an airlock request, and its introspection reports her token held,
 // while bob is served at each and his token is not held. With BROKER_PROJECT_ACCESS_URL unset, the
-// same broker serves her at each, and its boot log says the hold is off.
+// same broker serves her at each, and its boot log says the hold is off. At every boot, the
+// person-access route Dispatch asks at a sign-out counts the one exchange entry that names each.
 //
 // Three boots of the binary on one database behind one public URL. The first, with the hold on and
 // Dispatch holding nobody, makes what ada and bob hold and finds each place serving both, which is
@@ -474,8 +514,9 @@ func verbOf(outcome string) string {
 // has no BROKER_PROJECT_ACCESS_URL: Dispatch still holds ada, and the broker's database keeps the
 // held answer the second boot read, yet the broker asks nobody and serves her at each place.
 //
-// Each place's control deletes the line of main.go that hands it the gate (holdPlaces' wiring):
-// the second boot then serves ada there, and this test fails naming that place.
+// Each place's control deletes the line of main.go that wires it (holdPlaces' wiring): a gated
+// place then serves ada at the second boot, the person-access route counts no entry, and this test
+// fails naming that place and that line.
 func TestTheCompiledBrokerHoldsAHeldPerson(t *testing.T) {
 	r := newHoldRig(t)
 	heldAda := &holdPerson{login: ada, deploySecret: approvalSecretName, airlockSecret: "ADA_AIRLOCK"}
@@ -487,20 +528,20 @@ func TestTheCompiledBrokerHoldsAHeldPerson(t *testing.T) {
 	r.equip(t, heldAda)
 	r.equip(t, servedBob)
 	for _, p := range []*holdPerson{heldAda, servedBob} {
-		r.expectAtEachPlace(t, "with the hold on and Dispatch holding nobody", p, answeredServed)
+		r.expectAtEachPlace(t, "with the hold on and Dispatch holding nobody", p, false)
 	}
 	if t.Failed() {
-		t.Fatal("a place refused a person Dispatch does not hold, so a refusal after the hold would not be the hold's")
+		t.Fatal("a place did not serve a person Dispatch does not hold, so what the next boot refuses would not be the hold's refusal")
 	}
 
 	r.dispatch.SetHeld(ada, true)
 	r.boot(t, true)
-	r.expectAtEachPlace(t, "with Dispatch holding ada", heldAda, answeredHeld)
-	r.expectAtEachPlace(t, "with Dispatch holding ada", servedBob, answeredServed)
+	r.expectAtEachPlace(t, "with Dispatch holding ada", heldAda, true)
+	r.expectAtEachPlace(t, "with Dispatch holding ada", servedBob, false)
 
 	r.boot(t, false)
 	asked := r.dispatch.Calls()
-	r.expectAtEachPlace(t, "with BROKER_PROJECT_ACCESS_URL unset and Dispatch still holding ada", heldAda, answeredServed)
+	r.expectAtEachPlace(t, "with BROKER_PROJECT_ACCESS_URL unset and Dispatch still holding ada", heldAda, false)
 	if calls := r.dispatch.Calls() - asked; calls != 0 {
 		t.Errorf("the broker with BROKER_PROJECT_ACCESS_URL unset asked the Dispatch stand-in %d times, want none", calls)
 	}
