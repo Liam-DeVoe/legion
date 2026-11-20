@@ -375,7 +375,11 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 	// Dispatch serves as a second login, dispatchServeLogin, which owns nothing in the database:
 	// the owner login dispatch migrates and grants it what a serving process uses, and Postgres
 	// then refuses it every write the grants leave out. Its password is generated beside the
-	// owner's and kept the same way, whatever existingDatabaseInstance says.
+	// owner's and kept the same way, whatever existingDatabaseInstance says. The component
+	// registers no User for it: Cloud SQL makes a user it creates with no database role a member
+	// of cloudsqlsuperuser, which may create roles and event triggers, and a user created with
+	// roles must name roles the database holds already. envoy-dispatch creates the login itself,
+	// through the owner at boot, with no role, from the URL it is given.
 	servePassword, err := random.NewRandomPassword(ctx, s.hostname+"-serve-password", &random.RandomPasswordArgs{Length: pulumi.Int(32), Special: pulumi.Bool(false)}, child)
 	if err != nil {
 		return nil, err
