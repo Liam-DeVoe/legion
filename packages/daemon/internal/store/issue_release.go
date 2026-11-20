@@ -22,7 +22,7 @@ import (
 // still in it and comes back at the next wake for one of its roles.
 //
 // Takes says the read is the teardown's last, the one the runtime asks under its pod lock and
-// takes the pod on (runtime.IssueSuspender), and Sandbox names the Sandbox it takes, "" where the
+// takes the pod on (runtime.IssueReleaser), and Sandbox names the Sandbox it takes, "" where the
 // runtime names none. A last read that answers ReleaseActs records the take on the mark
 // (issue_releases.taken_pod), which refuses an operator's take-over of a suspended claim of the
 // issue from then until the release ends (refuseOperatorTakeOver, which every claim write runs).

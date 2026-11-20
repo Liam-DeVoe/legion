@@ -6616,7 +6616,7 @@ An operator's suspension holds the pod because it is the one suspension the daem
 The operator ends that pod by resuming the claim, which starts the role in the pod that is still there, or by stopping it, which retires the claim and leaves the issue to this rule.
 The pass reads that suspension when it queues the release, and the teardown reads it again, the last time under the runtime's pod lock (`store.IssueRelease`).
 So an operator who suspends a claim of the issue after the release is queued, and before that last read, still keeps the pod: the teardown cancels the release and records the hold as `unowned_operator_suspended`.
-The runtime deletes the pod on that last read and reads the store no more, so a suspension made after it could keep nothing.
+The runtime ends the pod on that last read and reads the store no more, so a suspension made after it could keep the pod no longer.
 The daemon refuses that suspension instead: `legion claims suspend` answers `409 Conflict` with a sentence that names the release and the pod's Sandbox, and the claim is left as it was (the guard of every claim write, `refuseOperatorTakeOver` in `internal/store/issue_release.go`).
 So in that window a suspension is refused, not lost, and once the release has ended the same command suspends the claim.
 An idle release takes its pod on the same last read, and refuses an operator's suspension made after it in the same way.
