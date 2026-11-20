@@ -1705,7 +1705,9 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
 // table's box, with every header on one line, and the other columns scroll inside the box. So
 // each column's header label and its controls stand on one line; the cell of the grip, the place
 // and the disclosure is no wider than 80 px; and while the table stands scrolled to its start,
-// the Priority column ends at the box's inner right edge.
+// the Priority column ends at the box's inner right edge. And (spec v84, Verification v61) no two
+// controls of the header row have 44 px touch targets that overlap, and the `#` column offers its
+// sort and no other control.
 // SLOW(>=2s): the seed and one page read at a phone's size.
 test("on a phone the priorities tab keeps each place and title together as wide as the box, under headers on one line", async ({
   browser,
@@ -1786,6 +1788,67 @@ test("on a phone the priorities tab keeps each place and title together as wide 
       Math.abs(gap),
       `the Priority column ends at the box's inner right edge (${gap} px from it)`
     ).toBeLessThanOrEqual(1);
+
+    // The header row's controls, each by its 44 px touch target: its box, grown about its centre
+    // to 44 px where it is smaller. No two of them may overlap, and the `#` header holds one
+    // control, its sort.
+    const headerTargets = () =>
+      table.locator("thead").evaluate((head) => {
+        const controls = [
+          ...head.querySelectorAll("button, input, select, a[href], [role='button']"),
+        ]
+          .map((control) => ({ control, rect: control.getBoundingClientRect() }))
+          .filter(({ rect }) => rect.width > 0 && rect.height > 0);
+        const targets = controls.map(({ control, rect }) => {
+          const width = Math.max(44, rect.width);
+          const height = Math.max(44, rect.height);
+          const x = rect.left + rect.width / 2 - width / 2;
+          const y = rect.top + rect.height / 2 - height / 2;
+          const header = (control.closest("th")?.textContent ?? "").trim().slice(0, 16);
+          const name = (
+            control.getAttribute("aria-label") ??
+            control.getAttribute("title") ??
+            control.textContent ??
+            ""
+          )
+            .trim()
+            .slice(0, 16);
+          return {
+            header,
+            name,
+            x,
+            y,
+            right: x + width,
+            bottom: y + height,
+            sort: control.matches('button[title^="Sort"]'),
+          };
+        });
+        const overlaps: string[] = [];
+        for (const [at, one] of targets.entries()) {
+          for (const other of targets.slice(at + 1)) {
+            const across = Math.min(one.right, other.right) - Math.max(one.x, other.x);
+            const down = Math.min(one.bottom, other.bottom) - Math.max(one.y, other.y);
+            if (across > 0.5 && down > 0.5)
+              overlaps.push(
+                `${one.header}/${one.name} and ${other.header}/${other.name} by ${Math.round(across)} px`
+              );
+          }
+        }
+        const place = targets.filter((target) => target.header.startsWith("#"));
+        return {
+          overlaps,
+          placeControls: place.map((target) => `${target.sort ? "sort" : "other"} ${target.name}`),
+        };
+      });
+    const targets = await settledValue("the header row's touch targets", headerTargets);
+    soft(
+      targets.overlaps,
+      "no two controls' 44 px touch targets in the header row overlap"
+    ).toEqual([]);
+    soft(
+      targets.placeControls.map((control) => control.split(" ")[0]),
+      `the # column's sort is the only control of its header (${targets.placeControls.join(", ")})`
+    ).toEqual(["sort"]);
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
   } finally {
     await context.close();
