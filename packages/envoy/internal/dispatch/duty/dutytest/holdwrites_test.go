@@ -49,27 +49,38 @@ func TestAWaitForARenewalIsNotAnsweredByAWriteCommittedBeforeIt(t *testing.T) {
 	}
 }
 
+// waitForWrites returns once the recorder has read n writes, within within. A wait for a renewal
+// (WaitForRenewal) cannot stand in for it: a write committed before such a wait never answers it.
+func waitForWrites(t *testing.T, writes *dutytest.Writes, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(within); len(writes.All()) < n; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("the recorder read %d of the %d writes made, within %v", len(writes.All()), n, within)
+		}
+	}
+}
+
 // A take over is read once, however often its new holder renews after it: of the writes since
 // the earlier holder's last renewal, only those that change the row's holder are takes. A second
-// real take, by a third holder, is a second change.
+// real take, by a third holder, is a second change. Each count is read once the recorder has read
+// every write made, so a renewal it read late is counted all the same.
 func TestATakeOverCountsTheWritesThatChangeTheHolderAlone(t *testing.T) {
 	database := storetest.Open(t)
 	writes := dutytest.Record(t, database.Pool, database.Pool.Listener, "test-hold")
 	earlier, taker, third := uuid.New(), uuid.New(), uuid.New()
 	write(t, database.Pool, earlier)
-	writes.WaitForRenewal(t, earlier, within)
 	signaledBy := writes.Now(t)
 	write(t, database.Pool, taker)
 	for range 3 {
 		write(t, database.Pool, taker)
 	}
-	writes.WaitForRenewal(t, taker, within)
+	waitForWrites(t, writes, 5)
 	take := writes.TakeOver(t, earlier, signaledBy, within)
 	if take.Took.Holder != taker || take.Changes != 1 || take.LateRenewals != 0 {
 		t.Fatalf("the take over read %+v, want one change, to %s, and no late renewal", take, taker)
 	}
 	write(t, database.Pool, third)
-	writes.WaitForRenewal(t, third, within)
+	waitForWrites(t, writes, 6)
 	if again := writes.TakeOver(t, earlier, signaledBy, within); again.Changes != 2 {
 		t.Fatalf("after a third holder's take the take over read %d changes, want 2", again.Changes)
 	}
