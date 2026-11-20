@@ -1520,65 +1520,75 @@ for (const view of ["the past version", "the reading pane", "the comment"] as co
   });
 }
 
-/** A person's Ctrl+click or middle click on `link`: the button held down for 150 ms, as a hand
- *  holds it, where Playwright's own `click` releases it at once. Answers the address of the page
- *  it opened in `context`, or `none` when no page opened within 5 s. The other site is served
- *  by the row (`serveOtherSite`). */
-async function heldClickOpens(
+/** A person's press on `link` - a click, a Ctrl+click or a middle click - with the button held
+ *  down for 150 ms, as a hand holds it, where Playwright's own `click` releases it at once, at the
+ *  middle of the link's first line box, since a link the card wraps over two lines has words that
+ *  are not its own inside its bounding box. Answers the address of the page it opened in
+ *  `context` once that page has left `about:blank`, or `none` when no page opened within 5 s. */
+async function heldPressOpens(
   context: BrowserContext,
   page: Page,
   link: Locator,
-  how: "Ctrl+click" | "middle click"
+  how: "click" | "Ctrl+click" | "middle click"
 ): Promise<string> {
   await link.scrollIntoViewIfNeeded();
-  const box = await link.boundingBox();
-  if (box === null) throw new Error(`k-link-click: the link to ${how} is drawn`);
+  const point = await link.evaluate((anchor) => {
+    const line = anchor.getClientRects()[0];
+    return line === undefined
+      ? undefined
+      : { x: line.left + line.width / 2, y: line.top + line.height / 2 };
+  });
+  if (point === undefined) throw new Error(`k-link-click: the link to ${how} is drawn`);
   const opened = context.waitForEvent("page", { timeout: 5000 }).catch(() => undefined);
-  await page.mouse.move(box.x + Math.min(8, box.width / 2), box.y + box.height / 2);
+  await page.mouse.move(point.x, point.y);
   if (how === "Ctrl+click") await page.keyboard.down("ControlOrMeta");
-  const button = how === "Ctrl+click" ? "left" : "middle";
+  const button = how === "middle click" ? "middle" : "left";
   await page.mouse.down({ button });
   await page.waitForTimeout(150);
   await page.mouse.up({ button });
   if (how === "Ctrl+click") await page.keyboard.up("ControlOrMeta");
   const tab = await opened;
   if (tab === undefined) return "none";
-  await tab.waitForLoadState("domcontentloaded");
+  await tab.waitForURL((url) => url.href !== "about:blank", { timeout: 5000 }).catch(() => {});
   const address = tab.url();
   await tab.close();
   return address;
 }
 
-/** Serves the other site the web links point to in `context`, as `newPageAt` does. */
-async function serveOtherSite(context: BrowserContext): Promise<void> {
+// SLOW(>=2s): the Conversation tab or the spec opened for each of ten presses.
+test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a press on a link leaves the comment folded, and a Ctrl+click and a middle click open its dispatch:// link in a new page", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(240_000);
+  const seed = await seedLinkSpec();
+  // A web link's own new page is served, though this row reads only where it leaves the card:
+  // headless Chromium opens a held Ctrl+click's or middle click's page at another site at
+  // random, a plain page's link outside Dispatch included, so whether that page opens is read
+  // where Dispatch opens it itself (the rows above).
   await context.route(`${OTHER_SITE}/**`, (route) =>
     route.fulfill({
       body: "<!doctype html><title>Another site</title><p>Another site.</p>",
       contentType: "text/html",
     })
   );
-}
-
-// SLOW(>=2s): the Conversation tab and the spec opened once for each of twelve presses.
-test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a Ctrl+click and a middle click open each link in a new page", async ({
-  context,
-  page,
-}) => {
-  test.setTimeout(240_000);
-  const seed = await seedLinkSpec();
-  await serveOtherSite(context);
+  await page.setViewportSize(WIDE);
   const reference = `dispatch://${seed.other.key}`;
-  const otherPage = (from: Page) => new URL(`/issues/${seed.other.key}`, from.url()).href;
   const margin = await createComment(seed.issueKey, {
     anchor: { artifact: "spec", quote: "names it too" },
-    body: `Read [a page elsewhere](${AWAY}) and see [the other issue](${reference}).`,
+    body: `Read [a page elsewhere](${AWAY}), see [the other issue](${reference}) and ${seed.other.key}.`,
   });
   // The folded card of each comment, as its page draws it: the comment's own turn on the
-  // Conversation tab, and the margin's card of the comment anchored in the spec.
+  // Conversation tab, and the margin's card of the comment anchored in the spec. Each card's
+  // folded preview is one button that opens the thread, and it keeps its links live
+  // (`MarkdownPreview`'s `links="live"`), whose host skips a press under a link: a link pressed
+  // there opens the link and leaves the thread as it was, with no caret in its reply box.
   const places = [
     {
       card: () => page.locator(`[data-turn="comment:${seed.commentId}"]`),
-      open: () => page.goto(`/issues/${seed.issueKey}/conversation`),
+      open: async () => {
+        await page.goto(`/issues/${seed.issueKey}/conversation`);
+      },
       where: "the Conversation tab's folded comment",
     },
     {
@@ -1587,34 +1597,53 @@ test("k-link-click: in a folded comment on the Conversation tab and in the spec'
       where: "the spec margin's folded comment",
     },
   ];
-  await page.setViewportSize(WIDE);
+  const presses = [
+    ["the web link", "click"],
+    ["the web link", "Ctrl+click"],
+    ["the web link", "middle click"],
+    ["the dispatch:// link", "Ctrl+click"],
+    ["the dispatch:// link", "middle click"],
+  ] as const;
   for (const { card, open, where } of places) {
-    for (const [name, find, target] of [
-      [
-        "the web link",
-        (scope: Locator) => scope.getByRole("link", { exact: true, name: "a page elsewhere" }),
-        (_from: Page) => new RegExp(`^${AWAY}$`),
-      ],
-      [
-        "the dispatch:// link",
-        (scope: Locator) => scope.locator(`a[data-dispatch-ref="${reference}"]`).first(),
-        (from: Page) => new RegExp(`^${otherPage(from)}(/|$)`),
-      ],
-    ] as const) {
-      for (const how of ["Ctrl+click", "middle click"] as const) {
-        await open();
-        const link = find(card());
-        await expect(link, `k-link-click: ${where} draws ${name}`).toBeVisible();
-        const at = page.url();
-        // Soft, so one run names every place and link that opens nothing.
+    for (const [name, how] of presses) {
+      await open();
+      // The press waits for the card to draw the bare key's title, the last thing the card
+      // draws as it opens, so it never lands on words the card is still drawing.
+      await expect(
+        card().locator(`a[data-dispatch-ref="${reference}"]`).nth(1),
+        `k-link-click: ${where} draws the key's title`
+      ).toContainText(seed.other.title);
+      const link =
+        name === "the web link"
+          ? card().getByRole("link", { exact: true, name: "a page elsewhere" })
+          : card().locator(`a[data-dispatch-ref="${reference}"]`).first();
+      await expect(link, `k-link-click: ${where} draws ${name}`).toBeVisible();
+      // The card's own fold: the margin's card itself, or the card inside the turn.
+      const folded = card().locator("xpath=descendant-or-self::*[@aria-expanded]").first();
+      await expect(folded, `k-link-click: ${where} is folded`).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      const at = page.url();
+      const address = await heldPressOpens(context, page, link, how);
+      // Soft, so one run names every place and press that goes wrong.
+      if (name === "the dispatch:// link") {
         expect
-          .soft(
-            await heldClickOpens(context, page, link, how),
-            `k-link-click: in ${where}, a ${how} on ${name} opens it in a new page`
-          )
-          .toMatch(target(page));
-        expect.soft(page.url(), `k-link-click: in ${where}, a ${how} keeps the page`).toBe(at);
+          .soft(address, `k-link-click: in ${where}, a ${how} on ${name} opens it in a new page`)
+          .toMatch(new RegExp(`^${new URL(`/issues/${seed.other.key}`, at).href}(/|$)`));
       }
+      expect
+        .soft(page.url(), `k-link-click: in ${where}, a ${how} on ${name} keeps the page`)
+        .toBe(at);
+      await expect
+        .soft(folded, `k-link-click: in ${where}, a ${how} on ${name} leaves the comment folded`)
+        .toHaveAttribute("aria-expanded", "false");
+      expect
+        .soft(
+          await page.evaluate(() => document.activeElement?.tagName),
+          `k-link-click: in ${where}, a ${how} on ${name} puts no caret in a reply box`
+        )
+        .not.toBe("TEXTAREA");
     }
   }
 });
