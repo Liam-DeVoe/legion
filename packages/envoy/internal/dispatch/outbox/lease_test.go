@@ -216,8 +216,9 @@ const (
 // begins so is a renewal of the publisher hold.
 const renewalStatement = "update duty_holds set expires_at"
 
-// outboxApplication is the application_name of the connections of the row's outbox's own pool, so
-// that in pg_stat_activity the witness tells a backend of the outbox's from every other session's.
+// outboxApplication is the application_name of every connection the row's outbox opens, its pool's
+// and its LISTEN connections', so that in pg_stat_activity the witness tells a backend of the
+// outbox's from every other session's.
 const outboxApplication = "idle outbox under test"
 
 // witnessQuestion asks what an idle outbox's own statements need of the database: an answer; a
@@ -1348,10 +1349,12 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// The outbox runs on a pool of its own, as it does in a dispatch process: named, so the witness
 	// tells a lock the outbox holds from one another session holds (witnessQuestion), and traced,
 	// so the heartbeat knows when each renewal of the publisher hold left (renewalTrace). Its
-	// LISTEN connections are traced too, so the row knows when each LISTEN succeeded (listenTrace).
-	pool := storetest.Traced(t, database.Pool, renewalTrace{process: held.process}, map[string]string{"application_name": outboxApplication})
+	// LISTEN connections carry the same name, so a lock one of them holds is the outbox's own too,
+	// and are traced, so the row knows when each LISTEN succeeded (listenTrace).
+	named := map[string]string{"application_name": outboxApplication}
+	pool := storetest.Traced(t, database.Pool, renewalTrace{process: held.process}, named)
 	outbox := New(Deps{Store: &store.Store{Pool: pool}, Publisher: &recordingPublisher{}, Broker: events.NewBroker(),
-		Listen: storetest.Traced(t, database.Pool, listenTrace{scans: held}, nil).Listener})
+		Listen: storetest.Traced(t, database.Pool, listenTrace{scans: held}, named).Listener})
 	held.install(t, outbox)
 	held.process.watch(t, outbox)
 	ctx, cancel := context.WithCancel(context.Background())
