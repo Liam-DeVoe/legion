@@ -154,7 +154,7 @@ const importDocumentPage = () => import("./features/document/DocumentPage");
  */
 const IssuePage = chunkComponent(
   () => importIssuePage().then((module) => module.IssuePage),
-  <IssuePageFallback />,
+  <IssuePageSpace />,
   true
 );
 const ProjectPage = chunkComponent(
@@ -307,7 +307,18 @@ function IssuePageInATransition(): ReactNode {
   useEffect(() => {
     startTransition(() => setRenderThePage(true));
   }, []);
-  return renderThePage ? <IssuePage /> : <IssuePageFallback />;
+  return renderThePage ? <IssuePage /> : <IssuePageSpace />;
+}
+
+/**
+ * The space the issue page keeps until it is drawn: the new page's frame keeps its own skeleton,
+ * which names no control and no tab (`IssueFrameFallback`), and every other reader today's
+ * (`IssuePageFallback`). It is drawn only on an issue's address, so the reader's choice alone
+ * says which, as the route's own `Suspense` fallback says it from `issueFrame`.
+ */
+function IssuePageSpace(): ReactNode {
+  const [choice] = useIssuePageChoice();
+  return choice === "outline" ? <IssueFrameFallback /> : <IssuePageFallback />;
 }
 
 /**

@@ -1086,7 +1086,10 @@ test("a reader with the preference off keeps today's shell on the issue page", a
       await route.continue();
     });
     const arrival = page.goto(`/issues/${key}`).catch(() => undefined);
-    const tabs = page.locator('[aria-busy="true"] [role="tablist"]');
+    // Today's skeleton keeps the strip's tab labels, transparent and hidden from assistive
+    // technology, so the strip holds its own width while the page loads (`IssueTabsSkeleton`);
+    // it is no tablist, so the row reads the strip's box.
+    const tabs = page.locator('[aria-busy="true"] [data-testid="issue-tabs-box"]');
     await expect(tabs).toBeVisible();
     expect(
       (await tabs.innerText())

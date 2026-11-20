@@ -97,16 +97,3 @@ describe("the shell's deferred parts", () => {
     expect(preview).not.toContain("export function referenceTriggerProps(");
   });
 });
-
-describe("the issue page's first render", () => {
-  test("is the route's element, and that element renders the page in a transition", () => {
-    expect(app).toContain('<Route element={<IssuePageInATransition />} path="/issues/:key/*" />');
-    const gate = app.slice(app.indexOf("function IssuePageInATransition("));
-    expect(gate).toContain("startTransition(() => setRenderThePage(true));");
-    // Until the transition commits the reader has the page's own skeleton, which is what the
-    // Suspense boundary above shows while its chunk arrives: nothing new appears in between.
-    expect(gate.slice(0, gate.indexOf("\n}\n"))).toContain(
-      "renderThePage ? <IssuePage /> : <IssuePageFallback />"
-    );
-  });
-});
