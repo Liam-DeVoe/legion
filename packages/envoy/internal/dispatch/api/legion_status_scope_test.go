@@ -73,8 +73,13 @@ type legionStatusRig struct {
 	made int
 }
 
-// newLegionStatusRig builds the server with R26's setting on or off, the project, and the
-// inventory:
+// newLegionStatusRig builds the server with R26's setting on or off (newLegionStatusRigOn).
+func newLegionStatusRig(t *testing.T, on bool) *legionStatusRig {
+	t.Helper()
+	return newLegionStatusRigOn(t, testServerOptions{legionStatusScope: on})
+}
+
+// newLegionStatusRigOn builds the server from serving, with the project and the inventory:
 //
 //   - R26 refuses: the shared token; the shared token whose body's actor names the daemon's
 //     session, since a bearer's body can name any session and proves none; a personal token
@@ -86,11 +91,12 @@ type legionStatusRig struct {
 //   - A check in front of the handler refuses, each with its own code: a read-only broker token
 //     (403 READ_ONLY_TOKEN), and a broker token that names a service and no person (403
 //     SIGN_IN_REQUIRED).
-func newLegionStatusRig(t *testing.T, on bool) *legionStatusRig {
+func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatusRig {
 	t.Helper()
 	issuer := newServiceTokenIssuer(t)
+	serving.oidc = issuer.verifier(t)
 	rig := &legionStatusRig{
-		brokerTokenRig: newBrokerTokenRigOn(t, testServerOptions{legionStatusScope: on, oidc: issuer.verifier(t)}),
+		brokerTokenRig: newBrokerTokenRigOn(t, serving),
 	}
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": brokerTestProject, "name": "Broker",
@@ -520,6 +526,157 @@ func legionDeepStatusWrites(t *testing.T, rig *legionStatusRig) (writes []legion
 	return writes, chain[parentDepthCap-1]
 }
 
+// legionStatusChange is one call of the status-change route. make makes, as a person, the issues
+// the call needs, and answers the call. judged says whether R26 judges the call: a step of the
+// call writes the status of a Legion issue, or moves a Legion issue out from under every
+// labelled issue (sendStatusChange).
+type legionStatusChange struct {
+	name   string
+	judged bool
+	make   func(t *testing.T, rig *legionStatusRig) legionStatusChangeCall
+}
+
+// legionStatusChangeCall is a status change of key with body, every issue that the call can
+// change, and the checks of what the call leaves on each issue when the server takes it. A dry
+// run writes nothing, so its checks are not read.
+type legionStatusChangeCall struct {
+	key     string
+	body    map[string]any
+	issues  []string
+	written map[string][]legionCheck
+}
+
+// legionCallState is what a status change can change on its issues: the state of each issue, and
+// the number of events and of comments on the issues.
+type legionCallState struct {
+	issues           map[string]legionIssueState
+	events, comments int64
+}
+
+func readLegionCall(t *testing.T, database *store.Store, keys []string) legionCallState {
+	t.Helper()
+	state := legionCallState{issues: make(map[string]legionIssueState, len(keys))}
+	for _, key := range keys {
+		state.issues[key] = readLegionIssue(t, database, key)
+	}
+	state.events = countRows(t, database, `select count(*) from events where issue_key = any($1)`, keys)
+	state.comments = countRows(t, database, `select count(*) from comments where issue_key = any($1)`, keys)
+	return state
+}
+
+// requireLegionCallUnchanged fails unless each issue of keys is as before, and the issues have as
+// many events and as many comments as before.
+func requireLegionCallUnchanged(t *testing.T, database *store.Store, keys []string, before legionCallState) {
+	t.Helper()
+	after := readLegionCall(t, database, keys)
+	for _, key := range keys {
+		if !after.issues[key].equal(before.issues[key]) {
+			t.Errorf("%s after the call: %s; want it as it was: %s", key, after.issues[key], before.issues[key])
+		}
+	}
+	if after.events != before.events || after.comments != before.comments {
+		t.Errorf("the issues %v have %d events and %d comments after the call, want %d and %d",
+			keys, after.events, after.comments, before.events, before.comments)
+	}
+}
+
+// sendStatusChange sends change from credential, which must reach the handler. With the setting
+// on, R26 refuses a judged call from a legionRefused credential: the answer is R26's refusal, its
+// changed is empty, and no issue of the call changes (requireLegionCallUnchanged). The server
+// takes every other call, 200. A dry run that the server takes changes nothing. Any other call
+// that the server takes leaves each check of written true.
+func (rig *legionStatusRig) sendStatusChange(t *testing.T, credential legionCredential, change legionStatusChange) {
+	t.Helper()
+	call := change.make(t, rig)
+	before := readLegionCall(t, rig.database, call.issues)
+	response := credential.send(t, http.MethodPost, "/api/v1/issues/"+call.key+"/status-change", call.body)
+	if change.judged && rig.deps.LegionStatusScope && credential.verdict == legionRefused {
+		requireLegionStatusRefusal(t, response)
+		if changed := decodeBody[statusChangeRefusal](t, response).Changed; len(changed) != 0 {
+			t.Errorf("the refused call changed %+v, want nothing", changed)
+		}
+		requireLegionCallUnchanged(t, rig.database, call.issues, before)
+		return
+	}
+	if response.Code != http.StatusOK {
+		t.Errorf("status=%d body=%s, want 200: the server takes this call", response.Code, response.Body.String())
+		return
+	}
+	if call.body["dry_run"] == true {
+		requireLegionCallUnchanged(t, rig.database, call.issues, before)
+		return
+	}
+	for _, key := range call.issues {
+		after := readLegionIssue(t, rig.database, key)
+		for _, check := range call.written[key] {
+			check(t, after)
+		}
+	}
+}
+
+// legionCascade is test 7's cascade: an unlabelled root moved to backlog with include_children,
+// over a child that carries the label and is in work. So the call writes the status of the
+// child, a Legion issue. With dryRun, it is the dry run of that call.
+func legionCascade(dryRun bool) legionStatusChange {
+	name := "a cascade over a labelled child in work"
+	if dryRun {
+		name = "the dry run of " + name
+	}
+	return legionStatusChange{name: name, judged: true, make: func(t *testing.T, rig *legionStatusRig) legionStatusChangeCall {
+		root := rig.issue(t, nil, "", "")
+		child := rig.issue(t, []string{"legion"}, root, "in_progress")
+		body := map[string]any{"status": "backlog", "include_children": true}
+		if dryRun {
+			body["dry_run"] = true
+		}
+		return legionStatusChangeCall{key: root, body: body, issues: []string{root, child}, written: map[string][]legionCheck{
+			root:  {hasStatus("backlog")},
+			child: {hasStatus("backlog"), hasLabels("legion"), hasParent(root)},
+		}}
+	}}
+}
+
+// legionStatusChanges are test 7's judged calls of the status-change route: the cascade and its
+// dry run (legionCascade); include_parent on an unlabelled child of a labelled issue, which
+// writes the status of the labelled issue and of its child; unlink_children of a labelled root,
+// which moves its unlabelled child out from under every labelled issue; and a status change with
+// no option on a labelled issue.
+func legionStatusChanges() []legionStatusChange {
+	return []legionStatusChange{
+		legionCascade(false),
+		legionCascade(true),
+		{name: "include_parent on an unlabelled child of a labelled issue", judged: true, make: func(t *testing.T, rig *legionStatusRig) legionStatusChangeCall {
+			parent := rig.issue(t, []string{"legion"}, "", "backlog")
+			child := rig.issue(t, nil, parent, "")
+			return legionStatusChangeCall{
+				key: child, body: map[string]any{"status": "in_progress", "include_parent": true}, issues: []string{parent, child},
+				written: map[string][]legionCheck{
+					parent: {hasStatus("in_progress")},
+					child:  {hasStatus("in_progress"), hasParent(parent)},
+				},
+			}
+		}},
+		{name: "unlink_children on a labelled root", judged: true, make: func(t *testing.T, rig *legionStatusRig) legionStatusChangeCall {
+			root := rig.issue(t, []string{"legion"}, "", "")
+			child := rig.issue(t, nil, root, "")
+			return legionStatusChangeCall{
+				key: root, body: map[string]any{"status": "backlog", "unlink_children": true}, issues: []string{root, child},
+				written: map[string][]legionCheck{
+					root:  {hasStatus("backlog")},
+					child: {hasParent(""), hasStatus(model.IssueStatusTriage)},
+				},
+			}
+		}},
+		{name: "a status change with no option on a labelled issue", judged: true, make: func(t *testing.T, rig *legionStatusRig) legionStatusChangeCall {
+			key := rig.issue(t, []string{"legion"}, "", "")
+			return legionStatusChangeCall{
+				key: key, body: map[string]any{"status": "todo"}, issues: []string{key},
+				written: map[string][]legionCheck{key: {hasStatus("todo")}},
+			}
+		}},
+	}
+}
+
 // TestALegionIssueStatusNeedsThePersonOrLegionStatusScope: a status write on an issue that carries
 // the legion label is refused from every credential that holds neither scope, a write of the open
 // status the issue holds already too, and taken from every credential that holds one. A status
@@ -704,6 +861,61 @@ func TestALabelledIssueLeavesItsLabelledParentWithoutTheScope(t *testing.T) {
 	}
 }
 
+// TestACascadeThatWritesALegionIssueIsRefusedWhole: R26 judges every issue that a call of the
+// status-change route would change, before the call's first write. From the shared token, which
+// holds neither scope, it refuses each judged call whole (legionStatusChanges): no issue of the
+// call changes its status, labels, parent or last_seq, and no issue of the call gets an event or
+// a comment. A labelled child that is in the call's status group already is not changed, so the
+// cascade over it is taken. With DISPATCH_PARENT_STATUS_RULE on too, done on a labelled parent
+// whose child is in work answers R26's code, not PARENT_STATUS_CONFLICT. A browser sign-in makes
+// the cascade over a labelled child in work.
+func TestACascadeThatWritesALegionIssueIsRefusedWhole(t *testing.T) {
+	rig := newLegionStatusRig(t, true)
+	shared := rig.credential(t, legionSharedToken)
+	for _, change := range legionStatusChanges() {
+		t.Run(change.name, func(t *testing.T) { rig.sendStatusChange(t, shared, change) })
+	}
+
+	t.Run("a cascade over a labelled child in the status's group already", func(t *testing.T) {
+		rig.sendStatusChange(t, shared, legionStatusChange{judged: false, make: func(t *testing.T, rig *legionStatusRig) legionStatusChangeCall {
+			root := rig.issue(t, nil, "", "")
+			child := rig.issue(t, []string{"legion"}, root, "icebox")
+			kept := readLegionIssue(t, rig.database, child)
+			return legionStatusChangeCall{
+				key: root, body: map[string]any{"status": "backlog", "include_children": true}, issues: []string{root, child},
+				written: map[string][]legionCheck{
+					root: {hasStatus("backlog")},
+					child: {func(t *testing.T, after legionIssueState) {
+						t.Helper()
+						if !after.equal(kept) {
+							t.Errorf("the cascade changed %s to %s, want it as it was: %s", child, after, kept)
+						}
+					}},
+				},
+			}
+		}})
+	})
+
+	t.Run("done on a labelled parent whose child is in work, with the parent-status rule on", func(t *testing.T) {
+		ruled := newLegionStatusRigOn(t, testServerOptions{legionStatusScope: true, parentStatusRule: true})
+		parent := ruled.issue(t, []string{"legion"}, "", "in_progress")
+		child := ruled.issue(t, nil, parent, "in_progress")
+		ruled.sendStatusChange(t, ruled.credential(t, legionSharedToken), legionStatusChange{judged: true,
+			make: func(*testing.T, *legionStatusRig) legionStatusChangeCall {
+				return legionStatusChangeCall{key: parent, body: map[string]any{"status": "done"}, issues: []string{parent, child}}
+			}})
+		// The control: R26 lets a browser sign-in through, and R24 refuses the same call. So the
+		// rule is on, and R26's code came first.
+		closed := ruled.credential(t, legionBrowserSignIn).send(t, http.MethodPost, "/api/v1/issues/"+parent+"/status-change",
+			map[string]any{"status": "done"})
+		requireRefused(t, closed, http.StatusConflict, "PARENT_STATUS_CONFLICT")
+	})
+
+	t.Run("the cascade from a browser sign-in", func(t *testing.T) {
+		rig.sendStatusChange(t, rig.credential(t, legionBrowserSignIn), legionCascade(false))
+	})
+}
+
 // TestNoMintHoldsLegionStatus: no credential mints a personal token that holds legion-status,
 // alone or beside person, and no edit gives it to one: each is 400 TOKEN_SCOPES_INPUT and changes
 // no token. The table's own check refuses a row that holds it, so a write that passes the API
@@ -816,7 +1028,9 @@ func TestAnIssueUnderALabelledIssueIsALegionIssue(t *testing.T) {
 
 // TestTheLegionStatusRefusalWaitsForItsSetting: with Deps.LegionStatusScope off, every write that
 // tests 1 to 5 and 11 send from the shared token, and that R26 refuses with the setting on, is
-// taken.
+// taken. So is every call of the status-change route that test 7 sends from the shared token and
+// that R26 refuses with the setting on (legionStatusChanges), with DISPATCH_PARENT_STATUS_RULE off
+// too. The dry run among them is taken and writes nothing.
 func TestTheLegionStatusRefusalWaitsForItsSetting(t *testing.T) {
 	rig := newLegionStatusRig(t, false)
 	shared := rig.credential(t, legionSharedToken)
@@ -839,6 +1053,13 @@ func TestTheLegionStatusRefusalWaitsForItsSetting(t *testing.T) {
 		}
 		judged++
 		t.Run(write.name, func(t *testing.T) { rig.send(t, shared, write) })
+	}
+	for _, change := range legionStatusChanges() {
+		if !change.judged {
+			continue
+		}
+		judged++
+		t.Run(change.name, func(t *testing.T) { rig.sendStatusChange(t, shared, change) })
 	}
 	if judged == 0 {
 		t.Fatal("no write R26 judges was sent, so the setting's absence proved nothing")

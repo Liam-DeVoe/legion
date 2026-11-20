@@ -2,7 +2,7 @@ package api
 
 // legion_status_scope.go is R26 of dispatch://INFRA-3320: the refusal of three writes of a Legion
 // issue. A Legion issue carries the legion label, in any letter case, or is under an issue that
-// carries it (legionManagedStatusOfRow). Where Deps.LegionStatusScope is on
+// carries it (legionManagedStatus). Where Deps.LegionStatusScope is on
 // (DISPATCH_LEGION_STATUS_SCOPE), a credential that holds neither model.ScopePerson nor
 // model.ScopeLegionStatus cannot make these writes:
 //
@@ -80,8 +80,12 @@ const codeLegionStatusScopeRequired = "LEGION_STATUS_SCOPE_REQUIRED"
 // the one that optionalActor resolved for the request (requestWriter), and a nil credential holds
 // no scope.
 //
-// A refused step answers 403 codeLegionStatusScopeRequired. A walk that fails is an error, which
-// the caller answers 500: the walk gates a write, so a failed walk never lets the write through.
+// It reads the state of each step's issue before the call from the issue's stored row, never
+// from the step. The caller holds the owner lock of each step's issue, so the stored row is the
+// issue's state before the call. So no builder of a plan has to carry the issue's labels.
+//
+// A refused step answers 403 codeLegionStatusScopeRequired. A read that fails is an error, which
+// the caller answers 500: the read gates a write, so a failed read never lets the write through.
 func refuseLegionStatusWrite(ctx context.Context, q pgx.Tx, on bool, writer issueWriter, plan issueWritePlan) error {
 	if !on || writer.system || writer.credential.Holds(model.ScopePerson) || writer.credential.Holds(model.ScopeLegionStatus) {
 		return nil
@@ -95,29 +99,36 @@ func refuseLegionStatusWrite(ctx context.Context, q pgx.Tx, on bool, writer issu
 }
 
 // refuseLegionStatusStep judges one step by R26's three rules. A step writes the status when it
-// names a status (statusAfter), with any value, the value the issue holds already included. The
-// label rule reads the labels alone, so it runs first and needs no query. The other two rules
-// read whether the issue is a Legion issue: before the call at most once, and after the call
-// only when a rule needs it.
+// names a status (statusAfter), with any value, the value the issue holds already included. Only
+// a step that writes labels (labelsAfter) can remove the label. So the label rule reads nothing
+// when the step writes no labels, or writes labels that hold the label. Otherwise it reads the
+// stored labels, and it needs no walk: the read walks the chain only when another rule needs the
+// walk. The other two rules read whether the issue is a Legion issue: before the call in the same
+// statement as the stored labels (legionIssueBefore), and after the call only when a rule needs it.
 func refuseLegionStatusStep(ctx context.Context, q pgx.Tx, step issueWriteStep) error {
-	// (b) The removal of the legion label.
-	if holdsLegionLabel(step.labelsBefore) && !holdsLegionLabel(step.labelsLeft()) {
-		return legionStatusScopeRefusal(step.key, "the removal of the legion label")
-	}
 	writesStatus := step.statusAfter != nil
-	if !writesStatus && !step.changesParent() {
+	walks := writesStatus || step.changesParent()
+	removesLabel := step.labelsAfter != nil && !holdsLegionLabel(*step.labelsAfter)
+	if !walks && !removesLabel {
 		return nil
 	}
-	before, err := legionManagedStatusOfRow(ctx, q, step.key, step.parentBefore, step.labelsBefore)
+	stored, before, err := legionIssueBefore(ctx, q, step.key, walks)
 	if err != nil {
 		return err
+	}
+	// (b) The removal of the legion label.
+	if removesLabel && holdsLegionLabel(stored) {
+		return legionStatusScopeRefusal(step.key, "the removal of the legion label")
+	}
+	if !walks {
+		return nil
 	}
 	if writesStatus {
 		// (a) A status write of an issue that is a Legion issue before the call or after it.
 		if before {
 			return legionStatusScopeRefusal(step.key, "a status write")
 		}
-		after, err := step.legionIssueAfter(ctx, q, before)
+		after, err := step.legionIssueAfter(ctx, q, stored, before)
 		if err != nil {
 			return err
 		}
@@ -130,7 +141,7 @@ func refuseLegionStatusStep(ctx context.Context, q pgx.Tx, step issueWriteStep) 
 	if !before {
 		return nil
 	}
-	after, err := step.legionIssueAfter(ctx, q, before)
+	after, err := step.legionIssueAfter(ctx, q, stored, before)
 	if err != nil {
 		return err
 	}
@@ -140,13 +151,19 @@ func refuseLegionStatusStep(ctx context.Context, q pgx.Tx, step issueWriteStep) 
 	return nil
 }
 
-// labelsLeft is the labels that the step leaves on its issue: the labels it writes, or the labels
-// the issue has when the step keeps them.
-func (step issueWriteStep) labelsLeft() []string {
-	if step.labelsAfter != nil {
-		return *step.labelsAfter
+// legionIssueBefore reads key's stored row: its labels and, when walk is set, whether it is a
+// Legion issue (legionManagedStatusWithLabelsSQL), in one statement. Without walk it reads the
+// labels alone.
+func legionIssueBefore(ctx context.Context, q pgx.Tx, key string, walk bool) (labels []string, legion bool, err error) {
+	if walk {
+		err = q.QueryRow(ctx, legionManagedStatusWithLabelsSQL, key).Scan(&labels, &legion)
+	} else {
+		err = q.QueryRow(ctx, `select labels from issues where key = $1`, key).Scan(&labels)
 	}
-	return step.labelsBefore
+	if err != nil {
+		return nil, false, fmt.Errorf("read %s as it is stored, for R26's refusal: %w", key, err)
+	}
+	return labels, legion, nil
 }
 
 // parentLeft is the parent that the step leaves on its issue: the parent it writes, or the
@@ -158,12 +175,17 @@ func (step issueWriteStep) parentLeft() *string {
 	return step.parentBefore
 }
 
-// legionIssueAfter says whether the step's issue is a Legion issue after the call. before is the
-// answer before the call. A step that changes neither the parent nor the labels leaves that
-// answer, so it is answered without a second walk.
-func (step issueWriteStep) legionIssueAfter(ctx context.Context, q pgx.Tx, before bool) (bool, error) {
-	labels := step.labelsLeft()
-	if !step.changesParent() && slices.Equal(step.labelsBefore, labels) {
+// legionIssueAfter says whether the step's issue is a Legion issue after the call. stored is the
+// issue's stored labels, and before is the answer before the call. The walk starts from the
+// parent and the labels that the step leaves: the labels it writes, or the stored labels when it
+// keeps them. A step that changes neither the parent nor the labels keeps the answer before the
+// call, so it is answered without a second walk.
+func (step issueWriteStep) legionIssueAfter(ctx context.Context, q pgx.Tx, stored []string, before bool) (bool, error) {
+	labels := stored
+	if step.labelsAfter != nil {
+		labels = *step.labelsAfter
+	}
+	if !step.changesParent() && slices.Equal(stored, labels) {
 		return before, nil
 	}
 	return legionManagedStatusOfRow(ctx, q, step.key, step.parentLeft(), labels)

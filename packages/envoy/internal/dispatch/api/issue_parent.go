@@ -81,6 +81,12 @@ var legionManagedStatusSQL = legionWalkSQL(`select i.parent_key, i.labels, 0 as 
 // writes that row (writeAdviceBefore). The walk above it, and the depth cap, are the same.
 var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, $2::text[] as labels, 0 as depth`)
 
+// legionManagedStatusWithLabelsSQL is legionManagedStatusSQL that answers the stored labels of
+// the issue keyed by $1 too, in the same statement: its labels, then whether it is a Legion
+// issue. R26's refusal reads both from the row as it is stored under the caller's owner locks
+// (legion_status_scope.go).
+var legionManagedStatusWithLabelsSQL = `select i.labels, (` + legionManagedStatusSQL + `) from issues i where i.key = $1`
+
 // legionWalkSQL is the legion-label walk up the parent chain from the row start selects: its
 // parent_key, its labels and depth 0.
 func legionWalkSQL(start string) string {
@@ -102,9 +108,10 @@ func legionWalkSQL(start string) string {
 // above the issue, are read as they stand and are not held still by any lock the caller takes.
 // Both claim routes (issue_claim.go) and a session's write advice (write_advice.go) read it. There
 // the answer is advice, so a chain that moves under the walk costs a sentence of guidance and
-// never a write. The same walk also gates a write: R26's refusal reads it from a given row
-// (legionManagedStatusOfRow), and legion_status_scope.go says why that walk needs no lock on an
-// ancestor either.
+// never a write. The same walk also gates a write: R26's refusal reads it, with the issue's
+// stored labels, before the call (legionManagedStatusWithLabelsSQL), and from the row that the
+// call leaves after it (legionManagedStatusOfRow). legion_status_scope.go says why that walk
+// needs no lock on an ancestor either.
 func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	var managed bool
 	if err := tx.QueryRow(ctx, legionManagedStatusSQL, key).Scan(&managed); err != nil {
@@ -115,7 +122,7 @@ func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, erro
 
 // legionManagedStatusOfRow is legionManagedStatus for key's row with its parent and labels given
 // rather than read (legionManagedStatusOfRowSQL): the row as a write leaves it, before the write
-// writes it (writeAdviceBefore), or the row before and after a call that R26's refusal judges
+// writes it (writeAdviceBefore), or the row after a call that R26's refusal judges
 // (legion_status_scope.go).
 func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key string, parent *string, labels []string) (bool, error) {
 	var managed bool
