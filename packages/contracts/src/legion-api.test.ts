@@ -2218,7 +2218,7 @@ test("the state golden carries a step on an ancestor's basis and whether each ro
 // no `gatedSteps` on an issue with a step on a basis (`api`'s `withoutGateBasis`, pinned on the
 // Go side): neither `waiting` nor `approved` is true of such a step, so it serves no entry of that
 // issue rather than a wrong one.
-const gatedStepStatusBefore164 = z.object({
+const gatedStepStatusBeforeBasis = z.object({
   status: z.enum(["unregistered", "waiting", "approved", "changes_requested"]),
 });
 
@@ -2233,10 +2233,10 @@ test("a reader before the basis words reads every gated step but those on a basi
   expect(older.length).toBeGreaterThan(1);
   expect(onBasis.length).toBe(2);
   for (const step of older) {
-    expect(gatedStepStatusBefore164.safeParse(step).error?.issues ?? []).toEqual([]);
+    expect(gatedStepStatusBeforeBasis.safeParse(step).error?.issues ?? []).toEqual([]);
   }
   for (const step of onBasis) {
-    const refused = gatedStepStatusBefore164.safeParse(step);
+    const refused = gatedStepStatusBeforeBasis.safeParse(step);
     expect(refused.success).toBeFalse();
     expect(refused.error?.issues[0]?.path).toEqual(["status"]);
   }
