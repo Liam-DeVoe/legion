@@ -20,10 +20,12 @@ import {
  *  the outline draws it: one line over the tree (`FailedReadLine`), with a Retry that asks that
  *  read alone again. */
 export interface FailedRead {
-  /** Whether the questions come from the read, as of the reads here they come from the asks'
-   *  alone: where no question that waits on the reader is drawn as the reads settle, the page's
-   *  first focus goes to this line's Retry before any other's (`IssueTree`'s opening), since no
-   *  question can be known while the read stands failed. */
+  /** Whether the questions come from the read, as of the reads here they come from the asks':
+   *  the issue's own read brings its open asks too (`tree-drafts.ts`'s `addAsks`), so a question
+   *  that waits on the reader is drawn while this read stands failed where the issue's read holds
+   *  it, and the page's first focus goes to that question (`IssueTree`'s opening). Where none is
+   *  drawn as the reads settle, it goes to this line's Retry before any other's, since a question
+   *  the issue's read does not hold comes from this read alone. */
   readonly bringsQuestions: boolean;
   /** How many times the read has failed (TanStack Query's `errorUpdateCount`), which keys the
    *  line's alert, so a second failure is said again. */

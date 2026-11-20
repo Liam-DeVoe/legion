@@ -309,8 +309,11 @@ export function useNodeEditing({
     // lets go of the row as the editing ends (`IssueTree.tsx`'s `useReleaseFocus`). A key that
     // leaves the focus on the row itself - Delete pressed the moment Enter is - is one for the
     // statement, and the caret goes in all the same, unless a later act takes the focus off the
-    // row first. So does a focus a script moves off the row before the reader has acted, since
-    // only their own act ends the page's placing of the focus.
+    // row first. So does a focus a script moves off the row before the reader has acted onto
+    // anything but another row - a control out of the outline, or one inside the row - since
+    // only their own act ends the page's placing of the focus. A focus that enters another row
+    // of the tree ends the editing whoever moved it, a script included, as a press there does
+    // (the `focusin` listener below), so no caret goes in after it.
     //
     // The row is watched on after the caret is placed, until the reader's first act, for two
     // things the editor does to the caret before the reader has done anything. It changes its
