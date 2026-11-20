@@ -30,18 +30,22 @@ index f9143e09370ab0b29c410c5efadc2bc529dd7ee1..2dd90f091e11c4bff04004c547d606d0
  export {setextUnderline} from './lib/setext-underline.js'
  export {thematicBreak} from './lib/thematic-break.js'
 diff --git a/dev/lib/attention.js b/dev/lib/attention.js
-index 9c93eb83f76e7948172bb84eb49acfc3595b84ad..124a8bc8e965ec61f4ebccd9b1c8356ec5f3d8ab 100644
+index 9c93eb83f76e7948172bb84eb49acfc3595b84ad..760c66265cbfdc7bff1b4d3f7b9851d88ac09c80 100644
 --- a/dev/lib/attention.js
 +++ b/dev/lib/attention.js
-@@ -16,6 +16,7 @@ import {ok as assert} from 'devlop'
- import {push, splice} from 'micromark-util-chunked'
+@@ -13,9 +13,10 @@
+  */
+ 
+ import {ok as assert} from 'devlop'
+-import {push, splice} from 'micromark-util-chunked'
++import {push} from 'micromark-util-chunked'
  import {classifyCharacter} from 'micromark-util-classify-character'
  import {resolveAll} from 'micromark-util-resolve-all'
-+import {countWork} from './work-counts.js'
++import {countWork, spliceCounted} from './work-counts.js'
  import {codes, constants, types} from 'micromark-util-symbol'
  
  /** @type {Construct} */
-@@ -28,13 +29,49 @@ export const attention = {
+@@ -28,13 +29,50 @@ export const attention = {
  /**
   * Take all events and resolve attention to emphasis or strong.
   *
@@ -54,8 +58,9 @@ index 9c93eb83f76e7948172bb84eb49acfc3595b84ad..124a8bc8e965ec61f4ebccd9b1c8356e
 + * its place as the bottom for its kind, since every opener below it was already
 + * read and refused by the rule of three, which reads nothing of the closer but
 + * that kind. A match puts the opener, what is between and the closer in place
-+ * at the end of the events resolved so far, rather than splicing them into the
-+ * whole list, so the events after a closer are never moved; everything between
++ * at the end of the events resolved so far, a splice of that list’s tail, rather
++ * than splicing them into the middle of the whole list, so the events after a
++ * closer are never moved; everything between
 + * an opener and its closer is resolved then (its sequences become data), so the
 + * openers above the opener are dropped, and every bottom above the opener comes
 + * down to it, since the opener’s own size may have changed.
@@ -68,7 +73,7 @@ index 9c93eb83f76e7948172bb84eb49acfc3595b84ad..124a8bc8e965ec61f4ebccd9b1c8356e
 -  /** @type {number} */
 -  let open
 +  /** @type {Array<Event>} */
-+  let resolved = []
++  const resolved = []
 +  /**
 +   * Events to read before the rest of `events`: the markers left of a closer
 +   * once it matched, which may close again.
@@ -94,7 +99,7 @@ index 9c93eb83f76e7948172bb84eb49acfc3595b84ad..124a8bc8e965ec61f4ebccd9b1c8356e
    /** @type {Token} */
    let group
    /** @type {Token} */
-@@ -47,158 +84,198 @@ function resolveAllAttention(events, context) {
+@@ -47,158 +85,204 @@ function resolveAllAttention(events, context) {
    let use
    /** @type {Array<Event>} */
    let nextEvents
@@ -378,15 +383,22 @@ index 9c93eb83f76e7948172bb84eb49acfc3595b84ad..124a8bc8e965ec61f4ebccd9b1c8356e
 +      ['exit', group, context]
 +    ])
 +
-+    // The closer’s exit, which goes with its enter.
++    // The closer’s exit, which goes with its enter: read here, and not kept,
++    // since the closing sequence stands in for it.
++    countWork('attention', 1)
 +    const closeExit = pending.length > 0 ? pending.shift() : events[next++]
 +    assert(closeExit, 'expected the closer’s exit')
 +
 +    // The opener (where none is left), what is between, and the closer go:
-+    // what replaces them is put in place at the end of what is resolved.
-+    countWork('attention', index - open + 3 + nextEvents.length)
-+    resolved.length = open - 1
-+    resolved = push(resolved, nextEvents)
++    // what replaces them is put in place at the end of what is resolved, a
++    // splice of its tail, which shifts nothing.
++    spliceCounted(
++      'attention',
++      resolved,
++      open - 1,
++      resolved.length - open + 1,
++      nextEvents
++    )
 +
 +    // If there are more markers in the closing, read them again: they may
 +    // close an opener further back.
@@ -428,8 +440,7 @@ index 9c93eb83f76e7948172bb84eb49acfc3595b84ad..124a8bc8e965ec61f4ebccd9b1c8356e
      }
    }
  
-+  countWork('attention', events.length + resolved.length)
-+  splice(events, 0, events.length, resolved)
++  spliceCounted('attention', events, 0, events.length, resolved)
    return events
  }
  
@@ -1032,18 +1043,22 @@ index 969b1cdf1228636c4ceccc85cea270ad47c3471f..9b757d8e2727a56e7e54df9a4afc901e
  export { thematicBreak } from './lib/thematic-break.js';
 \ No newline at end of file
 diff --git a/lib/attention.js b/lib/attention.js
-index 1040eb0498e88cae2a24997296689f56add69a0c..2bc517ba53cc98db356a3554b322ed2631c945af 100644
+index 1040eb0498e88cae2a24997296689f56add69a0c..2f6a7c212f994ae1cbd58b75765c857db5bf8763 100644
 --- a/lib/attention.js
 +++ b/lib/attention.js
-@@ -15,6 +15,7 @@
- import { push, splice } from 'micromark-util-chunked';
+@@ -12,9 +12,10 @@
+  * } from 'micromark-util-types'
+  */
+ 
+-import { push, splice } from 'micromark-util-chunked';
++import { push } from 'micromark-util-chunked';
  import { classifyCharacter } from 'micromark-util-classify-character';
  import { resolveAll } from 'micromark-util-resolve-all';
-+import { countWork } from './work-counts.js';
++import { countWork, spliceCounted } from './work-counts.js';
  /** @type {Construct} */
  export const attention = {
    name: 'attention',
-@@ -25,140 +26,248 @@ export const attention = {
+@@ -25,140 +26,255 @@ export const attention = {
  /**
   * Take all events and resolve attention to emphasis or strong.
   *
@@ -1056,8 +1071,9 @@ index 1040eb0498e88cae2a24997296689f56add69a0c..2bc517ba53cc98db356a3554b322ed26
 + * its place as the bottom for its kind, since every opener below it was already
 + * read and refused by the rule of three, which reads nothing of the closer but
 + * that kind. A match puts the opener, what is between and the closer in place
-+ * at the end of the events resolved so far, rather than splicing them into the
-+ * whole list, so the events after a closer are never moved; everything between
++ * at the end of the events resolved so far, a splice of that list’s tail, rather
++ * than splicing them into the middle of the whole list, so the events after a
++ * closer are never moved; everything between
 + * an opener and its closer is resolved then (its sequences become data), so the
 + * openers above the opener are dropped, and every bottom above the opener comes
 + * down to it, since the opener’s own size may have changed.
@@ -1070,7 +1086,7 @@ index 1040eb0498e88cae2a24997296689f56add69a0c..2bc517ba53cc98db356a3554b322ed26
 -  /** @type {number} */
 -  let open;
 +  /** @type {Array<Event>} */
-+  let resolved = []
++  const resolved = []
 +  /**
 +   * Events to read before the rest of `events`: the markers left of a closer
 +   * once it matched, which may close again.
@@ -1350,14 +1366,21 @@ index 1040eb0498e88cae2a24997296689f56add69a0c..2bc517ba53cc98db356a3554b322ed26
 +      ['exit', group, context]
 +    ])
 +
-+    // The closer’s exit, which goes with its enter.
++    // The closer’s exit, which goes with its enter: read here, and not kept,
++    // since the closing sequence stands in for it.
++    countWork('attention', 1)
 +    const closeExit = pending.length > 0 ? pending.shift() : events[next++]
 +
 +    // The opener (where none is left), what is between, and the closer go:
-+    // what replaces them is put in place at the end of what is resolved.
-+    countWork('attention', index - open + 3 + nextEvents.length)
-+    resolved.length = open - 1
-+    resolved = push(resolved, nextEvents)
++    // what replaces them is put in place at the end of what is resolved, a
++    // splice of its tail, which shifts nothing.
++    spliceCounted(
++      'attention',
++      resolved,
++      open - 1,
++      resolved.length - open + 1,
++      nextEvents
++    )
 +
 +    // If there are more markers in the closing, read them again: they may
 +    // close an opener further back.
@@ -1400,8 +1423,7 @@ index 1040eb0498e88cae2a24997296689f56add69a0c..2bc517ba53cc98db356a3554b322ed26
    }
 -  return events;
 +
-+  countWork('attention', events.length + resolved.length)
-+  splice(events, 0, events.length, resolved)
++  spliceCounted('attention', events, 0, events.length, resolved)
 +  return events
  }
  
