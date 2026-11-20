@@ -43,9 +43,9 @@
 -- triggers, written into the catalogue alone, and reads, refuses and rewrites no row. The function
 -- names are Dispatch's own: the broker's migrations may share this schema
 -- (TestTheBrokerAndDispatchMigrationsCreateNoNameInCommon).
--- This header was edited in place after the migration identity check arrived, twice (rounds 24 and
--- 26 of its review), and the two lines below name the texts before each edit, so a database that
--- applied either still boots.
+-- This header was edited in place after the migration identity check arrived, twice (round 26 of
+-- its review, then these lines), and the two lines below name the texts before each edit, so a
+-- database that applied either still boots.
 -- replaces: 20261119060414_session_generation_floors.up.sql sha256:bd9d44ffd84309bec3bfd73529bdad12550331a175e246c383ff8e600429443d
 -- replaces: 20261119060414_session_generation_floors.up.sql sha256:2b187b6569dd926846dceb59513c2d701385d6491fe8c95d6e5838ddd156540d
 create table session_generation_floors (
