@@ -1154,3 +1154,37 @@ func TestLegionMergeHelpsComparisonListsNothingForGitsOwnTree(t *testing.T) {
 		t.Errorf("%s printed %q (%v), want nothing: the merge holds git's merged tree", mergeComparison(merge, "--name-only"), out, err)
 	}
 }
+
+// A bookmark of a carrier's shape under this workspace's prefix, on a commit of the repository
+// rather than on a carrier: a role's commit on base, or the first parent the run itself names. A
+// carrier has no parent in the repository, so nothing a carrier's removal does reaches the
+// repository's own commits (dispatch://INFRA-4149's plan, step 4). The run abandons neither
+// commit: it refuses, or it leaves the commit visible. At 03a652db it refused such a bookmark and
+// made nothing; a sweep that abandons whatever such a bookmark names loses the role's work, and
+// takes the first parent and its bookmark before the run resolves it.
+func TestLegionMergeAbandonsNoRepositoryCommitACarriersBookmarkNames(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target func(r *mergeRepo) string
+	}{
+		{"a role's commit on base", func(r *mergeRepo) string {
+			r.commit("work", []string{"base"}, map[string]string{"work": "the role's work\n"})
+			id := r.id("work")
+			r.jj("bookmark", "delete", "work")
+			return id
+		}},
+		{"the first parent", func(r *mergeRepo) string { return r.id(mergeFirst) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newMergeRepo(t)
+			r.minimalCase(2)
+			target := tc.target(r)
+			r.jj("bookmark", "create", "legion-merge-default-0123456789abcdef-g", "-r", target)
+			r.workOn("base")
+			code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+			if got := r.template(target, "hidden"); got != "false" {
+				t.Errorf("legion merge = %d, and the repository's commit %s, which the bookmark legion-merge-default-0123456789abcdef-g names, is hidden: the run abandoned it\nstdout:\n%s\nstderr:\n%s", code, target, stdout, stderr)
+			}
+		})
+	}
+}
