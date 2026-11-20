@@ -23,9 +23,10 @@ At the pull request's current head:
 gh pr checks <n>
 ```
 
-Without `--required`. With it, `gh` prints only the checks the base requires: at `ed157dc9` it
-printed 1 row where the rollup held 46, so no lane under the aggregate `ci-ok` and no check the
-base does not require is in it. On a base that requires nothing, `--required` prints that no
+Without `--required`. With it, `gh` prints only the checks the base requires: at `ed157dc9`,
+read while `ci-ok` had not yet reported, it printed 1 row where the rollup held 46, and once CI
+settled the same read gives 2 of 48. So no lane under the aggregate `ci-ok` and no check the base
+does not require is in it. On a base that requires nothing, `--required` prints that no
 required checks are reported and exits 1 (dispatch://INFRA-3035, on cybermonklabs/legion#3658).
 
 At a named head, such as a commit you have just pushed:

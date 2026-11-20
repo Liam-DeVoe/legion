@@ -270,11 +270,14 @@ so only the role ends a round such a red would hold, and it ends it by this page
 
 A green re-run of a red in no test, such as a download that answered 5xx or a runner that ended,
 owes the record before the press and none of these three steps: the census is one issue per test,
-and a fault of a download or a runner belongs to the tree that owns that step.
+and a fault of a download or a runner belongs to the tree that owns that step. After a green
+re-run whose log read failed, the role knows the job but not the test's name: it makes no search,
+posts no comment, and sends step 3's message to the controller, naming the job and saying the log
+could not be read.
 
 After a green re-run of a failing test, and before it completes its phase, the role runs these
-three commands in this order. A red cleared and never written up is a flaky test nobody fixes, which is the cost this page
-is paid to stop. A re-run that comes back red is the round's failure and owes no occurrence.
+three commands in this order. A red cleared and never written up is a flaky test nobody fixes,
+which is the cost this page is paid to stop. A re-run that comes back red is the round's failure and owes no occurrence.
 
 1. `dispatch search --query '<the failing test's full name>'`, which finds the issue that tracks
    that test. An issue a record of an earlier red already cites is read again before it is cited

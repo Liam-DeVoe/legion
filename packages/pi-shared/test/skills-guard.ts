@@ -848,11 +848,20 @@ const BACKSTOP_AFTER_THE_RELEASE =
 /**
  * A green re-run of a red in no test owes the record and no census step, the architect's decision
  * of 2026-11-20: the census is one issue per test, and a download's or a runner's fault belongs to
- * the tree that owns that step. Worlds `c` and `h`, whose reds are in no test, already owe no step
- * there (`disposal: false` in red_world_table).
+ * the tree that owns that step. World `c`, whose red is a setup step and in no test, already owes
+ * no step there (`disposal: false` in red_world_table).
  */
 const NO_TEST_OWES_NO_CENSUS =
   "A green re-run of a red in no test, such as a download that answered 5xx or a runner that ended, owes the record before the press and none of these three steps";
+/**
+ * A green re-run whose log read failed: the role knows the job and not the test's name, so it
+ * makes no search and posts no comment, and its message to the controller names the job and says
+ * the log could not be read (the architect, 2026-11-20). World `h`'s red is such a test: a test
+ * whose attempt-1 log is past retention (`log_gone`), and it owes no search or comment there
+ * (`disposal: false`).
+ */
+const UNREAD_LOG_NAMES_THE_JOB =
+  "After a green re-run whose log read failed, the role knows the job but not the test's name: it makes no search, posts no comment, and sends step 3's message to the controller, naming the job and saying the log could not be read.";
 
 /**
  * The sentences INFRA-1303's batch of record at 6a643564 showed a role misreading, each pinned
@@ -979,6 +988,11 @@ export function redAtTheHeadFaults(pages: {
           sentence: NULL_ROLLUP_WAITS_FIRST,
           because:
             "a role that takes a null rollup on its first read for an empty set re-runs nothing and ends a wait that has not begun",
+        },
+        {
+          sentence: UNREAD_LOG_NAMES_THE_JOB,
+          because:
+            "a role whose log read failed has no test name to search for, and without this sentence it searches for nothing or invents one",
         },
         {
           sentence: NO_TEST_OWES_NO_CENSUS,

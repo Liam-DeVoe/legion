@@ -131,6 +131,15 @@ test("the docs page's commands are the red-at-the-head page's, `<o>/<r>` written
 // The commit endpoint's count at 9b728582 was read twice, 113 and later 114 (INFRA-1303's
 // comment 07122575 and INFRA-3035's spec); a page that gives one count as the only one misstates
 // a measurement a reader can repeat and get the other.
+// The --required read at ed157dc9 was made while ci-ok had not yet reported (1 of 46); settled, the
+// same read gives 2 of 48 (INFRA-1303's spec, last claim review).
+test("the docs page gives both reads of --required at ed157dc9", () => {
+  const docs = readFileSync(CHECKS_AND_RERUNS, "utf8").replace(/\s+/g, " ");
+  expect(docs).toContain(
+    "read while `ci-ok` had not yet reported, it printed 1 row where the rollup held 46, and once CI settled the same read gives 2 of 48"
+  );
+});
+
 test("the docs page gives both reads of the commit endpoint at 9b728582", () => {
   const docs = readFileSync(CHECKS_AND_RERUNS, "utf8").replace(/\s+/g, " ");
   expect(docs).toContain(
