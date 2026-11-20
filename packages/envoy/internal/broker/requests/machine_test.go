@@ -927,8 +927,14 @@ func TestCreateDoesNotReuseAnExpiredOrRevokedGrant(t *testing.T) {
 
 // TestAGrantMadeAfterTheEndPassWaitsForTheNextRequest: Create checks the live grants of the asked
 // names once (endMatchingLiveGrants) and reuses only a grant that check saw. A grant made for the
-// same names after that check, by a request that raced this one, is not handed back: this request
-// asks again. The next request's check sees the grant, and that request is granted it.
+// same names after that check, by a request that raced this one, is not handed back to this
+// request. That is a limit reuseLiveGrant states, not a requirement, and the first assertion
+// below pins it: a change that checks such a grant and hands it back lifts the limit, fails there
+// as expected, and changes this test with it. The request here stops at its reuse. In Create, a
+// request handed no grant goes on to write a request of its own, and for names granted at once
+// that request makes a grant of its own, so the request after it is handed that newer grant, the
+// newest. Here the next request's check sees the racing request's grant, the only one, and that
+// request is handed it.
 func TestAGrantMadeAfterTheEndPassWaitsForTheNextRequest(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx := context.Background()

@@ -395,27 +395,33 @@ func TestAnAdministratorsTagOnAKeyGrantedAtOnceEndsTheJudgedGrantBesideIt(t *tes
 // which the judge decided, and of AUTO_TOKEN and ACME_TOKEN, which its session got at once.
 // ACME_TOKEN sorts first. Its owner first changes it: most changes only pause the grant (it wants
 // an approval, or the policy no longer serves it through a tag the loader refuses or a value that
-// is gone), and a lowered ACME_TOKEN max-grant ends the grant before Create's own max-grant
-// refusal. Then a later key comes to end the grant for good: DEEL_API_KEY or AUTO_TOKEN tagged as
-// an administrator's, DEEL_API_KEY's requesters list dropping the session's person, DEEL_API_KEY
+// is gone); one lowers its max-grant to 10 minutes, which leaves the 600-second grant releasing
+// but refuses a next request that asks for 15 minutes, after Create's check of the live grants.
+// Then a later key comes to end the grant for good: DEEL_API_KEY or AUTO_TOKEN tagged as an
+// administrator's, DEEL_API_KEY's requesters list dropping the session's person, DEEL_API_KEY
 // served from another source, or DEEL_API_KEY's max-grant lowered below the grant's 600 seconds;
-// or ACME_TOKEN's own max-grant is lowered while it still wants an approval. The release, or the
-// next request for the grant's names, must end it whatever ACME_TOKEN answers, and once every
-// change is taken back the grant still releases nothing.
+// or ACME_TOKEN's own max-grant is lowered to 5 minutes while it still wants an approval. The
+// release, or the next request for the grant's names, must end it whatever ACME_TOKEN answers,
+// and once every change is taken back the grant still releases nothing. In each case one change
+// alone ends the grant: the 10-minute cap ends nothing, so its case needs the administrator tag's
+// end, and ACME_TOKEN's own 5-minute cap is the only end of its cases.
 func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) {
 	names := []string{"DEEL_API_KEY", "AUTO_TOKEN", "ACME_TOKEN"}
 	released := func(release Release) bool {
 		return slices.ContainsFunc(names, func(name string) bool { return releasedValue(release, name) != "" })
 	}
-	lowered := func(s secrets.LocalSecret) secrets.LocalSecret {
-		s.Tags[policy.TagMaxGrant] = "5m"
+	capped := func(s secrets.LocalSecret, limit string) secrets.LocalSecret {
+		s.Tags[policy.TagMaxGrant] = limit
 		return s
 	}
+	// A setup change pauses the grant's release or, with asks set, leaves the grant releasing and
+	// only caps the lifetime the next request may ask for: that request asks for asks seconds, over
+	// the cap, so Create's own max-grant refusal comes after its check of the live grants.
 	type setupChange struct {
-		apply     func(*testing.T, *Machine)
-		endsGrant bool
+		apply func(*testing.T, *Machine)
+		asks  int
 	}
-	pauses := map[string]setupChange{
+	setups := map[string]setupChange{
 		"ACME_TOKEN wants an approval": {apply: func(t *testing.T, m *Machine) {
 			retag(t, m, policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierHuman, "acme-v1"))
 		}},
@@ -431,9 +437,9 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 			fixtureStore(m).Delete(policytest.ID("ACME_TOKEN"))
 			retag(t, m)
 		}},
-		"ACME_TOKEN allows at most 5 minutes": {apply: func(t *testing.T, m *Machine) {
-			retag(t, m, lowered(policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1")))
-		}, endsGrant: true},
+		"ACME_TOKEN allows at most 10 minutes, and the request asks for 15": {apply: func(t *testing.T, m *Machine) {
+			retag(t, m, capped(policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1"), "10m"))
+		}, asks: 900},
 	}
 	ends := map[string]struct {
 		name   string
@@ -448,14 +454,14 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 			return policytest.TypeSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 		}},
 		"DEEL_API_KEY allows at most 5 minutes": {"DEEL_API_KEY", func() secrets.LocalSecret {
-			return lowered(policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"))
+			return capped(policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"), "5m")
 		}},
 		"ACME_TOKEN itself allows at most 5 minutes": {"ACME_TOKEN", func() secrets.LocalSecret {
-			return lowered(policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierHuman, "acme-v1"))
+			return capped(policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierHuman, "acme-v1"), "5m")
 		}},
 	}
 	type combination struct {
-		pause, end string
+		setup, end string
 		reuse      bool
 	}
 	var combinations []combination
@@ -467,20 +473,21 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 	combinations = append(combinations,
 		combination{"ACME_TOKEN wants an approval", "DEEL_API_KEY allows at most 5 minutes", false},
 		combination{"ACME_TOKEN wants an approval", "ACME_TOKEN itself allows at most 5 minutes", false},
+		combination{"ACME_TOKEN wants an approval", "ACME_TOKEN itself allows at most 5 minutes", true},
 		combination{"ACME_TOKEN is not served under a tag the loader refuses", "DEEL_API_KEY is tagged as an administrator's", false},
 		combination{"ACME_TOKEN is not served under a tag the loader refuses", "DEEL_API_KEY is tagged as an administrator's", true},
 		combination{"ACME_TOKEN is not served, its value gone", "DEEL_API_KEY is tagged as an administrator's", false},
 		combination{"ACME_TOKEN is not served, its value gone", "DEEL_API_KEY is tagged as an administrator's", true},
 		combination{"ACME_TOKEN is not served, its value gone", "AUTO_TOKEN is tagged as an administrator's", true},
 		combination{"ACME_TOKEN is not served under a tag the loader refuses", "AUTO_TOKEN is tagged as an administrator's", true},
-		combination{"ACME_TOKEN allows at most 5 minutes", "AUTO_TOKEN is tagged as an administrator's", true},
+		combination{"ACME_TOKEN allows at most 10 minutes, and the request asks for 15", "AUTO_TOKEN is tagged as an administrator's", true},
 		combination{"ACME_TOKEN wants another person's approval", "AUTO_TOKEN is tagged as an administrator's", true},
 		combination{"ACME_TOKEN is not served, its value gone", "DEEL_API_KEY no longer lists the person", true},
 		combination{"ACME_TOKEN is not served, its value gone", "DEEL_API_KEY is served from another source", true},
 	)
 	for _, c := range combinations {
 		path := map[bool]string{false: "the release", true: "the next request"}[c.reuse]
-		t.Run(c.pause+", then "+c.end+", at "+path, func(t *testing.T) {
+		t.Run(c.setup+", then "+c.end+", at "+path, func(t *testing.T) {
 			m, session, key := newJudgeFixture(t)
 			retag(t, m, policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1"))
 			judged := judgedGrant(t, m, session, key, 600, names...)
@@ -489,35 +496,43 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 			}
 
 			// The setup's own effect is data, not its label: most changes only pause the release,
-			// while a lowered max-grant is itself an end that Create must find before its own
-			// max-grant refusal returns.
-			setup := pauses[c.pause]
+			// while a cap the grant is inside leaves it releasing and refuses only the next request.
+			setup := setups[c.setup]
 			setup.apply(t, m)
-			if !setup.endsGrant {
+			if setup.asks == 0 {
 				if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
-					t.Fatalf("Values while %s = %+v, %v; want ErrGrantNotLive and nothing released", c.pause, release, err)
+					t.Fatalf("Values while %s = %+v, %v; want ErrGrantNotLive and nothing released", c.setup, release, err)
 				}
 				if by, audits := endedForGood(t, m, judged); by != "" || audits != 0 {
 					t.Fatalf("after the pause alone: revoked_by %q with %d grant.revoked rows; want the grant paused, not ended", by, audits)
 				}
+			} else if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); err != nil || slices.ContainsFunc(names, func(name string) bool { return releasedValue(release, name) == "" }) {
+				t.Fatalf("Values while %s = %+v, %v; want all three keys released: the grant is inside the cap", c.setup, release, err)
 			}
 
-			// The end, while ACME_TOKEN still pauses the grant.
+			// The end, while ACME_TOKEN still pauses the grant or caps the next request.
 			end := ends[c.end]
 			retag(t, m, end.secret())
 			if _, served := m.Policy.Get().Secrets[end.name]; !served {
 				t.Fatalf("the policy does not serve %s once %s; the test sets up nothing", end.name, c.end)
 			}
 			if c.reuse {
-				again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes again", 600, names...), "", nil)
+				asks := 600
+				if setup.asks != 0 {
+					asks = setup.asks
+				}
+				again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes again", asks, names...), "", nil)
 				if again.GrantID != nil {
 					t.Fatalf("Create once %s = %+v, %v; want no grant handed back", c.end, again, err)
+				}
+				if setup.asks != 0 && !errors.Is(err, ErrGrantRequiresLifetime) {
+					t.Fatalf("Create for %d seconds once %s = %+v, %v; want the max-grant refusal, which comes after the end", asks, c.end, again, err)
 				}
 			} else if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
 				t.Fatalf("Values once %s = %+v, %v; want ErrGrantNotLive and nothing released", c.end, release, err)
 			}
 			if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
-				t.Errorf("after %s once %s while %s: revoked_by %q with %d grant.revoked rows by %s; want the grant ended once for good", path, c.end, c.pause, by, audits, GrantEndedActor)
+				t.Errorf("after %s once %s while %s: revoked_by %q with %d grant.revoked rows by %s; want the grant ended once for good", path, c.end, c.setup, by, audits, GrantEndedActor)
 			}
 
 			// Every change taken back.
