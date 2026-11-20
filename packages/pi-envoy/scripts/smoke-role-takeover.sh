@@ -890,10 +890,19 @@ row5_claude() {
     [[ "$(registered_at cc-b "$x")" -gt "$(registered_at cc-a "$x")" ]]
   }
   # A's handoff claims only while A still holds the role, and B asks for it on every heartbeat.
-  # A answers once more here, and B's next heartbeat registers X after that answer, so the window
-  # this row needs runs from A's answer to A's handoff: one heartbeat of B's and the /clear.
-  renew_claude cc-a
-  expect_true "process B registered X last" wait_for "$listener_wait_timeout" registered_last
+  # The row needs B to register X after A's last answer, and B's heartbeat is B's own, which a
+  # loaded machine or a slow answer to B stretches. So A answers on every pass, one every 2 s,
+  # until B has registered X after A's latest answer, and the window this row needs runs from
+  # that answer to A's handoff: at most 2 s and the /clear.
+  answer_until_registered_last() {
+    local deadline=$((SECONDS + listener_wait_timeout))
+    while ((SECONDS < deadline)); do
+      renew_claude cc-a
+      wait_for 2 registered_last && return 0
+    done
+    return 1
+  }
+  expect_true "process B registered X last, while A answered for its claim" answer_until_registered_last
   clear_at="$(now_ms)"
   send cc-a "$(jq -nc --arg s "$x2" '{op:"clear",session:$s}')"
   # A listener that refuses the handoff's claim leaves the process holding a role it no longer
