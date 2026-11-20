@@ -262,12 +262,13 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 // TestEveryFormValueTheUploadReadsIsMarked holds it to the form values the upload routes' source
 // reads by name, so a value read there and not marked here fails.
 var artifactUploadFormValues = map[string]proseMark{
-	"content": markProse,
-	"summary": markProse,
-	"actor":   {why: "the writer's identity, which the server resolves"},
-	"name":    markName,
-	"file":    {why: "a file's bytes: a Markdown file is read as content, any other file is not read"},
-	"primary": markRawPayload,
+	"content":      markProse,
+	"summary":      markProse,
+	"actor":        {why: "the writer's identity, which the server resolves"},
+	"name":         markName,
+	"file":         {why: "a file's bytes: a Markdown file is read as content, any other file is not read"},
+	"primary":      markRawPayload,
+	"precondition": markTime,
 }
 
 // proseMember is one member of a request type as the registry walk meets it.

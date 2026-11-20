@@ -54,6 +54,9 @@ var queryKeyExceptions = map[string]string{
 // calls it with `last` and `first` alone, which writingCheckCountsQuery, the parameters struct of
 // GET /api/v1/writing-check/counts, declares.
 var queryKeysReadThroughAHelper = []string{
+	// multipartJSONField reads one named JSON field of an upload's form: `actor` and
+	// `precondition`, each a field of the multipart body the upload routes declare.
+	`artifacts.go: FormValue(field)`,
 	`delivery.go: Get(name)`,
 	`delivery.go: Has(name)`,
 	`server.go: query[field]`,

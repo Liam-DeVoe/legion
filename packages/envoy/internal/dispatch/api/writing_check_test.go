@@ -873,17 +873,20 @@ func TestTheWritingCheckReadsAMarkdownUploadAndNotAFile(t *testing.T) {
 		t.Errorf("plain upload event = %+v", event)
 	}
 	// A new version uploaded whole is read for the blocks it adds alone: the seed's own blocks are
-	// not read again, and a bad block it adds is.
+	// not read again, and a bad block it adds is. Each names the token of the version it replaces
+	// (`precondition`), which every replacement of a document must.
+	base := uploadBaseNamed(t, rig.handler, target, "notes")
 	rig.clearEvents()
 	whole := "Seed paragraph here.\n\n" + cleanProse + "\n"
-	if response := rig.asSession(http.MethodPost, target, map[string]any{"name": "notes", "content": whole}); response.Code != http.StatusCreated {
+	if response := rig.asSession(http.MethodPost, target, map[string]any{"name": "notes", "content": whole, "precondition": base}); response.Code != http.StatusCreated {
 		t.Fatalf("a clean new version: %d %s", response.Code, response.Body.String())
 	}
 	if event := rig.lastEvent("a clean new version"); event.Outcome != writingcheck.OutcomeClean {
 		t.Errorf("a clean new version: event = %+v, want clean", event)
 	}
+	base = uploadBaseNamed(t, rig.handler, target, "notes")
 	rig.clearEvents()
-	if response := rig.asSession(http.MethodPost, target, map[string]any{"name": "notes", "content": whole + "\n" + badProse + "\n"}); response.Code != http.StatusCreated {
+	if response := rig.asSession(http.MethodPost, target, map[string]any{"name": "notes", "content": whole + "\n" + badProse + "\n", "precondition": base}); response.Code != http.StatusCreated {
 		t.Errorf("a new version adding a bad block: %d %s, want 201", response.Code, response.Body.String())
 	}
 	if event := rig.lastEvent("a new version adding a bad block"); event.Outcome != writingCheckFindings || !slices.Equal(event.Rules, []string{badRule}) {

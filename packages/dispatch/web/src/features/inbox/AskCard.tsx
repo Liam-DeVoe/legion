@@ -81,7 +81,8 @@ import { stepAsideFromSelection } from "../threads/SelectionBar";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { stoppedNote, useKeyedWrite, useLiveRegistration } from "../writes/useKeyedWrite";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -113,6 +114,7 @@ import { DefinePopover, type SelectedWords, selectedWordsIn } from "./DefinePopo
 import { EarlierApproval } from "./EarlierApproval";
 import { AskHandOnLiveContext } from "./hand-on-live";
 import { askWaitingOnPerson } from "./list-row";
+import type { AskPress } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
 import { RewriteBadge } from "./RewriteBadge";
 import { useAskAnswerForm } from "./useAskAnswerForm";
@@ -287,17 +289,13 @@ function useFormRef(): [
  * reading column draws through the document page - and a prop that path does not carry is a
  * hold that path does not get. What the list does with the request is the list's own: it holds
  * an ask it already listed a row for and ignores one it did not. A card drawn where no list can
- * drop it registers with nobody.
+ * drop it registers with nobody. The ask held is the one the live hand-on is of, which is the
+ * card's own unless a host has drawn the card for another ask since that press (`useAskHandOn`).
  */
 function useHeldHandOn(ask: Ask): AskHandOnWrite {
   const write = useAskHandOn(ask);
   const onLive = useContext(AskHandOnLiveContext);
-  const live = write.pending || write.failed;
-  useEffect(() => {
-    if (!live) return;
-    onLive(ask.id, true);
-    return () => onLive(ask.id, false);
-  }, [ask.id, live, onLive]);
+  useLiveRegistration(write.liveAskId, onLive);
   return write;
 }
 
@@ -349,6 +347,7 @@ export function AskCard({
     sendAnswer,
     sendClarification,
     setAnswerText,
+    setAnswerTextOf,
     setQuestionChoice,
     startChanging,
     submit,
@@ -401,9 +400,12 @@ export function AskCard({
       : documentProject === undefined
         ? undefined
         : { project: documentProject };
-  const upload = useDraftUpload((text) => {
-    setAnswerText((current) => appendToDraft(current, text));
-    setQuestionChoice(false);
+  // A file's text joins the answer of the ask it was pasted or dropped under, which its press
+  // carries (`useDraftUpload`, `setAnswerTextOf`); only text added to the field on screen puts its
+  // question choice away.
+  const upload = useDraftUpload((text: string, askId: string) => {
+    setAnswerTextOf(askId, (current) => appendToDraft(current, text));
+    if (askId === ask.id) setQuestionChoice(false);
   });
   const uploading = upload.pending > 0;
   const answerFieldRef = useRef<HTMLTextAreaElement>(null);
@@ -462,14 +464,17 @@ export function AskCard({
   // The reader's Rewrite: the route answers at once with the rewrite running, and the card then
   // follows the ask's own read, which the rewrite's quiet events (`ask.rewriting`, `ask.edited`,
   // `ask.rewrite_failed`) refresh on the live socket. The badge says how a refused press went,
-  // so the write is inline.
+  // so the write is inline. Each press carries the ask it rewrites (`AskPress`), as an answer's
+  // does (`useAskAnswerForm`): what its landing reads again is that ask's, whichever ask a host
+  // draws this card for by then.
   const rewriting = useKeyedWrite({
     inline: true,
-    label: () => `Rewrite of “${displayedAsk.question}”`,
-    write: (_variables, bounds) => api.rewriteAsk(displayedAsk.id, bounds),
-    onSettled: () => {
-      invalidateOwnerReads(queryClient, displayedAsk);
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", displayedAsk.id] });
+    label: (press: AskPress) => `Rewrite of “${press.ask.question}”`,
+    method: "POST",
+    write: (press: AskPress, bounds) => api.rewriteAsk(press.ask.id, bounds),
+    onSettled: (_answer, _error, press) => {
+      invalidateOwnerReads(queryClient, press.ask);
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
     },
   });
   // The rewrite the card shows: a press Dispatch refused stands as a failed rewrite, with
@@ -501,7 +506,7 @@ export function AskCard({
   const startRewrite = () => {
     if (isApproval || rewriteRunning) return;
     setShowingOriginal(false);
-    rewriting.mutate();
+    rewriting.mutate({ ask: displayedAsk });
   };
   const startAskBack = () => {
     setQuestionChoice(false);
@@ -885,7 +890,7 @@ export function AskCard({
             uploadOwner === undefined
               ? undefined
               : (event) => {
-                  if (!refusing) upload.drop(event, uploadOwner);
+                  if (!refusing) upload.drop(event, uploadOwner, ask.id);
                 }
           }
           onKeyDown={(event) => {
@@ -900,7 +905,7 @@ export function AskCard({
             uploadOwner === undefined
               ? undefined
               : (event) => {
-                  if (!refusing) upload.paste(event, uploadOwner);
+                  if (!refusing) upload.paste(event, uploadOwner, ask.id);
                 }
           }
           placeholder={askingBack ? "Ask a question back" : answerPlaceholder}
@@ -1079,7 +1084,19 @@ export function AskCard({
             why={UNSENT_ANSWER_WHY}
           />
         )}
-        {answerFailure === null ? null : <QueryError message={answerFailure.message} />}
+        {answerFailure === null ? null : (
+          <QueryError
+            message={
+              // This branch offers no Retry: the question has closed, so an answer the reader
+              // stopped is said with what the card shows in place of its form.
+              mutation.error instanceof SendStoppedError
+                ? stoppedWriteNote("your answer", "saved", {
+                    anew: "The question has closed, and the record above shows how.",
+                  })
+                : answerFailure.message
+            }
+          />
+        )}
         {referencedByNode}
         {threadNode}
       </>
@@ -1471,7 +1488,12 @@ export function AskCard({
         )}
         {clarification.isError ? (
           <QueryError
-            message="Could not send your clarification."
+            message={
+              // A question back the reader stopped may have been sent, and Retry makes that very
+              // press again (`retryLast`).
+              stoppedNote(clarification, "your clarification", "sent") ??
+              "Could not send your clarification."
+            }
             onRetry={() => submitGuard.retryLast(clarification)}
             retrying={clarification.isPending}
           />

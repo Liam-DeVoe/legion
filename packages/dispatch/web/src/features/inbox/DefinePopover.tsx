@@ -213,6 +213,7 @@ export function DefinePopover({
   const define = useKeyedWrite({
     inline: true,
     label: () => `Definition of “${words}”`,
+    method: "POST",
     write: (_variables, bounds) => api.defineWords({ ...place, words: [words] }, bounds),
   });
   const { mutate, reset } = define;

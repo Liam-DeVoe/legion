@@ -18,6 +18,15 @@ import (
 // graph names it.
 const multipartUploadFunction = "api.server.multipartArtifactUpload"
 
+// formFieldReaders names the functions of package api that read one form value by a name their
+// caller passes, with the index of that argument: multipartJSONField reads an upload's `actor` and
+// `precondition` so. The read is the caller's, under the name the call passes, so the guard reads
+// that name at each call - a constant, or a name it cannot read - and walks no further into the
+// reader. A reader passed as a value, not called, is walked as any function is, where its read by
+// its parameter is one the guard cannot name. TestEveryFormValueTheUploadReadsIsMarked holds each
+// reader to reading the form by that argument alone, so an entry here hides no other read.
+var formFieldReaders = map[string]int{"api.multipartJSONField": 3}
+
 // formReads is what the functions a route runs read of its request's form: each form value read
 // by name, with the lines that read it, and each read whose name the guard cannot tell.
 type formReads struct {
@@ -41,6 +50,16 @@ func uploadFormReads(graph *lockGraph, handlers []*lockFunction) formReads {
 			if _, ok := node.(*ast.FuncLit); ok {
 				return false
 			}
+			if call, ok := node.(*ast.CallExpr); ok {
+				if index, reader := formFieldReaderOf(graph, call); reader {
+					if name, known := literalText(ast.Unparen(call.Args[index]), fn.pkg, graph.constants); known {
+						reads.named[name] = append(reads.named[name], graph.line(fn.source, call))
+					} else {
+						reads.unnamed = append(reads.unnamed, graph.line(fn.source, call))
+					}
+					return true
+				}
+			}
 			name, read, known := formReadOf(graph, fn.pkg, node)
 			switch {
 			case !read:
@@ -52,8 +71,11 @@ func uploadFormReads(graph *lockGraph, handlers []*lockFunction) formReads {
 			return true
 		})
 		for _, call := range ownCalls(fn) {
-			for _, callee := range graph.callees(call) {
-				walk(callee)
+			// A call of a field reader was read above, by the name it passes.
+			if _, reader := formFieldReaderOf(graph, call); !reader {
+				for _, callee := range graph.callees(call) {
+					walk(callee)
+				}
 			}
 			for _, argument := range call.Args {
 				for _, passed := range graph.functionValue(argument) {
@@ -68,38 +90,95 @@ func uploadFormReads(graph *lockGraph, handlers []*lockFunction) formReads {
 	return reads
 }
 
+// formFieldReaderOf reports whether call calls a function formFieldReaders names, and the index of
+// the argument that names the form value it reads.
+func formFieldReaderOf(graph *lockGraph, call *ast.CallExpr) (int, bool) {
+	fun := ast.Unparen(call.Fun)
+	switch generic := fun.(type) {
+	case *ast.IndexExpr:
+		fun = generic.X
+	case *ast.IndexListExpr:
+		fun = generic.X
+	}
+	ident, ok := fun.(*ast.Ident)
+	if !ok {
+		return 0, false
+	}
+	fn, ok := graph.info.Uses[ident].(*types.Func)
+	if !ok || fn.Pkg() == nil {
+		return 0, false
+	}
+	index, reader := formFieldReaders[functionName(fn.Origin())]
+	return index, reader && index < len(call.Args)
+}
+
 // formReadOf reports whether node reads a value or a file of the request's form, and the name it
-// reads when that name is a constant: a call of http.Request's FormValue, PostFormValue or
-// FormFile, an index or a Get or Has of http.Request's Form or PostForm, an index of
-// multipart.Form's Value or File, or a read of the raw parts (MultipartReader), which names none.
+// reads when that name is a constant (formReadKeyOf).
 func formReadOf(graph *lockGraph, pkg string, node ast.Node) (name string, read, known bool) {
-	var key ast.Expr
+	key, read := formReadKeyOf(graph, node)
+	if !read || key == nil {
+		return "", read, false
+	}
+	name, known = literalText(ast.Unparen(key), pkg, graph.constants)
+	return name, true, known
+}
+
+// formReadKeyOf reports whether node reads a value or a file of the request's form, and the
+// expression naming what it reads: a call of http.Request's FormValue, PostFormValue or FormFile,
+// an index or a Get or Has of http.Request's Form or PostForm, an index of multipart.Form's Value
+// or File, or a read of the raw parts (MultipartReader), which names none and answers a nil key.
+func formReadKeyOf(graph *lockGraph, node ast.Node) (key ast.Expr, read bool) {
 	switch n := node.(type) {
 	case *ast.CallExpr:
 		switch calledFunctionName(graph, n) {
 		case "http.Request.FormValue", "http.Request.PostFormValue", "http.Request.FormFile":
-			key = n.Args[0]
+			return n.Args[0], true
 		case "url.Values.Get", "url.Values.Has":
 			selector, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr)
 			if !ok || !isFormField(graph, selector.X) {
-				return "", false, false
+				return nil, false
 			}
-			key = n.Args[0]
+			return n.Args[0], true
 		case "http.Request.MultipartReader":
-			return "", true, false
-		default:
-			return "", false, false
+			return nil, true
 		}
 	case *ast.IndexExpr:
-		if !isFormField(graph, n.X) {
-			return "", false, false
+		if isFormField(graph, n.X) {
+			return n.Index, true
 		}
-		key = n.Index
-	default:
-		return "", false, false
 	}
-	name, known = literalText(ast.Unparen(key), pkg, graph.constants)
-	return name, true, known
+	return nil, false
+}
+
+// formFieldReaderReadsOnlyItsArgument reports, for a function formFieldReaders names, each read of
+// the request's form in its body that is not a read by its name argument (the parameter at
+// index), so an entry of formFieldReaders cannot hide a read of the reader's own.
+func formFieldReaderReadsOnlyItsArgument(graph *lockGraph, reader *lockFunction, index int) []string {
+	var parameter types.Object
+	for fn, declared := range graph.declared {
+		if declared == reader && index < fn.Signature().Params().Len() {
+			parameter = fn.Signature().Params().At(index)
+		}
+	}
+	var other []string
+	byArgument := false
+	ast.Inspect(reader.body, func(node ast.Node) bool {
+		key, read := formReadKeyOf(graph, node)
+		if !read {
+			return true
+		}
+		ident, ok := ast.Unparen(key).(*ast.Ident)
+		if key == nil || !ok || parameter == nil || graph.info.Uses[ident] != parameter {
+			other = append(other, graph.line(reader.source, node))
+		} else {
+			byArgument = true
+		}
+		return true
+	})
+	if !byArgument {
+		other = append(other, "no read of the form by that argument at all")
+	}
+	return other
 }
 
 // isFormField reports whether expression selects a field that holds the request's form values:
@@ -130,6 +209,16 @@ func TestEveryFormValueTheUploadReadsIsMarked(t *testing.T) {
 	graph := copyLockGraph(t)
 	if graph.named[multipartUploadFunction] == nil {
 		t.Fatalf("%s, the upload this guard reads, is gone: point the guard at its replacement", multipartUploadFunction)
+	}
+	for _, name := range slices.Sorted(maps.Keys(formFieldReaders)) {
+		reader := graph.named[name]
+		if reader == nil {
+			t.Fatalf("%s, a form field reader formFieldReaders names, is gone: delete its entry", name)
+		}
+		if other := formFieldReaderReadsOnlyItsArgument(graph, reader, formFieldReaders[name]); len(other) > 0 {
+			t.Errorf("%s reads the form by other than its argument %d, which the guard reads at each call:\n\t%s",
+				name, formFieldReaders[name], strings.Join(other, "\n\t"))
+		}
 	}
 	routes := writeRouteHandlers(t, graph, writingCheckMethods)
 	reads := formReads{named: map[string][]string{}}
