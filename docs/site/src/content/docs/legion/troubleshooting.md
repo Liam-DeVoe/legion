@@ -1074,7 +1074,7 @@ These tasks adopt nothing:
 
 - the controller's start.
 
-Notices, hooks, phase-ended messages and phase reminders reach the agent through Envoy or through its plugin, not as a task, so they adopt nothing either.
+Notices, hooks, merge-forward messages and phase reminders reach the agent through Envoy or through its plugin, not as a task, so they adopt nothing either.
 
 **A phase task waits for the turns of the other roles.**
 The daemon does not send a phase task while another claim of the same issue is in a turn, or while a prompt is on its way to one.
@@ -1462,8 +1462,9 @@ These arrive as messages on the Dispatch issue:
   the whole change. The footer of the reviewer's newest deciding review on GitHub shows which case
   holds.
 - **The merger merges nothing.** It merges nothing while the head conflicts with its base, which
-  GitHub can neither merge nor start pull-request CI for: the daemon sends such a head back to
-  `implementing` on its own. And it enqueues nothing on a merge-queue base whose
+  GitHub can neither merge nor start pull-request CI for: the daemon asks the implementer to merge
+  the base forward while the issue stays in `merging`, and the merger merges the new head once the
+  reviewer's approval of it is on the pull request. And it enqueues nothing on a merge-queue base whose
   `squash_merge_commit_message` still joins the branch's commit messages, since the enqueue can
   carry no message of its own: it tells the architect, and only a person can change that
   repository setting to `PR_BODY` or `BLANK`. A merge GitHub refuses is the merger's to decide
@@ -1491,9 +1492,8 @@ These arrive as messages on the Dispatch issue:
   ([An architect is told `pull-request-missing`](#an-architect-is-told-pull-request-missing)).
 - **A worker's completion refused `HANDOFF_STALE_ENTRY`.** The phase the completing turn was
   working ended under that turn, and the role has since been handed the phase's work again: the
-  issue left the phase and came back, or the head started conflicting with its base while the
-  tester tested, while the reviewer reviewed a round it had not completed, or while the merger
-  worked toward the merge. The daemon ends no turn, so the turn reporting the completion is of
+  issue left the phase and came back, as when a request for changes ended a review round the
+  reviewer had not completed. The daemon ends no turn, so the turn reporting the completion is of
   an entry behind the one the role's phases row names, and nothing is recorded. The refusal
   names the issue, the role and the phase, the entry the completion is of and the entry the
   role's phases row is on, and then what decided it, which is one of four readings: the
@@ -1526,23 +1526,27 @@ These arrive as messages on the Dispatch issue:
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
   none.
 
-An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
-GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
-the issue back to the implementer with the base to merge forward and told the architect. From
-`retro` the implementer kept its turn and was handed the implementing task once that turn ended;
-from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
-interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
-workspace is the implementer's now. The implementer's retro completion after the move reports the
-entry retro handed it while its phases row is on the implementing one. The issue is in
-`implementing` by then, so the `legion` tool sends it as the implementer's completion of
-implementing, with the newest `implement` record and the head that record names, which can be the
-head the record holds; it is refused (`HANDOFF_STALE_ENTRY`) because retro back to `implementing`
-is a move back, which raised the entry the phase stands on, and the refusal names that move. The
-implementer merges the base forward in the implementing task's own turn and completes that work
-with a handoff of its own, never retro's commit; the merger's phases row still names the entry
-merging gave it, so a completion it sends for the phase it lost is refused
-(`HANDOFF_NOT_CURRENT_PHASE`).
-The work comes back through testing, review, acceptance and retro to a new merge. A red check
+An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
+conflicts with its base is waiting on the daemon's merge forward or on nothing at all. The daemon
+reads the pull request's mergeability twice, at least a minute apart, and acts only on a conflict
+both reads report, and only when the next step needs a mergeable head: the issue stands past its
+review, a check the base requires has no green result on the head, the base requires a current
+branch, or the daemon could not read the base's rules. Its log says which: `workflow: a conflict
+read waits for a second read` for a first read, `workflow: a second read did not confirm the
+conflict` for a read GitHub took back or a second read whose attempts all answered no state (the
+merge-state reads then follow the head), `workflow: a confirmed conflict needs no merge yet` with the
+required contexts and the green ones, and `workflow: merge forward asked` with the reason. A read
+GitHub answered before the newest read the record holds of the same head is dropped whole, with
+`workflow: GitHub's merge state answered before the read the record holds; the read is dropped`,
+so an answer that waited behind a newer one never releases a first read or clears a conflict. A merge
+forward keeps the phase: the implementer merges in the issue workspace and pushes with no handoff
+and no completion, the phase's worker is told to stop writing the workspace and not to complete
+its phase at the old head, and is then told the new head, and `workflow: the merge forward landed`
+names both heads. A completion of the phase the issue stands in that names a head a merge
+forward replaced, the head an earlier merge forward replaced included, or that names no head once
+a merge forward landed, is refused `HANDOFF_HEAD_MERGED_FORWARD`, with nothing recorded, and is
+made again at the new head; a completion of a phase the issue has already left is recorded as
+before. Past review the reviewer is asked to read the merge and approve the new head. A red check
 sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
@@ -1703,6 +1707,38 @@ notice comes once per handoff commit, from whichever read finds it first.
   GitHub lists, applies a lost head, review or approval-carrying push, and tells an architect
   `pull-request-missing`, so an issue whose next handoff lands does not wait for the backlog to
   drain.
+- **A head got no `CI settled` message.** The Envoy listener and the daemon each write a line
+  that says where the settlement stopped. Each line names the head and the generation, and the
+  publish line and the drop lines also name the snapshot, so a drop line matches the publish line
+  of the same settlement. Each line is written once for each record state or settlement while the
+  listener or the daemon runs, and again after a restart of it, or once the daemon has kept 4,096
+  dropped settlements since: each remembers in memory what it logged.
+  - The listener writes `checks held a head` for a head's record that it has
+    not settled after 10 minutes with no event. The line names what holds the record: `running`
+    names each check run that has not finished, `suites` names each check suite that is not
+    completed with its App and run count, and `overflowed`, `no_run_id`, `legacy` and `claimed`
+    name the other holds. It is a warning when every recorded check run has finished.
+  - The listener writes `checks settlement published` for each settlement it publishes.
+  - The daemon writes one line for each checks settlement it drops before it applies it:
+    `intake: a checks settlement was dropped: the decoder refused it` (a warning that names the
+    field in `reason`, and the `sha`, `generation` and `snapshot` of the payload where each
+    reads), `workflow: a checks settlement was dropped: no pull request is recorded
+    for it`, `workflow: a checks settlement stands for no head the record holds` (with
+    `recorded_head` and `head_run_open`), and `workflow: a checks settlement of the head was not
+    applied` (with `classification`, `stale` or `conflict`). A settlement envelope the daemon
+    cannot decode at all, such as one whose source is not `github`, is logged as `poison JetStream
+    message` (an error with the `subject`) and dropped. A settlement delivered again after it
+    applied writes no line.
+
+  A published settlement with no new `CI settled` message and no drop line is one of three things:
+  - The daemon applied it, and the line it would tell is the line it already told for that head,
+    so it tells nobody again. The earlier `CI settled` message of that head stands for it.
+  - The daemon applied it on a tree that lingers after its root left the workflow, where the
+    daemon tells nobody.
+  - In every other case, it was lost between the listener and the daemon.
+
+  No line at all for a finished head means that no event of that head reached the listener's
+  record.
 - **`an intake handler outran its limit and was cut`** (a warning with `consumer`, `event_id`,
   `fact` and `limit`). One message's handling ran past `limit`, the handler limit
   `worker_rpc_timeout_seconds` derives for this deployment, so the daemon cancelled the
