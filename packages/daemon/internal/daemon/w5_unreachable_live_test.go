@@ -1932,9 +1932,7 @@ func (f *w5Fresh) controllerLauncherGone() time.Time {
 	// stamp itself is held to that order, after the block and no later than the relaunch line.
 	var stamped time.Time
 	if len(gone) > 0 {
-		if at, ok := gone[0].Attrs["relaunchedAt"].(string); ok {
-			stamped, _ = time.Parse(time.RFC3339Nano, at)
-		}
+		stamped = relaunchStampOf(gone[0])
 	}
 	var lineAt time.Time
 	if len(relaunchLines) > 0 {
@@ -1960,6 +1958,18 @@ func (f *w5Fresh) controllerLauncherGone() time.Time {
 		time.Since(unblocked).Round(time.Second), clockAt(unblocked), back)
 	f.record("after: %s", describeSnapshot(f.snapshot(), f.names))
 	return relaunched
+}
+
+// relaunchStampOf is the relaunch an R6 controller line names (its relaunchedAt, the claim's
+// LastRelaunch as the daemon stamped it), read back as recordingLog keeps it; the zero time where
+// the line carries none or carries it in a form time.Parse(time.RFC3339Nano, ...) does not read.
+func relaunchStampOf(rec loggedRecord) time.Time {
+	text, _ := rec.Attrs["relaunchedAt"].(string)
+	stamped, err := time.Parse(time.RFC3339Nano, text)
+	if err != nil {
+		return time.Time{}
+	}
+	return stamped
 }
 
 func durationAfter(records []loggedRecord, from time.Time) string {

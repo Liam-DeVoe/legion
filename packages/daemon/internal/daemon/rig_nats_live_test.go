@@ -35,6 +35,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -108,9 +109,9 @@ func daemonGrant() natsGrant {
 // everything is the harness's own set.
 var everything = natsGrant{Publish: natsRules{Allow: []string{">"}}, Subscribe: natsRules{Allow: []string{">"}}}
 
-// rigNATS is the rig's running nats-server: its client and monitoring ports, kept across a
-// restart (stop, start), its store, the credential files of the users a process under test
-// connects as, and the harness's own connection.
+// rigNATS is the rig's running nats-server: its client port, kept across a restart (stop, start)
+// and held while the server is down (heldClient), its monitoring port, its store, the credential
+// files of the users a process under test connects as, and the harness's own connection.
 type rigNATS struct {
 	t      *testing.T
 	binary string
@@ -118,6 +119,10 @@ type rigNATS struct {
 	grants rigGrants
 
 	port, monitorPort int
+	// heldClient is the socket that holds the client port while the server is stopped: bound
+	// without SO_REUSEADDR and never listening, so no other process can bind the port and a dial
+	// is refused, as it is with the server down. start closes it just before the server binds.
+	heldClient int
 	// url is what a session and the daemon dial; dispatchURL is the same server with Dispatch's
 	// user and password in it, since the Dispatch a test runs (scratchDispatch) takes no seed of
 	// its own (its environment drops every NATS_ variable).
@@ -138,12 +143,13 @@ type rigNATS struct {
 	js    jetstream.JetStream
 }
 
-// startRigNATS writes the server's configuration and starts it. The client and monitoring ports
-// are the kernel's own picks on the first start, read back from the server's log, and the same
-// ones on every later start, since every process under test was told them.
+// startRigNATS writes the server's configuration and starts it. The client port is the kernel's
+// own pick on the first start, read back from the server's log, and the same one on every later
+// start, since every process under test was told it. The monitoring port is a fresh pick on every
+// start: only the rig's /connz reads it.
 func startRigNATS(t *testing.T, binary string, grants rigGrants, logDir string) *rigNATS {
 	t.Helper()
-	n := &rigNATS{t: t, binary: binary, dir: t.TempDir(), grants: grants, log: filepath.Join(logDir, "nats.log")}
+	n := &rigNATS{t: t, binary: binary, dir: t.TempDir(), grants: grants, log: filepath.Join(logDir, "nats.log"), heldClient: -1}
 	var listenerSeed, daemonSeed string
 	listenerSeed, n.listenerPublic = testnkeys.User(t)
 	daemonSeed, n.daemonPublic = testnkeys.User(t)
@@ -157,7 +163,10 @@ func startRigNATS(t *testing.T, binary string, grants rigGrants, logDir string) 
 	if err := os.MkdirAll(filepath.Join(n.dir, "store"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(n.stop)
+	// Cleanups run last first: the server's end, then the release of a client port an outage the
+	// test did not end still holds.
+	t.Cleanup(n.releaseClientPort)
+	t.Cleanup(func() { n.end() })
 	n.start()
 	return n
 }
@@ -213,10 +222,12 @@ var (
 )
 
 // start runs the server and returns once it says it is ready, and once the harness has
-// connected to it as its own user.
+// connected to it as its own user. On a restart it frees the client port it held (heldClient)
+// just before the server binds it.
 func (n *rigNATS) start() {
 	t := n.t
 	t.Helper()
+	n.monitorPort = 0
 	config := filepath.Join(n.dir, "nats-server.conf")
 	writeProofFile(t, config, n.configuration())
 	logFile, err := os.OpenFile(n.log, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -227,6 +238,7 @@ func (n *rigNATS) start() {
 	if err != nil {
 		t.Fatal(err)
 	}
+	n.releaseClientPort()
 	cmd := exec.Command(n.binary, "-c", config)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	if err := cmd.Start(); err != nil {
@@ -246,8 +258,8 @@ func (n *rigNATS) start() {
 		if strings.Contains(text, "Server is ready") {
 			if n.port == 0 {
 				n.port = portIn(t, natsClientPort, text, n.log)
-				n.monitorPort = portIn(t, natsMonitorPort, text, n.log)
 			}
+			n.monitorPort = portIn(t, natsMonitorPort, text, n.log)
 			break
 		}
 		select {
@@ -277,15 +289,24 @@ func (n *rigNATS) start() {
 	}
 }
 
-// stop ends the server and waits for it; one that has stopped is left as it is. A check that
-// drops every session's NATS connection (w4) stops it and starts it again.
+// stop ends the server for an outage: a check that drops every session's NATS connection (w4)
+// stops it and starts it again. While it is stopped, stop holds its client port
+// (holdClientPort), which start frees.
 func (n *rigNATS) stop() {
+	if n.end() {
+		n.holdClientPort()
+	}
+}
+
+// end ends the server and waits for it, answering whether it was running; one that has stopped
+// is left as it is. It is the test's cleanup, which holds no port.
+func (n *rigNATS) end() bool {
 	if n.cmd == nil {
-		return
+		return false
 	}
 	select {
 	case <-n.exited:
-		return
+		return false
 	default:
 	}
 	_ = n.cmd.Process.Signal(os.Interrupt)
@@ -295,6 +316,32 @@ func (n *rigNATS) stop() {
 		_ = n.cmd.Process.Kill()
 		<-n.exited
 	}
+	return true
+}
+
+// holdClientPort holds the stopped server's client port (heldClient) until start frees it, so
+// no other process on the host takes it during an outage: a socket bound to it without
+// SO_REUSEADDR, which a later bind of the port by anyone else fails against, and which never
+// listens, so a session's or the daemon's dial is refused as it is with no server.
+func (n *rigNATS) holdClientPort() {
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	if err != nil {
+		n.t.Fatalf("open a socket to hold the nats-server's client port %d: %v", n.port, err)
+	}
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Port: n.port, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		_ = syscall.Close(fd)
+		n.t.Fatalf("hold the nats-server's client port 127.0.0.1:%d while it is stopped: %v", n.port, err)
+	}
+	n.heldClient = fd
+}
+
+// releaseClientPort frees the client port holdClientPort held, if it holds one.
+func (n *rigNATS) releaseClientPort() {
+	if n.heldClient < 0 {
+		return
+	}
+	_ = syscall.Close(n.heldClient)
+	n.heldClient = -1
 }
 
 // natsConnection is one client connection /connz lists: the server's id, the name its client

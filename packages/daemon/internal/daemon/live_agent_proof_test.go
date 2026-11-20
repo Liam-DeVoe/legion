@@ -648,8 +648,9 @@ func (l *recordingLog) Handle(ctx context.Context, record slog.Record) error {
 }
 
 // decodeAttr is one attribute as a step compares it: a number as float64, whatever its Go type, so
-// a step's own literal need not match the daemon's; a duration and every other value as the text
-// the log shows.
+// a step's own literal need not match the daemon's; a time as its RFC 3339 text with nanoseconds,
+// which time.Parse(time.RFC3339Nano, ...) reads back, where slog.Value.String would give Go's own
+// layout; a duration and every other value as the text the log shows.
 func decodeAttr(value slog.Value) any {
 	switch value.Kind() {
 	case slog.KindInt64:
@@ -660,6 +661,8 @@ func decodeAttr(value slog.Value) any {
 		return value.Float64()
 	case slog.KindBool:
 		return value.Bool()
+	case slog.KindTime:
+		return value.Time().Format(time.RFC3339Nano)
 	case slog.KindString:
 		return value.String()
 	default:
