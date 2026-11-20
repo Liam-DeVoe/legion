@@ -650,6 +650,9 @@ jobs:
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
               - 'packages/envoy/internal/broker/machine/*'
+              # A profile's proxy block is held to rulehost's grammar in internal/broker/policy,
+              # and rulehost reads its hosts with netaddr and weborigin (below).
+              - 'packages/envoy/internal/broker/netaddr/*'
               - 'packages/envoy/internal/broker/oauth/*'
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
@@ -660,6 +663,7 @@ jobs:
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
+              - 'packages/envoy/internal/broker/rulehost/*'
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/**'
               # The response shapes the broker's own handlers marshal, which Dispatch's OpenAPI
@@ -702,6 +706,7 @@ jobs:
               - 'packages/envoy/listenerwire/*'
               # testnats's Gate reserves its port with internal/testport.
               - 'packages/envoy/internal/testport/*'
+              - 'packages/envoy/internal/weborigin/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
@@ -3998,6 +4003,7 @@ jobs:
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
               - 'packages/envoy/internal/broker/machine/*'
+              - 'packages/envoy/internal/broker/netaddr/*'
               - 'packages/envoy/internal/broker/oauth/*'
               - 'packages/envoy/internal/broker/oauthstore/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
@@ -4007,6 +4013,7 @@ jobs:
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
               - 'packages/envoy/internal/broker/requests/*'
+              - 'packages/envoy/internal/broker/rulehost/*'
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/*'
               # internal/broker/store embeds every migration.
@@ -4113,6 +4120,7 @@ jobs:
               - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/testport/*'
               - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/internal/weborigin/*'
               - 'packages/envoy/listenerwire/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
@@ -4214,6 +4222,7 @@ jobs:
               - '!packages/envoy/internal/session/**/*_test.go'
               - '!packages/envoy/internal/store/**/*_test.go'
               - '!packages/envoy/internal/testport/**/*_test.go'
+              - '!packages/envoy/internal/weborigin/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'
               - '!packages/envoy/natscred/**/*_test.go'
