@@ -2910,11 +2910,11 @@ jobs:
               # entry, and its way backs of the step records and of the plan ratings, to the block
               # each migration's header carries.
               - 'packages/daemon/internal/store/migrations/*.up.sql'
-              # The ten copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
+              # The ten copies of shipped texts that readExtract (waiting_line_texts_test.go:473)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
               # backs' (way_back_doc_test.go:129), the troubleshooting page's refusal table's
               # (troubleshooting_refusals_doc_test.go:41) and the three of the guide's regions
-              # (workspace_copy_doc_test.go:90), each committed beside the package whose own check
+              # (workspace_copy_doc_test.go:92), each committed beside the package whose own check
               # reads it. They are .txt files, which the module's `**/*.go` above does not match.
               - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
               - 'packages/daemon/cmd/legion/troubleshooting_refusals_extract.txt'
@@ -2927,7 +2927,7 @@ jobs:
               - 'packages/daemon/internal/runtime/sandbox/workspace_copy_doc_extract.txt'
               - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
               # The shipped texts the waiting line's four copies are held to, and the ban over
-              # them, every one read by waiting_line_texts_test.go:485; troubleshooting.md is also
+              # them, every one read by waiting_line_texts_test.go:483; troubleshooting.md is also
               # the page the refusal table's copy is held to. The guide of the way back and of the
               # workspace-copy regions is docs/kubernetes.md, below.
               - 'docs/site/src/content/docs/legion/concepts.md'
@@ -2946,7 +2946,7 @@ jobs:
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
               # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,281,
-              # way_back_doc_test.go:181 and workspace_copy_doc_test.go:46).
+              # way_back_doc_test.go:181 and workspace_copy_doc_test.go:48).
               - 'docs/kubernetes.md'
               # The skill file packages/daemon/internal/textcheck/design_approved_wake_test.go
               # holds the architect's prompt to (:32-38).

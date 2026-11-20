@@ -172,11 +172,11 @@ func (s *Store) BeginWorkspaceCopy(ctx context.Context) (WorkspaceCopyBegun, err
 // restore id where they are. Equal means the same head, the same tips, the same bookmarks and the
 // same size, taken off the same pod. A turn that reads the workspace and writes nothing in it ends
 // with the work the copy before it already holds, and rewriting a multi-megabyte row every five
-// minutes to store the bytes again is waste, which is a design defect (AGENTS.md): the row that is
-// already there is the same copy, so the save only records that the copy is current as of a later
-// minute. Its attempt stays as it was with the rest of it — nothing about the work has changed,
-// so the pod that was already offered it is still the pod this copy was offered to — and the first
-// copy whose content differs is a new row with a new id and an attempt of its own. The pod is part
+// minutes to store the bytes again is waste: the row that is already there is the same copy, so
+// the save only records that the copy is current as of a later minute. Its attempt stays as it
+// was with the rest of it — nothing about the work has changed, so the pod that was already
+// offered it is still the pod this copy was offered to — and the first copy whose content
+// differs is a new row with a new id and an attempt of its own. The pod is part
 // of the comparison because the rest of the row is read against it: a workspace that comes back
 // unchanged on a pod that replaced the first would otherwise keep naming the pod that is gone as
 // its source, and the take would then answer the copy to the pod it was taken off.

@@ -22,8 +22,7 @@ import (
 // Go lane. The product halves read a copy of their regions committed beside each of the three
 // packages (workspace_copy_doc_extract.txt, and testpg_disk_doc_extract.txt in internal/launcher)
 // through internal/testdoc; this half holds each region of every copy to the guide itself. Neither
-// half alone is the guarantee: together they are the one the tests used to give when they read the
-// guide.
+// half alone is the guarantee: together they hold each region to the guide and to the code.
 //
 // What it proves: each region of any copy is the run of the guide's lines, byte for byte, that the
 // region's own two markers bound, and those are the markers its product test reads it by, since
