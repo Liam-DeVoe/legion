@@ -243,9 +243,9 @@ func pendingWords(pending map[claim.Token]string) string {
 // projectReleaseTries reads in all (tryBounded), since one that failed would leave every line's
 // end unwritten for the whole release; a store that cannot be read at any of them leaves each
 // line's end unwritten, saying so, rather than naming one the release did not read. A line's
-// detail is written in one place, as the store keeps a far side's error text
-// (storetext.FarSideError): it carries a machine's refusal of the stop, the store's answer to a
-// read of the claim, or the read of the claims that failed here.
+// detail is kept as the store keeps a far side's error text (storetext.FarSideError): it carries
+// a machine's refusal of the stop, the store's answer to a read of the claim, or the read of the
+// claims that failed here, whose text is cut once for every line.
 func (r *projectReleaser) writeClaims(ctx context.Context, run *releaseRun, pending map[claim.Token]string) {
 	var claims []supervise.Claim
 	err := r.tryBounded(ctx, r.retry, "project release: read the claims it stopped; reading them again", func() error {
@@ -253,8 +253,10 @@ func (r *projectReleaser) writeClaims(ctx context.Context, run *releaseRun, pend
 		claims, err = r.store.Claims(ctx)
 		return err
 	}, "release", run.id)
+	var unread string
 	if err != nil {
 		r.log.Error("project release: read the claims it stopped", "release", run.id, "error", err)
+		unread = storetext.FarSideError("how it stands is not known: the release could not read the claims at its end: " + err.Error())
 	}
 	stored := map[claim.Token]supervise.Claim{}
 	for _, c := range claims {
@@ -264,19 +266,16 @@ func (r *projectReleaser) writeClaims(ctx context.Context, run *releaseRun, pend
 	defer run.mu.Unlock()
 	for i := range run.result.Claims {
 		line := &run.result.Claims[i]
+		if err != nil {
+			line.Detail, line.Ended, line.BootStarts = unread, "", false
+			continue
+		}
 		detail, explained := run.detail[line.Token]
 		if why, ok := pending[line.Token]; ok {
 			detail, explained = why, true
 		}
-		if err != nil {
-			detail, explained = "how it stands is not known: the release could not read the claims at its end: "+err.Error(), true
-		}
 		if explained {
 			line.Detail = storetext.FarSideError(detail)
-		}
-		if err != nil {
-			line.Ended, line.BootStarts = "", false
-			continue
 		}
 		c, ok := stored[line.Token]
 		if !ok {

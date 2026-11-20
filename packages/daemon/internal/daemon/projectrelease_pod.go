@@ -506,10 +506,12 @@ func deletedOutcome(read releaseRead) api.ReleaseOutcome {
 // update round (hold). The release waits for each hold to be stored before it finishes, and a
 // refusal of one is written on that claim's line. The line gives why as its first reason, and after
 // it each round the release could not end. Why can carry a far side's error text — a delete the
-// runtime refused, an ask the store did not take, a stop a machine refused — so it is kept as the
-// store keeps such a text (storetext.FarSideError), in the line, the hold's reason and the log.
+// runtime refused, an ask the store did not take, a stop a machine refused — so the line, the
+// hold's reason and the log line keep its start, as the store keeps such a text
+// (storetext.FarSideError), and the whole text follows that log line, in parts
+// (storetext.LogWhole, projectReleaseErrorInFull).
 func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *releasePod, why string) {
-	why = storetext.FarSideError(why)
+	kept := storetext.FarSideError(why)
 	held := releaseStopTokens(pod.stop)
 	var others []claim.Token
 	for _, v := range r.issueViews(pod.sandbox.Issue) {
@@ -517,13 +519,14 @@ func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *relea
 			others = append(others, v.Token)
 		}
 	}
-	unended := r.hold(ctx, run, held, others, "the project release leaves its pod: "+why)
+	unended := r.hold(ctx, run, held, others, "the project release leaves its pod: "+kept)
 	run.mu.Lock()
 	line := &run.result.Sandboxes[pod.line]
-	reason := strings.Join(append([]string{why}, unended...), reasonSeparator)
+	reason := strings.Join(append([]string{kept}, unended...), reasonSeparator)
 	line.Outcome, line.Reason = api.ReleaseLeft, reason
 	run.mu.Unlock()
 	r.log.Warn("project release: left an issue pod and its disk", "release", run.id, "sandbox", pod.sandbox.Name, "reason", reason)
+	storetext.LogWhole(r.log, projectReleaseErrorInFull, why, "release", run.id, "sandbox", pod.sandbox.Name)
 	r.record(ctx, run)
 }
 

@@ -9,15 +9,12 @@ package daemon
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -52,22 +49,23 @@ func (r *idleWakeRig) startRelease(bound string) api.ProjectReleaseResponse {
 
 // awaitReportsSinceLastTurn waits until each role whose activity report a project release reads
 // has sent one since its last turn started, which every rig path that starts a release waits for
-// first. Since dispatch://INFRA-3583 spec v21's R6 the release asks a read pod a role of which has
-// sent no report since its last turn (projectReleaser.asks and background, where
-// claim.ReadSessionWork answers claim.WorkUnreported), as it asks a pod with unpushed work. The
-// rig's role process reports at a turn's end and 250 ms and a second after it
-// (idleRigRoleProcess.prompted), so a release started right after a turn, or while a daemon slow
-// under the race detector has yet to stamp the turn's start, can ask a pod its test means to be
-// asked nothing, and leave it when the bound gives its roles no time to answer.
+// first. The release asks a read pod a role of which has sent no report since its last turn
+// (dispatch://INFRA-3583 R6; projectReleaser.asks and background, where claim.ReadSessionWork
+// answers claim.WorkUnreported), as it asks a pod with unpushed work. The rig's role process
+// reports at a turn's end and 250 ms and a second after it (idleRigRoleProcess.prompted), so a
+// release started right after a turn, or while a daemon slow under the race detector has yet to
+// stamp the turn's start, can ask a pod its test means to be asked nothing, and leave it when the
+// bound gives its roles no time to answer.
 //
 // It reads the claims the release reads: of each issue whose pod the release reads, one a role
 // process of which runs and has said it is ready (runningClaims), each claim that records a process
 // and is not gone (background). The last turn's start is the daemon's own view of the claim, the
 // operator's listing, which serves a supervised claim as its machine holds it; the report is the
 // claim row's at the launch that view names, as the release reads it (store.Store.ClaimActivity),
-// since the activity route writes the store alone. A role whose plan keeps it in a turn
-// (idleRigPlan.StayInTurn) is passed over: it sends no report until the plan ends that turn, and
-// the release asks its pod for the turn whatever its report says (asks, inTurn).
+// since the activity route writes the store alone, and every row's is read in one query for each
+// look (activityReports). A role whose plan keeps it in a turn (idleRigPlan.StayInTurn) is passed
+// over: it sends no report until the plan ends that turn, and the release asks its pod for the
+// turn whatever its report says (asks, inTurn).
 func (r *idleWakeRig) awaitReportsSinceLastTurn() {
 	r.t.Helper()
 	var unreported []claim.Token
@@ -84,6 +82,7 @@ func (r *idleWakeRig) awaitReportsSinceLastTurn() {
 				read[c.Issue] = true
 			}
 		}
+		reports := r.activityReports()
 		unreported = unreported[:0]
 		for _, c := range claims {
 			if !read[c.Issue] || c.Locator == nil || supervise.IsGone(supervise.ClaimState(c.State)) ||
@@ -94,8 +93,12 @@ func (r *idleWakeRig) awaitReportsSinceLastTurn() {
 			if c.LastTurnStart != nil {
 				lastTurn = *c.LastTurnStart
 			}
-			reportedAt, background := r.activityReport(c.Token, c.Generation)
-			if claim.ReadSessionWork(reportedAt, lastTurn, background) == claim.WorkUnreported {
+			// A row at another launch holds no report of this one, as the release reads it.
+			var report idleRigActivity
+			if stored, ok := reports[c.Token]; ok && stored.generation == c.Generation {
+				report = stored
+			}
+			if claim.ReadSessionWork(report.at, lastTurn, report.background) == claim.WorkUnreported {
 				unreported = append(unreported, c.Token)
 			}
 		}
@@ -103,26 +106,45 @@ func (r *idleWakeRig) awaitReportsSinceLastTurn() {
 	})
 }
 
-// activityReport is when the claim row's activity report of token's launch generation was read,
-// and whether it named background work running: the columns store.Store.ClaimActivity reads, the
-// zero time where that launch has reported nothing.
-func (r *idleWakeRig) activityReport(token claim.Token, generation uint64) (time.Time, bool) {
+// idleRigActivity is a claim row's launch generation and the activity report its row holds of
+// that launch: when it was read, the zero time where the launch has reported nothing, and whether
+// it named background work running.
+type idleRigActivity struct {
+	generation uint64
+	at         time.Time
+	background bool
+}
+
+// activityReports is the activity report of each claim row of the rig's project, by token, read
+// in one query: the columns store.Store.ClaimActivity reads, with the launch generation the row
+// records.
+func (r *idleWakeRig) activityReports() map[claim.Token]idleRigActivity {
 	r.t.Helper()
-	var at *time.Time
-	var background bool
-	err := r.pool.QueryRow(context.Background(),
-		`select activity_at, activity_background from claims where token = $1 and generation = $2`,
-		string(token), int64(generation)).Scan(&at, &background)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return time.Time{}, false
-	}
+	rows, err := r.pool.Query(context.Background(),
+		`select token, generation, activity_at, activity_background from claims where project = $1`, r.project)
 	if err != nil {
-		r.t.Fatalf("read the activity report of %s at generation %d: %v", token, generation, err)
+		r.t.Fatalf("read the activity reports of project %s's claims: %v", r.project, err)
 	}
-	if at == nil {
-		return time.Time{}, false
+	defer rows.Close()
+	reports := map[claim.Token]idleRigActivity{}
+	for rows.Next() {
+		var token string
+		var generation int64
+		var at *time.Time
+		var background bool
+		if err := rows.Scan(&token, &generation, &at, &background); err != nil {
+			r.t.Fatalf("read the activity reports of project %s's claims: %v", r.project, err)
+		}
+		report := idleRigActivity{generation: uint64(generation)}
+		if at != nil {
+			report.at, report.background = *at, background
+		}
+		reports[claim.Token(token)] = report
 	}
-	return *at, background
+	if err := rows.Err(); err != nil {
+		r.t.Fatalf("read the activity reports of project %s's claims: %v", r.project, err)
+	}
+	return reports
 }
 
 // readRelease is the release's GET as the daemon served it, decoded and raw.

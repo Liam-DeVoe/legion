@@ -392,15 +392,15 @@ service and the machine's CPU, and on a small machine `api` and `docs` then each
 `daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race
 detector, in its race step, once per job; the plain step ("Test the Go daemon") leaves it out,
 and `go vet -tags e2e ./...` in the `typecheck` job still compiles it without the detector. The
-figures below were measured while these steps were the `test` job's. On CI's runners, while the
-plain step still ran it, it took at most 625 s there over the 49 green main `test` jobs of
-2026-11-01 to 2026-11-03, and up to 733.581 s in the jobs whose race step timed out (job
-125688799071). Under `-race` it took up
+figures below were measured while these steps were the `test` job's, but for the last two, which
+are `daemon-go`'s race step's. On CI's runners, while the plain step still ran it, it took at
+most 625 s there over the 49 green main `test` jobs of 2026-11-01 to 2026-11-03, and up to
+733.581 s in the jobs whose race step timed out (job 125688799071). Under `-race` it took up
 to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
 measured, on main and on pull requests, and ran go test's own ten minutes out on main at
 job 125691048644 of run 41562777668; on a busy machine it took longer still (908 s under
-`-race` on a shared devbox). With the project release's tests it took 1,766.673 s in the race
-step at d8582528 (job 136067045968) and 1,731.355 s at b9eddd39 (job 136272918493), within 10%
+`-race` on a shared devbox). With the project release's tests it took 1,766.673 s in `daemon-go`'s
+race step at d8582528 (job 136067045968) and 1,731.355 s at b9eddd39 (job 136272918493), within 10%
 of 30 minutes, so the race step gives it 33 minutes, the larger plus 10% rounded up, and a
 command that runs the whole package, alone or in a pattern that includes it, passes
 `-timeout 33m`:

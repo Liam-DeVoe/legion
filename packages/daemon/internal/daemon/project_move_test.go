@@ -406,8 +406,7 @@ type moveRelease struct {
 // beginRelease reads what a release is checked against before it starts, once every role whose
 // report the release reads has reported since its last turn (awaitReportsSinceLastTurn): what it
 // reads is then what the release finds, and the clean pod is asked nothing. The wait passes over
-// the pod in a turn, whose plan keeps it there. Every release of a move starts here, before
-// runRelease.
+// the pod in a turn, whose plan keeps it there. Every release runRelease runs begins here.
 func (m *projectMove) beginRelease(t *testing.T, name string) *moveRelease {
 	t.Helper()
 	r := m.rig

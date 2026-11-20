@@ -85,6 +85,11 @@ const releaseNoMachine = "the daemon supervises no machine for it"
 // them (api.ReleasedSandbox): leave and takeOthers join what they build.
 const reasonSeparator = "; "
 
+// projectReleaseErrorInFull is the message of the lines that carry the whole error of a Sandbox
+// the release left or of the release's failure, in parts (takeOthers, leave, fail,
+// storetext.LogWhole), where the result and every other line about it keep only its start.
+const projectReleaseErrorInFull = "project release: an error in full; the result and the lines about it keep its start"
+
 // projectReleaseStore is what the project release reads and writes of the daemon's store: whether
 // the project's pause refuses it, its record, the stop set a dry run reads as the release's own
 // transaction reads it, each claim it stops or holds as the store holds it, which is what decides
@@ -720,8 +725,10 @@ func byViewToken(a, b supervise.ClaimView) int {
 // Sandbox of a kind the release does not know. A controller's pod left — its claim not stored
 // suspended in time, or its delete refused — has the controller's claim held for an operator, as a
 // left issue pod's claims are (hold), so no boot starts the controller while its pod stands. A
-// left Sandbox's reason, the hold's and the log's, is the error's text as the store keeps a far
-// side's (storetext.FarSideError): a runtime's error names the request's URL, with its query.
+// left Sandbox's reason, the hold's and the log line's, is the start of the error's text as the
+// store keeps a far side's (storetext.FarSideError): a runtime's error names the request's URL,
+// with its query. The whole text follows that line in the log, in parts (storetext.LogWhole,
+// projectReleaseErrorInFull).
 func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, others []int) {
 	var controllers []claim.Token
 	for _, c := range run.stop {
@@ -748,9 +755,10 @@ func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, other
 		default:
 			err = errors.New(releaseUnknownKind)
 		}
-		var reason string
+		var text, reason string
 		if err != nil {
-			reason = storetext.FarSideError(err.Error())
+			text = err.Error()
+			reason = storetext.FarSideError(text)
 			if line.Kind == runtime.ProjectSandboxController {
 				if unended := r.hold(ctx, run, controllers, nil, "the project release leaves the controller's pod: "+reason); len(unended) > 0 {
 					reason = strings.Join(append([]string{reason}, unended...), reasonSeparator)
@@ -767,6 +775,7 @@ func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, other
 		run.mu.Unlock()
 		if err != nil {
 			r.log.Warn("project release: left a Sandbox", "release", run.id, "sandbox", line.Name, "kind", line.Kind, "reason", reason)
+			storetext.LogWhole(r.log, projectReleaseErrorInFull, text, "release", run.id, "sandbox", line.Name, "kind", line.Kind)
 		} else {
 			r.log.Info("project release: deleted a Sandbox", "release", run.id, "sandbox", line.Name, "kind", line.Kind)
 		}
@@ -840,13 +849,16 @@ func (r *projectReleaser) writeFinish(ctx context.Context, run *releaseRun, resu
 
 // fail records a release that could not go on with what stopped it, and finishes it: nothing more
 // of it acts, and the boot ends it as it ends any release. Why can carry a far side's error text,
-// such as a list of the project's Sandboxes the API server refused, so it is logged and kept as
-// the store keeps such a text (storetext.FarSideError).
+// such as a list of the project's Sandboxes the API server refused, so the result and the line
+// that logs it keep its start, as the store keeps such a text (storetext.FarSideError), and the
+// whole text follows that line in the log, in parts (storetext.LogWhole,
+// projectReleaseErrorInFull).
 func (r *projectReleaser) fail(ctx context.Context, run *releaseRun, why string) {
-	why = storetext.FarSideError(why)
-	r.log.Error("project release: stopped short of its acts", "release", run.id, "reason", why)
+	kept := storetext.FarSideError(why)
+	r.log.Error("project release: stopped short of its acts", "release", run.id, "reason", kept)
+	storetext.LogWhole(r.log, projectReleaseErrorInFull, why, "release", run.id)
 	run.mu.Lock()
-	run.result.Failure = why
+	run.result.Failure = kept
 	run.mu.Unlock()
 	r.finish(ctx, run)
 }

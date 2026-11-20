@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -677,70 +679,133 @@ const releaseFarSideError = `Delete "https://user:secret@api.example/apis?labelS
 // every other word as written.
 const releaseFarSideKept = `Delete "https://api.example/apis": the server refused` + "\uFFFD" + ` the request`
 
-// cybermonklabs/legion#4463: every far side's error text the daemon stores, serves or logs is kept
-// as storetext.FarSideError keeps it, valid text with no URL userinfo or query, and the release's
-// result is stored (project_releases.result) and served (its GET, the state's projectRelease). So
-// each path by which an error's text enters the result keeps it that way: the reason of an issue
-// pod the release left because the runtime refused its delete (leave), the reason of a repository
-// cache whose delete the runtime refused (takeOthers), the detail of a claim's line when the claims
-// could not be read at the end (writeClaims), and the release's failure when the project's
-// Sandboxes could not be listed (fail).
+// releaseFarSideLastWords is how the log keeps the last words of releaseFarSideLong, the
+// release's longer far side's error: the URL they name without its userinfo and its query.
+const releaseFarSideLastWords = `the last request went to "https://api.example/apis" and these are the last words`
+
+// releaseFarSideLong is a far side's error text longer than the store keeps of one
+// (storetext.FarSideErrorRunes): releaseFarSideError, then a relayed command's stderr, then last
+// words that name a URL with a userinfo and a query.
+var releaseFarSideLong = releaseFarSideError + "\n" +
+	strings.Repeat("the relayed command's stderr goes on, line after line.\n", 2*storetext.FarSideErrorRunes) +
+	`the last request went to "https://user:secret@api.example/apis?token=y" and these are the last words`
+
+// cybermonklabs/legion#4463: every far side's error text the daemon stores or serves is kept as
+// storetext.FarSideError keeps it, valid text with no URL userinfo or query, cut to its start
+// where it is longer than storetext.FarSideErrorRunes, and the log gets the whole text through
+// storetext.LogWhole. The release's result is stored (project_releases.result) and served (its
+// GET, the state's projectRelease). So each path by which an error's text enters the result keeps
+// it that way: the reason of an issue pod the release left because the runtime refused its delete
+// (leave), the reason of a repository cache whose delete the runtime refused (takeOthers), the
+// detail of a claim's line when the claims could not be read at the end (writeClaims), and the
+// release's failure when the project's Sandboxes could not be listed (fail). A text longer than
+// the store keeps leaves only its start in the result, and leave, takeOthers and fail log the
+// whole of it after their own line, in parts under projectReleaseErrorInFull, which join to the
+// text whose start the result keeps; writeClaims logs the failed read's error on its own line.
 func TestProjectReleaseKeepsAFarSidesErrorTextAsTheStoreKeepsIt(t *testing.T) {
-	refused := errors.New(releaseFarSideError)
 	for _, tc := range []struct {
 		name string
-		// text runs the release and answers the text of its result that took the error's.
-		text func(t *testing.T) string
+		// text runs the release with refused as the far side's error and configure applied to the
+		// releaser before it starts, and answers the text of its result that took the error's.
+		text func(t *testing.T, refused error, configure func(*projectReleaser)) string
+		// inFull is whether the path logs the whole of a text it cuts under
+		// projectReleaseErrorInFull (writeClaims logs its read's error on its own line), and
+		// sandbox the Sandbox each of those parts names, "" for none.
+		inFull  bool
+		sandbox string
 	}{
-		{"the reason of an issue pod whose delete the runtime refused", func(t *testing.T) string {
-			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
-			// A retired claim holds no process: its pod is deleted unread, once its stop settled at
-			// once.
-			if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208",
-				Issue: "LEGION-208", Role: claim.RoleImplementer, Session: "ses_implementer", State: supervise.StateRetired}, ""); err != nil {
-				t.Fatal(err)
-			}
-			records := &releaseRecord{claims: sup.deps.Store.(*outboxClaimStore), finished: make(chan json.RawMessage, 1),
-				stop: []store.ProjectReleaseClaim{{Token: token, Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer,
-					Session: "ses_implementer", State: supervise.StateWorking}}}
-			pods := &releasePods{sandboxes: []runtime.ProjectSandbox{{Name: "legion-legion-legion-208", Kind: runtime.ProjectSandboxIssue,
-				Issue: "LEGION-208", Tree: "LEGION-208", PodUID: "uid-208", ConfiguredImage: true}}, deleteErr: refused}
-			line := releaseLine(t, api.ProjectReleaseResponse{Result: runRelease(t, records, sup, pods)}, "legion-legion-legion-208")
-			if line.Outcome != api.ReleaseLeft {
-				t.Errorf("the pod's line is %+v, want it left for its refused delete", line)
-			}
-			return line.Reason
-		}},
-		{"the reason of a repository cache whose delete the runtime refused", func(t *testing.T) string {
-			pods := controllerPods()
-			pods.deleteErr = refused
-			line := releaseLine(t, releaseTheController(t, &releaseRecord{}, pods), releaseCache)
-			if line.Outcome != api.ReleaseLeft {
-				t.Errorf("the cache's line is %+v, want it left for its refused delete", line)
-			}
-			return line.Reason
-		}},
-		{"the detail of a claim's line when the claims could not be read at the end", func(t *testing.T) string {
-			release := releaseTheController(t, &releaseRecord{claimsFails: projectReleaseTries, claimsErr: refused}, controllerPods())
-			return releaseClaimLine(t, release, claim.ControllerToken("legion")).Detail
-		}},
-		{"the release's failure when the project's Sandboxes could not be listed", func(t *testing.T) string {
-			pods := controllerPods()
-			pods.storeListFails, pods.storeListErr = projectReleaseTries, refused
-			return releaseTheController(t, &releaseRecord{}, pods).Result.Failure
-		}},
+		{name: "the reason of an issue pod whose delete the runtime refused", inFull: true, sandbox: "legion-legion-legion-208",
+			text: func(t *testing.T, refused error, configure func(*projectReleaser)) string {
+				sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+				token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+				// A retired claim holds no process: its pod is deleted unread, once its stop settled
+				// at once.
+				if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208",
+					Issue: "LEGION-208", Role: claim.RoleImplementer, Session: "ses_implementer", State: supervise.StateRetired}, ""); err != nil {
+					t.Fatal(err)
+				}
+				records := &releaseRecord{claims: sup.deps.Store.(*outboxClaimStore), finished: make(chan json.RawMessage, 1),
+					stop: []store.ProjectReleaseClaim{{Token: token, Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer,
+						Session: "ses_implementer", State: supervise.StateWorking}}}
+				pods := &releasePods{sandboxes: []runtime.ProjectSandbox{{Name: "legion-legion-legion-208", Kind: runtime.ProjectSandboxIssue,
+					Issue: "LEGION-208", Tree: "LEGION-208", PodUID: "uid-208", ConfiguredImage: true}}, deleteErr: refused}
+				line := releaseLine(t, api.ProjectReleaseResponse{Result: runRelease(t, records, sup, pods, configure)}, "legion-legion-legion-208")
+				if line.Outcome != api.ReleaseLeft {
+					t.Errorf("the pod's line is %+v, want it left for its refused delete", line)
+				}
+				return line.Reason
+			}},
+		{name: "the reason of a repository cache whose delete the runtime refused", inFull: true, sandbox: releaseCache,
+			text: func(t *testing.T, refused error, configure func(*projectReleaser)) string {
+				pods := controllerPods()
+				pods.deleteErr = refused
+				line := releaseLine(t, releaseTheController(t, &releaseRecord{}, pods, configure), releaseCache)
+				if line.Outcome != api.ReleaseLeft {
+					t.Errorf("the cache's line is %+v, want it left for its refused delete", line)
+				}
+				return line.Reason
+			}},
+		{name: "the detail of a claim's line when the claims could not be read at the end",
+			text: func(t *testing.T, refused error, configure func(*projectReleaser)) string {
+				release := releaseTheController(t, &releaseRecord{claimsFails: projectReleaseTries, claimsErr: refused}, controllerPods(), configure)
+				return releaseClaimLine(t, release, claim.ControllerToken("legion")).Detail
+			}},
+		{name: "the release's failure when the project's Sandboxes could not be listed", inFull: true,
+			text: func(t *testing.T, refused error, configure func(*projectReleaser)) string {
+				pods := controllerPods()
+				pods.storeListFails, pods.storeListErr = projectReleaseTries, refused
+				return releaseTheController(t, &releaseRecord{}, pods, configure).Result.Failure
+			}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			text := tc.text(t)
-			for _, leaked := range []string{"secret", "token=y", "\x00"} {
-				if strings.Contains(text, leaked) {
-					t.Errorf("the text %q holds %q, which no far side's error text the store keeps holds", text, leaked)
+			kept := func(t *testing.T, text string) {
+				t.Helper()
+				for _, leaked := range []string{"secret", "token=y", "\x00"} {
+					if strings.Contains(text, leaked) {
+						t.Errorf("the text %q holds %q, which no far side's error text the store keeps holds", text, leaked)
+					}
+				}
+				if !strings.Contains(text, releaseFarSideKept) {
+					t.Errorf("the text %q lacks the rest of the far side's error, %q", text, releaseFarSideKept)
 				}
 			}
-			if !strings.Contains(text, releaseFarSideKept) {
-				t.Errorf("the text %q lacks the rest of the far side's error, %q", text, releaseFarSideKept)
-			}
+			t.Run("a text the store keeps whole", func(t *testing.T) {
+				kept(t, tc.text(t, errors.New(releaseFarSideError), func(*projectReleaser) {}))
+			})
+			t.Run("a text longer than the store keeps", func(t *testing.T) {
+				logs := &syncBuffer{}
+				text := tc.text(t, errors.New(releaseFarSideLong), func(r *projectReleaser) { r.log = jsonLogger(logs) })
+				kept(t, text)
+				if runes := utf8.RuneCountInString(text); runes != storetext.FarSideErrorRunes || !strings.HasSuffix(text, "…") {
+					t.Errorf("the text is %d runes ending %q, want its start, %d runes ending with …", runes, text[max(0, len(text)-16):], storetext.FarSideErrorRunes)
+				}
+				if !tc.inFull {
+					return
+				}
+				var whole strings.Builder
+				parts := loggedMessages(t, logs.String(), projectReleaseErrorInFull)
+				for i, part := range parts {
+					sandbox, _ := part["sandbox"].(string)
+					if part["level"] != "INFO" || part["release"] != float64(1) || sandbox != tc.sandbox ||
+						part["part"] != float64(i+1) || part["parts"] != float64(len(parts)) {
+						t.Fatalf("logged part %v, want part %d of %d at INFO of release 1 naming Sandbox %q", part, i+1, len(parts), tc.sandbox)
+					}
+					text, _ := part["error"].(string)
+					whole.WriteString(text)
+				}
+				if !strings.HasSuffix(whole.String(), releaseFarSideLastWords) {
+					t.Fatalf("the %d parts logged under %q join to %d bytes ending %q, want the far side's whole text, ending %q",
+						len(parts), projectReleaseErrorInFull, whole.Len(), whole.String()[max(0, whole.Len()-96):], releaseFarSideLastWords)
+				}
+				for _, leaked := range []string{"secret", "token=y", "\x00"} {
+					if strings.Contains(whole.String(), leaked) {
+						t.Errorf("the parts logged under %q hold %q", projectReleaseErrorInFull, leaked)
+					}
+				}
+				if storetext.FarSideError(whole.String()) != text {
+					t.Errorf("the result's text is not the start of the text the log holds whole")
+				}
+			})
 		})
 	}
 }
