@@ -1010,9 +1010,9 @@ func (s *Set) Registration(account, podUID, session string) error {
 //
 // The identity is the repository, the workflow file's path and the ref. The path is the
 // workflow_ref without the repository and without "@" and the ref (oauthwire.WorkflowPath), since
-// a workflow file's name and a branch's name can each hold an "@". A workflow_ref outside that
-// form is refused without repeating its raw value. A run whose job comes from a reusable
-// workflow other than the one the run started in is refused: `job_workflow_ref` names the workflow file
+// a workflow file's name and a branch's name can each hold an "@"; a workflow_ref that is not of
+// that form is refused, naming it and the ref. A run whose job comes from a reusable workflow
+// other than the one the run started in is refused: `job_workflow_ref` names the workflow file
 // the job is written in and `workflow_ref` the one the run entered through, and where they differ
 // the code that is running is not the code the entry names. An entry that lists the workflow on
 // that exact ref answers a token that writes its project; a workflow no such entry lists is
@@ -1048,7 +1048,7 @@ func (s *Set) Workflow(token map[string]any, session string, projects []string) 
 	}
 	workflow, ok := oauthwire.WorkflowPath(workflowRef, repository, ref)
 	if !ok {
-		return Claims{}, fmt.Errorf("%w: the subject token's workflow_ref is not <owner>/<name>/<path>@<ref> under its repository %s", ErrClaimMissing, repository)
+		return Claims{}, fmt.Errorf("%w: the subject token's workflow_ref %s is not %s/<path>@%s: its repository, the path of its workflow file and its ref", ErrClaimMissing, workflowRef, repository, ref)
 	}
 	key := workflowKey{repository, workflow, ref}
 	entry, listed := s.workflows[key]

@@ -567,7 +567,7 @@ func TestWorkflowRefusesWhatItCannotDecide(t *testing.T) {
 		{name: "a ref no entry lists", token: workflowToken(repository, repository+"/"+workflow+"@refs/heads/topic", repository+"/"+workflow+"@refs/heads/topic", "refs/heads/topic"),
 			session: "release-bot", want: exchange.ErrNoEntry, names: "refs/heads/topic"},
 		{name: "a workflow_ref that does not end in the token's ref", token: workflowToken(repository, runRef(workflow), runRef(workflow), "refs/heads/topic"),
-			session: "release-bot", want: exchange.ErrClaimMissing, names: "workflow_ref is not <owner>/<name>/<path>@<ref> under its repository " + repository},
+			session: "release-bot", want: exchange.ErrClaimMissing, names: runRef(workflow) + " is not " + repository + "/<path>@refs/heads/topic"},
 		{name: "a repository no entry lists", token: workflowToken("example-org/other-repo", "example-org/other-repo/"+workflow+"@"+ref, "example-org/other-repo/"+workflow+"@"+ref, ref),
 			session: "release-bot", want: exchange.ErrNoEntry, names: "example-org/other-repo"},
 		{name: "a session the entry does not fix", token: workflowToken(repository, runRef(nightly), runRef(nightly), ref),
