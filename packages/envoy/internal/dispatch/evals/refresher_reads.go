@@ -437,7 +437,7 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 	}
 	// An eval read logged above that the seed took over before its lock was taken is computed now,
 	// so the insert reads which of them are logged again, under their locks.
-	tag, err := tx.Exec(ctx, `
+	inserted, err := tx.Query(ctx, `
 		insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, n, sum, num, den, samples, built_by)
 		select stored.project_key, stored.eval_id, $5::text, stored.series, '', gap.day::date, stored.listed, 0, 0, 0, 0, '{}', $4
 		from (
@@ -453,13 +453,30 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 			least(coalesce(stored.next_day - 1, $3::date), $3::date)::timestamp, interval '1 day') as gap(day)
 		order by stored.eval_id collate "C", stored.series collate "C", gap.day
 		on conflict (project_key, eval_id, writer, series, repo, day) do nothing
+		returning eval_id, day
 	`, project, SourceLogged, r.today, r.build, writerReadings, evalIDs)
 	if err != nil {
 		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
+	}
+	// The days it wrote are the days whose stored figures it may have moved, folded again in its
+	// transaction (foldFiguresInTx) under the locks it holds.
+	spans := map[string]daySpan{}
+	var written int64
+	var evalID string
+	var day time.Time
+	if _, err := pgx.ForEachRow(inserted, []any{&evalID, &day}, func() error {
+		written++
+		addSpan(spans, evalID, measures.Midnight(day), measures.Midnight(day))
+		return nil
+	}); err != nil {
+		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
+	}
+	if err := foldFiguresInTx(ctx, tx, r.build, project, spans); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, fmt.Errorf("commit the zero rows of %s's logged evals: %w", project, err)
 	}
 	r.store.drainChanges(ctx)
-	return tag.RowsAffected(), nil
+	return written, nil
 }

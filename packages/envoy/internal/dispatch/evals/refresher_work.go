@@ -90,9 +90,12 @@ type refresh struct {
 	walkApplies     *delivery.ApplyRows
 	walkAppliesFrom time.Time
 	// walking is set while the pass walks, whose days run in order and so need no gap filled
-	// behind a first day they move (gapsBehind).
+	// behind a first day they move (gapsBehind), and whose days' stored figures are folded once
+	// the walks' batches are written (foldWalked) rather than in each day's own transaction.
 	walking bool
-	report  refreshed
+	// walked is the days the pass's walks wrote, by family and project (noteWalked).
+	walked map[walkKey]map[time.Time]bool
+	report refreshed
 }
 
 // load reads the projects and the delivery settings and seeds the projects the pass owes a seed
@@ -625,8 +628,11 @@ func (r *refresh) writeDelivery(ctx context.Context, read DeliveryDay, project s
 		return nil
 	}
 	day.Gaps = r.gapsBehind(walkDelivery, project, read.Day, built.Rows, first)
-	if err := r.store.WriteProjectDay(ctx, day, r.build); err != nil {
+	if err := r.store.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, r.build, !r.walking); err != nil {
 		return err
+	}
+	if r.walking {
+		r.noteWalked(walkDelivery, project, read.Day)
 	}
 	r.noteBuilt(walkDelivery, project, read.Day, built.Rows)
 	r.done[key], r.report.days[key] = true, true
@@ -703,8 +709,11 @@ func (r *refresh) writeLegion(ctx context.Context, project string, day time.Time
 		return nil
 	}
 	written.Gaps = r.gapsBehind(walkLegion, project, read.Day, built.Rows, first)
-	if err := r.store.WriteLegionProjectDay(ctx, written, r.build); err != nil {
+	if err := r.store.writeProjectDay(ctx, "Legion", written, legionDaySlugs, legionDayFamilies, r.build, !r.walking); err != nil {
 		return err
+	}
+	if r.walking {
+		r.noteWalked(walkLegion, project, read.Day)
 	}
 	r.noteBuilt(walkLegion, project, read.Day, built.Rows)
 	r.done[key], r.report.days[key] = true, true
@@ -850,8 +859,9 @@ func (r *refresh) noteBuilt(family, project string, day time.Time, built []DayRo
 }
 
 // walk makes a batch of each walk: the delivery walk (where delivery settings exist), and each
-// project's Legion walk, logged zero fill and unowned-p0 row of today. It answers whether a walk
-// has days left, which asks for the next pass at once.
+// project's Legion walk, logged zero fill and unowned-p0 row of today, and then folds the stored
+// figures of the days the batches wrote (foldWalked). It answers whether a walk has days left,
+// which asks for the next pass at once.
 func (r *refresh) walk(ctx context.Context) (bool, error) {
 	walks, err := r.store.readWalks(ctx, r.build)
 	if err != nil {
@@ -884,7 +894,7 @@ func (r *refresh) walk(ctx context.Context) (bool, error) {
 			return false, err
 		}
 	}
-	return pending, nil
+	return pending, r.foldWalked(ctx)
 }
 
 // walkDays makes one batch of the walk key: from the first day it has not built, or, where it is

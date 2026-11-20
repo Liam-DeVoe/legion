@@ -10,7 +10,6 @@ package measures
 
 import (
 	"maps"
-	"math"
 	"slices"
 	"strconv"
 	"time"
@@ -243,13 +242,9 @@ type Status struct {
 // that subtraction or sum into one instruction that rounds once, an arm64 build does, and the
 // last bit that moves can move a figure rounded to one decimal (a Pipeline day's p90 of 453 s,
 // 7.55 minutes, read 7.6 on arm64 and 7.5 on amd64), so the quantile would differ by machine.
+// The arithmetic is quantileAt's, which SortedSamples' Quantile reads its ranks through too.
 func Quantile(sorted []float64, p float64) float64 {
-	i := float64(float64(len(sorted)-1) * p)
-	lo := int(math.Floor(i))
-	if lo+1 >= len(sorted) {
-		return sorted[len(sorted)-1]
-	}
-	return sorted[lo] + float64((sorted[lo+1]-sorted[lo])*(i-float64(lo)))
+	return quantileAt(len(sorted), func(k int) float64 { return sorted[k] }, p)
 }
 
 // minutesBetween is b - a in minutes, one division of whole nanoseconds, so a duration the
@@ -565,13 +560,13 @@ func FoldDeployRunSuccess(parts []DayPart) *DeployRunSuccess {
 // pipeline.ts:21-29), unrounded; the three are nil when no part holds a sample.
 func FoldLeadTime(parts []DayPart) LeadTimeCell {
 	sorted := MergedSamples(parts, SeriesMinutes)
-	cell := LeadTimeCell{N: len(sorted)}
-	if len(sorted) == 0 {
+	cell := LeadTimeCell{N: sorted.Len()}
+	if sorted.Len() == 0 {
 		return cell
 	}
-	cell.MedianMinutes = new(Quantile(sorted, 0.5))
-	cell.P90Minutes = new(Quantile(sorted, 0.9))
-	cell.MaxMinutes = new(sorted[len(sorted)-1])
+	cell.MedianMinutes = new(sorted.Quantile(0.5))
+	cell.P90Minutes = new(sorted.Quantile(0.9))
+	cell.MaxMinutes = new(sorted.Max())
 	return cell
 }
 
@@ -621,10 +616,10 @@ func FoldChangeFailureRate(parts []DayPart) ChangeFailureRate {
 // (dora.ts:206-213, 251), whose MedianMinutes is nil when no part holds a sample.
 func FoldTimeToRestore(parts []DayPart) TimeToRestore {
 	sorted := MergedSamples(parts, SeriesMinutes)
-	if len(sorted) == 0 {
+	if sorted.Len() == 0 {
 		return TimeToRestore{}
 	}
-	return TimeToRestore{MedianMinutes: new(Quantile(sorted, 0.5))}
+	return TimeToRestore{MedianMinutes: new(sorted.Quantile(0.5))}
 }
 
 // DailySeries is the window's per-UTC-day deploys and run success, oldest first, every day of the

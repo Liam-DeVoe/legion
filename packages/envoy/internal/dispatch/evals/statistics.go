@@ -645,8 +645,8 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 		}
 	case AggQuantile:
 		stats["sum"], stats["max"] = new(folded.Sum), largest
-		if samples := measures.MergedSamples(parts, series); len(samples) > 0 {
-			stats["median"], stats["p90"] = new(measures.Quantile(samples, 0.5)), new(measures.Quantile(samples, 0.9))
+		if samples := measures.MergedSamples(parts, series); samples.Len() > 0 {
+			stats["median"], stats["p90"] = new(samples.Quantile(0.5)), new(samples.Quantile(0.9))
 		}
 	case AggMax:
 		stats["max"] = largest

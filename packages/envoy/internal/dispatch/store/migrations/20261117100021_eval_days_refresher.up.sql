@@ -15,24 +15,32 @@
 -- feed held anything new, and on the `delivery_changes` row when a page last read the change log to
 -- its end (delivery.ChangeCursor's ReadAt), which a full page leaves where it stood; so
 -- evals.Store.RefresherAge reads how long ago the last pass ran or a pass last read the whole
--- change log, whichever is older. It is a table of its own rather than rows of
--- issue_facts_cursor: legionfacts.CursorAge reads that table's oldest row as the age of the Legion
--- facts, and a row of another loop would stand in its answer.
+-- change log, whichever is older. A third row, `figures` (migration 20261120072042), is the stored
+-- figures' own read of the same change log, kept as the `delivery_changes` row is, which every
+-- build that writes the figures reads its eval_days and eval_versions changes from, so a change the
+-- refresher's page of a build with no figures read is still folded; RefresherAge reads the two
+-- feeds' rows alone. It is a table of its own rather than rows of issue_facts_cursor:
+-- legionfacts.CursorAge reads that table's oldest row as the age of the Legion facts, and a row of
+-- another loop would stand in its answer.
 --
 -- eval_days_walks holds one row per walk the refresher makes over a span of days: the delivery and
 -- CI rows of every project (family `delivery`, project_key ''), since one read of a day's delivery
 -- rows builds every project's; the Legion rows of one project (family `legion`); the zero rows of
--- one project's logged evals (family `logged`); and one project's unowned-p0 row of today (family
--- `unowned`), a walk of one day at a time that stands at tomorrow once today's row is written.
+-- one project's logged evals (family `logged`); one project's unowned-p0 row of today (family
+-- `unowned`), a walk of one day at a time that stands at tomorrow once today's row is written; and
+-- the stored figures of one project (family `figures`, migration 20261120072042), a walk of the
+-- ranges' end days, which stands two days past tomorrow once the ranges ending two days after
+-- today are folded.
 --   built_by   the build whose walk this is, part of the walk's key: each build makes walks of
 --              its own, begun at its start, which is how a release rebuilds every row of a family
 --              an older build wrote, and while two builds run (a rolling deploy), each continues its
 --              own walk rather than beginning again the one the other recorded, and neither stops
 --              the other from reaching today. A build whose walk reaches today drops another
 --              build's record of it that has not moved for two days, a build no process runs.
---   next_day   the first day the walk has not built yet; null while the walk is to begin, at the
---              first input day of what it walks. A walk that has built today stands at tomorrow,
---              and the first pass of a new UTC day builds that day.
+--   next_day   the first day the walk has not built yet (of the figures walk, the first end day);
+--              null while the walk is to begin, at the first input day of what it walks. A walk
+--              that has built today stands at tomorrow, and the first pass of a new UTC day builds
+--              that day.
 --   updated_at when the walk last moved.
 --
 -- Two new tables, both empty: nothing existing is read or rewritten, and the release before this
@@ -48,7 +56,7 @@ create table eval_days_cursor (
 );
 
 create table eval_days_walks (
-    family text not null check (family in ('delivery', 'legion', 'logged', 'unowned')),
+    family text not null check (family in ('delivery', 'legion', 'logged', 'unowned', 'figures')),
     project_key text not null default '',
     built_by text not null,
     next_day date,

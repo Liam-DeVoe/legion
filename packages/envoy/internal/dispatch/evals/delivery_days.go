@@ -620,10 +620,12 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 // that day does not hold, such as a repository whose last row moved to another day or project, as
 // a zero row (zeroStaleDays). It records day's members in eval_day_members on its day, and deletes
 // the members of the project's delivery and CI families recorded on that day that day does not
-// hold, so each item's row there says where it was last counted. A row of another project, another
-// day or another eval, and an item of another family, is refused before anything is written.
+// hold, so each item's row there says where it was last counted; and it folds again the stored
+// figures of the days whose rows it moved, where builtBy writes them (figures.go). A row of another
+// project, another day or another eval, and an item of another family, is refused before anything
+// is written.
 func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy string) error {
-	return s.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, builtBy)
+	return s.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, builtBy, true)
 }
 
 // WriteUnownedP0Day writes project's unowned-p0 row of the UTC day day is on: the count of its
@@ -635,7 +637,8 @@ func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy str
 // the row on every change that can move the count, most of which move nothing. builtBy is the
 // running build. Its change row waits in the change log's outbox, so the transaction takes no
 // change log lock, and is moved into the log once it has committed (drainChanges), as every
-// writer of the day rows does.
+// writer of the day rows does; and its transaction folds again the stored figures of the day where
+// its row moved and builtBy writes them (figures.go).
 func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.Time, builtBy string) error {
 	unowned, err := delivery.CountUnownedP0(ctx, s.database.Pool, project)
 	if err != nil {
@@ -668,6 +671,9 @@ func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.
 		},
 	}
 	if err := upsertDays(ctx, tx, []DayRow{row}, builtBy); err != nil {
+		return err
+	}
+	if err := foldFiguresInTx(ctx, tx, builtBy, project, map[string]daySpan{evalID: {first: date, last: date}}); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
