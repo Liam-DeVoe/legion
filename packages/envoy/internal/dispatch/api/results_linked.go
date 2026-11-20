@@ -52,7 +52,7 @@ const linkedPullRequestReads = 10
 // the commit is taken to be repo's or there is no repo.
 //
 // A result may name a commit of two kinds of repository. The first is repo, the repository the
-// check's issue resolves to, which recordCheckResult resolved for this refusal; a nil repo is
+// check's issue resolves to, which readResultRequest resolved for this refusal; a nil repo is
 // nothing to ask GitHub about, no refusal and no read-through. A deployment with no App key
 // resolves none, so the key is not checked again here. The second is a linked repository in
 // which the external links of the check's issue name a GitHub pull request that is open or
