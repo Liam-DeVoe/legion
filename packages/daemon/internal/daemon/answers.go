@@ -37,10 +37,10 @@ type answering struct {
 }
 
 // attachAnswers builds the answer loop over the daemon's store, its Dispatch client (posting in an
-// agent's name), its Envoy listener, supervision's answer gate, the issue record, the gh tool and
-// the conversation store, and under kubernetes first installs the shared public leak check that
-// tool's guard runs (answersTools), refusing the boot where it cannot. Without `answers` it
-// builds nothing.
+// agent's name), its Envoy listener, supervision's answer gate, the issue record, the gh tool, the
+// conversation store and the project's pause flag, and under kubernetes first installs the shared
+// public leak check that tool's guard runs (answersTools), refusing the boot where it cannot.
+// Without `answers` it builds nothing.
 func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, p plan, s *supervision, st *store.Store) error {
 	if w.answers == nil {
 		return nil
@@ -52,6 +52,15 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 	tools, err := w.answersTools(ctx, cfg, p, s.runtime, st)
 	if err != nil {
 		return fmt.Errorf("the answer loop: %w", err)
+	}
+	// The loop reads the flag the machines read (supervise.Deps.Paused), and the resume pokes it
+	// (projectPause.Resumed). A daemon that holds no pause leaves it never paused.
+	var paused func() bool
+	if w.pauses != nil {
+		paused = func() bool {
+			_, on := w.pauses.service.Paused()
+			return on
+		}
 	}
 	w.answers.loop = answerloop.New(answerloop.Config{
 		Project: p.project, Answers: *cfg.Answers, Store: st, Dispatch: client,
@@ -66,7 +75,7 @@ func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, 
 			}
 			return cfg.GitHubApps.Review.AppID
 		},
-		Answer: answer.Answer, Now: time.Now, Log: w.log,
+		Answer: answer.Answer, Paused: paused, Now: time.Now, Log: w.log,
 	})
 	return nil
 }

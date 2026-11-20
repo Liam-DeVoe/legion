@@ -20,6 +20,10 @@
 // is never written: the question goes to the running agent on its role topic, held until the role
 // is held (Gate). The day's spend is kept per project and UTC day; over answers.bounds.daily_usd a
 // question gets the daemon's reply in the agent's name and is passed on.
+//
+// While the project is paused (Config.Paused) no answer starts, one in flight stops before its
+// next model call or gh call (answer.ErrPaused), and no reply is posted or passed on: every
+// question keeps its state, and is taken in the order it was received once the project resumes.
 package answerloop
 
 import (
@@ -213,6 +217,10 @@ type Config struct {
 	AppID func(claim.Role) string
 	// Answer generates an answer: answer.Answer.
 	Answer func(ctx context.Context, req answer.Request) (answer.Reply, error)
+	// Paused says whether the project is paused (the daemon's pause flag, pause.Service.Paused);
+	// nil is never paused. While it is, no answer starts and no reply is posted: each question
+	// waits in the state it has, and the first schedule after the resume takes it (Poke).
+	Paused func() bool
 	Now    func() time.Time
 	Log    *slog.Logger
 	// Sweep is how often the loop looks again at the questions it holds: a held forward, and a
@@ -263,17 +271,25 @@ func (l *Loop) Run(ctx context.Context) {
 	}
 }
 
-func (l *Loop) poke() {
+// Poke wakes the loop to schedule now rather than at its next sweep: a question received, a
+// worker that leaves a conversation waiting for its slot, and the project's resume.
+func (l *Loop) Poke() {
 	select {
 	case l.wake <- struct{}{}:
 	default:
 	}
 }
 
+// paused is whether the project is paused (Config.Paused).
+func (l *Loop) paused() bool { return l.cfg.Paused != nil && l.cfg.Paused() }
+
 // schedule starts a worker for each conversation with open questions that has none, oldest
 // question first, while fewer than the bound run. A conversation the bound leaves waiting is
-// scheduled as soon as a worker ends.
+// scheduled as soon as a worker ends. While the project is paused it starts none.
 func (l *Loop) schedule(ctx context.Context) {
+	if l.paused() {
+		return
+	}
 	open, err := l.cfg.Store.OpenQuestions(ctx, l.cfg.Project)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -303,7 +319,7 @@ func (l *Loop) schedule(ctx context.Context) {
 				waiting := l.waiting
 				l.mu.Unlock()
 				if waiting {
-					l.poke()
+					l.Poke()
 				}
 			}()
 			l.work(ctx, q.Session)
@@ -313,7 +329,9 @@ func (l *Loop) schedule(ctx context.Context) {
 
 // work runs session's open questions one after another, in the order they were received, until
 // none is left to work now: a held forward is tried once a pass, and an error ends the pass, which
-// the next sweep tries again.
+// the next sweep tries again. The project's pause ends the pass too, read before each question and
+// answered by a run it stopped (answer.ErrPaused): the question keeps its state and waits, with
+// the ones after it, for the resume.
 func (l *Loop) work(ctx context.Context, session string) {
 	tried := map[string]store.QuestionState{}
 	for ctx.Err() == nil {
@@ -330,15 +348,28 @@ func (l *Loop) work(ctx context.Context, session string) {
 			return
 		}
 		q := open[next]
+		if l.paused() {
+			l.waitsForResume(q)
+			return
+		}
 		tried[q.ID] = q.State
 		if err := l.process(ctx, q); err != nil {
-			if ctx.Err() == nil {
+			switch {
+			case errors.Is(err, answer.ErrPaused):
+				l.waitsForResume(q)
+			case ctx.Err() == nil:
 				l.cfg.Log.Error("answers: question not finished; trying again at the next sweep", "question", q.ID, "issue", q.Issue,
 					"role", q.Role, "session", q.Session, "state", q.State, "error", err)
 			}
 			return
 		}
 	}
+}
+
+// waitsForResume logs q waiting for the project's resume.
+func (l *Loop) waitsForResume(q store.AnswerQuestion) {
+	l.cfg.Log.Info("answers: the project is paused; the question waits for the resume", "question", q.ID, "issue", q.Issue,
+		"role", q.Role, "session", q.Session)
 }
 
 // Receive is the hand-off consumer's handler (intake.HandoffHandler): it finds the conversation the
@@ -390,7 +421,7 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error 
 		return nil
 	}
 	l.logState(q, "")
-	l.poke()
+	l.Poke()
 	return nil
 }
 

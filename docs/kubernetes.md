@@ -1663,9 +1663,17 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   the reply recorded before that write is then posted and no model is called.
   One appended is posted without being answered again, since its answer is already in the conversation.
 
+- **While the project is paused** ([Pausing a project](#pausing-a-project)), the loop does no work.
+  It reads the pause's own flag, the one the daemon's launches and task sends read.
+  No answer starts, and an answer in flight when the pause comes stops before its next model call or `gh` call, its cost so far counted in the day's spend.
+  A question that arrives during the pause, or is in flight when it comes, is kept where it stood (`answers: the project is paused; the question waits for the resume`): nothing is posted for it, and it is not passed to the controller.
+  After the resume the loop answers the questions in the order they arrived, each within its usual bounds, and a run the pause stopped is answered again as one after a restart is, given the `gh` calls it already made.
+  A daemon that cannot hold a pause, a tmux daemon among them, never pauses its loop.
+
 ### Cost and logs
 
 Every answer logs one line, `answers: answered`, with `question`, `issue`, `role`, `session`, `model`, `kind`, `fault`, `calls`, `inputTokens`, `outputTokens`, `cacheWriteTokens`, `cacheReadTokens`, `reasoningTokens` and `costUSD`, each summed over every model call of the answer, cache writes included, at `prices`.
+An answer the project's pause stopped carries `paused` too, set to true.
 The cost is added to the project's spend for the UTC day, kept in the daemon's store so a restart keeps it;
 the spend is checked before each answer, so the answer that crosses `daily_usd` finishes, and every question after it that day gets the daemon's `over_limit` reply.
 Beside it: one `answers: question` line per change of a question's state, one `answers: gh` line per `gh` call naming the App (its role and configured id) and the owner it ran as, and `answers: question passed to the controller` once per question passed on.

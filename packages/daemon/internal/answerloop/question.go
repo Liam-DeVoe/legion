@@ -119,10 +119,18 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 			l.cfg.Log.Warn("answers: the gh tool's directory was not removed", "question", q.ID, "error", err)
 		}
 	}()
+	// The pause is read again before the question's first gh call, a lookup of an earlier call's
+	// outcome, as the answer reads it before its first model call.
+	if l.paused() {
+		return answer.ErrPaused
+	}
 	earlier, err := l.earlierCalls(ctx, q, tool)
 	if err != nil {
 		return err
 	}
+	// An answer the pause stops (answer.ErrPaused) leaves q generating: its cost is the day's all
+	// the same, nothing is appended or posted, and the next run after the resume is handed the gh
+	// calls this one made (earlierCalls).
 	reply, err := l.cfg.Answer(ctx, answer.Request{
 		Conversation:  session.Conversation(),
 		Agent:         answer.Agent{Role: conv.Role, Issue: conv.Issue, Session: conv.Session, Phase: facts.Phase, GHUsage: agent.Usage()},
@@ -130,7 +138,7 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 		Question:      answer.Question{ID: q.ID, Text: origin.Text, Asker: origin.Asker, Where: origin.Where},
 		MayAskNothing: q.MayAskNothing, Earlier: earlier,
 		Providers: l.cfg.Answers.Providers, Prices: l.cfg.Answers.Prices, Bounds: l.cfg.Answers.Bounds,
-		GH: tool, Log: l.cfg.Log,
+		GH: tool, Paused: l.cfg.Paused, Log: l.cfg.Log,
 	})
 	if reply.CostUSD > 0 {
 		if spendErr := l.cfg.Store.AddAnswerSpend(context.WithoutCancel(ctx), l.cfg.Project, now, reply.CostUSD); spendErr != nil {
@@ -334,7 +342,8 @@ func noAnswerNote(reason Reason, reply string) string {
 // again (a delivery's reply route keeps one reply per attempt, the ask thread is read for the
 // question's marker first, an Envoy message carries the question's id as its idempotency key).
 // Then the question is passed on when it must be, and marked done. A post refused for good drops
-// the question and passes it on.
+// the question and passes it on. While the project is paused nothing is posted or passed on
+// (answer.ErrPaused): q stays appended, and is posted after the resume.
 //
 // The row holds the reason a question is passed on for before PassOn marks it passed: `legion
 // state` lists a passed question with its row's pass_reason (questionsForController), so a read
@@ -342,6 +351,9 @@ func noAnswerNote(reason Reason, reply string) string {
 // reply's reason is written with the reply (generate, decideFault); a refused post writes its own
 // here first.
 func (l *Loop) post(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
+	if l.paused() {
+		return answer.ErrPaused
+	}
 	body := q.ReplyText + "\n\n" + AnswerMarker + q.ID + " -->"
 	var err error
 	switch origin.Kind {

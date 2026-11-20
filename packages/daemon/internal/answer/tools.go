@@ -72,8 +72,12 @@ type ghArgsSchema struct {
 }
 
 // toolSet is the loop's tools as agentloop offers and runs them for req, each call's output
-// given to add as the model reads it (inFront.add).
-func toolSet(req Request, add func(string)) []agentloop.Tool {
+// given to add as the model reads it (inFront.add). The project's pause is read before each call
+// (Request.Paused): a call it finds paused does not run, and the run ends through stop, with
+// ErrPaused as the cause, so no later model call starts; a refusal alone could not end the run,
+// since agentloop hands it back to the model. A pause that comes during a call is OnStep's to end
+// (answer), as agentloop finishes a step only once the calls it asked for have returned.
+func toolSet(req Request, add func(string), stop context.CancelCauseFunc) []agentloop.Tool {
 	set := make([]agentloop.Tool, len(tools))
 	for i, t := range tools {
 		set[i] = agentloop.Tool{
@@ -81,6 +85,10 @@ func toolSet(req Request, add func(string)) []agentloop.Tool {
 			Description: t.description(req),
 			Schema:      t.schema(req),
 			Run: func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
+				if req.paused() {
+					stop(ErrPaused)
+					return "refused: the Legion project is paused, so the call did not run.", true
+				}
 				output, isError := t.run(ctx, req, call)
 				add(output)
 				return output, isError
