@@ -1,0 +1,313 @@
+package daemon
+
+// A reviewer starts only in an issue pod on the configured image (reviewer_pod.go). These cases
+// drive the update-round rig (podupdate_test.go): real machines over a real Postgres, the runtime
+// faked, and the runtime's reading of the issue pod's image scripted (podImageScript).
+
+import (
+	"errors"
+	"slices"
+	"sync"
+	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
+)
+
+const (
+	// reviewerPodConfiguredImage is the image the runtime launches every container with now, and
+	// reviewerPodOldImage the one the issue's pod was built from by an earlier release.
+	reviewerPodConfiguredImage = "ghcr.io/cybermonklabs/legion-worker:v19.51.0"
+	reviewerPodOldImage        = "ghcr.io/cybermonklabs/legion-worker:v19.50.0"
+	// reviewerPodDrift is the drift the runtime reports for that pod, spelled as podShapeDrift
+	// spells an image.
+	reviewerPodDrift = "image " + reviewerPodOldImage + ", now " + reviewerPodConfiguredImage
+)
+
+// podImageScript is the Sandbox runtime's reading of the issue pod's image
+// (sandbox.Runtime.IssuePodImage), as a test sets it: the pod the issue's Sandbox runs now and the
+// image it runs, or no live pod at all, which is what the round's replacement leaves until the
+// next launch builds a fresh pod on the configured image.
+type podImageScript struct {
+	mu   sync.Mutex
+	read sandbox.PodImage
+	live bool
+}
+
+func (p *podImageScript) IssuePodImage(issue string) (sandbox.PodImage, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if issue != podUpdateIssue {
+		return sandbox.PodImage{}, false
+	}
+	return p.read, p.live
+}
+
+// runs sets the issue's live pod and the image it runs.
+func (p *podImageScript) runs(pod, image string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.read, p.live = sandbox.PodImage{Pod: pod, Image: image, Configured: reviewerPodConfiguredImage}, true
+}
+
+// replaced is the issue's Sandbox suspended by the round's replacement: no live pod.
+func (p *podImageScript) replaced() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.read, p.live = sandbox.PodImage{}, false
+}
+
+// readsPodImages hands the rig's reviewer gate the scripted reading, with the issue's pod running
+// image, and answers the script.
+func (r *podUpdateRig) readsPodImages(image string) *podImageScript {
+	r.t.Helper()
+	script := &podImageScript{}
+	script.runs(podUpdatePod, image)
+	r.s.reviewerPods.images = script
+	return script
+}
+
+// spendTheMinutesOpenings makes the project's pod_update_rounds_per_minute spent at the next
+// sweep: one round a minute, and this daemon opened one a moment ago (beginPodUpdateSweep).
+func (r *podUpdateRig) spendTheMinutesOpenings() {
+	one := 1
+	r.s.cfg.PodUpdateRoundsPerMinute = &one
+	r.s.podUpdateMu.Lock()
+	r.s.podUpdateOpenedAt = r.clock.Now()
+	r.s.podUpdateMu.Unlock()
+}
+
+// startReviewer is the daemon starting the reviewer's claim, as the outbox's start row does for a
+// queued claim (RequestSpawn), and answers what the start answered. A claim the boot restored with
+// no process is launch_uncertain until its release settles it, which the daemon's own
+// unfinished-launch path does before it launches (launchUnfinishedClaim), as startInPod does.
+func (r *podUpdateRig) startReviewer() error {
+	r.t.Helper()
+	m, ok := r.sup.Machine(r.tokens[claim.RoleReviewer])
+	if !ok {
+		r.t.Fatal("the reviewer is not supervised")
+	}
+	if r.claimOf(claim.RoleReviewer).State == supervise.StateLaunchUncertain {
+		if _, err := m.ReleaseUncertainLaunch(r.ctx); err != nil {
+			r.t.Fatalf("release the reviewer's unfinished launch: %v", err)
+		}
+	}
+	return m.Handle(r.ctx, supervise.RequestSpawn{Claim: r.tokens[claim.RoleReviewer]})
+}
+
+// reviewerLaunches is every process the fake started for the reviewer's claim (Spawn and
+// Resume), split at the first replacement of the pod: the ones before it were started while the
+// issue's only pod was the one the round replaces.
+func (r *podUpdateRig) reviewerLaunches() (before, after []fake.Call) {
+	replaced := false
+	for _, call := range r.rt.Calls() {
+		switch {
+		case call.Method == "ReplacePod":
+			replaced = true
+		case (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == r.tokens[claim.RoleReviewer]:
+			if replaced {
+				after = append(after, call)
+			} else {
+				before = append(before, call)
+			}
+		}
+	}
+	return before, after
+}
+
+// heldReviewerStart is a reviewer start the rule must hold: the fake started no reviewer process,
+// and the start answered a wait, which the outbox's start row backs off on.
+func heldReviewerStart(t *testing.T, rig *podUpdateRig, err error) {
+	t.Helper()
+	if before, _ := rig.reviewerLaunches(); len(before) > 0 {
+		t.Fatalf("the fake records %d reviewer process(es) started while the issue's pod %s runs %s, not the configured %s: the reviewer started in the old pod",
+			len(before), podUpdatePod, reviewerPodOldImage, reviewerPodConfiguredImage)
+	}
+	if !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the reviewer's start in a pod on another image answered %v, want a wait", err)
+	}
+	if c := rig.claimOf(claim.RoleReviewer); c.State != supervise.StateQueued || c.Locator != nil {
+		t.Fatalf("the reviewer is %s at %+v after its held start, want it queued with no process", c.State, c.Locator)
+	}
+}
+
+// replacedLines is every line that says the issue pod is replaced before its reviewer starts.
+func replacedLines(t *testing.T, rig *podUpdateRig) []map[string]any {
+	t.Helper()
+	return loggedMessages(t, rig.logs.String(), reviewerPodReplacedLine)
+}
+
+// wantOneReplacedLine holds that the line was written exactly once, at info, for the issue's pod,
+// naming both images.
+func wantOneReplacedLine(t *testing.T, rig *podUpdateRig) {
+	t.Helper()
+	lines := replacedLines(t, rig)
+	if len(lines) != 1 {
+		t.Fatalf("the daemon logged %q %d times, want once for the pod: %+v", reviewerPodReplacedLine, len(lines), lines)
+	}
+	line := lines[0]
+	for field, want := range map[string]string{
+		"level": "INFO", "issue": podUpdateIssue, "pod": podUpdatePod, "image": reviewerPodOldImage, "configured_image": reviewerPodConfiguredImage,
+	} {
+		if line[field] != want {
+			t.Errorf("the line's %s is %v, want %s: %+v", field, line[field], want, line)
+		}
+	}
+}
+
+// startsInTheNewPod is the reviewer's start once the round has replaced the pod: it starts, in the
+// pod that replaced the old one, and the fake records that one process and no other for it.
+func startsInTheNewPod(t *testing.T, rig *podUpdateRig, images *podImageScript) {
+	t.Helper()
+	images.replaced()
+	rig.startInPod(claim.RoleReviewer, podUpdateReplacementPod)
+	before, after := rig.reviewerLaunches()
+	if len(before) != 0 || len(after) != 1 {
+		t.Fatalf("the fake records %d reviewer process(es) before the replacement and %d after, want none and one", len(before), len(after))
+	}
+}
+
+// Before the daemon starts or relaunches a reviewer process in an issue pod, it reads whether that
+// pod runs the configured image. Where it does not, the daemon starts no reviewer there: it opens
+// that pod's update round at once, outside the project's limits on openings, or joins the round
+// already open, and the reviewer starts in the pod the round's replacement makes. The stale-plugin
+// lane relaunches no reviewer in place in such a pod, and still relaunches the other roles there.
+// A pod on the configured image, and a runtime that runs no issue pods (tmux), start the reviewer
+// at once.
+func TestAReviewerStartInAPodOnAnotherImageReplacesThePodFirst(t *testing.T) {
+	t.Run("a start opens the round at once and starts the reviewer in the new pod", func(t *testing.T) {
+		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester),
+			podUpdateRole{role: claim.RoleReviewer, state: supervise.StateQueued})
+		images := rig.readsPodImages(reviewerPodOldImage)
+		rig.drifts(reviewerPodDrift)
+		rig.spendTheMinutesOpenings()
+
+		// The control: with the minute's openings spent, the drift alone opens no round.
+		rig.sweepSettled()
+		if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != "" {
+			t.Fatalf("the drifted pod's round opened as %q under spent limits, so this case cannot show the reviewer's start opening it", c.UpdateRound)
+		}
+
+		heldReviewerStart(t, rig, rig.startReviewer())
+		heldReviewerStart(t, rig, rig.startReviewer())
+		wantOneReplacedLine(t, rig)
+
+		rig.tick()
+		opened := rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+		if want := reviewerStartReason + ", " + reviewerPodDrift; opened.UpdateReasons != want {
+			t.Fatalf("the round opened for %q, want %q", opened.UpdateReasons, want)
+		}
+		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+			rig.awaitAsked(role, podUpdateRound)
+		}
+		heldReviewerStart(t, rig, rig.startReviewer())
+		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+			rig.signal(role, "a1b2c3d")
+		}
+		rig.awaitReplacement(1, "once every role in the pod answered")
+
+		startsInTheNewPod(t, rig, images)
+		wantOneReplacedLine(t, rig)
+	})
+
+	t.Run("a start while a round is open over the pod joins it", func(t *testing.T) {
+		inRound := func(role claim.Role) podUpdateRole {
+			return podUpdateRole{role: role, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion,
+				round: podUpdateRound, reasons: reviewerPodDrift}
+		}
+		rig := newPodUpdateRig(t, inRound(claim.RoleImplementer), inRound(claim.RoleTester),
+			podUpdateRole{role: claim.RoleReviewer, state: supervise.StateQueued})
+		images := rig.readsPodImages(reviewerPodOldImage)
+		rig.drifts(reviewerPodDrift)
+		rig.spendTheMinutesOpenings()
+
+		heldReviewerStart(t, rig, rig.startReviewer())
+		wantOneReplacedLine(t, rig)
+		rig.sweepSettled()
+		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+			if c := rig.claimOf(role); c.UpdateRound != podUpdateRound || c.UpdateReasons != reviewerPodDrift {
+				t.Fatalf("the %s is in round %q for %q after the reviewer's start, want the round already open, %q for %q",
+					role, c.UpdateRound, c.UpdateReasons, podUpdateRound, reviewerPodDrift)
+			}
+		}
+		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+			rig.signal(role, "a1b2c3d")
+		}
+		rig.awaitReplacement(1, "once every role of the open round answered")
+
+		startsInTheNewPod(t, rig, images)
+	})
+
+	t.Run("the stale-plugin lane relaunches no reviewer in place and still relaunches another role", func(t *testing.T) {
+		stale := func(role claim.Role) podUpdateRole {
+			return podUpdateRole{role: role, state: supervise.StateReady, session: true, inPod: true, contract: api.DaemonAPIVersion - 1}
+		}
+		rig := newPodUpdateRig(t, stale(claim.RoleImplementer), stale(claim.RoleReviewer))
+		rig.readsPodImages(reviewerPodOldImage)
+		claims, err := rig.sup.Claims(rig.ctx)
+		if err != nil {
+			t.Fatalf("read the claims for the sweep: %v", err)
+		}
+
+		rig.s.refreshStalePlugins(claims, "sweep")
+		rig.awaitClaim(claim.RoleImplementer, "the implementer relaunched in place onto this daemon's plugin", func(c supervise.Claim) bool {
+			return c.State == supervise.StateLaunching
+		})
+		m, ok := rig.sup.Machine(rig.tokens[claim.RoleReviewer])
+		if !ok {
+			t.Fatal("the reviewer is not supervised")
+		}
+		m.Wait()
+
+		if c := rig.claimOf(claim.RoleReviewer); c.State != supervise.StateReady {
+			t.Fatalf("the reviewer is %s, want it left running for its pod's round", c.State)
+		}
+		resumes := rig.rt.CallsOf("Resume")
+		if len(resumes) != 1 || resumes[0].Spec.Claim != rig.tokens[claim.RoleImplementer] {
+			t.Fatalf("the lane started %d processes (%+v), want the implementer's alone", len(resumes), resumes)
+		}
+		if lines := replacedLines(t, rig); len(lines) != 0 {
+			t.Fatalf("the lane tried to relaunch the reviewer in place, which the start's own check refused: %+v", lines)
+		}
+		noInstall := func(c supervise.Claim) bool { return noPluginInstall(rig.s.cfg, c) }
+		if left := claimsToRefresh(claims, noInstall, rig.s.reviewerPods.behind); left != 1 {
+			t.Fatalf("the lane counts %d claims left to refresh, want the implementer's alone", left)
+		}
+	})
+
+	t.Run("a start in a pod on the configured image starts at once with no round", func(t *testing.T) {
+		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), podUpdateRole{role: claim.RoleReviewer, state: supervise.StateQueued})
+		rig.readsPodImages(reviewerPodConfiguredImage)
+
+		rig.startInPod(claim.RoleReviewer, podUpdatePod)
+		rig.sweepSettled()
+		rig.sweepSettled()
+
+		if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != "" {
+			t.Fatalf("the implementer is in round %q, want no round over a pod on the configured image", c.UpdateRound)
+		}
+		if lines := replacedLines(t, rig); len(lines) != 0 {
+			t.Fatalf("the daemon logged %+v for a pod on the configured image", lines)
+		}
+		if calls := rig.replacements(); len(calls) != 0 {
+			t.Fatalf("the pod was replaced %d times, want never", len(calls))
+		}
+	})
+
+	t.Run("a runtime that runs no issue pods starts the reviewer at once", func(t *testing.T) {
+		rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), podUpdateRole{role: claim.RoleReviewer, state: supervise.StateQueued})
+
+		rig.startInPod(claim.RoleReviewer, podUpdatePod)
+
+		if lines := replacedLines(t, rig); len(lines) != 0 {
+			t.Fatalf("the daemon logged %+v under a runtime that reads no pod image", lines)
+		}
+		if before, _ := rig.reviewerLaunches(); !slices.ContainsFunc(before, func(c fake.Call) bool { return c.Method == "Spawn" }) {
+			t.Fatal("the fake records no reviewer start")
+		}
+	})
+}

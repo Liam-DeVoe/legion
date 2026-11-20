@@ -34,6 +34,44 @@ func (r *Runtime) IssuePodRunsConfiguredImage(issue string) bool {
 	return !drifted
 }
 
+// PodImage is the image a live issue pod runs, as IssuePodImage reads it: the pod's uid, the
+// image it runs, and the image this runtime launches every container with now. The pod runs
+// another image than the configured one where the two differ.
+type PodImage struct {
+	Pod, Image, Configured string
+}
+
+// IssuePodImage is the image the live pod of issue's Sandbox runs, read from the stores the
+// runtime already watches, as IssuePodRunsConfiguredImage reads it: Image is the first container
+// of the pod that runs another image than the configured one (imageDrift), and the configured
+// image where none does. The daemon reads it before it starts a reviewer in that pod
+// (internal/daemon's reviewerPods), because a reviewer starts only in a pod on the configured
+// image.
+//
+// live is false where the Sandbox holds no pod a launch would keep (relaunch's own reading): no
+// Sandbox, a suspended one, no pod of its own, a pod that ended or whose init container failed. A
+// launch then makes a fresh pod on the configured image, so no pod of another image is there to
+// start a role in.
+func (r *Runtime) IssuePodImage(issue string) (PodImage, bool) {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return PodImage{}, false
+	}
+	s, err := r.storedSandbox(name)
+	if err != nil || s == nil || s.mode() == modeSuspended {
+		return PodImage{}, false
+	}
+	pod := r.storedPod(name)
+	if _, initExit := failedInit(pod); !ownedBy(pod, s.UID) || terminal(pod) || initExit != nil {
+		return PodImage{}, false
+	}
+	image := r.image
+	if other, drifted := imageDrift(pod, r.image); drifted {
+		image = other
+	}
+	return PodImage{Pod: string(pod.UID), Image: image, Configured: r.image}, true
+}
+
 // IssueSandbox says whether the runtime still holds the Sandbox of issue, and what that Sandbox
 // is called: the one name the six role claims of the issue share, which its pod carries too
 // (SandboxName, through issueSandboxName), read from the Sandbox the runtime's store holds. The

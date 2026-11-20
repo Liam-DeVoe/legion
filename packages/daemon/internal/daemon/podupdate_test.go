@@ -224,12 +224,15 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		log:     log,
 		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
+		// The reviewer's start check, as openSupervision wires it: the fake reads no pod's image,
+		// so it holds nothing until a test hands it a reading (readsPodImages).
+		reviewerPods:    newReviewerPods(rt, log),
 		enqueue:         w.enqueueOutbox,
 		applySweepFacts: w.applySweepFacts,
 		refreshGate:     supervise.NewRefreshGate(0),
 	}
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
+		Runtime: rt, Conns: conns, Store: s.reviewerPods.gate(st), Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		// The store's read of a launch's activity report, as openSupervision wires it: what a
 		// relaunch records the background work it ended from (supervise's recordEnd).
 		ClaimActivity:  st.ClaimActivity,
