@@ -349,7 +349,9 @@ wait_gone_name() {
   _wgn_tenths=$(((${EPOCHREALTIME//[!0-9]/} - _wgn_sent) / 100000))
   for _wgn_target in ${wait_gone_left[@]+"${wait_gone_left[@]}"}; do
     if [[ $_wgn_target == port:* ]]; then
-      _wgn_what=$(ss -Hltnp "sport = :${_wgn_target#port:}" 2>&1 | tr -s ' \n' ' ') || _wgn_what=
+      # ss -p reads every process's descriptors to name the holder: held to 5 s, as a name is all
+      # it adds once the wait is over, and a read that ran past that names no holder.
+      _wgn_what=$(timeout -k 1 5 ss -Hltnp "sport = :${_wgn_target#port:}" 2>&1 | tr -s ' \n' ' ') || _wgn_what=
       _wgn_what="port ${_wgn_target#port:} is still listened on (${_wgn_what% })"
     elif [[ $_wgn_target == lock:* ]]; then
       _wgn_what="lock ${_wgn_target#lock:} is still held"
