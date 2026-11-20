@@ -129,9 +129,9 @@ type leaverConfig struct {
 	built []func(t *testing.T, r *leaverRig)
 }
 
-// withBrokerGate puts the broker's real project-access client in front of a Dispatch server. It
-// deliberately builds no hold.Gate: until the production gate exists a held person still reaches
-// the broker, which is the acceptance red these tests must observe.
+// withBrokerGate puts the broker's real project-access client in front of a Dispatch server, and
+// with it the broker's real hold gate, which brokertest.WithProjectAccess builds from that client
+// as cmd/broker/main.go does.
 func withBrokerGate() leaverOption {
 	return func(c *leaverConfig) {
 		// The router is set once it is built, by the test goroutine, and read by the server's
