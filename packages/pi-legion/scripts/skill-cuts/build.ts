@@ -23,11 +23,11 @@
  *
  * **build-cases.** `--sessions` holds the candidate sessions, one JSON line each:
  * `{"store", "hash", "path"?}`, `hash` the file hash count.sql names a file by (16 hex characters
- * of md5 of its path). A line without `path` is resolved with sessions.sql, one query per store
- * and SESSION_BATCH hashes. The candidates are taken in the order judge.ts's `blindOrder` gives
- * them under `--seed` (the summary records the seed and the order), one case per session, until
- * `--max` cases are built, or the readers' dollars at list price reach `--budget-usd`, when no
- * further reader call starts and the build stops (exit 3) with what it has.
+ * of md5 of its path). A line without `path` is resolved with sessions.sql, one query per store.
+ * The candidates are taken in the order judge.ts's `blindOrder` gives them under `--seed` (the
+ * summary records the seed and the order), one case per session, until `--max` cases are built,
+ * or the readers' dollars at list price reach `--budget-usd`, when no further reader call starts
+ * and the build stops (exit 3) with what it has.
  *
  * **The stop rule** (the architect's, 2026-11-20T19:07:23Z; `stopBy`): before the build reads a
  * further session, after each session decided, it stops (exit 4) as soon as
@@ -61,18 +61,19 @@
  * moment; a case line the summary does not record (a kill between the two) is left out when the
  * build goes on, and its session is read again. For each session:
  *
- * 1. Its transcript is pulled by path with pull.sql, PULL_PAGE parts a call, paging by offset,
- *    into a file of its own (`<out>.spool/`, removed once the session is decided), each part
- *    written as its row comes, with the checks of psql-rows.ts's `psqlRows` and `pullText`; so
- *    one row is held at a time, however long the file. It is read from there line by line
- *    (`readTranscript`), each line parsed as transcript.ts's entry; the text after the last
- *    newline, a line still being written, is left out when it does not parse. Only the entries
- *    the builder reads whole are held whole (`heldWhole`: the header, a `session_init`, model and
- *    thinking changes, context resets, a system prompt's digest, Envoy role claims); every other
- *    entry is held light, with where its line is, a message with its roles, tool calls and
- *    `[Skill file: …]` line, and is read whole again only where a check or a reader needs it (the
- *    reader's windows, the reads it offers, the case's messages, the compaction before the step).
- *    So a session holds its entries' light forms and what its case and windows need, not its file.
+ * 1. Its transcript is pulled by path with pull.sql, PULL_PAGE slices of at most 1 MiB a call,
+ *    paging by place, into a file of its own (`<out>.spool/`, removed once the session is
+ *    decided), each slice written as its row comes, read by psql-rows.ts's `PsqlTable` and
+ *    checked by its `PullCheck`; so one row is held at a time, however long the file. It is read
+ *    from there line by line (`readTranscript`), each line parsed as transcript.ts's entry; the
+ *    text after the last newline, a line still being written, is left out when it does not
+ *    parse. Only the entries the builder reads whole are held whole (`heldWhole`: the header, a
+ *    `session_init`, model and thinking changes, context resets, a system prompt's digest, Envoy
+ *    role claims); every other entry is held light, with where its line is, a message with its
+ *    roles, tool calls and `[Skill file: …]` line, and is read whole again only where a check or a
+ *    reader needs it (the reader's windows, the reads it offers, the case's messages, the
+ *    compaction before the step). So a session holds its entries' light forms and what its case
+ *    and windows need, not its file.
  * 2. The session's messages are those of its current branch (the parent chain of its last entry),
  *    in order, as Oh My Pi 18.18.6 gives them to the model: each `message` (less an assistant
  *    message it leaves out: one marked `retryRecovery`, or an error with no content), each
@@ -364,7 +365,7 @@ import {
   stepText,
 } from "./judge";
 import { firstMessageLoad } from "./load";
-import { PullRow, psqlRows } from "./psql-rows";
+import { PsqlTable, PullCheck } from "./psql-rows";
 import {
   AuditAnswer,
   CaseAnswer,
@@ -456,8 +457,6 @@ export const RESTATE_WINDOWS = 10;
  *  end of one part is whole in the next. */
 export const RESTATE_PART_CHARS = 50_000;
 export const RESTATE_OVERLAP = 1_000;
-/** The most hashes one sessions.sql query names. */
-export const SESSION_BATCH = 500;
 /** The most first user messages the second tasks reader call reads. */
 export const TASK_MESSAGES = 60;
 /** The longest one try of a reader call may take: a reply with a long thinking budget is slow. */
@@ -665,32 +664,21 @@ function usdOf(spent: readonly Spent[]): number {
 // ---------------------------------------------------------------------------------------------
 // The store
 
-/** The rows of `query` run by the store command `command` on the database `db`. Throws with the
- *  command's first error line when it fails. */
+/** The rows of `query` run by the store command `command` on the database `db`, as eachStoreRow
+ *  reads them. */
 async function storeRows(command: string, db: string, query: string): Promise<unknown[]> {
-  const child = Bun.spawn([command, db], {
-    stdin: new Blob([query]),
-    stdout: "pipe",
-    stderr: "pipe",
+  const rows: unknown[] = [];
+  await eachStoreRow(command, db, query, (row) => {
+    rows.push(row);
   });
-  const [stdout, stderr, code] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (code !== 0) {
-    const line = stderr.split("\n").find((each) => each.trim() !== "") ?? "";
-    throw new Error(`the store command exited ${code}: ${line.slice(0, 300)}`);
-  }
-  return psqlRows(stdout);
+  return rows;
 }
 
 /**
- * Runs `query` as storeRows does and gives each row to `visit` as the command prints it, one line
- * at a time, so no more than one row's text is held. The output is checked as psql-rows.ts's
- * `psqlRows` checks it, with the same faults, and the command's failure is reported before a fault
- * of its output, as storeRows reports it; a throw of `visit` comes after both, and no row is given
- * after it. Returns the rows the table holds.
+ * Runs `query` by the store command `command` on the database `db` and gives each row to `visit`
+ * as the command prints it, read by psql-rows.ts's `PsqlTable`, so no more than one row's text is
+ * held. A command that fails is reported first, with its first error line; then a fault of its
+ * output; then a throw of `visit`, after which no row is given. Returns the rows the table holds.
  */
 async function eachStoreRow(
   command: string,
@@ -704,92 +692,20 @@ async function eachStoreRow(
     stderr: "pipe",
   });
   const stderr = new Response(child.stderr).text();
-  let line = 0;
-  let rule = -1;
-  let footer = -1;
-  let blank = -1;
-  let rows = 0;
-  let fault: string | undefined;
-  let visitFault: unknown;
-  const take = (text: string) => {
-    line += 1;
-    if (fault !== undefined) return;
-    if (rule < 0) {
-      if (!/^-[-+]*$/.test(text)) return;
-      if (line === 1) fault = "psql output: no header rule (a line of dashes under a header)";
-      else if (!/^-+$/.test(text))
-        fault = `psql output line ${line}: the table has more than one column`;
-      else rule = line;
-      return;
-    }
-    const trimmed = text.trim();
-    if (footer >= 0) {
-      if (trimmed !== "") fault = `psql output line ${line}: text after the table's footer`;
-      return;
-    }
-    if (blank >= 0 && trimmed !== "") {
-      fault = `psql output line ${blank}: not one JSON value: ""`;
-      return;
-    }
-    const counted = /^\((\d+) rows?\)$/.exec(text);
-    if (counted) {
-      if (Number(counted[1]) !== rows) {
-        fault = `psql output line ${line}: the footer gives ${Number(counted[1])} rows, the table holds ${rows}`;
-      } else footer = line;
-      return;
-    }
-    if (trimmed === "") {
-      blank = line;
-      return;
-    }
-    let row: unknown;
-    try {
-      row = JSON.parse(trimmed);
-    } catch {
-      fault = `psql output line ${line}: not one JSON value: ${JSON.stringify(trimmed.slice(0, 120))}`;
-      return;
-    }
-    rows += 1;
-    if (visitFault !== undefined) return;
-    try {
-      visit(row);
-    } catch (error) {
-      visitFault = error;
-    }
-  };
-  let carry: Buffer[] = [];
-  for await (const chunk of child.stdout) {
-    const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
-    let from = 0;
-    for (;;) {
-      const newline = bytes.indexOf(0x0a, from);
-      if (newline < 0) break;
-      const piece = bytes.subarray(from, newline);
-      take((carry.length === 0 ? piece : Buffer.concat([...carry, piece])).toString("utf8"));
-      carry = [];
-      from = newline + 1;
-    }
-    if (from < bytes.length) carry.push(bytes.subarray(from));
-  }
-  if (carry.length > 0) take(Buffer.concat(carry).toString("utf8"));
+  const table = new PsqlTable(visit);
+  for await (const chunk of child.stdout) table.write(chunk);
   const code = await child.exited;
   if (code !== 0) {
     const first = (await stderr).split("\n").find((each) => each.trim() !== "") ?? "";
     throw new Error(`the store command exited ${code}: ${first.slice(0, 300)}`);
   }
-  if (fault !== undefined) throw new Error(fault);
-  if (rule < 0) throw new Error("psql output: no header rule (a line of dashes under a header)");
-  if (footer < 0) throw new Error("psql output: no footer (N rows) after the table");
-  if (visitFault !== undefined) throw visitFault;
-  return rows;
+  return table.end();
 }
 
-/** Pulls the file `filePath` of the store `db` into the file `spool`, PULL_PAGE parts a call, each
- *  part written as its row comes (`eachStoreRow`), so one row is held at a time however long the
- *  file. Returns the bytes it wrote and the calls it took. It checks the rows as psql-rows.ts's
- *  `pullText` does: each row `{"o", "c"}`, no offset twice, and each part starting where the text
- *  before it ends; the rows come in offset order (pull.sql's ORDER BY), and one that does not is
- *  refused. */
+/** Pulls the file `filePath` of the store `db` into the file `spool`, PULL_PAGE rows a call, each
+ *  row checked by psql-rows.ts's `PullCheck` and its bytes written as it comes (`eachStoreRow`),
+ *  so one row of at most 1 MiB is held at a time however long the file. Returns the bytes it
+ *  wrote and the calls it took. */
 export async function pullTranscript(
   command: string,
   db: string,
@@ -798,45 +714,15 @@ export async function pullTranscript(
 ): Promise<{ bytes: number; calls: number }> {
   const fd = openSync(spool, "w");
   try {
-    let after = -2;
-    let calls = 0;
-    let rows = 0;
-    let seen = -2;
-    let next = 0;
-    let bytes = 0;
+    const check = new PullCheck();
     const write = (row: unknown) => {
-      rows += 1;
-      const parsed = PullRow.safeParse(row);
-      if (!parsed.success) {
-        throw new Error(
-          `pull row ${rows} is not {"o": <offset>, "c": <text>}: ${parsed.error.message}`
-        );
-      }
-      const piece = parsed.data;
-      if (piece.o === seen) throw new Error(`pull rows give offset ${piece.o} twice`);
-      if (piece.o < seen) {
-        throw new Error(`pull rows: the part at offset ${piece.o} comes after the one at ${seen}`);
-      }
-      seen = piece.o;
-      const text = Buffer.from(piece.c, "utf8");
-      if (piece.o >= 0) {
-        if (piece.o !== next) {
-          throw new Error(
-            `pull rows: the part at offset ${piece.o} does not start where the text before it ends (${next})`
-          );
-        }
-        next += text.length;
-      }
+      const text = check.take(row);
       for (let at = 0; at < text.length; ) at += writeSync(fd, text, at);
-      bytes += text.length;
     };
-    for (;;) {
-      const page = await eachStoreRow(command, db, pullSql(filePath, after), write);
-      calls += 1;
-      if (page < PULL_PAGE) break;
-      after = seen;
+    for (let calls = 1; ; calls += 1) {
+      const page = await eachStoreRow(command, db, pullSql(filePath, check.last), write);
+      if (page < PULL_PAGE) return { bytes: check.bytes, calls };
     }
-    return { bytes, calls };
   } finally {
     closeSync(fd);
   }
@@ -849,27 +735,20 @@ export function fileHash(filePath: string): string {
 
 const SessionRow = z.strictObject({ path: z.string().min(1), hash: z.string() });
 
-/** The paths of the files of `hashes` in the store `db`, by hash, SESSION_BATCH a query. */
+/** The paths of the files of `hashes` in the store `db`, by hash, in one sessions.sql query (none
+ *  for no hash): the query reads the store's whole file table once, whatever the hashes. */
 async function resolvePaths(
   command: string,
   db: string,
   hashes: readonly string[]
 ): Promise<{ paths: Map<string, string>; queries: number }> {
   const paths = new Map<string, string>();
-  let queries = 0;
-  for (let start = 0; start < hashes.length; start += SESSION_BATCH) {
-    const rows = await storeRows(
-      command,
-      db,
-      sessionsSql(hashes.slice(start, start + SESSION_BATCH))
-    );
-    queries += 1;
-    for (const row of rows) {
-      const { path: filePath, hash } = SessionRow.parse(row);
-      paths.set(hash, filePath);
-    }
+  if (hashes.length === 0) return { paths, queries: 0 };
+  for (const row of await storeRows(command, db, sessionsSql(hashes))) {
+    const { path: filePath, hash } = SessionRow.parse(row);
+    paths.set(hash, filePath);
   }
-  return { paths, queries };
+  return { paths, queries: 1 };
 }
 
 // ---------------------------------------------------------------------------------------------

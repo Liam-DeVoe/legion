@@ -343,6 +343,13 @@ exact capture commands are in the headers of `psql-rows.test.ts` (the count, the
 query and the edge shapes) and `count.test.ts` (the models query), and `count.test.ts` checks each
 query's rows against its capture.
 
+`F7-pull.txt` was captured again, with the same database and the command now in
+`psql-rows.test.ts`'s header, when `pull.sql`'s rows changed from `{"o", "c"}` to `{"o", "k",
+"c"}`: `pull.sql` now cuts each piece of a file into slices of at most 1 MiB and `k` numbers the
+slices of one piece, so a file row that holds a whole older file of hundreds of MB no longer
+comes as one row. F1's pieces are each one slice, so the new capture is the old one with `"k" :
+0` in each row. `F7-empty.txt` was not captured again: the new query gives the same bytes.
+
 ## F8 and F9: Oh My Pi's Responses body for `openai/gpt-6.1-sol`, and the gateway's replies (`F8-*`, `F9-*`)
 
 `$O` is the scratch directory `/legion/scratch/tmp/infra4676/openai-route.ByGhxu`, outside the

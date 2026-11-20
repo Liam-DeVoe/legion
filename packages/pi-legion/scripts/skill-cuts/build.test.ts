@@ -54,7 +54,9 @@ import {
 //
 // The store is a stand-in for the configuration's psqlCommand: a program that reads the query on
 // its standard input and prints psql's aligned table of one JSON value per row (F7's shape) from
-// a made-up store file, each transcript stored in parts of PART_CHARS characters, so a pull pages.
+// a made-up store file, each transcript stored as the store keeps a file it imported and then
+// appended to: its first three quarters in the file row, in slices of PART_CHARS characters, and
+// the rest in parts of PART_CHARS from the file row's byte length on, so a pull pages.
 // The gateway is a stand-in built on recorder.ts; GitHub is a stand-in gh over made-up
 // repositories (REPOSITORIES), each as it was at the one commit SHA. The copies output (R4's) is
 // of a later read: it lists a skill `newer` that no repository held at SHA, and not `older`,
@@ -535,24 +537,34 @@ if (store === undefined) {
 const literals = (text) => [...text.matchAll(/'((?:[^']|'')*)'/g)].map((m) => m[1].replaceAll("''", "'"));
 let kind;
 let rows;
-if (query.includes("omp_session_files_parts pt") && /p\\.o > (-?\\d+)/.test(query)) {
+let after;
+const place = /\\(pc\\.o, s\\.k\\) > \\((-?\\d+), (-?\\d+)\\)/.exec(query);
+if (query.includes("omp_session_files_parts pt") && place) {
   kind = "pull";
   const filePath = literals(/WHERE f\\.path = ('(?:[^']|'')*')/.exec(query)[1])[0];
-  const after = Number(/WHERE p\\.o > (-?\\d+)/.exec(query)[1]);
+  after = [Number(place[1]), Number(place[2])];
+  const limit = Number(/LIMIT (\\d+)/.exec(query)[1]);
   const text = store.files[filePath];
   const pieces = [];
   if (text !== undefined) {
-    pieces.push({ o: -1, c: "" });
-    let offset = 0;
-    // Parts of PART_CHARS, and of more for a long file, so it is never more than 100 parts.
+    // Stored as a file the store imported and then appended to: the file row holds the first
+    // three quarters, the parts the rest from the file row's byte length on. Slices and parts are
+    // of PART_CHARS, and of more for a long file, so a file is never more than 100 rows.
     const size = Math.max(${PART_CHARS}, Math.ceil(text.length / 100));
-    for (let at = 0; at < text.length; at += size) {
+    const row = text.slice(0, Math.floor((text.length * 3) / 4));
+    for (let at = 0, k = 0; at < row.length || k === 0; at += size, k += 1) {
+      pieces.push({ o: -1, k, c: row.slice(at, at + size) });
+    }
+    let offset = Buffer.byteLength(row, "utf8");
+    for (let at = row.length; at < text.length; at += size) {
       const c = text.slice(at, at + size);
-      pieces.push({ o: offset, c });
+      pieces.push({ o: offset, k: 0, c });
       offset += Buffer.byteLength(c, "utf8");
     }
   }
-  rows = pieces.filter((piece) => piece.o > after).slice(0, 64);
+  rows = pieces
+    .filter((piece) => piece.o > after[0] || (piece.o === after[0] && piece.k > after[1]))
+    .slice(0, limit);
 } else if (query.includes("left(md5(f.path), 16) = ANY")) {
   kind = "sessions";
   const hashes = new Set(literals(query.slice(query.indexOf("ANY"))));
@@ -571,7 +583,7 @@ if (query.includes("omp_session_files_parts pt") && /p\\.o > (-?\\d+)/.test(quer
   process.stderr.write("psql: error: not a query of the runner\\n");
   process.exit(3);
 }
-appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ db, kind, rows: rows.length, limit64: !query.includes("omp_session_files_parts pt") || query.includes("LIMIT 64") }) + "\\n");
+appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ db, kind, rows: rows.length, after, first: rows[0] && [rows[0].o, rows[0].k], limit64: !query.includes("omp_session_files_parts pt") || query.includes("LIMIT 64") }) + "\\n");
 process.stdout.write(" value \\n-------\\n" + rows.map((row) => " " + JSON.stringify(row) + "\\n").join("") + "(" + rows.length + (rows.length === 1 ? " row" : " rows") + ")\\n\\n");
 `;
 
@@ -1886,14 +1898,28 @@ describe("build-cases over every made-up session", () => {
     expect(summary.readerSpend.usd).toBeGreaterThan(0);
   });
 
-  test("a pull pages at 64 parts a call, and a hash without a path is resolved with sessions.sql", () => {
+  test("a pull pages at 64 rows a call, inside the file row's slices too, and a hash without a path is resolved with sessions.sql", () => {
     const log = readFileSync(psqlLog, "utf8")
       .split("\n")
       .filter((line) => line !== "")
-      .map((line) => JSON.parse(line) as { kind: string; rows: number; limit64: boolean });
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            kind: string;
+            rows: number;
+            after?: number[];
+            first?: number[];
+            limit64: boolean;
+          }
+      );
     expect(log.every((each) => each.limit64)).toBe(true);
     expect(log.filter((each) => each.kind === "sessions")).toHaveLength(1);
     expect(log.some((each) => each.kind === "pull" && each.rows === 64)).toBe(true);
+    // A call that starts after a slice of the file row and returns the next one: a page that
+    // ended inside the file row.
+    expect(
+      log.some((each) => each.kind === "pull" && each.after?.[0] === -1 && each.first?.[0] === -1)
+    ).toBe(true);
     const good = summaryOf(out).sessions.find(
       (each) => each.hash === fileHash(sessionPath("good"))
     );
@@ -2654,7 +2680,7 @@ test("build-cases refuses a stop bound that is no number, before any read", asyn
 test("the pull reads the store command's output row by row with psqlRows' checks and faults, and reports a failing command first", async () => {
   const dir = path.join(scratch, "pull-output");
   mkdirSync(dir, { recursive: true });
-  const row = (o: number, c: string) => ` ${JSON.stringify({ o, c })}`;
+  const row = (o: number, c: string, k = 0) => ` ${JSON.stringify({ o, k, c })}`;
   const outputs = [
     ["part", "-----", row(-1, ""), row(0, "a\n"), "(2 rows)", ""],
     ["part", "-----", row(-1, ""), row(0, "a\n"), "(2 rows)"],
@@ -2667,12 +2693,17 @@ test("the pull reads the store command's output row by row with psqlRows' checks
     ["part", "-----", "", row(-1, ""), "(1 row)"],
     ["part", "-----", row(-1, ""), "", ""],
   ].map((lines) => lines.join("\n"));
-  for (const [n, output] of outputs.entries()) {
-    const file = path.join(dir, `${n}.txt`);
+  /** A store command that prints `output`, named `name`. */
+  const printing = (name: string, output: string) => {
+    const file = path.join(dir, `${name}.txt`);
     writeFileSync(file, output);
-    const command = path.join(dir, `${n}.sh`);
+    const command = path.join(dir, `${name}.sh`);
     writeFileSync(command, `#!/bin/sh\ncat '${file}'\n`);
     chmodSync(command, 0o755);
+    return command;
+  };
+  for (const [n, output] of outputs.entries()) {
+    const command = printing(String(n), output);
     const spool = path.join(dir, `${n}.jsonl`);
     let fault: string | undefined;
     try {
@@ -2693,6 +2724,20 @@ test("the pull reads the store command's output row by row with psqlRows' checks
       }).toEqual({ n, error: `Error: ${fault}` });
     }
   }
+  // An imported file appended to: the file row's two slices, then a part at the file row's byte
+  // length, whose DEL psql prints as \x7F; and a part at 0 after them, which overlaps the file row.
+  const head = ["part", "-----", row(-1, "ab"), row(-1, "c\n", 1)];
+  const imported = printing(
+    "imported",
+    [...head, String.raw` {"o" : 4, "k" : 0, "c" : "d\x7F\n"}`, "(3 rows)", ""].join("\n")
+  );
+  const spool = path.join(dir, "imported.jsonl");
+  expect(await pullTranscript(imported, "store_a", "/x", spool)).toEqual({ bytes: 7, calls: 1 });
+  expect(readFileSync(spool, "utf8")).toBe("abc\nd\u007f\n");
+  const overlap = printing("overlap", [...head, row(0, "d\n"), "(3 rows)", ""].join("\n"));
+  expect(await pullTranscript(overlap, "store_a", "/x", spool).catch(String)).toBe(
+    "Error: pull rows: the part at offset 0 does not start where the text before it ends (4)"
+  );
   // A command that fails is reported as failing, whatever it printed.
   const failing = path.join(dir, "failing.sh");
   writeFileSync(failing, "#!/bin/sh\necho 'not a table'\necho 'psql: error: gone' >&2\nexit 3\n");

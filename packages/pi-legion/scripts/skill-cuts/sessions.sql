@@ -3,8 +3,9 @@
 -- every file with a read in the window by its hash (`md5(path)` cut to 16 hex characters); the
 -- caller takes the hashes of the rows of the skill whose copy maps to the cut repository's copy
 -- (kind `read`, across every day of the store), and this query names their paths. It reads only
--- public.omp_session_files, so the parts are not read again for each skill. `sessionsSql` of
--- countsql.ts fills it.
+-- public.omp_session_files, so the parts are not read again for each skill. It reads the whole
+-- table and takes md5 of every path once whatever the number of hashes, so build.ts gives it all
+-- of a store's hashes in one query. `sessionsSql` of countsql.ts fills it.
 --
 -- Placeholder, written in the query as its name inside double braces and filled with one whole SQL
 -- value:

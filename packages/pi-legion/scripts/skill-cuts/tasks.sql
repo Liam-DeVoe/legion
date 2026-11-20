@@ -12,13 +12,15 @@ SET LOCAL statement_timeout = '15min';
 --   terms         a text array (`ARRAY['term', …]::text[]`); a message holds a term when it holds
 --                 its text, letter case aside
 --
--- What it reads: per file, the file row's content and the parts that start in the first MiB
--- (start_offset < 1048576), joined in offset order, one file at a time; the text after their last
+-- What it reads: per file, its head, one file at a time: the file row's content, then each part
+-- that starts in the first MiB (start_offset < 1048576), in offset order, each piece cut to its
+-- first 1048576 characters before it is joined and the head cut the same way (a file row can hold
+-- a whole older file of hundreds of MB, as models.sql says). The text after the head's last
 -- newline is left out, since it may be cut. The first user message is the first line that is an
 -- Oh My Pi user message (`"type": "message"`, `message.role` `user`) or a Claude Code prompt
 -- (`"type": "user"`, not `isMeta`, holding no `tool_result`); its text is its string content, or
 -- its text blocks joined by newlines. A session whose first user message does not end in that
--- first MiB gives no row.
+-- head gives no row.
 --
 -- Rows, by path, each one JSON value: {"path": <the file's path>, "text": <the message's first
 -- 4,000 characters>}.
@@ -26,10 +28,16 @@ WITH heads AS (
   SELECT f.path, h.txt
   FROM public.omp_session_files f
   CROSS JOIN LATERAL (
-    SELECT coalesce(f.content, '')
-      || coalesce(string_agg(pt.content, '' ORDER BY pt.start_offset), '') AS txt
-    FROM public.omp_session_files_parts pt
-    WHERE pt.path = f.path AND pt.start_offset < 1048576
+    SELECT substr(
+      coalesce(substr(f.content, 1, 1048576), '') || coalesce((
+        SELECT string_agg(substr(pt.content, 1, 1048576), '' ORDER BY pt.start_offset)
+        FROM public.omp_session_files_parts pt
+        WHERE pt.path = f.path AND pt.start_offset < 1048576
+      ), ''),
+      1,
+      1048576
+    ) AS txt
+    OFFSET 0
   ) h
   WHERE f.mtime_ms >= {{day_start}} AND f.mtime_ms < {{day_end}}
 ),
@@ -41,7 +49,8 @@ firsts AS (
     FROM (
       SELECT t.n, CASE WHEN pg_input_is_valid(t.ln, 'jsonb') THEN t.ln::jsonb END AS j
       FROM string_to_table(
-        left(hd.txt, greatest(length(hd.txt) - strpos(reverse(hd.txt), E'\n'), 0)),
+        -- The head up to its last newline: less the text after it and the newline.
+        left(hd.txt, greatest(length(hd.txt) - length(split_part(hd.txt, E'\n', -1)) - 1, 0)),
         E'\n'
       ) WITH ORDINALITY AS t(ln, n)
       WHERE strpos(hd.txt, E'\n') > 0 AND strpos(t.ln, '"user"') > 0

@@ -18,6 +18,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { loadConfig, type SkillCutsConfig, storeNamed } from "./config";
+import type { PullKey } from "./psql-rows";
 
 /** The SQL files of the runner, beside this file. */
 export type Template = "count.sql" | "models.sql" | "pull.sql" | "tasks.sql" | "sessions.sql";
@@ -132,18 +133,27 @@ export function modelsSql(
   });
 }
 
-/** The rows a transcript pull asks for in one call. */
+/** The rows a transcript pull asks for in one call (pull.sql's page). */
 export const PULL_PAGE = 64;
 
-/** pull.sql filled for the file `filePath`, its rows after the offset `after` (-2 for the first
- *  call). */
-export function pullSql(filePath: string, after: number): string {
-  if (!Number.isSafeInteger(after) || after < -2) {
-    throw new Error(`after ${after} is not an offset of -2 or more`);
+/** pull.sql filled for the file `filePath`, its rows after the place `after` (PULL_START for the
+ *  first call). */
+export function pullSql(filePath: string, after: PullKey): string {
+  if (
+    !Number.isSafeInteger(after.o) ||
+    after.o < -2 ||
+    !Number.isSafeInteger(after.k) ||
+    after.k < 0
+  ) {
+    throw new Error(
+      `after offset ${after.o}, slice ${after.k} is not an offset of -2 or more and a slice of 0 or more`
+    );
   }
   return fillTemplate(readTemplate("pull.sql"), {
     path: sqlString(filePath),
-    after: String(after),
+    after_o: String(after.o),
+    after_k: String(after.k),
+    page: String(PULL_PAGE),
   });
 }
 

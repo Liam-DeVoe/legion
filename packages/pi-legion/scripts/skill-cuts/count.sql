@@ -21,16 +21,23 @@ SET LOCAL statement_timeout = '15min';
 -- apart. A piece that holds no newline lies inside one line. A line that crosses pieces is the
 -- tail of one piece, every following piece with no newline, and the head of the next piece that
 -- holds one; those fragments share a group, the running count of newline-holding pieces of the
--- file, and are joined in offset order. So the memory a file takes is bounded by its longest
--- line, not by the file.
+-- file, and are joined in offset order. So no file is joined whole: the memory a file takes is
+-- its largest piece, which is copied whole (below), and the lines it joins (those that cross a
+-- piece and those that hold a target), not the whole file. A file row that holds a whole older
+-- file is one piece of up to hundreds of MB.
 --
--- Passes: one over the day's parts. The parts of a file come in the primary key's order, so no
--- sort moves their text, and each is decompressed once: one plain copy of it is made behind an
--- OFFSET 0 fence and every function below reads that copy. The whole lines of a piece are split
--- out only when the piece may hold a target: when it holds `kill`, `KILL`, `/references/` or
+-- Passes: one over the day's files, one file at a time, and over each file's parts. The parts of
+-- a file come in the primary key's order, so no sort moves their text, and each piece is
+-- decompressed once: one plain copy of it is made behind an OFFSET 0 fence and every function
+-- below reads that copy (the file row's copy, its first newline and its tail are made once per
+-- file, and its parts read its state from them). The whole lines of a piece are split out only
+-- when the piece may hold a target: when it holds `kill`, `KILL`, `/references/` or
 -- `rror":true`, as every target below does. Only the fragments of lines that cross a part
 -- boundary, the lines that hold a target and two total rows per file go through a sort, one file
--- at a time, to be joined. Only those lines are parsed as jsonb.
+-- at a time, to be joined. Only those lines are parsed as jsonb, each inside its file's LATERAL,
+-- where it is read into its events and dropped: only the events, one small row per parsed line
+-- and each file's totals are materialized, never a line's text, as models.sql materializes only
+-- each file's result.
 --
 -- The targets a line must hold to be parsed: one of `skill://`, `SKILL.md`, `/references/`,
 -- `"Skill"`, `Launching skill: `, `Base directory for this skill: `, `"isError":true` or
@@ -73,22 +80,26 @@ SET LOCAL statement_timeout = '15min';
 -- characters, sorted, in a JSON array, so the client counts distinct hashes across queries. No
 -- path or line text leaves the database.
 WITH
-day_files AS MATERIALIZED (
-  SELECT
-    f.path,
-    coalesce(f.content, '') AS content,
-    -- the file row's state before the first part: whether it ends inside a line, and the
-    -- groups it opens (1 when it holds a newline)
-    split_part(coalesce(f.content, ''), E'\n', -1) <> '' AS content_open,
-    (strpos(coalesce(f.content, ''), E'\n') > 0)::int::bigint AS content_groups
+-- Per file, one file at a time: its totals and the events of its lines that hold a target. Each
+-- such line is joined whole, parsed, read into its events and dropped inside the file's LATERAL;
+-- what is materialized is each event, one `line` row per parsed line (`ok` false when it is not
+-- one JSON value), and the file's `total` rows (`bytes` and `parts` set). An event is a call, an
+-- answer or a Claude Code skill directory: `tool` is `read` for a read by path (Oh My Pi `read`,
+-- Claude Code `Read`) and `skill` for a Claude Code `Skill` call; `arg` is the path or the skill
+-- input; `ok` is false for an error answer; `copy` is the answer's `[Skill file: …]` path or the
+-- skill directory's SKILL.md.
+events AS MATERIALIZED (
+  SELECT f.path, e.ev, e.id, e.ts, e.tool, e.arg, e.ok, e.copy, e.bytes, e.parts
   FROM public.omp_session_files f
-  WHERE f.mtime_ms >= {{day_start}} AND f.mtime_ms < {{day_end}}
-),
--- Per file: its totals (bytes is set, line is null) and each line that holds a target (line is
--- set), whole.
-lines AS MATERIALIZED (
-  SELECT d.path, fl.bytes, fl.parts, fl.line
-  FROM day_files d
+  -- The file row's text, one plain copy made once behind OFFSET 0 fences, with its nl1 and tail
+  -- (as for each part below), which also give the file row's state to its first part.
+  CROSS JOIN LATERAL (
+    SELECT x.c, strpos(x.c, E'\n') AS nl1, split_part(x.c, E'\n', -1) AS tail
+    FROM (SELECT coalesce(f.content, '') || '' AS c OFFSET 0) x
+    OFFSET 0
+  ) fr
+  -- The file's totals (bytes is set, line is null) and each line that holds a target (line is
+  -- set), whole.
   CROSS JOIN LATERAL (
     SELECT g.bytes, g.parts, g.line
     FROM (
@@ -105,19 +116,14 @@ lines AS MATERIALIZED (
         SELECT -1::bigint AS off, fr.c, fr.nl1, fr.tail, false AS prev_open,
           (fr.nl1 > 0)::int::bigint AS grp, true AS last, octet_length(fr.c)::bigint AS bytes,
           0::bigint AS parts
-        FROM (
-          SELECT x.c, strpos(x.c, E'\n') AS nl1, split_part(x.c, E'\n', -1) AS tail
-          FROM (SELECT d.content || '' AS c OFFSET 0) x
-          OFFSET 0
-        ) fr
         UNION ALL
         SELECT
           q.off,
           dc.c,
           dc.nl1,
           dc.tail,
-          coalesce(lag(dc.tail <> '') OVER win, d.content_open),
-          d.content_groups + count(*) FILTER (WHERE dc.nl1 > 0) OVER win,
+          coalesce(lag(dc.tail <> '') OVER win, fr.tail <> ''),
+          (fr.nl1 > 0)::int::bigint + count(*) FILTER (WHERE dc.nl1 > 0) OVER win,
           lead(q.off) OVER win IS NULL,
           sum(octet_length(dc.c)) OVER win,
           count(*) OVER win
@@ -125,7 +131,7 @@ lines AS MATERIALIZED (
           -- The parts in the primary key's order, so no sort moves their text.
           SELECT pt.start_offset AS off, pt.content AS raw
           FROM public.omp_session_files_parts pt
-          WHERE pt.path = d.path
+          WHERE pt.path = f.path
           ORDER BY pt.start_offset
           OFFSET 0
         ) q
@@ -203,28 +209,29 @@ lines AS MATERIALIZED (
           OR strpos(g.line, '"tool_use"') > 0 OR strpos(g.line, '"tool_result"') > 0
           OR strpos(g.line, '"sourceToolUseID"') > 0))
   ) fl
-),
-parsed AS MATERIALIZED (
-  SELECT l.path, CASE WHEN pg_input_is_valid(l.line, 'jsonb') THEN l.line::jsonb END AS j
-  FROM lines l
-  WHERE l.line IS NOT NULL
-),
--- Each call, answer and Claude Code skill directory the parsed lines hold. `tool` is `read` for a
--- read by path (Oh My Pi `read`, Claude Code `Read`) and `skill` for a Claude Code `Skill` call;
--- `arg` is the path or the skill input; `ok` is false for an error answer; `copy` is the answer's
--- `[Skill file: …]` path or the skill directory's SKILL.md.
-events AS MATERIALIZED (
-  SELECT p.path, e.ev, e.id, e.ts, e.tool, e.arg, e.ok, e.copy
-  FROM parsed p
+  -- The line parsed, once: null when it is not one JSON value, and for a totals row.
+  CROSS JOIN LATERAL (
+    SELECT CASE WHEN pg_input_is_valid(fl.line, 'jsonb') THEN fl.line::jsonb END AS j
+    OFFSET 0
+  ) p
   CROSS JOIN LATERAL (
     SELECT CASE
       WHEN pg_input_is_valid(p.j ->> 'timestamp', 'timestamptz') THEN (p.j ->> 'timestamp')::timestamptz
     END AS ts
   ) lt
   CROSS JOIN LATERAL (
+    -- The file's totals.
+    SELECT 'total' AS ev, NULL::text AS id, NULL::timestamptz AS ts, NULL::text AS tool,
+      NULL::text AS arg, NULL::boolean AS ok, NULL::text AS copy, fl.bytes, fl.parts
+    WHERE fl.bytes IS NOT NULL
+    UNION ALL
+    -- A parsed line: ok when it is one JSON value.
+    SELECT 'line', NULL, NULL, NULL, NULL, p.j IS NOT NULL, NULL, NULL, NULL
+    WHERE fl.line IS NOT NULL
+    UNION ALL
     -- Oh My Pi: a read call.
-    SELECT 'call' AS ev, x.e ->> 'id' AS id, lt.ts, 'read' AS tool,
-      x.e -> 'arguments' ->> 'path' AS arg, NULL::boolean AS ok, NULL::text AS copy
+    SELECT 'call', x.e ->> 'id', lt.ts, 'read', x.e -> 'arguments' ->> 'path', NULL, NULL, NULL,
+      NULL
     FROM jsonb_array_elements(
       CASE
         WHEN p.j ->> 'type' = 'message' AND p.j -> 'message' ->> 'role' = 'assistant'
@@ -240,7 +247,8 @@ events AS MATERIALIZED (
       substring(
         split_part(p.j -> 'message' -> 'content' -> 0 ->> 'text', E'\n', 1)
         FROM '^\[Skill file: (.+)\]$'
-      )
+      ),
+      NULL, NULL
     WHERE p.j ->> 'type' = 'message' AND p.j -> 'message' ->> 'role' = 'toolResult'
     UNION ALL
     -- Claude Code: a Skill or Read call.
@@ -250,7 +258,7 @@ events AS MATERIALIZED (
         WHEN x.e ->> 'name' = 'Skill' THEN coalesce(x.e -> 'input' ->> 'skill', x.e -> 'input' ->> 'command')
         ELSE x.e -> 'input' ->> 'file_path'
       END,
-      NULL, NULL
+      NULL, NULL, NULL, NULL
     FROM jsonb_array_elements(
       CASE
         WHEN p.j ->> 'type' = 'assistant' AND jsonb_typeof(p.j -> 'message' -> 'content') = 'array'
@@ -261,7 +269,7 @@ events AS MATERIALIZED (
     UNION ALL
     -- Claude Code: a tool result.
     SELECT 'result', x.e ->> 'tool_use_id', NULL, NULL, NULL,
-      (x.e -> 'is_error') IS DISTINCT FROM 'true'::jsonb, NULL
+      (x.e -> 'is_error') IS DISTINCT FROM 'true'::jsonb, NULL, NULL, NULL
     FROM jsonb_array_elements(
       CASE
         WHEN p.j ->> 'type' = 'user' AND jsonb_typeof(p.j -> 'message' -> 'content') = 'array'
@@ -285,10 +293,11 @@ events AS MATERIALIZED (
           FROM '^Base directory for this skill: (.+)$'
         ),
         '/'
-      ) || '/SKILL.md'
+      ) || '/SKILL.md',
+      NULL, NULL
     WHERE p.j ->> 'type' = 'user' AND p.j ? 'sourceToolUseID'
   ) e
-  WHERE p.j IS NOT NULL
+  WHERE f.mtime_ms >= {{day_start}} AND f.mtime_ms < {{day_end}}
 ),
 -- Each call of a skill file, with its skill name and kind.
 calls AS (
@@ -376,11 +385,11 @@ FROM (
     json_build_object(
       'row', 'summary', 'store', {{store}}, 'mtime_from', {{day_start}}::bigint,
       'mtime_to', {{day_end}}::bigint,
-      'files', (SELECT count(DISTINCT l.path) FROM lines l WHERE l.bytes IS NOT NULL),
-      'parts', (SELECT coalesce(sum(l.parts), 0) FROM lines l),
-      'bytes', (SELECT coalesce(sum(l.bytes), 0) FROM lines l),
-      'lines_parsed', (SELECT count(*) FROM parsed),
-      'bad_lines', (SELECT count(*) FROM parsed WHERE j IS NULL),
+      'files', (SELECT count(DISTINCT e.path) FROM events e WHERE e.ev = 'total'),
+      'parts', (SELECT coalesce(sum(e.parts), 0) FROM events e WHERE e.ev = 'total'),
+      'bytes', (SELECT coalesce(sum(e.bytes), 0) FROM events e WHERE e.ev = 'total'),
+      'lines_parsed', (SELECT count(*) FROM events e WHERE e.ev = 'line'),
+      'bad_lines', (SELECT count(*) FROM events e WHERE e.ev = 'line' AND NOT e.ok),
       'shared_call_ids', (SELECT count(*) FROM shared)
     )::text
 ) o

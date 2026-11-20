@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { SQL } from "bun";
 import { z } from "zod";
+import { pullTranscript } from "./build";
 import { loadConfig } from "./config";
 import {
   countSql,
@@ -12,28 +13,30 @@ import {
   main,
   modelsSql,
   mtimeRange,
+  PULL_PAGE,
   pullSql,
   sessionsSql,
   sqlString,
   tasksSql,
 } from "./countsql";
 import { cutOffsets, lastTimestampMs, loadFixtures, storedPath, storeRefusal } from "./fixturedb";
-import { psqlRows, pullText } from "./psql-rows";
+import { PULL_START, PullRow, psqlRows } from "./psql-rows";
 
 // R1's fixture proof of count.sql (plan, "The SQL is committed and proven on fixtures") and of
 // models.sql, and the pieces they stand on: countsql.ts's filling and fixturedb.ts's loading. The
 // proof needs the pod's test server (LEGION_TEST_PG_DSN) and psql, and runs each query with the
 // store command's own flags; without the server it is skipped with a printed line (the pi-legion
-// CI job has none). It makes five databases of its own on that server and drops them at the end:
+// CI job has none). It makes six databases of its own on that server and drops them at the end:
 // F1's session, its subagent and F4 in the first; F1b in the second; F1's session in the third,
 // cut into three parts inside its `alpha` read call line; and, for models.sql, in the fourth: F1c
 // (F1's subagent with its model_change line taken out, so its model is its session_init's) cut
 // after its session_init line, F1d (F1b's first two lines, with no model line) and F1b cut inside
-// its first line, so that its model_change line is in its second part; and in the fifth a file
-// made here, F4 with a long line before its first assistant message, whose head models.sql cuts
-// at 256 Ki. Each query's rows must equal those of its F7 capture (psql-rows.test.ts gives the
-// capture commands of count.sql's), so a change to the SQL that changes a result fails here until
-// F7 is captured again.
+// its first line, so that its model_change line is in its second part; in the fifth a file made
+// here, F4 with a long line before its first assistant message, whose head models.sql cuts at 256
+// Ki; and in the sixth, for pull.sql and tasks.sql, the made-up sessions the pull tests describe.
+// Each query's rows must equal those of its F7 capture (psql-rows.test.ts gives the capture
+// commands of count.sql's and pull.sql's), so a change to the SQL that changes a result fails here
+// until F7 is captured again.
 //
 // F1c, F1d and models.sql's captures, from packages/pi-legion/scripts/skill-cuts, with FIRST the
 // first database as psql-rows.test.ts loads it and MODELS a fourth made the same way:
@@ -136,7 +139,16 @@ describe("countsql.ts fills the SQL", () => {
       () => fillTemplate("SELECT {{a}}", { a: "1", b: "2" }),
       "no placeholder for b",
     ],
-    ["a pull offset below -2", () => pullSql("a.jsonl", -3), "is not an offset of -2 or more"],
+    [
+      "a pull place before the file row",
+      () => pullSql("a.jsonl", { o: -3, k: 0 }),
+      "is not an offset of -2 or more and a slice of 0 or more",
+    ],
+    [
+      "a pull place of a slice below 0",
+      () => pullSql("a.jsonl", { o: -1, k: -1 }),
+      "is not an offset of -2 or more and a slice of 0 or more",
+    ],
     [
       "a hash that is not 16 hex characters",
       () => sessionsSql(["83af4b8e0c75a05"]),
@@ -153,7 +165,7 @@ describe("countsql.ts fills the SQL", () => {
 
   test("a string value is one literal, whatever it holds", () => {
     expect(sqlString("it's a path\\with'quotes")).toBe("'it''s a path\\with''quotes'");
-    expect(pullSql("a'b.jsonl", -2)).toContain("WHERE f.path = 'a''b.jsonl'");
+    expect(pullSql("a'b.jsonl", PULL_START)).toContain("WHERE f.path = 'a''b.jsonl'");
   });
 
   test("the command prints the query and refuses a store the configuration does not name", () => {
@@ -264,6 +276,7 @@ describe.skipIf(serverDsn === undefined)(
       third: `skill_cuts_count_${stamp}_third`,
       models: `skill_cuts_count_${stamp}_models`,
       big: `skill_cuts_count_${stamp}_big`,
+      pull: `skill_cuts_count_${stamp}_pull`,
     };
     /** The DSN of one of this run's databases on the server LEGION_TEST_PG_DSN names. */
     const dsnOf = (name: string) => {
@@ -277,8 +290,98 @@ describe.skipIf(serverDsn === undefined)(
     const BIG = path.join(scratch, "big.jsonl");
     let bigParts: readonly number[] = [];
 
-    /** The rows of `sql` run in the database `name` with the store command's psql flags. */
-    function run(name: string, sql: string): unknown[] {
+    // The sixth database's made-up sessions. IMPORTED is stored as the store keeps a whole file
+    // it imported and then appended to (ompsessions.go's Import and Append): its file row holds
+    // more than 2 MiB, and its two parts start at the row's byte length. The file row's pad line
+    // has a 3-byte character across each 1 MiB cut, so each cut moves back to that character's
+    // first byte; its user message comes after its first MiB; its note line holds a DEL (U+007F,
+    // which psql prints as \x7F), the text \x7F, a backslash before a DEL, and U+0085; and it
+    // ends with a read of skill://alpha and the first half of its result's line, which the first
+    // part ends. FIRST_MESSAGE is a file row only: its user message, then a line that runs past
+    // the first MiB. MANY is loaded by fixturedb.ts in 70 parts, more than one call's page of rows.
+    const MIB = 1_048_576;
+    const IMPORTED = "made-up/imported.jsonl";
+    const FIRST_MESSAGE = "made-up/first-message.jsonl";
+    const MANY = path.join(scratch, "many.jsonl");
+    /** A store command that runs the query in the database its URL argument names. */
+    const STORE = path.join(scratch, "store.sh");
+    const jsonLine = (value: unknown) => `${JSON.stringify(value)}\n`;
+    const importedHeader = jsonLine({
+      type: "session",
+      version: 3,
+      id: "made-up-imported",
+      timestamp: "2026-11-20T03:00:00.000Z",
+      cwd: "/work",
+    });
+    /** The bytes before the pad's text: the header line and `{"type":"pad","pad":"`. */
+    const padAt = Buffer.byteLength(importedHeader) + '{"type":"pad","pad":"'.length;
+    const readResult = jsonLine({
+      type: "message",
+      id: "r0000001",
+      parentId: "c0000001",
+      timestamp: "2026-11-20T03:00:01.600Z",
+      message: {
+        role: "toolResult",
+        toolCallId: "toolu_made_up",
+        toolName: "read",
+        isError: false,
+        content: [{ type: "text", text: "[Skill file: /skills/alpha/SKILL.md]\n# alpha\n" }],
+      },
+    });
+    const resultCut = Math.floor(readResult.length / 2);
+    const importedRow = [
+      importedHeader,
+      jsonLine({
+        type: "pad",
+        pad: `${"x".repeat(MIB - 1 - padAt)}€${"x".repeat(MIB - 3)}€${"x".repeat(1000)}`,
+      }),
+      jsonLine({
+        type: "message",
+        id: "u0000001",
+        parentId: null,
+        timestamp: "2026-11-20T03:00:01.000Z",
+        message: { role: "user", content: "Fixture task: list the made-up steps." },
+      }),
+      jsonLine({ type: "note", text: "a\u007fb \\x7F c\\\u007f d\u0085" }),
+      jsonLine({
+        type: "message",
+        id: "c0000001",
+        parentId: "u0000001",
+        timestamp: "2026-11-20T03:00:01.500Z",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "toolu_made_up",
+              name: "read",
+              arguments: { path: "skill://alpha" },
+            },
+          ],
+        },
+      }),
+      readResult.slice(0, resultCut),
+    ].join("");
+    const importedParts = [
+      readResult.slice(resultCut),
+      jsonLine({
+        type: "note",
+        timestamp: "2026-11-20T03:00:03.000Z",
+        text: "Step 1 \u007f done.",
+      }),
+    ];
+    const importedText = importedRow + importedParts.join("");
+    const firstMessageRow =
+      jsonLine({
+        type: "message",
+        id: "u0000002",
+        parentId: null,
+        timestamp: "2026-11-20T04:00:00.000Z",
+        message: { role: "user", content: "Fixture task: write the made-up report." },
+      }) + jsonLine({ type: "pad", pad: "y".repeat(MIB + 200_000) });
+
+    /** psql's output of `sql` run in the database `name` with the store command's psql flags. */
+    function output(name: string, sql: string): string {
       const psql = Bun.spawnSync(
         [
           "psql",
@@ -298,8 +401,11 @@ describe.skipIf(serverDsn === undefined)(
       );
       if (psql.exitCode !== 0)
         throw new Error(`psql exited ${psql.exitCode}: ${psql.stderr.toString()}`);
-      return psqlRows(psql.stdout.toString());
+      return psql.stdout.toString();
     }
+
+    /** The rows of `sql` run in the database `name` with the store command's psql flags. */
+    const run = (name: string, sql: string) => psqlRows(output(name, sql));
 
     /** The rows of an F7 capture. */
     const captured = (name: string) => psqlRows(readFileSync(path.join(TESTDATA, name), "utf8"));
@@ -333,6 +439,40 @@ describe.skipIf(serverDsn === undefined)(
       );
       const [big] = await loadFixtures(dsnOf(names.big), [BIG], { parts: 3, line: '"type":"pad"' });
       bigParts = big?.offsets ?? [];
+      writeFileSync(
+        MANY,
+        jsonLine({ type: "session", id: "made-up-many", timestamp: "2026-11-20T05:00:00.000Z" }) +
+          jsonLine({ type: "pad", pad: "z".repeat(7_000) })
+      );
+      await loadFixtures(dsnOf(names.pull), [MANY], { parts: 70 });
+      const pull = new SQL(dsnOf(names.pull));
+      try {
+        let offset = Buffer.byteLength(importedRow);
+        await pull`
+          INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len)
+          VALUES (${IMPORTED}, ${importedRow}, ${Date.parse("2026-11-20T03:00:03.000Z")},
+            ${Buffer.byteLength(importedText)})
+        `;
+        for (const part of importedParts) {
+          await pull`
+            INSERT INTO public.omp_session_files_parts (path, start_offset, content)
+            VALUES (${IMPORTED}, ${offset}, ${part})
+          `;
+          offset += Buffer.byteLength(part);
+        }
+        await pull`
+          INSERT INTO public.omp_session_files (path, content, mtime_ms, byte_len)
+          VALUES (${FIRST_MESSAGE}, ${firstMessageRow}, ${Date.parse("2026-11-20T04:00:00.000Z")},
+            ${Buffer.byteLength(firstMessageRow)})
+        `;
+      } finally {
+        await pull.close();
+      }
+      writeFileSync(
+        STORE,
+        `#!/bin/sh\nexec psql -X -q -w -v ON_ERROR_STOP=1 --single-transaction -c 'SET TRANSACTION READ ONLY' -f - "$1"\n`,
+        { mode: 0o755 }
+      );
     }, 60_000);
 
     afterAll(async () => {
@@ -396,11 +536,16 @@ describe.skipIf(serverDsn === undefined)(
       expect(rows.at(-1)).toMatchObject({ row: "summary", files: 1, parts: 3, bad_lines: 0 });
     });
 
-    test("the pull, task, sessions and empty queries give their F7 rows", () => {
-      const pull = run(names.first, pullSql(storedPath(F1_SESSION), -2));
+    test("the pull, task, sessions and empty queries give their F7 rows, and pullTranscript pulls the file whole", async () => {
+      const pull = run(names.first, pullSql(storedPath(F1_SESSION), PULL_START));
       expect(pull).toEqual(captured("F7-pull.txt"));
-      expect(pullText(pull)).toBe(readFileSync(F1_SESSION, "utf8"));
-      expect(run(names.first, pullSql("no/such/path.jsonl", -2))).toEqual([]);
+      const spool = path.join(scratch, "f1-pulled.jsonl");
+      const f1 = readFileSync(F1_SESSION);
+      expect(
+        await pullTranscript(STORE, dsnOf(names.first), storedPath(F1_SESSION), spool)
+      ).toEqual({ bytes: f1.length, calls: 1 });
+      expect(readFileSync(spool).equals(f1)).toBe(true);
+      expect(run(names.first, pullSql("no/such/path.jsonl", PULL_START))).toEqual([]);
       expect(
         run(
           names.first,
@@ -415,6 +560,103 @@ describe.skipIf(serverDsn === undefined)(
       expect(run(names.first, sessionsSql([...hashes, "0000000000000000"]))).toEqual(
         captured("F7-sessions.txt")
       );
+    });
+
+    /** Each pull row's place and the bytes of its text: `[o, k, bytes]`. */
+    const placed = (rows: unknown[]) =>
+      rows.map((row) => {
+        const { o, k, c } = PullRow.parse(row);
+        return [o, k, Buffer.byteLength(c)];
+      });
+
+    test("a file row of over 1 MiB comes as slices of at most 1 MiB, each cut at a character's first byte, and its parts follow at its byte length", () => {
+      const row = Buffer.from(importedRow);
+      // The cuts at 1 MiB and 2 MiB each fall on the second byte of a euro sign.
+      expect([row[MIB], row[2 * MIB]].map((byte) => ((byte ?? 0) & 0xc0) === 0x80)).toEqual([
+        true,
+        true,
+      ]);
+      const first = row.length;
+      const second = first + Buffer.byteLength(importedParts[0] ?? "");
+      const all = [
+        [-1, 0, MIB - 1],
+        [-1, 1, MIB],
+        [-1, 2, row.length - (2 * MIB - 1)],
+        [first, 0, Buffer.byteLength(importedParts[0] ?? "")],
+        [second, 0, Buffer.byteLength(importedParts[1] ?? "")],
+      ];
+      expect(placed(run(names.pull, pullSql(IMPORTED, PULL_START)))).toEqual(all);
+      // A call starts after the place it is given: inside the file row, after it, after a part.
+      expect(placed(run(names.pull, pullSql(IMPORTED, { o: -1, k: 0 })))).toEqual(all.slice(1));
+      expect(placed(run(names.pull, pullSql(IMPORTED, { o: -1, k: 2 })))).toEqual(all.slice(3));
+      expect(placed(run(names.pull, pullSql(IMPORTED, { o: first, k: 0 })))).toEqual(all.slice(4));
+    });
+
+    test("pullTranscript pulls an imported session appended to byte for byte, its DEL among them, though psql prints a DEL as \\x7F", async () => {
+      const printed = output(names.pull, pullSql(IMPORTED, { o: -1, k: 1 }));
+      expect(printed).toContain(String.raw`a\x7Fb`);
+      expect(printed).toContain(String.raw`Step 1 \x7F done.`);
+      const spool = path.join(scratch, "imported-pulled.jsonl");
+      expect(await pullTranscript(STORE, dsnOf(names.pull), IMPORTED, spool)).toEqual({
+        bytes: Buffer.byteLength(importedText),
+        calls: 1,
+      });
+      expect(readFileSync(spool).equals(Buffer.from(importedText))).toBe(true);
+    });
+
+    test("a pull of more rows than a call's page takes calls until one returns fewer, and keeps the file's bytes", async () => {
+      const stored = storedPath(MANY);
+      expect(run(names.pull, pullSql(stored, PULL_START))).toHaveLength(PULL_PAGE);
+      const spool = path.join(scratch, "many-pulled.jsonl");
+      const many = readFileSync(MANY);
+      expect(await pullTranscript(STORE, dsnOf(names.pull), stored, spool)).toEqual({
+        bytes: many.length,
+        calls: 2,
+      });
+      expect(readFileSync(spool).equals(many)).toBe(true);
+    });
+
+    test("the task query reads each file's first MiB only: a first user message after it gives no row", () => {
+      expect(
+        run(
+          names.pull,
+          tasksSql(mtimeRange("2026-11-20"), "2026-11-20T00:00:00Z", "2026-11-22T00:00:00Z", [
+            "Fixture",
+          ])
+        )
+      ).toEqual([{ path: FIRST_MESSAGE, text: "Fixture task: write the made-up report." }]);
+    });
+
+    test("count.sql on an imported session appended to: a read in its file row, whose result's line runs on into its first part", () => {
+      expect(run(names.pull, countSql(CONFIG, "store_a", "2026-11-20"))).toEqual([
+        {
+          row: "count",
+          store: "store_a",
+          day: "2026-11-20",
+          skill: "alpha",
+          copy: "/skills/alpha/SKILL.md",
+          kind: "read",
+          files: 1,
+          hashes: [fileHash(IMPORTED)],
+          unpaired: 0,
+          unpaired_hashes: [],
+        },
+        {
+          row: "summary",
+          store: "store_a",
+          mtime_from: Date.parse("2026-11-20T00:00:00Z"),
+          mtime_to: Date.parse("2026-11-21T00:00:00Z"),
+          files: 3,
+          parts: 2 + 70,
+          bytes:
+            Buffer.byteLength(importedText) +
+            Buffer.byteLength(firstMessageRow) +
+            readFileSync(MANY).length,
+          lines_parsed: 2,
+          bad_lines: 0,
+          shared_call_ids: 0,
+        },
+      ]);
     });
 
     /** The model rows of a models.sql result, each `[hash, model, source]`, and its summary. */
