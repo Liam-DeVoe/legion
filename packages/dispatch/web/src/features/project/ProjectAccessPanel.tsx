@@ -329,17 +329,45 @@ function githubLine(project: string, row: ProjectRepository): string {
   return `GitHub: ${row.github_full_name}, id ${row.github_id}`;
 }
 
+/** What the owner reads when Dispatch refuses a confirm of `repo`, and whether Retry is offered.
+ *  GitHub answering another id now (409 REPOSITORY_CHANGED) and no issue of the project holding
+ *  the name any more (404 REPOSITORY_NOT_FOUND) are answered by the list read again after every
+ *  confirm, and pressing again would send the same stale confirm, so neither offers Retry. A 503
+ *  (GitHub not answering the confirm's own read, REPOSITORY_ID_UNAVAILABLE) never reaches here:
+ *  the write path makes the confirm again under its key, as it does for every 5xx. Any other
+ *  refusal shows Dispatch's words, with Retry. */
+function confirmRefusal(
+  project: string,
+  repo: string,
+  refused: Error
+): { readonly message: string; readonly retry: boolean } {
+  switch (refused instanceof ApiError ? refused.code : undefined) {
+    case "REPOSITORY_CHANGED":
+      return {
+        message: `GitHub now holds another repository under ${repo}: check its name and id again, then confirm.`,
+        retry: false,
+      };
+    case "REPOSITORY_NOT_FOUND":
+      return {
+        message: `No issue of ${project} holds ${repo} without a confirmed repository any more.`,
+        retry: false,
+      };
+    default:
+      return { message: apiErrorMessage(refused, `Couldn't confirm ${repo}.`), retry: true };
+  }
+}
+
 /**
  * The repository names a project's issues and its default hold, which its owner confirms before
  * the project can be private (`GET` and `POST /api/v1/projects/{key}/repositories…`, the owner's
  * alone): each stored name beside what GitHub holds under it now, so the owner sees when a name
- * has come to hold a repository they did not mean, and confirms the id GitHub answers. Confirm
- * records it on the project's rows; Confirm as shared, offered while issues of other projects hold
- * the name with no id, records it on those too. How other projects use a name informs the owner
- * and holds nothing back: only an unconfirmed name does, and the switch names those. A confirm
- * refused because GitHub now answers another id (409 REPOSITORY_CHANGED) offers no Retry, since
- * it would send the same id: the list is read again after every confirm, and the row shows what
- * GitHub holds now.
+ * has come to hold a repository they did not mean, and confirms the id GitHub answers. A name the
+ * project holds with two ids, or with one and with none, is a row each, keyed by name and id.
+ * Confirm records the id on the project's rows that hold the name with none; Confirm as shared,
+ * offered while issues of other projects hold the name with no id, records it on those too. How
+ * other projects use a name informs the owner and holds nothing back: only an unconfirmed name
+ * does, and the switch names those. The list is read again after every confirm, so a refusal
+ * that a stale list caused (`confirmRefusal`) shows beside a row that says what holds now.
  */
 function RepositoriesSection({ project }: { project: string }): ReactNode {
   const ids = useId();
@@ -357,22 +385,19 @@ function RepositoriesSection({ project }: { project: string }): ReactNode {
     write: (input, bounds) => api.confirmProjectRepository(project, input, bounds),
   });
 
+  // A confirm is of a stored name, and records its id on the rows that hold that name with none,
+  // so its refusal shows beside the name's unconfirmed row.
   const refusalOf = (row: ProjectRepository): ReactNode => {
     const pressed = confirm.variables;
-    if (!confirm.isError || pressed === undefined || pressed.repo !== row.repo) {
+    if (!confirm.isError || pressed === undefined || row.id !== null || pressed.repo !== row.repo) {
       return null;
     }
-    const changed =
-      confirm.error instanceof ApiError && confirm.error.code === "REPOSITORY_CHANGED";
+    const shown = confirmRefusal(project, row.repo, confirm.error);
     return (
       <div className="mt-2">
         <QueryError
-          message={
-            changed
-              ? `GitHub now holds another repository under ${row.repo}: check its name and id again, then confirm.`
-              : apiErrorMessage(confirm.error, `Couldn't confirm ${row.repo}.`)
-          }
-          onRetry={changed ? undefined : () => confirm.mutate(pressed)}
+          message={shown.message}
+          onRetry={shown.retry ? () => confirm.mutate(pressed) : undefined}
           retrying={confirm.isPending}
         />
       </div>
@@ -409,9 +434,9 @@ function RepositoriesSection({ project }: { project: string }): ReactNode {
           const confirmId = row.id === null ? row.github_id : null;
           return (
             <li
-              aria-label={row.repo}
+              aria-label={row.id === null ? row.repo : `${row.repo}, id ${row.id}`}
               className={`border-b px-4 py-3 last:border-0 ${borderDefault}`}
-              key={row.repo}
+              key={`${row.repo}#${row.id ?? ""}`}
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className={`min-w-0 break-all font-mono text-sm ${textPrimaryOnSurface}`}>

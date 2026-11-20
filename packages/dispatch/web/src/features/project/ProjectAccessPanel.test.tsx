@@ -944,13 +944,14 @@ test("the owner of a public project reads each repository its issues name, besid
       within(row("acme/widgets")).getByRole("button", { name: "Confirm acme/widgets as shared" })
     ).toBeInTheDocument();
 
-    expect(within(row("acme/tools")).getByText("Confirmed: id 9004")).toBeInTheDocument();
+    const toolsRow = row("acme/tools, id 9004");
+    expect(within(toolsRow).getByText("Confirmed: id 9004")).toBeInTheDocument();
     expect(
-      within(row("acme/tools")).getByText(
+      within(toolsRow).getByText(
         "Also used by 3 issues of other projects; their people read this repository."
       )
     ).toBeInTheDocument();
-    expect(within(row("acme/tools")).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(toolsRow).queryByRole("button")).not.toBeInTheDocument();
 
     expect(
       within(row("acme/gone")).getByText(
@@ -961,6 +962,37 @@ test("the owner of a public project reads each repository its issues name, besid
       within(row("acme/gone")).queryByRole("button", { name: /^Confirm/ })
     ).not.toBeInTheDocument();
     expect(panel.getProjectRepositories).toHaveBeenCalledWith("CORE");
+  } finally {
+    panel.restore();
+  }
+});
+
+// A name CORE holds with an id on some rows and with none on others is two rows, sorted with the
+// unconfirmed one first: the confirmed row says so and offers nothing, and the unconfirmed one
+// offers the confirm, which records GitHub's id on the rows that hold the name with none.
+test("a name held with an id and with none is a row each, and only the unconfirmed one offers Confirm", async () => {
+  const panel = renderPanel({
+    repositories: [
+      repository({ github_id: 9010, repo: "acme/widgets" }),
+      repository({ github_id: 9010, id: 9003, repo: "acme/widgets" }),
+    ],
+  });
+  try {
+    const section = await screen.findByRole("region", { name: "Repositories" });
+    await waitFor(() => expect(within(section).getAllByRole("listitem")).toHaveLength(2));
+    const unconfirmed = within(section).getByRole("listitem", { name: "acme/widgets" });
+    const confirmed = within(section).getByRole("listitem", { name: "acme/widgets, id 9003" });
+    expect(within(unconfirmed).getByText("Not confirmed")).toBeInTheDocument();
+    expect(
+      within(unconfirmed).getByRole("button", { name: "Confirm acme/widgets" })
+    ).toBeInTheDocument();
+    expect(within(confirmed).getByText("Confirmed: id 9003")).toBeInTheDocument();
+    expect(
+      within(confirmed).getByText(
+        "GitHub now holds another repository under this name: acme/widgets, id 9010. CORE's issues keep id 9003."
+      )
+    ).toBeInTheDocument();
+    expect(within(confirmed).queryByRole("button")).not.toBeInTheDocument();
   } finally {
     panel.restore();
   }
@@ -1003,35 +1035,51 @@ test("Confirm sends the stored name with GitHub's id, Confirm as shared says sha
   }
 });
 
-// Dispatch refuses a confirm whose id is no longer GitHub's answer for the name (409
-// REPOSITORY_CHANGED): the name now holds another repository. Pressing again would send the same
-// stale id, so there is no Retry: the list is read again, and the row shows what GitHub holds now
-// for the owner to confirm or not.
-test("a confirm refused REPOSITORY_CHANGED says the name now holds another repository, reads the list again, and offers no Retry", async () => {
-  const user = userEvent.setup();
-  const panel = renderPanel({ repositories: [widgets] });
-  const confirm = spyOn(api, "confirmProjectRepository").mockRejectedValue(
-    new ApiError(409, {
-      code: "REPOSITORY_CHANGED",
-      error: "acme/widgets is GitHub's repository 9010 now, not 9003: nothing was recorded",
-    })
-  );
-  try {
-    const section = await screen.findByRole("region", { name: "Repositories" });
-    await user.click(await within(section).findByRole("button", { name: "Confirm acme/widgets" }));
-    const alert = await within(section).findByRole("alert");
-    expect(
-      within(alert).getByText(
-        "GitHub now holds another repository under acme/widgets: check its name and id again, then confirm."
-      )
-    ).toBeInTheDocument();
-    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
-    await waitFor(() => expect(panel.getProjectRepositories).toHaveBeenCalledTimes(2));
-  } finally {
-    panel.restore();
-    confirm.mockRestore();
-  }
-});
+// A confirm Dispatch refuses shows beside its row. GitHub answering another id for the name now
+// (409 REPOSITORY_CHANGED) and no row of CORE holding the name with no id any more (404
+// REPOSITORY_NOT_FOUND) are both a list the owner read before something changed: pressing again
+// would send the same confirm, so neither offers Retry, and the list is read again for the row to
+// say what holds now. Neither draws Dispatch's words. (A 503 when GitHub does not answer the
+// confirm's read is made again under its key by the write path, as every 5xx is.)
+for (const { code, status, server, shown } of [
+  {
+    code: "REPOSITORY_CHANGED",
+    server: "acme/widgets is GitHub's repository 9010 now, not 9003: nothing was recorded",
+    shown:
+      "GitHub now holds another repository under acme/widgets: check its name and id again, then confirm.",
+    status: 409,
+  },
+  {
+    code: "REPOSITORY_NOT_FOUND",
+    server: "no issue of CORE holds acme/widgets with no id",
+    shown: "No issue of CORE holds acme/widgets without a confirmed repository any more.",
+    status: 404,
+  },
+] as const) {
+  test(`a confirm refused ${code} says so beside its row, offers no Retry, and reads the list again`, async () => {
+    const user = userEvent.setup();
+    const panel = renderPanel({ repositories: [widgets] });
+    const confirm = spyOn(api, "confirmProjectRepository").mockRejectedValue(
+      new ApiError(status, { code, error: server })
+    );
+    try {
+      const section = await screen.findByRole("region", { name: "Repositories" });
+      await user.click(
+        await within(section).findByRole("button", { name: "Confirm acme/widgets" })
+      );
+      const alert = await within(
+        within(section).getByRole("listitem", { name: "acme/widgets" })
+      ).findByRole("alert");
+      expect(within(alert).getByText(shown)).toBeInTheDocument();
+      expect(drawn(server)).toBe(false);
+      expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+      await waitFor(() => expect(panel.getProjectRepositories).toHaveBeenCalledTimes(2));
+    } finally {
+      panel.restore();
+      confirm.mockRestore();
+    }
+  });
+}
 
 // The list and the confirm are the owner's alone (owner's cookie), and are what a switch to
 // private waits on: a person who is not the owner, and the owner of a project that is private

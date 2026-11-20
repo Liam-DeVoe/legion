@@ -137,7 +137,8 @@ export interface ProjectRepository {
   readonly shared_elsewhere: number;
 }
 
-/** `GET /api/v1/projects/{key}/repositories`' answer, each name once, sorted. */
+/** `GET /api/v1/projects/{key}/repositories`' answer, sorted by name and then by id, a null id
+ *  first: a name the project holds with two ids, or with one and with none, is a row each. */
 export interface ProjectRepositories {
   readonly repositories: readonly ProjectRepository[];
 }
@@ -1106,7 +1107,9 @@ export class DispatchApiClient {
 
   /** Records GitHub's id for one stored repository name on the project's rows that hold it with
    *  none, and with `shared` on other projects' such rows too; `409 REPOSITORY_CHANGED` when
-   *  GitHub's answer is no longer `id`. The owner's alone, at a browser. */
+   *  GitHub's answer is no longer `id`, `404 REPOSITORY_NOT_FOUND` when no row of the project
+   *  holds the name with none, `503 REPOSITORY_ID_UNAVAILABLE` when GitHub does not answer. The
+   *  owner's alone, at a browser. */
   confirmProjectRepository(project: string, input: ConfirmRepositoryInput, bounds: WriteBounds) {
     return this.send(confirmProjectRepositoryRequest(project, input), bounds);
   }
