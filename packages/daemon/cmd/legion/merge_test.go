@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -352,10 +353,15 @@ func TestLegionMergeLeavesNoCarrier(t *testing.T) {
 // defines before its built-in one of the same name, so a merge.default of text does not close it.
 // What still chooses a path's merge driver is the repository's own attributes (the .gitattributes
 // of the working copy or of git's index when git runs in a git worktree, and
-// $GIT_DIR/info/attributes) and the machine's system attributes file. B3's history with
-// diff.algorithm=bogus in the repository's configuration gives B3's jj conflict at f, not exit 3:
-// merge-ort uses histogram whatever a configuration says, but git 2.47.3, the worker image's git,
-// dies on a diff.algorithm it cannot parse unless the list sets one. A newer git may not.
+// $GIT_DIR/info/attributes) and the machine's system attributes file. git 2.47.3, the worker
+// image's git, reads diff.algorithm in merge-tree, and the list's diff.algorithm=histogram closes
+// two settings of it. B3's history with diff.algorithm=bogus in the repository's configuration
+// gives B3's jj conflict at f, not exit 3: that git dies on a value it cannot parse. A history of
+// lines that are each a or b, with diff.algorithm=minimal in the repository's configuration,
+// gives git's merge without that setting, its tree and its exit status: merge-ort runs histogram,
+// but where histogram falls back to the classic diff, that diff runs as minimal, so that git's
+// own merge of the history differs. git 2.56.1's merge-tree reads no diff.algorithm, so there
+// both rows check legion merge's merge alone.
 func TestLegionMergeReadsNoMergeConfiguration(t *testing.T) {
 	t.Run("git's merge options", func(t *testing.T) {
 		r := newMergeRepo(t)
@@ -422,6 +428,77 @@ func TestLegionMergeReadsNoMergeConfiguration(t *testing.T) {
 		}
 		if got := strings.Fields(r.read("resolve", "-r", "@-", "--list")); !slices.Equal(got, []string{"f", "2-sided", "conflict"}) {
 			t.Errorf("jj resolve -r @- --list = %q, want f alone", got)
+		}
+	})
+	t.Run("diff.algorithm minimal", func(t *testing.T) {
+		r := newMergeRepo(t)
+		// The history: f holds 3,000 lines at base, each a or b. legion/ACME-1 makes 800 random
+		// edits to f and main makes 4, each edit flipping, inserting or deleting one line. On
+		// lines this alike histogram falls back to the classic diff, which minimal changes. Seed 3
+		// is the first of seeds 1 to 60 that a search outside this test, with this generator and
+		// git 2.47.3, found to merge into another tree under `git -c diff.algorithm=minimal
+		// merge-tree --write-tree` than under plain `git merge-tree --write-tree`: minimal gives a
+		// conflict (exit 1), and the plain merge-tree a clean merge (exit 0).
+		rng := rand.New(rand.NewPCG(3, 3))
+		line := func() string { return string("ab"[rng.IntN(2)]) }
+		lines := make([]string, 3000)
+		for i := range lines {
+			lines[i] = line()
+		}
+		edited := func(edits int) string {
+			edit := slices.Clone(lines)
+			for range edits {
+				i := rng.IntN(len(edit))
+				switch rng.IntN(3) {
+				case 0:
+					if edit[i] == "a" {
+						edit[i] = "b"
+					} else {
+						edit[i] = "a"
+					}
+				case 1:
+					edit = slices.Insert(edit, i, line())
+				default:
+					edit = slices.Delete(edit, i, i+1)
+				}
+			}
+			return strings.Join(edit, "\n") + "\n"
+		}
+		r.commit("base", []string{"root()"}, map[string]string{"f": strings.Join(lines, "\n") + "\n"})
+		r.commit(mergeFirst, []string{"base"}, map[string]string{"f": edited(800)})
+		r.commit("main", []string{"base"}, map[string]string{"f": edited(4)})
+		r.publish("main")
+		r.workOn("base")
+		// gitMerge is plain `git merge-tree --write-tree` of the two parents, without the list:
+		// its tree and its exit status, 0 for a clean merge and 1 for one with conflicts.
+		args := []string{"git", "merge-tree", "--write-tree", r.id(mergeFirst), r.id("main")}
+		gitMerge := func() (string, int) {
+			t.Helper()
+			out, err := r.fixture.Try(r.ws, args...)
+			code := 0
+			if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() == 1 {
+				code = 1
+			} else if err != nil {
+				t.Fatalf("%s = %v, want a merge:\n%s", strings.Join(args, " "), err, out)
+			}
+			tree, _, _ := strings.Cut(out, "\n")
+			return tree, code
+		}
+		tree, code := gitMerge()
+		r.git("config", "diff.algorithm", "minimal")
+		// The control: plain merge-tree again. git 2.47.3 reads diff.algorithm and gives another
+		// tree, so there the row also shows that the list's entry is what keeps git's default
+		// merge. A git that reads no diff.algorithm in merge-tree (CI's git 2.56.1) gives the
+		// same tree, and there the row logs one line and checks the merge alone.
+		if minimal, _ := gitMerge(); minimal == tree {
+			t.Logf("%s merges this history into the same tree under diff.algorithm=minimal, so the row checks legion merge's merge alone", r.git("version"))
+		}
+		got, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+		if got != code {
+			t.Fatalf("legion merge = %d, want %d, the exit status of git's merge without diff.algorithm\nstdout:\n%s\nstderr:\n%s", got, code, stdout, stderr)
+		}
+		if description := r.template("@-", "description"); !strings.HasSuffix(description, "\nLegion-Merge: "+tree+"\n") {
+			t.Errorf("the merge's description is\n%q\nwant its last line Legion-Merge: %s, git's tree without diff.algorithm", description, tree)
 		}
 	})
 }

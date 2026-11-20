@@ -15,7 +15,9 @@ body: |-
   and no user's attributes file changes git's merge. One exception is a driver that a
   configuration defines with an empty name (`merge..driver`). The repository's own attributes
   (`.gitattributes` and `$GIT_DIR/info/attributes`) and the machine's system attributes file
-  still apply. The list also sets `diff.algorithm` to `histogram`. git's merge uses histogram
-  whatever a configuration says. git 2.47.3, the worker image's git, reads `diff.algorithm` and
-  dies on a value it cannot parse. A newer git may not: git 2.56.1 merges under such a value, as
-  measured in CI. The entry keeps the merge from depending on which git runs.
+  still apply. The list also sets `diff.algorithm` to `histogram`. git 2.47.3, the worker image's
+  git, reads `diff.algorithm` in `git merge-tree`. Under `minimal`, git's merge still runs
+  histogram, but where histogram falls back to the classic diff, that diff runs as minimal. So
+  the merged tree can differ, and a content conflict can become a clean merge or the reverse. A
+  value git cannot parse makes that git die. The entry closes both. git 2.56.1 reads neither,
+  since its `git merge-tree` does not read `diff.algorithm`.

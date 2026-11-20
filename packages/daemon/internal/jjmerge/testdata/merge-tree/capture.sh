@@ -21,11 +21,14 @@
 # merge-tree gets the option list `legion merge` gives it, in the same order (jjmerge's
 # mergeTreeOptions): git's merge options at their documented defaults, an empty merge.default,
 # which names no driver, core.attributesFile at /dev/null, and diff.algorithm at histogram.
-# merge-ort uses histogram whatever a configuration says. git 2.47.3, the worker image's git,
-# reads diff.algorithm and dies on a value it cannot parse, and a newer git may not (2.56.1
-# merges, measured in CI). The entry keeps the merge from depending on that. So each file holds
-# the merge that `legion merge` reads, and a configuration could change it only as it changes
-# that merge.
+# git 2.47.3, the worker image's git, reads diff.algorithm in merge-tree (merge-recursive.c's
+# merge_recursive_config). merge-ort then runs histogram (merge-ort.c's merge_start), but where
+# histogram falls back to the classic diff, that diff runs as minimal under
+# `diff.algorithm = minimal`, so the tree can differ and a content conflict can become a clean
+# merge or the reverse. A value git cannot parse makes that git die. The entry closes both. git
+# 2.56.1 reads neither, since its merge-tree does not read diff.algorithm. So each file holds the
+# merge that `legion merge` reads, and a configuration could change it only as it changes that
+# merge.
 set -euo pipefail
 
 if [ $# -ne 1 ]; then

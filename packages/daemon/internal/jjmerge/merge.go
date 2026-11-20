@@ -21,8 +21,8 @@ import (
 // mergeTreeOptions sets git's merge options to their documented defaults (git v2.47.3,
 // Documentation/config/merge.txt and gitattributes(5)), sets merge.default empty, points
 // core.attributesFile at /dev/null and sets diff.algorithm to histogram, so neither a global or
-// repository merge option, nor a default driver, nor the user's attributes file changes the
-// merge, and no configured diff.algorithm fails it. merge.renames "Defaults to the value
+// repository merge option, nor a default driver, nor the user's attributes file, nor a configured
+// diff.algorithm changes the merge. merge.renames "Defaults to the value
 // of diff.renames", which defaults to true; merge.directoryRenames "Defaults to conflict";
 // merge.renameLimit "currently defaults to 7000"; merge.conflictStyle "The default is merge";
 // merge.renormalize is off unless a configuration sets it. merge.default names the merge driver
@@ -37,14 +37,18 @@ import (
 // a user's attributes file with `f merge=union`, makes git merge a content conflict cleanly. What
 // still applies is the repository's own attributes (the .gitattributes of the working copy or of
 // git's index when git runs in a git worktree, and $GIT_DIR/info/attributes) and the machine's
-// system attributes file, as for any git merge in the repository. merge-ort, git's merge, uses
-// histogram whatever a configuration says (merge-ort.c's merge_start hardcodes it), so a
-// configured diff.algorithm changes no merge. git 2.47.3, the worker image's git, reads that
-// value first, though (merge-recursive.c's merge_recursive_config), and dies on one it cannot
-// parse. A newer git may not: git 2.56.1 merges under such a value, as CI measured. The entry
-// keeps the merge from depending on which git runs. The merge (mergeTree) and the reading
-// command (Comparison) both give git this list. A caller outside the package reads it through
-// MergeTreeOptions, which answers a copy, so no caller changes the list the merge gets.
+// system attributes file, as for any git merge in the repository. git 2.47.3, the worker image's
+// git, reads diff.algorithm in merge-tree (builtin/merge-tree.c calls init_ui_merge_options, so
+// merge-recursive.c's merge_recursive_config reads it). merge-ort, git's merge, then sets
+// histogram (merge-ort.c's merge_start), but keeps the flag that `minimal` sets. So histogram
+// runs, and where it falls back to the classic diff (xdiff/xhistogram.c's
+// fall_back_to_classic_diff), that diff runs as minimal: the tree can differ, and a content
+// conflict can become a clean merge or the reverse. A value git cannot parse makes that git die.
+// The entry closes both, since a value given with -c wins over a configured one. git 2.56.1, CI's
+// git, reads neither: its merge-tree does not read diff.algorithm (init_basic_merge_options). The
+// merge (mergeTree) and the reading command (Comparison) both give git this list. A caller outside
+// the package reads it through MergeTreeOptions, which answers a copy, so no caller changes the
+// list the merge gets.
 var mergeTreeOptions = [...]string{
 	"-c", "merge.renames=true",
 	"-c", "merge.directoryRenames=conflict",
@@ -136,8 +140,9 @@ type Request struct {
 	// the first parent, then the second.
 	Revisions [2]string
 	// Stderr is where the merge names, one line each, a commit of a run that it keeps rather than
-	// abandons, with why it keeps it (keep), and a bookmark of a carrier's name that it leaves on a
-	// commit that is no carrier. Nil names nothing.
+	// abandons, with why it keeps it (keep), a bookmark of a carrier's name that it leaves on a
+	// commit that is no carrier, and a bookmark that it leaves on a carrier that a legion merge
+	// wrote and that is immutable. Nil names nothing.
 	Stderr io.Writer
 }
 
