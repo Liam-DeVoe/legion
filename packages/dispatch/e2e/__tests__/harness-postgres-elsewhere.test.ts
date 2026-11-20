@@ -251,14 +251,14 @@ test.skipIf(!onLinux)(
 );
 
 // A start, unlike a row, looks for run directories elsewhere on the whole machine: its sweep's
-// `servedUnder` is "/" (`removeLeftoverPostgres`), which every start passes on to the walk of the
-// kernel's processes (`servedElsewhere`), and the source rule of the pool's and the shell stacks'
-// starts holds them to the sweep's own defaults. No row can run that sweep in CI without judging
-// what every other row planted, so this row runs the walk itself with its default: it lists a
-// postmaster planted beside the file's own directory, where the walk a row's sweep makes, under
-// that directory, does not.
+// `servedUnder` is "/" by default (`removeLeftoverPostgres`), and passes it on to the walk of the
+// kernel's processes (`servedElsewhere`); the source rules hold that default to "/" and every
+// production call of the sweep to no argument. No row can run that sweep in CI without judging
+// what every other row planted, so this row runs the walk under "/": it lists a postmaster
+// planted beside the file's own directory, where the walk a row's sweep makes, under that
+// directory, does not.
 test.skipIf(!onLinux)(
-  "v-no-leftover-postgres: a start's walk of the kernel's processes, by its own default, looks for run directories on the whole machine: it lists a postmaster served beside the file's own directory, which a row's walk under that directory does not",
+  "v-no-leftover-postgres: a start's walk of the kernel's processes under its sweep's default, /, looks for run directories on the whole machine: it lists a postmaster served beside the file's own directory, which a row's walk under that directory does not",
   async () => {
     const sibling = realpathSync(mkdtempSync(join(dirname(plantsRoot()), "marks-sibling-")));
     const beside = leaveElsewhere(undefined, true, sibling);
@@ -266,7 +266,7 @@ test.skipIf(!onLinux)(
       const real = realpathSync(tmpdir());
       const uid = process.getuid?.() ?? -1;
       const runs = (served: readonly { run: string }[]) => served.map(({ run }) => run);
-      expect(runs(servedElsewhere(real, uid))).toContain(realpathSync(beside.run));
+      expect(runs(servedElsewhere(real, uid, "/"))).toContain(realpathSync(beside.run));
       expect(runs(servedElsewhere(real, uid, plantsRoot()))).not.toContain(
         realpathSync(beside.run)
       );

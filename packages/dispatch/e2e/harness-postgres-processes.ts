@@ -625,10 +625,11 @@ export interface Served extends Postmaster {
  *  named are the listing's; one of another name there, a run directory renamed after its stack
  *  started, is found here. That shape only finds a candidate: the mark in that run directory, its
  *  owner and the postmaster's own `/proc` facts decide (`sweepRun`). Only a run directory in
- *  `under` is listed: `/`, every one, for a start; a row's own directory for a row, so that the
- *  sweep of one row judges no stack that another row, or another session of the machine, planted
- *  beside it. A process that ends while it is read is not listed. */
-export function servedElsewhere(real: string, uid: number, under = "/"): Served[] {
+ *  `under` is listed: `/`, every one, for a start (the default of `removeLeftoverPostgres`); a
+ *  row's own directory for a row, so that the sweep of one row judges no stack that another row,
+ *  or another session of the machine, planted beside it. A process that ends while it is read is
+ *  not listed. */
+export function servedElsewhere(real: string, uid: number, under: string): Served[] {
   const within = under.endsWith("/") ? under : `${under}/`;
   let pids: string[];
   try {

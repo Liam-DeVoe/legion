@@ -407,6 +407,21 @@ function sweepsGivenArguments(modules: readonly Module[]): string[] {
     );
 }
 
+/** The text of the default of the start's sweep's `servedUnder` (`removeLeftoverPostgres` of
+ *  `harness-postgres-removal.ts`), the directory a start looks in for run directories elsewhere,
+ *  which a start passes on to the walk of the kernel's processes (`servedElsewhere`): `"/"`, the
+ *  whole machine. Answers a line saying why where the sweep declares no such default. */
+function sweepServesUnder(modules: readonly Module[]): string {
+  const sweep = modules.find((module) => module.file === "harness-postgres-removal.ts");
+  const body = sweep && bodiesOf(sweep).find(({ name }) => name === "removeLeftoverPostgres");
+  if (body === undefined || !ts.isFunctionDeclaration(body.node))
+    return "no removeLeftoverPostgres";
+  const parameter = body.node.parameters.find(
+    ({ name }) => ts.isIdentifier(name) && name.text === "servedUnder"
+  );
+  return parameter?.initializer?.getText(body.source) ?? "no default of servedUnder";
+}
+
 /** `modules` with the text of `file` changed by `change`, which must change it. */
 function planted(
   modules: readonly Module[],
@@ -556,8 +571,9 @@ test("v-no-leftover-postgres: a start's removal of a dead stack's container read
     ]);
     expect(aroundTheRemoval(raceOfTheSweep).found[0]?.startsWith(`${file} ${body} `)).toBe(true);
   }
-  // Every start runs the sweep with its own defaults, the look at the whole machine among them;
-  // the control, the pool's start given a directory to look in, is named.
+  // Every start runs the sweep with its own defaults, and its default look for run directories
+  // elsewhere is the whole machine; the controls, the pool's start given a directory to look in,
+  // and a default of the sweep's own TMPDIR, are named.
   expect(sweepsGivenArguments(modules)).toEqual([]);
   expect(
     sweepsGivenArguments(
@@ -571,6 +587,14 @@ test("v-no-leftover-postgres: a start's removal of a dead stack's container read
   ).toEqual([
     expect.stringMatching(/^harness-pool\.ts startPool \d+:\d+ removeLeftoverPostgres\(/),
   ]);
+  expect(sweepServesUnder(modules)).toBe('"/"');
+  expect(
+    sweepServesUnder(
+      planted(modules, "harness-postgres-removal.ts", (source) =>
+        source.replace('  servedUnder = "/",\n', "  servedUnder = tmpdir(),\n")
+      )
+    )
+  ).toBe("tmpdir()");
 });
 
 /** The test files whose rows count their waits with these fixtures (`rowOf`), which the shared
