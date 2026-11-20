@@ -2369,3 +2369,80 @@ func readPublishAcknowledgement(data []byte) (publishAcknowledgement, bool) {
 	}
 	return ack, ack.Error != nil || (ack.Stream != "" && ack.Seq > 0)
 }
+
+// Servers is the client's servers as a log line names them: comma-separated, each without its
+// userinfo (serverList), so a report or an error can name the hub without its credential.
+func (c *Client) Servers() string {
+	return serverList(c.urls)
+}
+
+// ProveAdmission asks the server afresh whether it admits this client: it dials one new connection
+// with the client's servers, name, credential and proxy, the credential read anew for this dial
+// as every connect of the client reads it, makes one round trip on it (a PING and its PONG), and
+// closes it. It answers nil only when a server admitted the connection and answered the round
+// trip, within ctx; otherwise why not, the server's refusal among them. It never reads or tests
+// c.Conn: a hub whose auth service admitted that connection keeps it after the service stops
+// answering, so only a new connection is a decision made now.
+//
+// The connection makes one attempt and never reconnects, carries none of the client's handlers
+// or its credential's keeper (natscred's Keeper, which a service credential starts beside each
+// connection), and so logs nothing: Dispatch proves every minute, and a proof's connect and close
+// are no connection event of the client's.
+func (c *Client) ProveAdmission(ctx context.Context) error {
+	opts := options(c.name, c.urls, nil, nil, nil, nil, c.reconnectErrClock)
+	if c.connectionSettings != nil {
+		if err := c.connectionSettings(&opts); err != nil {
+			return fmt.Errorf("bus: admission proof: %w", err)
+		}
+	}
+	opts.AllowReconnect, opts.RetryOnFailedConnect = false, false
+	opts.ConnectedCB, opts.ReconnectedCB, opts.ClosedCB = nil, nil, nil
+	opts.DisconnectedErrCB, opts.ReconnectErrCB, opts.AsyncErrorCB = nil, nil, nil
+	bound := opts.Timeout
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("bus: admission proof: %w", context.DeadlineExceeded)
+		}
+		bound = min(bound, remaining)
+	}
+	opts.Timeout = bound
+	if c.dialer != nil {
+		opts.CustomDialer = c.dialer.bounded(bound)
+		// As connectWithContext: the proxy, not this process, resolves the server's name.
+		opts.SkipHostLookup = true
+	}
+	type dialed struct {
+		conn *nats.Conn
+		err  error
+	}
+	result := make(chan dialed, 1)
+	go func() {
+		conn, err := opts.Connect()
+		result <- dialed{conn: conn, err: err}
+	}()
+	var conn *nats.Conn
+	select {
+	case d := <-result:
+		if d.err != nil {
+			return fmt.Errorf("bus: admission proof: the new connection was not admitted: %w", d.err)
+		}
+		conn = d.conn
+	case <-ctx.Done():
+		go func() {
+			if d := <-result; d.conn != nil {
+				d.conn.Close()
+			}
+		}()
+		return fmt.Errorf("bus: admission proof: %w", ctx.Err())
+	}
+	defer conn.Close()
+	flush := func() error { return conn.FlushTimeout(bound) }
+	if _, ok := ctx.Deadline(); ok {
+		flush = func() error { return conn.FlushWithContext(ctx) }
+	}
+	if err := flush(); err != nil {
+		return fmt.Errorf("bus: admission proof: the admitted connection did not answer a round trip: %w", err)
+	}
+	return nil
+}
