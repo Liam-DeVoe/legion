@@ -385,10 +385,13 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 	// The work the release took off the pod this one replaces goes over next: the launcher holds
 	// the bundle and restores it into the workspace before it runs the role's command, so the
 	// restore has to be in its hands before any generation of the pod is started, this one
-	// included (internal/launcher's bundleRestore). It never stops the start, and it leaves the
-	// start its reserve (beforeTheStart). It goes before the index: this send is the bundle's one
-	// attempt, and the index has the poll's next push besides.
-	d.restoreWorkspace(ctx, token, podUID)
+	// included (internal/launcher's bundleRestore). It leaves the start its reserve
+	// (beforeTheStart), and stops the start only where the store does not answer the ask that
+	// takes this pod's one restore attempt (restoreWorkspace). It goes before the index: this send
+	// is the bundle's one attempt, and the index has the poll's next push besides.
+	if err := d.restoreWorkspace(ctx, token, podUID); err != nil {
+		return err
+	}
 	// The leak check's index of sandbox lines goes over last, so the check in the role's pod reads
 	// the newest index the daemon holds from the role's first write. It never stops the start, and
 	// it leaves the start its reserve: a launcher that did not install it keeps the index it holds,
@@ -753,13 +756,18 @@ const bundleRestoreBound = 2 * time.Minute
 // restore did in a frame of its own, which is what the saved copy is dropped on
 // (restoreReported).
 //
-// Nothing here stops a role. A slice the launcher refuses, a body that did not arrive as it was
-// sent, a store that cannot be read and a connection that fails are each logged and left: a pod
-// that never starts is worse than one whose workspace holds only what was pushed, and the
-// launcher writes the agent its own notice of what was lost (internal/launcher's restoreWorkspace).
+// Nothing else here stops a role. A slice the launcher refuses, a body that did not arrive as it
+// was sent, and a connection that fails are each logged and left: a pod that never starts is
+// worse than one whose workspace holds only what was pushed, and the launcher writes the agent its
+// own notice of what was lost (internal/launcher's restoreWorkspace). A store that does not answer
+// the ask is the one exception, and it stops the start: the attempt may still be open, and a role
+// started now would work in a workspace that a later start of the pod, or the pod after it, could
+// be sent the bundle over. The supervisor's next launch asks again.
+//
 // Nor does the hop take the time the start frame needs: it ends the start's reserve before the
-// start's deadline (beforeTheStart), and where no more than that is left the store is not asked,
-// so the bundle's attempt is not spent and it stays in the store.
+// start's deadline (beforeTheStart). Where no more than that is left the store is still asked,
+// under the start's own time, so this pod's attempt is taken, and nothing is sent: the work stays
+// in the database, as after a send that failed.
 //
 // One attempt per bundle, and the read is it: the store records the pod this send is for before
 // it answers the body, and answers nothing for that bundle afterwards
@@ -778,69 +786,73 @@ const bundleRestoreBound = 2 * time.Minute
 // sent to it, and nothing is sent to the pod after it either, since its roles go on working and
 // pushing from the workspace its own fetch provisioned. That refusal is this hop's one warning
 // an operator must read — the work is in the database and no pod will put it back on its own.
-func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
+func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) error {
 	if d.saved == nil || d.restored == nil {
-		return
+		return nil
 	}
 	// The session names the issue its pod is of, as the Secret its launcher authenticated with
 	// did, and when that pod was created, as the API server stamped it. A launcher that never
 	// arrives is the start's own error to report, not this hop's.
 	session, err := d.await(ctx, token, podUID)
 	if err != nil || session.issue == "" {
-		return
+		return nil
 	}
 	issue := session.issue
-	reserved, cancelReserve, err := d.beforeTheStart(ctx)
-	if err != nil {
-		d.log.Warn("launcher bundle: the store is not asked for a saved workspace bundle before this start, so any bundle it holds stays there and the pod starts on what was pushed",
-			"issue", issue, "launcher", token, "pod", podUID, "error", err)
-		return
+	// The ask is this pod's one attempt, made before every start of the pod whatever time is left:
+	// a start that did not ask would leave the attempt open for a later start of the pod, or for
+	// the pod after it, to be sent the bundle over the work this start's role does.
+	reserved, cancelReserve, noTime := d.beforeTheStart(ctx)
+	if noTime != nil {
+		reserved, cancelReserve = context.WithCancel(ctx)
 	}
 	defer cancelReserve()
 	restoring, cancel := context.WithTimeout(reserved, bundleRestoreBound)
 	defer cancel()
 	bundle, take, err := d.saved(restoring, issue, podUID, session.podCreated)
 	if err != nil {
-		d.log.Warn("launcher bundle: the saved workspace bundle could not be taken for this pod's one restore attempt, so the pod starts on what was pushed",
-			"issue", issue, "launcher", token, "pod", podUID, "error", err)
-		return
+		return fmt.Errorf("the saved workspace bundle of %s could not be taken for this pod's one restore attempt, so no role of the pod starts until the store answers: %w", issue, err)
 	}
 	if take == runtime.WorkspaceBundleRefusedOlder {
 		d.log.Warn("launcher bundle: this pod was not created after the release's save, so the saved workspace bundle is refused and no pod is sent it again; the work stays in the daemon's database and holds the issue's pod",
 			"issue", issue, "launcher", token, "pod", podUID, "created", session.podCreated,
 			"saved", bundle.At, "head", bundle.Head, "release", bundle.Release)
-		return
+		return nil
 	}
 	// Nothing was released, the restore is already confirmed, the release saved a workspace that
 	// had nothing unpushed, this bundle has had its one attempt, or this is the pod the work was
 	// taken off: the pod starts on what its fetch provisioned, as every pod of an issue that was
 	// never released does.
 	if take != runtime.WorkspaceBundleSend || len(bundle.Bundle) == 0 {
-		return
+		return nil
+	}
+	if noTime != nil {
+		d.log.Warn("launcher bundle: the start has no time left to send the saved workspace bundle, and this pod has had its one restore attempt, so no pod is sent it; the work stays in the daemon's database and holds the issue's pod",
+			"issue", issue, "launcher", token, "pod", podUID, "saved", bundle.At, "head", bundle.Head, "release", bundle.Release, "error", noTime)
+		return nil
 	}
 	frames, err := bundleFrames(issue, bundle)
 	if err != nil {
 		d.log.Warn("launcher bundle: the saved workspace bundle could not be sliced, so the pod starts on what was pushed",
 			"issue", issue, "launcher", token, "error", err)
-		return
+		return nil
 	}
 	for _, frame := range frames {
 		answer, _, err := d.request(restoring, token, podUID, frame, bundleWaiter(frame.ID, frame.Index))
 		if err != nil {
 			d.log.Warn("launcher bundle: a slice of the saved workspace bundle did not reach the launcher, so the pod starts on what was pushed",
 				"issue", issue, "launcher", token, "slice", frame.Index, "slices", frame.Count, "error", err)
-			return
+			return nil
 		}
 		result, ok := answer.(shimwire.LauncherBundleResult)
 		if !ok {
 			d.log.Warn("launcher bundle: the launcher answered a bundle slice with another frame, so the pod starts on what was pushed",
 				"issue", issue, "launcher", token, "slice", frame.Index, "answer", answer.FrameType())
-			return
+			return nil
 		}
 		if !result.OK {
 			d.log.Warn("launcher bundle: the launcher refused a slice of the saved workspace bundle, so the pod starts on what was pushed",
 				"issue", issue, "launcher", token, "slice", frame.Index, "slices", frame.Count, "error", result.Error)
-			return
+			return nil
 		}
 		if !result.Held {
 			continue
@@ -852,10 +864,11 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		// and where it stays: this send was the bundle's one attempt.
 		d.log.Info("launcher bundle: the released workspace's saved work reached the pod that replaces it",
 			"issue", issue, "launcher", token, "bytes", len(bundle.Bundle), "slices", len(frames))
-		return
+		return nil
 	}
 	d.log.Warn("launcher bundle: the launcher took every slice of the saved workspace bundle without holding the whole",
 		"issue", issue, "launcher", token, "slices", len(frames))
+	return nil
 }
 
 // restoreReported drops the saved bundle of the release a launcher's report names, once that
