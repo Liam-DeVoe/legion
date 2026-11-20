@@ -109,7 +109,7 @@ const schemas: Record<string, z.ZodType> = {
   "root-close.json": LegionEmptyResponse,
   "child-park.json": LegionEmptyResponse,
   "child-rerun.json": LegionEmptyResponse,
-  // The owner's plan (contract 183): what register_plan took, and stop_task's empty answer.
+  // The owner's plan (contract 192): what register_plan took, and stop_task's empty answer.
   "plan-register.json": LegionPlanRegisterResponse,
   "task-stop.json": LegionEmptyResponse,
   // The project pause (contract 178), each written from what the route itself answers
@@ -1006,7 +1006,7 @@ test("the request schema takes exactly the ratings the daemon takes", () => {
   expect(parted).toEqual([]);
 });
 
-// Contract 183: a step that failed names the step its task returns to, `returnTo`, by its place in
+// Contract 192: a step that failed names the step its task returns to, `returnTo`, by its place in
 // the task, 1 for its first. Only a completion with the verdict fail names one
 // (RETURN_TO_NEEDS_FAIL), and a place below 1 is none (INVALID_RETURN_TO). A completion that
 // names none stays what it was.
@@ -1024,7 +1024,7 @@ test("a failed step's completion names the step its task returns to", () => {
   }
 });
 
-// Contract 183: register_plan answers the plan it took, its version and each task with the steps
+// Contract 192: register_plan answers the plan it took, its version and each task with the steps
 // its block names as the plan writes them (`role` or `role:key`). A task whose block names none
 // runs the project's default steps and is answered with no step, an empty list and never null.
 test("register_plan answers each task of the plan it took with its steps", () => {
@@ -1043,7 +1043,7 @@ test("register_plan answers each task of the plan it took with its steps", () =>
   ).toBeFalse();
 });
 
-// Contract 183 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
+// Contract 192 widens one value set: a held issue's `holdReason` is `escalated`, `task-stopped`
 // (its owner stopped its task with stop_task) or `children` (a parent whose plan has no
 // acceptance step waits, before its retro, for the issues beneath it). A state with a stopped
 // task and a held parent parses, each reason kept; a reason outside the three is refused.
@@ -1064,7 +1064,7 @@ test("a state with a stopped task and a parent held for its children parses", ()
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
 });
 
-// Contract 183 gives each of those two holds its own word in `admission.held`:
+// Contract 192 gives each of those two holds its own word in `admission.held`:
 // `children_before_retro`, a parent held before its retro, whose `heldBy` names each issue beneath
 // it still in the workflow, and `task_stopped`, a stopped task that keeps no slot, with no
 // `heldBy`. A state whose held rows carry them parses, each row kept as served; a word outside

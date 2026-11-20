@@ -14,16 +14,18 @@ package api
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces bumps this constant. The same commit writes the
-// number in every other file that holds it: `legion.daemonApiVersion` in
-// `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`, and the two fixtures
+// Bump rule: a change to any of these surfaces raises this constant above the number its base
+// carries. The same commit writes the number in every other file that holds it:
+// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
+// `packages/claude-envoy/package.json`, and the two fixtures
 // that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
 // and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant.
+// disagrees with this constant, and, naming a free number, a change that touches the contract
+// below (that script's header says which edits do) and declares no number above its base's.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.
@@ -911,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -922,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -1357,7 +1358,7 @@ package api
 // one the daemon was about to start from one nothing will start again.
 // `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of `LEGION_HELD_REASONS`,
 // which refuses a value it does not name rather than stripping it like an unknown key, so a word
-// added to the ladder later bumps this number again, as 183 did with `children_before_retro` and
+// added to the ladder later bumps this number again, as 192 did with `children_before_retro` and
 // `task_stopped`. The key itself is written on every body, empty
 // rather than null, and a caller from a pod whose claims record a contract below 98 is served the
 // admission block without it (api's stateFor, withoutHeld), as a caller below 94 is served every
@@ -1496,8 +1497,8 @@ package api
 // slot on this contract, so one not standing in `held` stands in that list under `at_work` where
 // no earlier word of the ladder is true of it, and one held from such a phase under
 // `unclassified` (`record.HeldAtWork`) — words the eleven of 98 already carry, so no strict
-// reader of 98 or above refuses them. From 183 a parent held there for the issues beneath it
-// reads `children_before_retro` and a task that was stopped there `task_stopped` (183 below).
+// reader of 98 or above refuses them. From 192 a parent held there for the issues beneath it
+// reads `children_before_retro` and a task that was stopped there `task_stopped` (192 below).
 // (This branch took 62 against the base 5a585b02, which carried 59; INFRA-2551's counts of the
 // moves back landed on main as 62 (cybermonklabs/legion#3522) and INFRA-312's spend attributes
 // as 64 (#3521), so this change takes a number above both. Read again on
@@ -2422,38 +2423,50 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 178: the project pause. Four routes: the controller's `POST /legion/v1/project/pause`
-// (`{grantId, reason}`) and `POST /legion/v1/project/resume` (`{grantId}`), which take a
-// controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`, and the operator's `POST
-// /legion/v1/operator/project/pause` (`{reason}`) and `POST /legion/v1/operator/project/resume`
-// (no body), which take the operator's bearer as every operator route does (`legion project
-// pause|resume`). None names a project: the daemon pauses its own. A pause answers `{pause}` and
-// a resume `{pause, released}`, the ended pause and how many held rows it let out; a pause is
-// `{id, since, by, reason}` and, once ended, `endedAt` and `endedBy` beside them, and `by` is
-// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure
-// body with what it names beside the code: 400 `PAUSE_REASON_REQUIRED` for a blank reason; 409
-// `PAUSE_UNAVAILABLE` with the setting that turns the pause off (`runtime: tmux`,
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
 // `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
-// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the pause that
-// stands; 409 `PROJECT_NOT_PAUSED` with the lastPause, where one has ended. While the project is
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
 // paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
-// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the pause that
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
 // stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
 // `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
 // on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
 // waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
 // `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
 // caller from a pod whose claims record a contract below 178 is served the state with neither key
-// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without assignments,
-// and the bands compose. The release records' resumes gain `pause`, the pause that held the wake,
-// absent on a wake no pause held. A controller grant now records who minted it, the controller
-// session or the operator's bearer, which the pause records as who acted; that has no wire shape
-// of its own.
-// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at the head of
-// each open pull request of cybermonklabs/legion found 169 to 177 each declared and none declaring
-// 178.)
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
 //
-// 183: the owner of an issue gives Legion a plan with one task, and the plan picks which of
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 192: the owner of an issue gives Legion a plan with one task, and the plan picks which of
 // today's steps run. Two architect routes are new. `POST /legion/v1/plans/register`
 // (`api.PlanRegisterRequest`: `grantId`, `issue`, `artifactId`, `version` from 1) reads that
 // version of a document of the issue from Dispatch, with its blocks, and answers 200 with the
@@ -2485,7 +2498,7 @@ package api
 // `legion claims retry` answer `409 TASK_STOPPED` or `409 HELD_FOR_CHILDREN` on a hold of one of
 // the two new reasons; only this release writes plan rows and those reasons, so no issue a release
 // before ran gets the new answers. `readBody` refuses an unknown field, so a plugin sending
-// `returnTo` to a daemon below 183 would have the completion refused, and a daemon below 183 has
+// `returnTo` to a daemon below 192 would have the completion refused, and a daemon below 192 has
 // neither route; the bump is why the two never meet (`api.OwnerPlanContract`).
 // Every architect request of one issue — register_plan, stop_task, sign_off,
 // request_backward_move, retry_or_escalate, close_root and register_gate — names on its fact the
@@ -2504,22 +2517,22 @@ package api
 // One value set of `GET /legion/v1/state` gets wider: an issue's `holdReason` takes
 // `task-stopped` (its owner stopped its task) and `children` (a parent whose plan has no
 // acceptance step waits, before its retro, for the issues beneath it) beside `escalated`. A caller
-// from a pod whose claims record a contract below 183 is served an issue held for either new
+// from a pod whose claims record a contract below 192 is served an issue held for either new
 // reason with no `holdReason`, as a hold of no reason is served (one row of `stateNarrowings`,
-// `withoutNewHoldReasons`); the bands compose, and every reader from 183 on takes the three values.
+// `withoutNewHoldReasons`); the bands compose, and every reader from 192 on takes the three values.
 // A second value set gets wider with it: `admission.held`'s `reason` takes
 // `children_before_retro` (a parent whose plan has no acceptance step, held before its retro,
 // with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a task
 // that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
 // `accepted_ancestor` and `at_work` (`record.HeldReasons`); both read `unclassified` before. The
-// plugin reads the word as a `z.enum`, so a caller below 183 is served each row of either word as
+// plugin reads the word as a `z.enum`, so a caller below 192 is served each row of either word as
 // `unclassified` with no `heldBy`, the row it read for that issue before (the same row of
 // `stateNarrowings`, `withoutNewHoldReasons`).
 // `settings.projects.<KEY>.default_steps`, the steps a task that names none runs, came with it: a
 // key of the settings block the plugin parses loosely, so it narrows nothing.
-// (This entry takes 183, the lowest number above main's 178 that no open pull request declared
-// when a census read all 246 open heads from 2026-11-20T01:40:08Z to 2026-11-20T01:40:29Z. The
-// census found 179 declared by #4540 and #4392, 180 by #4175 and #4049, 181 by #4553 and 182 by
-// #4495, with nothing above 182. Read the base's own number and every open pull request again at
-// the next merge rather than from this line.)
-const DaemonAPIVersion = 183
+// (This entry takes 192, the lowest number above main's 188 that no open pull request declared
+// when a census read all 264 open heads from 2026-11-20T10:29:43Z to 2026-11-20T10:30:17Z. The
+// census found 188 declared by #4581 and #4610, 189 by #3831, #4592 and #4596, 190 by #4493 and
+// #4578, and 191 by #4495, with nothing above 191. Read the base's own number and every open pull
+// request again at the next merge rather than from this line.)
+const DaemonAPIVersion = 192

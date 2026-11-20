@@ -91,6 +91,9 @@ Where it disagrees with the code or a command's `--help`, follow those and tell 
 
 - End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"<phase>"} -->`.
 
+- A Dispatch comment or message never carries the `<!-- legion: … -->` footer.
+  Dispatch records the session that wrote it, and only a pull-request comment or review needs the footer.
+
 - Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` unset:
   a set variable outranks the gh directory the daemon refreshes.
 
