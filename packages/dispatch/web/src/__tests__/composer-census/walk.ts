@@ -1,8 +1,9 @@
 /**
  * The composer census (INFRA-1503), its walk up: from a mount, or from a place a component above
  * mounts is drawn, up through what draws it in its component to the top of that component's code
- * or to a route, into the body of each component it is handed to in a slot, and through each
- * helper it is drawn through. `readTrees` (`trees.ts`) walks up from each mount and each place
+ * or to a route, into the body of each component it is handed to in a slot, through each helper
+ * it is drawn through, and into each function a component is handed and calls with it, where the
+ * function is written. `readTrees` (`trees.ts`) walks up from each mount and each place
  * once and keeps the walk on it (`Mount.walked`, `Edge.walked`): the trees read its branches,
  * keys, routes and early returns, and the forms (`forms.ts`) read the same items and each element
  * it passes, so the two never read two walks that could differ.
@@ -107,13 +108,17 @@ export function walkUp(program: Program, start: ts.Node, comp: Comp): Walked {
   return { items: walk.items, receivers: walk.receivers, unread: walk.unread };
 }
 
+/** Walks up from `start` in `comp`, to the top of `comp`'s code, or, where `top` is given, to
+ *  that function and not into it: a function `comp` hands another component, which draws what
+ *  it is handed where that component calls it (`followCalled`). */
 function walkFrom(
   walk: Walk,
   start: ts.Node,
   comp: Comp,
   inside: boolean,
   depth: number,
-  initialPath: readonly string[] = []
+  initialPath: readonly string[] = [],
+  top?: ts.Node
 ): void {
   if (walk.seen.has(start)) return;
   walk.seen.add(start);
@@ -128,7 +133,7 @@ function walkFrom(
   let path = [...initialPath];
   let child: ts.Node = start;
   let current: ts.Node | undefined = start.parent;
-  while (current !== undefined && child !== comp.fn) {
+  while (current !== undefined && child !== comp.fn && current !== top) {
     if (ts.isPropertyAssignment(current) && child === current.initializer) {
       path.unshift(current.name.getText());
     }
@@ -268,12 +273,18 @@ function walkFrom(
         if (helper.uses.length === 0) {
           unreadAt(walk, current, `${helper.what} nowhere the census can see`);
         }
-        for (const use of helper.uses) walkFrom(walk, use, comp, inside, depth + 1);
+        for (const use of helper.uses) walkFrom(walk, use, comp, inside, depth + 1, [], top);
         return;
       }
-      // Handed to a call the census does not follow as a helper: unread, unless the call draws
+      // Handed to a function the component is handed itself (`providers(children, …)`): read
+      // what each function its users hand it does with it, then go on up from the call. Handed
+      // to any other call the census does not follow as a helper: unread, unless the call draws
       // what it is handed as it is (`CALL_WRAPPERS`).
-      const why = handedTo(walk, current, child, comp);
+      const called = calledProp(current, child, comp);
+      const why =
+        called === undefined
+          ? handedTo(walk, current, child, comp)
+          : followCalled(walk, comp, called, depth + 1);
       if (why !== undefined) unreadAt(walk, current, why);
     }
     child = current;
@@ -367,6 +378,192 @@ function handedTo(walk: Walk, current: ts.Node, child: ts.Node, comp: Comp): str
   return `${callee}(…) is handed what holds the composer, and is no function the census reads (draw it through a component or a helper the census reads${allow})`;
 }
 
+/** A call of a function a component is handed as a prop, with what holds the composer as one of
+ *  its arguments: the prop, and which argument. */
+interface Called {
+  readonly prop: string;
+  readonly index: number;
+}
+
+/** The prop `current` calls, where it is a call of a function `comp` is handed as a prop and
+ *  `child` one of its arguments (`providers(children, …)`). Undefined for any other node, and
+ *  where `child` is a function, which the walk reads as drawn by the call. */
+function calledProp(current: ts.Node, child: ts.Node, comp: Comp): Called | undefined {
+  if (
+    !ts.isCallExpression(current) ||
+    !ts.isIdentifier(current.expression) ||
+    ts.isArrowFunction(child) ||
+    ts.isFunctionExpression(child)
+  ) {
+    return undefined;
+  }
+  const index = current.arguments.indexOf(child as ts.Expression);
+  const found = lookup(current.expression, comp);
+  return index >= 0 && found.kind === "prop" ? { index, prop: found.prop } : undefined;
+}
+
+/** Follows what holds the composer into each function `comp`'s users hand it as `called.prop`:
+ *  up from each place that function draws the parameter it is handed in, to the function, in the
+ *  code of the component that holds it. What the function draws stands where `comp` calls it,
+ *  so the walk then goes on up from the call. Answers why the census cannot, where it cannot:
+ *  a value handed as the prop that it cannot follow to a function, no function handed at all,
+ *  or a function that draws its parameter nowhere it can see. */
+function followCalled(walk: Walk, comp: Comp, called: Called, depth: number): string | undefined {
+  const { prop, index } = called;
+  const lead = `${prop}(…) is handed what holds the composer`;
+  if (depth > MAX_DEPTH) return `${lead}, and sits deeper than the census reads`;
+  const { fns, unseen } = handedFunctions(walk.program, comp, prop);
+  if (unseen.length > 0) {
+    return `${lead}, and the census cannot follow what ${comp.name} is handed as ${prop} to a function: ${unseen.join("; ")}`;
+  }
+  if (fns.length === 0) return `${lead}, and no user of ${comp.name} hands it a ${prop}`;
+  const nowhere: string[] = [];
+  for (const { fn, host } of fns) {
+    const uses = paramUses(fn, index, host);
+    if (uses.length === 0) nowhere.push(where(fn));
+    walk.receivers.add(host.id);
+    for (const use of uses) walkFrom(walk, use, host, true, depth, [], fn);
+  }
+  return nowhere.length === 0
+    ? undefined
+    : `${lead}, and the ${prop} at ${nowhere.join(", ")} draws it nowhere the census can see`;
+}
+
+/** A function a component is handed, with the component whose code holds it. */
+interface Handed {
+  readonly fn: ts.FunctionLikeDeclaration;
+  readonly host: Comp;
+}
+
+/** The functions the users of `comp` hand it as `prop`, each with the component whose code holds
+ *  it: an arrow or a function written there, or a local or a function of that component's own,
+ *  followed back through each prop it is passed on as (`providers={providers}`) and each
+ *  parameter of a function handed to an element (`shell={(frame, providers) => …}`) to what that
+ *  element's component calls the function with. `unseen` names each value it cannot follow to a
+ *  function, where it is. */
+function handedFunctions(
+  program: Program,
+  comp: Comp,
+  prop: string
+): { readonly fns: readonly Handed[]; readonly unseen: readonly string[] } {
+  const fns: Handed[] = [];
+  const unseen: string[] = [];
+  const seen = new Set<string>();
+  const fromValue = (value: ts.Expression, host: Comp, depth: number): void => {
+    let node = value;
+    while (
+      ts.isParenthesizedExpression(node) ||
+      ts.isAsExpression(node) ||
+      ts.isNonNullExpression(node) ||
+      ts.isSatisfiesExpression(node)
+    ) {
+      node = node.expression;
+    }
+    if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+      fns.push({ fn: node, host });
+      return;
+    }
+    if (ts.isIdentifier(node) && depth <= MAX_DEPTH) {
+      const found = lookup(node, host);
+      const init =
+        found.kind === "local" && found.element === undefined ? found.decl.initializer : undefined;
+      if (init !== undefined && (ts.isArrowFunction(init) || ts.isFunctionExpression(init))) {
+        fns.push({ fn: init, host });
+        return;
+      }
+      if (found.kind === "function" && ts.isFunctionDeclaration(found.node)) {
+        fns.push({ fn: found.node, host });
+        return;
+      }
+      if (found.kind === "prop") {
+        fromProp(host, found.prop, depth + 1);
+        return;
+      }
+      if (found.kind === "param") {
+        fromParam(found.fn, found.index, depth + 1);
+        return;
+      }
+    }
+    unseen.push(`${where(value)}: ${text(value)}`);
+  };
+  const fromProp = (receiver: Comp, name: string, depth: number): void => {
+    if (seen.has(`${receiver.id} ${name}`)) return;
+    seen.add(`${receiver.id} ${name}`);
+    for (const { element } of program.usesById.get(receiver.id) ?? []) {
+      const passed = attribute(element, name);
+      // A use that passes no such prop hands the component none, unless a spread may.
+      if (passed === undefined) {
+        if (spreads(element).length > 0) {
+          unseen.push(
+            `${where(element)}: a spread into <${receiver.name}>, which may hold ${name}`
+          );
+        }
+        continue;
+      }
+      const value = passed.initializer;
+      if (value === undefined || !ts.isJsxExpression(value) || value.expression === undefined) {
+        unseen.push(`${where(passed)}: ${text(passed)}`);
+        continue;
+      }
+      for (const host of drawnIn(program, element)) fromValue(value.expression, host, depth);
+    }
+  };
+  const fromParam = (fn: ts.SignatureDeclaration, index: number, depth: number): void => {
+    const handedAs =
+      ts.isJsxExpression(fn.parent) && ts.isJsxAttribute(fn.parent.parent)
+        ? fn.parent.parent
+        : undefined;
+    const element = handedAs?.parent.parent;
+    const id =
+      element === undefined ? undefined : tagComp(program, modOf(program, element), element);
+    const receiver = id === undefined ? undefined : program.comps.get(id);
+    const body = receiver?.fn.body;
+    if (handedAs === undefined || receiver === undefined || body === undefined) {
+      unseen.push(
+        `${where(fn)}: a parameter of a function handed to no component the census reads`
+      );
+      return;
+    }
+    const name = handedAs.name.getText();
+    let calls = 0;
+    const visit = (node: ts.Node) => {
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+        const found = lookup(node.expression, receiver);
+        if (found.kind === "prop" && found.prop === name) {
+          calls++;
+          const argument = node.arguments[index];
+          if (argument !== undefined) fromValue(argument, receiver, depth);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(body);
+    if (calls === 0) {
+      unseen.push(
+        `${where(handedAs)}: ${receiver.name} calls its ${name} nowhere the census can see`
+      );
+    }
+  };
+  fromProp(comp, prop, 0);
+  return { fns, unseen };
+}
+
+/** The places `fn`, a function in `comp`'s code, draws its parameter at `index` as it is. */
+function paramUses(fn: ts.FunctionLikeDeclaration, index: number, comp: Comp): ts.Identifier[] {
+  const uses: ts.Identifier[] = [];
+  const visit = (node: ts.Node) => {
+    if (ts.isIdentifier(node)) {
+      const found = lookup(node, comp);
+      if (found.kind === "param" && found.fn === fn && found.index === index) {
+        if (placed(node, []) !== undefined) uses.push(node);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  if (fn.body !== undefined) visit(fn.body);
+  return uses;
+}
+
 /** A helper `current` is, which the walk, coming up from `child`, follows to each place `comp`
  *  draws what the helper holds: a helper of its module, a local holding the JSX or a function
  *  returning it, or a helper of `comp`'s own that `child` is handed to, by its parameter. Answers
@@ -427,17 +624,7 @@ function helperAt(
   const index = current.arguments.indexOf(child as ts.Expression);
   const param = fn?.parameters[index];
   if (fn === undefined || param === undefined || !ts.isIdentifier(param.name)) return undefined;
-  const uses: ts.Identifier[] = [];
-  const visit = (node: ts.Node) => {
-    if (ts.isIdentifier(node) && node !== param.name) {
-      const found = lookup(node, comp);
-      if (found.kind === "param" && found.fn === fn && found.index === index) {
-        if (drawsWhole(node)) uses.push(node);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  if (fn.body !== undefined) visit(fn.body);
+  const uses = paramUses(fn, index, comp);
   return {
     name: param.name.text,
     uses,
