@@ -74,6 +74,13 @@ func checkBlockOf(id string, serves ...string) string {
 // p2 is the reference R's one check serves in the world every case starts from.
 const p2 = "dispatch://LEGION-150/spec#b-p2"
 
+// pParagraph is a reference to the paragraph of P's primary document (requirementBlocks' "A
+// paragraph that is no requirement.") by the id Dispatch's tree holds for it: Dispatch mints a UUID
+// for every untyped block, and no version's markdown writes it, since GET /text renders no untyped
+// block's id (pmdoc's carry_block_ids.go). The version register_gate reads holds that paragraph
+// with no id, as requirementBlocks writes it.
+const pParagraph = "dispatch://LEGION-150/spec#b-5d0c2a8e-3f61-4b7a-9e24-7c1d8f0b6a39"
+
 // rViewSpec is R's primary document as a view writes it: no requirement block, and a Delivers:
 // line naming the ancestor's requirement it delivers.
 const rViewSpec = "# R\n\nDelivers: dispatch://LEGION-150/spec#b-p2@v3, the whole of P2.\n"
@@ -221,9 +228,12 @@ func putBasisRecord(t *testing.T, h *harness, at phase.Phase) {
 }
 
 // Every case R1 names as a refusal is refused with its own code and a message naming what Dispatch
-// shows, and records nothing: no fact reaches the intake. Each case is the world k2's negative
-// control names with that one case put in, so each refusal comes from its case and not from the
-// world; TestBasisGateOpenings opens the step on that same world.
+// shows, and records nothing: no fact reaches the intake, R's record and its Dispatch issue are as
+// they were before the call, and Dispatch takes no write. That holds the cases only this fake can
+// build, a session's approval, Dispatch's own and P's live text past its approved version, to what
+// the scratch Dispatch rig holds its own cases to. Each case is the world k2's negative control
+// names with that one case put in, so each refusal comes from its case and not from the world;
+// TestBasisGateOpenings opens the step on that same world.
 func TestBasisGateRefusals(t *testing.T) {
 	h, facts, statuses, architect := basisHarness(t, nil)
 	for index, tc := range []struct {
@@ -368,6 +378,9 @@ func TestBasisGateRefusals(t *testing.T) {
 		{name: "a check that serves a block of P's primary document that is no requirement", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-note"))
 		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/spec#b-note"}},
+		{name: "a check that serves a paragraph block of P's primary document", change: func(world *statusRecorder, _ map[string]any) {
+			world.withVersion(rVerification, 2, checkBlockOf("k1", pParagraph))
+		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"check k1", "serves " + pParagraph, "p1, p2, p3, p:4"}},
 		{name: "a check that serves a block id P's document does not hold", change: func(world *statusRecorder, _ map[string]any) {
 			world.withVersion(rVerification, 2, checkBlockOf("k1", "dispatch://LEGION-150/spec#b-p9"))
 		}, status: http.StatusConflict, code: "VIEW_SERVES_OUTSIDE_BASIS", says: []string{"serves dispatch://LEGION-150/spec#b-p9"}},
@@ -399,6 +412,12 @@ func TestBasisGateRefusals(t *testing.T) {
 			if tc.record != "" {
 				putBasisRecord(t, h, tc.record)
 			}
+			// R's record and its Dispatch issue as they stand before the call, which a refusal
+			// leaves as they were: it writes nothing to either.
+			kept, shown := readIssue(t, h, basisR), statuses.issues[basisR]
+			if kept == nil {
+				t.Fatalf("%s is not recorded, so its record cannot be held to the refusal", basisR)
+			}
 			refusal := refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", body, nil), tc.status, tc.code)
 			for _, want := range tc.says {
 				if !strings.Contains(refusal, want) {
@@ -411,6 +430,19 @@ func TestBasisGateRefusals(t *testing.T) {
 			if events := gateEventsOf(t, h, basisR); events != 0 {
 				t.Fatalf("gate facts taken for %s = %d, want none", basisR, events)
 			}
+			if after := readIssue(t, h, basisR); !reflect.DeepEqual(after, kept) {
+				t.Fatalf("the refused registration left the record of %s %+v, want it as it was: %+v", basisR, after, kept)
+			}
+			if after := statuses.issues[basisR]; !reflect.DeepEqual(after, shown) {
+				t.Fatalf("the refused registration left the Dispatch issue %s %+v, want it as it was: %+v", basisR, after, shown)
+			}
+			if len(statuses.writes) != 0 {
+				t.Fatalf("the refused registration wrote %+v to Dispatch, want no write", statuses.writes)
+			}
+			if len(statuses.taken) != 0 {
+				t.Fatalf("the refused registration made the Dispatch writes %q, want no write", statuses.taken)
+			}
+			t.Logf("refused %s; the record of %s and its Dispatch issue are as they were, and Dispatch took no write", tc.code, basisR)
 		})
 	}
 }
@@ -600,6 +632,47 @@ func TestTheCriteriaStepsBasisGateIsTheAncestorsVerificationDocument(t *testing.
 	if got := facts.recorded(); len(got) != 1 {
 		t.Fatalf("the refused criteria registration applied %#v, want nothing more recorded", got[1:])
 	}
+}
+
+// A deployment that gates the decisions step takes, as its basis, P's decisions document a person
+// approved: the step's document of the ancestor, as stepDocument binds one, on which R registers
+// its own decisions document. R's checks are held to the requirement blocks of P's primary
+// document at its latest version, as for the criteria step, and a registration of the decisions
+// step reads no view fact. P's primary document named for the decisions step is another step's
+// document, refused as one, and records nothing.
+func TestTheDecisionsStepsBasisGateIsTheAncestorsDecisionsDocument(t *testing.T) {
+	h, facts, statuses, architect := basisHarness(t, []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec})
+	*statuses = basisWorld(301)
+	withDecisions(statuses, "# Decisions\n\nNone yet.\n")
+	statuses.approvals[pDecisions] = dispatch.Approval{State: "approved", LatestVersion: 1, Version: new(1), By: basisAlice, Seq: 23, At: basisApprovedAt,
+		Role: dispatch.ArtifactRoleDecisions, Slug: dispatch.DecisionsSlug}
+	statuses.reviews[pDecisions] = []dispatch.Review{{Version: 1, State: "approved", Kind: "person", Actor: basisAlice, At: basisApprovedAt}}
+	body := basisBody(architect.grant(t))
+	body["step"], body["artifactId"], body["version"], body["basisArtifactId"], body["basisVersion"] = "decisions", rDecisions, 1, pDecisions, 1
+	if recorder := h.request(http.MethodPost, "/legion/v1/gates/register", body, nil); recorder.Code != http.StatusOK {
+		t.Fatalf("register the decisions step on P's decisions document = %d: %s", recorder.Code, recorder.Body)
+	}
+	want := intake.GateRegistered{Issue: basisR, Step: record.DesignStepDecisions, ArtifactID: rDecisions, Version: 1, DispatchVersion: 1,
+		Since: record.EventMark{Seq: 301},
+		Basis: &record.GateBasis{Issue: basisP, ArtifactID: pDecisions, Version: 1, Approval: record.EventMark{Seq: 23, At: basisApprovedAt},
+			Approver: "user:alice", Serves: []string{"dispatch://LEGION-150/spec#b-p2@v3"}, Reason: basisReason(reasonRunes), Session: architect.session}}
+	if got := facts.recorded(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("decisions registration facts = %#v, want %#v", got, want)
+	}
+	t.Logf("the decisions step of %s registered on version 1 of %s's decisions document, approved by %s", basisR, basisP, want.Basis.Approver)
+
+	body = basisBody(architect.grant(t))
+	body["step"], body["artifactId"], body["version"] = "decisions", rDecisions, 1
+	refusal := refused(t, h.request(http.MethodPost, "/legion/v1/gates/register", body, nil), http.StatusConflict, "GATE_STEP_DOCUMENT_MISMATCH")
+	for _, named := range []string{pSpec, "decisions step's document of LEGION-150"} {
+		if !strings.Contains(refusal, named) {
+			t.Errorf("refusal = %q, want it naming %q", refusal, named)
+		}
+	}
+	if got := facts.recorded(); len(got) != 1 {
+		t.Fatalf("the refused decisions registration applied %#v, want nothing more recorded", got[1:])
+	}
+	t.Logf("P's primary document named for the decisions step: %s", refusal)
 }
 
 // Every registration of the spec step records the view fact (R4), with a basis or without: the

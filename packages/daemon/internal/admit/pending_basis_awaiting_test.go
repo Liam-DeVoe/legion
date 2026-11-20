@@ -80,9 +80,11 @@ func registeredPendingWhileWaiting(t *testing.T, pool *pgxpool.Pool, admission *
 
 // requestWaitingRoot seeds LEGION-208 waiting on its own design gate at version 3: its architect
 // handed its approval request ask-approval of that version to the person at sequence 5, and it
-// holds the row it keeps through the wait, with LEGION-300 waiting in line behind it.
-func requestWaitingRoot(t *testing.T) (*pgxpool.Pool, *Admission) {
+// holds the row it keeps through the wait, with LEGION-300 waiting in line behind it. It answers
+// that request's ask beside the pool and the admission.
+func requestWaitingRoot(t *testing.T) (*pgxpool.Pool, *Admission, string) {
 	t.Helper()
+	const ask = "ask-approval"
 	pool := migratedPool(t)
 	seedSlotted(t, pool, "LEGION-208", "U")
 	seedWaiting(t, pool, "LEGION-300", "V")
@@ -90,7 +92,7 @@ func requestWaitingRoot(t *testing.T) (*pgxpool.Pool, *Admission) {
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3})
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if err := records.PutRootAsk(context.Background(), tx, record.RootAsk{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval,
+		if err := records.PutRootAsk(context.Background(), tx, record.RootAsk{Issue: "LEGION-208", Ask: ask, Kind: record.AskApproval,
 			Artifact: "artifact-208", Open: true, Seq: 5, WaitingOn: "human", WaitingOnSeq: 5, ByTree: true}); err != nil {
 			t.Fatalf("record the approval request of LEGION-208: %v", err)
 		}
@@ -103,7 +105,20 @@ func requestWaitingRoot(t *testing.T) (*pgxpool.Pool, *Admission) {
 	if root := issue(t, pool, "LEGION-208"); !root.AwaitingPerson() || root.Awaiting.GateVersion != 3 || root.Awaiting.Artifact != "artifact-208" {
 		t.Fatalf("the root = %s (awaiting %+v), want it waiting on its gate at version 3", root.Phase, root.Awaiting)
 	}
-	return pool, admission
+	return pool, admission, ask
+}
+
+// waitingRootFor is LEGION-208 waiting on a person, and the approval request of its own that its
+// pending registration finds open: waiting on its own approval request ask-approval
+// (requestWaitingRoot) where ownRequest is set, and otherwise on a question of its own
+// (waitingRoot), with no such request.
+func waitingRootFor(t *testing.T, ownRequest bool) (*pgxpool.Pool, *Admission, string) {
+	t.Helper()
+	if ownRequest {
+		return requestWaitingRoot(t)
+	}
+	pool, admission := waitingRoot(t, config.DesignGateRootIssues)
+	return pool, admission, ""
 }
 
 // k11's awaiting-person runs (dispatch://INFRA-3320, R1), which the scratch Dispatch rig does not
@@ -112,7 +127,9 @@ func requestWaitingRoot(t *testing.T) (*pgxpool.Pool, *Admission) {
 // request: the pending registration declares no hand-back, the person's approval of the ancestor's
 // version answers the wait as an approval does, and a changes request on it answers the wait as a
 // changes request does, with no notice beside either; the resume task names the ancestor's
-// document, its version and what happened.
+// document, its version and what happened. The changes request answers so a root waiting on a
+// question of its own and one waiting on its own approval request alike, and the latter's resume
+// names that request as still with the person.
 //
 // A root waiting on its own approval request whose architect makes the pending registration and
 // then resolves that request: the resolve, by a session of the root's own tree, answers the wait
@@ -125,10 +142,14 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 	const ancestorDocument = "the primary document of LEGION-150 (dispatch://LEGION-150/spec)"
 	for _, tc := range []struct {
 		name string
-		act  intake.DispatchArtifact
-		by   record.Answer
-		says []string
-		not  []string
+		// ownRequest is a root waiting on its own approval request (requestWaitingRoot), whose
+		// pending registration found that request open; otherwise the root waits on a question of
+		// its own (waitingRoot).
+		ownRequest bool
+		act        intake.DispatchArtifact
+		by         record.Answer
+		says       []string
+		not        []string
 	}{
 		{
 			name: "a question of its own, then the person's approval of the ancestor's version", act: ancestorAct(intake.DispatchArtifactApproved, 60, ""),
@@ -146,10 +167,19 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 				"Still with the person: ask ask-q."},
 			not: []string{"A person requested changes to your", workflow.DesignApprovedWake},
 		},
+		{
+			name: "its own approval request, then the person's changes request on the ancestor's version", ownRequest: true,
+			act: ancestorAct(intake.DispatchArtifactChangesRequested, 61, "name the rollback path"), by: record.AnsweredByChanges,
+			says: []string{"The wait of your spec step on an ancestor's approval request ended: user:alice requested changes on version 4 of " +
+				ancestorDocument + `: "name the rollback path".`, "The spec step of LEGION-208 no longer waits on approval request ask-150 of version 4 of " +
+				ancestorDocument, "The step stays closed, registered on the primary document of LEGION-208 (dispatch://LEGION-208/spec) with no basis.",
+				"Your primary document is not approved at version 3.", "Still with the person: the approval request for primary document version 3."},
+			not: []string{"A person requested changes to your", workflow.DesignApprovedWake, "Do not request approval"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool, admission := waitingRoot(t, config.DesignGateRootIssues)
-			registeredPendingWhileWaiting(t, pool, admission, "")
+			pool, admission, requestAsk := waitingRootFor(t, tc.ownRequest)
+			registeredPendingWhileWaiting(t, pool, admission, requestAsk)
 
 			// The act answers the wait, and the pass that applied it resumes the root on the row
 			// it kept through the wait.
@@ -197,12 +227,12 @@ func TestAPendingBasisMeetsARootWaitingOnAPerson(t *testing.T) {
 		{name: "its own approval request resolved, the person's approval before the held resume", held: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool, admission := requestWaitingRoot(t)
-			registeredPendingWhileWaiting(t, pool, admission, "ask-approval")
+			pool, admission, ask := waitingRootFor(t, true)
+			registeredPendingWhileWaiting(t, pool, admission, ask)
 			if tc.held {
 				admission.HoldForCatchUp("LEGION-208")
 			}
-			applyFact(t, pool, admission, "resolve", intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval,
+			applyFact(t, pool, admission, "resolve", intake.DispatchAskClosed{Key: "LEGION-208", Ask: ask, Kind: record.AskApproval,
 				Artifact: "artifact-208", State: "resolved", Actor: treeArchitect, Mark: seqMark(7)})
 			if tc.held {
 				if root := issue(t, pool, "LEGION-208"); !root.Answered() || root.Awaiting.AnsweredBy != record.AnsweredByClosed {

@@ -75,9 +75,12 @@ type statusWrite struct {
 }
 
 type statusRecorder struct {
-	noArtifacts
 	err    error
 	writes []statusWrite
+	// taken is every other Dispatch write the fake took, in order, as `<method> <issue or
+	// project>`: a message, a document upload, a role-holder publication, and a write of the
+	// gated steps, the design gates, a step, a step's rating or a plan. It keeps none of them.
+	taken []string
 	// documents maps each Dispatch document id this fake knows to the issue carrying it.
 	documents map[string]string
 	// approved maps a document id to the version Dispatch shows approved, its latest; absent means
@@ -179,7 +182,10 @@ func (r *statusRecorder) ReleaseClaim(context.Context, string) error {
 	return errors.New("the architect routes release no claim")
 }
 
-func (r *statusRecorder) PostMessage(context.Context, string, string) error { return nil }
+func (r *statusRecorder) PostMessage(_ context.Context, key, _ string) error {
+	r.taken = append(r.taken, "PostMessage "+key)
+	return nil
+}
 func (r *statusRecorder) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
@@ -261,32 +267,41 @@ func (r *statusRecorder) WebhookAppInstalled(context.Context, string) (bool, err
 	return true, nil
 }
 
-func (r *statusRecorder) PutGatedSteps(context.Context, string, []string) error {
+func (r *statusRecorder) PutGatedSteps(_ context.Context, project string, _ []string) error {
+	r.taken = append(r.taken, "PutGatedSteps "+project)
 	return nil
 }
 
-func (r *statusRecorder) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+func (r *statusRecorder) PutStep(_ context.Context, key, _ string, _ dispatch.StepWrite) error {
+	r.taken = append(r.taken, "PutStep "+key)
 	return nil
 }
-func (r *statusRecorder) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+func (r *statusRecorder) PutStepRating(_ context.Context, key, _ string, _ dispatch.StepWrite, _ dispatch.PlanRating) error {
+	r.taken = append(r.taken, "PutStepRating "+key)
 	return nil
 }
-func (r *statusRecorder) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
+func (r *statusRecorder) PutPlan(_ context.Context, key, _ string, _ dispatch.PlanWrite) error {
+	r.taken = append(r.taken, "PutPlan "+key)
 	return nil
 }
-func (r *statusRecorder) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
+func (r *statusRecorder) PutDesignGates(_ context.Context, key string, _ []dispatch.DesignGateDocument) error {
+	r.taken = append(r.taken, "PutDesignGates "+key)
 	return nil
 }
 
-// noArtifacts is the issue's documents as a fake Dispatch that keeps none: an upload answers the
-// slug Dispatch files the name under. It also takes every role-holder publication and keeps none.
-// No route of this package writes a document of an issue's, and none publishes a role holder.
-type noArtifacts struct{}
-
-func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
+// UploadArtifact answers an upload with the slug Dispatch files the name under, and keeps no
+// document. No route of this package writes a document of an issue's.
+func (r *statusRecorder) UploadArtifact(_ context.Context, key, name, _ string) (string, error) {
+	r.taken = append(r.taken, "UploadArtifact "+key)
 	return name, nil
 }
-func (noArtifacts) PutRoleHolders(context.Context, string, []dispatch.RoleHolder) error { return nil }
+
+// PutRoleHolders takes a role-holder publication and keeps none. No route of this package
+// publishes a role holder.
+func (r *statusRecorder) PutRoleHolders(_ context.Context, key string, _ []dispatch.RoleHolder) error {
+	r.taken = append(r.taken, "PutRoleHolders "+key)
+	return nil
+}
 
 var _ dispatch.Client = (*statusRecorder)(nil)
 

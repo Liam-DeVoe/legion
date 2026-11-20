@@ -1,10 +1,13 @@
 package daemon
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,20 +52,73 @@ func (r *personHandoverRig) restart() {
 // is one fact per launch, so a second ready of the same launch tells nothing; the composer is read
 // directly so a proof can read the catch-up after every act.
 func (r *personHandoverRig) catchUpNow(key string) record.CatchUpGate {
+	r.t.Helper()
+	return catchUpGate(r.t, r.composeCatchUp(key).notice)
+}
+
+// queuedCatchUp is one catch-up row of a root's architect in the outbox: its id, the row whose
+// telling it is (the row itself, or the row a re-held copy copies: record.Notice.ResendOf), and
+// the reason it tells.
+type queuedCatchUp struct {
+	id, telling int64
+	reason      string
+}
+
+// composedCatchUp is one composition of a root architect's catch-up (composeCatchUp): the
+// catch-up rows queued for that architect just before it, the outbox row it queued and the notice
+// that row carries.
+type composedCatchUp struct {
+	queued []queuedCatchUp
+	id     int64
+	notice record.Notice
+}
+
+// composeCatchUp is catchUpNow's composition, answering the whole of it. The composer first drops
+// the catch-ups still queued for the architect that record.Store.DropCatchUps may drop (it keeps
+// one whose telling is recorded as told under record.KeptToldSource, and one carrying kept
+// decisions while a row of its telling is under a live lease), so the rows queued before it are
+// read in the same transaction, under the advisory lock that drop takes and every composition of a
+// catch-up of key waits on (record.LockCatchUps): no catch-up the daemon queues lands between that
+// read and the drop, and none lands beside the row this composition queued, which is then the
+// newest catch-up of key that copies no other.
+func (r *personHandoverRig) composeCatchUp(key string) composedCatchUp {
 	t := r.t
 	t.Helper()
 	root := r.record(key)
 	launch := r.architects[key].launch.Generation
+	var composed composedCatchUp
 	if err := pgx.BeginFunc(t.Context(), r.pool, func(tx pgx.Tx) error {
-		return workflow.QueueCatchUp(t.Context(), tx, record.NewStore(), r.cfg.Gates.Steps(), root, launch, "", time.Now().UTC(), time.Time{})
+		if err := record.LockCatchUps(t.Context(), tx, key); err != nil {
+			return err
+		}
+		for _, row := range catchUpRows(t, tx, key) {
+			payload, err := record.DecodeOutboxPayload(row)
+			if err != nil {
+				return err
+			}
+			notice := payload.(record.Notice)
+			composed.queued = append(composed.queued, queuedCatchUp{id: row.ID, telling: cmp.Or(notice.ResendOf, row.ID), reason: notice.Reason})
+		}
+		if err := workflow.QueueCatchUp(t.Context(), tx, record.NewStore(), r.cfg.Gates.Steps(), root, launch, "", time.Now().UTC(), time.Time{}); err != nil {
+			return err
+		}
+		var payload []byte
+		if err := tx.QueryRow(t.Context(), `select id, payload from outbox where kind = $1 and issue = $2 and payload->>'kind' = 'catch-up'
+			and payload->>'resend_of' is null order by id desc limit 1`, string(record.OutboxKindNotice), key).Scan(&composed.id, &payload); err != nil {
+			return err
+		}
+		return json.Unmarshal(payload, &composed.notice)
 	}); err != nil {
 		t.Fatalf("compose the catch-up of the architect of %s: %v", key, err)
 	}
-	return catchUpGate(t, r.latestCatchUp(key))
+	if composed.notice.CatchUp == nil {
+		t.Fatalf("the catch-up composed for the architect of %s carries no tree: %+v", key, composed.notice)
+	}
+	return composed
 }
 
-// otherNotices is every notice the daemon has queued on key for its architect but the catch-ups
-// a proof's own reads write (catchUpNow), each as `<kind>: <reason>`, oldest first.
+// otherNotices is every notice the daemon has queued on key for its architect but the catch-ups,
+// which a read holds apart (stepReads), each as `<kind>: <reason>`, oldest first.
 func (r *personHandoverRig) otherNotices(key string) []string {
 	r.t.Helper()
 	rows, err := r.pool.Query(r.t.Context(), `select (payload->>'kind') || ': ' || coalesce(payload->>'reason', '') from outbox
@@ -77,58 +133,125 @@ func (r *personHandoverRig) otherNotices(key string) []string {
 	return notices
 }
 
-// stepReads is what k3 and k11 read of a root after each act: its spec step as the state serves
-// it (which `read_record` parses), its spec row as the daemon stores it, its phase, the spec step
-// of the catch-up its architect would read now, and every notice queued for its architect but
-// those catch-ups.
+// stepReads is what k3 reads of a root after each act: its spec step as the state serves it
+// (which `read_record` parses), its spec row as the daemon stores it, its phase, the whole
+// catch-up its architect would read now, and every notice queued for its architect but
+// catch-ups. The catch-ups are read apart: queued counts those queued for the architect when the
+// read composed its own, and foreign names each of them that no read of the proof composed (own).
+// stepJSON, rowJSON and caughtJSON are the step, the row and the catch-up as JSON, encoded once
+// at the read, which stays compares.
 type stepReads struct {
-	step    string
-	row     string
-	phase   phase.Phase
-	caught  string
-	notices []string
+	step                          api.GatedStepView
+	row                           record.DesignGate
+	phase                         phase.Phase
+	caught                        record.Notice
+	stepJSON, rowJSON, caughtJSON string
+	notices                       []string
+	queued                        int
+	foreign                       []string
+	own                           *ownCatchUps
 }
 
-func (r *personHandoverRig) stepReads(key string) stepReads {
+// ownCatchUps is every catch-up of one root that the proof's reads of it composed (composeCatchUp),
+// by outbox id, beside those already queued when the first read was made: the catch-ups a later
+// read may find queued for the root's architect, as themselves or as re-held copies. Any other is
+// one the daemon queued since the last read, which the next composition would drop unseen
+// (record.Store.DropCatchUps), so each read reads the catch-ups queued before it composes its own.
+type ownCatchUps struct{ ids []int64 }
+
+// stepReads reads key as k3 does, holding the catch-ups queued for its architect to own, the
+// catch-ups the proof's earlier reads of key composed; nil for the first read, which takes every
+// catch-up queued before it as its own, since no act of the proof came before it.
+func (r *personHandoverRig) stepReads(key string, own *ownCatchUps) stepReads {
 	t := r.t
 	t.Helper()
 	state, _ := settled(t, r.d, "answer its state", func(api.State) bool { return true })
-	encode := func(what string, value any) string {
-		encoded, err := json.Marshal(value)
-		if err != nil {
-			t.Fatalf("encode %s of %s: %v", what, key, err)
+	reads := stepReads{step: stepOf(state, key), row: r.gates(key)[record.DesignStepSpec], phase: state.Issues[key].Phase, own: own}
+	composed := r.composeCatchUp(key)
+	if reads.own == nil {
+		reads.own = &ownCatchUps{}
+		for _, queued := range composed.queued {
+			reads.own.ids = append(reads.own.ids, queued.telling)
 		}
-		return string(encoded)
 	}
-	return stepReads{
-		step:    encode("the state's spec step", stepOf(state, key)),
-		row:     encode("the spec row", r.gates(key)[record.DesignStepSpec]),
-		phase:   state.Issues[key].Phase,
-		caught:  encode("the catch-up's spec step", r.catchUpNow(key)),
-		notices: r.otherNotices(key),
+	for _, queued := range composed.queued {
+		if !slices.Contains(reads.own.ids, queued.telling) {
+			reads.foreign = append(reads.foreign, fmt.Sprintf("row %d: %s", queued.id, queued.reason))
+		}
 	}
+	reads.own.ids = append(reads.own.ids, composed.id)
+	reads.queued, reads.caught, reads.notices = len(composed.queued), composed.notice, r.otherNotices(key)
+	reads.stepJSON, reads.rowJSON, reads.caughtJSON = encodeRead(t, key, reads.step), encodeRead(t, key, reads.row), encodeRead(t, key, reads.caught)
+	return reads
 }
 
-// stays holds key's step to want after act, as k3's negative control reads it: the state, the
-// stored row and the catch-up name the same step open at the version registered with its basis,
-// the root stands in the same phase, and its architect was told nothing.
+// encodeRead is value, a read of key, as JSON.
+func encodeRead(t *testing.T, key string, value any) string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("encode %T of %s: %v", value, key, err)
+	}
+	return string(encoded)
+}
+
+// firstReads is the read every run of k3 holds its later reads to (stays), made once the run's
+// opening was read and, past the first run, once its gate seed and Dispatch rows ran
+// (dispatchRowsDone). It must find R's step open on its basis in the state, the stored row and the
+// catch-up, at the version registered and on P's document at the version approved: stays holds
+// later reads to this one whatever it holds, so a seed that closed or moved the step before it
+// would otherwise pass as the step that stays.
+func (r *personHandoverRig) firstReads(run basisRun) stepReads {
+	t := r.t
+	t.Helper()
+	root, parent := run.root.Key, run.parent
+	reads := r.stepReads(root, nil)
+	if step := reads.step; step.Status != api.GatedStepOpenOnBasis || step.ApprovedVersion == nil || *step.ApprovedVersion != run.rootVersion ||
+		step.CurrentVersion != run.rootVersion || step.Basis == nil || step.Basis.Issue != parent.Key || step.Basis.ArtifactID != parent.PrimaryArtifactID ||
+		step.Basis.Version != run.basisVersion {
+		t.Fatalf("at the first read the state serves %s's spec step %+v (basis %+v), want it %s at its version %d on version %d of %s's primary document",
+			root, step, step.Basis, api.GatedStepOpenOnBasis, run.rootVersion, run.basisVersion, parent.Key)
+	}
+	if row := reads.row; !record.GateOpen(row) || !row.OnBasis() || *row.ApprovedVersion != run.rootVersion || row.Basis.Issue != parent.Key ||
+		row.Basis.ArtifactID != parent.PrimaryArtifactID || row.Basis.Version != run.basisVersion {
+		t.Fatalf("at the first read the daemon stores %s's spec row %+v (basis %+v), want it open at its version %d on version %d of %s's primary document",
+			root, row, row.Basis, run.rootVersion, run.basisVersion, parent.Key)
+	}
+	if caught := catchUpGate(t, reads.caught); !caught.Open || caught.Pending || caught.Version != run.rootVersion || caught.Basis == nil ||
+		caught.Basis.Issue != parent.Key || caught.Basis.Artifact != parent.PrimaryArtifactID || caught.Basis.Version != run.basisVersion {
+		t.Fatalf("at the first read the catch-up of %s's architect states its spec step %+v (basis %+v), want it open at its version %d on version %d of %s's primary document",
+			root, caught, caught.Basis, run.rootVersion, run.basisVersion, parent.Key)
+	}
+	t.Logf("%s, first read: its spec step %s at its version %d on version %d of %s's primary document in the state, the row and the catch-up; %d catch-up(s) queued before it",
+		root, reads.step.Status, run.rootVersion, run.basisVersion, parent.Key, reads.queued)
+	return reads
+}
+
+// stays holds key's step to want after act, as k3's negative control reads it: the state and the
+// stored row name the same step open at the version registered with its basis, the root stands
+// in the same phase, the whole catch-up its architect would read is the same, and its architect
+// was told nothing: no notice, and no catch-up but those the proof's own reads composed.
 func (r *personHandoverRig) stays(act, key string, want stepReads) {
 	t := r.t
 	t.Helper()
-	got := r.stepReads(key)
+	got := r.stepReads(key, want.own)
 	switch {
-	case got.step != want.step:
-		t.Fatalf("%s: the state serves %s's spec step %s, want it as it stood: %s", act, key, got.step, want.step)
-	case got.row != want.row:
-		t.Fatalf("%s: the daemon stores %s's spec row %s, want it as it stood: %s", act, key, got.row, want.row)
+	case got.stepJSON != want.stepJSON:
+		t.Fatalf("%s: the state serves %s's spec step %s, want it as it stood: %s", act, key, got.stepJSON, want.stepJSON)
+	case got.rowJSON != want.rowJSON:
+		t.Fatalf("%s: the daemon stores %s's spec row %s, want it as it stood: %s", act, key, got.rowJSON, want.rowJSON)
 	case got.phase != want.phase:
 		t.Fatalf("%s: %s stands at %s, want %s: no act on the ancestor moves it", act, key, got.phase, want.phase)
-	case got.caught != want.caught:
-		t.Fatalf("%s: the catch-up of %s's architect states its spec step %s, want %s", act, key, got.caught, want.caught)
+	case got.caughtJSON != want.caughtJSON:
+		t.Fatalf("%s: the catch-up of %s's architect reads %s, want it as it stood: %s", act, key, got.caughtJSON, want.caughtJSON)
+	case len(got.foreign) > 0:
+		t.Fatalf("%s: the daemon queued the catch-ups %q for %s's architect since the last read, want none but the proof's own (rows %v)",
+			act, got.foreign, key, want.own.ids)
 	case !slices.Equal(got.notices, want.notices):
 		t.Fatalf("%s: the notices queued for %s's architect = %q, want them as they stood: %q", act, key, got.notices, want.notices)
 	}
-	t.Logf("%s: %s stays at %s with its spec step %s", act, key, got.phase, got.step)
+	t.Logf("%s: %s stays at %s with its spec step %s; its whole catch-up as it stood (decided %q, kept %s); %d catch-up(s) queued before this read, none but the proof's own",
+		act, key, got.phase, got.stepJSON, got.caught.CatchUp.Decided, encodeRead(t, key, got.caught.CatchUp.Kept), got.queued)
 }
 
 // launches counts the launches the runtime made of token.
@@ -170,6 +293,39 @@ func (r *personHandoverRig) readmit(key string) (api.OperatorClaim, api.State) {
 	session, secret := registerLaunch(t, r.d, launch)
 	r.architects[key] = rigArchitect{launch: launch, session: session, secret: secret}
 	return r.d.claim(token), state
+}
+
+// approvedVersionPattern finds each version a start task names as approved, in the words of the
+// kept approval's sentence (workflow.KeptDecisionsTask: `A person approved version <N> of …`),
+// subject and all, so the daemon's `No person approved version <N>` is not counted.
+var approvedVersionPattern = regexp.MustCompile(`(?i)a person approved version (\d+)`)
+
+// namesNoApprovalFrom fails unless task, key's start task after a re-admission, names no approval
+// of key's own document at version from or later: no `A person approved version N` with N of from
+// or more, and no decision on key's spec that opened its step in the line that names the decisions
+// kept for the tree (workflow.KeptDecisionsTask: `<ref> (design-approved by <actor>)`, which names
+// no version). It answers the versions the task names as approved.
+func (r *personHandoverRig) namesNoApprovalFrom(key, task string, from int) []int {
+	t := r.t
+	t.Helper()
+	var approved []int
+	for _, match := range approvedVersionPattern.FindAllStringSubmatch(task, -1) {
+		version, err := strconv.Atoi(match[1])
+		if err != nil {
+			t.Fatalf("the start task of %s names approved version %q, which is no number: %v", key, match[1], err)
+		}
+		if version >= from {
+			t.Fatalf("the start task of %s after its re-admission names approved version %d, want no approval of its document at version %d or later: %q",
+				key, version, from, task)
+		}
+		approved = append(approved, version)
+	}
+	for _, decision := range []record.DecisionKind{record.DecisionDesignApproved, record.DecisionCarriedGateOpened} {
+		if own := fmt.Sprintf("dispatch://%s/spec (%s by ", key, decision); strings.Contains(task, own) {
+			t.Fatalf("the start task of %s after its re-admission names the kept decision %q, want no approval of its own document kept: %q", key, own, task)
+		}
+	}
+	return approved
 }
 
 // stayingOptions shape one run of k3: P admitted as a live Legion root whose own gate names its
@@ -304,9 +460,10 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 // k3 (dispatch://INFRA-3320, R3 and R2). A step that rests on an ancestor's approval behaves as an
 // approved step of the root's own document, and nothing done to the ancestor's document moves it.
 // Each run opens R's step on P's approval as k1 does, reads R's step in the state and in the
-// daemon's row, R's phase, R's catch-up and the notices queued for R's architect, and holds every
-// read after each act to what it read before the first (stays); the person then approves P again
-// and the reads are held once more.
+// daemon's row, R's phase, R's whole catch-up, the catch-ups and the other notices queued for R's
+// architect, and holds every read after each act to its first read (stays), which must find the
+// step open on P's approval at the version registered (firstReads); the person then approves P
+// again and the reads are held once more.
 //
 //  1. P is labelled and in progress, recorded by no tree. The registration's gate seed is held back
 //     (outboxHold) while the person writes a new version of P's primary document and asks for
@@ -326,9 +483,10 @@ func (r *personHandoverRig) openRun(held *outboxHold, names []string, opt stayin
 // person's changes request on it closes it and reaches R's architect as design-changes-requested;
 // the person's approval of it leaves it open on that approval with no basis; a registration of it
 // with no basis leaves it closed until the person approves; and a new version of it followed by a
-// re-admission leaves R with no gate and a start task naming no approval of the version the basis
-// opened, once with no earlier approval of R and once from the fourth run's R, whose start task
-// names the person's approval of v2, asks for a request of the latest version and names R1's path.
+// re-admission leaves R with no gate and a start task naming no approval of R's document at the
+// version the basis opened or later, neither as an approved version nor as a kept decision, once
+// with no earlier approval of R and once from the fourth run's R, whose start task names the
+// person's approval of v2, asks for a request of the latest version and names R1's path.
 func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	held := &outboxHold{}
 	r := newPersonHandoverRig(t, 16)
@@ -337,7 +495,7 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 
 	// 1. The held seed, P's new version and the changes request on it, the seed, the restart.
 	one := r.openRun(held, []string{"Kestrel nest monitor", "Raptor habitat survey"}, stayingOptions{holdSeed: true})
-	base := r.stepReads(one.root.Key)
+	base := r.firstReads(one)
 	newer := r.editAs(one.parent.PrimaryArtifactID, asPerson, insertParagraph("The survey adds the northern ridge."))
 	r.quiet(one.parent.Key)
 	r.stays(fmt.Sprintf("run 1, the person's version %d of P's primary document, the seed still due", newer), one.root.Key, base)
@@ -363,7 +521,7 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 
 	// 2. P's open approval request when the daemon starts again.
 	two := r.openRun(held, []string{"Lantern festival lighting", "Riverside carnival logistics"}, stayingOptions{})
-	base = r.stepReads(two.root.Key)
+	base = r.firstReads(two)
 	requested := r.editDocument(two.parent.PrimaryArtifactID, insertParagraph("The carnival moves upstream."))
 	ask := r.requestApproval(two.parent.PrimaryArtifactID, "The carnival moves upstream.")
 	r.quiet(two.parent.Key)
@@ -381,7 +539,7 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 
 	// 3. P a live Legion root whose own gate names P's document.
 	three := r.openRun(held, []string{"Orchard irrigation timer", "Valley water allocation"}, stayingOptions{live: true})
-	base = r.stepReads(three.root.Key)
+	base = r.firstReads(three)
 	closed := r.editDocument(three.parent.PrimaryArtifactID, insertParagraph("The allocation counts the wells."))
 	r.quiet(three.parent.Key)
 	settled(t, r.d, "close the gate of "+three.parent.Key+" at its version "+fmt.Sprint(closed), func(s api.State) bool {
@@ -407,7 +565,7 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	if kept := r.gates(four.root.Key)[record.DesignStepSpec].ApprovedByPerson(); kept == nil || kept.Version != four.ownApproval.Version {
 		t.Fatalf("the spec row of %s keeps the person's approval %+v, want version %d held apart", four.root.Key, kept, four.ownApproval.Version)
 	}
-	base = r.stepReads(four.root.Key)
+	base = r.firstReads(four)
 	event := r.newestEvent(four.root.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == four.ownApproval.Version })
 	r.applyAsTheDaemon("dispatch", "late-"+event.factID(), intake.DispatchArtifact{Key: four.root.Key, ArtifactID: four.root.PrimaryArtifactID,
 		Kind: intake.DispatchArtifactApproved, Version: four.ownApproval.Version, Mark: record.EventMark{Seq: event.Seq, At: four.ownApproval.CreatedAt}, Actor: smoke})
@@ -418,7 +576,7 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 
 	// 5. A new version of R's Verification document adding a check of G's requirement.
 	five := r.openRun(held, []string{"Glacier melt sensor", "Alpine hydrology study", "Mountain climate programme"}, stayingOptions{grandparent: true})
-	base = r.stepReads(five.root.Key)
+	base = r.firstReads(five)
 	r.writeDocument(five.root.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(five.parent.Key, "p2")}},
 		rigCheck{id: "k2", serves: []string{specBlock(five.grand.Key, "g1")}}))
 	r.quiet(five.root.Key)
@@ -522,10 +680,16 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 		t.Fatalf("after the re-admission %s holds the gates %+v and the state serves %+v, want none: a new generation keeps no gate", readmitted.root.Key, gates,
 			stepOf(state, readmitted.root.Key))
 	}
-	if started.Pending != nil && strings.Contains(started.Pending.Task, "approved version") {
-		t.Fatalf("the start task of %s after its re-admission = %q, want no approval of its document named", readmitted.root.Key, started.Pending.Task)
+	var task string
+	if started.Pending != nil {
+		task = started.Pending.Task
 	}
-	t.Logf("%s re-admitted with no gate; its start task %+v names no approval", readmitted.root.Key, started.Pending)
+	if strings.Contains(task, "approved version") {
+		t.Fatalf("the start task of %s after its re-admission = %q, want no approval of its document named", readmitted.root.Key, task)
+	}
+	r.namesNoApprovalFrom(readmitted.root.Key, task, readmitted.rootVersion)
+	t.Logf("%s re-admitted with no gate; its start task %+v names no approval, and no kept decision of its own document",
+		readmitted.root.Key, started.Pending)
 
 	// The fourth run's R: its start task names the person's approval of v2 and R1's path.
 	latest := r.editDocument(four.root.PrimaryArtifactID, insertParagraph("The polisher stops at the rim."))
@@ -537,12 +701,12 @@ func TestBasisGateStaysOnTheRootDocument(t *testing.T) {
 	kept := fmt.Sprintf("A person approved version %d of the primary document, and the primary document is now at version %d. Request approval of version %d,",
 		four.ownApproval.Version, latest, latest)
 	path := fmt.Sprintf("The other way is to write %s as a view on an approved ancestor and register the step on that ancestor's approval", four.root.Key)
-	if started.Pending == nil || !strings.Contains(started.Pending.Task, kept) || !strings.Contains(started.Pending.Task, path) ||
-		strings.Contains(started.Pending.Task, fmt.Sprintf("approved version %d", four.rootVersion)) {
-		t.Fatalf("the start task of %s after its re-admission = %+v, want it naming %q and %q and no approval of version %d",
-			four.root.Key, started.Pending, kept, path, four.rootVersion)
+	if started.Pending == nil || !strings.Contains(started.Pending.Task, kept) || !strings.Contains(started.Pending.Task, path) {
+		t.Fatalf("the start task of %s after its re-admission = %+v, want it naming %q and %q", four.root.Key, started.Pending, kept, path)
 	}
-	t.Logf("%s re-admitted with no gate; its start task: %q", four.root.Key, started.Pending.Task)
+	approved := r.namesNoApprovalFrom(four.root.Key, started.Pending.Task, four.rootVersion)
+	t.Logf("%s re-admitted with no gate; its start task names approved versions %v, each below its version %d registered on the basis (latest %d), and no kept decision of its own document: %q",
+		four.root.Key, approved, four.rootVersion, latest, started.Pending.Task)
 }
 
 // applyAsTheDaemon applies fact under source and id through an engine of the daemon's own

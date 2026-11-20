@@ -314,6 +314,196 @@ func (r *personHandoverRig) openedOnBasis(root, parent scratchIssue, rootVersion
 	return state, r.oneBasisMessage(root.Key)
 }
 
+// ancestorOpening is one case of k1 once its registration answered 200: root's spec step open at
+// its own version rootVersion on approval, the person's approval of parent's primary document,
+// registered with reason. The fields past those say where the case's world is not the first
+// case's: parentLive is false for a parent the daemon records in no live tree while the step opens
+// (P on the backlog); ownApproval is the version of root's own document a person approved, older
+// than rootVersion (R at v4 holding the person's approval of v2), 0 for none; and whileOpen, when
+// set, runs once every read of the open root is made and before root is taken to done.
+type ancestorOpening struct {
+	root, parent scratchIssue
+	rootVersion  int
+	approval     scratchReview
+	reason       string
+	parentLive   bool
+	ownApproval  int
+	whileOpen    func()
+}
+
+// readAncestorOpening is what every case of k1 reads once root's registration on parent's approval
+// answered 200: the first case's steps 7 and 8, which each repeat reads whole. The opening
+// (openedOnBasis) and its message, line by line; no ask on root; the state's treeRuns and the view
+// fact; the planner's task; root's catch-up naming the basis and no person's approval; parent's
+// architect told once that root rests on it; parent's catch-up naming root, and parent's first
+// phase waiting while root is open; no notice queued on root or on parent, and no role message of
+// root's tree, saying a person approved root's document, nor, where a person approved an older
+// version of it, naming that version; and, root taken to done, parent's architect told so and
+// parent's first phase started.
+func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
+	t := r.t
+	t.Helper()
+	root, parent := c.root, c.parent
+	if c.ownApproval != 0 && c.ownApproval == c.approval.Version {
+		t.Fatalf("the person approved version %d of both %s's and %s's documents, so no read can tell a reader naming %s's own approval; give the case versions apart",
+			c.ownApproval, root.Key, parent.Key, root.Key)
+	}
+	state, message := r.openedOnBasis(root, parent, c.rootVersion, c.approval.Version)
+	t.Logf("%s opened at version %d on %s's approval of version %d and plans; the message on it:\n%s", root.Key, c.rootVersion, parent.Key, c.approval.Version, message)
+	p2 := specBlock(parent.Key, "p2")
+	for _, want := range []string{
+		"- The step is spec.",
+		fmt.Sprintf("- The primary document of %s for this step is dispatch://%s/spec (%s).", root.Key, root.Key, root.PrimaryArtifactID),
+		fmt.Sprintf("- The architect of %s registered version %d of this document.", root.Key, c.rootVersion),
+		fmt.Sprintf("- No person approved version %d of this document.", c.rootVersion),
+		fmt.Sprintf("- The ancestor is %s.", parent.Key),
+		fmt.Sprintf("- The primary document of %s for this step is dispatch://%s/spec (%s).", parent.Key, parent.Key, parent.PrimaryArtifactID),
+		fmt.Sprintf("- A person approved version %d of this document.", c.approval.Version),
+		"- The person is user:smoke.",
+		"- Dispatch recorded this approval at " + c.approval.CreatedAt.UTC().Format(time.RFC3339) + ".",
+		fmt.Sprintf("  - %s@v%d", p2, c.approval.Version),
+		fmt.Sprintf("- The architect session %s registered this step.", r.architects[root.Key].session),
+		"> " + c.reason,
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("the message on %s does not say %q:\n%s", root.Key, want, message)
+		}
+	}
+	if asks := r.asks(root.Key); len(asks) != 0 {
+		t.Fatalf("%s holds asks %+v, want none: nobody is asked to approve a step a basis opened", root.Key, asks)
+	}
+	if runs := state.Issues[root.Key].TreeRuns; runs == nil || !*runs {
+		t.Fatalf("the state serves %s's treeRuns = %v, want true", root.Key, runs)
+	}
+	if viewOf := r.record(root.Key).ViewOf; viewOf != parent.Key {
+		t.Fatalf("the view fact recorded at %s's registration = %q, want %s", root.Key, viewOf, parent.Key)
+	}
+	viewSentence := fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names.",
+		root.Key, parent.Key, root.Key, parent.Key, root.Key)
+	if task := r.entryTask(root.Key, claim.RolePlanner); !strings.Contains(task, viewSentence) {
+		t.Fatalf("the planner's task of %s = %q, want the view sentence %q", root.Key, task, viewSentence)
+	}
+	r.ready(root.Key)
+	caught := catchUpGate(t, r.latestCatchUp(root.Key))
+	if !caught.Open || caught.Pending || caught.Approved != 0 || caught.Version != c.rootVersion || caught.Basis == nil || caught.Basis.Issue != parent.Key ||
+		caught.Basis.Artifact != parent.PrimaryArtifactID || caught.Basis.Version != c.approval.Version || caught.Basis.Approver != "user:smoke" {
+		t.Fatalf("the catch-up of %s's architect states its spec step %+v (basis %+v), want open at version %d on version %d of %s's primary document with no person's approval",
+			root.Key, caught, caught.Basis, c.rootVersion, c.approval.Version, parent.Key)
+	}
+
+	// P's architect is told that R rests on P where the daemon records P in a live tree. P on the
+	// backlog is in none, so while R opens no architect of P runs to be told or to catch up: the
+	// daemon queues no resting-root row, and P's architect hears of R in its start task once the
+	// person sets P todo and P is admitted. P's architect then registers P's own gate, as the first
+	// case's step 5 does, so that from here on P stands where the first case's P stands.
+	told := 1
+	if c.parentLive {
+		resting := r.notices(parent.Key, "resting-root")
+		if len(resting) != 1 || resting[0].Version != c.approval.Version || resting[0].Ref != "dispatch://"+parent.Key+"/spec" ||
+			!strings.Contains(resting[0].Reason, root.Key) || !strings.Contains(resting[0].Reason, "spec step") ||
+			!strings.Contains(resting[0].Reason, fmt.Sprintf("%s@v%d", p2, c.approval.Version)) {
+			t.Fatalf("the resting-root notices to %s's architect = %+v, want one naming %s, its spec step and P2", parent.Key, resting, root.Key)
+		}
+	} else {
+		told = 0
+		if resting := r.notices(parent.Key, "resting-root"); len(resting) != 0 {
+			t.Fatalf("the daemon queued resting-root notices %+v on %s, which it records in no live tree; want none", resting, parent.Key)
+		}
+		parentGrant := r.admit(parent.Key)
+		startTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in planning).", parent.Key, root.Key)
+		started := r.d.claim(r.architectToken(parent.Key))
+		if started.Pending == nil || !strings.Contains(started.Pending.Task, startTask) {
+			t.Fatalf("the start task of %s's architect at its admission = %+v, want it naming %q", parent.Key, started.Pending, startTask)
+		}
+		t.Logf("%s rested on %s while it was on the backlog with no resting-root row, and %s's start task names it: %q",
+			root.Key, parent.Key, parent.Key, started.Pending.Task)
+		r.registerApprovedGate(parent.Key, parent.PrimaryArtifactID, c.approval.Version, parentGrant)
+	}
+	r.ready(parent.Key)
+	restingClause := fmt.Sprintf("resting on the approval of %s and still in the workflow: %s (its spec step, in planning)", parent.Key, root.Key)
+	if notice := r.latestCatchUp(parent.Key); !strings.Contains(notice.Reason, restingClause) {
+		t.Fatalf("the catch-up of %s's architect = %q, want it naming %q", parent.Key, notice.Reason, restingClause)
+	}
+	if standing := r.record(parent.Key).Phase; standing != phase.Admitted {
+		t.Fatalf("%s stands at %s while %s is open, want admitted: its first phase waits for its open child", parent.Key, standing, root.Key)
+	}
+	t.Logf("%s's architect was told %d time(s) that %s rests on it, its catch-up names %s, and %s waits at admitted while %s is open",
+		parent.Key, told, root.Key, root.Key, parent.Key, root.Key)
+
+	// The first registration of a step moves no standing gate, which an unregistered step leaves
+	// standing open (classify.StandingGate), so it sends the tree's roles nothing; the opening that
+	// follows a close is read in TestBasisGateRefusals. Whatever is queued, on R for its architect,
+	// on P for P's architect or to a role of R's tree, nothing says a person approved R's
+	// document: in R's own words "its" is R, and P's words would name R. The phrase read in R's
+	// words keeps its subject, so the daemon's own "No person approved version N of its spec
+	// document" (workflow's gate messages) is not read as an approval.
+	versions := []int{c.rootVersion}
+	if c.ownApproval != 0 {
+		versions = append(versions, c.ownApproval)
+	}
+	var ofItsOwn, namingRoot []string
+	for _, version := range versions {
+		ofItsOwn = append(ofItsOwn, fmt.Sprintf("a person approved version %d of its", version))
+		namingRoot = append(namingRoot, fmt.Sprintf("approved version %d of the primary document of %s", version, root.Key),
+			fmt.Sprintf("approved %s's spec document at version %d", root.Key, version))
+	}
+	for index, phrase := range namingRoot {
+		namingRoot[index] = strings.ToLower(phrase)
+	}
+	rootNotices, parentNotices, roleMessages := r.noticeReasons(root.Key), r.noticeReasons(parent.Key), r.roleMessages(root.Key)
+	// saysApproved fails when one of said holds one of phrases, all lower case, in any case.
+	saysApproved := func(whose string, said, phrases []string) {
+		for _, words := range said {
+			lowered := strings.ToLower(words)
+			for _, phrase := range phrases {
+				if strings.Contains(lowered, phrase) {
+					t.Fatalf("%s says a person approved %s's own document (%q): %q", whose, root.Key, phrase, words)
+				}
+			}
+		}
+	}
+	saysApproved("a notice queued on "+root.Key+" or a role message of its tree", slices.Concat(rootNotices, roleMessages), slices.Concat(ofItsOwn, namingRoot))
+	saysApproved("a notice queued on "+parent.Key+" for its architect", parentNotices, namingRoot)
+	t.Logf("none of the %d notices queued on %s, the %d queued on %s and the %d role messages of %s's tree says a person approved %s's document: role messages %q",
+		len(rootNotices), root.Key, len(parentNotices), parent.Key, len(roleMessages), root.Key, root.Key, roleMessages)
+	if c.ownApproval != 0 {
+		// R holds the person's approval of an older version of its own document, and the step stands
+		// open at R's latest on P's approval: no reader names that older version, as the step's
+		// approval or beside the version the step opened at.
+		older := fmt.Sprintf("version %d", c.ownApproval)
+		view, err := json.Marshal(state.Issues[root.Key])
+		if err != nil {
+			t.Fatalf("encode the state of %s: %v", root.Key, err)
+		}
+		if strings.Contains(string(view), fmt.Sprintf(`"approvedVersion":%d`, c.ownApproval)) || strings.Contains(message, older) {
+			t.Fatalf("a reader names %s, the person's approval, as the step's approval at version %d: state %s, message:\n%s", older, c.rootVersion, view, message)
+		}
+		for _, words := range slices.Concat(rootNotices, roleMessages) {
+			if strings.Contains(words, older) {
+				t.Fatalf("a notice queued on %s or a role message of its tree names %s, the person's approval, beside the step open at version %d: %q",
+					root.Key, older, c.rootVersion, words)
+			}
+		}
+		t.Logf("neither the state, the message, the %d notices queued on %s nor the %d role messages of its tree name %s, the person's approval: notices %q",
+			len(rootNotices), root.Key, len(roleMessages), older, rootNotices)
+	}
+	if c.whileOpen != nil {
+		c.whileOpen()
+	}
+
+	r.setStatus(root.Key, "done")
+	testwait.Eventually(t, "the daemon to tell the architect of "+parent.Key+" that "+root.Key+" is done", func() bool {
+		return len(r.notices(parent.Key, "resting-root")) > told
+	})
+	if resting := r.notices(parent.Key, "resting-root"); len(resting) != told+1 || !strings.Contains(resting[told].Reason, root.Key+" is done.") {
+		t.Fatalf("the resting-root notices to %s's architect = %+v, want %d, the last naming %s done", parent.Key, resting, told+1, root.Key)
+	}
+	settled(t, r.d, "start the first phase of "+parent.Key+" once "+root.Key+" is done", func(s api.State) bool {
+		return s.Issues[parent.Key].Phase == phase.Planning
+	})
+	t.Logf("%s is done, %s's architect was told so, and %s plans", root.Key, parent.Key, parent.Key)
+}
+
 // registrationPause holds the register_gate call of one issue between its Dispatch reads and its
 // fact (overrides.gateRegistrationRead) until the proof releases it.
 type registrationPause struct {
@@ -439,15 +629,18 @@ func insertAtEnd(markdown string) map[string]string {
 //     gate seed is held as well (outboxHold).
 //  7. Released, the call answers 200 and the step opens before its seed runs: R plans, nobody is
 //     asked, the design-approved notice names P's document and version, one message on R records
-//     the opening whole, no notice or role message says a person approved R's document, the state
-//     and R's record name the basis, the view fact reads P, the planner's task carries the view
-//     sentence, R's catch-up names the basis, P's architect is told once that R rests on it, P's
-//     catch-up names R, and P's first phase waits while R is open. The seed then runs and leaves
-//     the step open.
+//     the opening whole, the state and R's record name the basis, the view fact reads P, the
+//     planner's task carries the view sentence, R's catch-up names the basis, P's architect is
+//     told once that R rests on it, P's catch-up names R, P's first phase waits while R is open,
+//     and no notice queued on R or on P and no role message of R's tree says a person approved
+//     R's document. The seed then runs and leaves the step open.
 //  8. R is taken to done: P's architect is told again, and P's first phase starts.
-//  9. The repeats: P's approval carried by Dispatch in the person's name; P labelled and on the
-//     backlog, no live tree, whose start task at its admission names R; and R holding the person's
-//     approval of v2 of its own document while at v4.
+//  9. The repeats, each read as steps 7 and 8 read the first case (readAncestorOpening): P's
+//     approval carried by Dispatch in the person's name; P labelled and on the backlog, no live
+//     tree while R opens, so no resting-root row and no architect of P to catch up until P is
+//     admitted, whose start task then names R; and R holding the person's approval of v2 of its
+//     own document while at v4, where no reader names v2: not the state, the message, a notice
+//     queued on R or a role message of its tree.
 //
 // Where the rig reaches no phase — the implementer's, the tester's and the reviewer's tasks, the
 // production check's task, the merger's start — the workflow and record tests do:
@@ -535,102 +728,22 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 		t.Fatalf("R's registration on P's approved version %d = %d %s (%v), want 200", approval.Version, answer.status, answer.body, answer.err)
 	}
 
-	// 7. What the opening reads, its seed still held.
-	state, message := r.openedOnBasis(root, parent, 1, approval.Version)
-	t.Logf("%s opened on %s's approval of version %d and plans; the message on it:\n%s", root.Key, parent.Key, approval.Version, message)
-	if seeds := r.outboxCount(root.Key, record.OutboxKindGateSeed); seeds == 0 {
-		t.Fatalf("no gate seed of %s is held in the outbox; the opening was to be read before the seed ran", root.Key)
-	}
-	session := r.architects[root.Key].session
-	for _, want := range []string{
-		"- The step is spec.",
-		fmt.Sprintf("- The primary document of %s for this step is dispatch://%s/spec (%s).", root.Key, root.Key, root.PrimaryArtifactID),
-		fmt.Sprintf("- The architect of %s registered version 1 of this document.", root.Key),
-		"- No person approved version 1 of this document.",
-		fmt.Sprintf("- The ancestor is %s.", parent.Key),
-		fmt.Sprintf("- The primary document of %s for this step is dispatch://%s/spec (%s).", parent.Key, parent.Key, parent.PrimaryArtifactID),
-		fmt.Sprintf("- A person approved version %d of this document.", approval.Version),
-		"- The person is user:smoke.",
-		"- Dispatch recorded this approval at " + approval.CreatedAt.UTC().Format(time.RFC3339) + ".",
-		fmt.Sprintf("  - %s@v%d", p2, approval.Version),
-		fmt.Sprintf("- The architect session %s registered this step.", session),
-		"> " + reason,
-	} {
-		if !strings.Contains(message, want) {
-			t.Errorf("the message on %s does not say %q:\n%s", root.Key, want, message)
-		}
-	}
-	if asks := r.asks(root.Key); len(asks) != 0 {
-		t.Fatalf("%s holds asks %+v, want none: nobody is asked to approve a step a basis opened", root.Key, asks)
-	}
-	// The first registration of a step moves no standing gate, which an unregistered step leaves
-	// standing open (classify.StandingGate), so it sends the tree's roles nothing; the opening that
-	// follows a close is read in TestBasisGateRefusals. Whatever is sent, nothing says a person
-	// approved R's document.
-	personApproved := []string{"a person approved version 1 of its", "A person approved version 1 of its",
-		fmt.Sprintf("A person approved version 1 of the primary document of %s", root.Key)}
-	roleMessages := r.roleMessages(root.Key)
-	for _, said := range append(r.noticeReasons(root.Key), roleMessages...) {
-		for _, phrase := range personApproved {
-			if strings.Contains(said, phrase) {
-				t.Fatalf("a notice or role message of %s says a person approved its own document (%q): %q", root.Key, phrase, said)
+	// 7 and 8. What the opening reads, its seed held until every read of the open root is made, and
+	// R taken to done.
+	r.readAncestorOpening(ancestorOpening{root: root, parent: parent, rootVersion: 1, approval: approval, reason: reason, parentLive: true,
+		whileOpen: func() {
+			if seeds := r.outboxCount(root.Key, record.OutboxKindGateSeed); seeds == 0 {
+				t.Fatalf("no gate seed of %s is held in the outbox; the opening was to be read before the seed ran", root.Key)
 			}
-		}
-	}
-	t.Logf("the opening queued %d role messages on %s's tree and none says a person approved its document: %q", len(roleMessages), root.Key, roleMessages)
-	if runs := state.Issues[root.Key].TreeRuns; runs == nil || !*runs {
-		t.Fatalf("the state serves %s's treeRuns = %v, want true", root.Key, runs)
-	}
-	if viewOf := r.record(root.Key).ViewOf; viewOf != parent.Key {
-		t.Fatalf("the view fact recorded at %s's registration = %q, want %s", root.Key, viewOf, parent.Key)
-	}
-	viewSentence := fmt.Sprintf("%s is a view on %s: the requirements of %s are the parts of the requirements of %s that the Delivers: line in the spec of %s names.",
-		root.Key, parent.Key, root.Key, parent.Key, root.Key)
-	if task := r.entryTask(root.Key, claim.RolePlanner); !strings.Contains(task, viewSentence) {
-		t.Fatalf("the planner's task of %s = %q, want the view sentence %q", root.Key, task, viewSentence)
-	}
-	r.ready(root.Key)
-	caught := catchUpGate(t, r.latestCatchUp(root.Key))
-	if !caught.Open || caught.Pending || caught.Approved != 0 || caught.Version != 1 || caught.Basis == nil || caught.Basis.Issue != parent.Key ||
-		caught.Basis.Artifact != parent.PrimaryArtifactID || caught.Basis.Version != approval.Version || caught.Basis.Approver != "user:smoke" {
-		t.Fatalf("the catch-up of %s's architect states its spec step %+v (basis %+v), want open on version %d of %s's primary document with no person's approval",
-			root.Key, caught, caught.Basis, approval.Version, parent.Key)
-	}
-	resting := r.notices(parent.Key, "resting-root")
-	if len(resting) != 1 || resting[0].Version != approval.Version || resting[0].Ref != "dispatch://"+parent.Key+"/spec" ||
-		!strings.Contains(resting[0].Reason, root.Key) || !strings.Contains(resting[0].Reason, "spec step") ||
-		!strings.Contains(resting[0].Reason, fmt.Sprintf("%s@v%d", p2, approval.Version)) {
-		t.Fatalf("the resting-root notices to %s's architect = %+v, want one naming %s, its spec step and P2", parent.Key, resting, root.Key)
-	}
-	r.ready(parent.Key)
-	restingClause := fmt.Sprintf("resting on the approval of %s and still in the workflow: %s (its spec step, in planning)", parent.Key, root.Key)
-	if notice := r.latestCatchUp(parent.Key); !strings.Contains(notice.Reason, restingClause) {
-		t.Fatalf("the catch-up of %s's architect = %q, want it naming %q", parent.Key, notice.Reason, restingClause)
-	}
-	if standing := r.record(parent.Key).Phase; standing != phase.Admitted {
-		t.Fatalf("%s stands at %s while %s is open, want admitted: its first phase waits for its open child", parent.Key, standing, root.Key)
-	}
-	held.release(root.Key)
-	testwait.Eventually(t, "the held gate seed of "+root.Key+" to run", func() bool {
-		return r.outboxCount(root.Key, record.OutboxKindGateSeed) == 0
-	})
-	settled(t, r.d, "keep the spec step of "+root.Key+" open on the basis after its gate seed ran", func(s api.State) bool {
-		return stepOf(s, root.Key).Status == api.GatedStepOpenOnBasis
-	})
-	t.Logf("%s's gate seed ran after the opening and left the step open on %s's approval", root.Key, parent.Key)
-
-	// 8. R is taken to done.
-	r.setStatus(root.Key, "done")
-	testwait.Eventually(t, "the daemon to tell the architect of "+parent.Key+" that "+root.Key+" is done", func() bool {
-		return len(r.notices(parent.Key, "resting-root")) >= 2
-	})
-	if resting := r.notices(parent.Key, "resting-root"); len(resting) != 2 || !strings.Contains(resting[1].Reason, root.Key+" is done.") {
-		t.Fatalf("the resting-root notices to %s's architect = %+v, want a second naming %s done", parent.Key, resting, root.Key)
-	}
-	settled(t, r.d, "start the first phase of "+parent.Key+" once "+root.Key+" is done", func(s api.State) bool {
-		return s.Issues[parent.Key].Phase == phase.Planning
-	})
-	t.Logf("%s is done, %s's architect was told again, and %s plans", root.Key, parent.Key, parent.Key)
+			held.release(root.Key)
+			testwait.Eventually(t, "the held gate seed of "+root.Key+" to run", func() bool {
+				return r.outboxCount(root.Key, record.OutboxKindGateSeed) == 0
+			})
+			settled(t, r.d, "keep the spec step of "+root.Key+" open on the basis after its gate seed ran", func(s api.State) bool {
+				return stepOf(s, root.Key).Status == api.GatedStepOpenOnBasis
+			})
+			t.Logf("%s's gate seed ran after the opening and left the step open on %s's approval", root.Key, parent.Key)
+		}})
 
 	// 9a. P's approval carried by Dispatch in the person's name.
 	carriedRoot := r.create(asSession, "Harbor crane scheduler", labelled)
@@ -645,15 +758,11 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.writeDocument(carriedRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(carriedParent.Key, "p2")}}))
 	r.registerApprovedGate(carriedParent.Key, carriedParent.PrimaryArtifactID, carried.Version, carriedParentGrant)
 	r.registerBasis(carriedGrant(), carriedRoot, 1, carriedParent, carried.Version, reason)
-	_, message = r.openedOnBasis(carriedRoot, carriedParent, 1, carried.Version)
-	if resting := r.notices(carriedParent.Key, "resting-root"); len(resting) != 1 || !strings.Contains(resting[0].Reason, carriedRoot.Key) {
-		t.Fatalf("the resting-root notices to %s's architect = %+v, want one naming %s", carriedParent.Key, resting, carriedRoot.Key)
-	}
-	t.Logf("Dispatch carried the person's approval of version %d of %s to version %d, and %s opened on it:\n%s",
-		before.Version, carriedParent.Key, carried.Version, carriedRoot.Key, message)
+	t.Logf("Dispatch carried the person's approval of version %d of %s to version %d, and %s registered on it", before.Version, carriedParent.Key, carried.Version, carriedRoot.Key)
+	r.readAncestorOpening(ancestorOpening{root: carriedRoot, parent: carriedParent, rootVersion: 1, approval: carried, reason: reason, parentLive: true})
 
-	// 9b. P labelled and on the backlog: no live tree, so no resting-root row; its start task at its
-	// admission names R.
+	// 9b. P labelled and on the backlog: no live tree while R opens, so no resting-root row and no
+	// architect of P, whose start task at its admission names R.
 	backlogRoot := r.create(asSession, "Glacier telemetry probe", labelled)
 	backlogGrant := r.admit(backlogRoot.Key)
 	backlogParent := r.create(asSession, "Arctic sensor network", parentOf("Sensors", ""))
@@ -666,18 +775,7 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.linkUnder(backlogRoot, backlogParent, false)
 	r.writeDocument(backlogRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(backlogParent.Key, "p2")}}))
 	r.registerBasis(backlogGrant(), backlogRoot, 1, backlogParent, backlogApproval.Version, reason)
-	r.openedOnBasis(backlogRoot, backlogParent, 1, backlogApproval.Version)
-	if resting := r.notices(backlogParent.Key, "resting-root"); len(resting) != 0 {
-		t.Fatalf("the daemon queued resting-root notices %+v on %s, which it records in no live tree; want none", resting, backlogParent.Key)
-	}
-	r.admit(backlogParent.Key)
-	startTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in planning).", backlogParent.Key, backlogRoot.Key)
-	started := r.d.claim(r.architectToken(backlogParent.Key))
-	if started.Pending == nil || !strings.Contains(started.Pending.Task, startTask) {
-		t.Fatalf("the start task of %s's architect at its admission = %+v, want it naming %q", backlogParent.Key, started.Pending, startTask)
-	}
-	t.Logf("%s rested on %s while it was on the backlog with no resting-root row, and %s's start task names it: %q",
-		backlogRoot.Key, backlogParent.Key, backlogParent.Key, started.Pending.Task)
+	r.readAncestorOpening(ancestorOpening{root: backlogRoot, parent: backlogParent, rootVersion: 1, approval: backlogApproval, reason: reason})
 
 	// 9c. R holding the person's approval of v2 of its own document while at v4.
 	olderRoot := r.create(asSession, "Violin tuning assistant", labelled)
@@ -695,21 +793,8 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.writeDocument(olderRoot.Key, "verification.md", checksMarkdown(rigCheck{id: "k1", serves: []string{specBlock(olderParent.Key, "p2")}}))
 	r.registerApprovedGate(olderParent.Key, olderParent.PrimaryArtifactID, olderApproval.Version, olderParentGrant)
 	r.registerBasis(olderGrant(), olderRoot, fourth, olderParent, olderApproval.Version, reason)
-	state, message = r.openedOnBasis(olderRoot, olderParent, fourth, olderApproval.Version)
-	view, err := json.Marshal(state.Issues[olderRoot.Key])
-	if err != nil {
-		t.Fatalf("encode the state of %s: %v", olderRoot.Key, err)
-	}
-	if strings.Contains(string(view), fmt.Sprintf(`"approvedVersion":%d`, second)) || strings.Contains(message, fmt.Sprintf("version %d", second)) {
-		t.Fatalf("a reader names version %d, the person's approval, as the step's approval at version %d: state %s, message:\n%s", second, fourth, view, message)
-	}
-	if approved := r.notices(olderRoot.Key, "design-approved")[0]; approved.Version != olderApproval.Version {
-		t.Fatalf("the design-approved notice of %s names version %d, want %s's approved version %d", olderRoot.Key, approved.Version, olderParent.Key, olderApproval.Version)
-	}
-	r.ready(olderRoot.Key)
-	if caught := catchUpGate(t, r.latestCatchUp(olderRoot.Key)); caught.Approved != 0 || caught.Version != fourth || !caught.Open || caught.Basis == nil {
-		t.Fatalf("the catch-up of %s states its spec step %+v, want it open on the basis at version %d with no person's approval beside it", olderRoot.Key, caught, fourth)
-	}
+	r.readAncestorOpening(ancestorOpening{root: olderRoot, parent: olderParent, rootVersion: fourth, approval: olderApproval, reason: reason, parentLive: true,
+		ownApproval: second})
 	t.Logf("%s, holding the person's approval of version %d and at version %d, opened at %d on %s's approval, and no reader names version %d",
 		olderRoot.Key, second, fourth, fourth, olderParent.Key, second)
 }

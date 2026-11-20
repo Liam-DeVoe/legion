@@ -2,8 +2,11 @@ package admit
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
@@ -11,10 +14,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -168,6 +174,39 @@ func childCatchUp(t *testing.T, pool *pgxpool.Pool, steps []record.DesignStep) m
 	return gates
 }
 
+// carryState is the daemon's own state source over the store, under steps: the state the
+// projection builds in the route's own snapshot, with no claim.
+type carryState struct{ steps []record.DesignStep }
+
+func (s carryState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
+	state, err := projection.Project(ctx, tx, record.NewStore(), testProject, s.steps, nil, nil, nil, nil, fixedNow)
+	return state, nil, err
+}
+
+// childServedSpec is the child's spec step as GET /legion/v1/state serves it under steps: the route
+// the `legion` tool's read_record reads an issue's record from, over the state the projection
+// builds from the store.
+func childServedSpec(t *testing.T, pool *pgxpool.Pool, steps []record.DesignStep) api.GatedStepView {
+	t.Helper()
+	handler := api.NewServer("127.0.0.1", 8437, api.Options{Steps: steps, State: carryState{steps: steps}, StateTransactions: pool}).Handler
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/state", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("state = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	var state api.State
+	if err := json.Unmarshal(recorder.Body.Bytes(), &state); err != nil {
+		t.Fatalf("decode the state %s: %v", recorder.Body, err)
+	}
+	for _, step := range state.Issues[carryChild].GatedSteps {
+		if step.Step == record.DesignStepSpec {
+			return step
+		}
+	}
+	t.Fatalf("the state serves %s no spec step: %s", carryChild, recorder.Body)
+	return api.GatedStepView{}
+}
+
 // restingOn is the key of each issue whose gate rests on the ancestor (record.Store.GatesRestingOn).
 func restingOn(t *testing.T, pool *pgxpool.Pool) []string {
 	t.Helper()
@@ -196,9 +235,10 @@ func sameBasis(got *record.GateBasis, want record.GateBasis) bool {
 // A child that a linger hands over carries a step that an ancestor's approval opened with its
 // basis, the person's approval of an earlier version that the step keeps apart, and its rest on
 // the ancestor, while the ancestor is neither done nor accepted: the child reads the step as open
-// on that basis in its record and its catch-up, and the ancestor's sign-off waits for it as it
-// waited for the old root. The carry writes no view fact, so the child's tasks name no ancestor's
-// requirements: its merger is resumed with no view sentence, though the old root's spec was a view.
+// on that basis in its record, in the state GET /legion/v1/state serves (which read_record reads)
+// and in its catch-up, and the ancestor's sign-off waits for it as it waited for the old root. The
+// carry writes no view fact, so the child's tasks name no ancestor's requirements: its merger is
+// resumed with no view sentence, though the old root's spec was a view.
 func TestAHandOverCarriesAStepOpenOnABasisWithItsBasisAndItsRest(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -237,6 +277,20 @@ func TestAHandOverCarriesAStepOpenOnABasisWithItsBasisAndItsRest(t *testing.T) {
 				got.Artifact != carryRootDoc || got.Version != 4 {
 				t.Fatalf("the child's catch-up of the spec step = %#v, want it registered and open at version 4", got)
 			}
+			// The state serves the carried step as the record holds it: open on the ancestor's
+			// basis, at the version the old root registered, which no person approved, with the
+			// basis naming the person's approval of the ancestor's version 3.
+			served := childServedSpec(t, pool, admission.engine.GatedSteps())
+			if served.Status != api.GatedStepOpenOnBasis || served.ArtifactID != carryRootDoc || served.CurrentVersion != 4 ||
+				served.ApprovedVersion == nil || *served.ApprovedVersion != 4 {
+				t.Fatalf("the state serves the child's spec step %+v, want it %s at version 4 of the old root's document", served, api.GatedStepOpenOnBasis)
+			}
+			if basis := served.Basis; basis == nil || basis.Issue != carryAncestor || basis.ArtifactID != carryBasisDoc || basis.Version != 3 ||
+				basis.Approver != "user:alice" || basis.ApprovedAt == nil || !basis.ApprovedAt.Equal(old.Basis.Approval.At) || basis.AskID != "" {
+				t.Fatalf("the state serves the child's spec step on the basis %+v, want the person's approval of version 3 of %s's primary document", basis, carryAncestor)
+			}
+			t.Logf("the state serves %s's spec step %s at version %d on version %d of %s's primary document, approved by %s",
+				carryChild, served.Status, *served.ApprovedVersion, served.Basis.Version, served.Basis.Issue, served.Basis.Approver)
 			inTx(t, pool, func(tx pgx.Tx) {
 				handed, err := record.NewStore().HandedOverRoot(context.Background(), tx, carryChild)
 				if err != nil || handed == nil || handed.Generation != 2 || !handed.GateCarried {

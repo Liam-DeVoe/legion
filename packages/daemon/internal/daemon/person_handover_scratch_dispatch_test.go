@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -535,10 +536,13 @@ func (r *personHandoverRig) approvalRequest(artifactID string, request map[strin
 
 // writeDocument writes content as key's document name, as a session uploads one: a new document,
 // or the next version of the document of that name, whose role Dispatch reads from the name
-// (verification.md, decisions.md). It answers the document's id. Dispatch refuses a check whose
-// `serves` names a block its block index does not hold (CheckBlockPointers), so a refusal naming
-// a block no document holds is asked again while a version written just before is indexed; any
-// other refusal fails the proof.
+// (verification.md, decisions.md). It answers the document's id. An upload that replaces a
+// document key already holds names the token of the version it replaces, as Dispatch's upload
+// route requires (PRECONDITION_REQUIRED otherwise), and a first upload names none
+// (documentToken). Dispatch refuses a check whose `serves` names a block its block index does not
+// hold (CheckBlockPointers), so a refusal naming a block no document holds is asked again while a
+// version written just before is indexed; any other refusal fails the proof. A refused upload
+// writes nothing, so the token read before the first upload holds for every upload asked again.
 func (r *personHandoverRig) writeDocument(key, name, content string) string {
 	t := r.t
 	t.Helper()
@@ -548,10 +552,14 @@ func (r *personHandoverRig) writeDocument(key, name, content string) string {
 			Primary bool   `json:"primary"`
 		} `json:"artifact"`
 	}
+	upload := map[string]any{"name": name, "content": content}
+	if token := r.documentToken(key, name); token != "" {
+		upload["precondition"] = map[string]string{"document": token}
+	}
+	body := withSessionActor(t, upload)
 	var last []byte
 	testwait.Eventually(t, "Dispatch to take "+name+" on "+key, func() bool {
-		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts",
-			withSessionActor(t, map[string]any{"name": name, "content": content}), asSession)
+		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", body, asSession)
 		last = answer
 		switch {
 		case status == http.StatusOK || status == http.StatusCreated:
@@ -569,6 +577,40 @@ func (r *personHandoverRig) writeDocument(key, name, content string) string {
 		t.Fatalf("Dispatch took %s on %s as %+v (%s); want a document with an id, not the primary one", name, key, uploaded.Artifact, last)
 	}
 	return uploaded.Artifact.ID
+}
+
+// documentToken is the token of the version key's document name stands at now, which an upload
+// replacing it names, and "" where key holds no document of that name, whose upload is a first
+// one: the issue's document text read by name or slug (GET
+// /api/v1/issues/{key}/artifacts/{name}/text, what `dispatch doc-read` prints as `Document
+// token:`), which answers 404 ARTIFACT_NOT_FOUND for no such document. Any other answer fails the
+// proof.
+func (r *personHandoverRig) documentToken(key, name string) string {
+	r.t.Helper()
+	path := "/api/v1/issues/" + key + "/artifacts/" + url.PathEscape(name) + "/text"
+	status, answer := dispatchAnswerAs(r.t, r.baseURL, http.MethodGet, path, nil, asSession)
+	switch status {
+	case http.StatusOK:
+		var text struct {
+			Token string `json:"token"`
+		}
+		if err := json.Unmarshal(answer, &text); err != nil {
+			r.t.Fatalf("decode the text read of %s's document %s from %s: %v", key, name, answer, err)
+		}
+		if text.Token == "" {
+			r.t.Fatalf("the text read of %s's document %s names no token: %s", key, name, answer)
+		}
+		return text.Token
+	case http.StatusNotFound:
+		var refusal struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(answer, &refusal); err == nil && refusal.Code == "ARTIFACT_NOT_FOUND" {
+			return ""
+		}
+	}
+	r.t.Fatalf("GET %s as %s = %d: %s, want 200 with the document's token or 404 ARTIFACT_NOT_FOUND", path, asSession, status, answer)
+	return ""
 }
 
 // requirementsMarkdown is a primary document headed title whose requirement blocks are ids, in
