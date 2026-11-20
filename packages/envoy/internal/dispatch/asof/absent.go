@@ -28,6 +28,11 @@ const (
 	reasonNoEvent = "No event records this field."
 	// E, for a delivery attempt.
 	reasonDeliveryState = "No receipt event or reply event gives the time of the state of this delivery attempt."
+	// E, for the block that a reply names.
+	reasonReplyBlock = "The item that holds this block changed after the cut. Dispatch keeps no record of the blocks of the item at the cut."
+	// E, for the place of an anchored block.
+	reasonAnchorBlock = "A stored document version records the id of a typed block only. " +
+		"No record gives the place of this block in the document at the cut."
 	// E, for a document version.
 	reasonNoToken = "Dispatch stored this version with no document token. All such versions are from before 2026-11-03."
 	// E, for a block id.
@@ -55,10 +60,14 @@ const (
 
 // AbsentFields is, by route ("<method> <pattern>" as in api/routes_table.go), each member that a
 // past-time answer of the route can leave out. It holds the plan's list "Absent fields, by
-// route", and beside it the delivery mode and the session of a comment's or a message's delivery
-// attempt (commentFields). A route that the plan lists with no field has an empty list. A
-// past-time answer names a member in the Dispatch-As-Of-Absent header only when it leaves that
-// member out, and it names only members this table holds for its route (ValidAbsent).
+// route", and beside it the members that the implementer added for a field the records at the cut
+// do not give (decision 5): the delivery mode and the session of a delivery attempt and the text
+// of the block that a reply names (commentFields, messageFields), the route's status reason of an
+// ask's reach (routeReachFields), each reply of an ask's thread (commentFields), the documents of
+// an approval request in the inbox (askFields), and the place of an anchored block. A route that
+// the plan lists with no field has an empty list. A past-time answer names a member in the
+// Dispatch-As-Of-Absent header only when it leaves that member out, and it names only members
+// this table holds for its route (ValidAbsent).
 var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/issues/{key}": {
 		{"/route_status", reasonLiveness},
@@ -87,9 +96,11 @@ var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/artifacts/{id}/events": eventLogFields(),
 	"GET /api/v1/events/log":            eventLogFields(),
 
-	"GET /api/v1/issues/{key}/comments":      commentFields("/*"),
-	"GET /api/v1/artifacts/{id}/comments":    commentFields("/*"),
-	"GET /api/v1/comments/{id}":              slices.Concat(commentFields("/comment"), commentFields("/replies/*")),
+	"GET /api/v1/issues/{key}/comments":   commentFields("/*"),
+	"GET /api/v1/artifacts/{id}/comments": commentFields("/*"),
+	"GET /api/v1/comments/{id}": slices.Concat(commentFields("/comment"), commentFields("/replies/*"), []AbsentField{
+		{"/comment/anchor_block", reasonAnchorBlock},
+	}),
 	"GET /api/v1/comments/{id}/history":      {},
 	"GET /api/v1/messages/{id}/history":      {},
 	"GET /api/v1/issues/{key}/messages":      slices.Concat(messageFields("/*/message"), messageFields("/*/replies/*")),
@@ -97,28 +108,17 @@ var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/messages/{id}":              slices.Concat(messageFields("/message"), messageFields("/replies/*")),
 
 	// ?thread=1 gives each ask of the list its thread.
-	"GET /api/v1/issues/{key}/asks": slices.Concat(askFields("/*"), []AbsentField{
-		{"/*/thread/route_status", reasonLiveness},
-		{"/*/thread/route_holder", reasonLiveness},
-	}),
+	"GET /api/v1/issues/{key}/asks":   slices.Concat(askFields("/*"), routeReachFields("/*/thread"), commentFields("/*/thread/replies/*")),
 	"GET /api/v1/artifacts/{id}/asks": askFields("/*"),
-	"GET /api/v1/asks/{id}": slices.Concat(askFields("/ask"), []AbsentField{
-		{"/route_status", reasonLiveness},
-		{"/route_holder", reasonLiveness},
+	"GET /api/v1/asks/{id}": slices.Concat(askFields("/ask"), routeReachFields(""), commentFields("/replies/*"), []AbsentField{
+		{"/ask/anchor_block", reasonAnchorBlock},
 	}),
 	"GET /api/v1/asks/open": {
 		{"/asks/*/waiting_on_person", reasonProjectDefault},
 	},
-	"GET /api/v1/inbox": {
+	"GET /api/v1/inbox": slices.Concat([]AbsentField{
 		{"/*/snoozed_until", reasonNoEvent},
-		{"/*/waiting_on_person", reasonProjectDefault},
-		{"/*/referenced_by_count", reasonGraph},
-		{"/*/revision", reasonParts},
-		{"/*/options/*/id", reasonParts},
-		{"/*/answer/id", reasonParts},
-		{"/*/thread/route_status", reasonLiveness},
-		{"/*/thread/route_holder", reasonLiveness},
-	},
+	}, askFields("/*"), routeReachFields("/*/thread"), commentFields("/*/thread/replies/*")),
 	"GET /api/v1/agents/{session_id}/answers": {},
 
 	"GET /api/v1/issues/{key}/artifacts":               documentFields("/*"),
@@ -177,13 +177,16 @@ func eventLogFields() []AbsentField {
 	}
 }
 
-// commentFields are the fields of a comment at prefix. The delivery mode and the session of an
-// attempt are not in the plan's list: a send resolves both with no event, so for an attempt that
-// no event at the cut dates they are absent too (decision 5).
+// commentFields are the fields of a comment at prefix: of a comment route's comment, and of each
+// reply of an ask's thread. Not in the plan's list: the text of the block that the reply names,
+// which an item changed after the cut rewrote as it rewrote whether the block is removed; and the
+// delivery mode and the session of an attempt, which a send resolves with no event, so for an
+// attempt that no event at the cut dates they are absent too (decision 5).
 func commentFields(prefix string) []AbsentField {
 	return []AbsentField{
 		{prefix + "/body", reasonBody},
-		{prefix + "/reply_block/removed", reasonNoEvent},
+		{prefix + "/reply_block/text", reasonReplyBlock},
+		{prefix + "/reply_block/removed", reasonReplyBlock},
 		{prefix + "/deliveries/*/state", reasonDeliveryState},
 		{prefix + "/deliveries/*/reply_id", reasonDeliveryState},
 		{prefix + "/deliveries/*/envelope_id", reasonDeliveryState},
@@ -194,11 +197,13 @@ func commentFields(prefix string) []AbsentField {
 	}
 }
 
-// messageFields are the fields of an issue message at prefix, with the delivery mode and the
-// session of an attempt for the reason commentFields gives.
+// messageFields are the fields of an issue message at prefix, with the block that the reply names
+// and the delivery mode and the session of an attempt for the reasons commentFields gives.
 func messageFields(prefix string) []AbsentField {
 	return []AbsentField{
 		{prefix + "/body", reasonBody},
+		{prefix + "/reply_block/text", reasonReplyBlock},
+		{prefix + "/reply_block/removed", reasonReplyBlock},
 		{prefix + "/deliveries/*/state", reasonDeliveryState},
 		{prefix + "/deliveries/*/reply_id", reasonDeliveryState},
 		{prefix + "/deliveries/*/envelope_id", reasonDeliveryState},
@@ -218,6 +223,17 @@ func askFields(prefix string) []AbsentField {
 		{prefix + "/answer/id", reasonParts},
 		{prefix + "/waiting_on_person", reasonProjectDefault},
 		{prefix + "/approval/documents", reasonMigrationFill},
+	}
+}
+
+// routeReachFields are the reach of an ask's route at prefix, which the route roster gives now.
+// The route's status reason is not in the plan's list for an ask: it gives the reason for a
+// status, and a past-time answer gives no status.
+func routeReachFields(prefix string) []AbsentField {
+	return []AbsentField{
+		{prefix + "/route_status", reasonLiveness},
+		{prefix + "/route_holder", reasonLiveness},
+		{prefix + "/route_status_reason", reasonLiveness},
 	}
 }
 

@@ -1,5 +1,7 @@
 package asof
 
+import "slices"
+
 // commentStateTypes are the events whose payload is the whole comment (model.CommentEventPayload):
 // the comment.* events but the delivery receipt, and the suggestion's accept and reject.
 var commentStateTypes = []string{
@@ -45,6 +47,20 @@ var CommentBodiesNotGivenStatement = `select c.id::text from public.comments c
 			where f.payload->>'id' = c.id::text and f.type in ` + sqlList(commentRewriteTypes) + `
 				and f.created_at > $2::timestamptz and ` + ownedBy("f", "c") + `
 			order by f.id limit 1) < ` + postHistoryBegan
+
+// ItemsChangedAfterStatement reads, of the items whose ids $1 holds (text[]), the id of each item
+// that changed after the cut $2 (timestamptz): a comment or a message with an edit or a delete
+// after the cut, or an ask with an event of its state after the cut (AskStateTypes). Only a change
+// of its item rewrites an item's blocks (refs.PlanItemIndex, refs.PlanAskParts), so the present
+// rows of comment_blocks, message_blocks and ask_blocks give a block's text, and whether it is
+// removed, as they stood at the cut for an item that did not change after it. The block index
+// keeps no earlier state with its time, so for an item that changed, the answer leaves both out.
+// The statement names public.events by its schema, so the store's binding at a cut does not
+// read the events shadow in its place (Bind).
+var ItemsChangedAfterStatement = `select distinct e.payload->>'id' from public.events e
+	where e.payload->>'id' = any($1::text[]) and e.type in ` +
+	sqlList(slices.Concat(commentRewriteTypes, messageRewriteTypes, askStateTypes)) + `
+		and e.created_at > $2::timestamptz`
 
 // CommentHistoryRowsAtCut and MessageHistoryRowsAtCut are SQL expressions for the history read of
 // one post at a cut (decision 17). Each is the number of post_body_history rows that the post had

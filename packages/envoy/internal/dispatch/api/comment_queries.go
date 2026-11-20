@@ -211,10 +211,12 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	if !anchorAtTheCut(r.Context(), comments[0].Anchor, "/comment") {
+		comments[0].AnchorPosition, err = s.anchorBlock(r.Context(), comments[0].Anchor)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, "reply_to", comment.ID)
 	if err != nil {

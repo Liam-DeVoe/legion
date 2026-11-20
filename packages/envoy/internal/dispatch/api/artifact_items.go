@@ -30,7 +30,7 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// At a cut each ask leaves out what the records at the cut do not give of it.
-	if err := s.leaveOutPastAskFields(r.Context(), asks, elementsOf(""), true); err != nil {
+	if err := s.leaveOutPastAskFields(r.Context(), asks, elementsOf("")); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

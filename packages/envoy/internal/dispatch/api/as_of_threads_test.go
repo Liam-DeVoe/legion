@@ -2,8 +2,9 @@
 // agent's answers at a cut (task t7 of INFRA-4620's plan) to the cases the equality harness
 // (as_of_equality_test.go) does not write: a post deleted after the cut in every thread a route
 // shows, a message edited before and after the cut, a post's history at a cut, an older build's
-// long edit, a delivery attempt no event dates, the inbox's asks at a cut and an answers poll
-// later than the cut.
+// long edit, a delivery attempt no event dates, the inbox's asks at a cut, an answers poll later
+// than the cut, the block a reply names, an anchored block's place, an ask's route reach, an old
+// approval request's documents and a direct thread's session rule.
 package api
 
 import (
@@ -147,10 +148,9 @@ func stringsHolding(doc any, words ...string) []string {
 
 // TestAPostDeletedAfterTheCutReadsAsDeletedInEveryThread: a post its author deletes after the cut
 // reads at the cut as deleted, with no part of its body, in every thread of a route of task t7
-// (decision 14). The comment and message routes leave its body out and name it absent (reason
-// T); the ask routes and the inbox, whose lists hold no pointer for a reply's body, give the
-// empty body the present read gives a deleted post; an agent's answers give the deleted mark and
-// an empty text; the history routes give the post's present mark and every body empty
+// (decision 14). The comment and message routes, and the threads of the ask routes and of the
+// inbox, leave its body out and name it absent (reason T); an agent's answers give the deleted
+// mark and an empty text; the history routes give the post's present mark and every body empty
 // (decision 17). The posts: a reply in an issue's comment thread, a reply in an open ask's
 // thread, a comment on a project document, and an issue message sent to a live session that a
 // person quoted in a reply, each edited before the cut so its history holds an entry then.
@@ -189,7 +189,7 @@ func TestAPostDeletedAfterTheCutReadsAsDeletedInEveryThread(t *testing.T) {
 	for _, read := range []struct {
 		target string
 		// named is whether the route's absent list holds the body of the posts it shows, so the
-		// answer leaves it out and names it; elsewhere it gives the empty body.
+		// answer leaves it out and names it; elsewhere a post object gives the empty body.
 		named bool
 		posts []string
 	}{
@@ -202,9 +202,9 @@ func TestAPostDeletedAfterTheCutReadsAsDeletedInEveryThread(t *testing.T) {
 		{issue + "/messages/" + message, true, []string{message}},
 		{"/api/v1/messages/" + message, true, []string{message}},
 		{"/api/v1/messages/" + quote, true, []string{message}},
-		{issue + "/asks?thread=1", false, []string{askReply}},
-		{"/api/v1/asks/" + ask, false, []string{askReply}},
-		{"/api/v1/inbox?assignee=me", false, []string{askReply}},
+		{issue + "/asks?thread=1", true, []string{askReply}},
+		{"/api/v1/asks/" + ask, true, []string{askReply}},
+		{"/api/v1/inbox?assignee=me", true, []string{askReply}},
 		{"/api/v1/asks/open?project=" + project, false, nil},
 	} {
 		t.Run(read.target, func(t *testing.T) {
@@ -482,7 +482,9 @@ func TestAnInboxAtACutListsTheAsksOpenThen(t *testing.T) {
 // post_body_history began: its edit before the cut was longer than an event carries whole, so the
 // comment.edited event carries the body cut at 32,000 UTF-16 units (body_truncated), and its edit
 // after the cut kept no history row. No record holds its body at the cut, so the comment routes
-// leave the body out and name it absent (reason T), and give no part of either body.
+// leave the body out and name it absent (reason T), and give no part of either body. The comment
+// is a reply in an open ask's thread, so the ask's read, the issue's ask list with its threads and
+// the inbox leave it out of the thread too.
 func TestALongCommentEditedAfterTheCutNamesItsBodyAbsent(t *testing.T) {
 	world, takeCut := newAsOfThreadWorld(t, "ASOT")
 	database := world.served.deps.Store
@@ -493,7 +495,9 @@ func TestALongCommentEditedAfterTheCutNamesItsBodyAbsent(t *testing.T) {
 	if _, truncated := model.EventBody(long("puffin")); !truncated {
 		t.Fatalf("a body of %d bytes rides whole in an event; the test needs one the event cuts", len(long("puffin")))
 	}
-	comment := world.comment(t, map[string]any{"body": long("gannet")})
+	ask := decodeBody[model.Ask](t, asOfSessionWrite(t, world.handler, http.MethodPost, "/api/v1/issues/"+world.issue+"/asks",
+		map[string]any{"question": "Which body did the long reply hold?"})).ID
+	comment := world.comment(t, map[string]any{"body": long("gannet"), "ask_id": ask})
 	asOfWrite(t, world.handler, http.MethodPatch, "/api/v1/comments/"+comment, map[string]any{"body": long("puffin")}, "alice")
 	cut := takeCut()
 	time.Sleep(5 * time.Millisecond)
@@ -508,7 +512,11 @@ func TestALongCommentEditedAfterTheCutNamesItsBodyAbsent(t *testing.T) {
 		t.Fatalf("begin the history after the edits: %v", err)
 	}
 
-	for _, target := range []string{"/api/v1/issues/" + world.issue + "/comments", "/api/v1/comments/" + comment} {
+	issue := "/api/v1/issues/" + world.issue
+	for _, target := range []string{
+		issue + "/comments", "/api/v1/comments/" + comment,
+		"/api/v1/asks/" + ask, issue + "/asks?thread=1", "/api/v1/inbox",
+	} {
 		t.Run(target, func(t *testing.T) {
 			doc, absent := world.readAt(t, target, cut)
 			for _, held := range stringsHolding(doc, "gannet", "puffin", "cormorant") {
@@ -539,11 +547,15 @@ func TestALongCommentEditedAfterTheCutNamesItsBodyAbsent(t *testing.T) {
 // reply_id, envelope_id, created_at and the comment's resolve_error or the message's
 // requested_by, with the delivery mode and the session the send resolves. Its place (the comment
 // or message, the target and the attempt) and what an unsettled attempt holds (no error, no
-// duplicate) are given. An attempt its receipt dates is given whole.
+// duplicate) are given. An attempt its receipt dates is given whole. The comment is a reply in an
+// open ask's thread, so the ask's read, the issue's ask list with its threads and the inbox leave
+// out the same members of it.
 func TestADeliveryWhoseStateNoEventDatesIsNamedAbsent(t *testing.T) {
 	world, takeCut := newAsOfThreadWorld(t, "ASOS")
 	database := world.served.deps.Store
-	comment := world.comment(t, map[string]any{"body": "A mention sent before the receipts."})
+	ask := decodeBody[model.Ask](t, asOfSessionWrite(t, world.handler, http.MethodPost, "/api/v1/issues/"+world.issue+"/asks",
+		map[string]any{"question": "Was the mention sent?"})).ID
+	comment := world.comment(t, map[string]any{"body": "A mention sent before the receipts.", "ask_id": ask})
 	message := world.message(t, map[string]any{"body": "A message sent before the receipts."}, "alice").ID
 	dated := world.message(t, map[string]any{
 		"body": "A message its receipt dates.", "target": "session:" + asOfListenerSession, "delivery": "btw",
@@ -576,6 +588,9 @@ func TestADeliveryWhoseStateNoEventDatesIsNamedAbsent(t *testing.T) {
 	}{
 		{issue + "/comments", comment, commentMembers, []string{"comment_id", "target", "attempt", "duplicate", "error"}, ""},
 		{"/api/v1/comments/" + comment, comment, commentMembers, []string{"comment_id", "target", "attempt", "duplicate", "error"}, ""},
+		{"/api/v1/asks/" + ask, comment, commentMembers, []string{"comment_id", "target", "attempt", "duplicate", "error"}, ""},
+		{issue + "/asks?thread=1", comment, commentMembers, []string{"comment_id", "target", "attempt", "duplicate", "error"}, ""},
+		{"/api/v1/inbox", comment, commentMembers, []string{"comment_id", "target", "attempt", "duplicate", "error"}, ""},
 		{issue + "/messages", message, messageMembers, []string{"message_id", "attempt", "duplicate", "error"}, dated},
 		{issue + "/messages/" + message, message, messageMembers, []string{"message_id", "attempt", "duplicate", "error"}, ""},
 		{"/api/v1/messages/" + message, message, messageMembers, []string{"message_id", "attempt", "duplicate", "error"}, ""},
@@ -676,4 +691,303 @@ func TestAnAnswersPollWithASinceAfterTheCutAnswersNothing(t *testing.T) {
 			t.Errorf("the poll as of the cut names since %s, want the since it was sent, %s", since, later.Format(time.RFC3339Nano))
 		}
 	})
+}
+
+// TestAReplyBlockAtACutReadsTheBlockThen: the block a reply names reads at the cut as the block
+// index holds it now where the item that holds it did not change after the cut, which is how it
+// stood at the cut: its text and that it is not removed. Where the item changed after the cut (a
+// comment or a message edited, an ask answered), the change rewrote the item's blocks and no
+// record keeps them at the cut, so every route that shows the reply leaves out the block's text
+// and whether it is removed, and names both absent (reason E). The block's node and id are the
+// reply's own, and are given.
+func TestAReplyBlockAtACutReadsTheBlockThen(t *testing.T) {
+	world, takeCut := newAsOfThreadWorld(t, "ASOB")
+	handler := world.handler
+	edited := world.comment(t, map[string]any{"body": "Alpha.\n\nBeta."})
+	kept := world.comment(t, map[string]any{"body": "Gamma.\n\nDelta."})
+	onEdited := world.comment(t, map[string]any{"body": "On beta.", "reply_to": edited, "reply_to_block": "b2"})
+	onKept := world.comment(t, map[string]any{"body": "On delta.", "reply_to": kept, "reply_to_block": "b2"})
+	message := world.message(t, map[string]any{"body": "One.\n\nTwo."}, "alice").ID
+	onMessage := world.message(t, map[string]any{"body": "On two.", "in_reply_to": message, "in_reply_to_block": "b2"}, "bob").ID
+	ask := decodeBody[model.Ask](t, asOfSessionWrite(t, handler, http.MethodPost, "/api/v1/issues/"+world.issue+"/asks", map[string]any{
+		"question": "Which day do we ship?", "options": []map[string]string{{"label": "Monday"}, {"label": "Tuesday"}},
+	})).ID
+	onAsk := world.comment(t, map[string]any{"body": "Monday works.", "ask_id": ask, "reply_to_block": "b2"})
+	cut := takeCut()
+	time.Sleep(5 * time.Millisecond)
+	asOfWrite(t, handler, http.MethodPatch, "/api/v1/comments/"+edited, map[string]any{"body": "Alpha.\n\nBeta, rewritten after the cut."}, "alice")
+	asOfWrite(t, handler, http.MethodPatch, "/api/v1/messages/"+message, map[string]any{"body": "One.\n\nTwo, rewritten after the cut."}, "alice")
+	asOfWrite(t, handler, http.MethodPost, "/api/v1/asks/"+ask+"/answer", map[string]any{"selected": []string{"Monday"}}, "alice")
+	world.settle(t)
+
+	replyBlock := func(t *testing.T, doc any, id string) (string, map[string]any) {
+		t.Helper()
+		posts := postsByID(doc)[id]
+		if len(posts) != 1 {
+			t.Fatalf("the answer holds the reply %s %d times, want once: %s", id, len(posts), abbreviateValue(doc))
+		}
+		block, _ := posts[0].object["reply_block"].(map[string]any)
+		if block == nil || block["block_id"] != "b2" || block["node"] == nil {
+			t.Fatalf("%s/reply_block is %s, want the block b2 the reply names, with its node", posts[0].path, abbreviateValue(posts[0].object["reply_block"]))
+		}
+		return pointerJoin(posts[0].path, "reply_block"), block
+	}
+	issue := "/api/v1/issues/" + world.issue
+	for _, read := range []struct {
+		target              string
+		changed, changeless []string
+	}{
+		{issue + "/comments", []string{onEdited, onAsk}, []string{onKept}},
+		{"/api/v1/comments/" + onEdited, []string{onEdited}, nil},
+		{"/api/v1/comments/" + edited, []string{onEdited}, nil},
+		{"/api/v1/comments/" + kept, nil, []string{onKept}},
+		{"/api/v1/comments/" + onAsk, []string{onAsk}, nil},
+		{issue + "/messages", []string{onMessage}, nil},
+		{issue + "/messages/" + onMessage, []string{onMessage}, nil},
+		{"/api/v1/messages/" + message, []string{onMessage}, nil},
+		{"/api/v1/asks/" + ask, []string{onAsk}, nil},
+		{issue + "/asks?thread=1", []string{onAsk}, nil},
+		{"/api/v1/inbox", []string{onAsk}, nil},
+	} {
+		t.Run(read.target, func(t *testing.T) {
+			doc, absent := world.readAt(t, read.target, cut)
+			for _, id := range read.changed {
+				place, block := replyBlock(t, doc, id)
+				for _, member := range []string{"text", "removed"} {
+					if value, given := block[member]; given {
+						t.Errorf("%s/%s at the cut is %s, and the item that holds the block changed after the cut: the answer leaves it out",
+							place, member, abbreviateValue(value))
+					}
+					if !namedAbsent(absent, pointerJoin(place, member)) {
+						t.Errorf("the answer at the cut names %v absent, want %s", absent, pointerJoin(place, member))
+					}
+				}
+			}
+			for _, id := range read.changeless {
+				place, block := replyBlock(t, doc, id)
+				_, present := replyBlock(t, world.readNow(t, read.target), id)
+				// The header names a pointer for every reply of a list at once, so the block of an
+				// unchanged item shows that it is given by carrying both members.
+				if block["text"] != present["text"] || block["removed"] != false {
+					t.Errorf("%s at the cut is %s, want the block as its unchanged item holds it, %s", place, abbreviateValue(block), abbreviateValue(present))
+				}
+			}
+		})
+	}
+}
+
+// TestAnAnchoredReadAtACutLeavesTheBlocksPlaceOut: the read of one comment and of one ask gives
+// the place of its anchored block in the document (anchor_block), which it reads from the live
+// document. At a cut the read reads no document: a stored version is markdown, which holds the id
+// of a typed block only, so no record gives the place of this paragraph at the cut. The read
+// leaves anchor_block out and names it absent (reason E).
+func TestAnAnchoredReadAtACutLeavesTheBlocksPlaceOut(t *testing.T) {
+	world, takeCut := newAsOfThreadWorld(t, "ASOA")
+	handler := world.handler
+	issue := asOfIssue(t, handler, map[string]any{
+		"project": "ASOA", "title": "An anchored spec", "spec": "Intro.\n\nThe second paragraph.\n",
+	}).Key
+	comment := decodeBody[model.Comment](t, asOfWrite(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{
+		"anchor": map[string]any{"artifact": "spec", "quote": "Intro."}, "body": "On the intro.",
+	}, "alice")).ID
+	ask := decodeBody[model.Ask](t, asOfSessionWrite(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/asks", map[string]any{
+		"anchor": map[string]any{"artifact": "spec", "quote": "Intro."}, "question": "Is the intro right?",
+	})).ID
+	cut := takeCut()
+	for _, read := range []struct{ target, object string }{
+		{"/api/v1/comments/" + comment, "comment"},
+		{"/api/v1/asks/" + ask, "ask"},
+	} {
+		t.Run(read.target, func(t *testing.T) {
+			if present, _ := world.readNow(t, read.target).(map[string]any)[read.object].(map[string]any); present["anchor_block"] == nil {
+				t.Fatalf("the present read gives no anchor_block: %s", abbreviateValue(present))
+			}
+			doc, absent := world.readAt(t, read.target, cut)
+			object, _ := doc.(map[string]any)[read.object].(map[string]any)
+			if value, given := object["anchor_block"]; given {
+				t.Errorf("/%s/anchor_block at the cut is %s, which no record at the cut gives: the read leaves it out", read.object, abbreviateValue(value))
+			}
+			if !namedAbsent(absent, "/"+read.object+"/anchor_block") {
+				t.Errorf("the answer at the cut names %v absent, want /%s/anchor_block", absent, read.object)
+			}
+			if object["anchor"] == nil {
+				t.Errorf("/%s/anchor at the cut is not given: the anchor is the row's", read.object)
+			}
+		})
+	}
+}
+
+// TestAnAsksRouteReachAtACutIsLeftOutWhole: the reach of an ask's route is read from the route
+// roster now, which keeps no past state. At a cut every read of the ask gives the route, which the
+// issue held then, and leaves out the route's status, its holder and the reason for its status,
+// and names the three absent (reason L): the ask's read, the issue's ask list with its threads and
+// the inbox.
+func TestAnAsksRouteReachAtACutIsLeftOutWhole(t *testing.T) {
+	world, takeCut := newAsOfThreadWorld(t, "ASOR")
+	route := "session:" + asOfListenerSession
+	asOfWrite(t, world.handler, http.MethodPatch, "/api/v1/issues/"+world.issue, map[string]any{"route": route}, "alice")
+	ask := decodeBody[model.Ask](t, asOfSessionWrite(t, world.handler, http.MethodPost, "/api/v1/issues/"+world.issue+"/asks",
+		map[string]any{"question": "Who holds the route?"})).ID
+	cut := takeCut()
+	for _, read := range []struct{ target, thread string }{
+		{"/api/v1/asks/" + ask, ""},
+		{"/api/v1/issues/" + world.issue + "/asks?thread=1", "/0/thread"},
+		{"/api/v1/inbox", "/0/thread"},
+	} {
+		t.Run(read.target, func(t *testing.T) {
+			reach := func(doc any) map[string]any {
+				tokens := pointerTokens(read.thread)
+				var found map[string]any
+				eachParent(doc, tokens, "", func(_ string, object map[string]any) { found = object })
+				if found == nil {
+					t.Fatalf("the answer holds no %q: %s", orRoot(read.thread), abbreviateValue(doc))
+				}
+				return found
+			}
+			if present := reach(world.readNow(t, read.target)); present["route"] != route || present["route_status"] == nil {
+				t.Fatalf("the present read gives the reach %s, want the route with its status", abbreviateValue(present))
+			}
+			doc, absent := world.readAt(t, read.target, cut)
+			object := reach(doc)
+			if object["route"] != route {
+				t.Errorf("%s/route at the cut is %v, want %s, the issue's route then", read.thread, object["route"], route)
+			}
+			for _, member := range []string{"route_status", "route_holder", "route_status_reason"} {
+				if value, given := object[member]; given {
+					t.Errorf("%s/%s at the cut is %s, which the roster gives now: the answer leaves it out", read.thread, member, abbreviateValue(value))
+				}
+				if !namedAbsent(absent, read.thread+"/"+member) {
+					t.Errorf("the answer at the cut names %v absent, want %s/%s", absent, read.thread, member)
+				}
+			}
+		})
+	}
+}
+
+// TestAnInboxAtACutNamesAnOldApprovalsDocumentsAbsent: an approval request written before
+// approval requests held their documents (its events carry an approval with no documents, which
+// migration 20261102110100 filled in the row with no event) gives no documents at the cut. The
+// inbox at the cut leaves approval.documents out and names it absent (reason B), as the ask's own
+// read does, rather than give the empty list of documents.
+func TestAnInboxAtACutNamesAnOldApprovalsDocumentsAbsent(t *testing.T) {
+	world, takeCut := newAsOfThreadWorld(t, "ASOV")
+	database := world.served.deps.Store
+	spec := asOfIssue(t, world.handler, map[string]any{
+		"project": "ASOV", "title": "An approval from before its documents", "spec": "# Spec\n\nApprove this.\n",
+	}).PrimaryArtifactID
+	requested := decodeBody[struct {
+		Ask model.Ask `json:"ask"`
+	}](t, asOfSessionWrite(t, world.handler, http.MethodPost, "/api/v1/artifacts/"+spec+"/approval-requests",
+		map[string]any{"summary": "Approve the spec."})).Ask.ID
+	world.settle(t)
+	// As a build before approval requests held their documents wrote it.
+	if _, err := database.Pool.Exec(context.Background(), `
+		update events set payload = payload #- '{approval,documents}'
+		where payload->>'id' = $1 and type like 'ask.%'`, requested); err != nil {
+		t.Fatalf("write the request's events as an older build wrote them: %v", err)
+	}
+	cut := takeCut()
+	for _, target := range []string{"/api/v1/inbox", "/api/v1/asks/" + requested} {
+		t.Run(target, func(t *testing.T) {
+			doc, absent := world.readAt(t, target, cut)
+			var approval map[string]any
+			switch root := doc.(type) {
+			case []any:
+				for _, element := range root {
+					if row, _ := element.(map[string]any); row["id"] == requested {
+						approval, _ = row["approval"].(map[string]any)
+					}
+				}
+			case map[string]any:
+				ask, _ := root["ask"].(map[string]any)
+				approval, _ = ask["approval"].(map[string]any)
+			}
+			if approval == nil {
+				t.Fatalf("the answer at the cut holds no approval of the request %s: %s", requested, abbreviateValue(doc))
+			}
+			if value, given := approval["documents"]; given {
+				t.Errorf("approval/documents at the cut is %s, which no event at the cut gives: the answer leaves it out", abbreviateValue(value))
+			}
+			want := "/ask/approval/documents"
+			if target == "/api/v1/inbox" {
+				want = "/*/approval/documents"
+			}
+			if !slices.Contains(absent, want) {
+				t.Errorf("the answer at the cut names %v absent, want %s", absent, want)
+			}
+		})
+	}
+}
+
+// TestADirectThreadAtACutIsReadByTheSessionRuleThen: a direct (issue-less) conversation is read by
+// a credential without the person scope as a session that names itself in ?session=, and only
+// where that session is in it: the root targets it, or it wrote a reply (readableMessageThread).
+// At a cut the rule reads the conversation as it stood then. A session whose reply came after
+// the cut is refused 403 THREAD_FORBIDDEN at the cut and reads the thread now; a conversation
+// written after the cut is not found at the cut; the root's own session reads the thread then
+// and now; and a read that names no session is refused 400 SESSION_REQUIRED at the cut too. No
+// session ever leaves a conversation it is in: a root's target does not change, and no route
+// deletes a direct message, so nothing a session could read at the cut is refused it now. No
+// route of this build lets a session other than the root's target reply in a direct
+// conversation, so that reply is stored as the rule reads it, a message of that session in the
+// thread.
+func TestADirectThreadAtACutIsReadByTheSessionRuleThen(t *testing.T) {
+	handler, database, root, reply, _ := directConversationFrom(t, "alice")
+	if first := reply("On it."); first.Code != http.StatusCreated {
+		t.Fatalf("s1's reply: status=%d body=%s", first.Code, first.Body.String())
+	}
+	cut := databaseCut(t, database)
+	time.Sleep(5 * time.Millisecond)
+	later := postAgentMessage(t, handler, "s1", map[string]any{"body": "Written after the cut.", "delivery": "aside"}, "alice")
+	if later.Code != http.StatusCreated {
+		t.Fatalf("a direct message after the cut: status=%d body=%s", later.Code, later.Body.String())
+	}
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into messages (author, body, in_reply_to, target)
+		values ('{"kind":"session","id":"s2"}', 'S2 joins after the cut.', $1, 'session:s1')
+	`, root.ID); err != nil {
+		t.Fatalf("store s2's reply in the conversation: %v", err)
+	}
+	laterID := decodeBody[model.Message](t, later).ID
+
+	read := func(t *testing.T, target string, atCut bool) *httptest.ResponseRecorder {
+		t.Helper()
+		if atCut {
+			target = withAsOf(t, target, cut)
+		}
+		return bearerRequest(t, handler, http.MethodGet, target, nil)
+	}
+	for _, row := range []struct {
+		what, target string
+		thenStatus   int
+		thenCode     string
+		nowStatus    int
+	}{
+		{"the root's session", "/api/v1/messages/" + root.ID + "?session=s1", http.StatusOK, "", http.StatusOK},
+		{"a session whose reply came after the cut", "/api/v1/messages/" + root.ID + "?session=s2", http.StatusForbidden, "THREAD_FORBIDDEN", http.StatusOK},
+		{"a conversation written after the cut", "/api/v1/messages/" + laterID + "?session=s1", http.StatusNotFound, "", http.StatusOK},
+		{"a read that names no session", "/api/v1/messages/" + root.ID, http.StatusBadRequest, "SESSION_REQUIRED", http.StatusBadRequest},
+	} {
+		t.Run(row.what, func(t *testing.T) {
+			if now := read(t, row.target, false); now.Code != row.nowStatus {
+				t.Fatalf("the present read: status=%d body=%s, want %d", now.Code, now.Body.String(), row.nowStatus)
+			}
+			then := read(t, row.target, true)
+			if then.Code != row.thenStatus || (row.thenCode != "" && decodeBody[refusalAnswer](t, then).Code != row.thenCode) {
+				t.Fatalf("the read at the cut: status=%d body=%s, want %d %s", then.Code, then.Body.String(), row.thenStatus, row.thenCode)
+			}
+			if then.Code == http.StatusForbidden && strings.Contains(then.Body.String(), "On it.") {
+				t.Errorf("the refusal at the cut gives the conversation's text: %s", then.Body.String())
+			}
+			if then.Code == http.StatusOK {
+				if named := then.Header().Get(contracts.DispatchAsOfHeader); named != cut.String() {
+					t.Errorf("the read at the cut names %s %q, want the cut %s", contracts.DispatchAsOfHeader, named, cut)
+				}
+				thread := decodeBody[messageRead](t, then)
+				if thread.Message.ID != root.ID || len(thread.Replies) != 1 {
+					t.Errorf("the thread at the cut is %s with %d replies, want %s with s1's one reply", thread.Message.ID, len(thread.Replies), root.ID)
+				}
+			}
+		})
+	}
 }

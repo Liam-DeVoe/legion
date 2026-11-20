@@ -214,6 +214,14 @@ var MachineryTables = map[string]string{
 // test of the shadows admits these tables with no shadow; each read of one of them at a cut
 // must apply its predicate.
 var CutReadTables = map[string]string{
+	"ask_blocks": "Only the parts of an ask that did not change after the cut (AsksChangedAfterStatement); " +
+		"an answer leaves out the part ids and the revision of every other ask.",
+	"comment_blocks": "Only the blocks of a comment that did not change after the cut (ItemsChangedAfterStatement), " +
+		"or of a comment deleted at any time, whose blocks read removed with no text as the comment reads deleted at the cut.",
+	"comment_mentions": "Only the mentions of a comment that the comments shadow gives at the cut: " +
+		"the transaction that creates a comment writes its mentions, and no write changes them after it.",
+	"message_blocks": "Only the blocks of a message that did not change after the cut (ItemsChangedAfterStatement), " +
+		"or of a message deleted at any time, whose blocks read removed with no text as the message reads deleted at the cut.",
 	"document_block_texts": "Only the rows of the document's version at the cut, " +
 		"for a version that document_indexed_versions holds.",
 	"document_indexed_versions": "Only the rows of the document's version at the cut.",
