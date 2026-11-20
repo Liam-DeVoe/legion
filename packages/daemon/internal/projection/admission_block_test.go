@@ -62,7 +62,7 @@ func TestTheJudgedAdmissionBlockIsTheBlockTheStateServes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			records := routeRecords{projectionStore: tc.store, project: "LEGION"}
-			state, err := Project(ctx, nil, records, "LEGION", tc.cap, nil, nil, nil, nil, nil, projectedAt)
+			state, err := Project(ctx, Inputs{Store: records, Project: "LEGION", Cap: tc.cap, Now: projectedAt})
 			if err != nil {
 				t.Fatalf("Project: %v", err)
 			}

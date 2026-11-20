@@ -72,8 +72,10 @@ func servedBlock(t *testing.T, pool *pgxpool.Pool, admission *Admission) any {
 	ctx := context.Background()
 	var encoded []byte
 	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		state, err := projection.Project(ctx, tx, record.NewStore(), testProject, admission.cap, admission.engine.GatedSteps(),
-			nil, nil, nil, nil, fixedNow)
+		state, err := projection.Project(ctx, projection.Inputs{
+			Tx: tx, Store: record.NewStore(), Project: testProject, Cap: admission.cap,
+			Steps: admission.engine.GatedSteps(), Now: fixedNow,
+		})
 		if err != nil {
 			return err
 		}

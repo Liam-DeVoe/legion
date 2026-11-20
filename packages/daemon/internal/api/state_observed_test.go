@@ -37,12 +37,12 @@ func (s *observingSource) State(context.Context, pgx.Tx) (State, []supervise.Cla
 	return State{}, nil, nil
 }
 
-func (s *observingSource) ObservedState(_ context.Context, tx pgx.Tx) (ObservedState, error) {
+func (s *observingSource) ObservedState(_ context.Context, tx pgx.Tx) (ObservedState, []supervise.Claim, error) {
 	s.tx, _ = tx.(*fakeTx)
 	if s.tx != nil {
 		s.bounded = s.tx.bounded
 	}
-	return s.observed, s.err
+	return s.observed, nil, s.err
 }
 
 // observedFixture is an observed view with one issue of each shape the view carries: a root at

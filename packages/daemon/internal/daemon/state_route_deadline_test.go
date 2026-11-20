@@ -41,12 +41,12 @@ func (s *heldState) State(ctx context.Context, _ pgx.Tx) (api.State, []supervise
 	return api.State{}, nil, ctx.Err()
 }
 
-func (s *heldState) ObservedState(ctx context.Context, _ pgx.Tx) (api.ObservedState, error) {
+func (s *heldState) ObservedState(ctx context.Context, _ pgx.Tx) (api.ObservedState, []supervise.Claim, error) {
 	if !s.held.Load() {
-		return api.ObservedState{}, nil
+		return api.ObservedState{}, nil, nil
 	}
 	<-ctx.Done()
-	return api.ObservedState{}, ctx.Err()
+	return api.ObservedState{}, nil, ctx.Err()
 }
 
 // stateTargets is the state route's two answers, the whole state and the observed view, which

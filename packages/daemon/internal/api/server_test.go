@@ -36,11 +36,11 @@ func (f fakeSource) State(_ context.Context, _ pgx.Tx) (State, []supervise.Claim
 	return f.state, f.claims, nil
 }
 
-func (f fakeSource) ObservedState(_ context.Context, _ pgx.Tx) (ObservedState, error) {
+func (f fakeSource) ObservedState(_ context.Context, _ pgx.Tx) (ObservedState, []supervise.Claim, error) {
 	if f.err != nil {
-		return ObservedState{}, f.err
+		return ObservedState{}, nil, f.err
 	}
-	return f.observed, nil
+	return f.observed, f.claims, nil
 }
 
 func serve(t *testing.T, src StateSource, method, target string) *httptest.ResponseRecorder {

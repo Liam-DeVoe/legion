@@ -720,7 +720,8 @@
             "architect": {
               "session": "",
               "state": "launching",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {},
             "gatedSteps": [
@@ -1068,7 +1069,8 @@
             "architect": {
               "session": "ses_legion_1_architect",
               "state": "working",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {},
             "gatedSteps": [
@@ -1416,7 +1418,8 @@
             "architect": {
               "session": "ses_legion_1_architect",
               "state": "idle",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {},
             "gatedSteps": [
@@ -1764,7 +1767,8 @@
             "architect": {
               "session": "ses_legion_1_architect",
               "state": "idle",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {},
             "gatedSteps": [
@@ -2118,7 +2122,8 @@
             "architect": {
               "session": "ses_legion_1_architect",
               "state": "idle",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {},
             "gatedSteps": [
@@ -2489,7 +2494,8 @@
             "architect": {
               "session": "ses_legion_1_architect",
               "state": "idle",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {},
             "gatedSteps": [
@@ -2860,7 +2866,8 @@
             "architect": {
               "session": "ses_legion_1_architect",
               "state": "idle",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {},
             "gatedSteps": [
@@ -3223,7 +3230,8 @@
             "architect": {
               "session": "ses_legion_1_architect",
               "state": "idle",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {},
             "gatedSteps": [
@@ -3315,7 +3323,8 @@
             "architect": {
               "session": "",
               "state": "launching",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {}
           }
@@ -3599,7 +3608,8 @@
             "architect": {
               "session": "ses_legion_1_architect",
               "state": "idle",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {},
             "gatedSteps": [
@@ -3691,7 +3701,8 @@
             "architect": {
               "session": "",
               "state": "launching",
-              "pluginContract": 0
+              "pluginContract": 0,
+              "updateState": "none"
             },
             "workers": {}
           }

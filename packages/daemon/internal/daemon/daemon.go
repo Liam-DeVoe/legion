@@ -29,11 +29,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -1043,9 +1043,9 @@ type plan struct {
 	plugins       *runtime.PluginInstall
 	pluginsSource string
 	// secretsLogin is the same login's client, read-only, for the state route to show its
-	// current status (source.State, agentsecrets.Client.LoginStatus); nil when the deployment
+	// current status (source.State, cipher.Client.LoginStatus); nil when the deployment
 	// enrolls no pod.
-	secretsLogin *agentsecrets.Client
+	secretsLogin *cipher.Client
 	// strandedReported is overrides.strandedReported; nil runs nothing.
 	strandedReported func()
 	// beforeServingLatched is overrides.beforeServingLatched; nil runs nothing.
@@ -2983,7 +2983,7 @@ type source struct {
 	now func() time.Time
 	// secretsLogin is the daemon's own agent-secrets token login client (newSecretsLogin), read
 	// through LoginStatus for the state route; nil when the deployment enrolls no pod.
-	secretsLogin *agentsecrets.Client
+	secretsLogin *cipher.Client
 	// deployment is the deployment's capabilities as this boot knows them (supervision.deployment),
 	// whose report the state carries.
 	deployment func() capabilities.Deployment
@@ -3369,7 +3369,26 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	state, err := projection.Project(ctx, tx, records, s.project, s.admissionCap, s.gatedSteps, s.experiments, claims, stranded, s.reports(), now)
+	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
+	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
+	// restart raises the wave again through its own paths; a paced catch-up waits on its
+	// outbox row, read here in the snapshot every other durable fact of this state is read from.
+	//
+	// The two are read before the projection and handed to it, so the state's `wakesWaiting` and
+	// each claim view's own `wake` are set from one list. Each read is of this one snapshot.
+	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	var held []supervise.WaitingWake
+	if s.wakes != nil {
+		held = s.wakes()
+	}
+	state, err := projection.Project(ctx, projection.Inputs{
+		Tx: tx, Store: records, Project: s.project, Cap: s.admissionCap, Steps: s.gatedSteps,
+		Experiments: s.experiments, Claims: claims, Stranded: stranded, Reports: s.reports(),
+		Wakes: api.WakesWaitingOf(held, paced), Now: now,
+	})
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -3391,19 +3410,6 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 			}
 		}
 	}
-	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
-	// a launch waits in its claim's machine, in memory alone, since no store holds one and a
-	// restart raises the wave again through its own paths; a paced catch-up waits on its
-	// outbox row, read here in the snapshot every other durable fact of this state is read from.
-	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
-	if err != nil {
-		return api.State{}, nil, err
-	}
-	var held []supervise.WaitingWake
-	if s.wakes != nil {
-		held = s.wakes()
-	}
-	state.WakesWaiting = api.WakesWaitingOf(held, paced)
 	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
 	// The project's pause, read through tx as every other durable fact here (api.PauseStateTx):
 	// `paused` with the roles it waits on and the rows it holds while the project is paused, and
@@ -3432,44 +3438,48 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	return state, claims, nil
 }
 
-// ObservedState is the observed view of the project's state through tx (api.StateSource): the
-// daemon block and the settings State serves, and the admission block and the issues
-// projection.Observe builds, all read in tx's one snapshot, so the view's stateSeq is the sequence
-// of the newest state event its issues and its admission block hold, as the full state's is. It
-// reads only what the view needs: the schema version, the boots, the state publication and the
-// project's claims here, and in projection.Observe the issues, every phase row in one statement,
-// the slots and what the admission judgement reads. It makes no read for any one issue, and it
-// judges nothing the view does not serve: no stranded claims, no stalled architects, no paced
-// wakes.
-func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.ObservedState, error) {
+// ObservedState is the observed view of the project's state through tx, and the project's claims
+// it read through tx to build it (api.StateSource): the daemon block and the settings State serves,
+// and the admission block and the issues projection.Observe builds, all read in tx's one snapshot,
+// so the view's stateSeq is the sequence of the newest state event its issues and its admission
+// block hold, as the full state's is. The route reads the caller's plugin contract from the claims,
+// as it does for State, so the view and the contract it is cut to come from one snapshot. It reads
+// only what the view needs: the schema version, the boots, the state publication and the project's
+// claims here, and in projection.Observe the issues, every phase row in one statement, the slots
+// and what the admission judgement reads. It makes no read for any one issue, and it judges nothing
+// the view does not serve: no stranded claims, no stalled architects, no paced wakes.
+func (s *source) ObservedState(ctx context.Context, tx pgx.Tx) (api.ObservedState, []supervise.Claim, error) {
 	version, err := s.store.SchemaVersionTx(ctx, tx)
 	if err != nil {
-		return api.ObservedState{}, err
+		return api.ObservedState{}, nil, err
 	}
 	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
 	if err != nil {
-		return api.ObservedState{}, err
+		return api.ObservedState{}, nil, err
 	}
 	published, err := s.records.StatePublication(ctx, tx, s.project)
 	if err != nil {
-		return api.ObservedState{}, err
+		return api.ObservedState{}, nil, err
 	}
 	claims, err := s.store.ClaimsTx(ctx, tx)
 	if err != nil {
-		return api.ObservedState{}, err
+		return api.ObservedState{}, nil, err
 	}
 	claims = ofProject(claims, s.projectToken)
 	now := time.Now().UTC()
 	if s.now != nil {
 		now = s.now().UTC()
 	}
-	observed, err := projection.Observe(ctx, tx, projectRecords{Store: s.records, project: s.project}, s.project, s.admissionCap, s.gatedSteps, claims, now)
+	observed, err := projection.Observe(ctx, projection.Inputs{
+		Tx: tx, Store: projectRecords{Store: s.records, project: s.project}, Project: s.project,
+		Cap: s.admissionCap, Steps: s.gatedSteps, Claims: claims, Now: now,
+	})
 	if err != nil {
-		return api.ObservedState{}, err
+		return api.ObservedState{}, nil, err
 	}
 	observed.Daemon = s.daemonInfo(version, boots, firstBootAt, published)
 	observed.Settings = s.settings
-	return observed, nil
+	return observed, claims, nil
 }
 
 // daemonInfo is the daemon block both views of the state serve (api.DaemonInfo), from what each

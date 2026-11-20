@@ -398,17 +398,19 @@ func TestTheBulkReadsAnswerEachIssueWhatItsOwnReadAnswers(t *testing.T) {
 // issues; each issue's key, phase, tree, slot index, wait, architect's claim state and each worker
 // role's claim state are the full view's; and the daemon block, the settings and the admission
 // block are the full state's own, the admission block byte for byte, since a reader takes an
-// issue's place in the line from its index in `admission.waiting`.
+// issue's place in the line from its index in `admission.waiting`. Both reads answer the same
+// claims beside their view, which the route places its caller by.
 func TestTheObservedViewIsTheFullStatesObservedPart(t *testing.T) {
 	r := newObservedRig(t)
 	var full api.State
 	var observed api.ObservedState
+	var fullClaims, observedClaims []supervise.Claim
 	r.readOnly(t, func(ctx context.Context, tx pgx.Tx) {
 		var err error
-		if full, _, err = r.src.State(ctx, tx); err != nil {
+		if full, fullClaims, err = r.src.State(ctx, tx); err != nil {
 			t.Fatalf("read the full state: %v", err)
 		}
-		if observed, err = r.src.ObservedState(ctx, tx); err != nil {
+		if observed, observedClaims, err = r.src.ObservedState(ctx, tx); err != nil {
 			t.Fatalf("read the observed view: %v", err)
 		}
 	})
@@ -416,6 +418,16 @@ func TestTheObservedViewIsTheFullStatesObservedPart(t *testing.T) {
 	sameJSON(t, "the daemon block", full.Daemon, observed.Daemon)
 	sameJSON(t, "the settings", full.Settings, observed.Settings)
 	sameJSON(t, "the admission block", full.Admission, observed.Admission)
+	tokens := func(claims []supervise.Claim) []claim.Token {
+		listed := make([]claim.Token, len(claims))
+		for i, current := range claims {
+			listed[i] = current.Token
+		}
+		return listed
+	}
+	if got, want := tokens(observedClaims), tokens(fullClaims); len(want) == 0 || !slices.Equal(got, want) {
+		t.Errorf("the observed read answers the claims %v, the full read %v: the route places its caller by the claims of the snapshot it serves", got, want)
+	}
 
 	fullKeys, observedKeys := slices.Sorted(maps.Keys(full.Issues)), slices.Sorted(maps.Keys(observed.Issues))
 	if !slices.Equal(fullKeys, observedKeys) {
@@ -513,7 +525,7 @@ func TestTheObservedViewIsOneSnapshot(t *testing.T) {
 
 	read := func(tx pgx.Tx) (phase.Phase, int64) {
 		t.Helper()
-		observed, err := r.src.ObservedState(ctx, tx)
+		observed, _, err := r.src.ObservedState(ctx, tx)
 		if err != nil {
 			t.Fatalf("read the observed view: %v", err)
 		}

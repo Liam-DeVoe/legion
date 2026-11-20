@@ -68,8 +68,8 @@ func (s pauseState) State(ctx context.Context, tx pgx.Tx) (api.State, []supervis
 }
 
 // ObservedState answers the empty observed view: the pause commands read the whole state.
-func (pauseState) ObservedState(context.Context, pgx.Tx) (api.ObservedState, error) {
-	return api.ObservedState{}, nil
+func (pauseState) ObservedState(context.Context, pgx.Tx) (api.ObservedState, []supervise.Claim, error) {
+	return api.ObservedState{}, nil, nil
 }
 
 // pauseCommandDaemon is a daemon of project LEGION as `legion project` and `legion state` reach it:

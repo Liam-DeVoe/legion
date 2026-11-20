@@ -67,8 +67,9 @@ func (s projectedSource) State(ctx context.Context, tx pgx.Tx) (api.State, []sup
 	return state, nil, err
 }
 
-func (s projectedSource) ObservedState(ctx context.Context, tx pgx.Tx) (api.ObservedState, error) {
-	return projection.Observe(ctx, tx, s.records, waitProject, 0, s.steps, nil, waitNow)
+func (s projectedSource) ObservedState(ctx context.Context, tx pgx.Tx) (api.ObservedState, []supervise.Claim, error) {
+	observed, err := projection.Observe(ctx, projection.Inputs{Tx: tx, Store: s.records, Project: waitProject, Steps: s.steps, Now: waitNow})
+	return observed, nil, err
 }
 
 // waitingStore is a migrated database of this package's template, with the records store and the
@@ -129,7 +130,7 @@ func seedWaitMirror(t *testing.T, st *store.Store, records record.Store, key, st
 // builds it (internal/projection), with no claims and no capability reports: this reading is the
 // admission object alone.
 func projectWaitingState(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep) (api.State, error) {
-	return projection.Project(ctx, tx, records, waitProject, 0, steps, nil, nil, nil, nil, waitNow)
+	return projection.Project(ctx, projection.Inputs{Tx: tx, Store: records, Project: waitProject, Steps: steps, Now: waitNow})
 }
 
 // waitingIssue is one issue of the fixture, written out so each case names the record it reads.

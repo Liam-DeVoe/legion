@@ -21,30 +21,62 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
+// Inputs are the facts one projection is built from: the transaction it reads through, the
+// store it reads with, and the project's own live and durable values as the caller holds them
+// at that moment.
+//
+// They are one value rather than a run of positional arguments because a reader of a call site
+// sees which fact each one is, and a fact added to the projection moves no call that does not
+// hold it.
+type Inputs struct {
+	// Tx is the repeatable-read transaction the caller owns, so the record reads and the claims
+	// share one snapshot. The projection does not commit it.
+	Tx pgx.Tx
+	// Store is what every record read goes through.
+	Store record.Store
+	// Project is the Dispatch project whose pending status writes and held lifecycle rows the
+	// state lists.
+	Project string
+	// Cap is the deployment's admission cap (config.Config.AdmissionCap), which the admission
+	// block carries beside the lists judged under it (blockers.JudgeAdmission).
+	Cap int
+	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
+	// root's view answers its own state of; the empty list gates none.
+	Steps []record.DesignStep
+	// Experiments are the project's declared experiments (config.Project.ExperimentsDeclared),
+	// whose order each issue's `assignments` ride in (assignmentViews); the empty list declares
+	// none, and every answer a record still holds then rides in the experiments' names.
+	Experiments []config.Experiment
+	// Claims are the supervision claims of this moment, which the claim views are built from.
+	Claims []supervise.Claim
+	// Stranded are the claims the daemon judges nothing will wake (workflow.Stranded), handed
+	// in because that judgement reads the gated steps and the released wakes over the store and
+	// this package may not read internal/workflow: it is what says an issue's work has stopped
+	// on its worker rather than on its place in a queue (whyStates), and the caller reads it in
+	// the same transaction, so the state is still one snapshot. Nil is nothing stranded.
+	Stranded []supervise.Claim
+	// Reports is each claim's latest capability report, by claim (LEGION-663): a claim with one
+	// shows it whatever its incarnation — the view carries the reporting process's, for a reader
+	// to compare with the locator's — and a claim with none shows no capabilities. Nil is no
+	// reports.
+	Reports map[claim.Token]capabilities.Report
+	// Wakes is every wake the daemon's pacing still holds, both lanes as one list
+	// (api.WakesWaitingOf): the state names them under `wakesWaiting`, and each claim view names
+	// the one its own claim waits for, so the two come from one list and cannot disagree. Nil is
+	// a daemon holding none, which is every moment outside a wave.
+	Wakes []api.WakeWaiting
+	// Now is the instant the held rows are read at (record.Store.HeldRows) and their waits are
+	// measured from.
+	Now time.Time
+}
+
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
-// caller owns the repeatable-read transaction, so its record reads and claims share one snapshot.
-// project is the Dispatch project whose pending status writes and held lifecycle rows the state
-// lists. steps are the design-gate steps the deployment gates (config.Gates.Steps), which each
-// root's view answers its own state of; the empty list gates none. experiments are the project's
-// declared experiments (config.Project.ExperimentsDeclared), whose order each issue's
-// `assignments` ride in (assignmentViews); the empty list declares none, and every answer a
-// record still holds then rides in the experiments' names. stranded is the claims the
-// daemon judges nothing will wake (workflow.Stranded), handed in because that judgement reads
-// the gated steps and the released wakes over the store and this package may not read
-// internal/workflow: it is what says an issue's work has stopped on its worker rather than on
-// its place in a queue (whyStates), and the caller reads it in the same transaction, so the
-// state is still one snapshot. Nil is nothing stranded. reports is each claim's latest
-// capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
-// the view carries the reporting process's, for a reader to compare with the locator's — and a
-// claim with none shows no capabilities. Nil is no reports. The role whose phase entry and given
-// entry each issue's view carries is the role that works its current phase (phase.RoleFor), and
-// the two handshake times beside them are that role's claim's, but for a tree's own root, whose
-// times are its architect's claim's in every phase (supervise.Claim.Handshake). now is the instant
-// the held rows are read at (record.Store.HeldRows) and their waits are measured from. cap is the
-// deployment's admission cap (config.Config.AdmissionCap), which the admission block carries
-// beside the lists judged under it (blockers.JudgeAdmission).
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap int, steps []record.DesignStep, experiments []config.Experiment, claims []supervise.Claim, stranded []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
-	issues, err := s.Issues(ctx, tx)
+// role whose phase entry and given entry each issue's view carries is the role that works its
+// current phase (phase.RoleFor), and the two handshake times beside them are that role's claim's,
+// but for a tree's own root, whose times are its architect's claim's in every phase
+// (supervise.Claim.Handshake).
+func Project(ctx context.Context, in Inputs) (api.State, error) {
+	issues, err := in.Store.Issues(ctx, in.Tx)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -68,26 +100,26 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 	// table. A row says which unit it covers: a `tree` row is its tree root's and every issue of
 	// the tree is shown it, an `issue` row is the issue's own. So an issue's answers are its
 	// root's tree rows and its own issue rows, which assignmentViews joins.
-	assignments, err := s.Assignments(ctx, tx, project)
+	assignments, err := in.Store.Assignments(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
 	}
-	place := declaredPlaces(experiments)
-	slots, err := s.Slots(ctx, tx)
+	place := declaredPlaces(in.Experiments)
+	slots, err := in.Store.Slots(ctx, in.Tx)
 	if err != nil {
 		return api.State{}, err
 	}
-	pending, err := s.PendingStatusWrites(ctx, tx, project)
+	pending, err := in.Store.PendingStatusWrites(ctx, in.Tx, in.Project)
 	if err != nil {
 		return api.State{}, err
 	}
-	held, err := s.HeldRows(ctx, tx, project, "", now)
+	held, err := in.Store.HeldRows(ctx, in.Tx, in.Project, "", in.Now)
 	if err != nil {
 		return api.State{}, err
 	}
 	// The open production checks, by issue: the check is read once for the whole state, since a
 	// closed check shows nothing and the open ones are few.
-	openChecks, err := s.OpenProductionChecks(ctx, tx)
+	openChecks, err := in.Store.OpenProductionChecks(ctx, in.Tx)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -101,19 +133,22 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 	// answers an issue what its read by key answers it (record.Store.AllPhases beside Phases,
 	// PullRequestsOf beside PullRequest, Gates beside GatesOf); an issue holding no row has no
 	// entry, which reads as the empty list, the nil pull request and the empty gates.
-	phases, err := s.AllPhases(ctx, tx)
+	phases, err := in.Store.AllPhases(ctx, in.Tx)
 	if err != nil {
 		return api.State{}, err
 	}
-	pullRequests, err := s.PullRequestsOf(ctx, tx, keys)
+	pullRequests, err := in.Store.PullRequestsOf(ctx, in.Tx, keys)
 	if err != nil {
 		return api.State{}, err
 	}
-	gatesOf, err := s.Gates(ctx, tx, keys)
+	gatesOf, err := in.Store.Gates(ctx, in.Tx, keys)
 	if err != nil {
 		return api.State{}, err
 	}
 
+	// The wake each claim's own view names, read from the one list the state names under
+	// `wakesWaiting`, so a claim view and that list report the same wake (api.ClaimWakes).
+	claimWakes := api.ClaimWakes(in.Wakes)
 	// The entry each claim was last queued a task of, by the issue and role the claim holds
 	// (supervise.Claim.GivenEntry), and beside it the claim's handshake of the last entry it was
 	// queued a task of (supervise.Claim.Handshake): the numbers and the two times an issue's view
@@ -122,13 +157,13 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 	// created for, or stale, from a claim an earlier run retired, where the claim of this issue and
 	// this role is the one the admission pass weighs (admit's resumeSlottedWorkers). One claim
 	// stands per issue and role (claim.NewToken), so one entry holds both readings of it.
-	entries := make(map[issueRole]roleEntry, len(claims))
-	for _, current := range claims {
+	entries := make(map[issueRole]roleEntry, len(in.Claims))
+	for _, current := range in.Claims {
 		entries[issueRole{issue: current.Issue, role: current.Role}] = roleEntry{given: current.GivenEntry, handshake: current.Handshake}
 	}
 
-	claimViews := make(map[claim.Token]api.ClaimView, len(claims))
-	for _, current := range claims {
+	claimViews := make(map[claim.Token]api.ClaimView, len(in.Claims))
+	for _, current := range in.Claims {
 		if current.Locator != nil {
 			if err := current.Locator.Validate(); err != nil {
 				return api.State{}, fmt.Errorf("project claim %s: %w", current.Token, err)
@@ -137,7 +172,14 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 		// Every field of the claim record is served or withheld by a decision, and the view that
 		// serves it is built in one place (api.ClaimViewOf, api.ClaimRecordFields).
 		view := api.ClaimViewOf(current)
-		if report, reported := reports[current.Token]; reported {
+		// Where the claim's update round stands. It is a reading over several of the claim's
+		// update columns rather than one column's own value, which is why it is taken here and
+		// not in the view's build (api.UpdateStateOf).
+		view.UpdateState = api.UpdateStateOf(current)
+		if wake, waits := claimWakes[current.Token]; waits {
+			view.Wake = &wake
+		}
+		if report, reported := in.Reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
 		}
 		claimViews[current.Token] = view
@@ -147,9 +189,11 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 	// holds and what Dispatch observes of each issue's own record are decided once, for this view
 	// and for the observed view of the state (Observe) alike, by the one definition both read
 	// (listIssues): the two views cannot disagree about what Dispatch observes.
-	listed, unrecorded := listIssues(issues, phases, slots, claims)
+	listed, unrecorded := listIssues(issues, phases, slots, in.Claims)
 
-	projected := api.State{Issues: make(map[string]api.Issue, len(issues)+len(unrecorded))}
+	// The wakes the pacing holds, as the state names them beside the claim views that name
+	// their own: one list, set here, so the two readings come from one place.
+	projected := api.State{Issues: make(map[string]api.Issue, len(issues)+len(unrecorded)), WakesWaiting: in.Wakes}
 	for _, issue := range issues {
 		entry := listed[issue.Key]
 		view := api.Issue{
@@ -272,7 +316,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 		// longer gates is kept in the record, where a deployment that gates it again reads its
 		// true state, and is in no entry here, since it holds nothing (classify.DesignGatesOpen).
 		if issue.Key == issue.Tree {
-			view.GatedSteps = api.GatedStepViewsOf(steps, gates)
+			view.GatedSteps = api.GatedStepViewsOf(in.Steps, gates)
 		}
 		if check, ok := checks[issue.Key]; ok {
 			view.Check = checkView(check)
@@ -305,7 +349,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 	// slots migration, "shared by every daemon of the database").
 	own := make([]record.Issue, 0, len(issues))
 	for _, issue := range issues {
-		if issue.Project == project {
+		if issue.Project == in.Project {
 			own = append(own, issue)
 		}
 	}
@@ -317,7 +361,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 	// The line it judged, the mirror rows it judged the links from and the facts it read are what
 	// each issue's view below is read from, so a member's place and every issue's `why` come from
 	// the judgement whose lists the block serves.
-	judged, err := blockers.JudgeAdmission(ctx, tx, s, project, steps, slots, cap, now)
+	judged, err := blockers.JudgeAdmission(ctx, in.Tx, in.Store, in.Project, in.Steps, slots, in.Cap, in.Now)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -398,7 +442,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are read from the same facts as the live trees of the block (record.LiveRoots) — live is
 	// wider than running, and a parked root's tree is neither.
-	whyStates(&projected, own, record.RunningRoots(own, facts), stranded, rows, facts.ChildWaits)
+	whyStates(&projected, own, record.RunningRoots(own, facts), in.Stranded, rows, facts.ChildWaits)
 	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
@@ -411,7 +455,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 	// The measure is read once for the whole state (quietTrees), from the records and the claims
 	// this pass already holds, and a live root is always one of its trees whatever its own
 	// status says (record.QuietTrees), so the lookup below cannot miss.
-	quiet := quietTrees(own, claims, now)
+	quiet := quietTrees(own, in.Claims, in.Now)
 	for _, issue := range own {
 		if _, live := trees[issue.Tree]; !live {
 			continue
@@ -441,39 +485,40 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap
 			ID:            row.ID,
 			Kind:          string(row.Kind),
 			Issue:         row.Issue,
-			WaitedSeconds: max(0, int64(now.Sub(row.NextAt).Seconds())),
+			WaitedSeconds: max(0, int64(in.Now.Sub(row.NextAt).Seconds())),
 			WaitsOn:       row.WaitsOn,
 		}
 	}
 	return projected, nil
 }
 
-// Observe is the observed view of the state route (api.ObservedState) through tx, the caller's
+// Observe is the observed view of the state route (api.ObservedState) through in.Tx, the caller's
 // repeatable-read transaction, all but its daemon block and its settings, which the caller sets as
 // it sets them on the full state (Project). The admission block is the full state's own: the same
 // judgement (blockers.JudgeAdmission) over the same reads, unfiltered and in the same order. The
 // issues are every issue the full state lists, each with the members Dispatch observes, decided by
 // the definition the full state's views are built from (listIssues). It reads the issues, every
 // phase row in one statement, the slots and what the admission judgement reads, and it makes no
-// statement for any one issue. project, cap, steps, claims and now are Project's.
-func Observe(ctx context.Context, tx pgx.Tx, s record.Store, project string, cap int, steps []record.DesignStep, claims []supervise.Claim, now time.Time) (api.ObservedState, error) {
-	issues, err := s.Issues(ctx, tx)
+// statement for any one issue. It reads the Tx, Store, Project, Cap, Steps, Claims and Now of in
+// as Project reads them; the other fields of in are the full state's alone.
+func Observe(ctx context.Context, in Inputs) (api.ObservedState, error) {
+	issues, err := in.Store.Issues(ctx, in.Tx)
 	if err != nil {
 		return api.ObservedState{}, err
 	}
-	phases, err := s.AllPhases(ctx, tx)
+	phases, err := in.Store.AllPhases(ctx, in.Tx)
 	if err != nil {
 		return api.ObservedState{}, err
 	}
-	slots, err := s.Slots(ctx, tx)
+	slots, err := in.Store.Slots(ctx, in.Tx)
 	if err != nil {
 		return api.ObservedState{}, err
 	}
-	judged, err := blockers.JudgeAdmission(ctx, tx, s, project, steps, slots, cap, now)
+	judged, err := blockers.JudgeAdmission(ctx, in.Tx, in.Store, in.Project, in.Steps, slots, in.Cap, in.Now)
 	if err != nil {
 		return api.ObservedState{}, err
 	}
-	listed, _ := listIssues(issues, phases, slots, claims)
+	listed, _ := listIssues(issues, phases, slots, in.Claims)
 	observed := api.ObservedState{Admission: api.AdmissionOf(judged.Block), Issues: make(map[string]api.ObservedIssue, len(listed))}
 	for key, entry := range listed {
 		observed.Issues[key] = entry.observedView(key)

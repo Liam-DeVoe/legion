@@ -212,8 +212,8 @@ func (f fixedStateSource) State(context.Context, pgx.Tx) (api.State, []supervise
 }
 
 // ObservedState answers the empty observed view: `legion controller start` reads the whole state.
-func (fixedStateSource) ObservedState(context.Context, pgx.Tx) (api.ObservedState, error) {
-	return api.ObservedState{}, nil
+func (fixedStateSource) ObservedState(context.Context, pgx.Tx) (api.ObservedState, []supervise.Claim, error) {
+	return api.ObservedState{}, nil, nil
 }
 
 // newControllerDaemonWithOptions is the daemon's HTTP surface as `legion controller start` and

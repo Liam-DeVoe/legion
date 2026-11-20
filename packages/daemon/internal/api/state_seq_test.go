@@ -69,16 +69,18 @@ func daemonKeyServed(t *testing.T, body []byte, key string) (json.RawMessage, bo
 	return raw, carried
 }
 
-// The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
-// whose claims record a contract below stateSeqContract is served the daemon block with none of
-// `stateSeq`, `stateId` and `stateRun`, since a plugin built before sjawhar/legion#2788 reads the
-// state with a strict schema that refuses the whole body for a key it does not name. A pod at the
-// contract, a pod whose claims record no contract, and a caller the daemon cannot place in a pod —
-// the operator's `legion state`, and Dispatch, which reads the sequence, the store id and the run
-// to line the body up with the state events — are served the three keys as the source answered
-// them.
+// A caller below stateSeqContract is served the daemon block with none of `stateSeq`, `stateId`
+// and `stateRun`, since a plugin built before sjawhar/legion#2788 reads the state with a strict
+// schema that refuses the whole body for a key it does not name. The route places a caller by the
+// contract it states (`Legion-Plugin-Contract`), and a caller that states none by the pod the
+// request came from; a pod's claims at shapedAnswersContract or above are in no pod's reckoning,
+// since every such build states its contract (podContracts), so the pods below the contract here
+// record one below shapedAnswersContract. A caller stating the contract, a pod whose claims record
+// it or no contract, and a caller the daemon cannot place in a pod — the operator's `legion state`,
+// and Dispatch, which reads the sequence, the store id and the run to line the body up with the
+// state events — are served the three keys as the source answered them.
 func TestTheStateSeqIsStrippedBelowItsContract(t *testing.T) {
-	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(stateSeqContract-1))
+	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(shapedAnswersContract-1))
 	want, carried := stateSeqServed(t, full)
 	wantID, wantRun := stateIDServed(t, full), stateRunServed(t, full)
 	if !carried || want == 0 || wantID == "" || wantRun == "" {
@@ -86,20 +88,24 @@ func TestTheStateSeqIsStrippedBelowItsContract(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name    string
-		remote  string
-		claims  []supervise.Claim
+		name   string
+		remote string
+		claims []supervise.Claim
+		// stated is the contract the caller states in the header, and 0 where it states none.
+		stated  int
 		carried bool
 	}{
-		{name: "a pod one contract below it", remote: statePodAddr + ":41000", claims: podClaims(stateSeqContract - 1)},
+		{name: "a caller stating one contract below it", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: stateSeqContract - 1},
+		{name: "a pod below shapedAnswersContract", remote: statePodAddr + ":41000", claims: podClaims(shapedAnswersContract - 1)},
 		{name: "a pod below PodUpdateContract, below every one of them", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
-		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(stateSeqContract - 1)},
+		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(shapedAnswersContract - 1)},
+		{name: "a caller stating the contract", remote: "192.0.2.1:41000", claims: podClaims(DaemonAPIVersion), stated: stateSeqContract, carried: true},
 		{name: "a pod at the contract", remote: statePodAddr + ":41000", claims: podClaims(stateSeqContract), carried: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), carried: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(stateSeqContract - 1), carried: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(shapedAnswersContract - 1), carried: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
+			body := stateStating(t, stateServer(t, populatedState(t), tc.claims), tc.remote, tc.stated)
 			seq, carried := stateSeqServed(t, body)
 			id, run := stateIDServed(t, body), stateRunServed(t, body)
 			if !tc.carried {
@@ -130,7 +136,7 @@ func TestAStateSeqOfZeroIsServedAtItsContract(t *testing.T) {
 // The body a pod below the contract is served is a copy: the next caller of the same daemon, in no
 // pod, is served the state as the source answered it, sequence, store and run and all.
 func TestTheStateServedToAPodBeforeTheStateSeqContractLeavesTheNextCallersStateWhole(t *testing.T) {
-	handler := stateServer(t, populatedState(t), podClaims(stateSeqContract-1))
+	handler := stateServer(t, populatedState(t), podClaims(shapedAnswersContract-1))
 
 	behind := stateAsked(t, handler, statePodAddr+":41000")
 	operator := stateAsked(t, handler, "192.0.2.1:41000")
@@ -146,7 +152,7 @@ func TestTheStateServedToAPodBeforeTheStateSeqContractLeavesTheNextCallersStateW
 // stateSeqContract is the contract whose entry in version.go added the key, and this daemon's own
 // contract is never below it: a caller at this contract is served the sequence.
 func TestTheStateSeqContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedStateSeq = 196
+	const addedStateSeq = 202
 	if stateSeqContract != addedStateSeq {
 		t.Fatalf("stateSeqContract = %d, want %d, the contract whose entry in version.go added `daemon.stateSeq`",
 			stateSeqContract, addedStateSeq)

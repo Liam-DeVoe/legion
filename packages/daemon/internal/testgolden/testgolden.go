@@ -19,8 +19,8 @@ import (
 // Check pins value, encoded as indented JSON with a final newline, to the daemon API fixture name.
 // With update it writes the fixture; otherwise it fails t where the file differs from what Go now
 // writes, naming the first line that differs and command, the run that rewrites the fixture. The
-// fixture's path is relative to the directory a package's tests run in, which for every caller is
-// packages/daemon/internal/<package>.
+// fixture is the file at Path, which is relative to the directory a package's tests run in, so
+// every caller runs in packages/daemon/internal/<package>.
 func Check(t testing.TB, name string, value any, update bool, command string) {
 	t.Helper()
 	encoded, err := json.MarshalIndent(value, "", "  ")
@@ -28,7 +28,7 @@ func Check(t testing.TB, name string, value any, update bool, command string) {
 		t.Fatalf("marshal %s: %v", name, err)
 	}
 	encoded = append(encoded, '\n')
-	path := filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
+	path := Path(name)
 	if update {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("create fixture directory: %v", err)
@@ -63,4 +63,11 @@ func firstDifferentLine(got, want []byte) string {
 		}
 	}
 	return "no line"
+}
+
+// Path is the path of the daemon API fixture name, relative to the directory a package's tests run
+// in, which for every caller is packages/daemon/internal/<package>. A test that reads a fixture
+// it does not pin whole with Check reads it here.
+func Path(name string) string {
+	return filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", name)
 }
