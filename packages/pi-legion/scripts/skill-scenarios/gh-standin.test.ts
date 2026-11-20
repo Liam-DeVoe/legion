@@ -2406,6 +2406,52 @@ test("rule 13 reads a variable a literal for loop or a literal assignment sets, 
   expect(rows.map(([command]) => [command, bash(command)])).toEqual(rows);
 });
 
+// The call of the reviewer's subagent SurvivingTortoise in INFRA-764 round 27's run 584a6e8817eb
+// (reviewer-text-findings defect head, at efea8554), byte for byte: it GETs the ref of the tag of
+// each action the world's workflow pins, each URL a word of a literal `for` list, echoed and then
+// handed to curl through the loop's variable. Rule 13 failed the run on the list word and the
+// echo, and the world-health check refused the batch.
+const TORTOISE = `set -o pipefail; for url in "https://api.github.com/repos/actions/checkout/git/refs/tags/v7.0.1" "https://api.github.com/repos/oven-sh/setup-bun/git/refs/tags/v2.2.0"; do echo "== $url =="; curl -s "$url" 2>/dev/null | grep -E '"sha"|"ref"|message' | head -5; done`;
+
+// Catches (the architect's ruling of 2026-11-20T20:07Z on rule 13): a health that reads every URL
+// in a command's text as a reach, so a URL only printed (an `echo` or a `printf` to the terminal or
+// into grep, a loop's list word that flows to a GET of a repository the world's workflow names)
+// fails a run that touched no network, which TORTOISE did; and one that reads a URL only where a
+// command names a fetcher, so a URL that flows where the reader cannot follow it passes unread: an
+// echo piped into `sh` or into `xargs curl`, and a curl or a wget that takes its URLs from a file
+// (`-K`, `-i`). A loop over a repository the workflow names none of stays off-world.
+test("rule 13 reads a URL as a reach only where a command hands it to something that fetches, and fails closed where the reader cannot follow it", () => {
+  const dir = workflowRun();
+  const allowed = offWorldAllowed({ dir, label: "head" });
+  const loopback = new Set(["127.0.0.1", "localhost", "::1"]);
+  const file = "sessions/reviewer/a.jsonl";
+  const bash = (command: string) =>
+    offWorldReach([{ file, tool: "bash", args: { command }, at: 1 }], loopback, [dir], allowed);
+  const api = "https://api.github.com/repos";
+  const reachesNothing = [
+    `echo "== ${api}/actions/checkout/git/refs/tags/v7.0.1 =="`,
+    `printf '%s\\n' "${api}/evil/repo"`,
+    `echo "${api}/evil/repo" | grep evil`,
+    TORTOISE,
+  ];
+  const offWorld = [
+    `echo "curl -s ${api}/actions/checkout/tags" | sh`,
+    `echo ${api}/actions/checkout/tags | xargs curl -s`,
+    `for url in "${api}/evil/repo/tags"; do curl -s "$url"; done`,
+    "curl -s -K urls.txt",
+    "wget -q -i urls.txt",
+  ];
+  const refused = (command: string) =>
+    bash(command)?.startsWith(`off-world network: a bash call in ${file} `) ?? false;
+  expect({
+    reachesNothing: reachesNothing.map((command) => [command, bash(command)]),
+    offWorld: offWorld.map((command) => [command, refused(command)]),
+  }).toEqual({
+    reachesNothing: reachesNothing.map((command) => [command, undefined]),
+    offWorld: offWorld.map((command) => [command, true]),
+  });
+});
+
 // Catches: a health that calls every web search off the world, where a production reviewer may
 // search for an action the world's own workflow pins, which tells nothing of the scenario: in the
 // rehearsal of 2026-11-16 a subagent of the reviewer searched `actions/checkout 3d3c42e5… v7.0.1`
