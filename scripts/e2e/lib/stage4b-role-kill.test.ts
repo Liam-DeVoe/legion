@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -12,6 +12,10 @@ import { scriptFunctions } from "./script-functions";
 const lib = join(import.meta.dir, "role-namespaces.sh");
 const stage4b = join(import.meta.dir, "..", "stage4b-sandbox-tree.sh");
 const fn = scriptFunctions(stage4b);
+// Set before temporaryDirectory registers its hooks, since bun takes a hook's timeout when the hook
+// is registered: the directory's removal, with the fake /proc trees, took more than bun's 5 s
+// default on a loaded devbox. Each case that waits on real processes sets its own bound.
+setDefaultTimeout(60_000);
 const dir = temporaryDirectory("stage4b-role-kill-test");
 // The home every bash this file starts runs under, so none of them reads the caller's. The
 // children below take PATH, this home and the case's own names, and nothing else of the caller's.
@@ -240,9 +244,17 @@ function fakeProc(name: string, procs: FakeProc[]): string {
 function snippet(file: string, name: string) {
   return new RegExp(`^${name}='[\\s\\S]*?'$`, "m").exec(readFileSync(file, "utf8"))?.[0] ?? "";
 }
+// A kill that signals nothing and prints what it was asked to send, which every run over a fake tree
+// is given as role_kill_sh's kill (role_kill): a pid or group the fake tree names is a real one's
+// number on this host.
+function fakeKill(): string {
+  const path = join(dir, "fake-kill");
+  writeFileSync(path, '#!/bin/sh\necho "kill $*"\n', { mode: 0o755 });
+  return path;
+}
 function runSnippet(definition: string, call: string, root: string) {
   const r = Bun.spawnSync(["bash", "-c", `${definition}\n${call}`], {
-    env: { PATH: process.env.PATH ?? "", HOME: home, proc_root: root },
+    env: { PATH: process.env.PATH ?? "", HOME: home, proc_root: root, role_kill: fakeKill() },
   });
   return { out: r.stdout.toString().trim(), err: r.stderr.toString().trim(), code: r.exitCode };
 }
@@ -503,5 +515,29 @@ describe("role_kill_sh reads the proc root it is given", () => {
       err: "the shim 7 of role-init 5 is in process group 4, not its own",
       code: 1,
     });
+  });
+
+  test("the one worker-shim child of the role-init has its group killed, and nothing else is", () => {
+    const root = fakeProc("kill-one", [
+      { pid: 5, ppid: 1, argv: ["legion", "launcher", "role-init", "--role", "planner"] },
+      { pid: 7, ppid: 5, argv: ["legion", "worker-shim"] },
+      { pid: 9, ppid: 7, pgrp: 7, argv: ["omp"] },
+    ]);
+    const run = runSnippet(def, 'sh -c "$role_kill_sh" role-kill 5', root);
+    expect(run).toEqual({ out: "kill -s KILL -- -7", err: "", code: 0 });
+  });
+
+  test("a worker-shim under another role-init is not this one's: only this one's group is killed", () => {
+    // 17 is another role's shim, under role-init 6, and 57 is a shim whose parent's pid starts with
+    // this role-init's digits: neither is a child of 5, so neither makes two.
+    const root = fakeProc("kill-other-parent", [
+      { pid: 5, ppid: 1, argv: ["legion", "launcher", "role-init", "--role", "planner"] },
+      { pid: 6, ppid: 1, argv: ["legion", "launcher", "role-init", "--role", "tester"] },
+      { pid: 7, ppid: 5, argv: ["legion", "worker-shim"] },
+      { pid: 17, ppid: 6, argv: ["legion", "worker-shim"] },
+      { pid: 57, ppid: 55, argv: ["legion", "worker-shim"] },
+    ]);
+    const run = runSnippet(def, 'sh -c "$role_kill_sh" role-kill 5', root);
+    expect(run).toEqual({ out: "kill -s KILL -- -7", err: "", code: 0 });
   });
 });

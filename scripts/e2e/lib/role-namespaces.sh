@@ -82,7 +82,11 @@ exec nsenter -t "$init" -U -m -p -i --preserve-credentials -- sh -c '"'$role_shi
 # is refused rather than signalled, since that group would be someone else's. It reads /proc in one
 # pass: one grep reads every process's PPid (-s: a process that ends between the listing and the
 # read is no child), and only INIT's children are read further, so a host with tens of thousands of
-# processes costs one grep rather than a sed for each of them.
+# processes costs one grep rather than a sed for each of them. It reads `${proc_root:-/proc}`, as
+# every program here does, and sends its signal with `${role_kill:-kill}`: a test of it over a fake
+# tree names a stand-in kill there, since a group the fake tree names is a real group's number on
+# the host (kubectl exec hands the pod's sh neither variable, so the pod always reads its /proc and
+# runs kill).
 # shellcheck disable=SC2016  # expanded by the pod's shell
 role_kill_sh='
 init=$1 shim= proc=${proc_root:-/proc}
@@ -96,4 +100,4 @@ done
 group=$(sed "s/.*) //" "$proc/$shim/stat" | cut -d" " -f3)
 [ "$group" = "$shim" ] || { echo "the shim $shim of role-init $init is in process group $group, not its own" >&2; exit 1; }
 # no-wait: the last act; the caller waits, bounded, for the daemon to see the generation end.
-kill -s KILL -- "-$group"'
+"${role_kill:-kill}" -s KILL -- "-$group"'
