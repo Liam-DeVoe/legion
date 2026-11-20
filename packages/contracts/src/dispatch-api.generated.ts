@@ -4908,6 +4908,7 @@ export interface components {
     EditPreconditionCurrent: {
       blocks: components["schemas"]["EditBlockPrecondition"][] | null;
       document: string;
+      version?: number;
     };
     EditPreconditionError: {
       code: string;
@@ -5552,6 +5553,7 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       content?: null | string;
       name: string;
+      precondition?: components["schemas"]["EditPrecondition"] | null;
       /** @description refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload */
       primary?: boolean;
       summary?: string;
@@ -6478,6 +6480,15 @@ export interface components {
       method: string;
       path: string;
     };
+    StandingReview: {
+      /** Format: date-time */
+      at: string;
+      by: string;
+      carried_from_version?: number;
+      reason?: string;
+      state: string;
+      version: number;
+    };
     StateResponse: {
       /** @enum {string} */
       state: "denied" | "cancelled" | "revoked";
@@ -6748,6 +6759,7 @@ export interface components {
       legion_managed_status?: boolean;
       moved_approval_request?: components["schemas"]["MovedApprovalRequest"];
       session_writes_since_human: number;
+      standing_review?: components["schemas"]["StandingReview"];
       suggestions?: components["schemas"]["Suggestions"];
       superseded_approval?: components["schemas"]["SupersededApproval"];
       unparsed_openers?: components["schemas"]["UnparsedOpeners"];
@@ -6896,6 +6908,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the base this upload replaces as one JSON object, as the JSON body's `precondition` field */
+          precondition?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -10299,6 +10313,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the base this upload replaces as one JSON object, as the JSON body's `precondition` field */
+          precondition?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -13378,6 +13394,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the base this upload replaces as one JSON object, as the JSON body's `precondition` field */
+          precondition?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -15164,6 +15182,7 @@ export type SessionAnswer = components["schemas"]["SessionAnswer"];
 export type SessionAnswerAsk = components["schemas"]["SessionAnswerAsk"];
 export type SessionAnswersResponse = components["schemas"]["SessionAnswersResponse"];
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
+export type StandingReview = components["schemas"]["StandingReview"];
 export type StateResponse = components["schemas"]["StateResponse"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];

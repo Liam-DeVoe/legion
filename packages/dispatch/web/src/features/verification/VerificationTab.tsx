@@ -21,6 +21,7 @@ import {
   textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { ReplacingUploadNote } from "../artifacts/ArtifactUpload";
 import { AgentName } from "../refs/AgentName";
 import { BlockReferences } from "../refs/ReferencedBy";
 import { ReferenceLink } from "../refs/ReferenceLink";
@@ -437,7 +438,12 @@ export function VerificationTab({
     return (
       <div data-testid="verification-empty">
         <EmptyState
-          action={<code>{`dispatch artifact --issue ${issueKey} --name verification.md`}</code>}
+          action={
+            <>
+              <code>{`dispatch artifact --issue ${issueKey} --name verification.md`}</code>
+              <ReplacingUploadNote />
+            </>
+          }
           label="Verification empty state"
           message={`${issueKey} has no Verification document. Make one with:`}
         />
