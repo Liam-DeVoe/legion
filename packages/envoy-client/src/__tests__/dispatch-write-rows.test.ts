@@ -19,16 +19,18 @@ import {
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
-  type IdempotencyLandedCode,
 } from "@legion/contracts";
 import { z } from "zod";
 import { keyedLayer } from "../../test/keyed-layer";
 import { answerErrors, answersOf, instance, onRoute, routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import {
+  DISPATCH_ANSWER_LOST,
+  DispatchAnswerMissingError,
   DispatchClient,
+  type DispatchLandedCode,
   DispatchWriteLandedError,
-  DispatchWriteUnsettledError,
+  writeOutcomeUnknown,
 } from "../dispatch-http";
 import { rowStores, WRITE_ROWS } from "../dispatch-write-rows";
 
@@ -145,6 +147,18 @@ const CASES: readonly WriteRowCase[] = [
         verdict: "pass",
         commit: "c8".repeat(20),
       } as Parameters<DispatchClient["recordResult"]>[1]),
+  },
+  {
+    method: "dryRunResult",
+    route: "POST /api/v1/issues/{key}/results/dry-run",
+    call: (client) =>
+      client.dryRunResult("ACME-1", {
+        actor,
+        check: "probe",
+        role: "tester",
+        verdict: "pass",
+        commit: "c8".repeat(20),
+      } as Parameters<DispatchClient["dryRunResult"]>[1]),
   },
   {
     method: "retractResult",
@@ -351,7 +365,8 @@ async function outcome(
     return { sent, answered: await row.call(client) };
   } catch (error) {
     if (error instanceof DispatchWriteLandedError) return { sent, landed: error.code };
-    if (error instanceof DispatchWriteUnsettledError) return { sent, unknown: true };
+    if (error instanceof DispatchAnswerMissingError) return { sent, missing: error.code };
+    if (writeOutcomeUnknown(error)) return { sent, unknown: true };
     return {
       sent,
       thrown: error instanceof Error ? `${error.name}: ${error.message}` : String(error),
@@ -359,13 +374,15 @@ async function outcome(
   }
 }
 
-/** What a 2xx that is not the call's answer is: a landing whose answer was lost where the 2xx
- * is Dispatch's own and the route stores it, and an outcome the call cannot know otherwise. */
+/** What a 2xx that is not the call's answer is: for a route that stores, a landing whose answer
+ *  was lost where the 2xx is Dispatch's own (it names the key back), and an outcome the call
+ *  cannot know where it is not; for a route that stores nothing, a missing answer either way. */
 function noAnswer(
   row: WriteRowCase,
-  _echo: Echo
-): { landed?: IdempotencyLandedCode; unknown?: boolean } {
-  return row.method === "markdownRoundTrip" ? {} : { unknown: true };
+  echo: Echo
+): { landed?: DispatchLandedCode; unknown?: boolean; missing?: string } {
+  if (!rowStores(WRITE_ROWS[row.method])) return { missing: DISPATCH_ANSWER_LOST };
+  return echo === "this" ? { landed: DISPATCH_ANSWER_LOST } : { unknown: true };
 }
 
 /** Each path inside `schema` at which an object refuses a member it does not name (a
@@ -424,9 +441,13 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     expect(driven).toEqual(Object.keys(WRITE_ROWS).sort());
   });
 
-  test("the routes that store nothing are the round trip and the related-item check", () => {
+  test("the routes that store nothing are the round trip, the related-item check and a result's dry run", () => {
     const stores = Object.entries(WRITE_ROWS).filter(([, row]) => !rowStores(row));
-    expect(stores.map(([method]) => method).sort()).toEqual(["markdownRoundTrip", "related"]);
+    expect(stores.map(([method]) => method).sort()).toEqual([
+      "dryRunResult",
+      "markdownRoundTrip",
+      "related",
+    ]);
   });
 
   // A newer Dispatch may answer a member the row does not name, at any depth, and an older client
@@ -491,11 +512,13 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
             answered: "answered" in got,
             landed: got.landed,
             unknown: got.unknown,
+            missing: got.missing,
             thrown: got.thrown,
           }).toEqual({
             answered: true,
             landed: undefined,
             unknown: undefined,
+            missing: undefined,
             thrown: undefined,
           });
           const last = got.sent.at(-1)?.split(" ") ?? [];
@@ -514,17 +537,19 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     // with what the call sent. A route that stores nothing made nothing either way.
     test(`${label}: the least ${status} answer naming no key back is not the call's answer`, async () => {
       const got = await outcome(row, status, "application/json", JSON.stringify(least), "none");
-      expect({ landed: got.landed, unknown: got.unknown }).toEqual({
+      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
         landed: undefined,
         unknown: undefined,
+        missing: undefined,
         ...noAnswer(row, "none"),
       });
     });
     test(`${label}: the least ${status} answer naming another key back is not this call's`, async () => {
       const got = await outcome(row, status, "application/json", JSON.stringify(least), "other");
-      expect({ landed: got.landed, unknown: got.unknown }).toEqual({
+      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
         landed: undefined,
         unknown: undefined,
+        missing: undefined,
         ...noAnswer(row, "other"),
       });
     });
@@ -532,59 +557,66 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     // 2xx reading ANSWER_NOT_KEPT (`keyedAnswerKept`, request_keys.go). A route that stores
     // nothing made nothing, so it is the missing answer there, and a landing only where the route
     // stores.
-    const notKept: { landed?: IdempotencyLandedCode; unknown?: boolean } = {
-      landed: IDEMPOTENCY_ANSWER_NOT_KEPT,
-    };
+    const notKept: { landed?: DispatchLandedCode; missing?: string } = rowStores(
+      WRITE_ROWS[row.method]
+    )
+      ? { landed: IDEMPOTENCY_ANSWER_NOT_KEPT }
+      : { missing: DISPATCH_ANSWER_LOST };
     test(`${label}: a replayed ${status} reading ANSWER_NOT_KEPT, naming its key back, is ${"landed" in notKept ? "ANSWER_NOT_KEPT" : "no answer"}`, async () => {
       const body = JSON.stringify({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" });
       const got = await outcome(row, status, "application/json", body, "this", {
         "Idempotency-Replayed": "?1",
       });
-      expect({ landed: got.landed, unknown: got.unknown }).toEqual({
+      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
         landed: undefined,
         unknown: undefined,
+        missing: undefined,
         ...notKept,
       });
     });
     // A 409 KEY_COMMITTED that names the key back says Dispatch committed the write under it and
     // kept no answer: a landing where the route stores, and by the same rule as the 2xx path, the
     // missing answer where it stores nothing.
-    const committed: { landed?: IdempotencyLandedCode; unknown?: boolean } = {
-      landed: IDEMPOTENCY_KEY_COMMITTED,
-    };
+    const committed: { landed?: DispatchLandedCode; missing?: string } = rowStores(
+      WRITE_ROWS[row.method]
+    )
+      ? { landed: IDEMPOTENCY_KEY_COMMITTED }
+      : { missing: DISPATCH_ANSWER_LOST };
     test(`${label}: a 409 KEY_COMMITTED naming its key back is ${"landed" in committed ? "KEY_COMMITTED" : "no answer"}`, async () => {
       const body = JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "committed" });
       const got = await outcome(row, 409, "application/json", body, "this");
-      expect({ landed: got.landed, unknown: got.unknown }).toEqual({
+      expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
         landed: undefined,
         unknown: undefined,
+        missing: undefined,
         ...committed,
       });
     });
     for (const echo of ["this", "none"] as const) {
       const named = echo === "this" ? "naming its key back" : "naming no key back";
-      for (const [name, type, body] of [
-        ["an HTML page", "text/html", "<html><body>not json</body></html>"],
-        ["an empty body", "application/json", ""],
-        ["JSON null", "application/json", "null"],
+      for (const [name, type, body, json] of [
+        ["an HTML page", "text/html", "<html><body>not json</body></html>", false],
+        ["an empty body", "application/json", "", false],
+        ["JSON null", "application/json", "null", true],
         // `{}` is the row of a method no caller reads the answer of, so it is that call's answer
         // where it names the key back, and no answer where it names none.
         ...(READS_NOTHING[row.method] && echo === "this"
           ? []
-          : [["the JSON {}", "application/json", "{}"]]),
+          : [["the JSON {}", "application/json", "{}", true] as const]),
       ] as const) {
+        // A 2xx that is no JSON is no answer of Dispatch's whatever key it names back (the write
+        // table's `foreign-2xx`, write-outcome.ts): a write that stores may have reached Dispatch
+        // behind it, so its outcome is unknown, and one that stores nothing made nothing.
         const expected =
-          echo === "this" && (body === "null" || body === "{}")
-            ? row.method === "recordSpecCheckResult"
-              ? { landed: "ANSWER_LOST" as const }
-              : {}
-            : noAnswer(row, echo);
-        const reads = "landed" in expected ? expected.landed : "unknown";
+          json || !rowStores(WRITE_ROWS[row.method]) ? noAnswer(row, echo) : { unknown: true };
+        const reads =
+          "landed" in expected ? "ANSWER_LOST" : "missing" in expected ? "no answer" : "unknown";
         test(`${label}: a ${status} with ${name}, ${named}, is ${reads}`, async () => {
           const got = await outcome(row, status, type, body, echo);
-          expect({ landed: got.landed, unknown: got.unknown }).toEqual({
+          expect({ landed: got.landed, unknown: got.unknown, missing: got.missing }).toEqual({
             landed: undefined,
             unknown: undefined,
+            missing: undefined,
             ...expected,
           });
         });

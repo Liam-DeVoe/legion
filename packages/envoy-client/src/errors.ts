@@ -137,26 +137,3 @@ export function natsFailureReason(error: unknown): string {
   }
   return errorClass(error);
 }
-
-/** Whether `status` is a redirect's: no request of this client follows one or reads its body. */
-export function isRedirectStatus(status: number): boolean {
-  return status >= 300 && status < 400;
-}
-
-/**
- * The origin a redirect points at, for the line that refuses it: the scheme and the host (with a
- * port that is not the scheme's own) of `response`'s `Location`, read against `url`, the request
- * it answers. Never its path, query, fragment or user, any of which can carry a secret. Undefined
- * for an answer that is no redirect, and for a `Location` that is missing or names no http(s)
- * origin.
- */
-export function redirectOrigin(response: Response, url: string): string | undefined {
-  const location = response.headers.get("Location");
-  if (!isRedirectStatus(response.status) || location === null) return undefined;
-  try {
-    const target = new URL(location, url);
-    return target.protocol === "http:" || target.protocol === "https:" ? target.origin : undefined;
-  } catch {
-    return undefined;
-  }
-}

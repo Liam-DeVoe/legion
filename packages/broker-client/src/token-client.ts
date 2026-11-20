@@ -49,6 +49,7 @@ import {
   RegistrationPendingError,
   TokenClientClosedError,
   TradeRetryingError,
+  type TradePart,
   TradeUnansweredError,
 } from "./token-errors";
 import {
@@ -317,6 +318,9 @@ export class BrokerTokenClient {
   #retryWait = RETRY_FIRST_WAIT_MS;
   /** Ended by {@link close}, which stops the retry loop. */
   readonly #closed = new AbortController();
+  /** The part of the trade under way, which a caller whose own signal ends its wait on the first
+   *  trade since its last token is told (`TradeUnansweredError.part`). */
+  #part: TradePart = "identity";
 
   constructor(options: BrokerTokenClientOptions) {
     const brokerUrl = withoutTrailingSlashes(options.brokerUrl.trim());
@@ -372,10 +376,10 @@ export class BrokerTokenClient {
    * - A caller whose `signal` ends first takes the token in hand where it is still live, and is
    *   otherwise told {@link RegistrationPendingError} where the last trade found the pod's session
    *   not registered yet, {@link TradeRetryingError} where it failed otherwise,
-   *   {@link TradeUnansweredError} where no trade has ended yet but one is out, and the signal's
-   *   own reason where no trade is out at all (`#stopped`). The loop goes on. A caller that passes
-   *   no signal waits until a token lands, a refusal ends the loop or, failing fast, a trade
-   *   fails.
+   *   {@link TradeUnansweredError} where no trade has ended yet but one is out, marked with the
+   *   part of that trade then under way (`tradeWaitEnded`), and the signal's own reason where no
+   *   trade is out at all (`#stopped`). The loop goes on. A caller that passes no signal waits
+   *   until a token lands, a refusal ends the loop or, failing fast, a trade fails.
    * - A closed client ({@link close}) answers a caller with nothing live in hand
    *   {@link TokenClientClosedError}, and trades no more.
    */
@@ -414,7 +418,7 @@ export class BrokerTokenClient {
   #stopped(reason: unknown): unknown {
     const last = this.#last;
     if (last === null)
-      return this.#loop === null ? reason : new TradeUnansweredError(this.describe());
+      return this.#loop === null ? reason : new TradeUnansweredError(this.describe(), this.#part);
     return last.kind === "pending"
       ? new RegistrationPendingError(this.#session, last.refusal)
       : new TradeRetryingError(last.said);
@@ -668,6 +672,7 @@ export class BrokerTokenClient {
    * process makes with the token it got.
    */
   async #trade(signal: AbortSignal | undefined): Promise<BrokerToken> {
+    this.#part = "identity";
     const subject = await this.#subject.read(signal);
     // Held, with the actor's and the minted token, so every line this process prints is scrubbed
     // of them (`@legion/contracts/held-secrets`): a broker at the wrong URL can echo them. Each is
@@ -714,6 +719,7 @@ export class BrokerTokenClient {
     // http origin; the client posts where it is told, as the Go client does.
     allowInsecureRequests(config);
     config[customFetch] = (url, options) => this.#send(url, options, signal, raw);
+    this.#part = "exchange";
     let answered: TokenEndpointResponse;
     try {
       answered = await genericGrantRequest(config, GRANT_TYPE_TOKEN_EXCHANGE, form);

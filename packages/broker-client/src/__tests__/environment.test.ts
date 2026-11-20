@@ -93,12 +93,14 @@ test("a GitHub Actions job's identity is read from the runner's variables, else 
   const endpoint = machineIdentity(job);
   expect(endpoint?.describe()).toContain(ACTIONS_TOKEN_URL_VAR);
   expect(endpoint?.describe()).not.toContain("runner-request-bearer");
+  // The runner sets the URL and the bearer together, in a job granted `id-token: write`.
   expect(() => machineIdentity({ ...job, [ACTIONS_TOKEN_VAR]: "" })).toThrow(
     `${ACTIONS_TOKEN_VAR} is required by ${IDENTITY_VAR}=github-actions`
   );
   expect(() => machineIdentity({ ...job, [MACHINE_AUDIENCE_VAR]: undefined })).toThrow(
     `${MACHINE_AUDIENCE_VAR} is required by ${IDENTITY_VAR}=github-actions`
   );
+  // A job with no endpoint reads the run's token from a file, where one is named.
   const noEndpoint = { [IDENTITY_VAR]: IDENTITY_GITHUB_ACTIONS };
   expect(
     machineIdentity({ ...noEndpoint, [MACHINE_TOKEN_FILE_VAR]: "/run/job/token" })?.describe()

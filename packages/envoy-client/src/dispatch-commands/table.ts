@@ -6,7 +6,6 @@ import {
   openAsksCommand,
   resolveAskCommand,
 } from "./asks";
-import { resultCommand, resultsCommand } from "./check-results";
 import type { CommandContext, DispatchToolResult, SessionContext } from "./context";
 import {
   commentCommand,
@@ -29,6 +28,8 @@ import {
   issuesCommand,
   issueUpdateCommand,
   relatedCommand,
+  resultCommand,
+  resultsCommand,
   searchCommand,
 } from "./issues";
 import { plansCommand } from "./plans";

@@ -626,7 +626,9 @@ them, covers the issue; with Envoy off or no answer from the listener it names n
 `DISPATCH_FIRST_MARKER`, the text pi-envoy and claude-envoy inject into a session with Dispatch.
 
 Every write `DispatchClient` makes carries one key. Each JSON and multipart call mints a
-`crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call, once (`#writeCall`), and sends
+`crypto.randomUUID()` `Idempotency-Key` per `POST` and `PATCH` call, once (`#writeCall`), or uses
+the key its caller gives (`docEdit` and a project's upload take one, and an empty key names
+nothing: [`docs/write-answers.md`](docs/write-answers.md)), and sends
 it on every attempt: the write's own attempts, the re-send after `401 BROKER_TOKEN_NOT_ACTIVE`,
 and each retry after an old build's answer of no route. So Dispatch runs the write once however
 many attempts reach it and answers a repeat with the first answer
@@ -653,7 +655,12 @@ with no attempt started more than 55 s after the first (`inFlightWithinMs`), unt
 answer comes back: a write that takes Dispatch 50 s, or two silent attempts in a row, still ends in
 its answer. An upload (a body of a megabyte or more) keeps the five-attempt schedule, since each
 repeat sends its whole body again. No attempt of any write starts more than 55 s after the client
-was made, since its 60 s deadline counts from there. The numbers come from the 3,612 `dispatch`
+was made, since its 60 s deadline counts from there; a caller with a bound of its own hands the
+client that bound's one timeout as `deadline`, and an `inFlightWithinMs` inside it, as `dispatch
+result --project` does. The client hands its signal to the credential for each request
+(`RequestCredential.headers`' `signal`), so the request's wait on a broker credential's trade ends
+at the same deadline; the trade itself runs under its own 30 s bound, and goes on for every other
+request that shares it. The numbers come from the 3,612 `dispatch`
 write commands that succeeded between 2026-10-31 21:00Z and 2026-11-02 07:30Z, each timed whole
 (p50 1.8 s, p95 19.6 s, p99 45.5 s). All of it sits inside the call's own 60 s deadline, so a
 Dispatch that is down holds a `dispatch` command, and the session waiting on it, no longer than
@@ -717,7 +724,10 @@ resend, and the attempt's own failure is the call's. Only a yes is remembered, a
 five minutes, so a rollback to a Dispatch without the layer is noticed within that bound.
 Dispatch's own refusal that carries no echo says its layer did not judge the request, so it sets
 the memory aside and `/healthz` decides afresh. The probe runs only after a write has already
-failed, so the ordinary path makes no request of its own.
+failed, so the ordinary path makes no request of its own. Writes of one process that fail
+together share one probe, which runs under its own 5 s and under no write's signal: a write's own
+end ends its wait on the probe alone, as a failed probe would, and the probe goes on for the
+others.
 
 The `dispatch` command runs each call in a process of its own, so it carries that memory in its
 session's `state.json` (`keyedLayer`: each origin with the wall-clock time of its last sighting,
@@ -785,6 +795,13 @@ next version), or the closing reason of `issue-update --status done` (the close 
 the issue's messages for the reason, then close with one that points at it). The close's own
 `PATCH` landing this way is the command's write, and exits 0.
 
+[`docs/write-answers.md`](docs/write-answers.md) says what each answer of Dispatch becomes, and
+what the `dispatch` command prints for each. It covers Dispatch's refusal, a gateway's page, a
+refused redirect, a path value that names nothing, and a write whose outcome is unknown. It also
+covers a landing whose answer is gone, and a 2xx that names no key back, which is never the call's
+answer. A landing needs the key that Dispatch names back. The line of a refused redirect names the
+target's origin, and its body as a gateway's page is named, in one redacted line.
+
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
 with no decision blocks, three or more session writes without a human response (with stronger
@@ -841,9 +858,11 @@ a Google identity token through a workload identity pool, as the Go client's `Po
 does (`pool-identity.ts`), for a machine with no Google service account of its own, such as an
 Azure box. `pool` needs all four of `AGENT_SECRETS_MACHINE_TOKEN_FILE`,
 `AGENT_SECRETS_MACHINE_AUDIENCE`, `AGENT_SECRETS_POOL_AUDIENCE` and `AGENT_SECRETS_POOL_ACCOUNT`.
-`github-actions` asks the runner endpoint in `ACTIONS_ID_TOKEN_REQUEST_URL`, with the bearer in
-`ACTIONS_ID_TOKEN_REQUEST_TOKEN`, for a token carrying `AGENT_SECRETS_MACHINE_AUDIENCE`; without
-that endpoint it reads the run token from `AGENT_SECRETS_MACHINE_TOKEN_FILE`.
+`github-actions` asks a GitHub Actions job's runner for its OIDC token of the audience
+`AGENT_SECRETS_MACHINE_AUDIENCE` at every trade (`github-actions.ts`): the runner's endpoint is
+`ACTIONS_ID_TOKEN_REQUEST_URL` and its bearer `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, which GitHub sets
+in a job granted `id-token: write`. A job with no endpoint reads the run's token from
+`AGENT_SECRETS_MACHINE_TOKEN_FILE`.
 An identity with one of its variables missing is an error that names the variable.
 
 A pod writes under a session name only once its deployment has registered that name for the pod,
@@ -1002,7 +1021,29 @@ first `: `; a label holding `: ` goes in `--options-json`, which the generated c
 for such a list), and `--<field>-json` for any other object. Only one flag of a call may read
 stdin. For a string or enum field, the command refuses `--<field> -` and `--<field>=-` with exit 2,
 and its refusal names `--<field>-file`. The one exception is `dispatch artifact --path`, whose value
-names a local file. `dispatch --help` lists the commands, `dispatch <command> --help` its flags and
+names a local file. The command refuses an empty value of each flag that names what a call is
+about or narrows a read, before any request. These flags are `--issue`, `--project`, `--check`,
+`--commit`, `--at`, `--retract`, `--comment`, `--session` of `dispatch send-to-agent`, and
+`--parent` of `dispatch issues` and `dispatch issue` (`IDENTIFIER_FIELDS` in
+`dispatch-command.ts`). An empty variable gives such a value. The command reads the value trimmed,
+so a value of only white space is refused too, and it refuses `.` and `..` for `--issue`,
+`--project`, `--retract`, `--comment` and `--session`, whose value goes into a URL path. The
+refusal names the flag, and the command exits 2. Sent, such a value named nothing. In a path it
+reached no route, a redirect of Dispatch's router, or another route: the URL drops `.` and `..`
+as steps of the path, so `dispatch read --issue ..` asked `GET /api/v1/`. A read that it narrowed
+came back wider: `dispatch search --project ""` answered every project's rows, and
+`dispatch issues --project ""` or `" "` every project's issues. `dispatch issues --parent ""`
+answered every issue of its project, and `dispatch results --at ""` as with no `--at`. An empty
+`--check` of `dispatch results --project` answered the results of every check at the commit.
+`dispatch issue --parent ""` made the issue under no parent. Dispatch refused at once
+`dispatch open-asks --project ""`, an empty `--commit` of `dispatch results`, and an empty
+`--check` or `--commit` of `dispatch result`. To search every project, leave `--project` out.
+`dispatch issue-update --parent ""` clears the parent, as its help says, so it is not refused. No
+URL path of this client holds a value that names nothing either: empty, only white space, `.` or
+`..`. `DispatchClient` refuses one before any request, for every caller (`DispatchEmptyPathError`),
+which a model's tool call can reach; no argument of the command reaches it, since the command
+refuses each such value of a flag first.
+`dispatch --help` lists the commands, `dispatch <command> --help` its flags and
 an example, and `--dry-run` runs the call's own argument check (`checkDispatchCall`: the owner, the
 strict schema, the cross-field checks and the picture files), refusing the arguments the call would
 refuse with the call's message, and otherwise prints the arguments as given, not as the call fills
@@ -1030,6 +1071,10 @@ Under Claude Code the whole output stays under 25,000 characters: the result tex
 the full text written to a file the output names, and the picture lines and follow notice kept.
 When Dispatch took the call but the session's state (a picture, the ledger, the memory) could not
 be written, the result still prints, with one line saying so.
+
+A CI job records its result of a check of the spec files with `dispatch result --project`, the
+one call that is no session's, and a session reads those results with `dispatch results --project`:
+[`docs/ci-results.md`](docs/ci-results.md) says how each works.
 
 `dispatch-session-state.ts` keeps one directory per session under `DISPATCH_STATE_DIR` (default
 `<XDG_STATE_HOME or ~/.local/state>/dispatch/sessions/<id>`): `state.json` carries what a

@@ -528,7 +528,7 @@ const KINDS: readonly Kind[] = [
     name: "trade unanswered",
     role: "credential-final",
     at: "credential",
-    fails: () => new TradeUnansweredError("this machine's pool identity"),
+    fails: () => new TradeUnansweredError("this machine's pool identity", "exchange"),
   },
   { name: "deadline", role: "stop-wait", at: "wait", own: { as: "deadline" } },
   { name: "stop", role: "stop-wait", at: "wait", own: { as: "cancelled" } },

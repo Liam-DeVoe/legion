@@ -41,7 +41,9 @@ const (
 	// only under Options.ServesReadOnly.
 	ProjectScopeNone = oauthwire.ProjectScopeNone
 	// ProjectScopeResults means Projects is the one project whose results the token writes, for
-	// the run it carries. A verifier accepts it only under Options.ServesResults.
+	// the run it carries, and it writes nothing else: a results token, which holds ScopeResults
+	// and nothing else beside it (shapeOf) and which a verifier accepts only under
+	// Options.ServesResults.
 	ProjectScopeResults = oauthwire.ProjectScopeResults
 )
 
@@ -51,11 +53,13 @@ const (
 // session's credential (ErrNotASession).
 const ScopeRead = oauthwire.ScopeRead
 
-// ScopeResults is the one OAuth scope a results token holds. Beside any project scope other than
-// ProjectScopeResults it is no session credential.
+// ScopeResults is the one OAuth scope a results token holds, carried here for the reason
+// ScopeRead is. Beside ProjectScopeResults it is a results token, and beside any other project
+// scope it is no session's credential (ErrNotASession).
 const ScopeResults = oauthwire.ScopeResults
 
-// CIRun is the GitHub Actions run a results token was minted for, as the broker answers it.
+// CIRun is the GitHub Actions run a results token was minted for, as the broker answers it
+// (Introspection.CI), carried here for the reason the project scopes are.
 type CIRun = oauthwire.CIRun
 
 // ExchangeClientID is the OAuth client every token issued for acting as a session is issued to:
@@ -86,12 +90,15 @@ func expiryOf(answer Introspection) time.Time {
 // callerOf is the Caller a live answer names, the one shape both checks hand back. The list of
 // projects is carried whole, under any scope, as the caller's own copy, and the scope beside it,
 // because a reader deciding what the token may do needs the scope itself and not only the list;
-// a read-only answer names none, which sessionCaller holds it to. The service is carried as the
-// broker answered it, which is set exactly where the person is not (sessionCaller refuses an
-// answer naming neither). ReadOnly is shapeOf's verdict on the answer, which sessionCaller reached
-// and hands over as shape: callerOf runs only on an answer sessionCaller accepted, and
-// sessionCaller lets a read-only answer through only with its switch set, which only a verifier
-// that serves one sets, so a Caller marked read-only is one such a verifier accepted.
+// a read-only answer names none, which sessionCaller holds it to, and a results answer names its
+// one project. The service is carried as the broker answered it, which is set exactly where the
+// person is not (sessionCaller refuses an answer naming neither). ReadOnly and ResultsOnly are
+// shapeOf's verdict on the answer, which sessionCaller reached and hands over as shape: callerOf
+// runs only on an answer sessionCaller accepted, and sessionCaller lets a read-only or a results
+// answer through only with its switch set, which only a verifier that serves one sets, so a
+// Caller marked either way is one such a verifier accepted. The run of a results answer is
+// copied, so a reader of the Caller shares nothing with the answer the cache keeps for the next
+// request.
 func callerOf(answer Introspection, shape tokenShape) Caller {
 	caller := Caller{
 		Session: answer.Session, Person: answer.Person, Service: answer.Service,

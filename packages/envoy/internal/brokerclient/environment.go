@@ -20,15 +20,18 @@ import (
 const (
 	// BrokerURLVar names the secrets broker, as it does for every other form of agent-secrets.
 	BrokerURLVar = "AGENT_SECRETS_URL"
-	// IdentityVar says which identity this machine proves: kubernetes, metadata or pool. Unset,
-	// this machine has none and nothing trades — which is every deployment that has not turned
-	// the exchange on, and is why no program here fails for want of it.
+	// IdentityVar says which identity this machine proves: kubernetes, metadata, pool or
+	// github-actions. Unset, this machine has none and nothing trades — which is every
+	// deployment that has not turned the exchange on, and is why no program here fails for want
+	// of it.
 	IdentityVar = "AGENT_SECRETS_MACHINE_IDENTITY"
 	// MachineTokenFileVar is the projected Kubernetes service-account token file, which
-	// IdentityKubernetes reads and IdentityPool federates.
+	// IdentityKubernetes reads and IdentityPool federates, and the file an
+	// IdentityGitHubActions job with no runner endpoint reads its run's token from.
 	MachineTokenFileVar = "AGENT_SECRETS_MACHINE_TOKEN_FILE"
 	// MachineAudienceVar is the audience of this machine's Google identity token: the metadata
-	// server mints it for that audience, and a pool mint names it as the minted token's own.
+	// server mints it for that audience, and a pool mint names it as the minted token's own. A
+	// GitHub Actions job's runner mints its OIDC token for it too.
 	MachineAudienceVar = "AGENT_SECRETS_MACHINE_AUDIENCE"
 	// PoolAudienceVar is the workload identity pool provider an external credential is traded
 	// at, the full //iam.googleapis.com/projects/… resource name.
@@ -36,7 +39,8 @@ const (
 	// PoolAccountVar is the managed identity generateIdToken is called on.
 	PoolAccountVar = "AGENT_SECRETS_POOL_ACCOUNT"
 	// ActionsTokenURLVar is the runner's OIDC token endpoint, which GitHub sets in a job granted
-	// id-token: write, and ActionsTokenVar the bearer that endpoint takes.
+	// id-token: write, and ActionsTokenVar the bearer that endpoint takes, which GitHub sets
+	// beside it. IdentityGitHubActions asks the one with the other.
 	ActionsTokenURLVar = "ACTIONS_ID_TOKEN_REQUEST_URL"
 	ActionsTokenVar    = "ACTIONS_ID_TOKEN_REQUEST_TOKEN"
 	// SessionVar is the session a trade writes under for a caller that acts as no session of

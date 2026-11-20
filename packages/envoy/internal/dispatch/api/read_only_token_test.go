@@ -96,9 +96,8 @@ var readListAnswers = map[string]limitedAnswer{
 // TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone walks the server register mounted,
 // test hooks in, with a read-only token: every row the list does not name and GET /ws/live answer
 // 403 READ_ONLY_TOKEN; GET /ws/doc/{room}, which reads no broker token at all, answers 401; and
-// each listed route answers its handler's own refusal of its probe path (readListAnswers).
-// A row is counted once its assertions have run, and the count is held to the rows the
-// registered server mounts, as the walk above is.
+// each listed route answers its handler's own refusal of its probe path (readListAnswers,
+// walkTheMountedServerWith).
 func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
 	walkTheMountedServerWith(t, readOnlyLimitedToken())
 }

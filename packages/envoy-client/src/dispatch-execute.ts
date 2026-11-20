@@ -1,11 +1,11 @@
 import { checkDispatchCall, dispatchServerUrls } from "./dispatch-commands/check";
-import { dryRunAsksDispatch } from "./dispatch-commands/check-results";
 import { commandContext } from "./dispatch-commands/command-context";
 import {
   type DispatchToolResult,
   type ExecuteDispatchToolInput,
   sessionContext,
 } from "./dispatch-commands/context";
+import { dryRunAsksDispatch } from "./dispatch-commands/issues";
 import {
   type DispatchCommand,
   type DispatchToolName,
