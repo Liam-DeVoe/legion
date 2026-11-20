@@ -1819,6 +1819,11 @@
         "why": "the rule's own walk down an error's chain, which reads each error's type and prints none of them: it decides an error's closed code (refusalCode) or its class (tlsFailure)"
       },
       {
+        "file": "packages/envoy/internal/redact/failure.go",
+        "callee": "(interface).Unwrap",
+        "why": "the rule's own walk down an error's chain, which reads each error's type and prints none of them: it finds the broker's own OAuth answer on no branch through an error this package already put in words (BrokerAnswer)"
+      },
+      {
         "file": "packages/envoy/internal/redact/oauth2.go",
         "callee": "(interface).Unwrap",
         "why": "the rule's own walk down an error's chain, which reads each error's type and prints none of them: it decides an error's closed code (refusalCode) or its class (tlsFailure)"
