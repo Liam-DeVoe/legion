@@ -747,3 +747,48 @@ func TestAPushForAReplacedConnectionHoldsTheTokensTurn(t *testing.T) {
 		t.Fatalf("the daemon holds the current connection on %q, want %s", held, digestOf(a.Body))
 	}
 }
+
+// A push of the index holds the turn of one pod of a token, not the token's own: each slice goes
+// only to that pod's connection (request), so a push that waits on a pod that has ended does not
+// hold the first start of the pod that replaced it. And a start whose push does wait for its own
+// pod's turn until the time the start keeps for its start frame says so, naming that time.
+func TestAnIndexPushWaitsOnlyForItsOwnPodsTurn(t *testing.T) {
+	for name, tc := range map[string]struct {
+		heldFor string
+		waits   bool
+	}{
+		"a push to the pod the start's pod replaced holds that pod's turn": {heldFor: "uid-pod-ended"},
+		"a push to the start's own pod holds its turn":                     {heldFor: "uid-pod-current", waits: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			a := testIndex(rigNow)
+			var logs lockedLog
+			d := reserveLaunchers(t, readsOf(a), nil, &logs)
+			l := &indexLauncher{}
+			connectIndexLauncher(t, d, workerToken, "uid-pod-current", true, l)
+			release, err := d.takeIndexTurn(context.Background(), workerToken, tc.heldFor)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*testStartReserve)
+			defer cancel()
+
+			if err := d.start(ctx, workerToken, "uid-pod-current", shimwire.LauncherStart{ID: "start-beside-a-push", Generation: 1, Argv: []string{"true"}}); err != nil {
+				t.Fatalf("the start: %v", err)
+			}
+			installs, text := l.installs(), logs.String()
+			if !tc.waits {
+				if !slices.Equal(installs, []string{digestOf(a.Body)}) || strings.Contains(text, "level=WARN") {
+					t.Fatalf("the launcher installed %s and the daemon logged %q, want the index installed with no wait for a push to another pod",
+						shortDigests(installs), text)
+				}
+				return
+			}
+			if len(installs) != 0 || !strings.Contains(text, "another push of the leak check index") || !strings.Contains(text, testStartReserve.String()) {
+				t.Fatalf("the launcher installed %s and the daemon logged %q, want no install and a warning naming the wait for another push and the %s the start keeps",
+					shortDigests(installs), text, testStartReserve)
+			}
+		})
+	}
+}

@@ -67,10 +67,10 @@ type launchers struct {
 	// and the leak check index's (serveLeakCheckIndex). A runtime sets it to its termination grace
 	// (configureProber), which is what a launch's bound gives the start frame past the launcher
 	// wait's deadline (launchBound, relaunch's starting), so those hops end by that deadline; zero,
-	// for a launchers built outside a runtime, reserves nothing. indexTurns is each token's one
-	// push of the index (takeIndexTurn), under mu.
+	// for a launchers built outside a runtime, reserves nothing. indexTurns is the one push of the
+	// index to each role's launcher in each pod (takeIndexTurn), under mu.
 	startReserve time.Duration
-	indexTurns   map[claim.Token]*indexTurn
+	indexTurns   map[indexTurnKey]*indexTurn
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
 	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored).
 	// A launchers built without the pair restores nothing.
@@ -131,7 +131,7 @@ type launcherSession struct {
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
 	guardKilled runtime.MemoryGuardKilled, volume runtime.VolumeReported, log *slog.Logger) *launchers {
 	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
-		indexTurns: map[claim.Token]*indexTurn{},
+		indexTurns: map[indexTurnKey]*indexTurn{},
 		saved:      saved, restored: restored, guardKilled: guardKilled, volume: volume, log: log}
 }
 
@@ -630,30 +630,40 @@ func (d *launchers) beforeTheStart(ctx context.Context) (context.Context, contex
 	return hop, cancel, nil
 }
 
-// indexTurn is one token's turn to push the leak check index: slot holds the push that runs, and
-// users counts the pushes that hold it or wait for it, so the turn is dropped once none does.
+// indexTurn is one pod's turn to push the leak check index to one role's launcher: slot holds the
+// push that runs, and users counts the pushes that hold it or wait for it, so the turn is dropped
+// once none does. indexTurnKey names it: the token and the pod, the pair every request sends by.
 type indexTurn struct {
 	slot  chan struct{}
 	users int
 }
 
-// takeIndexTurn waits for token's turn to push the index, until ctx ends, and answers its release.
-// The turn is the token's and not one connection's, because each slice goes to the token's
-// current connection (request): a push asked for a connection that a reconnect has replaced sends
-// to its replacement, which a push of the replacement's own must not run beside.
-func (d *launchers) takeIndexTurn(ctx context.Context, token claim.Token) (func(), error) {
+type indexTurnKey struct {
+	token  claim.Token
+	podUID string
+}
+
+// takeIndexTurn waits for the turn of token's launcher in podUID to push the index, until ctx
+// ends, and answers its release. The turn is the pod's and not one connection's, because each
+// slice goes to the token's current connection in that pod (request): a push asked for a
+// connection that a reconnect has replaced sends to its replacement, which a push of the
+// replacement's own must not run beside. Nor is it the token's alone: a slice is never sent to
+// another pod's connection, so a push that waits on a pod that has ended holds no start of the
+// pod that replaced it.
+func (d *launchers) takeIndexTurn(ctx context.Context, token claim.Token, podUID string) (func(), error) {
+	key := indexTurnKey{token: token, podUID: podUID}
 	d.mu.Lock()
-	turn := d.indexTurns[token]
+	turn := d.indexTurns[key]
 	if turn == nil {
 		turn = &indexTurn{slot: make(chan struct{}, 1)}
-		d.indexTurns[token] = turn
+		d.indexTurns[key] = turn
 	}
 	turn.users++
 	d.mu.Unlock()
 	leave := func() {
 		d.mu.Lock()
 		if turn.users--; turn.users == 0 {
-			delete(d.indexTurns, token)
+			delete(d.indexTurns, key)
 		}
 		d.mu.Unlock()
 	}
@@ -679,9 +689,10 @@ func (d *launchers) takeIndexTurn(ctx context.Context, token claim.Token) (func(
 // request does, so a push asked for a connection a reconnect has replaced goes to its replacement,
 // and that connection's hello and install are the ones it reads; a launcher not connected now is
 // pushed the index by its next connection's start, or by the poll after its next read. One push of
-// the index to a token runs at a time (takeIndexTurn): a start's and the poll's would otherwise
-// send one sequence at once, whose answers share their waiters' names (bundleWaiter), and the
-// second, once the first has ended, finds the index installed and sends nothing.
+// the index to a pod's launcher of a token runs at a time (takeIndexTurn): a start's and the
+// poll's would otherwise send one sequence at once, whose answers share their waiters' names
+// (bundleWaiter), and the second, once the first has ended, finds the index installed and sends
+// nothing.
 //
 // Every other outcome is an error that says why: the launcher refused a slice or the install,
 // answered with another frame or a malformed one, the connection failed, or the hop, its wait for
@@ -692,10 +703,11 @@ func (d *launchers) serveLeakCheckIndex(ctx context.Context, session *launcherSe
 	}
 	hop, cancel := context.WithTimeout(ctx, d.leakCheckHop)
 	defer cancel()
-	release, err := d.takeIndexTurn(hop, session.token)
+	release, err := d.takeIndexTurn(hop, session.token, session.podUID)
 	if err != nil {
 		if ctx.Err() != nil {
-			return ctx.Err()
+			return fmt.Errorf("another push of the leak check index to the pod's launcher was still running when this push had to stop; a start stops it %s before its own deadline, the time it keeps for its start frame: %w",
+				d.startReserve, ctx.Err())
 		}
 		return fmt.Errorf("another push of the leak check index to the pod's launcher still ran when this push's bound of %s ran out", d.leakCheckHop)
 	}
