@@ -352,15 +352,19 @@ describe.skipIf(!envoyStackEnabled)(
         if (dial === undefined) throw new Error("the server recorded no NATS dial")
         expect(recoveryBoundMs(dial.options, 1)).toBeLessThan(RECOVERY_BOUND_MS)
         expectRecoveredByPingOut(dial, 1)
-        // The hung redial must not hold the process: it exits on SIGTERM, which the shared wait
-        // reads through its exit, failing at the row's deadline while the server still runs.
-        // Read for the log, never asserted: the time from SIGTERM to the process's exit.
-        const stoppedAt = Date.now()
+        // Main's own check of the exit on SIGTERM, on the real clock: this server writes no record
+        // of its way out to read the exit bound from, so the check stays until the claude-envoy
+        // pull request's bounded way out replaces it with that record.
+        const signalledAt = Date.now()
         server.kill("SIGTERM")
-        await settled("the channel server's exit on SIGTERM", server.exited)
+        const outcome = await Promise.race([
+          server.exited.then(() => "exited"),
+          Bun.sleep(15_000).then(() => "running"),
+        ])
         console.log(
-          `claude-envoy stall exit: the way out took ${Date.now() - stoppedAt} ms from SIGTERM to the process's exit`,
+          `claude-envoy stall exit: SIGTERM -> ${outcome} after ${((Date.now() - signalledAt) / 1000).toFixed(1)} s`,
         )
+        expect(outcome).toBe("exited")
       })
     })
   },
