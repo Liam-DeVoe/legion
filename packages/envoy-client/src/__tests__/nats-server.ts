@@ -74,7 +74,7 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       "run",
       "-d",
       // A container that dies on its own is gone with it, so the readiness loop's `docker logs`
-      // fails at once instead of spinning to its timeout (docs/testing.md).
+      // fails at once instead of waiting on for a server that is gone (docs/testing.md).
       "--rm",
       "--name",
       name,
@@ -92,10 +92,20 @@ export async function startNatsServer(directory: string, nkeyUser?: string): Pro
       "-c",
       "/etc/nats/test.conf"
     );
-    const deadline = Date.now() + 90_000;
-    // nats-server logs to stderr.
+    // The readiness wait has no span of its own: a container starts slowly on a loaded host while
+    // Docker still answers, and a fixed span would end the wait while it does. The run's own
+    // deadline bounds it (CI's job timeout-minutes; the caller's hook takes no timeout), a
+    // container that dies ends it at once (`docker logs` fails, as above), and every 30 s it names
+    // the container it still waits for. nats-server logs to stderr.
+    const began = Date.now();
+    let named = began;
     while (!(await docker("logs", name)).stderr.includes("Server is ready")) {
-      if (Date.now() > deadline) throw new Error(`NATS container ${name} never became ready`);
+      if (Date.now() - named >= 30_000) {
+        named = Date.now();
+        console.error(
+          `still waiting for NATS container ${name} to log that it is ready, ${Math.round((named - began) / 1000)} s after its start`
+        );
+      }
       await Bun.sleep(100);
     }
     const port = (await docker("port", name, "4222/tcp")).stdout.split("\n")[0];
