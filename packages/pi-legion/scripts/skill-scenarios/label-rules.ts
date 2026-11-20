@@ -100,16 +100,15 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     at: "head",
   },
   {
-    file: "skills/legion-retro/SKILL.md",
-    has: "and the pull request body's `Checks` block carries each of those lines",
-    cut: "The retro's gate asks a pass from both roles. The label deletes `from the implementer and from the tester alike,`.",
-    at: "base",
+    file: "packages/daemon/internal/prompts/roles/tester.md",
+    has: "A `before_merge` check reads yes at the head you test only with a pass from the implementer and a pass from the tester there",
+    cut: "INFRA-4303 moved the two-role rule into the tester's role prompt. The label deletes it.",
+    at: "head",
   },
   {
     file: "skills/legion-retro/SKILL.md",
-    has: "`dispatch results` prints those head lines under each check, and the pull request body's `Checks` block holds none of them.",
-    cut: "The retro's gate asks a pass from both roles, in the words item 19 of the round gives the head lines. The label deletes `, from the implementer and from the tester alike`.",
-    at: "head",
+    has: "and the pull request body's `Checks` block carries each of those lines",
+    cut: "The retro's gate asks a pass from both roles. The label deletes `from the implementer and from the tester alike,`.",
   },
   {
     file: "skills/legion-retro/SKILL.md",
@@ -150,6 +149,7 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     file: "skills/legion-worker/references/ci-checks.md",
     has: "A run of the named job on a push of the change's branch also records its own result",
     keep: "A CI job's own record. It names no role.",
+    at: "base",
   },
   {
     file: "skills/legion-worker/references/ci-checks.md",
@@ -243,7 +243,7 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   {
     file: "skills/legion-architect/SKILL.md",
     has: "The checks are the gate every later role reads",
-    cut: "`the implementer and the tester record a result against each check with no ci_check, and` gives each such check a result of both roles. The label deletes those words.",
+    cut: "`the implementer and the tester record a result against each check with no ci_check, and` and `, from the implementer and from the tester` give each such check a result of both roles. The label deletes those words.",
   },
   {
     file: "skills/legion-architect/SKILL.md",
@@ -253,12 +253,13 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   {
     file: "skills/legion-architect/references/design-gate.md",
     has: "The human approves both documents in one request",
-    cut: "`the implementer and the tester record a result against each check with no ci_check, and` gives each such check a result of both roles. The label deletes those words.",
+    cut: "`the implementer and the tester record a result against each check with no ci_check, and` and `, from the implementer and from the tester` give each such check a result of both roles. The label deletes those words.",
   },
   {
     file: "skills/legion-architect/references/design-gate.md",
     has: "`dispatch results` derives a result from the named run",
     keep: "What CI's job records. It names no result of a role.",
+    at: "base",
   },
   {
     file: "skills/legion-architect/references/design-gate.md",
@@ -305,6 +306,82 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     has: "Otherwise record your own result for each `before_merge` check before you complete",
     cut: "It asks the tester's own result of each `before_merge` check, half of the rule. The label deletes `record your own result for each before_merge check before you complete, and`.",
   },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "Approval is gated by the `before_merge` checks of the issue's own Verification document at its head",
+    cut: "The coordinator's ruling puts the two-role rule in this line. The label deletes ` from the implementer and from the tester`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/pr-body.md",
+    has: "Approval is gated by the `before_merge` checks of its own Verification document, read at its own head",
+    cut: "The coordinator's ruling puts the two-role rule in this line. The label deletes ` from the implementer and from the tester`.",
+    at: "head",
+  },
+];
+// The guide lines the coordinator's ruling changes to state INFRA-4303's rule, which each later-fail
+// label cuts, in the reviewer's texts and in the architect's alike.
+const RULED_LINES_LATER_FAIL: readonly Entry[] = [
+  {
+    file: "skills/legion-architect/SKILL.md",
+    has: "The checks are the gate every later role reads",
+    cut: "The coordinator's ruling puts the rule in this line. The label deletes `; a pass and a fail at one open head leave the check not known, which the reviewer refuses at once, requesting changes naming the check, with no wait for a later result`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-architect/SKILL.md",
+    has: "A pass and a fail at any open head make the check not known, whoever recorded them",
+    cut: "The coordinator's ruling puts the architect's rule in this line. The label deletes it.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-architect/SKILL.md",
+    has: "A `ci_check` run still going, or GitHub unread, is waited for and moves nothing back",
+    cut: "The coordinator's ruling takes from the architect's wait a check that a pass and a fail make not known. The label deletes `, except where a pass and a fail at an open head make the check not known: then send the issue back at once, naming the check`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-architect/references/acceptance.md",
+    has: "A pass and a fail at one open head make a check not known: send the issue back at once",
+    cut: "The coordinator's ruling puts the architect's rule in the last round. The label deletes it.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-architect/references/design-gate.md",
+    has: "The human approves both documents in one request",
+    cut: "The coordinator's ruling puts the rule in this line. The label deletes `; a pass and a fail at one open head leave the check not known, which the reviewer refuses at once, requesting changes naming the check, with no wait for a later result`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "Every `before_merge` check of the issue reads yes on the line of the approved head",
+    cut: "The coordinator's ruling puts the rule in the retro's gate. The label deletes `, and a pass and a fail at one head leave it not known`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "A pass and a fail at one open head leave the check not known, whoever recorded them",
+    cut: "The coordinator's ruling puts the reviewer's rule in this line. The label deletes it.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "While that run has not concluded, wait for it by its name, and do not approve or request changes for that check",
+    cut: "The coordinator's ruling takes from the reviewer's wait a head that a pass and a fail make not known. The label deletes `, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "Approval is gated by the `before_merge` checks of the issue's own Verification document at its head",
+    cut: "The coordinator's ruling puts the rule in this line. The label deletes `, and a pass and a fail at one open head leave a check not known, which the reviewer refuses at once, requesting changes naming the check, with no wait for a later result`.",
+    at: "head",
+  },
+  {
+    file: "skills/legion-worker/references/pr-body.md",
+    has: "Approval is gated by the `before_merge` checks of its own Verification document, read at its own head",
+    cut: "The coordinator's ruling puts the rule in this line. The label deletes `, and a pass and a fail at one open head leave a check not known, which the reviewer refuses at once, requesting changes naming the check, with no wait for a later result`.",
+    at: "head",
+  },
 ];
 const ENTRIES_LATER_FAIL: readonly Entry[] = [
   {
@@ -337,45 +414,15 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     at: "head",
   },
   {
-    file: "skills/legion-worker/references/ci-checks.md",
-    has: "so nothing in this section holds for such a check while its run is still going or GitHub is unread",
-    cut: "Item 13 adds it: a pass and a fail at the head decide a `ci_check` check at once for each role, with no wait for the run or for GitHub. The label deletes it.",
+    file: "packages/daemon/internal/prompts/roles/reviewer.md",
+    has: "A pass and a fail at any open head make the check not known: request changes at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.",
+    cut: "INFRA-4303 moved the reviewer's no-wait rule into its role prompt. The label deletes it.",
     at: "head",
   },
   {
-    file: "skills/legion-worker/references/ci-checks.md",
-    has: "the tester fails no round for the run, unless the line of that head reads not known because a pass and a fail count there, which is a failure at once.",
-    cut: "Item 13 takes from the tester's wait a head that reads not known for a pass and a fail. The label deletes `, unless the line of that head reads not known because a pass and a fail count there, which is a failure at once`.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-worker/references/ci-checks.md",
-    has: "Unless the line of that head reads not known because a pass and a fail count there, the reviewer waits for that run by its name",
-    cut: "Item 13 takes from the reviewer's wait a head that reads not known for a pass and a fail. The label deletes `Unless the line of that head reads not known because a pass and a fail count there, ` and starts the sentence `The reviewer waits`.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "do not approve or request changes for that check, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above.",
-    cut: "Item 13 takes from the wait a head that reads not known for a pass and a fail. The label deletes `, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above`.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-worker/references/pr-body.md",
-    has: "fails no round, unless that head's line reads not known because a pass and a fail count there, which is that test failure, at once.",
-    cut: "Item 13 takes from the tester's wait a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there, which is that test failure, at once`.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-retro/SKILL.md",
-    has: "read again where GitHub could not be read, unless that head's line reads not known because a pass and a fail count there: that check moves the issue back at once, as below.",
-    cut: "The retro's wait, in a text that the reviewer reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there: that check moves the issue back at once, as below`.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-architect/SKILL.md",
-    has: "is waited for and moves nothing back, unless that head's line reads not known because a pass and a fail count there, which sends the issue back at once, naming the check.",
-    cut: "The architect's wait, in a text that the reviewer reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there, which sends the issue back at once, naming the check`.",
+    file: "packages/daemon/internal/prompts/roles/tester.md",
+    has: "A pass and a fail at any open head make the check not known; count it as a test failure",
+    cut: "The tester's form of the rule, in a text that the reviewer reads. INFRA-4303 puts it in the tester's role prompt, and the label deletes it.",
     at: "head",
   },
   {
@@ -387,6 +434,7 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-worker/references/ci-checks.md",
     has: "a retraction does not lift the rule",
     keep: "A retraction and the field `ci_check`. It says nothing of a pass and a fail at one head.",
+    at: "base",
   },
   {
     file: "skills/legion-worker/references/ci-checks.md",
@@ -402,6 +450,7 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-worker/references/ci-checks.md",
     has: "It is an entry in `failures` when no pass of it stands at that head",
     keep: "A pass and a fail from CI on a check carrying `ci_check`, as above.",
+    at: "base",
   },
   {
     file: "skills/legion-worker/references/merge-gate.md",
@@ -415,27 +464,9 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     at: "base",
   },
   {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "A pass and a fail at one head leave it not known, whoever recorded them, and a later pass",
-    cut: "T5.12 adds it. The label deletes it.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "That is a refusal at once: `REQUEST_CHANGES` naming the check, with no wait for a later result, for a CI run still going or for GitHub.",
-    cut: "T5.12 adds it, and item 13 makes it a refusal at once, with no wait for a CI run or for GitHub. The label deletes it.",
-    at: "head",
-  },
-  {
     file: "packages/daemon/internal/prompts/roles/reviewer.md",
     has: "A pass and a fail at one head leave it not known, whoever recorded them, and a later pass there does not end it: refuse the approval",
     cut: "T5.13 adds it. The label deletes it.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-retro/SKILL.md",
-    has: "A pass at another commit does not count, and a pass and a fail at one head leave it not known.",
-    cut: "The retro's gate, in a text that the reviewer reads. T5.13 adds it, and the label deletes `, and a pass and a fail at one head leave it not known`.",
     at: "head",
   },
   {
@@ -462,6 +493,7 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-worker/references/pr-body.md",
     has: "A `ci_check` check with no pass standing at the head",
     keep: "A pass and a fail from CI on a check carrying `ci_check`, as above.",
+    at: "base",
   },
   {
     file: "skills/thermonuclear-deep-review/SKILL.md",
@@ -500,18 +532,6 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     at: "base",
   },
   {
-    file: "skills/legion-architect/SKILL.md",
-    has: "A pass and a fail at one head leave that head's line not known, whoever recorded them, so the check's own answer, its `A pass stands:` line, reads not known or no, and never yes.",
-    cut: "The architect's rule, in a text that the reviewer reads. T5.12 adds it, item 25 names the answer it leaves, and the label deletes it.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-architect/SKILL.md",
-    has: "Such a check has no pass: send the issue back at once with `request_backward_move` naming the check, and do not wait for a later result, for a CI run still going or for GitHub.",
-    cut: "The architect's rule, in a text that the reviewer reads. T5.12 adds it, item 13 makes the move back come at once, and the label deletes it.",
-    at: "head",
-  },
-  {
     file: "skills/legion-architect/references/acceptance.md",
     has: "That registration's approval request waits with the person",
     keep: "The wait of an approval request. It names no check of Dispatch.",
@@ -548,12 +568,25 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     has: "Where a dispatch fails for a reason that survives correcting the call",
     keep: "A subagent that fails. It names no check of Dispatch.",
   },
+  ...RULED_LINES_LATER_FAIL,
 ];
 const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
   {
     file: "packages/daemon/internal/prompts/roles/architect-root.md",
     has: "The person's answer, resolution or reply on any ask of the root",
     keep: "A person's answer gives a task. It names no check of Dispatch.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/architect-root.md",
+    has: "To give a check to CI, write a new check block under a new id",
+    keep: "A check given to CI, and a retraction. It says nothing of a pass and a fail at one head.",
+    at: "head",
+  },
+  {
+    file: "packages/daemon/internal/prompts/roles/tester.md",
+    has: "A pass and a fail at any open head make the check not known; count it as a test failure",
+    cut: "The tester's form of the rule, in a text that the architect reads. INFRA-4303 puts it in the tester's role prompt, and the label deletes it.",
+    at: "head",
   },
   {
     file: "skills/legion-architect/SKILL.md",
@@ -575,24 +608,6 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     has: "On a check with no `ci_check`, a fail recorded after a pass",
     cut: "T5.12 deletes it. The label restores it.",
     at: "base",
-  },
-  {
-    file: "skills/legion-architect/SKILL.md",
-    has: "A pass and a fail at one head leave that head's line not known, whoever recorded them, so the check's own answer, its `A pass stands:` line, reads not known or no, and never yes.",
-    cut: "T5.12 adds it, item 25 names the answer it leaves, and the label deletes it.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-architect/SKILL.md",
-    has: "Such a check has no pass: send the issue back at once with `request_backward_move` naming the check, and do not wait for a later result, for a CI run still going or for GitHub.",
-    cut: "T5.12 adds it, item 13 makes the move back come at once, and the label deletes it.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-architect/SKILL.md",
-    has: "is waited for and moves nothing back, unless that head's line reads not known because a pass and a fail count there, which sends the issue back at once, naming the check.",
-    cut: "Item 13 takes from the architect's wait a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there, which sends the issue back at once, naming the check`.",
-    at: "head",
   },
   {
     file: "skills/legion-architect/references/acceptance.md",
@@ -622,63 +637,9 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     at: "base",
   },
   {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "A pass and a fail at one head leave it not known, whoever recorded them, and a later pass",
-    cut: "The reviewer's rule, in a text that the architect reads. T5.12 adds it, and the label deletes it.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "That is a refusal at once: `REQUEST_CHANGES` naming the check, with no wait for a later result, for a CI run still going or for GitHub.",
-    cut: "The reviewer's rule, in a text that the architect reads. T5.12 adds it, item 13 makes it a refusal at once, and the label deletes it.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "do not approve or request changes for that check, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above.",
-    cut: "The reviewer's wait, in a text that the architect reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above`.",
-    at: "head",
-  },
-  {
     file: "packages/daemon/internal/prompts/roles/architect-root.md",
-    has: "A pass and a fail at one head leave it not known: send the issue back with `request_backward_move` naming the check",
-    cut: "T5.13 adds it. The label deletes it.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-retro/SKILL.md",
-    has: "A pass at another commit does not count, and a pass and a fail at one head leave it not known.",
-    cut: "The retro's gate, in a text that the architect reads. T5.13 adds it, and the label deletes `, and a pass and a fail at one head leave it not known`.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-retro/SKILL.md",
-    has: "read again where GitHub could not be read, unless that head's line reads not known because a pass and a fail count there: that check moves the issue back at once, as below.",
-    cut: "The retro's wait, in a text that the architect reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there: that check moves the issue back at once, as below`.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-worker/references/ci-checks.md",
-    has: "so nothing in this section holds for such a check while its run is still going or GitHub is unread",
-    cut: "The rule of each role for a `ci_check` check, in a text that the architect reads. Item 13 adds it, and the label deletes it.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-worker/references/ci-checks.md",
-    has: "the tester fails no round for the run, unless the line of that head reads not known because a pass and a fail count there, which is a failure at once.",
-    cut: "The tester's wait, in a text that the architect reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless the line of that head reads not known because a pass and a fail count there, which is a failure at once`.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-worker/references/ci-checks.md",
-    has: "Unless the line of that head reads not known because a pass and a fail count there, the reviewer waits for that run by its name",
-    cut: "The reviewer's wait, in a text that the architect reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `Unless the line of that head reads not known because a pass and a fail count there, ` and starts the sentence `The reviewer waits`.",
-    at: "head",
-  },
-  {
-    file: "skills/legion-worker/references/pr-body.md",
-    has: "fails no round, unless that head's line reads not known because a pass and a fail count there, which is that test failure, at once.",
-    cut: "The tester's wait, in a text that the architect reads. Item 13 takes from it a head that reads not known for a pass and a fail. The label deletes `, unless that head's line reads not known because a pass and a fail count there, which is that test failure, at once`.",
+    has: "A pass and a fail at any open head make the check not known: send the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.",
+    cut: "INFRA-4303 moved the architect's no-wait rule into its role prompt. The label deletes it.",
     at: "head",
   },
   {
@@ -721,6 +682,7 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-worker/references/ci-checks.md",
     has: "a retraction does not lift the rule",
     keep: "A retraction and the field `ci_check`. It says nothing of a pass and a fail at one head.",
+    at: "base",
   },
   {
     file: "skills/legion-worker/references/ci-checks.md",
@@ -736,6 +698,7 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-worker/references/ci-checks.md",
     has: "It is an entry in `failures` when no pass of it stands at that head",
     keep: "A pass and a fail from CI on a check carrying `ci_check`, as above.",
+    at: "base",
   },
   {
     file: "skills/legion-worker/references/pr-body.md",
@@ -746,6 +709,7 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     file: "skills/legion-worker/references/pr-body.md",
     has: "A `ci_check` check with no pass standing at the head",
     keep: "A pass and a fail from CI on a check carrying `ci_check`, as above.",
+    at: "base",
   },
   {
     file: "skills/legion-worker/references/withheld-capability.md",
@@ -767,6 +731,7 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
     has: "`untrusted-input`",
     keep: "A row of a security review's table. It names no check of Dispatch.",
   },
+  ...RULED_LINES_LATER_FAIL,
 ];
 
 export const RULES: Record<string, Rule> = {

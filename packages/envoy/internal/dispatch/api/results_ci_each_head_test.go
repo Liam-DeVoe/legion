@@ -212,8 +212,9 @@ func TestACheckCIProvesDerivesAResultAtEachOpenHead(t *testing.T) {
 	// end. The time each step took is logged, and asserted nowhere.
 	t.Run("a read that does not end", func(t *testing.T) {
 		bounds := holdCIReadBounds(t)
+		// GitHub's client timeout must outlast the row's wait, so only ciReadBound can end H2's read.
 		savedTimeout := githubapp.RequestTimeout
-		githubapp.RequestTimeout = 2 * ciReadDeadline
+		githubapp.RequestTimeout = 24 * time.Hour
 		t.Cleanup(func() { githubapp.RequestTimeout = savedTimeout })
 		held := github.hold(t, "acme/widgets", ciEachHeadH2)
 		started := time.Now()

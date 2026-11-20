@@ -155,7 +155,11 @@ head, when no attributed head is its commit, as when the pull request is attribu
 issue, or when any field of the check changed after it was recorded.
 
 **An issue is proved by its own checks.** Approval is gated by the `before_merge` checks of its
-own Verification document, read at its own head, so a result a child recorded proves nothing for
+own Verification document, read at its own head: each reads yes on the line of that head from the
+implementer and from the tester (from CI for a check carrying `ci_check`), never from a pass at
+another commit, and a pass and a fail at one open head leave a check not known, which the reviewer
+refuses at once, requesting changes naming the check, with no wait for a later result. So a result
+a child recorded proves nothing for
 a root — it was recorded at the child's head — and a child never records the result that proves
 a root's check. A child carrying part of a root's requirement proves it with a check on its own
 Verification document whose `serves` names that requirement. A root's own checks are proven at

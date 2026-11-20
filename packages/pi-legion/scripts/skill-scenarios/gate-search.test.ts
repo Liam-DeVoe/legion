@@ -42,7 +42,7 @@ const MERGE_GATE = "skills/legion-worker/references/merge-gate.md";
 // The words that make merge-gate.md's gate name a pass of each role at the reviewed head.
 const TWO_ROLES = [
   " from the implementer and from the tester both (from CI, for a check carrying `ci_check`)",
-  ": a line that names one of the two roles alone is no pass for the approval",
+  "; a line that names one of the two roles alone is no pass",
 ];
 const ONE_ROLE =
   "Approve only when each `before_merge` check reads yes on the line of the head you review, from the implementer.";

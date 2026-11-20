@@ -199,7 +199,7 @@ Then
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: each needs a pass standing at that head, which
 `dispatch results --issue <issue>` shows. A pass and a fail at any open head make the check not known: send
-the issue back at once, naming the check, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
+the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
 At acceptance, read each CI-proved check's derived result and each result its CI job recorded.
 To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule.
 A result a child recorded against one of the root's

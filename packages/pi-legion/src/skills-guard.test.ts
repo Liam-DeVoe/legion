@@ -791,6 +791,54 @@ test("a result from CI satisfies the passages that judge or record a check's evi
   );
 });
 
+// The coordinator's ruling puts INFRA-4303's rule in ten guide lines beside the role prompts. A
+// pass and a fail at one open head make a check not known, and the role that reads them acts at
+// once; none of these lines may keep main's old rule that a later fail leaves a pass standing.
+test("the ten guide lines state the later-fail rule and none states the old one", () => {
+  const read = (...parts: string[]) => collapsed(path.join(staged, ...parts));
+  const architect = read("legion-architect", "SKILL.md");
+  const mergeGate = read("legion-worker", "references", "merge-gate.md");
+  const refusal =
+    "a pass and a fail at one open head leave the check not known, which the reviewer refuses at once, requesting changes naming the check, with no wait for a later result.";
+  for (const [text, line] of [
+    [architect, refusal],
+    [
+      architect,
+      "A pass and a fail at any open head make the check not known, whoever recorded them, and a later pass does not end that: do not accept the issue; send it back at once with `request_backward_move` naming the check, and do not wait for a later result.",
+    ],
+    [
+      architect,
+      "is waited for and moves nothing back, except where a pass and a fail at an open head make the check not known: then send the issue back at once, naming the check.",
+    ],
+    [
+      read("legion-architect", "references", "acceptance.md"),
+      "A pass and a fail at one open head make a check not known: send the issue back at once with `request_backward_move` naming the check, and do not wait for a later result.",
+    ],
+    [read("legion-architect", "references", "design-gate.md"), refusal],
+    [
+      read("legion-retro", "SKILL.md"),
+      "a pass at another commit does not count, and a pass and a fail at one head leave it not known.",
+    ],
+    [
+      mergeGate,
+      "A pass and a fail at one open head leave the check not known, whoever recorded them, and a later pass there does not end it: that is a refusal at once, `REQUEST_CHANGES` naming the check, with no wait for a later result, for a CI run still going or for GitHub.",
+    ],
+    [
+      mergeGate,
+      "unless the line of the head being reviewed reads not known because a pass and a fail count there, which is the refusal above.",
+    ],
+    [mergeGate, refusal.replace("leave the check", "leave a check")],
+    [read("legion-worker", "references", "pr-body.md"), refusal.replace("leave the check", "leave a check")],
+  ] as const) {
+    expect(text).toContain(line);
+    expect(text).not.toContain("a fail recorded after a pass leaves that pass standing");
+  }
+  expect(architect).not.toContain("is waited for and moves nothing back. A name no run answers");
+  expect(mergeGate).not.toContain(
+    "and do not approve or request changes for that check. Wait the same way"
+  );
+});
+
 // The architect writes a check as `ci_check` where a CI job on an ordinary pull request already
 // makes its proof, so the mechanism is used rather than only available (R5).
 test("the architect writes a check CI already proves as ci_check", () => {
