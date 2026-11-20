@@ -19,9 +19,9 @@ var parseWork, renderWork, updateWork atomic.Uint64
 //     literalDomains, literalURL's path, and the transform's nextURLPattern, urlDomain, emailRun
 //     and findURLs);
 //   - each node unescapeTablePipes walks, each event the reading of list spreads steps over
-//     (readSpreads) and each insert into that stream it records (insertEvents), and each footnote
-//     definition keyed for, and each reference looked up in, the map that resolves a reference up
-//     to case (footnoteDefinitionsByKey).
+//     (readSpreads) and each event of each insert into that stream it records (insertEvents), and
+//     each footnote definition keyed for, and each reference looked up in, the map that resolves a
+//     reference up to case (footnoteDefinitionsByKey).
 //
 // A test reads it before and after a call and holds the difference to a count linear in the
 // call's input, which no load on the machine moves: the parse costs that once grew with the
@@ -38,7 +38,8 @@ func RenderWork() uint64 { return renderWork.Load() }
 
 // UpdateWork is how many fragment items this process's writes of a tree into a document have
 // reached since it started: for each fragment operation Update makes, the items ygo walks over to
-// the index it is given and the items it deletes or inserts there, and the items each list of a
+// the index it is given and the items it deletes or inserts there, each inserted child counted as
+// the loop that builds it visits it (insertPChildren), and the items each list of a
 // fragment's children holds. ygo walks a fragment from its start to each index it is given, so a
 // write that inserted a fragment's children one index at a time, or walked the fragment again for
 // each replaced child, reached a number of items that grew with the square of the children

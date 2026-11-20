@@ -311,12 +311,18 @@ var emptyChildren = crdt.NewYXmlElement("paragraph").Children()
 // how y-prosemirror writes a fragment's new children (updateYFragment's tail insert, and
 // createTypeFromElementNode's). A call still walks to index, so its cost grows with index as well
 // as with children.
+//
+// Its steps are counted where they are taken (UpdateWork): one for each child its loop visits, and
+// index once for ygo's walk to index, which ygo takes and does not count itself. An insert that
+// went back to one call per child would count its own walk at each call, index plus the children
+// before it, and so pay for the n walks it makes.
 func insertPChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, index int, children []normalizedChild) error {
 	if len(children) == 0 {
 		return nil
 	}
 	nodes := slices.Grow(slices.Clip(emptyChildren), len(children))
 	for _, child := range children {
+		updateWork.Add(1)
 		if child.isText() {
 			text, err := createTypeFromTextNodes(txn, child.text)
 			if err != nil {
@@ -332,7 +338,7 @@ func insertPChildren(txn *crdt.Transaction, frag *crdt.YXmlFragment, index int, 
 		nodes = append(nodes, element)
 	}
 	frag.Insert(txn, index, nodes...)
-	updateWork.Add(uint64(index + len(nodes)))
+	updateWork.Add(uint64(index))
 	return nil
 }
 

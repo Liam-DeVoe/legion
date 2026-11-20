@@ -571,16 +571,18 @@ func (m *lineMachine) exitBare(keep, line int) {
 // and 0.08 s this way). The patched mdast-util-from-markdown collects prepareList's own
 // insertions the same way and rebuilds the events once.
 //
-// Every stream insert goes through here, so here is where its steps are counted (ParseWork): the
-// events an insert moves and the line marks it walks, and the record of it. This one moves no
-// event and walks no mark, so it counts the record alone; an insert that moved the stream in place
-// would count each event it moved and each mark it walked, which writeInserts then moves no more.
+// Every stream insert goes through here, so here is where its steps are counted (ParseWork): one
+// for each element a loop of the insert visits. This one visits the events it adds, as it records
+// them, and moves none and walks no mark; an insert that moved the stream in place would count
+// each event it moved and each line mark its loop walked, which writeInserts then moves no more.
 func (m *lineMachine) insertEvents(index int, added []spreadEvent) {
 	if len(added) == 0 {
 		return
 	}
+	for range added {
+		parseWork.Add(1)
+	}
 	m.inserts = append(m.inserts, eventInsert{at: index, events: added})
-	parseWork.Add(1)
 }
 
 // writeInserts rebuilds the stream with every recorded insert in place, each before the event it

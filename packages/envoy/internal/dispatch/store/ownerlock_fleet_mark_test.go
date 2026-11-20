@@ -149,10 +149,6 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 	}
 }
 
-// markExpiryWindow is the earlier build's mark's window in the race below, short enough for the
-// mark to expire inside it.
-const markExpiryWindow = 2 * time.Second
-
 // The earlier build's mark expires while writers of this build are in flight in both modes:
 // those whose fleet read found the mark take the owners' rows beside their advisory locks, and
 // those that start once it has expired take the advisory locks alone, behind the gate, while
@@ -161,15 +157,15 @@ const markExpiryWindow = 2 * time.Second
 // that still writes past the mark is in the fleet only by its registration, and "What the fleet
 // does not see" (cmd/dispatch/README.md) names the three cases where it is not. No update is
 // lost, nothing deadlocks and nothing else fails, and this build's writers commit in both modes.
-// The mark's window is shortened to markExpiryWindow so that it expires inside the run. The
-// mark's age is read by the database's clock, the clock the fleet read judges it by, and this
-// build's writers run until one of them has committed in the advisory mode, which only a fleet
-// read that no longer counts the mark answers.
+// The test expires the mark itself, as the passing of its window would (ageLegacyMark), once a
+// writer of this build has committed beside the earlier build, so the expiry falls inside the run
+// at a point the run has reached, however slow the machine: a window of real time could close
+// before any writer committed beside the earlier build. The mark's age is read by the database's
+// clock, the clock the fleet read judges it by, and this build's writers run until one of them
+// has committed in the advisory mode, which only a fleet read that no longer counts the mark
+// answers.
 func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	s, owners := openFleetStore(t)
-	window := OwnerLockMarkWindow
-	OwnerLockMarkWindow = markExpiryWindow
-	t.Cleanup(func() { OwnerLockMarkWindow = window })
 	ctx := context.Background()
 	all := owners.all()
 	start := ownerSeqs(t, s, all)
@@ -180,11 +176,16 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 	markYoung := func() bool {
 		var young bool
 		if err := s.Pool.QueryRow(ctx, `select pg_catalog.now() - seen_at < make_interval(secs => $1) from owner_lock_legacy_mark`,
-			(markExpiryWindow / 2).Seconds()).Scan(&young); err != nil {
+			(OwnerLockMarkWindow / 2).Seconds()).Scan(&young); err != nil {
 			t.Errorf("read the earlier build's mark's age: %v", err)
 			return false
 		}
 		return young
+	}
+	committed := func(besideAnEarlierBuild bool) bool {
+		ledger.mu.Lock()
+		defer ledger.mu.Unlock()
+		return ledger.modes[besideAnEarlierBuild] > 0
 	}
 
 	stop := make(chan struct{})
@@ -217,20 +218,21 @@ func TestTheMarkExpiresWhileWritersOfBothModesAreInFlight(t *testing.T) {
 			}
 		})
 	}
+	testwait.Eventually(t, "a writer of this build to commit beside the earlier build while its mark is young", func() bool {
+		return committed(true)
+	})
+	ageLegacyMark(t, s, OwnerLockMarkWindow+time.Second)
 	testwait.Eventually(t, "a writer of this build to commit in the advisory mode once the mark expired", func() bool {
-		ledger.mu.Lock()
-		defer ledger.mu.Unlock()
-		return ledger.modes[false] > 0
+		return committed(false)
 	})
 	end()
 
+	// Both modes committed, which the two waits above hold: each fails by name when no writer
+	// commits in its mode.
 	lost, deadlocks, failures := ledger.settle(t, s, all, start)
-	t.Logf("the mark expired %s after its stamp: this build's writers committed %d in the mode beside an earlier build and %d in the advisory mode; %d increments lost",
-		markExpiryWindow, ledger.modes[true], ledger.modes[false], lost)
+	t.Logf("the mark expired once a writer committed beside the earlier build: this build's writers committed %d in the mode beside an earlier build and %d in the advisory mode; %d increments lost",
+		ledger.modes[true], ledger.modes[false], lost)
 	if lost != 0 || deadlocks != 0 || failures != 0 {
 		t.Errorf("%d increments lost, %d deadlocks, %d other failures; want none of each", lost, deadlocks, failures)
-	}
-	if ledger.modes[true] == 0 || ledger.modes[false] == 0 {
-		t.Errorf("this build's writers committed %d beside an earlier build and %d in the advisory mode; want both modes across the mark's expiry", ledger.modes[true], ledger.modes[false])
 	}
 }
