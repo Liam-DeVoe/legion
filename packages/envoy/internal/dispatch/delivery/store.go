@@ -706,7 +706,7 @@ func ScanJob(row pgx.Row) (DeliveryRunJob, error) {
 // together. Every other writer of a delivery_runs row is one statement too, which takes the row's
 // lock and then, in its change trigger, the change log's advisory lock (0100): this one takes its
 // jobs' row locks, then the run row's (the `with`, which runs after the insert), and the change
-// log's lock last, in the triggers that fire at the statement's end (delivery.LockChanges), so a
+// log's lock last, in the triggers that fire at the statement's end (lockChangesStatement), so a
 // run's own completion written beside its jobs waits for one of them rather than deadlocking with
 // it, and the change log's lock is held for that statement's triggers and its commit alone. It
 // takes the job rows in one order, their names' byte order, whatever order the listing gave them

@@ -45,10 +45,10 @@ func ScanRepoProject(row pgx.Row) (model.RepoProject, error) {
 //     change under it. No issue write takes a lock on this row: an issue names any owner/name as
 //     its repository, mapped or not, so nothing an issue write does depends on this row.
 //
-// Every writer of a mapping goes through here, and none takes the change log's lock (LockChanges)
-// inside its transaction: the mapping's trigger records its settings change in the change log's
-// outbox, which takes no lock (migration 20261117100020), and each writer moves it into the log
-// after its commit (DrainRepoProjectChange). These are the locks the release before this one
+// Every writer of a mapping goes through here, and none takes the change log's lock
+// (lockChangesStatement) inside its transaction: the mapping's trigger records its settings
+// change in the change log's outbox, which takes no lock (migration 20261117100020), and each
+// writer moves it into the log after its commit (DrainRepoProjectChange). These are the locks the release before this one
 // takes, in the same order, so two writes of one repository, one of each build of a roll, wait for
 // each other in that one order too. The writers: the PUT and the DELETE of api's mapping routes,
 // the boot seed (api.SeedRepoProjects), cmd/dispatch-seed's projects, and the delivery fixtures

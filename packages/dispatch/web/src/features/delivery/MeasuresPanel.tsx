@@ -279,7 +279,6 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           </div>
           {measures === undefined || targets === undefined ? null : (
             <Sparkbars
-              format={(v) => `${v} deploys`}
               judged={{
                 evalSlug: EVAL_SLUGS.deploys_per_day,
                 statistic: "deploys.per_day",
@@ -290,6 +289,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                 value: d.deploys,
                 partial: d.partial,
               }))}
+              write={(v) => () => `${v} deploys`}
             />
           )}
         </KpiCard>
@@ -465,7 +465,6 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
           {measures === undefined || targets === undefined ? null : (
             <>
               <Sparkbars
-                format={pct}
                 judged={{
                   evalSlug: EVAL_SLUGS.deploy_run_success_rate,
                   statistic: "runs.rate",
@@ -477,6 +476,7 @@ export function MeasuresPanel({ data }: { data: DeliveryMeasuresResponse | undef
                   value: d.run_success_rate,
                   partial: d.partial,
                 }))}
+                write={(v) => (extra) => pct(v, 1 + extra)}
               />
               <div className={`text-[11px] ${textMutedOnSurface}`}>
                 <WindowFigure
