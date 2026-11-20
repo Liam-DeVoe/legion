@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // A project's access is who may see it and who changes that (internal/dispatch/access): its one
@@ -270,9 +271,54 @@ func (s *server) putProjectAccessPerson(w http.ResponseWriter, r *http.Request) 
 	s.principalWrite(w, r, access.PrincipalPerson, r.PathValue("email"), access.AddPrincipal)
 }
 
-// deleteProjectAccessPerson takes a person off the project's access list.
+// deleteProjectAccessPerson takes a person off the project's access list. A removal that took a
+// restricted member off it owes the broker the revocation of their machine logins, recorded in the
+// removal's transaction (recordMachineLoginRevocation) and paid after the commit; a removal that
+// left the list as it was owes nothing, so no project's owner ends the logins of a person another
+// project lists.
 func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Request) {
-	s.principalWrite(w, r, access.PrincipalPerson, r.PathValue("email"), access.RemovePrincipal)
+	email := r.PathValue("email")
+	s.ownerWrite(w, r, "", func(ctx context.Context, tx pgx.Tx, key string, by model.Actor, _ *model.Viewer) (model.ProjectAccess, []model.Event, error) {
+		named, err := access.NamesPerson(ctx, tx, key, email)
+		if err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		answer, event, err := access.RemovePrincipal(ctx, tx, s.deps.Events, key, access.PrincipalPerson, email, by)
+		if err != nil {
+			return model.ProjectAccess{}, nil, err
+		}
+		if named {
+			if err := s.recordMachineLoginRevocation(ctx, tx, email); err != nil {
+				return model.ProjectAccess{}, nil, err
+			}
+		}
+		return answer, []model.Event{event}, nil
+	})
+}
+
+// recordMachineLoginRevocation records, in tx, that Dispatch owes the secrets broker the
+// revocation of every machine login person approved for their own machines, when people records
+// person as a restricted member (store.RecordMachineLoginRevocation); a full member, a person with
+// no row and a deployment with no broker (Deps.AgentSecrets nil, where no machine login exists) owe
+// nothing. The broker revocation loop pays it after the write commits (revokeOwedMachineLogins), so
+// the write never waits on the broker: an owner removes a person while the broker is down, and the
+// person's cookie and personal tokens are refused from the commit on by Dispatch's own check of
+// the lists (restrictedOwnerAdmitted). A removal from an access list (deleteProjectAccessPerson)
+// records it; it is written to be the one record any other write that takes a restricted member
+// off a project makes in its own transaction.
+func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, person string) error {
+	person = model.CanonicalLogin(person)
+	if s.deps.AgentSecrets == nil || person == "" {
+		return nil
+	}
+	var kind string
+	if err := tx.QueryRow(ctx, `select coalesce((select member_kind from people where email = $1), '')`, person).Scan(&kind); err != nil {
+		return err
+	}
+	if kind != string(model.MemberRestricted) {
+		return nil
+	}
+	return store.RecordMachineLoginRevocation(ctx, tx, person)
 }
 
 // putProjectAccessGroup names a group on the project's access list.

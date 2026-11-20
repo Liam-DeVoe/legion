@@ -124,9 +124,12 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 // workflow, a Google machine's account, each listed for the person) is held to no account and no
 // time: no person's credential made it, the operator's configuration names its person, and a pod
 // cannot sign in again, so a time would refuse it for as long as it lives once the person's account
-// is recorded, and every trade it makes in the margin after. The broker decides that scope for
-// those entries and for no person's own trade (exchange.Set's Pod, Workflow and Google; Person and
-// Machine decide the person scope), and such a token holds no scope, so it never mints or decides.
+// is recorded, and every trade it makes in the margin after. Such a token records neither an
+// account nor its credential's creation, and that is how it is told apart: a restricted member's
+// machine login trades for a named token too (exchange.Set.Machine, held to one project), but a
+// person's credential made it and its trade recorded that credential, so it is held to its account
+// as the person scope's is (personCredential). A named token holds no scope, so it never mints or
+// decides.
 //
 // That leaves no window to wait out while the broker pays a revocation: every credential the
 // replaced account holds records it or was made before the recording that replaced it, since
@@ -147,7 +150,7 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Ca
 	var kind string
 	var replaced, named bool
 	admission := brokerAdmission{Subject: s.brokerTokenSubject(caller), Foreign: s.brokerForeignAccount(caller)}
-	held := s.deps.SignInIssuer != "" && caller.ProjectScope != brokertoken.ProjectScopeNamed
+	held := s.deps.SignInIssuer != "" && (caller.ProjectScope != brokertoken.ProjectScopeNamed || personCredential(caller))
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select coalesce((select member_kind from people where email = $1), ''),
 			`+brokerAccountReplaced("$1", "$2::text", "$5::boolean", "$3::timestamptz", "$4::boolean")+`,
@@ -167,6 +170,14 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Ca
 		return admission, nil
 	}
 	return admission, s.restrictedOwnerAdmitted(ctx, caller.Person)
+}
+
+// personCredential reports whether a broker token's trade recorded the person's credential that
+// made it: the account it records, or when that credential was made. A sign-in's and a machine
+// login's trade record both, or the creation alone for a credential no account approved; an
+// operator entry's records neither, since no person's credential made it.
+func personCredential(caller brokertoken.Caller) bool {
+	return caller.AccountSubject != "" || !caller.CredentialCreatedAt.IsZero()
 }
 
 // brokerCredentialMargin is how long after people recorded an address's Google account a broker
@@ -466,9 +477,11 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// A token's list is its credential's, which the one rule of what a caller sees reads
 	// (internal/dispatch/access), and what the list holds while the deployment holds no private
 	// project is what the token did before projects could be private (R9); once one is private,
-	// every list holds the token's reads and writes (R3). A token an operator's entry mapped to one
-	// project names that project, today's named-scope rule (brokertoken refuses a named token naming
-	// two): it held the token's writes, and still does, and no read (model.ListHoldsWrites). A token
+	// every list holds the token's reads and writes (R3). A token held to one project names that
+	// project, today's named-scope rule (brokertoken refuses a named token naming two): one an
+	// operator's entry mapped, and a restricted member's machine login's (the broker's
+	// exchange.Set.Machine); it held the token's writes, and still does, and no read
+	// (model.ListHoldsWrites), a restricted member's reads being held by their member kind. A token
 	// acting as its person carries the list its trade asked for (brokertoken.Caller.Projects), which
 	// held nothing, since a dev box session's person writes wherever they may
 	// (model.ListHoldsNothing). Every other token carries no list: a named token naming none (the

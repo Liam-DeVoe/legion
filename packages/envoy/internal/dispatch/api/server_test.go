@@ -103,6 +103,11 @@ type testServerOptions struct {
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
 	brokerTokens func(*store.Store) *brokertoken.Verifier
+	// agentSecretsURL and agentSecretsTokenFile are Deps' broker relay for the credential pages
+	// (DISPATCH_AGENT_SECRETS_URL and the file holding Dispatch's own account token at that
+	// broker); empty is the deployment with no broker, whose credential routes answer FEATURE_OFF.
+	agentSecretsURL       string
+	agentSecretsTokenFile string
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -317,25 +322,27 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		// A wait on the event feed keys on the horizon's stall warning (eventFeedFrame), so the
 		// warning must arrive inside that wait's patience rather than at the production five and
 		// thirty seconds.
-		HorizonStallAfter:   horizontest.StallWarning,
-		HorizonWarnEvery:    horizontest.StallWarning,
-		OIDC:                options.oidc,
-		OIDCAccounts:        options.oidcAccounts,
-		AccessAccounts:      options.accessAccounts,
-		SignInIssuer:        options.signInIssuer,
-		RestrictedAdmission: restrictedAdmissionOf(options.signInOutside, database.Pool),
-		PrivateProjects:     options.privateProjects,
-		BusProjects:         options.busProjects,
-		BrokerTokens:        brokerTokens,
-		AgentStream:         options.agentStream,
-		AgentPublisher:      agentPublisher,
-		Embedder:            options.embedder,
-		Answerer:            options.answerer,
-		Files:               options.files,
-		DashboardEntry:      options.dashboardEntry,
-		BuildCommit:         options.buildCommit,
-		OutboxPublishes:     options.outboxPublishes,
-		Metrics:             options.metrics,
+		HorizonStallAfter:     horizontest.StallWarning,
+		HorizonWarnEvery:      horizontest.StallWarning,
+		OIDC:                  options.oidc,
+		OIDCAccounts:          options.oidcAccounts,
+		AccessAccounts:        options.accessAccounts,
+		SignInIssuer:          options.signInIssuer,
+		RestrictedAdmission:   restrictedAdmissionOf(options.signInOutside, database.Pool),
+		PrivateProjects:       options.privateProjects,
+		BusProjects:           options.busProjects,
+		BrokerTokens:          brokerTokens,
+		AgentSecretsURL:       options.agentSecretsURL,
+		AgentSecretsTokenFile: options.agentSecretsTokenFile,
+		AgentStream:           options.agentStream,
+		AgentPublisher:        agentPublisher,
+		Embedder:              options.embedder,
+		Answerer:              options.answerer,
+		Files:                 options.files,
+		DashboardEntry:        options.dashboardEntry,
+		BuildCommit:           options.buildCommit,
+		OutboxPublishes:       options.outboxPublishes,
+		Metrics:               options.metrics,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

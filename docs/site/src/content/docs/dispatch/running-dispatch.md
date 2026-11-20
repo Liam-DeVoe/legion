@@ -1052,12 +1052,20 @@ person sees.
 A restricted member's dashboard holds only what they may read. Their rail shows Inbox, Agents,
 Delivery, their projects and Settings, with no Priorities or Pipeline and no Peek. Delivery shows
 them the pull requests whose issue they see and the deploys that shipped them, with no run's jobs,
-no setup form and no session-groups editor. The Priorities, Pipeline, broadcasts and
-machine-login pages answer **Page not found**, and Settings shows no Groups and no Delivery
-timeline. The API refuses them, and every token they make, every read of the whole deployment,
-`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`, except that they
-revoke their own credential grants and end their own sign-ins, as a full member does: the secrets
-broker decides whose each one is.
+no setup form and no session-groups editor. The Priorities, Pipeline and broadcasts pages answer
+**Page not found**, and Settings shows no Groups and no Delivery timeline. The machine-login page
+is theirs, listing their own machine logins alone: there they approve, at their browser, the device
+login of their own agents, and list and revoke their own machine logins, and Dispatch decides or
+ends for them no other credential. The API refuses them, and every token they make, every read of
+the whole deployment, `403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`,
+but for those calls at their browser, and except that they revoke their own credential grants and
+end their own sign-ins, as a full member does: the secrets broker decides whose each one is. The
+secrets broker holds their agents' tokens to one project, which their agents name in
+`AGENT_SECRETS_PROJECTS`. Taking such a person off a project's list ends their tokens for it within
+325 seconds, since the broker checks every trade against Dispatch, and Dispatch then revokes their
+machine logins at the broker, after the removal commits and again until the broker confirms; the
+log line `the secrets broker revoked the machine logins of a restricted member taken off an access
+list` records each, and the person approves a new machine login for a project that still lists them.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
 a token that lists no project read the private project as missing. A person who sees the project
