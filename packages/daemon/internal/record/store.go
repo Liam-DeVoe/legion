@@ -68,7 +68,7 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // issues.memory_* columns are no part of it: what a unit was drawn is an assignment row of its own
 // (AssignmentsOf, AssignmentsFor), and nothing this release's daemon runs reads the columns but the
 // back-fill of 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, forward_merge_owed, children_waited_at, holds_gate`
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, coalesce(view_of, ''), children_wait_start, children_wait_task, children_wait_reason, children_wait_since, forward_merge_owed, children_waited_at, holds_gate, retained_until, carried_generation, carried_gate, parked_by_architect, pending_close, seen_seq`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -228,6 +228,10 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		return fmt.Errorf("record issue %s: GitHub's spelling %s names another repository than %s", issue.Key, issue.GitHubRepo, issue.Repo)
 	case issue.Generation > maxInt64:
 		return fmt.Errorf("put issue %s: generation %d does not fit a bigint", issue.Key, issue.Generation)
+	case issue.CarriedGeneration > maxInt64:
+		return fmt.Errorf("put issue %s: carried generation %d does not fit a bigint", issue.Key, issue.CarriedGeneration)
+	case issue.PendingClose != nil && issue.PendingClose.Generation > maxInt64:
+		return fmt.Errorf("put issue %s: the generation %d of its refused close does not fit a bigint", issue.Key, issue.PendingClose.Generation)
 	}
 	noteIssueWrite(ctx, issue.Key)
 	var heldFrom any
@@ -263,6 +267,16 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 			childrenWaitSince = issue.ChildrenWait.Since
 		}
 	}
+	// A refused close is one mark of four parts, set and cleared whole, so it is one nullable
+	// jsonb rather than four columns that could hold half of one: null is no close waiting.
+	var pendingClose []byte
+	if issue.PendingClose != nil {
+		encoded, err := json.Marshal(issue.PendingClose)
+		if err != nil {
+			return fmt.Errorf("put issue %s: encode its refused close: %w", issue.Key, err)
+		}
+		pendingClose = encoded
+	}
 	// The update's condition keeps a recorded issue on the repository, default branch and GitHub
 	// spelling it was recorded with: a write naming others changes no row, and is refused below.
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
@@ -290,15 +304,20 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// finds no ancestor to be a view on writes the view away. holds_gate is written set-only: the
 	// insert writes the record's mark and the update keeps a mark the row holds, so a copy of the
 	// issue read before a pass marked it (MarkHoldsGate), which carries false, never clears it
-	// (Issue.HoldsGate).
+	// (Issue.HoldsGate). tree is the insert's alone: the update keeps the tree the issue was first
+	// recorded under, which the release before reads after a rollback and no decision of this one
+	// reads (Issue.Tree). seen_seq is written forwards alone, the greater of the row's and the
+	// copy's, so a copy read before the consumer moved it never takes it back (Issue.SeenSeq).
 	tag, err := tx.Exec(ctx, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, hold_reason, dispatch_status, repo, default_branch, github_repo,
 		awaiting_ask, awaiting_gate_version, awaiting_artifact, awaiting_answered_at, awaiting_answered_by, awaiting_answered_detail, awaiting_since_seq, awaiting_since,
 		ancestry, handed_over_from, told_parent, view_of,
-		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, forward_merge_owed, children_waited_at, holds_gate)
+		children_wait_start, children_wait_task, children_wait_reason, children_wait_since, forward_merge_owed, children_waited_at, holds_gate,
+		retained_until, carried_generation, carried_gate, parked_by_architect, pending_close, seen_seq)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15::text, ''), $16, $17, $18, $19, $20, $21, $22, $23, nullif($24::text, ''), nullif($25::text, ''), $26, $27,
 		coalesce($28::text[], '{}'), $29, nullif($30::text, ''), nullif($31::text, ''),
-		$32, $33, $34, $35, $36, $37, $38)
-		on conflict (key) do update set tree = excluded.tree, project = excluded.project, title = excluded.title,
+		$32, $33, $34, $35, $36, $37, $38,
+		$39, $40, $41, $42, $43, $44)
+		on conflict (key) do update set project = excluded.project, title = excluded.title,
 		parent = excluded.parent, phase = excluded.phase, generation = excluded.generation,
 		status = excluded.status, rank = excluded.rank, handed_over = excluded.handed_over, taken_back = excluded.taken_back,
 		linger_until = excluded.linger_until,
@@ -314,13 +333,17 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 		children_wait_start = excluded.children_wait_start, children_wait_task = excluded.children_wait_task,
 		children_wait_reason = excluded.children_wait_reason, children_wait_since = excluded.children_wait_since,
 		forward_merge_owed = excluded.forward_merge_owed, children_waited_at = excluded.children_waited_at,
-		holds_gate = issues.holds_gate or excluded.holds_gate
+		holds_gate = issues.holds_gate or excluded.holds_gate,
+		retained_until = excluded.retained_until, carried_generation = excluded.carried_generation,
+		carried_gate = excluded.carried_gate, parked_by_architect = excluded.parked_by_architect,
+		pending_close = excluded.pending_close, seen_seq = greatest(issues.seen_seq, excluded.seen_seq)
 		where issues.repo = excluded.repo and issues.default_branch = excluded.default_branch and issues.github_repo = excluded.github_repo`,
 		issue.Key, issue.Tree, issue.Project, issue.Title, issue.Parent, string(issue.Phase), int64(issue.Generation), issue.Status,
 		issue.Rank, issue.HandedOver, issue.TakenBack, issue.LingerUntil, heldFrom, issue.LastDispatchSeq, string(holdReason), issue.DispatchStatus,
 		issue.Repo, issue.DefaultBranch, issue.GitHubRepo, awaitingAsk, awaitingGate, awaitingArtifact, answeredAt, string(answeredBy), answeredDetail,
 		sinceSeq, since, issue.Ancestry, issue.HandedOverFrom, issue.ToldParent, issue.ViewOf,
 		childrenWaitStart, childrenWaitTask, childrenWaitReason, childrenWaitSince, issue.ForwardMergeOwed, issue.ChildrenWaitedAt, issue.HoldsGate,
+		issue.RetainedUntil, int64(issue.CarriedGeneration), issue.CarriedGate, issue.ParkedByArchitect, pendingClose, issue.SeenSeq,
 	)
 	if err != nil {
 		return fmt.Errorf("put issue %s: %w", issue.Key, err)
@@ -516,19 +539,99 @@ func (s *Postgres) PutRepoNote(ctx context.Context, tx pgx.Tx, note RepoNote) er
 // OpenTreeLifecycle is the admission fact's transactional entry point into the shared lifecycle
 // barrier.
 func (s *Postgres) OpenTreeLifecycle(ctx context.Context, tx pgx.Tx, project, tree string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
-	return treelifecycle.Open(ctx, tx, project, tree, authority)
+	return treelifecycle.Trees.Open(ctx, tx, project, tree, authority)
 }
 
 // TreeLifecycle reads the tree's lifecycle without opening it.
 func (s *Postgres) TreeLifecycle(ctx context.Context, tx pgx.Tx, project, tree string) (treelifecycle.Lifecycle, bool, error) {
-	return treelifecycle.Read(ctx, tx, project, tree)
+	return treelifecycle.Trees.Read(ctx, tx, project, tree)
 }
 
 // TreeLifecycles reads the lifecycle of each of trees in one query, opening nothing; a tree with
 // no row has no entry. project is the claim project token the tree_lifecycles table is keyed by,
 // the value OpenTreeLifecycle takes, not the Dispatch project key.
 func (s *Postgres) TreeLifecycles(ctx context.Context, tx pgx.Tx, project string, trees []string) (map[string]treelifecycle.Lifecycle, error) {
-	return treelifecycle.ReadMany(ctx, tx, project, trees)
+	return treelifecycle.Trees.ReadMany(ctx, tx, project, trees)
+}
+
+// OpenIssueLifecycle is the admission fact's transactional entry point into the issue's own
+// lifecycle barrier (treelifecycle.Issues).
+func (s *Postgres) OpenIssueLifecycle(ctx context.Context, tx pgx.Tx, project, issue string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error) {
+	return treelifecycle.Issues.Open(ctx, tx, project, issue, authority)
+}
+
+// IssueLifecycles reads the lifecycle of each of issues in one query, opening nothing; an issue
+// with no row has no entry. project is the claim project token, as for TreeLifecycles.
+func (s *Postgres) IssueLifecycles(ctx context.Context, tx pgx.Tx, project string, issues []string) (map[string]treelifecycle.Lifecycle, error) {
+	return treelifecycle.Issues.ReadMany(ctx, tx, project, issues)
+}
+
+// UnkeptTree is a value issues.tree stores, while an issue that stores it is in Legion's work,
+// whose tree_lifecycles row the shadow keeper left as it stands, and why (Reason): a cleanup the
+// release before reserved and has not confirmed, or a lifetime the operator holds.
+type UnkeptTree struct {
+	Tree   string
+	Reason string
+}
+
+// The two reasons KeepTreeLifecyclesOpen leaves a tree's row as it stands.
+const (
+	UnkeptCleanupReserved = "its cleanup is reserved and not confirmed"
+	UnkeptOperatorHold    = "the operator holds it"
+)
+
+// KeepTreeLifecyclesOpen is the shadow keeper (R22 of dispatch://INFRA-3320, decision 16 of
+// dispatch://INFRA-4730): for every value issues.tree stores while an issue of project that stores
+// it is in Legion's work (InLegionsWork, its phase and its five statuses passed to the statement
+// rather than spelled in it), the tree's lifecycle row stands open with a bound epoch, so a claim
+// the release before admits after a rollback binds it. One statement does it however many trees:
+// a value with no row gets epoch one under the workflow, and one whose cleanup confirmed gets its
+// next epoch, as treelifecycle.Open would give either. It reserves no row, ever. A row it cannot
+// open is left as it stands and answered, by tree, with its reason (UnkeptTree): a cleanup the
+// release before reserved, which only that release's own cleanup confirms, and a lifetime the
+// operator holds. project is the Dispatch project key the issue records carry; the rows are keyed
+// by its token (claim.ProjectToken), as every lifecycle row is. It takes the shared serializer
+// first, as every lifecycle operation does.
+func (s *Postgres) KeepTreeLifecyclesOpen(ctx context.Context, tx pgx.Tx, project string) ([]UnkeptTree, error) {
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return nil, fmt.Errorf("keep the tree lifecycles of %s open: %w", project, err)
+	}
+	if err := treelifecycle.Serialize(ctx, tx); err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(ctx, `with stored as (
+			select distinct tree from issues
+			where project = $1 and tree <> '' and phase <> $3 and status = any($4::text[])
+		), opened as (
+			insert into tree_lifecycles (project, tree, epoch, authority)
+			select $2, tree, 1, 'workflow' from stored
+			on conflict (project, tree) do update set epoch = tree_lifecycles.epoch + 1, authority = 'workflow',
+				cleanup_started = false, cleanup_confirmed_at = null, updated_at = now()
+			where tree_lifecycles.cleanup_started and tree_lifecycles.cleanup_confirmed_at is not null
+		)
+		select l.tree, l.cleanup_started from stored join tree_lifecycles l on l.project = $2 and l.tree = stored.tree
+		where (l.cleanup_started and l.cleanup_confirmed_at is null) or (not l.cleanup_started and l.authority <> 'workflow')
+		order by l.tree`, project, token, string(phase.Done), inWorkStatuses)
+	if err != nil {
+		return nil, fmt.Errorf("keep the tree lifecycles of %s open: %w", project, err)
+	}
+	unkept, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (UnkeptTree, error) {
+		var tree UnkeptTree
+		var reserved bool
+		if err := row.Scan(&tree.Tree, &reserved); err != nil {
+			return UnkeptTree{}, err
+		}
+		tree.Reason = UnkeptOperatorHold
+		if reserved {
+			tree.Reason = UnkeptCleanupReserved
+		}
+		return tree, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("keep the tree lifecycles of %s open: %w", project, err)
+	}
+	return unkept, nil
 }
 
 func scanIssue(row scanner) (*Issue, error) {
@@ -543,16 +646,34 @@ func scanIssue(row scanner) (*Issue, error) {
 	var answeredAt *time.Time
 	var answeredBy, answeredDetail string
 	var sinceSeq *int64
-	var since, declaredAt, treeStalledToldAt, releasedForWaitAt, childrenWaitSince, childrenWaitedAt *time.Time
+	var since, declaredAt, treeStalledToldAt, releasedForWaitAt, childrenWaitSince, childrenWaitedAt, retainedUntil *time.Time
 	var childrenWaitStart, childrenWaitTask, childrenWaitReason *string
+	var carriedGeneration int64
+	var pendingClose []byte
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt,
 		&issue.ViewOf, &childrenWaitStart, &childrenWaitTask, &childrenWaitReason, &childrenWaitSince, &issue.ForwardMergeOwed,
-		&childrenWaitedAt, &issue.HoldsGate); err != nil {
+		&childrenWaitedAt, &issue.HoldsGate, &retainedUntil, &carriedGeneration, &issue.CarriedGate, &issue.ParkedByArchitect,
+		&pendingClose, &issue.SeenSeq); err != nil {
 		return nil, err
+	}
+	if carriedGeneration < 0 {
+		return nil, fmt.Errorf("issue %s has negative carried generation %d", issue.Key, carriedGeneration)
+	}
+	issue.CarriedGeneration = uint64(carriedGeneration)
+	if retainedUntil != nil {
+		utc := retainedUntil.UTC()
+		issue.RetainedUntil = &utc
+	}
+	if pendingClose != nil {
+		var refused PendingClose
+		if err := json.Unmarshal(pendingClose, &refused); err != nil {
+			return nil, fmt.Errorf("issue %s holds a refused close that does not decode: %w", issue.Key, err)
+		}
+		issue.PendingClose = &refused
 	}
 	if declaredAt != nil {
 		issue.DeclaredAt = declaredAt.UTC()

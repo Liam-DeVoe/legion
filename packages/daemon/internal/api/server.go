@@ -298,10 +298,12 @@ type Options struct {
 // an operator root opens its tree's lifecycle before its claim is stored, and the tree's close
 // reserves the tree's cleanup, then finishes it once every claim of the tree has retired. The
 // open's created runs in the open's own transaction where it created the tree's row, and is where
-// the tree's experiments are drawn (store.Store.OpenOperatorTreeLifecycle).
+// the tree's experiments are drawn (store.Store.OpenOperatorTreeLifecycle). Every spawn opens its
+// issue's own lifecycle too, which each claim of the issue binds (store.Store.OpenIssueLifecycle).
 type TreeLifecycles interface {
 	OpenOperatorTreeLifecycle(ctx context.Context, project, tree string,
 		created func(ctx context.Context, tx pgx.Tx) error) (treelifecycle.Lifecycle, error)
+	OpenIssueLifecycle(ctx context.Context, project, issue string, authority treelifecycle.Authority) (treelifecycle.Lifecycle, error)
 	ReserveOperatorTreeCleanup(ctx context.Context, project, tree string) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
 }

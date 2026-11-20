@@ -597,6 +597,71 @@ func TestStoreRoundTripsTheMarkThatAnIssueHoldsItsOwnGate(t *testing.T) {
 	})
 }
 
+// Each issue keeps its own facts on its record (R17 of dispatch://INFRA-3320): the retention a
+// converted linger left it, the run and gate a hand-over carried into it, the architect's park, a
+// close Dispatch refused and the newest Dispatch sequence the consumer saw. PutIssue stores each
+// and every read behind issueColumns gives it back, and a record carrying none reads back with
+// none. A later write replaces each of them but two: issues.tree is the insert's alone, so a copy
+// naming another tree keeps the one the issue was first recorded under (R22), and seen_seq only
+// moves forward, so a copy read before the consumer moved it never takes it back. The write that
+// clears the refused close and the retention clears them.
+func TestStoreRoundTripsEachIssuesOwnFacts(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	retained := time.Date(2026, 11, 21, 6, 30, 0, 0, time.UTC)
+	facts := issueFixture("LEGION-219")
+	facts.Tree = "LEGION-200"
+	facts.RetainedUntil = &retained
+	facts.CarriedGeneration, facts.CarriedGate = 4, true
+	facts.ParkedByArchitect = true
+	facts.PendingClose = &PendingClose{Generation: 3, Entry: 7, Kind: "close_root", Reason: "Closed by its architect: every child is done."}
+	facts.SeenSeq = 52
+	bare := issueFixture("LEGION-220")
+
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, facts))
+		must(t, records.PutIssue(ctx, tx, bare))
+		got, err := records.Issue(ctx, tx, facts.Key)
+		must(t, err)
+		if !reflect.DeepEqual(written(t, got), &facts) {
+			t.Fatalf("issue with its own facts = %#v, want %#v", got, facts)
+		}
+		both, err := records.IssuesByKey(ctx, tx, []string{facts.Key, bare.Key})
+		must(t, err)
+		if !reflect.DeepEqual(writtenAll(t, both), []Issue{facts, bare}) {
+			t.Fatalf("issues by key = %#v, want %#v", both, []Issue{facts, bare})
+		}
+	})
+
+	later := facts
+	later.Tree = "LEGION-300"
+	later.RetainedUntil, later.PendingClose = nil, nil
+	later.CarriedGeneration, later.CarriedGate, later.ParkedByArchitect = 0, false, false
+	later.SeenSeq = 40
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, later))
+		got, err := records.Issue(ctx, tx, facts.Key)
+		must(t, err)
+		want := later
+		want.Tree, want.SeenSeq = facts.Tree, facts.SeenSeq
+		if !reflect.DeepEqual(written(t, got), &want) {
+			t.Fatalf("issue after a later write = %#v, want %#v: the tree it was first recorded under, the newest sequence seen, and every other fact as the later write gave it", got, want)
+		}
+	})
+
+	ahead := later
+	ahead.SeenSeq = 60
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, ahead))
+		got, err := records.Issue(ctx, tx, facts.Key)
+		must(t, err)
+		if got.SeenSeq != 60 {
+			t.Fatalf("%s's newest sequence seen after a write carrying 60 = %d, want 60: a sequence ahead of the stored one moves it", facts.Key, got.SeenSeq)
+		}
+	})
+}
+
 // The tree a root left is what keeps it its own tree on every later pass of the admission sweep
 // and every release of children (workflow's RanAsRoot), so PutIssue stores it and every read
 // behind issueColumns gives it back.
@@ -2335,7 +2400,7 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
 			"moved_at", "tree_stalled_told_at", "released_for_wait_at", "view_of",
 			"children_wait_start", "children_wait_task", "children_wait_reason", "children_wait_since", "forward_merge_owed", "children_waited_at",
-			"holds_gate"},
+			"holds_gate", "retained_until", "carried_generation", "carried_gate", "parked_by_architect", "pending_close", "seen_seq"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_verbatim", "entry_raised_at", "entry_moved_back", "entry_from", "handoff_record", "handoff_version", "reviewed_head"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "statuses", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "state_read_at", "conflicting_head", "merge_sha", "conflict_read", "merge_forward"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
@@ -2345,7 +2410,9 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 		"dispatch_claims":   {"key", "claimed_by", "claim_seq"},
 		"slots":             {"issue", "index", "admitted_at"},
 		"processed_events":  {"source", "event_id", "processed_at"},
-		"outbox":            {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause"},
+		"outbox":            {"id", "kind", "issue", "payload", "attempts", "next_at", "last_error", "created_at", "lease_token", "lease_until", "write_mark", "held_by_pause", "attempt_key", "attempt_body"},
+		"issue_lifecycles":  {"project", "issue", "epoch", "authority", "cleanup_started", "cleanup_confirmed_at", "updated_at"},
+		"tree_conversions":  {"project", "step", "converted_at"},
 	}
 	inTx(t, st, func(tx pgx.Tx) {
 		for table, expected := range want {

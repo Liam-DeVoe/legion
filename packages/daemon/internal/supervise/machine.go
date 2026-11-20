@@ -138,15 +138,32 @@ func (s SuspendSource) RetiresPhaseTask() bool {
 
 // Claim is one role claim as the supervisor holds and persists it.
 type Claim struct {
-	Token      claim.Token
-	Project    string
-	Tree       string
+	Token   claim.Token
+	Project string
+	// Tree is the tree the claim's issue stored when the daemon first recorded it (issues.tree),
+	// or, for an operator's claim on an issue the daemon records nothing of, the tree the operator
+	// named: what claims.tree holds for the release before after a rollback (R22 of
+	// dispatch://INFRA-3320). The store writes it from the issue's record where there is one
+	// (store.Store.AdmitClaim).
+	Tree string
+	// LaunchTree is the issue's gate root at the claim's last launch: what the spawn spec, the
+	// role's LEGION_TREE and the registration's answer name (decision 13 of
+	// dispatch://INFRA-4730). "" for a claim no launch of this release has set it on.
+	LaunchTree string
 	Issue      string
 	Role       claim.Role
 	Generation uint64
-	// TreeEpoch is the durable lifecycle epoch this claim bound to before its first persistence.
-	// A cleanup reservation closes that epoch before a later claim/launch can write or run.
-	TreeEpoch uint64
+	// TreeEpoch is the epoch of the tree lifecycle of Tree the claim was last admitted under,
+	// written for the release before, whose launch checks it (R22); no decision of this release
+	// reads it. IssueEpoch is the durable lifecycle epoch of the claim's own issue it bound to
+	// before its first persistence (store.Store.AdmitClaim): a cleanup reservation of the issue
+	// closes that epoch before a later claim or launch can write or run.
+	TreeEpoch  uint64
+	IssueEpoch uint64
+	// HoldsGate is whether the claim's issue held its own design gate at the claim's last launch
+	// (record.Chains.HoldsOwnGate), set at each launch beside LaunchTree: what the machine reads
+	// an architect of a gate holder by.
+	HoldsGate bool
 	// Session and SessionFile are the agent's reported session id and absolute transcript path.
 	Session     string
 	SessionFile string

@@ -441,6 +441,16 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The claim binds its issue's own lifecycle (store.Store.AdmitClaim): the operator opens it
+	// where nothing holds it, and an issue the workflow already holds keeps the workflow's, whose
+	// epoch the claim binds, as a worker the operator spawns into a workflow tree binds that tree's.
+	if _, err := s.trees.OpenIssueLifecycle(ctx, s.project, req.Issue, treelifecycle.AuthorityOperator); errors.Is(err, treelifecycle.ErrCleanupReserved) {
+		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf("issue %s is waiting for durable cleanup: %v", req.Issue, err)))
+		return
+	} else if err != nil && !errors.Is(err, treelifecycle.ErrAuthorityHeld) {
+		s.operatorFailure(w, "spawn", token, err)
+		return
+	}
 	m, created, err := s.supervisor.Create(ctx, c, req.Prompt)
 	if err != nil {
 		s.operatorFailure(w, "spawn", token, err)

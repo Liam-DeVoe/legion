@@ -2022,13 +2022,28 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 					continue
 				}
 			}
-			if candidate.Kind == record.LineQueuedRoot {
-				// Claims, tree lifecycles and the runtime key a tree by the normalized project
-				// token, not the Dispatch project key the issue record carries.
-				project, err := claim.ProjectToken(a.project)
-				if err != nil {
-					return admitted, released, fmt.Errorf("open admission lifecycle of %s: %w", issue.Key, err)
+			// Claims, tree and issue lifecycles and the runtime key a tree or an issue by the
+			// normalized project token, not the Dispatch project key the issue record carries.
+			project, err := claim.ProjectToken(a.project)
+			if err != nil {
+				return admitted, released, fmt.Errorf("open admission lifecycle of %s: %w", issue.Key, err)
+			}
+			// Every issue the pass starts opens its own lifecycle (R17 of dispatch://INFRA-3320):
+			// each claim of it binds that lifecycle's epoch (store.Store.AdmitClaim), and a cleanup
+			// of the issue reserves it. An issue whose cleanup is still reserved, or whose
+			// lifecycle the operator holds, waits, and the candidates behind it go on.
+			if _, err := a.store.OpenIssueLifecycle(ctx, tx, project, issue.Key, treelifecycle.AuthorityWorkflow); err != nil {
+				if errors.Is(err, treelifecycle.ErrCleanupReserved) {
+					a.log.Info("admission waits for the issue's cleanup", "issue", issue.Key)
+					continue
 				}
+				if errors.Is(err, treelifecycle.ErrAuthorityHeld) {
+					a.log.Warn("admission waits for the issue's other authority", "issue", issue.Key, "error", err)
+					continue
+				}
+				return admitted, released, fmt.Errorf("open admission lifecycle of %s: %w", issue.Key, err)
+			}
+			if candidate.Kind == record.LineQueuedRoot {
 				lifecycle, err := a.store.OpenTreeLifecycle(ctx, tx, project, issue.Tree, treelifecycle.AuthorityWorkflow)
 				if err != nil {
 					if errors.Is(err, treelifecycle.ErrCleanupReserved) {

@@ -81,6 +81,9 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindRetentionEnd ends, at its deadline, the retention a converted linger left one
+	// issue (RetentionEnd).
+	OutboxKindRetentionEnd OutboxKind = "retention_end"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on five lanes side by
@@ -134,7 +137,7 @@ const (
 // basis's and a re-parented root's — each read Dispatch and apply what they read as a fact, and
 // run on the lifecycle lane together.
 var laneKinds = map[OutboxLane][]OutboxKind{
-	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
+	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindRetentionEnd, OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
@@ -190,10 +193,10 @@ type pauseHold struct {
 // one role (phase_ended, hook_prompt, role_message, update_ask, merge_forward) and the merger's
 // merge-queue message, and the three rows of a production check (check_wake, check_look,
 // check_bound). Every other row runs while the project is paused: the stops (a supervise row of
-// any other op, issue_suspend, issue_release), a supervise row that takes back a stopped phase's
-// task (`retire_task`), the reads and writes of Dispatch (the gate, pending-basis and re-parent
-// seeds among them), and the controller's notices (controller_notice), since the pause never holds
-// the controller (spec Design item 8).
+// any other op, issue_suspend, issue_release, retention_end), a supervise row that takes back a
+// stopped phase's task (`retire_task`), the reads and writes of Dispatch (the gate, pending-basis
+// and re-parent seeds among them), and the controller's notices (controller_notice), since the
+// pause never holds the controller (spec Design item 8).
 //
 // The outbox's claim reads the list as SQL literals (store.go's outboxPauseFree, built from it),
 // so DueRows, ClaimRow, HeldRows and PauseHeldRows hold exactly these rows, and the resume marks
@@ -1416,6 +1419,21 @@ type WorkspaceRemove struct {
 
 func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemove }
 
+// RetentionEnd is the end, at the row's own due time (the issue's RetainedUntil), of the retention
+// a linger of the release before left one issue, the row's own (decision 17 of
+// dispatch://INFRA-4730): for the issue while it stays out of Legion's work, after any production
+// check it owes, it retires the issue's suspended claims, deletes its bundle and removes its tmux
+// workspace, the three things that linger's expiry would have done for it. Generation and Entry
+// are the issue's run and phase entry the conversion queued it at, so a late row does nothing to
+// a run or an entry the issue has moved on to since; it acts on the one issue, and on no single
+// pod or claim of it.
+type RetentionEnd struct {
+	Generation uint64 `json:"generation"`
+	Entry      int64  `json:"entry"`
+}
+
+func (RetentionEnd) OutboxKind() OutboxKind { return OutboxKindRetentionEnd }
+
 // RoleMessage is one message the daemon sends a role holder, published to that role's topic: Role
 // is the claim token, which the runner addresses as a role topic, and Body is the whole of what the
 // holder is told. It is how the daemon reaches a worker with something to read rather than a task
@@ -2169,6 +2187,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindRetentionEnd:
+		value := RetentionEnd{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindRoleMessage:
 		value := RoleMessage{}
 		if err := decoder.Decode(&value); err != nil {
@@ -2359,6 +2383,10 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 	case WorkspaceRemove:
 		if value.Linger == 0 {
 			return fmt.Errorf("workspace removal requires the root generation of its linger")
+		}
+	case RetentionEnd:
+		if value.Generation == 0 || value.Entry <= 0 {
+			return fmt.Errorf("the end of an issue's retention requires the run generation and the phase entry it was queued at")
 		}
 	case Notice:
 		if !validNoticeKind(value.Kind) {

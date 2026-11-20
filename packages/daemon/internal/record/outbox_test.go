@@ -69,6 +69,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		Notice{Kind: "basis-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-100/spec", Reason: "name the rollback path"},
 		LingerClose{Generation: 7},
 		WorkspaceRemove{Linger: 3},
+		// The end of a converted linger's retention of one issue, fenced by the run and the entry
+		// the conversion queued it at (dispatch://INFRA-4730's decision 17).
+		RetentionEnd{Generation: 3, Entry: 5},
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria"}, {Step: DesignStepSpec, ArtifactID: "artifact-208"}}},
 		RoleHoldersPublish{Issue: "LEGION-208"},
@@ -248,7 +251,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk,
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindRoleHoldersPublish, OutboxKindStepRecord, OutboxKindConflictConfirm,
-		OutboxKindMergeForward, OutboxKindPlanRecord}
+		OutboxKindMergeForward, OutboxKindPlanRecord, OutboxKindRetentionEnd}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneLifecycle, LaneRecord, LaneRoleMessage}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
 		t.Errorf("OutboxLanes() = %v, want the lanes %v in name order", got, oracle)
@@ -313,10 +316,13 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		OutboxKindPendingBasisSeed: "",
 		// A re-parent seed reads Dispatch for a root's new parent and starts no turn
 		// (dispatch://INFRA-3320).
-		OutboxKindReparentSeed:       "",
-		OutboxKindLingerClose:        "",
-		OutboxKindIssueSuspend:       "",
-		OutboxKindWorkspaceRemove:    "",
+		OutboxKindReparentSeed:    "",
+		OutboxKindLingerClose:     "",
+		OutboxKindIssueSuspend:    "",
+		OutboxKindWorkspaceRemove: "",
+		// The end of a converted linger's retention retires suspended claims, deletes a bundle and
+		// removes a workspace, which starts no turn, as a stop does (dispatch://INFRA-4730).
+		OutboxKindRetentionEnd:       "",
 		OutboxKindIssueBranch:        "",
 		OutboxKindIssueBundle:        "",
 		OutboxKindIssueRelease:       "",
@@ -477,6 +483,12 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 			ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300", Ran: "it ran as a tree of its own"}},
 		OutboxKindLingerClose:     {lacks(notAfterBoot), lacks(notAfterBoot), lacks(notAfterBoot), nil},
 		OutboxKindWorkspaceRemove: {lacks(notAfterBoot), lacks(notAfterBoot), lacks(notAfterBoot), nil},
+		// It does for one issue, at its retention's deadline, what a linger's expiry did for a tree,
+		// so it names the run and the entry the conversion queued it at (decision 17 of
+		// dispatch://INFRA-4730).
+		OutboxKindRetentionEnd: {carries("Generation"), carries("Entry"),
+			lacks("it acts on the one issue: it retires every suspended claim of it, deletes its bundle and removes its workspace, and no single pod or claim is what it fences"),
+			RetentionEnd{}},
 		OutboxKindIssueSuspend: {carries("Generation"), carries("Entry"), carries(podUIDField),
 			IssueSuspend{Tree: "LEGION-208", TreeGeneration: 7}},
 		OutboxKindIssueBundle: {carries("Generation"), carries("Entry"), carries(podUIDField),
