@@ -54,11 +54,18 @@ var markedCalls = []struct {
 		_, err := client.RequestCore(ctx, "envoy.marked.request", nats.Header{ConnectionProbeHeader: []string{"1"}})
 		return err
 	}},
+	// A stored message read (a handover's lane head and cursor reads, its walk's next copy):
+	// requestConfirmed waits for the connection in connForRequest.
+	{"stored message read", func(ctx context.Context, client *Client, _ KeyValue) error {
+		_, err := client.LastStoredMessage(ctx, KeptRoleCursorSubject("marked"))
+		return err
+	}},
 }
 
 // A call the listener's main client makes for a caller that holds a lock, made while the hub holds
-// the handshake of the client's reconnect, answers ErrConnectionLost while the handshake is still
-// held, through each path the call reaches the connection by: the request's own read of the
+// the handshake of the client's reconnect after the caller's own question (LostNow) answered the
+// connection up, answers ErrConnectionLost while the handshake is still held, through each path
+// the call reaches the connection by: the request's own read of the
 // connection (requestRead), the wait a publish, a forward or a stream read makes for the connection
 // before it sends (connForCall), and the context a forward builds for itself, which keeps the
 // caller's mark (StartRequestStoredTo). A caller that held its lock across a wait for the
@@ -95,6 +102,11 @@ func TestAMarkedCallDuringAHeldHandshakeAnswersAtOnce(t *testing.T) {
 			t.Cleanup(client.Close)
 			t.Cleanup(proxy.Restore)
 			kv := lostReplyBucket(t, client)
+			// The caller asks first, as every pass under a lock does, and hears the connection up;
+			// the drop comes after that answer.
+			if lost := client.LostNow(); lost != nil {
+				t.Fatalf("the main client's question before the drop answered %v, want up", lost)
+			}
 			proxy.Cut()
 			hold := proxy.HoldConnectAnswers()
 			awaitHeld(t, hold)

@@ -45,6 +45,15 @@ func (c *Client) ProbesForTest() uint64 {
 	return c.proberLocked().probes.Load()
 }
 
+// AnswerWaitForTest makes tick run each time a request on c whose caller holds no lock begins to
+// wait for nats.go's own answer about its connection (requestReadUntil), until the function it
+// answers takes the hook out. It is for tests alone: a row of another package reads it to know that
+// a call made under a lock (WithLockHeld) never begins that wait.
+func (c *Client) AnswerWaitForTest(tick func()) (restore func()) {
+	previous := c.answerWaitTick.Swap(&tick)
+	return func() { c.answerWaitTick.Store(previous) }
+}
+
 // ProbeReadsDownForTest is Client.ProbeReadsDownForTest on the session consumers' own client.
 func (s *SessionConsumers) ProbeReadsDownForTest(down func() bool) (restore func()) {
 	return s.client.ProbeReadsDownForTest(down)
