@@ -875,8 +875,8 @@ RULES = {
     # handlers record to: read from another module, as the outbox's test below reads all eight.
     f"{ENVOY}/internal/dispatch/api/shared_issue_examples_test.go": reads(*[
         (f"{DAEMON}/internal/intake/testdata/dispatch/{name}",
-         "internal/dispatch/api/shared_issue_examples_test.go:148 os.ReadFile "
-         "(sharedIssueExamples + the example's file, :15)")
+         "internal/dispatch/api/shared_issue_examples_test.go:189 os.ReadFile "
+         "(sharedIssueExamples + the example's file, :17)")
         for name in ("issue-claimed-first.json", "issue-claimed-forced.json", "issue-claimed-every-field.json",
                      "issue-released-null-claim.json", "issue-released-closed.json")]),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
@@ -2874,7 +2874,7 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-block-id-encodings.json", "packages/contracts/src/dispatch-block-ref.test.ts:98-102 reads the Go side's own table by relative path and asserts set equality against it, so the two halves are one corpus"),
         (f"{DAEMON}/internal/intake/testdata/dispatch/server-started.json", "packages/contracts/src/dispatch-api.test.ts:411 (the URL at :407-410)"),
         *[(f"{DAEMON}/internal/intake/testdata/dispatch/{name}",
-           "packages/contracts/src/dispatch-issue-events.test.ts:351 (the URL at :350, each file of EXAMPLES, :29)")
+           "packages/contracts/src/dispatch-issue-events.test.ts:393 (the URL at :392, each file of EXAMPLES, :29)")
           for name in SHARED_ISSUE_ENVELOPES],
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/block-pointer-values.json", "packages/contracts/src/dispatch-block-ref.test.ts:129-133 reads pmdoc's own JSON copy of the block pointer table by relative path"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:146-150 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
