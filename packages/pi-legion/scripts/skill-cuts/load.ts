@@ -8,33 +8,44 @@
  * - `--skill` is the skill's directory as written: its description is the one tested. The skill
  *   is tested under `--name` when one is given, else under its frontmatter `name` (its
  *   directory's name when the frontmatter names none). `--name` changes the frontmatter `name`
- *   and the directory's name in a scratch copy (`renamedSkill`) and nothing else: the skill's own
- *   text, its references and every other file that names the skill stay as they are, and the
- *   command says so.
+ *   and the directory's name in a scratch copy (`renamedSkill`), and, for a profile that carries
+ *   a subagent's recorded prompt, the name of that prompt's listing line of the skill
+ *   (capture.ts's `renamedListingBlocks`), and nothing else: the skill's own text, its
+ *   references, every other line of a recorded prompt and every other file that names the skill
+ *   stay as they are, and the command says so.
  * - The tasks file (`loadTasks`) holds one JSON object per line (Task): `{id, text, label,
  *   source: "session", store, pathHash}` for a real session's first request (its store, and
  *   cases.ts's `pathHash` of the transcript's path, never the path), or `{id, text, label,
- *   source: "written"}`; `label` is `need` or `near-miss`.
- * - The profile file (`loadProfile`) is one JSON object: cases.ts's `Profile` (the other skills
+ *   source: "written"}`; `label` is `need` or `near-miss`. Either may name its `profile`: the
+ *   profile file of the session the task came from (absolute, or relative to the tasks file's
+ *   directory), so that the task runs in that session's rebuilt context.
+ * - A profile file (`loadProfile`) is one JSON object: cases.ts's `Profile` (the other skills
  *   installed beside it, each a `ProfileSkill`; the Oh My Pi plugins; the context files; an
- *   appended system prompt), the `context` (`devbox`, the default, or `legion:<project>:<role>`),
- *   and for Claude Code `claude`, the plugin layout (ClaudeLayout).
+ *   appended system prompt), the `context` (a case's: `devbox`, the default,
+ *   `legion:<project>:<role>` or `subagent:<agent>`), and for Claude Code `claude`, the plugin
+ *   layout (ClaudeLayout). `--profile` is the profile of each task that names none; a task that
+ *   names none when no `--profile` is given is refused.
  *
- * For each task the host's first request is captured once, against the recorder (recorder.ts),
- * so no host process reaches the gateway or runs a tool:
+ * For each task the host's first request is captured once, in the rebuilt context of the task's
+ * own profile (its skills, its plugins with capture.ts's stand-ins, its context files, its
+ * appended prompt and its context), against the recorder (recorder.ts), so no host process
+ * reaches the gateway or runs a tool:
  *
  * - Oh My Pi: capture.ts's `captureBody`, with the task's text as a history of one user message.
  *   Oh My Pi lists each skill under a hint that it has a model write from the name and the
  *   description, so what is tested is that hint; the capture writes it once per Oh My Pi version,
- *   name and description, through the gateway, and keeps it in its cache.
- * - Claude Code: a scratch `CLAUDE_CONFIG_DIR` and HOME, into which `claude plugin install`
- *   installs a local marketplace that holds the profile's skills and the tested skill under its
- *   name, each in its plugin; then `claude -p --output-format stream-json --verbose --model <id>
- *   -- <task>` in the context's working directory, with `ANTHROPIC_BASE_URL` at the recorder. The
- *   first request that holds tools and the task's text is kept. Claude Code lists each plugin
- *   skill as `<plugin>:<name>` with its description (`claudeListing`). Thinking `off` sets
- *   `CLAUDE_CODE_DISABLE_THINKING`, a level of `claude --effort` goes as that flag, and `auto`
- *   leaves Claude Code's own default.
+ *   name and description, through the gateway, and keeps it in its cache. A `subagent:<agent>`
+ *   profile is captured as capture.ts captures a subagent's case: its recorded prompt with only
+ *   the skill's listing line changed, its recorded tools (each one nothing defines left out and
+ *   recorded), and the stand-in Envoy listener.
+ * - Claude Code: for each profile, a scratch `CLAUDE_CONFIG_DIR` and HOME, into which `claude
+ *   plugin install` installs a local marketplace that holds the profile's skills and the tested
+ *   skill under its name, each in its plugin; then `claude -p --output-format stream-json
+ *   --verbose --model <id> -- <task>` in the context's working directory, with
+ *   `ANTHROPIC_BASE_URL` at the recorder. The first request that holds tools and the task's text
+ *   is kept. Claude Code lists each plugin skill as `<plugin>:<name>` with its description
+ *   (`claudeListing`). Thinking `off` sets `CLAUDE_CODE_DISABLE_THINKING`, a level of `claude
+ *   --effort` goes as that flag, and `auto` leaves Claude Code's own default.
  *
  * Then that one body is sent `--runs` times to the gateway (gateway.ts), with the `anthropic-*`
  * headers the host sent beside it, on the route of its API: an `anthropic/<id>` model's body goes
@@ -51,14 +62,17 @@
  * never counted as loaded by its own description.
  *
  * Under `--out`: `summary.json` (the test's settings, what the host lists for the skill, each
- * task's loads and verdict, the skill's verdict, the spend), `runs/<task id>.jsonl` (one JSON line
- * per run, LoadRun), and `captures/` (each task's body and its record). A task whose run file holds
- * its runs is skipped, so a command started again goes on from what was saved; an `--out` written
- * by a test of other settings (another skill text, name, host, model, thinking level, run count or
- * profile), or by a task of the same id with another text, is refused. The verdicts are score.ts's:
- * a task's is `taskFault` and the skill's `descriptionFault`, given only once every task has its
+ * task's profile file with the SHA-256 of its bytes, its loads and verdict, the skill's verdict,
+ * the spend), `runs/<task id>.jsonl` (one JSON line per run, LoadRun, which names its task's
+ * profile file and that SHA-256 too), and `captures/` (each task's body and its record). A task
+ * whose run file holds its runs is skipped, so a command started again goes on from what was
+ * saved; an `--out` written by a test of other settings (another skill text, name, host, model,
+ * thinking level or run count), or holding a capture or runs of a task of the same id with
+ * another text or under a profile of other bytes, is refused. The verdicts are score.ts's: a
+ * task's is `taskFault` and the skill's `descriptionFault`, given only once every task has its
  * runs and they are LOAD_RUNS.
  */
+import { createHash } from "node:crypto";
 import {
   cpSync,
   existsSync,
@@ -79,8 +93,9 @@ import {
   captureBody,
   capturePaths,
   type HintWriter,
+  renamedListingBlocks,
 } from "./capture";
-import { Profile, type ProfileSkill, type Thinking } from "./cases";
+import { Case, Profile, type ProfileSkill, type Thinking } from "./cases";
 import {
   buildContext,
   type ContextRecord,
@@ -148,6 +163,8 @@ export class LoadRefused extends Error {}
 export class LoadStopped extends Error {}
 
 const Name = z.string().regex(NAME, { error: "a name of letters, digits, '.', '_' and '-'" });
+/** A SHA-256 in hex. */
+const Sha256 = z.string().regex(/^[0-9a-f]{64}$/, { error: "a SHA-256 in hex" });
 
 /** Where a task comes from. */
 export const TaskSource = z.enum(["session", "written"]);
@@ -156,6 +173,9 @@ const TaskFields = {
   id: z.string().min(1),
   text: z.string().refine((text) => text.trim() !== "", "is blank"),
   label: TaskLabel,
+  /** The profile file of the session the task came from (loadProfile): absolute, or relative to
+   *  the tasks file's directory. A task that names none runs under `--profile`. */
+  profile: z.string().min(1).optional(),
 };
 /** One task of a tasks file: a real session's first request, with its store and the hash of its
  *  transcript's path, or a task the reader wrote. */
@@ -164,7 +184,7 @@ export const Task = z.discriminatedUnion("source", [
     ...TaskFields,
     source: z.literal("session"),
     store: z.string().min(1),
-    pathHash: z.string().regex(/^[0-9a-f]{64}$/, { error: "a SHA-256 in hex" }),
+    pathHash: Sha256,
   }),
   z.strictObject({ ...TaskFields, source: z.literal("written") }),
 ]);
@@ -180,12 +200,10 @@ export const ClaudeLayout = z.strictObject({
 });
 export type ClaudeLayout = z.infer<typeof ClaudeLayout>;
 
-/** A load test's profile: what the host installs beside the tested skill. */
+/** A load test's profile: what the host installs beside the tested skill, and the context it runs
+ *  in (a case's; `devbox` unless it names one). */
 export const LoadProfile = Profile.extend({
-  context: z
-    .string()
-    .regex(/^(legion:[^:\s]+:[^:\s]+|devbox)$/, { error: "devbox or legion:<project>:<role>" })
-    .default("devbox"),
+  context: Case.shape.context.default("devbox"),
   claude: ClaudeLayout.optional(),
 });
 export type LoadProfile = z.infer<typeof LoadProfile>;
@@ -203,8 +221,9 @@ const SpentRecord = z.strictObject({
 
 /** One run of one task: whether the first assistant message the gateway gave for the task's body
  *  loaded the skill and by which call, the names of its tool calls in order, its stop reason, the
- *  request id, what it used, and what the host lists for the skill (Oh My Pi's hint, or Claude
- *  Code's listed description). */
+ *  request id, what it used, what the host lists for the skill (Oh My Pi's hint, or Claude Code's
+ *  listed description), and the profile file of its task's context with the SHA-256 of its
+ *  bytes. */
 export const LoadRun = z.strictObject({
   task: z.string().min(1),
   run: z.int().positive(),
@@ -219,6 +238,8 @@ export const LoadRun = z.strictObject({
   requestId: z.string().nullable(),
   usage: SpentRecord,
   listed: z.string(),
+  profile: z.string().min(1),
+  profileDigest: Sha256,
 });
 export type LoadRun = z.infer<typeof LoadRun>;
 
@@ -311,15 +332,27 @@ export function loadTasks(file: string): Task[] {
   return tasks;
 }
 
+/** A profile file as a load test read it: its absolute path, the SHA-256 of its bytes, its
+ *  profile, and the skill the test looks for under it (for Claude Code, in the plugin its layout
+ *  puts the tested skill in). */
+export interface TaskProfile {
+  readonly file: string;
+  readonly digest: string;
+  readonly profile: LoadProfile;
+  readonly tested: TestedSkill;
+}
+
 /** The profile of `file`, checked for a test of the skill `name` in `host`. Throws a LoadRefused
  *  naming each fault: a file that is not a profile; a profile skill named `name` (the tested skill
  *  is not one of the other skills) or a name given twice; and for Claude Code a profile with no
  *  plugin layout, or one that puts a profile skill in no plugin or in two, names a skill the
  *  profile does not install, or names a plugin twice. */
-export function loadProfile(file: string, host: Host, name: string): LoadProfile {
+export function loadProfile(file: string, host: Host, name: string): TaskProfile {
+  let bytes: Uint8Array;
   let raw: unknown;
   try {
-    raw = JSON.parse(readFileSync(file, "utf8"));
+    bytes = readFileSync(file);
+    raw = JSON.parse(new TextDecoder().decode(bytes));
   } catch (error) {
     throw new LoadRefused(`cannot read the profile ${file} as JSON: ${messageFor(error)}`);
   }
@@ -357,7 +390,55 @@ export function loadProfile(file: string, host: Host, name: string): LoadProfile
   if (faults.length > 0) {
     throw new LoadRefused(`the profile ${file} is refused: ${faults.join("; ")}`);
   }
-  return profile;
+  const plugin = host === "claude" ? layout?.skillPlugin : undefined;
+  return {
+    file,
+    digest: createHash("sha256").update(bytes).digest("hex"),
+    profile,
+    tested: plugin === undefined ? { name } : { name, plugin },
+  };
+}
+
+/** A task and the profile it runs under. */
+interface ProfiledTask {
+  readonly task: Task;
+  readonly profile: TaskProfile;
+}
+
+/** Each task of `tasks` in order, with its profile: the file the task names (absolute, or
+ *  relative to the tasks file's directory), else `o.profileFile` (`--profile`); each file read
+ *  once (`loadProfile`). Throws a LoadRefused naming each task that names no profile when no
+ *  `--profile` is given, or a profile's refusal. */
+function taskProfiles(
+  tasks: readonly Task[],
+  o: Pick<LoadOptions, "tasksFile" | "profileFile" | "host">,
+  name: string
+): ProfiledTask[] {
+  const fallback = o.profileFile === undefined ? undefined : path.resolve(o.profileFile);
+  const read = new Map<string, TaskProfile>();
+  const profiled: ProfiledTask[] = [];
+  const lacking: string[] = [];
+  for (const task of tasks) {
+    const file =
+      task.profile === undefined ? fallback : path.resolve(path.dirname(o.tasksFile), task.profile);
+    if (file === undefined) {
+      lacking.push(task.id);
+      continue;
+    }
+    let profile = read.get(file);
+    if (profile === undefined) {
+      profile = loadProfile(file, o.host, name);
+      read.set(file, profile);
+    }
+    profiled.push({ task, profile });
+  }
+  if (lacking.length > 0) {
+    const one = lacking.length === 1;
+    throw new LoadRefused(
+      `${one ? "task" : "tasks"} ${lacking.join(", ")} of ${o.tasksFile} ${one ? "names" : "name"} no profile, and no --profile is given for a task that names none`
+    );
+  }
+  return profiled;
 }
 
 /** The frontmatter `name` of the skill in `dir`, or the directory's own name when it gives none. */
@@ -575,6 +656,9 @@ export interface ClaudeCaptureRecord {
   readonly model: string;
   readonly thinking: ThinkingLevel;
   readonly skill: TestedSkill;
+  /** The profile file the capture's context was built from, and the SHA-256 of its bytes. */
+  readonly profile: string;
+  readonly profileDigest: string;
   /** The request's path, and the `anthropic-*` headers Claude Code sent with it, which each run
    *  sends with the body. */
   readonly requestPath: string;
@@ -633,7 +717,8 @@ export interface LoadOptions {
   /** The name it is tested under, when not its own. */
   readonly name?: string;
   readonly tasksFile: string;
-  readonly profileFile: string;
+  /** The profile of each task that names none (`--profile`), when one is given. */
+  readonly profileFile?: string;
   readonly runs: number;
   readonly out: string;
   /** The model (`anthropic/<id>`, or `<id>`) and the thinking level. */
@@ -679,13 +764,14 @@ interface Settings {
   readonly thinking: ThinkingLevel;
   readonly runs: number;
   readonly hintModel: string | null;
-  readonly profile: LoadProfile;
 }
 
 /** A test's summary, as `summary.json` holds it. Only what a later command checks is read back. */
 const SavedSummary = z.looseObject({
   settings: z.unknown(),
-  tasks: z.array(z.looseObject({ id: z.string(), text: z.string() })),
+  tasks: z.array(
+    z.looseObject({ id: z.string(), text: z.string(), profileDigest: z.string().optional() })
+  ),
 });
 
 /** Runs `argv` to its end with `env` and returns its standard output; throws, naming it and its
@@ -714,47 +800,47 @@ function hintUsd(record: CaptureRecord): number {
   }, 0);
 }
 
-/** One load test, as `runLoad` runs it: its options, settings, scratch root and tested skill. */
+/** One load test, as `runLoad` runs it: its options, settings, scratch root and the tested
+ *  skill's directory. */
 class LoadTest {
-  readonly tested: TestedSkill;
-  private claudeReady: Promise<ClaudeSetup> | undefined;
+  /** Claude Code's scratch home of each profile, by the SHA-256 of the profile's file. */
+  private readonly claudeSetups = new Map<string, Promise<ClaudeSetup>>();
 
   constructor(
     readonly o: LoadOptions,
     readonly settings: Settings,
     readonly root: string,
     readonly skillDir: string
-  ) {
-    const plugin = settings.profile.claude?.skillPlugin;
-    this.tested =
-      o.host === "claude" && plugin !== undefined
-        ? { name: settings.name, plugin }
-        : { name: settings.name };
-  }
+  ) {}
 
   say(line: string): void {
     this.o.io.out(`load: ${line}\n`);
   }
 
-  /** The case a capture of `id` reads, and the arm it installs: the profile's skills and the
-   *  tested skill from its directory, with `text` as the one message. The tested skill's entry
-   *  names the local directory: context.ts installs an arm's own skill from `skillDir` and reads
-   *  no repository for it. */
-  caseOf(id: string, text: string): { c: CaptureCase; arm: Arm } {
-    const { profile, name, model, thinking } = this.settings;
+  /** The case a capture of `id` reads in the context of `profile`, and the arm it installs: the
+   *  profile's skills and the tested skill from its directory, with `text` as the one message,
+   *  and the rest of the profile as it is (its plugins, context files, appended prompt, and a
+   *  subagent's recorded prompt and tools), but that a recorded prompt of a skill tested under
+   *  another name lists it under that name (`renamedListingBlocks`), as the scratch copy's
+   *  frontmatter and directory name it. The tested skill's entry names the local directory:
+   *  context.ts installs an arm's own skill from `skillDir` and reads no repository for it. */
+  caseOf(id: string, text: string, profile: LoadProfile): { c: CaptureCase; arm: Arm } {
+    const { name, renamedFrom, model, thinking } = this.settings;
     const own: ProfileSkill = {
       repo: "local/skill-directory",
       commit: this.settings.skillText,
       path: this.skillDir,
       name,
     };
+    const { context, claude: _claude, systemPrompt, ...rest } = profile;
+    const recorded =
+      systemPrompt === undefined || renamedFrom === null
+        ? systemPrompt
+        : renamedListingBlocks(systemPrompt, renamedFrom, name);
     const caseProfile: Profile = {
+      ...rest,
+      ...(recorded === undefined ? {} : { systemPrompt: recorded }),
       skills: [...profile.skills, own],
-      plugins: profile.plugins,
-      contextFiles: profile.contextFiles,
-      ...(profile.appendSystemPrompt === undefined
-        ? {}
-        : { appendSystemPrompt: profile.appendSystemPrompt }),
     };
     return {
       c: {
@@ -762,7 +848,7 @@ class LoadTest {
         skill: name,
         model,
         thinking,
-        context: profile.context,
+        context,
         profile: caseProfile,
         sessionDigest: null,
       },
@@ -784,15 +870,15 @@ class LoadTest {
     };
   }
 
-  /** Task `task`'s body through Oh My Pi, captured or read back. */
-  async ompCapture(task: Task): Promise<Captured> {
+  /** Task `task`'s body through Oh My Pi in the context of `profile`, captured or read back. */
+  async ompCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "omp", task.id);
     if (this.o.models === undefined && !(existsSync(files.body) && existsSync(files.record))) {
       throw new Error(
         `it has no capture in ${path.dirname(files.body)}, and no --models is given to make one`
       );
     }
-    const { c, arm } = this.caseOf(task.id, task.text);
+    const { c, arm } = this.caseOf(task.id, task.text, profile.profile);
     const capture = await captureBody(c, arm, {
       omp: this.o.omp,
       outDir: path.dirname(files.body),
@@ -805,21 +891,24 @@ class LoadTest {
       configFiles: this.o.configFiles,
       ...(this.o.timeoutMs === undefined ? {} : { timeoutMs: this.o.timeoutMs }),
     });
-    const listed = capture.record.listing.find((entry) => entry.name === this.tested.name)?.hint;
-    if (listed === undefined) throw new Error(`its capture does not list ${this.tested.name}`);
+    const { name } = profile.tested;
+    const listed = capture.record.listing.find((entry) => entry.name === name)?.hint;
+    if (listed === undefined) throw new Error(`its capture does not list ${name}`);
     return { body: capture.body, headers: capture.record.requestHeaders, listed };
   }
 
-  /** The scratch Claude Code home of this test, made once (ClaudeSetup): the profile's skills
-   *  and the tested one laid out by context.ts, and a local marketplace of the layout's plugins
+  /** The scratch Claude Code home of `profile` (ClaudeSetup), made once per profile: its skills
+   *  and the tested one laid out by context.ts, and a local marketplace of its layout's plugins
    *  installed into a scratch CLAUDE_CONFIG_DIR. */
-  claudeSetup(): Promise<ClaudeSetup> {
-    this.claudeReady ??= (async () => {
-      const layout = this.settings.profile.claude;
-      if (layout === undefined) throw new Error("the profile has no Claude Code layout");
-      const root = path.join(this.root, "claude");
+  claudeSetup(profile: TaskProfile): Promise<ClaudeSetup> {
+    const made = this.claudeSetups.get(profile.digest);
+    if (made !== undefined) return made;
+    const setup = (async () => {
+      const layout = profile.profile.claude;
+      if (layout === undefined) throw new Error(`the profile ${profile.file} has no Claude layout`);
+      const root = path.join(this.root, "claude", "profiles", profile.digest.slice(0, 16));
       rmSync(root, { recursive: true, force: true });
-      const { c, arm } = this.caseOf("claude-profile", "");
+      const { c, arm } = this.caseOf("claude-profile", "", profile.profile);
       // Oh My Pi's plugins are no Claude Code plugins: only the skills and context files go in.
       const context = await buildContext({ ...c, profile: { ...c.profile, plugins: [] } }, arm, {
         source: this.o.source,
@@ -828,8 +917,9 @@ class LoadTest {
       });
       const plugins = layout.plugins.map((plugin) => ({ ...plugin, skills: [...plugin.skills] }));
       const own = plugins.find((plugin) => plugin.name === layout.skillPlugin);
-      if (own === undefined) plugins.push({ name: layout.skillPlugin, skills: [this.tested.name] });
-      else own.skills.push(this.tested.name);
+      if (own === undefined) {
+        plugins.push({ name: layout.skillPlugin, skills: [profile.tested.name] });
+      } else own.skills.push(profile.tested.name);
       const market = path.join(root, "marketplace");
       writeWhole(
         path.join(market, ".claude-plugin", "marketplace.json"),
@@ -895,11 +985,13 @@ class LoadTest {
         context: context.record,
       };
     })();
-    return this.claudeReady;
+    this.claudeSetups.set(profile.digest, setup);
+    return setup;
   }
 
-  /** Task `task`'s body through Claude Code, captured or read back. */
-  async claudeCapture(task: Task): Promise<Captured> {
+  /** Task `task`'s body through Claude Code in the context of `profile`, captured or read
+   *  back. */
+  async claudeCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "claude", task.id);
     if (existsSync(files.body) && existsSync(files.record)) {
       const record = JSON.parse(readFileSync(files.record, "utf8")) as ClaudeCaptureRecord;
@@ -909,7 +1001,7 @@ class LoadTest {
         listed: record.listed,
       };
     }
-    const setup = await this.claudeSetup();
+    const setup = await this.claudeSetup(profile);
     const { thinking } = this.settings;
     const model = this.settings.model.replace(/^anthropic\//, "");
     const logs = path.join(this.root, "claude", "runs", cacheKey(task.id).slice(0, 16));
@@ -972,7 +1064,7 @@ class LoadTest {
     if (turn === undefined) throw new Error("Claude Code sent no model request that holds it");
     const body = JSON.parse(turn.body) as MessagesBody;
     const listing = claudeListing(body);
-    const key = `${this.tested.plugin}:${this.tested.name}`;
+    const key = `${profile.tested.plugin}:${profile.tested.name}`;
     const listed = listing.get(key);
     if (listed === undefined) {
       const names = [...listing.keys()].join(", ") || "no skill";
@@ -984,7 +1076,9 @@ class LoadTest {
       claude: { binary: this.o.claude, version: setup.version },
       model,
       thinking,
-      skill: this.tested,
+      skill: profile.tested,
+      profile: profile.file,
+      profileDigest: profile.digest,
       requestPath: turn.path,
       requestHeaders: Object.fromEntries(
         Object.entries(turn.headers).filter(([name]) => name.startsWith("anthropic-"))
@@ -1003,8 +1097,8 @@ class LoadTest {
   }
 
   /** The runs task `id` has saved. Throws a LoadRefused when its file holds a line that is not
-   *  its next run. */
-  savedRuns(id: string): LoadRun[] {
+   *  its next run, or a run made under a profile of other bytes than `profile`. */
+  savedRuns(id: string, profile: TaskProfile): LoadRun[] {
     const file = loadRunFile(this.o.out, id);
     if (!existsSync(file)) return [];
     const runs: LoadRun[] = [];
@@ -1020,21 +1114,28 @@ class LoadTest {
       if (!parsed.success || parsed.data.task !== id || parsed.data.run !== runs.length + 1) {
         throw new LoadRefused(`${file}:${index + 1} is not run ${runs.length + 1} of task ${id}`);
       }
-      runs.push(parsed.data);
+      const run = parsed.data;
+      if (run.profileDigest !== profile.digest) {
+        throw new LoadRefused(
+          `${file}:${index + 1}: run ${run.run} of task ${id} ran under the profile ${run.profile} (SHA-256 ${run.profileDigest}), not ${profile.file} (SHA-256 ${profile.digest}): give the task that profile again, or use another --out`
+        );
+      }
+      runs.push(run);
     }
     return runs;
   }
 
-  /** The run of `task` numbered `run` that `reply` is, as its run file keeps it. */
-  runOf(task: Task, run: number, reply: Reply, listed: string): LoadRun {
-    const first = firstMessageLoad(this.o.host, reply.message.content, this.tested);
+  /** The run of `task` numbered `run` that `reply` is, in the context of `profile`, as its run
+   *  file keeps it. */
+  runOf(task: Task, run: number, reply: Reply, listed: string, profile: TaskProfile): LoadRun {
+    const first = firstMessageLoad(this.o.host, reply.message.content, profile.tested);
     return {
       task: task.id,
       run,
       label: task.label,
       source: task.source,
       host: this.o.host,
-      name: this.tested.name,
+      name: profile.tested.name,
       loaded: first.loaded,
       loadedBy: first.loadedBy,
       toolCalls: [...first.toolCalls],
@@ -1042,15 +1143,19 @@ class LoadTest {
       requestId: reply.requestId ?? null,
       usage: { ...reply.spent },
       listed,
+      profile: profile.file,
+      profileDigest: profile.digest,
     };
   }
 
-  /** Makes the runs `task` lacks beside `saved`: the first alone and the rest after it at once
-   *  (the body is the same, so the cache the first one writes serves the others), and saves its
-   *  run file when they end. */
-  async runTask(task: Task, saved: readonly LoadRun[]): Promise<TaskRuns> {
+  /** Makes the runs `task` lacks beside `saved`, in the context of `profile`: the first alone and
+   *  the rest after it at once (the body is the same, so the cache the first one writes serves
+   *  the others), and saves its run file when they end. */
+  async runTask(task: Task, saved: readonly LoadRun[], profile: TaskProfile): Promise<TaskRuns> {
     const captured =
-      this.o.host === "omp" ? await this.ompCapture(task) : await this.claudeCapture(task);
+      this.o.host === "omp"
+        ? await this.ompCapture(task, profile)
+        : await this.claudeCapture(task, profile);
     const send = () => this.o.gateway.send(captured.body, { headers: captured.headers });
     const opening = await Promise.allSettled([send()]);
     const others = await Promise.allSettled(
@@ -1061,7 +1166,7 @@ class LoadTest {
     let budgetSpent = false;
     for (const result of [...opening, ...others]) {
       if (result.status === "fulfilled") {
-        runs.push(this.runOf(task, runs.length + 1, result.value, captured.listed));
+        runs.push(this.runOf(task, runs.length + 1, result.value, captured.listed, profile));
       } else if (result.reason instanceof BudgetSpent) budgetSpent = true;
       else failures.push(`task ${task.id}: a run failed: ${messageFor(result.reason)}`);
     }
@@ -1130,7 +1235,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     );
   }
   const tasks = loadTasks(o.tasksFile);
-  const profile = loadProfile(o.profileFile, o.host, name);
+  const profiled = taskProfiles(tasks, o, name);
   const settings: Settings = {
     skillText: o.skillDigest,
     name,
@@ -1140,7 +1245,6 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     thinking: o.thinking,
     runs: o.runs,
     hintModel: o.host === "omp" ? (o.hintModel ?? null) : null,
-    profile,
   };
 
   const summaryFile = path.join(o.out, "summary.json");
@@ -1158,11 +1262,20 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
         `${o.out} holds a load test of other settings (${JSON.stringify(saved.data.settings)}) than this one's (${JSON.stringify(settings)}): use another --out`
       );
     }
-    for (const task of tasks) {
+    for (const { task, profile } of profiled) {
       const before = saved.data.tasks.find((each) => each.id === task.id);
       if (before !== undefined && before.text !== task.text) {
         throw new LoadRefused(
           `${o.out} holds runs of a task ${task.id} with another text: give the new text another id, or use another --out`
+        );
+      }
+      // A capture or a run made under a profile of other bytes would not be this task's.
+      const made =
+        existsSync(loadCapturePaths(o.out, o.host, task.id).body) ||
+        existsSync(loadRunFile(o.out, task.id));
+      if (made && before !== undefined && before.profileDigest !== profile.digest) {
+        throw new LoadRefused(
+          `${o.out} holds task ${task.id} made under a profile of other bytes (SHA-256 ${before.profileDigest ?? "not recorded"}) than ${profile.file} (SHA-256 ${profile.digest}): give the task that profile again, or use another --out`
         );
       }
     }
@@ -1175,7 +1288,9 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     root,
     settings.renamedFrom === null ? given : renamedSkill(given, name, path.join(root, "skill"))
   );
-  const runsOf = new Map(tasks.map((task) => [task.id, test.savedRuns(task.id)]));
+  const runsOf = new Map(
+    profiled.map(({ task, profile }) => [task.id, test.savedRuns(task.id, profile)])
+  );
   const outcomes = new Map(
     tasks.map((task) => [task.id, taskOutcome(task.label, runsOf.get(task.id) ?? [], o.runs)])
   );
@@ -1208,10 +1323,15 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
           changed:
             settings.renamedFrom === null
               ? "nothing"
-              : "the frontmatter name and the directory's name, in a scratch copy; nothing else that names the skill",
+              : "the frontmatter name and the directory's name, in a scratch copy, and a recorded prompt's listing line of the skill; nothing else that names the skill",
         },
         listed: runs[0]?.listed ?? null,
-        tasks: tasks.map((task) => ({ ...task, ...outcomeOf(task) })),
+        tasks: profiled.map(({ task, profile }) => ({
+          ...task,
+          profile: profile.file,
+          profileDigest: profile.digest,
+          ...outcomeOf(task),
+        })),
         verdict,
         spend: { runsUsd, hintsUsd, usd: runsUsd + hintsUsd },
         peakRssBytes: peak,
@@ -1227,14 +1347,25 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   test.say(
     `the skill ${name} on ${o.host === "omp" ? "Oh My Pi" : "Claude Code"}, model ${settings.model}, thinking ${o.thinking}: ${count("need")} need and ${count("near-miss")} near-miss tasks, ${o.runs} runs each`
   );
+  const byFile = new Map<string, { profile: TaskProfile; ids: string[] }>();
+  for (const { task, profile } of profiled) {
+    const entry = byFile.get(profile.file);
+    if (entry === undefined) byFile.set(profile.file, { profile, ids: [task.id] });
+    else entry.ids.push(task.id);
+  }
+  for (const { profile, ids } of byFile.values()) {
+    test.say(
+      `${ids.length === 1 ? "task" : "tasks"} ${ids.join(", ")} run in the context ${profile.profile.context} of the profile ${profile.file} (SHA-256 ${profile.digest})`
+    );
+  }
   if (settings.renamedFrom !== null) {
     test.say(
-      `${own} is tested under the name ${name}: its frontmatter name and its directory's name are changed in a scratch copy, and nothing else that names the skill changes (its own text, its references, other skills and code still say ${own})`
+      `${own} is tested under the name ${name}: its frontmatter name and its directory's name are changed in a scratch copy, and so is the name of a recorded prompt's listing line of it, and nothing else that names the skill changes (its own text, its references, other skills and code still say ${own})`
     );
   }
   const failures: string[] = [];
-  let listedSaid = false;
-  for (const task of tasks) {
+  const listedSaid = new Set<string>();
+  for (const { task, profile } of profiled) {
     const saved = runsOf.get(task.id) ?? [];
     const what = `task ${task.id} (${task.label}, ${task.source === "session" ? "from a session" : "written"})`;
     if (saved.length >= o.runs) {
@@ -1246,7 +1377,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     }
     let ran: TaskRuns;
     try {
-      ran = await test.runTask(task, saved);
+      ran = await test.runTask(task, saved, profile);
     } catch (error) {
       if (error instanceof LoadRefused) throw error;
       failures.push(`task ${task.id}: ${messageFor(error)}`);
@@ -1257,12 +1388,12 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     const outcome = taskOutcome(task.label, ran.runs, o.runs);
     outcomes.set(task.id, outcome);
     const listed = ran.runs[0]?.listed;
-    if (!listedSaid && listed !== undefined) {
-      listedSaid = true;
+    if (listed !== undefined && !listedSaid.has(profile.digest)) {
+      listedSaid.add(profile.digest);
       test.say(
         o.host === "omp"
-          ? `Oh My Pi lists ${name} under the hint ${JSON.stringify(listed)}`
-          : `Claude Code lists ${test.tested.plugin}:${name} as ${JSON.stringify(listed)}`
+          ? `Oh My Pi lists ${name} under the hint ${JSON.stringify(listed)} in the context of ${profile.file}`
+          : `Claude Code lists ${profile.tested.plugin}:${name} as ${JSON.stringify(listed)} in the context of ${profile.file}`
       );
     }
     const each = ran.runs.map((run) => `run ${run.run} ${run.loaded ? "loads" : "does not"}`);

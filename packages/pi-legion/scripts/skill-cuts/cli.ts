@@ -19,7 +19,7 @@
  *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --day <YYYY-MM-DD>
  *       [--hour <0-23>]
  *   bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
- *       [--name <name>] --tasks <file> --host <omp|claude> --profile <file> --out <dir>
+ *       [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir>
  *       [--runs <n>] [--model <model>] [--thinking <level>] [--budget-usd <n>]
  *       [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>]
  *       [--scratch <dir>] [--models <models.yml>] [--omp <binary>] [--hint-model <model>]
@@ -1714,7 +1714,8 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
 // `load`.
 
 const LOAD_USAGE = [
-  "usage: cli.ts load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> --profile <file> --out <dir>",
+  "usage: cli.ts load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir>",
+  "  --profile is the profile of each task whose line names no profile of its own",
   `  [--runs <n, default ${LOAD_RUNS}>] [--model <model, default ${LOAD_MODEL}>] [--thinking <level, default ${LOAD_THINKING.omp} on omp, ${LOAD_THINKING.claude} on claude>]`,
   "  [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>]",
   "  omp: [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--omp-config <file>]...",
@@ -1749,7 +1750,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
   );
   const given = required(
     values,
-    ["config", "key-file", "skill", "tasks", "host", "profile", "out"],
+    ["config", "key-file", "skill", "tasks", "host", "out"],
     LOAD_USAGE
   );
   const host = Host.safeParse(given.host);
@@ -1783,7 +1784,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     skillDigest: textDigest(given.skill),
     ...(values.name === undefined ? {} : { name: values.name }),
     tasksFile: given.tasks,
-    profileFile: given.profile,
+    ...(values.profile === undefined ? {} : { profileFile: values.profile }),
     runs: values.runs === undefined ? LOAD_RUNS : Number(values.runs),
     out: given.out,
     model: values.model ?? LOAD_MODEL,
@@ -1820,13 +1821,13 @@ const USAGE = [
   "  read --prompt <name> --in <input.json> --out <answer.json> ...",
   "  control <map|attack|same-job|sentence> --in <input.json> --out <result.json> ...",
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>] [--query count|models]",
-  "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> --profile <file> --out <dir> ...",
+  "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> [--profile <file>] --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>] [--cache-dir <dir>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut id>=<file>]... [--models <dir>]",
   "  build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]",
   "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
-  "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl>",
-  "  build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl>",
+  "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>]",
+  "  build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--profiles-out <dir> --copies <dir> --count <dir>]",
 ].join("\n");
 
 /** The command line. Returns the exit status (EXIT). */

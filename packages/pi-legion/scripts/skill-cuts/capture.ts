@@ -455,6 +455,32 @@ export function skillListing(body: unknown): Map<string, string> {
 /** What became of the case skill's line of a recorded skill listing in an arm's prompt. */
 export type ListingLine = "replaced" | "removed" | "not listed";
 
+/** The recorded system prompt `blocks` with the first `<skills>` listing line of `skill`
+ *  (`- <skill>: <text>`) put through `change`, which gets the line's text and gives the line to
+ *  put in its place, or undefined to leave it out; every other byte as recorded. Undefined when no
+ *  block lists a line of `skill`. */
+function changedListingLine(
+  blocks: readonly string[],
+  skill: string,
+  change: (text: string) => string | undefined
+): string[] | undefined {
+  const prefix = `- ${skill}: `;
+  for (const [index, text] of blocks.entries()) {
+    const section = /<skills>\n([\s\S]*?)<\/skills>/.exec(text);
+    if (section?.[1] === undefined) continue;
+    const start = section.index + "<skills>\n".length;
+    const lines = section[1].split("\n");
+    const at = lines.findIndex((line) => line.startsWith(prefix));
+    if (at === -1) continue;
+    const line = change((lines[at] ?? "").slice(prefix.length));
+    if (line === undefined) lines.splice(at, 1);
+    else lines[at] = line;
+    const changed = text.slice(0, start) + lines.join("\n") + text.slice(start + section[1].length);
+    return blocks.map((each, n) => (n === index ? changed : each));
+  }
+  return undefined;
+}
+
 /** The recorded system prompt `blocks` as an arm sends them: the first `<skills>` listing line of
  *  `skill` (`- <skill>: <text>`) under `hint`, or left out when `hint` is undefined (the arm lists
  *  no such skill); every other byte as recorded. A recording that lists no line of `skill` is
@@ -464,23 +490,25 @@ export function armPromptBlocks(
   skill: string,
   hint: string | undefined
 ): { blocks: string[]; line: ListingLine } {
-  const prefix = `- ${skill}: `;
-  for (const [index, text] of blocks.entries()) {
-    const section = /<skills>\n([\s\S]*?)<\/skills>/.exec(text);
-    if (section?.[1] === undefined) continue;
-    const start = section.index + "<skills>\n".length;
-    const lines = section[1].split("\n");
-    const at = lines.findIndex((line) => line.startsWith(prefix));
-    if (at === -1) continue;
-    if (hint === undefined) lines.splice(at, 1);
-    else lines[at] = `${prefix}${hint}`;
-    const changed = text.slice(0, start) + lines.join("\n") + text.slice(start + section[1].length);
-    return {
-      blocks: blocks.map((each, n) => (n === index ? changed : each)),
-      line: hint === undefined ? "removed" : "replaced",
-    };
-  }
-  return { blocks: [...blocks], line: "not listed" };
+  const changed = changedListingLine(blocks, skill, () =>
+    hint === undefined ? undefined : `- ${skill}: ${hint}`
+  );
+  if (changed === undefined) return { blocks: [...blocks], line: "not listed" };
+  return { blocks: changed, line: hint === undefined ? "removed" : "replaced" };
+}
+
+/** The recorded system prompt `blocks` with the first `<skills>` listing line of `from` naming
+ *  `to` in its place, its text as recorded, and every other byte as recorded; or the blocks as
+ *  recorded when none lists `from`. The pinned Oh My Pi's line is `- <name>: <text>` and names no
+ *  path, so the name is all that changes. A load test of a skill under another name (load.ts,
+ *  `--name`) gives a recorded prompt this way, and its capture then lists that name under the
+ *  hint written for it (`armPromptBlocks`). */
+export function renamedListingBlocks(
+  blocks: readonly string[],
+  from: string,
+  to: string
+): string[] {
+  return changedListingLine(blocks, from, (text) => `- ${to}: ${text}`) ?? [...blocks];
 }
 
 /** `model` with its provider, `anthropic` when it names none. */

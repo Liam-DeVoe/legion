@@ -1,11 +1,12 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
 import { skillHeaderPath } from "../skill-scenarios/transcript";
-import { skillListing } from "./capture";
+import { armPromptBlocks, type CaptureRecord, renamedListingBlocks, skillListing } from "./capture";
 import { pathHash } from "./cases";
 import { type CliIo, main } from "./cli";
 import {
@@ -46,12 +47,15 @@ import type { TaskLabel } from "./score";
 // made from F2 (`bun send.ts <body.json>`); and F3, the bodies Claude Code 2.1.311 sent for a task
 // that calls `Skill` on acme-tools:alpha and `Read` on beta's SKILL.md (`CLAUDE_CONFIG_DIR=<scratch>
 // ANTHROPIC_BASE_URL=<recording proxy> claude -p --output-format stream-json --verbose
-// "<prompt>"`). The command rows run `skill-cuts load` in this process against a stand-in gateway
-// on 127.0.0.1 built on recorder.ts, with captures saved where the command reads them back, so no
-// host runs and no row reaches a network. The rows that run a real host are skipped without
-// LEGION_TEST_OMP (refused on GitHub Actions without it, where the pi-legion job installs the pin,
-// as capture.test.ts does), and without LEGION_TEST_CLAUDE naming the Claude Code binary (which
-// that job does not install). Every skill, repository and store here is made up.
+// "<prompt>"`). The subagent row's profile carries the system prompt and tools F1's `task`
+// subagent recorded in its `session_init` line (F1, `HOME=<scratch> omp -p --session-dir
+// <scratch>/sessions --model anthropic/claude-sonnet-5-5 "<prompt>"`). The command rows run
+// `skill-cuts load` in this process against a stand-in gateway on 127.0.0.1 built on recorder.ts,
+// with captures saved where the command reads them back, so no host runs and no row reaches a
+// network. The rows that run a real host are skipped without LEGION_TEST_OMP (refused on GitHub
+// Actions without it, where the pi-legion job installs the pin, as capture.test.ts does), and
+// without LEGION_TEST_CLAUDE naming the Claude Code binary (which that job does not install).
+// Every skill, repository and store here is made up.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const omp = process.env.LEGION_TEST_OMP;
@@ -355,6 +359,8 @@ function runsOf(label: TaskLabel, loads: readonly boolean[]): LoadRun[] {
         usd: 0,
       },
       listed: "Use for the alpha checklist.",
+      profile: "/profiles/alpha.json",
+      profileDigest: "0".repeat(64),
     })
   );
 }
@@ -447,6 +453,10 @@ const ALPHA_SKILL = [
 const ALPHA_X = "The alpha steps: one, two, three.\n";
 const BETA_SKILL =
   "---\nname: beta\ndescription: Use when a task asks for the beta greeting of the made-up project.\n---\n\n# Beta\n\nGreet with one line.\n";
+const GAMMA_SKILL =
+  "---\nname: gamma\ndescription: Use when a task asks for the gamma report of the made-up project.\n---\n\n# Gamma\n\nReport in one line.\n";
+/** The SHA-256 of `file`'s bytes, in hex. */
+const sha256 = (file: string) => createHash("sha256").update(readFileSync(file)).digest("hex");
 
 describe("--name tests the skill under another name", () => {
   test("the scratch copy changes only the frontmatter name and the directory's name", () => {
@@ -472,6 +482,20 @@ describe("--name tests the skill under another name", () => {
     const copy = renamedSkill(dir, "omega", path.join(scratch, "rename", "copies"));
     expect(readFileSync(path.join(copy, "SKILL.md"), "utf8")).toBe(
       text.replace("---\n", "---\nname: omega\n")
+    );
+  });
+
+  test("a recorded prompt under another name changes only the name of the skill's listing line (F1's subagent)", () => {
+    const renamed = renamedListingBlocks(SUBAGENT.systemPrompt, "beta", "beta-renamed");
+    const line = "- beta: Use when asked for the beta greeting of the fixture project.";
+    expect(SUBAGENT.systemPrompt.join("\n")).toContain(`\n${line}\n`);
+    expect(renamed).toEqual(
+      SUBAGENT.systemPrompt.map((block) =>
+        block.replace(line, line.replace("beta", "beta-renamed"))
+      )
+    );
+    expect(renamedListingBlocks(SUBAGENT.systemPrompt, "delta", "omega")).toEqual(
+      SUBAGENT.systemPrompt
     );
   });
 });
@@ -607,6 +631,34 @@ const BETA_PROFILE = {
   plugins: [],
   contextFiles: [],
 };
+const GAMMA_PROFILE = {
+  skills: [{ repo: "acme/skills", commit: COMMIT, path: "skills/gamma", name: "gamma" }],
+  plugins: [],
+  contextFiles: [],
+};
+/** A `models.yml` of the gateway's Messages route, whose provider a capture points at its
+ *  recorder. */
+const ANTHROPIC_MODELS =
+  "providers:\n  anthropic:\n    baseUrl: http://127.0.0.1:9\n    api: anthropic-messages\n    compat: {replayUnsignedThinking: false, supportsLongCacheRetention: true}\n    models:\n      - {id: claude-sonnet-5-5, name: Claude Sonnet 5.5, reasoning: true, input: [text, image], contextWindow: 1000000, maxTokens: 128000, cost: {input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5}}\n";
+/** The system prompt and tool names F1's `task` subagent recorded in its `session_init` line (its
+ *  skill listing names alpha and beta). */
+const SUBAGENT = z
+  .looseObject({ systemPrompt: z.array(z.string()).min(1), tools: z.array(z.string()).min(1) })
+  .parse(
+    readFileSync(
+      path.join(
+        TESTDATA,
+        "F1",
+        "2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80",
+        "ProductiveChicken.jsonl"
+      ),
+      "utf8"
+    )
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line): unknown => JSON.parse(line))
+      .find((entry) => z.looseObject({ type: z.literal("session_init") }).safeParse(entry).success)
+  );
 
 describe("skill-cuts load with saved captures", () => {
   const dir = path.join(scratch, "saved");
@@ -614,6 +666,8 @@ describe("skill-cuts load with saved captures", () => {
   const skill = path.join(dir, "alpha");
   const tasks = path.join(dir, "tasks.jsonl");
   const profile = path.join(dir, "profile.json");
+  /** need-1's own profile, which its line names relative to the tasks file's directory. */
+  const profileA = path.join(dir, "profile-a.json");
   let args: string[] = [];
   let key = "";
   /** Of each task's text, the runs the stand-in answers with a read of skill://alpha. */
@@ -635,11 +689,13 @@ describe("skill-cuts load with saved captures", () => {
         source: "session",
         store: "store_a",
         pathHash: pathHash("/sessions/a.jsonl"),
+        profile: "profile-a.json",
       },
       { id: "near-1", text: NEAR, label: "near-miss", source: "written" },
     ];
     writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
     writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+    writeFileSync(profileA, JSON.stringify(GAMMA_PROFILE));
     // Each task's capture, saved where the command reads it back: F2's body with the task's text
     // as its one message, and the fields of its record that the load test reads.
     for (const { id, text } of lines) {
@@ -707,7 +763,17 @@ describe("skill-cuts load with saved captures", () => {
     expect(ran.stdout).toContain(
       "the skill alpha: a description fault: tasks near-1 (R6's test has at least 5 need and 5 near-miss tasks; this one has 1 and 1)"
     );
-    for (const id of ["need-1", "near-1"]) {
+    // Each task in its own profile's context: need-1 the one its line names, near-1 --profile's.
+    expect(ran.stdout).toContain(
+      `load: task need-1 run in the context devbox of the profile ${profileA} (SHA-256 ${sha256(profileA)})`
+    );
+    expect(ran.stdout).toContain(
+      `load: task near-1 run in the context devbox of the profile ${profile} (SHA-256 ${sha256(profile)})`
+    );
+    for (const [id, file] of [
+      ["need-1", profileA],
+      ["near-1", profile],
+    ] as const) {
       const runs = savedRuns(out, id);
       expect(runs.map((run) => run.run)).toEqual([1, 2, 3]);
       expect(runs.filter((run) => run.loaded).map((run) => run.loadedBy)).toEqual([
@@ -716,21 +782,40 @@ describe("skill-cuts load with saved captures", () => {
       ]);
       expect(runs.every((run) => run.listed === "Use for the alpha checklist.")).toBe(true);
       expect(runs.every((run) => run.usage.model === "claude-sonnet-5-5")).toBe(true);
+      expect(runs.every((run) => run.profile === file && run.profileDigest === sha256(file))).toBe(
+        true
+      );
     }
     const summary = z
       .looseObject({
         verdict: z.unknown(),
         tested: z.unknown(),
-        tasks: z.array(z.looseObject({ id: z.string(), loads: z.number(), fault: z.unknown() })),
+        tasks: z.array(
+          z.looseObject({
+            id: z.string(),
+            loads: z.number(),
+            fault: z.unknown(),
+            profile: z.string(),
+            profileDigest: z.string(),
+          })
+        ),
       })
       .parse(JSON.parse(readFileSync(path.join(out, "summary.json"), "utf8")));
     expect(summary.verdict).toEqual({
       descriptionFault: true,
       reason: "a description fault: tasks near-1",
     });
-    expect(summary.tasks.map((task) => [task.id, task.loads, task.fault])).toEqual([
-      ["need-1", 2, false],
-      ["near-1", 2, true],
+    expect(
+      summary.tasks.map((task) => [
+        task.id,
+        task.loads,
+        task.fault,
+        task.profile,
+        task.profileDigest,
+      ])
+    ).toEqual([
+      ["need-1", 2, false, profileA, sha256(profileA)],
+      ["near-1", 2, true, profile, sha256(profile)],
     ]);
     expect(summary.tested).toEqual({ name: "alpha", renamedFrom: null, changed: "nothing" });
     // Each run went with the header the host sent, and no output holds the key.
@@ -766,7 +851,7 @@ describe("skill-cuts load with saved captures", () => {
     expect(savedRuns(out, "near-1").map((run) => run.run)).toEqual([1, 2, 3]);
   });
 
-  test("an --out of another test's settings, a task id given twice and a profile that installs the tested name are refused before any model call", async () => {
+  test("an --out of another test's settings, a task id given twice, a profile that installs the tested name, a task with no profile and no --profile, and a task whose runs were made under a profile of other bytes are refused before any model call", async () => {
     const before = recorder.requests.length;
     const renamed = await cli([...args, "--name", "omega"]);
     expect(renamed.code).toBe(2);
@@ -789,23 +874,48 @@ describe("skill-cuts load with saved captures", () => {
     expect(mine.stderr).toContain(
       "it installs a skill named alpha, the name the skill is tested under"
     );
+    // near-1 names no profile, and no --profile is given.
+    const at = args.indexOf("--profile");
+    const bare = await cli([...args.slice(0, at), ...args.slice(at + 2)]);
+    expect(bare.code).toBe(2);
+    expect(bare.stderr).toContain(
+      `task near-1 of ${tasks} names no profile, and no --profile is given for a task that names none`
+    );
+    // need-1's line names a profile of other bytes than the one its runs were made under.
+    const moved = path.join(dir, "moved.jsonl");
+    writeFileSync(
+      moved,
+      readFileSync(tasks, "utf8").replace('"profile-a.json"', '"profile-b.json"')
+    );
+    writeFileSync(path.join(dir, "profile-b.json"), JSON.stringify(GAMMA_PROFILE, null, 2));
+    const other = await cli(args.map((arg) => (arg === tasks ? moved : arg)));
+    expect(other.code).toBe(2);
+    expect(other.stderr).toContain(
+      `holds task need-1 made under a profile of other bytes (SHA-256 ${sha256(profileA)})`
+    );
     expect(recorder.requests.length).toBe(before);
   });
 });
 
-/** Made-up repositories, the tested skill and one need task for a real host's run, under `dir`,
- *  with the stand-in's configuration. */
-function hostInputs(dir: string) {
+/** Made-up repositories (skills alpha, beta and gamma), the tested skill's `tested` files (alpha's
+ *  unless given) and the tasks `lines` (one need task unless given) for a real host's run, under
+ *  `dir`, with the stand-in's configuration. */
+function hostInputs(
+  dir: string,
+  lines: readonly object[] = [{ id: "need-1", text: NEED, label: "need", source: "written" }],
+  tested: Record<string, string> = { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X }
+) {
   const made = setup(dir);
   const repos = path.join(dir, "repos");
-  writeTree(path.join(repos, "acme/skills", COMMIT), { "skills/beta/SKILL.md": BETA_SKILL });
-  const skill = path.join(dir, "alpha");
-  writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+  writeTree(path.join(repos, "acme/skills", COMMIT), {
+    "skills/alpha/SKILL.md": ALPHA_SKILL,
+    "skills/beta/SKILL.md": BETA_SKILL,
+    "skills/gamma/SKILL.md": GAMMA_SKILL,
+  });
+  const skill = path.join(dir, "tested");
+  writeTree(skill, tested);
   const tasks = path.join(dir, "tasks.jsonl");
-  writeFileSync(
-    tasks,
-    `${JSON.stringify({ id: "need-1", text: NEED, label: "need", source: "written" })}\n`
-  );
+  writeFileSync(tasks, lines.map((line) => `${JSON.stringify(line)}\n`).join(""));
   const out = path.join(dir, "out");
   const common = [
     "--config",
@@ -837,10 +947,7 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       const dir = path.join(scratch, "omp");
       const { out, common } = hostInputs(dir);
       const models = path.join(dir, "models.yml");
-      writeFileSync(
-        models,
-        "providers:\n  anthropic:\n    baseUrl: http://127.0.0.1:9\n    api: anthropic-messages\n    compat: {replayUnsignedThinking: false, supportsLongCacheRetention: true}\n    models:\n      - {id: claude-sonnet-5-5, name: Claude Sonnet 5.5, reasoning: true, input: [text, image], contextWindow: 1000000, maxTokens: 128000, cost: {input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5}}\n"
-      );
+      writeFileSync(models, ANTHROPIC_MODELS);
       const profile = path.join(dir, "profile.json");
       writeFileSync(profile, JSON.stringify(BETA_PROFILE));
       answer = () => [
@@ -881,6 +988,179 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       expect(ran.stdout).toContain(
         "no verdict: R6's rule is of 3 runs a task, and this test runs 1"
       );
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  test(
+    "captures each of two tasks in its own profile's context: each body lists its own profile's skills, and each run names its profile",
+    async () => {
+      const dir = path.join(scratch, "omp-profiles");
+      const { out, common } = hostInputs(dir, [
+        { id: "need-1", text: NEED, label: "need", source: "written", profile: "gamma.json" },
+        { id: "near-1", text: NEAR, label: "near-miss", source: "written" },
+      ]);
+      const models = path.join(dir, "models.yml");
+      writeFileSync(models, ANTHROPIC_MODELS);
+      const profile = path.join(dir, "profile.json");
+      writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+      const gamma = path.join(dir, "gamma.json");
+      writeFileSync(gamma, JSON.stringify(GAMMA_PROFILE));
+      answer = () => READ_ALPHA;
+      const ran = await cli([
+        "load",
+        ...common,
+        "--host",
+        "omp",
+        "--profile",
+        profile,
+        "--omp",
+        String(omp),
+        "--models",
+        models,
+      ]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      for (const [id, file, other] of [
+        ["need-1", gamma, "gamma"],
+        ["near-1", profile, "beta"],
+      ] as const) {
+        const body = JSON.parse(readFileSync(loadCapturePaths(out, "omp", id).body, "utf8"));
+        expect([...skillListing(body).keys()].sort()).toEqual(["alpha", other]);
+        expect(savedRuns(out, id)).toMatchObject([
+          { loaded: true, profile: file, profileDigest: sha256(file) },
+        ]);
+      }
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  test(
+    "captures a subagent-context task as a subagent case: its recorded prompt with only the skill's listing line changed, its recorded tools less one nothing defines, which is recorded",
+    async () => {
+      const dir = path.join(scratch, "omp-subagent");
+      const { out, common } = hostInputs(dir, [
+        { id: "need-1", text: NEED, label: "need", source: "written", profile: "subagent.json" },
+      ]);
+      const models = path.join(dir, "models.yml");
+      writeFileSync(models, ANTHROPIC_MODELS);
+      const subagent = path.join(dir, "subagent.json");
+      writeFileSync(
+        subagent,
+        JSON.stringify({
+          ...BETA_PROFILE,
+          context: "subagent:task",
+          systemPrompt: SUBAGENT.systemPrompt,
+          tools: [...SUBAGENT.tools, "acme_absent_tool"],
+        })
+      );
+      answer = () => READ_ALPHA;
+      const ran = await cli([
+        "load",
+        ...common,
+        "--host",
+        "omp",
+        "--omp",
+        String(omp),
+        "--models",
+        models,
+      ]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(ran.stdout).toContain(
+        `load: task need-1 run in the context subagent:task of the profile ${subagent}`
+      );
+      const files = loadCapturePaths(out, "omp", "need-1");
+      const body = JSON.parse(readFileSync(files.body, "utf8"));
+      const record = JSON.parse(readFileSync(files.record, "utf8")) as CaptureRecord;
+      const hint = "Use for the alpha work, stand-in hint.";
+      // The recorded blocks byte for byte, but alpha's listing line, which lists the tested text.
+      const sent = body.system.map((block: { text: string }) => block.text);
+      expect(sent).toEqual(armPromptBlocks(SUBAGENT.systemPrompt, "alpha", hint).blocks);
+      expect(skillListing(body).get("alpha")).toBe(hint);
+      expect(record.recordedPrompt?.line).toBe("replaced");
+      expect(record.tools?.sent).toEqual(SUBAGENT.tools);
+      expect(record.tools?.leftOut.map((tool) => tool.name)).toEqual(["acme_absent_tool"]);
+      expect(texts(body.messages).some((text) => text.includes(NEED))).toBe(true);
+      expect(savedRuns(out, "need-1")).toMatchObject([
+        {
+          loaded: true,
+          listed: hint,
+          profile: subagent,
+          profileDigest: sha256(subagent),
+        },
+      ]);
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  test(
+    "captures a subagent-context task under --name beta-renamed with the recorded listing line naming beta-renamed, and counts its read as a load",
+    async () => {
+      const dir = path.join(scratch, "omp-subagent-renamed");
+      const { out, common } = hostInputs(
+        dir,
+        [{ id: "need-1", text: NEAR, label: "need", source: "written", profile: "subagent.json" }],
+        { "SKILL.md": BETA_SKILL }
+      );
+      const models = path.join(dir, "models.yml");
+      writeFileSync(models, ANTHROPIC_MODELS);
+      const subagent = path.join(dir, "subagent.json");
+      writeFileSync(
+        subagent,
+        JSON.stringify({
+          skills: [{ repo: "acme/skills", commit: COMMIT, path: "skills/alpha", name: "alpha" }],
+          plugins: [],
+          contextFiles: [],
+          context: "subagent:task",
+          systemPrompt: SUBAGENT.systemPrompt,
+          tools: SUBAGENT.tools,
+        })
+      );
+      answer = () => [
+        {
+          type: "tool_use",
+          id: "toolu_renamed",
+          name: "read",
+          input: { path: "skill://beta-renamed" },
+        },
+      ];
+      const ran = await cli([
+        "load",
+        ...common,
+        "--name",
+        "beta-renamed",
+        "--host",
+        "omp",
+        "--omp",
+        String(omp),
+        "--models",
+        models,
+      ]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      expect(ran.stdout).toContain("beta is tested under the name beta-renamed");
+      const files = loadCapturePaths(out, "omp", "need-1");
+      const body = JSON.parse(readFileSync(files.body, "utf8"));
+      const record = JSON.parse(readFileSync(files.record, "utf8")) as CaptureRecord;
+      const hint = "Use for the beta-renamed work, stand-in hint.";
+      // The recorded blocks byte for byte, but beta's listing line, which names beta-renamed and
+      // lists it under its hint; alpha's line stays as recorded.
+      const line = "- beta: Use when asked for the beta greeting of the fixture project.";
+      const sent = body.system.map((block: { text: string }) => block.text);
+      expect(sent).toEqual(
+        SUBAGENT.systemPrompt.map((block) => block.replace(line, `- beta-renamed: ${hint}`))
+      );
+      const listing = skillListing(body);
+      expect([...listing.keys()].sort()).toEqual(["alpha", "beta-renamed"]);
+      expect(listing.get("beta-renamed")).toBe(hint);
+      expect(record.recordedPrompt?.line).toBe("replaced");
+      expect(savedRuns(out, "need-1")).toMatchObject([
+        {
+          loaded: true,
+          loadedBy: "read skill://beta-renamed",
+          name: "beta-renamed",
+          listed: hint,
+          profile: subagent,
+        },
+      ]);
     },
     HOST_ROW_TIMEOUT_MS
   );
@@ -959,10 +1239,13 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
 
 describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
   test(
-    "installs the profile and the tested skill as local plugins, captures the first request with its listing and headers, and counts a Skill call as a load",
+    "installs each task's profile and the tested skill as local plugins, captures each task's first request with its own profile's listing and its headers, and counts a Skill call as a load",
     async () => {
       const dir = path.join(scratch, "claude");
-      const { out, common } = hostInputs(dir);
+      const { out, common } = hostInputs(dir, [
+        { id: "need-1", text: NEED, label: "need", source: "written" },
+        { id: "near-1", text: NEAR, label: "near-miss", source: "written", profile: "other.json" },
+      ]);
       const profile = path.join(dir, "profile.json");
       writeFileSync(
         profile,
@@ -975,12 +1258,29 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
           },
         })
       );
-      answer = () => [
+      const other = path.join(dir, "other.json");
+      writeFileSync(
+        other,
+        JSON.stringify({
+          ...GAMMA_PROFILE,
+          claude: {
+            marketplace: "other-market",
+            plugins: [{ name: "other-tools", skills: ["gamma"] }],
+            skillPlugin: "other-tools",
+          },
+        })
+      );
+      // Each request gets a Skill call on alpha under the plugin its own listing names.
+      answer = (body) => [
         {
           type: "tool_use",
           id: "toolu_skill",
           name: "Skill",
-          input: { skill: "acme-tools:alpha" },
+          input: {
+            skill: JSON.stringify(body).includes("- other-tools:alpha: ")
+              ? "other-tools:alpha"
+              : "acme-tools:alpha",
+          },
         },
       ];
       const ran = await cli([
@@ -996,29 +1296,46 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
         String(claude),
       ]);
       expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
-      const files = loadCapturePaths(out, "claude", "need-1");
-      const body = JSON.parse(readFileSync(files.body, "utf8"));
-      const listing = claudeListing(body);
-      expect(listing.get("acme-tools:alpha")).toBe(
-        "Use when a task asks for the alpha checklist of the made-up project."
-      );
-      expect(listing.has("acme-tools:beta")).toBe(true);
-      expect(texts(body.messages).some((text) => text.includes(NEED))).toBe(true);
-      // Thinking off: the body asks for none.
-      expect(body.thinking).toBeUndefined();
-      const record = z
-        .looseObject({ requestHeaders: z.record(z.string(), z.string()) })
-        .parse(JSON.parse(readFileSync(files.record, "utf8")));
-      expect(record.requestHeaders["anthropic-beta"]).toBeString();
-      expect(
-        Object.keys(record.requestHeaders).every((name) => name.startsWith("anthropic-"))
-      ).toBe(true);
-      expect(savedRuns(out, "need-1")).toMatchObject([
-        { loaded: true, loadedBy: "Skill acme-tools:alpha", toolCalls: ["Skill"] },
-      ]);
-      expect(ran.stdout).toContain(
-        'Claude Code lists acme-tools:alpha as "Use when a task asks for the alpha checklist of the made-up project."'
-      );
+      const description = "Use when a task asks for the alpha checklist of the made-up project.";
+      for (const [id, file, plugin, sibling, text] of [
+        ["need-1", profile, "acme-tools", "beta", NEED],
+        ["near-1", other, "other-tools", "gamma", NEAR],
+      ] as const) {
+        const files = loadCapturePaths(out, "claude", id);
+        const body = JSON.parse(readFileSync(files.body, "utf8"));
+        const listing = claudeListing(body);
+        expect(listing.get(`${plugin}:alpha`)).toBe(description);
+        // Only the plugins of this task's own profile, each with its own skills.
+        const plugged = [...listing.keys()].filter((name) => name.includes(":")).sort();
+        expect(plugged).toEqual([`${plugin}:alpha`, `${plugin}:${sibling}`].sort());
+        expect(texts(body.messages).some((each) => each.includes(text))).toBe(true);
+        // Thinking off: the body asks for none.
+        expect(body.thinking).toBeUndefined();
+        const record = z
+          .looseObject({
+            requestHeaders: z.record(z.string(), z.string()),
+            profile: z.string(),
+            profileDigest: z.string(),
+          })
+          .parse(JSON.parse(readFileSync(files.record, "utf8")));
+        expect(record.requestHeaders["anthropic-beta"]).toBeString();
+        expect(
+          Object.keys(record.requestHeaders).every((name) => name.startsWith("anthropic-"))
+        ).toBe(true);
+        expect([record.profile, record.profileDigest]).toEqual([file, sha256(file)]);
+        expect(savedRuns(out, id)).toMatchObject([
+          {
+            loaded: true,
+            loadedBy: `Skill ${plugin}:alpha`,
+            toolCalls: ["Skill"],
+            profile: file,
+            profileDigest: sha256(file),
+          },
+        ]);
+        expect(ran.stdout).toContain(
+          `Claude Code lists ${plugin}:alpha as "${description}" in the context of ${file}`
+        );
+      }
     },
     HOST_ROW_TIMEOUT_MS
   );

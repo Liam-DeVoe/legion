@@ -131,7 +131,7 @@ file's model, read from the first 256 KiB of the file, as one row per file hash.
 ```
 bun scripts/skill-cuts/cli.ts load --config <skill-cuts.json> --key-file <file> \
   --skill <skill dir> [--name <name>] --tasks <tasks.jsonl> --host <omp|claude> \
-  --profile <profile.json> --out <dir> [--runs <n, default 3>] \
+  [--profile <profile.json>] --out <dir> [--runs <n, default 3>] \
   [--model <model, default anthropic/claude-sonnet-5-5>] \
   [--thinking <level, default off on omp, auto (Claude Code's own) on claude>] \
   [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] \
@@ -143,22 +143,31 @@ bun scripts/skill-cuts/cli.ts load --config <skill-cuts.json> --key-file <file> 
 The load test of R6 and R7 (`load.ts`): whether the host's agent loads the skill for each task,
 given what the host lists for it. `--tasks` holds one task per line, `{id, text, label, source}`
 with `label` `need` or `near-miss` and `source` `written`, or `session` with its `store` and
-`pathHash`. `--profile` is the other skills installed beside it (the `Profile` of `cases.ts`, a
-`context`, and for Claude Code a `claude` plugin layout: `{marketplace, plugins: [{name, skills}],
-skillPlugin}`). `--name` tests the skill under another name: its frontmatter `name` and its
-directory's name change in a scratch copy, and nothing else that names the skill.
+`pathHash`. A profile file is the other skills installed beside the skill (the `Profile` of
+`cases.ts`), a `context` (a case's: `devbox`, the default, `legion:<project>:<role>` or
+`subagent:<agent>`, whose profile carries the subagent's recorded system prompt and tools), and
+for Claude Code a `claude` plugin layout: `{marketplace, plugins: [{name, skills}], skillPlugin}`.
+Each task runs in the context of the session it came from: a task line may name its own `profile`
+file (absolute, or relative to the tasks file's directory), and `--profile` is the profile of each
+task that names none; a task with neither is refused. `--name` tests the skill under another
+name: its frontmatter `name` and its directory's name change in a scratch copy, a subagent's
+recorded prompt lists it under that name (its listing line's name changes, its text and every
+other line stay), and nothing else that names the skill changes.
 
-Per task, the host's first request is captured once against a recorder (Oh My Pi through
-`capture.ts`, which lists the skill under the hint Oh My Pi has a model write; Claude Code with a
-scratch `CLAUDE_CONFIG_DIR` that installs the skills as local plugins), then sent `--runs` times.
-An `openai/<id>` model runs on Oh My Pi only, on the Responses route, with an Anthropic
-`--hint-model`. A run loads the skill when the first assistant message reads it (Oh My Pi: `read`
-of `skill://<name>` or its `SKILL.md`, a `tool_use` block or a Responses `function_call` item;
-Claude Code: `Skill` naming `<name>` or `<plugin>:<name>`, or `Read` of its `SKILL.md`), and never
-goes past that message. It prints each task's loads and verdict and the skill's verdict
-(`score.ts`), and writes `<out>/runs/<task>.jsonl` (one line per run), `<out>/captures/` and
-`<out>/summary.json`. A task whose run file is complete is skipped, so a run started again goes on
-from what was saved.
+Per task, the host's first request is captured once against a recorder, in the context of the
+task's own profile (Oh My Pi through `capture.ts`, which lists the skill under the hint Oh My Pi
+has a model write, with the plugins' stand-ins, and sends a subagent's recorded prompt with only
+the skill's listing line changed; Claude Code with a scratch `CLAUDE_CONFIG_DIR` per profile that
+installs the skills as local plugins), then sent `--runs` times. An `openai/<id>` model runs on
+Oh My Pi only, on the Responses route, with an Anthropic `--hint-model`. A run loads the skill
+when the first assistant message reads it (Oh My Pi: `read` of `skill://<name>` or its
+`SKILL.md`, a `tool_use` block or a Responses `function_call` item; Claude Code: `Skill` naming
+`<name>` or `<plugin>:<name>`, or `Read` of its `SKILL.md`), and never goes past that message. It
+prints each task's loads and verdict and the skill's verdict (`score.ts`), and writes
+`<out>/runs/<task>.jsonl` (one line per run), `<out>/captures/` and `<out>/summary.json`; each
+run line and each task of the summary names its profile file and the SHA-256 of its bytes. A
+task whose run file is complete is skipped, so a run started again goes on from what was saved;
+a task whose capture or runs were made under a profile of other bytes is refused.
 
 ### `copies`
 
@@ -212,9 +221,11 @@ bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file 
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
   --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
-  --skill <skill dir> --store <db>... --out <tasks.jsonl>
+  --skill <skill dir> --store <db>... --out <tasks.jsonl> \
+  [--profiles-out <dir> --copies <copies out dir> --count <count dir> --context-session <store>:<hash>]
 bun scripts/skill-cuts/cli.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> \
-  --skill <skill dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl>
+  --skill <skill dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> \
+  [--profiles-out <dir> --copies <copies out dir> --count <count dir>]
 ```
 
 `build.ts`: `build-cases` pulls each candidate session through the config's `psqlCommand`, has
@@ -324,6 +335,19 @@ pull that failed). A stopped run goes on as `build-tasks` does: the summary reco
 (the SHA-256 of `SKILL.md` and of the sessions file, the seed and `--max`), each session tried
 and each request judged, and `<out>.found.jsonl` holds the requests found until the tasks are
 written.
+
+`--profiles-out <dir>` (either mode) runs each task in the rebuilt context of the session it came
+from. For each task from a session, `build-tasks` pulls the session again and rebuilds its profile
+as `build-cases` rebuilds a case's at the session's start: the units its host had and what they
+shipped at their commits then (from `--copies` and `--count`), the plugins, the context files, a
+subagent's recorded system prompt and tools, and the context (`devbox`, `legion:<project>:<role>`
+or `subagent:<agent>`), less the tested skill. It writes that to `<dir>/<task id>.json` (load.ts's
+`LoadProfile`), and the task line's `profile` is the file's path. A written task takes the profile
+of `--context-session <store>:<hash>`, the session the reader's mode requires for it (the
+most-read session of the context that installs the skill). That profile is rebuilt before any
+reader call, and the build fails when that session gives none. The summary's `profiles` records
+the context session, each task's profile with its evidence, and why a task has none. A build that
+has already finished gets no profiles afterwards: give it a fresh `--out`.
 
 ## The request log
 
