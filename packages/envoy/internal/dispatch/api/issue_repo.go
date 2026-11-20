@@ -78,7 +78,7 @@ func parseIssueRepo(raw json.RawMessage) (repo *string, provided bool, err error
 // acting for one, that names `repo` at all, a string or null, and answers whether it did. An issue's
 // own repository may name any owner/name, and every repository an issue resolves to is one its
 // project owns (refs.ProjectRepositoriesSQL), which a viewer that is not open reads through the
-// GitHub proxy and the Delivery views once a project it sees owns it
+// GitHub proxy, the App-installation route and the Delivery views once a project it sees owns it
 // (refs.RepositoryClause): a restricted member who named one could make any repository the App
 // reaches theirs to read. So their issues take the repository they resolve to, their nearest
 // parent's or their project's default, and a restricted member sets no issue's own, nor changes or

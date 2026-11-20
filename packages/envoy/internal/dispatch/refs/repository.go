@@ -122,8 +122,9 @@ func ProjectRepositories(ctx context.Context, q Queryer, project string) ([]stri
 // no private project, which reads no issue for it (R9). For an open viewer the private projects it
 // does not see are read first, and those it sees only where one of the others owns the repository;
 // for any other viewer only the projects it sees are read. It is in refs rather than access because
-// refs imports access. The GitHub proxy (routes) and delivery's pull requests that name no issue
-// and runs that name none (api, delivery) each hold a repository to it.
+// refs imports access. The GitHub proxy (routes), the App-installation route (api) and delivery's
+// pull requests that name no issue and runs that name none (api, delivery) each hold a repository
+// to it.
 //
 // repoExpr is spliced more than once, so it must be a column, a bound parameter or another
 // side-effect-free expression, not a bare column named repo or project, nor name the aliases owned,
