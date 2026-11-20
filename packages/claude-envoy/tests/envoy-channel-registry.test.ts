@@ -1,17 +1,21 @@
 import { expect, jest, test } from "bun:test"
+import { closeSync, constants, mkdirSync, openSync, writeSync } from "node:fs"
+import { dirname } from "node:path"
 import {
   canonicalTopic,
   legacyDispatchIssueSubject,
   uncapturedTopicRefusal,
 } from "@legion/contracts"
+import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { SHUTDOWN_SETTLE_MS } from "@legion/envoy-client/envoy-settings"
 import { EnvoyApiError } from "@legion/envoy-client/transport"
-import { span } from "@legion/test-fixtures/wait"
+import { span, until } from "@legion/test-fixtures/wait"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
   directSubject,
   FakeNats,
+  FakeNotifier,
   noInterest,
   recordingClient,
   sessionOptions,
@@ -624,6 +628,69 @@ test("a shutdown landing inside the heartbeat's registry read leaves the registr
     expect([...entry].sort()).toEqual([directSubject, alreadyRegistered])
   } finally {
     release.resolve()
+    await session.shutdown()
+  }
+})
+
+/**
+ * A writer of the FIFO at `path` once something holds it open to read, else undefined: opened
+ * for writing without blocking, a FIFO is refused ENXIO while nothing reads it.
+ */
+function fifoWriter(path: string): number | undefined {
+  try {
+    return openSync(path, constants.O_WRONLY | constants.O_NONBLOCK)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENXIO") return undefined
+    throw error
+  }
+}
+
+// Shutdown's "no registration starts from here", for a heartbeat already on its way: its step
+// reads the handoff file (`adoptHandoff`) and registers next, and a registration once shutdown has
+// closed the relay would be refused for want of one and told into the conversation as an outage.
+// The handoff file is a FIFO, so the heartbeat's read of it holds the step until the row writes
+// the id: the gate opens only once shutdown has begun, and the step goes on to `register()`.
+test("a heartbeat that reaches its registration once shutdown has begun registers nothing and writes no notice into the conversation", async () => {
+  const stateDirectory = scratchState()
+  const nats = new FakeNats()
+  const notifier = new FakeNotifier()
+  const registered: string[] = []
+  const client = recordingClient([], {
+    subscribe: async (input) => {
+      registered.push(input.sessionID)
+      return noInterest(input.sessionID)
+    },
+  })
+  // This process's own pid, so the startup sweep of dead pids' handoff directories keeps it.
+  const handoff = sessionHandoffFile(stateDirectory, process.pid)
+  mkdirSync(dirname(handoff), { recursive: true })
+  const made = Bun.spawnSync(["mkfifo", handoff])
+  if (made.exitCode !== 0) throw new Error(`mkfifo ${handoff}: ${made.stderr.toString()}`)
+  // The default heartbeat interval (a minute) never ticks here: the one heartbeat is the one the
+  // session requests as it starts, to pick up a handoff written before it polled.
+  const session = await startChannelSession(
+    sessionOptions(new SessionIdentity("ses_claude", "/tmp"), stateDirectory, {
+      connection: nats,
+      notifier,
+      client,
+      handoffPid: process.pid,
+    }),
+  )
+  let gate: number | undefined
+  try {
+    gate = await until("the heartbeat's read of the handoff file", () => fifoWriter(handoff))
+    const before = registered.length
+    const stopping = session.shutdown()
+    // Shutdown has begun: it closes the relay before its first wait.
+    expect(nats.calls).toContain(`nats.unsubscribe ${deliverSubject("ses_claude")}`)
+    writeSync(gate, "ses_claude\n")
+    closeSync(gate)
+    gate = undefined
+    await stopping
+    expect(registered.slice(before)).toEqual([])
+    expect(notifier.notifications).toEqual([])
+  } finally {
+    if (gate !== undefined) closeSync(gate)
     await session.shutdown()
   }
 })

@@ -1315,6 +1315,10 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * (`takeDeliveryAnswer`).
    */
   const register = async (): Promise<void> => {
+    // Nothing registers once shutdown has begun: a registration queued before it would find the
+    // relay closed, be refused and tell the leaving session an outage, and one the chain still
+    // holds past the shutdown's bounded wait would land after the DELETE and write the record back.
+    if (shuttingDown) return
     if (handoffDeliveryPending) {
       await options.followSession?.()
       if (shuttingDown) return
