@@ -19,10 +19,13 @@ func TestTheParentStatusRuleInputRendersTheSetting(t *testing.T) {
 	for _, row := range []struct {
 		name string
 		args func() *gcp.DispatchArgs
+		// defaults is that args are the defaults' own, whose listener and front door pods have
+		// committed goldens.
+		defaults bool
 	}{
-		{"tailnet with sign-in", dispatchArgs},
-		{"tailnet without sign-in", dispatchTailnetWithoutSignInArgs},
-		{"sandbox", dispatchSandboxArgs},
+		{"tailnet with sign-in", dispatchArgs, true},
+		{"tailnet without sign-in", dispatchTailnetWithoutSignInArgs, false},
+		{"sandbox", dispatchSandboxArgs, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			unset, err := runDispatch(t, row.args(), true)
@@ -35,13 +38,10 @@ func TestTheParentStatusRuleInputRendersTheSetting(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, "on", appEnv(t, m)["DISPATCH_PARENT_STATUS_RULE"])
 			requireRightAfter(t, m, "DISPATCH_SERVER_URL", "DISPATCH_PARENT_STATUS_RULE")
+			if row.defaults {
+				requirePodGolden(t, m, "example-dispatch-listener", "dispatch-listener-pod.golden")
+				requirePodGolden(t, m, "example-dispatch-tailnet", "dispatch-tailnet-pod.golden")
+			}
 		})
 	}
-
-	args := dispatchArgs()
-	args.ParentStatusRule = true
-	m, err := runDispatch(t, args, true)
-	require.NoError(t, err)
-	requirePodGolden(t, m, "example-dispatch-listener", "dispatch-listener-pod.golden")
-	requirePodGolden(t, m, "example-dispatch-tailnet", "dispatch-tailnet-pod.golden")
 }

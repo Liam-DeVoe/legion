@@ -12,7 +12,6 @@ package api
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -99,10 +98,8 @@ func RunParentStatusFixAtBoot(ctx context.Context, deps Deps, leases duty.Leases
 			slog.Info("dispatch: the boot waits for the parent status fix, which another process runs under its lease", "lease", parentStatusFixLease)
 			logged = now
 		}
-		select {
-		case <-ctx.Done():
+		if !waitFor(ctx, parentStatusFixWait) {
 			return ParentStatusRule{}, ctx.Err()
-		case <-time.After(parentStatusFixWait):
 		}
 	}
 }
@@ -168,21 +165,15 @@ func (s *server) fixParentStatuses(ctx context.Context) error {
 	return nil
 }
 
-// parentStatusFixIssue is an issue as the fix's plan reads it.
-type parentStatusFixIssue struct {
-	key, status string
-	parent      *string
-}
-
 // readParentStatusFixIssues reads every issue of the database, of every project, in key order:
 // by project, then by number.
-func readParentStatusFixIssues(ctx context.Context, q queryer) ([]parentStatusFixIssue, error) {
+func readParentStatusFixIssues(ctx context.Context, q queryer) ([]ruleIssue, error) {
 	rows, err := q.Query(ctx, `select key, status, parent_key from issues order by project_key, number`)
 	if err != nil {
 		return nil, fmt.Errorf("read the issues of the parent status fix: %w", err)
 	}
-	issues, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (parentStatusFixIssue, error) {
-		var issue parentStatusFixIssue
+	issues, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (ruleIssue, error) {
+		var issue ruleIssue
 		err := row.Scan(&issue.key, &issue.status, &issue.parent)
 		return issue, err
 	})
@@ -207,7 +198,7 @@ type parentStatusFixStep struct {
 // highest first (the fewest links above it), then in key order. A move's comment names the issue
 // in work under it that comes first in key order. Over the links left, no done issue has an open
 // issue under it, so each ancestor of an issue in work is in work or not started.
-func parentStatusFixSteps(issues []parentStatusFixIssue) []parentStatusFixStep {
+func parentStatusFixSteps(issues []ruleIssue) []parentStatusFixStep {
 	statuses := make(map[string]string, len(issues))
 	order := make(map[string]int, len(issues))
 	for index, issue := range issues {
@@ -268,7 +259,7 @@ func parentStatusFixSteps(issues []parentStatusFixIssue) []parentStatusFixStep {
 }
 
 // planParentStatusFix is R25's fix over every issue of the database, checked under its owner
-// locks before any step writes (D16). It reads the plan with plain reads, then, in a transaction
+// locks before any step writes. It reads the plan with plain reads, then, in a transaction
 // of its own that writes nothing, takes the owner locks of every step's issue and of each step's
 // current and new parent in one store.LockOwners call, reads the plan again under them, and checks
 // the whole plan as Dispatch's system actor writes it (refuseIssueWritePlan), with the rule on: a
@@ -319,10 +310,8 @@ func (s *server) planParentStatusFixUnderLocks(ctx context.Context, steps []pare
 	if len(again) == 0 {
 		return again, true, nil
 	}
-	for _, lock := range issueWriteLocks(again) {
-		if _, locked := slices.BinarySearch(held, lock); !locked {
-			return again, false, nil
-		}
+	if !locksHeld(held, again) {
+		return again, false, nil
 	}
 	keys := make([]string, 0, len(again))
 	for _, step := range again {
@@ -334,8 +323,7 @@ func (s *server) planParentStatusFixUnderLocks(ctx context.Context, steps []pare
 	}
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(again))}
 	for index := range again {
-		row := rows[again[index].key]
-		again[index].title, again[index].labelsBefore = row.title, row.labels
+		again[index].title = rows[again[index].key].title
 		writes.steps = append(writes.steps, again[index].issueWriteStep)
 	}
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, parentStatusFixWriter(), writes)
@@ -366,11 +354,8 @@ func (step parentStatusFixStep) call(ctx context.Context) issueWriteCall {
 	}
 	names := step.names
 	if step.reparent {
-		call.fields.Parent = json.RawMessage("null")
-		call.step.leaves = func(before model.Issue) bool {
-			return statusGroup(before.Status) == groupDone || before.Parent == nil || *before.Parent != names
-		}
-		call.step.words = func(model.Issue) string {
+		call.unlinkFrom(names)
+		call.comment.words = func(model.Issue) string {
 			return fmt.Sprintf("Dispatch's parent status rule (R24): %s is done and this issue is not, so Dispatch removed the link. "+
 				"This issue keeps its status, its labels and the issues under it.", names)
 		}
@@ -378,7 +363,7 @@ func (step parentStatusFixStep) call(ctx context.Context) issueWriteCall {
 	}
 	call.fields.Status = step.statusAfter
 	call.step.leaves = func(before model.Issue) bool { return statusGroup(before.Status) != groupNotStarted }
-	call.step.words = func(before model.Issue) string {
+	call.comment.words = func(before model.Issue) string {
 		return fmt.Sprintf("Dispatch's parent status rule (R24): %s, in work, is under this issue, so Dispatch moved it from `%s` to `in_progress`.",
 			names, before.Status)
 	}

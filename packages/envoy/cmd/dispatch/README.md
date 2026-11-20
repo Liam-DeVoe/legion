@@ -922,7 +922,10 @@ A tab opened before the deploy needs a reload:
 With the setting on, a process refuses a write that leaves a parent's status out of line with its children's (`409 PARENT_STATUS_CONFLICT`, Routes, below), and its boot runs the one-time fix of the pairs that break that rule (below).
 A process with the setting off still takes such a write after the fix ran, and the fix does not run again.
 So no process of the earlier setting may serve once a process with the setting on serves, whether the deploy changes the setting or first brings an image that reads it.
-Turn the setting on only once every Legion daemon that writes to this Dispatch runs the release that sends the options of `POST /api/v1/issues/{key}/status-change`.
+Turn the setting on only when two conditions hold.
+First, each Legion daemon that writes to this Dispatch runs the releases with the daemon's side of the rule, which send the options of `POST /api/v1/issues/{key}/status-change`.
+Second, each project's instructions retry a failed root architect with a status write of `todo` alone, not `backlog` and then `todo`, and that project's daemon and controller have read them.
+The rule refuses that `backlog` while an issue under the root is in work.
 Stop every process of the earlier setting, or scale it to zero, before a process with the setting on serves.
 At its default one replica, `envoy-infra:gcp:Dispatch` does that with a Kubernetes Deployment's `strategy: Recreate`, which stops the old pod before the new one starts (its input `parentStatusRule`, `packages/envoy/infra/README.md`).
 A deployment that runs more than one replica rolls, so scale it to zero first, as for INFRA-258 above.
