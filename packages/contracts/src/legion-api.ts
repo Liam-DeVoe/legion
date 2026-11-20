@@ -1056,17 +1056,19 @@ const legionAgentSecretsLoginView = z.object({
 });
 
 /** `api.DispatchCredentialView` — the daemon's Dispatch credential under `dispatch_token_broker`
- * (contract 199): `session`, the session its own Dispatch calls run under
+ * (contract 202): `session`, the session its own Dispatch calls run under
  * (`legion-daemon:<PROJECT>`); `transitionLaunches`, the launches since the daemon's boot that
  * carried the transition token of `dispatch_token_transition_file`, and `lastTransitionLaunchAt`,
  * when the latest of them was sent, null before the first; and `liveLaunchesWithDispatchToken`,
  * the live launches whose start carried a Dispatch token, whichever daemon started them. A
- * deployment removes `dispatch_token_transition_file` once the last is 0. Never a token. */
+ * deployment removes `dispatch_token_transition_file` once the last is 0. Never a token. No plugin
+ * code reads a field of it (`LEGION_ANSWER_READS` names none), so each is optional, and a value
+ * that is present is still held to its type. */
 const legionDispatchCredentialView = z.object({
-  session: nonEmptyString,
-  transitionLaunches: z.number().int().nonnegative(),
-  lastTransitionLaunchAt: timestamp.nullable(),
-  liveLaunchesWithDispatchToken: z.number().int().nonnegative(),
+  session: nonEmptyString.optional(),
+  transitionLaunches: z.number().int().nonnegative().optional(),
+  lastTransitionLaunchAt: timestamp.nullable().optional(),
+  liveLaunchesWithDispatchToken: z.number().int().nonnegative().optional(),
 });
 
 /** `api.CapabilityState` — one row of the deployment's capability report
@@ -1322,8 +1324,8 @@ const legionPaused = z.object({
  * same way (`api.stateFor`, `withoutPause`), so a reader below 178 learns nothing of the pause
  * from a state that carries neither.
  * `dispatchCredential` is the daemon's Dispatch credential and the two counts of the Dispatch
- * tokens its launches hand out, written only under `dispatch_token_broker` (contract 199); the
- * route strips it for a caller below 199, read the same way (`api.stateFor`,
+ * tokens its launches hand out, written only under `dispatch_token_broker` (contract 202); the
+ * route strips it for a caller below 202, read the same way (`api.stateFor`,
  * `withoutDispatchCredential`). */
 export const LegionStateResponse = z.object({
   daemon: daemonInfo.optional(),

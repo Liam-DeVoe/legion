@@ -2603,13 +2603,14 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   }
 });
 
-// The daemon's Dispatch credential under `dispatch_token_broker` (contract 199): the golden names
+// The daemon's Dispatch credential under `dispatch_token_broker` (contract 202): the golden names
 // the daemon's session and the two counts a deployment reads before it removes
 // `dispatch_token_transition_file`, and the time of the last transition launch is null before the
 // first. The key is not required: a daemon without the setting writes none, and a daemon at this
-// contract leaves it off the state it serves a caller older than 199, whether the caller states
-// its contract or is read from its pod (`api.stateFor`, `withoutDispatchCredential`). What is
-// refused is a count that is not a whole number of launches, or a credential with no session.
+// contract leaves it off the state it serves a caller older than 202, whether the caller states
+// its contract or is read from its pod (`api.stateFor`, `withoutDispatchCredential`). No plugin
+// reads a field of it, so each field is optional; what is refused is a count that is not a whole
+// number of launches, or an empty session.
 test("the state golden names the daemon's Dispatch credential, and the key may be absent", () => {
   const state = fixture("state.json") as Record<string, unknown>;
   expect(LegionStateResponse.parse(state).dispatchCredential).toEqual({
@@ -2635,7 +2636,6 @@ test("the state golden names the daemon's Dispatch credential, and the key may b
     { ...credential, liveLaunchesWithDispatchToken: -1 },
     { ...credential, transitionLaunches: 1.5 },
     { ...credential, session: "" },
-    { ...credential, lastTransitionLaunchAt: undefined },
   ]) {
     expect(
       LegionStateResponse.safeParse({ ...state, dispatchCredential: refused }).success
