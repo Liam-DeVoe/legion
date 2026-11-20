@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -62,9 +64,11 @@ func WriteSeed(ctx context.Context, database *store.Store, seed *Seed) (bool, er
 		{"issues", w.writeIssues},
 		{"links", w.writeLinks},
 		{"documents and files", w.writeArtifacts},
+		{"issue and document events", w.writeItemEvents},
 		{"asks", w.writeAsks},
 		{"comments", w.writeComments},
 		{"messages", w.writeMessages},
+		{"event order", w.orderEvents},
 		{"counters", w.settleCounters},
 	}
 	for _, step := range steps {
@@ -560,6 +564,22 @@ func (w *seedWriter) writeAsks(ctx context.Context) error {
 		if err := w.writeEvent(ctx, where, "ask.opened", authorJSON, string(payload), ask.CreatedAt); err != nil {
 			return fmt.Errorf("the opening event of ask %s: %w", ask.ID, err)
 		}
+		if answer == nil {
+			continue
+		}
+		// An answered ask was answered by its person, through the answer route, whose event
+		// carries the ask as the answer left it.
+		answered, err := json.Marshal(api.SeedAskAnsweredPayload(stored, model.ReferenceChanges{}))
+		if err != nil {
+			return err
+		}
+		answerer, err := w.actorJSON(ask.Answer.By)
+		if err != nil {
+			return err
+		}
+		if err := w.writeEvent(ctx, where, "ask.answered", answerer, string(answered), answer.At); err != nil {
+			return fmt.Errorf("the answer event of ask %s: %w", ask.ID, err)
+		}
 	}
 	return nil
 }
@@ -636,8 +656,10 @@ func (w *seedWriter) writeComment(ctx context.Context, comment Comment) error {
 	return nil
 }
 
-// writeMessages writes each message of an issue's thread, to its session where it names one, and
-// indexes its blocks.
+// writeMessages writes each message of an issue's thread, to its session where it names one,
+// indexes its blocks, and writes its message.created event under its issue's next sequence, as
+// the message route leaves it: the message as it was written, its body cut as an event carries
+// one (model.EventBody).
 func (w *seedWriter) writeMessages(ctx context.Context) error {
 	for _, message := range w.seed.Messages {
 		id := ItemID("message", message.ID)
@@ -645,13 +667,140 @@ func (w *seedWriter) writeMessages(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		target := nullable(sessionRoute(message.To))
 		if _, err := w.tx.Exec(ctx, `
 			insert into messages (id, issue_key, author, body, target, created_at) values ($1, $2, $3::jsonb, $4, $5, $6)
-		`, id, message.Issue, author, message.Body, nullable(sessionRoute(message.To)), message.CreatedAt); err != nil {
+		`, id, message.Issue, author, message.Body, target, message.CreatedAt); err != nil {
 			return fmt.Errorf("message %s: %w", message.ID, err)
 		}
 		if err := w.indexItem(ctx, refs.ItemMessage, id, message.Body, message.CreatedAt); err != nil {
 			return fmt.Errorf("message %s: %w", message.ID, err)
+		}
+		body, truncated := model.EventBody(message.Body)
+		issue := message.Issue
+		payload, err := json.Marshal(model.MessageEventPayload{
+			Message: model.Message{
+				ID: id, IssueKey: &issue, Author: w.actor(message.Author), Body: body, Target: target,
+				CreatedAt: message.CreatedAt,
+			},
+			BodyTruncated: truncated,
+		})
+		if err != nil {
+			return err
+		}
+		if err := w.writeEvent(ctx, owner{issue: &issue}, "message.created", author, string(payload), message.CreatedAt); err != nil {
+			return fmt.Errorf("message %s's event: %w", message.ID, err)
+		}
+	}
+	return nil
+}
+
+// writeItemEvents writes the events each issue's and each document's history appended, each with
+// the payload its route builds (api's Seed*Payload): an issue's issue.created as it was created,
+// its issue.claimed where it holds a claim, at the claim's time, and its issue.closed where it is
+// done, at its close; and each document's and file's artifact.created. The seed holds only each
+// issue's end state, so an issue that is done was created todo, a claim was made before the close
+// (a seed with a claim made after its issue closed is refused), and the creator, who is each
+// project's default assignee, created every issue and item, and closed an issue nobody is
+// assigned.
+func (w *seedWriter) writeItemEvents(ctx context.Context) error {
+	creator, err := w.actorJSON(w.creator())
+	if err != nil {
+		return err
+	}
+	event := func(where owner, kind, actor string, payload any, at time.Time) error {
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		return w.writeEvent(ctx, where, kind, actor, string(encoded), at)
+	}
+	for _, issue := range w.seed.Issues {
+		where := owner{issue: &issue.Key}
+		status := issue.Status
+		if issue.ClosedAt != nil {
+			status = "todo"
+		}
+		open := func(i *model.Issue) { i.Status, i.ClosedAt = status, nil }
+		created, err := api.SeedIssueCreatedPayload(ctx, w.tx, issue.Key, func(i *model.Issue) {
+			open(i)
+			i.Claim, i.UpdatedAt = nil, i.CreatedAt
+		})
+		if err == nil {
+			err = event(where, "issue.created", creator, created, issue.CreatedAt)
+		}
+		if err != nil {
+			return fmt.Errorf("the create event of issue %s: %w", issue.Key, err)
+		}
+		if issue.Claim != nil {
+			claim := *issue.Claim
+			if issue.ClosedAt != nil && claim.At.After(*issue.ClosedAt) {
+				return fmt.Errorf("issue %s is claimed at %s, after its close at %s", issue.Key, claim.At, *issue.ClosedAt)
+			}
+			holder, err := w.actorJSON(claim.Session)
+			if err != nil {
+				return err
+			}
+			claimed, err := api.SeedIssueClaimedPayload(ctx, w.tx, issue.Key, func(i *model.Issue) {
+				open(i)
+				i.UpdatedAt = claim.At
+			})
+			if err == nil {
+				err = event(where, "issue.claimed", holder, claimed, claim.At)
+			}
+			if err != nil {
+				return fmt.Errorf("the claim event of issue %s: %w", issue.Key, err)
+			}
+		}
+		if issue.ClosedAt != nil {
+			closedAt := *issue.ClosedAt
+			closer, err := w.actorJSON(cmp.Or(issue.Assignee, w.creator()))
+			if err != nil {
+				return err
+			}
+			closed, err := api.SeedIssueUpdatedPayload(ctx, w.tx, issue.Key, open, func(i *model.Issue) { i.UpdatedAt = closedAt })
+			if err == nil {
+				err = event(where, "issue.closed", closer, closed, closedAt)
+			}
+			if err != nil {
+				return fmt.Errorf("the close event of issue %s: %w", issue.Key, err)
+			}
+		}
+	}
+	for _, artifact := range w.seed.Artifacts {
+		id := artifactID(artifact.Owner, artifact.Slug)
+		where := owner{artifact: &id}
+		if strings.Contains(artifact.Owner, "-") {
+			where = owner{issue: &artifact.Owner}
+		}
+		created, err := api.SeedArtifactCreatedPayload(ctx, w.tx, id, model.ReferenceChanges{})
+		if err == nil {
+			err = event(where, "artifact.created", creator, created, artifact.CreatedAt)
+		}
+		if err != nil {
+			return fmt.Errorf("the create event of %s/%s: %w", artifact.Owner, artifact.Slug, err)
+		}
+	}
+	return nil
+}
+
+// orderEvents numbers each owner's events in the order they happened, as a server that wrote them
+// one by one would have: the writers above go kind by kind (issues, asks, comments, messages), so
+// a comment can be numbered before an earlier message. The first statement moves every number out
+// of the way of the unique (owner, seq) indexes, and the second numbers them by time. The third
+// writes into each issue event's payload the issue's last_seq as that event left it, its own
+// number, as the server's append does (model.IssueEventPayload.WithOwnerLastSeq).
+func (w *seedWriter) orderEvents(ctx context.Context) error {
+	for _, statement := range []string{
+		`update events set seq = -seq`,
+		`update events e set seq = o.number
+		from (select id, row_number() over (partition by issue_key, artifact_id order by created_at, seq desc) as number from events) o
+		where e.id = o.id`,
+		`update events set payload = jsonb_set(payload, '{last_seq}', to_jsonb(seq))
+		where issue_key is not null and type in ('issue.created', 'issue.updated', 'issue.closed')`,
+	} {
+		if _, err := w.tx.Exec(ctx, statement); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -157,13 +159,95 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 	for _, message := range seed.Messages {
 		var issue, author string
 		var created time.Time
-		if err := database.Pool.QueryRow(ctx, `select issue_key, author->>'id', created_at from messages where id = $1`,
-			ItemID("message", message.ID)).Scan(&issue, &author, &created); err != nil {
+		var eventBody *string
+		var eventAt *time.Time
+		if err := database.Pool.QueryRow(ctx, `
+			select m.issue_key, m.author->>'id', m.created_at, e.payload->>'body', e.created_at
+			from messages m
+			left join events e on e.type = 'message.created' and e.payload->>'id' = m.id::text and e.issue_key = m.issue_key
+			where m.id = $1
+		`, ItemID("message", message.ID)).Scan(&issue, &author, &created, &eventBody, &eventAt); err != nil {
 			t.Fatalf("read message %s: %v", message.ID, err)
 		}
 		if issue != message.Issue || author != message.Author || !created.Equal(message.CreatedAt) {
 			t.Errorf("message %s is on %s by %s at %s, want %s by %s at %s", message.ID, issue, author, created, message.Issue, message.Author, message.CreatedAt)
 		}
+		// An issue's log lists its messages as the message route leaves them: each under a
+		// message.created event of its issue, dated when it was written, which carries its body.
+		if eventBody == nil || *eventBody != message.Body || eventAt == nil || !eventAt.Equal(message.CreatedAt) {
+			t.Errorf("message %s has the message.created event with the body %v at %v, want one on %s with the message's body at %s",
+				message.ID, eventBody, eventAt, message.Issue, message.CreatedAt)
+		}
+	}
+	// Each issue's, ask's and document's log holds the events its history appended, each dated
+	// when it happened and carrying what its route's payload carries: an issue as it was created
+	// (a done one todo, with no close and no claim), its claim, its close, an ask's answer, and a
+	// document's or a file's create.
+	type wantEvent struct {
+		owner, kind string
+		at          time.Time
+		holds       map[string]any
+	}
+	var wants []wantEvent
+	for _, issue := range seed.Issues {
+		status := issue.Status
+		if issue.ClosedAt != nil {
+			status = "todo"
+		}
+		wants = append(wants, wantEvent{issue.Key, "issue.created", issue.CreatedAt,
+			map[string]any{"key": issue.Key, "title": issue.Title, "status": status, "closed_at": nil, "claim": nil}})
+		if issue.Claim != nil {
+			wants = append(wants, wantEvent{issue.Key, "issue.claimed", issue.Claim.At,
+				map[string]any{"key": issue.Key, "reason": "claimed", "claim": map[string]any{"actor": map[string]any{"id": issue.Claim.Session}}}})
+		}
+		if issue.ClosedAt != nil {
+			wants = append(wants, wantEvent{issue.Key, "issue.closed", *issue.ClosedAt,
+				map[string]any{"key": issue.Key, "status": "done", "changed": []string{"status", "closed_at"}}})
+		}
+	}
+	for _, ask := range seed.Asks {
+		if ask.Answer != nil {
+			wants = append(wants, wantEvent{ask.Owner, "ask.answered", ask.Answer.At,
+				map[string]any{"id": ItemID("ask", ask.ID), "state": "answered", "answer": map[string]any{"user": ask.Answer.By}}})
+		}
+	}
+	for _, artifact := range seed.Artifacts {
+		wants = append(wants, wantEvent{artifact.Owner + "/artifact/" + artifact.Slug, "artifact.created", artifact.CreatedAt,
+			map[string]any{"artifact": map[string]any{"id": artifactID(artifact.Owner, artifact.Slug), "slug": artifact.Slug}}})
+	}
+	for _, want := range wants {
+		holds, err := json.Marshal(want.holds)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var found int
+		if err := database.Pool.QueryRow(ctx, `
+			select count(*) from events
+			where type = $1 and created_at = $2 and payload @> $3::jsonb
+			  and (payload->>'last_seq' is null or (payload->>'last_seq')::int = seq)
+		`, want.kind, want.at, string(holds)).Scan(&found); err != nil {
+			t.Fatal(err)
+		}
+		if found != 1 {
+			t.Errorf("%s has %d %s events at %s holding %s, want one", want.owner, found, want.kind, want.at, holds)
+		}
+	}
+	// Each owner's log is in the order its events happened, as a server writing them one by one
+	// numbers them: no event is numbered after a later one.
+	var disordered []string
+	rows, err := database.Pool.Query(ctx, `
+		select coalesce(issue_key, artifact_id::text) || ' ' || seq || ' ' || type
+		from (select *, lag(created_at) over (partition by issue_key, artifact_id order by seq) as before from events) e
+		where before > created_at order by 1
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disordered, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		t.Fatal(err)
+	}
+	if len(disordered) > 0 {
+		t.Errorf("these events are numbered after a later event of their owner: %v", disordered)
 	}
 	for _, artifact := range seed.Artifacts {
 		var stored string
