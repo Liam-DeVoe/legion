@@ -2464,7 +2464,7 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 191: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
+// 189: dispatch://INFRA-3320 -- a root's design-gate step can stand open on an ancestor's
 // approval, or wait, closed, on an ancestor's open approval request: a basis. Three surfaces
 // move.
 // `POST /legion/v1/gates/register` (`api.GateRegisterRequest`) takes three optional fields that
@@ -2503,7 +2503,7 @@ package api
 // while a Dispatch child of the issue is open (`record.ChildOpen`). Each names the issues that
 // hold it; the refusal's shape is the one every refusal has.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 191 is served every issue without `treeRuns`, and without `gatedSteps` on an
+// contract below 189 is served every issue without `treeRuns`, and without `gatedSteps` on an
 // issue any step of which reads either new word (api's stateFor, withoutGateBasis), as a caller
 // below 178 is served the state without `paused` and `lastPause`, the entry of 178 above
 // (withoutPause), a caller below 146 the issues without both entry times and `architectStalls`,
@@ -2512,14 +2512,14 @@ package api
 // issue, the entry of 133 (withoutMergeWait), and so on down the bands that entry lists; the
 // twenty-two compose. 178's row runs before this one and the two touch no key of each other's:
 // withoutPause takes the state's `paused` and `lastPause`, and withoutGateBasis takes `treeRuns`
-// and some `gatedSteps` and reads the phase and the held word, so a caller at 178 through 190 is
+// and some `gatedSteps` and reads the phase and the held word, so a caller at 178 through 188 is
 // served the pause and none of this entry's keys and words, and a caller at 146 through 177 the
 // entry times and neither.
 // The strip of `gatedSteps` is not for the key's sake: every plugin from 55 on
 // reads `status` with a strict enum of the four words and refuses the whole body for a fifth, and
 // no word of the four is true of such a step — `waiting` would send its architect to ask a person
 // for an approval of its own, and `approved` names a person's approval no person gave — so such a
-// caller is served no entry of that issue at all rather than a wrong one. Every reader from 191
+// caller is served no entry of that issue at all rather than a wrong one. Every reader from 189
 // on takes `treeRuns` and `basis` as optional and reads the six words
 // (`packages/contracts/src/legion-api.ts`).
 // The change ships store migrations `20261114064234_design_gate_basis` and
@@ -2531,7 +2531,7 @@ package api
 // `awaiting_children` (dispatch://INFRA-3320 R11 to R13). `GET /legion/v1/state` serves an issue in
 // it with `phase: awaiting_children`, which `LEGION_WORKFLOW_PHASES` names, and an
 // `admission.held` entry for such a parent with `reason: awaiting_children`, which
-// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 191 knows
+// `LEGION_HELD_REASONS` names. A caller from a pod whose claims record a contract below 189 knows
 // neither word — its phase enum and its held words are the ones before this change — so the daemon
 // serves it that issue's `phase` as `admitted`, the status that names no worker's phase, and that
 // held entry's `reason` as `children_first`, the word a started parent's wait took over (api's
@@ -2609,7 +2609,13 @@ package api
 // 2026-11-20T10:13Z and 10:25Z found 189 (#3831, and #4596, which stacks on this change) and 190
 // (#4493 and #4578) declared, and nothing above 190, so this change moved 189 → 191, the lowest
 // number above main's that no other open head declares
-// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20b-md). Read the base's own number and
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20b-md). At the forward merge of
+// 2026-11-20 that brought main in at b1b4e281ec0a, main still carried 188, and a REST raw read of
+// each of the 267 open heads' file between 2026-11-20T12:19Z and 12:24Z found 190 (#4578), 191
+// (#4049, #4493, #4495 and #4573, and #4596, which stacks on this change), 192, 193 and 194
+// declared, and no head declaring 189, so this change moved 191 → 189, the lowest number above
+// main's that no other open head declares
+// (dispatch://INFRA-4728/artifact/contract-census-2026-11-20c-md). Read the base's own number and
 // every open head again, by a REST raw read of each head's file, at the next forward merge rather
 // than from this line.)
-const DaemonAPIVersion = 191
+const DaemonAPIVersion = 189

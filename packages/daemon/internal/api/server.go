@@ -1202,7 +1202,7 @@ const quietTimeContract = 111
 // refuses a word it does not name and with it the whole state body, so a caller below 132 is
 // served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
 // optional. mergeWaitContract, assignmentsContract, entryTimesContract, pauseContract and
-// gateBasisContract stand above it, so a caller in a pod at 132 through 190 is served the word and
+// gateBasisContract stand above it, so a caller in a pod at 132 through 188 is served the word and
 // neither `treeRuns` nor the gated steps of an issue a step of which stands on a basis, one at 132
 // through 177 no `paused` or `lastPause` either, one at 132 through 145 no `entryQueuedAt`,
 // `entryConfirmedAt` or `architectStalls` either, one at 132 through 140 no `assignments` either,
@@ -1252,7 +1252,7 @@ const entryTimesContract = 146
 const pauseContract = 178
 
 // gateBasisContract is the daemon contract that let a root's gated step stand open on an
-// ancestor's approval or wait on an ancestor's approval request (version.go's 191,
+// ancestor's approval or wait on an ancestor's approval request (version.go's 189,
 // dispatch://INFRA-3320, R1 and R2), and served each root whether its tree runs. It added the
 // gated step's `basis` and the two status words `open_on_basis` and `pending_on_basis`, and each
 // root's `treeRuns`. A plugin before it is served the state without `treeRuns`, which one built
@@ -1270,12 +1270,12 @@ const pauseContract = 178
 // and a caller in no pod are served the state as it is (stateFor). pauseContract stands right
 // below it, and the two rows touch no key of each other's: withoutPause takes the state's `paused`
 // and `lastPause`, and withoutGateBasis takes `treeRuns` and some `gatedSteps` and reads the phase
-// and the held word, so a caller at 178 through 190 is served the pause and none of this
+// and the held word, so a caller at 178 through 188 is served the pause and none of this
 // contract's keys and words. entryTimesContract stands below pauseContract, and no row of the
 // three reads a key another takes, so a caller at 146 through 177 is served both times and
 // `architectStalls` and neither the pause nor this contract's, and a caller below 146 none of the
 // three.
-const gateBasisContract = 191
+const gateBasisContract = 189
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
