@@ -21,8 +21,8 @@ import (
 // The control is windowLifeLocked keeping the first life it made (`if c.windowLife == nil {`): the
 // window after the replacement takes the closed connection's life, every pin of it is refused, and
 // its first send answers ErrUnavailable at its own bound. pinFirst without its wait for the
-// registration fails the row too: the first window pins before the life's listener is registered,
-// the close's report reaches no listener, and the closed connection's life never ends.
+// registration can fail this row too, only when the life's listener registers after the close; the
+// row below is that control's own.
 func TestAWindowAfterTheConnectionIsReplacedPinsTheNewConnectionsLife(t *testing.T) {
 	every := lifeCheckEvery.Swap(int64(time.Hour))
 	t.Cleanup(func() { lifeCheckEvery.Store(every) })
