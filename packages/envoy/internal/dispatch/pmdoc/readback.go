@@ -182,8 +182,15 @@ func newMisread(before, after *Node, spanCells int) (string, error) {
 	if err != nil && !errors.Is(err, ErrSchema) {
 		return "", err
 	}
+	return misreadSince(before, after, backAfter, err, spanCells)
+}
+
+// misreadSince is newMisread of after, whose read-back is backAfter, or the refusal refused where
+// the parser refused after's rendering: the write path's fallback judges the tree it stores where
+// no reading reads back under the rule by a read-back of its own (readBackEither).
+func misreadSince(before, after, backAfter *Node, refused error, spanCells int) (string, error) {
 	written := asWritten(after)
-	if err == nil && readDifference(written, backAfter, skip{}) == "" {
+	if refused == nil && readDifference(written, backAfter, skip{}) == "" {
 		return "", nil
 	}
 	backBefore, beforeErr := readBack(before, spanCells)
@@ -196,8 +203,8 @@ func newMisread(before, after *Node, spanCells int) (string, error) {
 	if beforeErr != nil {
 		return "", nil
 	}
-	if err != nil {
-		return err.Error(), nil
+	if refused != nil {
+		return refused.Error(), nil
 	}
 	previous := asWritten(before)
 	drift := skip{names: attributeDrift(previous, backBefore)}

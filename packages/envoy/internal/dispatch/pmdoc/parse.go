@@ -53,8 +53,10 @@ var blockReader = markdownReader{md: goldmark.New(
 )}
 
 // baseEmailReader is blockReader with the base's email links (markdownReader.baseEmails). Only the
-// write path's fallback reads with it (FallBackEmailLinks), and only a rendering
-// (parseRenderingAsBase); every reader of a document keeps the rule's links.
+// write path's fallback reads with it (fallbackTier): a write's markdown (writtenAsBase) and a
+// rendering (parseRenderingAsBase), and the renderer judges a run under the same links where no
+// spelling of it reads back under the rule (inlineReader's baseEmails); every reader of a
+// document keeps the rule's links.
 var baseEmailReader = markdownReader{md: blockReader.md, baseEmails: true}
 
 // blockParsers is goldmark's default block parsers with its list parser held off an empty item
@@ -115,8 +117,8 @@ func ParseRendering(markdown string) (*Node, error) {
 }
 
 // parseRenderingAsBase is ParseRendering of markdown with the base's email links
-// (baseEmailReader), before EnsureBlockIDs, since the fallback reads its links alone
-// (FallBackEmailLinks).
+// (baseEmailReader), before EnsureBlockIDs, since the fallback reads its inline nodes alone
+// (fallbackTier).
 func parseRenderingAsBase(markdown string) (*Node, error) {
 	return parseMarkdown(baseEmailReader, markdown, fromStart, true, readBackBudget(), nil)
 }
@@ -208,10 +210,10 @@ func parseStampedAt(markdown string, at origin, budget *WriteBudget) (*Node, err
 // block of live the markdown leaves unchanged keeps its id (carryBlockIDs), which the markdown
 // cannot name, so the write leaves it as it was. A block id of any length is written; one longer
 // than text.MaxBlockIDBytes is simply no graph node (refs.PlanBlocks). A document whose rendering,
-// the markdown it is stored as, reads back otherwise is refused (RefuseMisreadDocument), unless
-// giving the email addresses whose links do not read back the base's reading makes a tree that
-// reads back (FallBackEmailLinks), which is the tree the write takes; ParseWritten is this parse
-// with that read-back, for a write that goes on to read the same rendering.
+// the markdown it is stored as, reads back otherwise is refused (RefuseMisreadDocument), unless the
+// write path's fallback finds a tree the write stores (fallbackTier), which is the tree the write
+// takes; ParseWritten is this parse with that read-back, for a write that goes on to read the same
+// rendering.
 func ParseForWrite(markdown string, live *Node) (*Node, error) {
 	doc, _, err := ParseWritten(markdown, live)
 	return doc, err
@@ -221,28 +223,41 @@ func ParseForWrite(markdown string, live *Node) (*Node, error) {
 // otherwise already made: the markdown the document is stored as and that markdown's tree
 // (WrittenReadBack). A write that stores that rendering and reads it again - for its task items,
 // for its blocks - shares this parse rather than making a second one of the same markdown. Where
-// the parse's tree reads back otherwise and the fallback finds a tree that reads back
-// (FallBackEmailLinks), that tree and its read-back are answered, and the write stores them. A
-// refused parse answers the zero read-back.
+// the parse's tree reads back otherwise, the first tier of the fallback (fallbackTier) that gives
+// a tree the write stores answers that tree and its rendering's read-back, and the write stores
+// them: the parse's tree with the base's links, else markdown read by the base reader with the
+// parse's block ids (writtenAsBase), else that reading as the base stores it, whose rendering
+// reads back under the rule as another tree. A refused parse answers the zero read-back.
 func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
+	doc, read, _, err := parseWritten(markdown, live)
+	return doc, read, err
+}
+
+// parseWritten is ParseWritten with the tier of the fallback that gave the tree answered,
+// noFallback where the parse's own tree is.
+func parseWritten(markdown string, live *Node) (*Node, WrittenReadBack, fallbackTier, error) {
 	doc, err := parseForWrite(markdown, live, true, NewWriteBudget())
 	if err != nil {
-		return nil, WrittenReadBack{}, err
+		return nil, WrittenReadBack{}, noFallback, err
 	}
 	read, misread, refused, err := documentMisread(doc)
 	if misread != "" {
-		fallen, changed, fallenRead, err := fallBackEmailLinks(doc, read)
+		reading, err := writtenAsBase(markdown, doc)
 		if err != nil {
-			return nil, WrittenReadBack{}, err
+			return nil, WrittenReadBack{}, noFallback, err
 		}
-		if changed {
-			return fallen, fallenRead, nil
+		fallen, tier, fallenRead, err := fallBack(doc, read, func(*Node) *Node { return reading }, readsBackDone, readsBackStored)
+		if err != nil {
+			return nil, WrittenReadBack{}, noFallback, err
+		}
+		if tier != noFallback {
+			return fallen, fallenRead, tier, nil
 		}
 	}
 	if err := refuseMisread(misread, refused, err); err != nil {
-		return nil, WrittenReadBack{}, err
+		return nil, WrittenReadBack{}, noFallback, err
 	}
-	return doc, read, nil
+	return doc, read, noFallback, nil
 }
 
 // ParseFragment parses markdown a caller writes into a document, rather than one that begins it,
@@ -541,9 +556,12 @@ func inlineParserOptions(rules delimiterRules) []parser.Option {
 
 // inlineReader reads one textblock's inline markdown (inlineParserOptions): run alone, and with
 // footnote definitions after it so that the references in it read as references
-// (parseInlineWithDefinitions).
+// (parseInlineWithDefinitions). baseEmails reads it with the base's email links (baseEmailsKey),
+// as baseEmailReader reads a document: the renderer judges a run so where no spelling of it reads
+// back under the rule (inlineWithEscapes).
 type inlineReader struct {
 	run, withDefinitions parser.Parser
+	baseEmails           bool
 }
 
 func newInlineReader(rules delimiterRules) inlineReader {
@@ -565,11 +583,17 @@ var inlineMarkdown, storedMarkdown, flankingMarkdown = newInlineReader(editorRul
 // definition. diverged is whether the parse, under editorRules or storedRules, read a `*` or `_`
 // run that could open or close otherwise under flankingRules (flankingDivergenceKey); where it did
 // not, flankingMarkdown reads the same source as storedMarkdown does, to the same nodes and error.
-func parseInlineWithDefinitions(markdown string, labels []string, reader inlineReader) (nodes []*Node, diverged bool, err error) {
+// moved is whether Dispatch's rule for the whole address moved or dropped a link a reader made
+// (emailRuleMovedKey); where it did not, the reader with the base's email links reads the same
+// source to the same nodes, divergence and error.
+func parseInlineWithDefinitions(markdown string, labels []string, reader inlineReader) (nodes []*Node, diverged, moved bool, err error) {
 	context := parser.NewContext()
+	if reader.baseEmails {
+		context.Set(baseEmailsKey, true)
+	}
 	if len(labels) == 0 {
 		nodes, err = readInline(markdown, reader.run, context, nil)
-		return nodes, context.Get(flankingDivergenceKey) != nil, err
+		return nodes, context.Get(flankingDivergenceKey) != nil, context.Get(emailRuleMovedKey) != nil, err
 	}
 	var full strings.Builder
 	full.WriteString(markdown)
@@ -578,20 +602,20 @@ func parseInlineWithDefinitions(markdown string, labels []string, reader inlineR
 	}
 	source := []byte(full.String())
 	root, err := parseSource(reader.withDefinitions, source, context)
-	diverged = context.Get(flankingDivergenceKey) != nil
+	diverged, moved = context.Get(flankingDivergenceKey) != nil, context.Get(emailRuleMovedKey) != nil
 	if err != nil {
-		return nil, diverged, err
+		return nil, diverged, moved, err
 	}
 	first, ok := root.FirstChild().(*ast.Paragraph)
 	if !ok {
-		return nil, diverged, fmt.Errorf("%w: inline markdown does not read as a paragraph", ErrSchema)
+		return nil, diverged, moved, fmt.Errorf("%w: inline markdown does not read as a paragraph", ErrSchema)
 	}
 	paragraph, err := convert(first, source, 1, footnoteLabels(root))
 	if err != nil {
-		return nil, diverged, err
+		return nil, diverged, moved, err
 	}
 	sortNodeMarks(paragraph)
-	return paragraph.Children, diverged, nil
+	return paragraph.Children, diverged, moved, nil
 }
 
 // referencedLabels is the footnote labels nodes refer to, each once, in order.

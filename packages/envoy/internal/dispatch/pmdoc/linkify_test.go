@@ -572,6 +572,205 @@ func TestLinkifyFallsBackToTheBaseWhereTheRuleDoesNotReadBack(t *testing.T) {
 	}
 }
 
+// fallbackShape is a text a write stores only through the write path's fallback (fallbackTier):
+// ParseWritten refused each before the fallback started from any misread, whatever its cause, and
+// main 1c7c8253 stores each. They read back otherwise under the rule, so they do not fit
+// testdata/refused-email-shapes.jsonl, whose every row's rule tree reads back as itself
+// (TestLinkifyStoresEveryRefusedShape, TestLinkifyFallsBackToTheBaseWhereTheRuleDoesNotReadBack).
+// tier is the tier a write of markdown stores it through (parseWritten), live the tier the
+// fallback of the rule's tree of it answers through (FallBackEmailLinks of Parse), stored the
+// rendering a write of it stores, which is the one main stores, measured with main's ParseForWrite
+// and Render, and again the rendering a second write of stored stores, "" where that is stored.
+type fallbackShape struct {
+	markdown   string
+	tier, live fallbackTier
+	stored     string
+	again      string
+}
+
+// fallbackShapes are texts ParseWritten refused while the fallback started only from an email
+// link's misread. In the four `**…**`/`_…_` rows and `***x@y.co/…` the rule leaves an address
+// unlinked and the emphasis beside it has no spelling that reads back; in `*<http://example.com>*…`
+// a web address reads on into the address; in the rest an email link written explicit reads back
+// with a link on `www`, and written bare (the base's spelling, inlineWithEscapes) it reads back
+// under the rule with the later address unlinked.
+var fallbackShapes = []fallbackShape{
+	{"**projects/p/agent-hosts@example.com**_)_\n", baseLinksTier, baseLinksTier, "**projects/p/agent-**[**hosts@example.com**](mailto:hosts@example.com)*)*\n", ""},
+	{"Mail **a/b-c@example.com**_._\n", baseLinksTier, baseLinksTier, "Mail **a/b-**[**c@example.com**](mailto:c@example.com)*.*\n", ""},
+	{"**serviceAccounts/agent-hosts@example.com**_,_ see\n", baseLinksTier, baseLinksTier, "**serviceAccounts/agent-**[**hosts@example.com**](mailto:hosts@example.com)*,* see\n", ""},
+	{"_a%b@example.com_**&**\n", baseLinksTier, baseLinksTier, "*a%*[*b@example.com*](mailto:b@example.com)**&**\n", ""},
+	{"*<http://example.com>*_%c@d.co_\n", baseReadingTier, baseReadingTier, "*<http://example.com>%*[*c@d.co*](mailto:c@d.co)\n", ""},
+	{"[x@y.co](mailto:x@y.co)/www.-@example.com\n", baseStoredTier, baseStoredTier, "x@y.co/www.-@example.com\n", ""},
+	{"> <a@b.co>/www.&#45;@c__.__c**o***\n", baseStoredTier, baseStoredTier, "> a@b.co/www.-@c\\_\\_.\\_\\_c**o***\n", ""},
+	// The rule reads the stored text with `_agent@c.co` unlinked, a tree whose own rendering, the
+	// earlier address written explicit, reads back: so a second write stores that rendering, and
+	// the renderer may not write a tree that reads back otherwise than it does (RendererVersion).
+	{"*<a@b.co>/www._agent@c.co/b~~ob-smith@example~~.com*\n", baseStoredTier, baseStoredTier, "*a@b.co/www.\\_agent@c.co/b~~ob-smith@example~~.com*\n", "[*a@b.co*](mailto:a@b.co)*/www.\\_agent@c.co/b~~ob-smith@example~~.com*\n"},
+	{"***x@y.co/.%.@y.c****o*)\n", baseLinksTier, baseLinksTier, "[***x@y.co***](mailto:x@y.co)***/.%***[***.@y.c***](mailto:.@y.c)*\\*\\*o*)\n", ""},
+	{"- [x@y.co](mailto:x@y.co)/www.Z_@example-project.iam.gserviceaccount.*com.www*.q.com\n", baseStoredTier, baseStoredTier, "- x@y.co/www.Z\\_@example-project.iam.gserviceaccount.*com.www*.q.com\n", ""},
+	{"<a@b.co>/www.9.&#45;@example-project.iam.gserviceaccount.[co](http://x.co)m/x\n", baseStoredTier, baseStoredTier, "a@b.co/www.9.-@example-project.iam.gserviceaccount.[co](http://x.co)m/x\n", ""},
+}
+
+// fallbackStores is tree's rendering, and whether a write stores tree as that rendering: it reads
+// back as tree as written, each textblock the rule reads otherwise read by the base reader
+// (readBackEither), as the fallback's last tier holds its tree to.
+func fallbackStores(t *testing.T, tree *Node) (string, bool) {
+	t.Helper()
+	rendering := mustRender(t, tree)
+	back, err := ParseRendering(rendering)
+	if err != nil {
+		return rendering, false
+	}
+	base, err := parseRenderingAsBase(rendering)
+	if err != nil {
+		return rendering, false
+	}
+	return rendering, readsBackAsWritten(tree, readBackEither(tree, back, base))
+}
+
+// R4 (INFRA-4224) stores every text the base stores. A write of each fallbackShape is stored, by
+// the tier the row names, as the text main stores: a tree of the first two tiers reads back as
+// itself in Go and in the browser editor's engine, and the last tier's rendering, which the rule
+// reads as another tree, reads back under the base reader as the tree stored.
+func TestLinkifyStoresWhatOnlyTheFallbackStores(t *testing.T) {
+	var readsBack []*Node
+	var markdowns []string
+	for _, shape := range fallbackShapes {
+		tree, written, tier, err := parseWritten(shape.markdown, nil)
+		if err != nil {
+			t.Errorf("a write of %q is refused: %v", shape.markdown, err)
+			continue
+		}
+		if tier != shape.tier {
+			t.Errorf("a write of %q stores %s through tier %d, want tier %d", shape.markdown, inlineSummaries(tree), tier, shape.tier)
+		}
+		if rendering := mustRender(t, tree); rendering != written.Markdown {
+			t.Errorf("a write of %q stores %q, and its tree renders to %q", shape.markdown, written.Markdown, rendering)
+		}
+		if written.Markdown != shape.stored {
+			t.Errorf("a write of %q stores %q, where main stores %q", shape.markdown, written.Markdown, shape.stored)
+		}
+		back, err := ParseRendering(written.Markdown)
+		if tier == baseStoredTier {
+			if base, err := parseRenderingAsBase(written.Markdown); err != nil || !readsBackAsWritten(tree, base) {
+				t.Errorf("a write of %q stores %q, which the base reads back as %s (%v), not as the stored tree %s", shape.markdown, written.Markdown, inlineSummaries(base), err, inlineSummaries(tree))
+			}
+			if err == nil && back.Equal(tree) {
+				t.Errorf("a write of %q stores %q, which the rule reads back as the stored tree: the row needs no last tier", shape.markdown, written.Markdown)
+			}
+			continue
+		}
+		if err != nil || !back.Equal(tree) {
+			t.Errorf("a write of %q stores %q, which Go reads back as %s (%v), not as the stored tree %s", shape.markdown, written.Markdown, inlineSummaries(back), err, inlineSummaries(tree))
+		}
+		readsBack = append(readsBack, tree)
+		markdowns = append(markdowns, written.Markdown)
+	}
+	for index, engine := range engineReadings(t, markdowns) {
+		if engine == nil || !withoutBlockIDs(engine).Equal(withoutBlockIDs(readsBack[index])) {
+			t.Errorf("a write stores %q, which the engine reads as %s, not as the stored tree %s", markdowns[index], inlineSummaries(engine), inlineSummaries(readsBack[index]))
+		}
+	}
+}
+
+// The server's write of an editor's tree has no writer's markdown to fall back from. For each
+// fallbackShape, the fallback of the rule's tree (FallBackEmailLinks of Parse) answers, by the tier
+// the row names, a tree a write stores, its rendering reading back as it under the rule or, where
+// the rule reads a textblock otherwise, under the base reader; and an edit that inserts the text
+// as a paragraph after another, or replaces that paragraph with it (FallBackMisreadWrite), is
+// stored so too.
+func TestFallBackEmailLinksStoresWhatOnlyTheFallbackStores(t *testing.T) {
+	before, err := Parse("First.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, shape := range fallbackShapes {
+		doc, err := Parse(shape.markdown)
+		if err != nil {
+			t.Errorf("Parse(%q): %v", shape.markdown, err)
+			continue
+		}
+		read, err := readBackWritten(doc, maxSpanCells)
+		if err != nil {
+			t.Errorf("read back Parse(%q): %v", shape.markdown, err)
+			continue
+		}
+		tree, tier, _, err := fallBackLive(doc, read)
+		if err != nil || tier != shape.live {
+			t.Errorf("the fallback of Parse(%q) answers %s through tier %d (%v), want tier %d", shape.markdown, inlineSummaries(tree), tier, err, shape.live)
+		}
+		public, changed, err := FallBackEmailLinks(doc)
+		if err != nil || !public.EqualWithBlockIDs(tree) || changed != (tree != doc) {
+			t.Errorf("FallBackEmailLinks(Parse(%q)) = %s, changed %t (%v), not the fallback's %s", shape.markdown, inlineSummaries(public), changed, err, inlineSummaries(tree))
+		}
+		if rendering, stores := fallbackStores(t, tree); !stores {
+			t.Errorf("FallBackEmailLinks(Parse(%q)) answers %s, written %q, which a write does not store", shape.markdown, inlineSummaries(tree), rendering)
+		}
+		for _, edit := range []struct {
+			name  string
+			after *Node
+		}{
+			{name: "an insert after a paragraph", after: &Node{Type: "doc", Children: append(slices.Clone(before.Children), doc.Children...)}},
+			{name: "a replacement of that paragraph", after: &Node{Type: "doc", Children: doc.Children}},
+		} {
+			stored, err := FallBackMisreadWrite(before, edit.after)
+			if err != nil {
+				t.Errorf("%s of %q is refused: %v", edit.name, shape.markdown, err)
+				continue
+			}
+			if rendering, stores := fallbackStores(t, stored); !stores {
+				t.Errorf("%s of %q stores %s, written %q, which a write does not store", edit.name, shape.markdown, inlineSummaries(stored), rendering)
+			}
+		}
+	}
+}
+
+// The fallback's last tier is a fixed point, so a settlement writes no version after version:
+// for each fallbackShape a write stores through it, the fallback of the tree the write stores, and
+// of the tree the live path answers, is that tree, unchanged; and a second write of the rendering
+// stored stores it again. The one row whose second write stores another rendering (again) stores
+// a tree that reads back, which a third write keeps.
+func TestTheFallbacksLastTierIsAFixedPoint(t *testing.T) {
+	for _, shape := range fallbackShapes {
+		if shape.tier != baseStoredTier {
+			continue
+		}
+		tree, written, _, err := parseWritten(shape.markdown, nil)
+		if err != nil {
+			t.Errorf("a write of %q is refused: %v", shape.markdown, err)
+			continue
+		}
+		if again, changed, err := FallBackEmailLinks(tree); err != nil || changed || again != tree {
+			t.Errorf("the fallback of %s, the tree a write of %q stores, = %s, changed %t (%v); want it unchanged", inlineSummaries(tree), shape.markdown, inlineSummaries(again), changed, err)
+		}
+		if doc, err := Parse(shape.markdown); err != nil {
+			t.Errorf("Parse(%q): %v", shape.markdown, err)
+		} else if live, _, err := FallBackEmailLinks(doc); err != nil {
+			t.Errorf("FallBackEmailLinks(Parse(%q)): %v", shape.markdown, err)
+		} else if again, changed, err := FallBackEmailLinks(live); err != nil || changed || again != live {
+			t.Errorf("the fallback of %s, the live path's answer for %q, = %s, changed %t (%v); want it unchanged", inlineSummaries(live), shape.markdown, inlineSummaries(again), changed, err)
+		}
+		want := shape.stored
+		if shape.again != "" {
+			want = shape.again
+		}
+		_, second, tier, err := parseWritten(written.Markdown, tree)
+		if err != nil || second.Markdown != want {
+			t.Errorf("a second write of %q stores %q (%v), want %q", written.Markdown, second.Markdown, err, want)
+			continue
+		}
+		if shape.again == "" {
+			continue
+		}
+		if tier != noFallback {
+			t.Errorf("a second write of %q stores %q through tier %d, want a tree that reads back", written.Markdown, second.Markdown, tier)
+		}
+		if _, third, _, err := parseWritten(second.Markdown, nil); err != nil || third.Markdown != second.Markdown {
+			t.Errorf("a third write of %q stores %q (%v), want it again", second.Markdown, third.Markdown, err)
+		}
+	}
+}
+
 // literalURL answers a URL at each offset of a line as a fresh read would, through the two records
 // that keep a line linear: the domain read from an earlier trigger (literalDomains), which a www
 // literal starting inside it reads again with its own underscores and dots, and a trail run

@@ -10,13 +10,16 @@ import (
 // storedMarkdown where the source holds no `~`, since it then reads as inlineMarkdown does, and
 // flankingMarkdown where the stored parse reported no `*` or `_` run that could open or close
 // otherwise under flankingRules (flankingDivergenceKey). Each skipped read must give the nodes and
-// the error the read it stands for gives, and the divergence it reports.
+// the error the read it stands for gives, and the divergence it reports. So must the read with the
+// base's email links that its judge of a run no spelling reads back under the rule skips where
+// the rule for the whole address moved or dropped no link (inlineWithEscapes).
 func FuzzReadBackSkips(f *testing.F) {
 	seeds := []string{
 		`\**x`, `b_*a**`, `***a.****&#32;b*`, `a_b*a_b*`, `**[a](u)**_b_`, `**a~~b**c~~`, `*~~**b~~*`,
 		`~a~ *b*`, `a~~*b*~~`, `\~~a~~`, `[^a] *b*`, `**a** b`,
 		`~~a ~b~~ c~`, `~a~~b~`, `a\~~~b~~`, `x ~\~~ y ~\~~`, `[~\~~](u)`, `&#126;~a~`,
 		`a*_*`, `*_*a`, `a*~*`, `~a~~`,
+		`x@y.co/www.-@example.com`, `**projects/p/agent-hosts@example.com***)*`, `a@b.co *c@d.co*`,
 	}
 	for _, seed := range seeds {
 		f.Add(seed, false)
@@ -27,19 +30,28 @@ func FuzzReadBackSkips(f *testing.F) {
 		if withLabel {
 			labels = []string{"a"}
 		}
-		editorNodes, editorDiverged, editorErr := parseInlineWithDefinitions(markdown, labels, inlineMarkdown)
+		editorNodes, editorDiverged, editorMoved, editorErr := parseInlineWithDefinitions(markdown, labels, inlineMarkdown)
+		if !editorMoved {
+			base := inlineMarkdown
+			base.baseEmails = true
+			baseNodes, baseDiverged, _, baseErr := parseInlineWithDefinitions(markdown, labels, base)
+			sameRead(t, markdown, labels, "inlineMarkdown", editorNodes, editorErr, "the base's inlineMarkdown", baseNodes, baseErr)
+			if baseDiverged != editorDiverged {
+				t.Fatalf("%q with labels %q: the base's inlineMarkdown reports divergence %v, inlineMarkdown %v", markdown, labels, baseDiverged, editorDiverged)
+			}
+		}
 		if !strings.Contains(markdown, "~") {
-			storedNodes, storedDiverged, storedErr := parseInlineWithDefinitions(markdown, labels, storedMarkdown)
+			storedNodes, storedDiverged, _, storedErr := parseInlineWithDefinitions(markdown, labels, storedMarkdown)
 			sameRead(t, markdown, labels, "inlineMarkdown", editorNodes, editorErr, "storedMarkdown", storedNodes, storedErr)
 			if storedDiverged != editorDiverged {
 				t.Fatalf("%q with labels %q: storedMarkdown reports divergence %v, inlineMarkdown %v", markdown, labels, storedDiverged, editorDiverged)
 			}
 		}
-		storedNodes, storedDiverged, storedErr := parseInlineWithDefinitions(markdown, labels, storedMarkdown)
+		storedNodes, storedDiverged, _, storedErr := parseInlineWithDefinitions(markdown, labels, storedMarkdown)
 		if storedDiverged {
 			return
 		}
-		flankingNodes, flankingDiverged, flankingErr := parseInlineWithDefinitions(markdown, labels, flankingMarkdown)
+		flankingNodes, flankingDiverged, _, flankingErr := parseInlineWithDefinitions(markdown, labels, flankingMarkdown)
 		sameRead(t, markdown, labels, "storedMarkdown", storedNodes, storedErr, "flankingMarkdown", flankingNodes, flankingErr)
 		if flankingDiverged {
 			t.Fatalf("%q with labels %q: flankingMarkdown reports divergence", markdown, labels)
@@ -83,7 +95,7 @@ func TestFlankingDivergenceIsReportedOnlyWhereTheRulesDiffer(t *testing.T) {
 	}{{"inlineMarkdown", inlineMarkdown}, {"storedMarkdown", storedMarkdown}} {
 		for _, labels := range [][]string{nil, {"a"}} {
 			for _, test := range tests {
-				if _, diverged, err := parseInlineWithDefinitions(test.markdown, labels, reader.reader); err != nil || diverged != test.diverged {
+				if _, diverged, _, err := parseInlineWithDefinitions(test.markdown, labels, reader.reader); err != nil || diverged != test.diverged {
 					t.Errorf("%s reads %q with labels %q: diverged %v (%v), want %v", reader.name, test.markdown, labels, diverged, err, test.diverged)
 				}
 			}

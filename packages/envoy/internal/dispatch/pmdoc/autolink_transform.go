@@ -544,19 +544,21 @@ func (piece textPiece) sourceAt(offset int) (*ast.Text, int, bool) {
 // the engine's one text node there: the text and string nodes before it, back to another node or
 // to a text a hard break ends (linkRuns), decoded, so a character reference or an escape in the
 // run counts as its character. A container's links are read in order, so the text a link that
-// went has joined is the text before the next one.
-func wholeEmailLinks(parent ast.Node, source []byte) {
+// went has joined is the text before the next one. moved reports whether the rule moved or
+// dropped a link, without which the base's reading (baseEmailsKey) is parent's as it stands.
+func wholeEmailLinks(parent ast.Node, source []byte) (moved bool) {
 	for container := range textContainers(parent) {
 		for child := container.FirstChild(); child != nil; {
 			next := child.NextSibling()
 			if link, ok := child.(*ast.AutoLink); ok && link.AutoLinkType == ast.AutoLinkEmail {
 				if span, bare := link.AttributeString(bareAutolinkAttr); bare {
-					wholeEmailLink(link, span.(text.Segment), source)
+					moved = wholeEmailLink(link, span.(text.Segment), source) || moved
 				}
 			}
 			child = next
 		}
 	}
+	return moved
 }
 
 // wholeEmailLink holds link, an email autolink a reader made from the bare address at source
@@ -566,8 +568,8 @@ func wholeEmailLinks(parent ast.Node, source []byte) {
 // (decodedLabelAttr), and the text nodes before it lose the run. A run that starts in a string,
 // which no source spells, leaves the link as it is, as linkFound leaves such an address text. No
 // run starts inside what one character reference decodes to, since none decodes to a character of
-// the run after one that is none.
-func wholeEmailLink(link *ast.AutoLink, span text.Segment, source []byte) {
+// the run after one that is none. It reports whether the link moved or went.
+func wholeEmailLink(link *ast.AutoLink, span text.Segment, source []byte) bool {
 	// The text pieces the run lies in, from the link back, and where it starts in the last of
 	// them; the run's length, whether GFM links each of its characters in a local part, and
 	// whether it reaches into a link a reader made.
@@ -605,7 +607,7 @@ walk:
 					// Markup, or a link a reader made that would read on into the text after it or
 					// that the renderer writes explicit only, splits the address: the link stays as
 					// the reader made it.
-					return
+					return false
 				}
 				break walk
 			}
@@ -626,19 +628,20 @@ walk:
 		}
 	}
 	if length == 0 || linked && crossed {
-		return
+		return false
 	}
 	parent := link.Parent()
 	if !linked {
-		if !webAddressReachesInto(link, source) {
-			parent.ReplaceChild(parent, link, ast.NewTextSegment(span))
+		if webAddressReachesInto(link, source) {
+			return false
 		}
-		return
+		parent.ReplaceChild(parent, link, ast.NewTextSegment(span))
+		return true
 	}
 	first := pieces[len(pieces)-1]
 	firstText, start, ok := first.sourceAt(from)
 	if !ok {
-		return
+		return false
 	}
 	label, _ := autolinkText(link, source)
 	var whole strings.Builder
@@ -658,6 +661,7 @@ walk:
 	moved.SetAttributeString(decodedLabelAttr, whole.String())
 	moved.SetPos(start)
 	parent.ReplaceChild(parent, link, moved)
+	return true
 }
 
 // readsOnInto reports whether link, an autolink a reader made from bare text whose text is label,

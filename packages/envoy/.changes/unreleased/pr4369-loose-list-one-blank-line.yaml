@@ -35,8 +35,13 @@ body: |-
   a web address (`www.`, `http://` or `https://`) in the joined text that reaches into the
   address keeps the reader's email link, and so does an earlier link a reader made next to an
   email link the writer wrote, or one whose text starts `_www.`. Where the renderer cannot write
-  an address as the rule reads it so that the text reads back, Dispatch gives that address its
-  earlier reading: in a write of a whole text, in every edit, in an accepted or a rejected
+  a text that holds an `@` as the rule reads it so that the text reads back, whatever the cause
+  (a link, emphasis beside it or a web address), Dispatch takes the earlier reading's links
+  there, else the earlier reading of the whole text, whichever reads back first. Where neither
+  reads back, it stores the text as the earlier release stores it, so
+  `[x@y.co](mailto:x@y.co)/www.-@example.com` is stored as `x@y.co/www.-@example.com`. Such a
+  stored text is the one kind that reads back as another tree: the rule reads it with one link
+  fewer. This applies in a write of a whole text, in every edit, in an accepted or a rejected
   suggestion, in the settlement of a document edited in the browser editor, and before Dispatch
   answers a document's token while that settlement is owed (a read, an edit, a snapshot or a
   named version), so every token a caller holds names the tree the document stores. So none of

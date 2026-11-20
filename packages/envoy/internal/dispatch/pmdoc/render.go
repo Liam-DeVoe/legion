@@ -60,6 +60,10 @@ type renderer struct {
 	// bareEmptyCode writes an empty code block in a typed block in a list item as its fences alone,
 	// and wroteBlankEmptyCode records one written with a line between them (emptyCodeWrittenBare).
 	bareEmptyCode, wroteBlankEmptyCode bool
+	// baseEmails judges the run being written under the base's email links (inlineReader's
+	// baseEmails), which inlineWithEscapes does for a run no spelling of which reads back under the
+	// rule.
+	baseEmails bool
 	// spanBudget is how many more empty cells the tables' spans may add: maxSpanCells, or none in
 	// a spanless render (renderSpanless).
 	spanBudget   int
