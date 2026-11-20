@@ -2149,6 +2149,10 @@ func (c *Client) publishJetStream(ctx context.Context, item contracts.Envelope) 
 // the earlier send was the same message to the same stream, so neither stored it and the failure
 // does not wrap ErrUnacknowledged. A denied publish (ErrPublishDenied) never wraps it, since the
 // grant that denied it denied every send of the call.
+//
+// A forward (StartRequestStoredTo and its Wait) is judged the same way: one that went out and got
+// no answer is ErrUnacknowledged, and one the server answered (ForwardAnswered) or that was never
+// sent is not.
 var ErrUnacknowledged = errors.New("the stream did not acknowledge the publish, so it may hold the message")
 
 // sendUnanswered reports whether err, from a JetStream publish handed to nats.go under a live
@@ -2375,11 +2379,50 @@ func KeptMsgID(dedupeKey, role string) string {
 // (RequestOptions.MsgID).
 var ErrNoForwardMsgID error = refusal("a forward without a " + nats.MsgIdHdr)
 
-// ErrForwardNotStored is returned by a forward's Wait when the stream's acknowledgement that it
-// stored the forward did not arrive before the deadline, or came back as the stream's error: the
-// forward's one lasting copy, which the holder's session consumer delivers, is missing. The
-// forward does not count as delivered; the listener reports it delivery_failed.
-var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storing the forward")
+// ErrForwardNotStored is returned by a forward's Wait when the stream did not store the forward
+// as far as the client knows: the stream's acknowledgement did not arrive before the deadline, the
+// wait for it failed, or the server answered that nothing took the forward (no responders) or the
+// stream refused it (its error answer). The forward's one lasting copy, which the holder's session
+// consumer delivers, is then missing or not known to be there. The forward does not count as
+// delivered; the listener reports it delivery_failed.
+//
+// ErrForwardNotStored itself, and any error that wraps it, is also ErrUnacknowledged: the forward
+// went out and nothing answered it, so the stream may hold it or store it yet. Wait returns such an
+// error for every failure but the server's two answers, which it returns as ForwardAnswered: those
+// are ErrForwardNotStored and not ErrUnacknowledged, since the server answered that the stream did
+// not store the forward. So a caller tells the two apart by ErrUnacknowledged, as it does for any
+// other stored send (mayHaveStored in cmd/listener).
+var ErrForwardNotStored error = &forwardNotStored{}
+
+// forwardNotStored is ErrForwardNotStored, with answer nil, and a forward the server answered as
+// not stored, with answer the server's answer (ForwardAnswered).
+type forwardNotStored struct {
+	answer error
+}
+
+func (e *forwardNotStored) Error() string {
+	if e.answer == nil {
+		return "bus: the stream did not acknowledge storing the forward"
+	}
+	return "bus: the stream did not acknowledge storing the forward: " + e.answer.Error()
+}
+
+func (e *forwardNotStored) Unwrap() error { return e.answer }
+
+// Is makes every forwardNotStored ErrForwardNotStored, and the one with no answer ErrUnacknowledged
+// too.
+func (e *forwardNotStored) Is(target error) bool {
+	return target == ErrForwardNotStored || (target == ErrUnacknowledged && e.answer == nil)
+}
+
+// ForwardAnswered is the error Wait returns for a forward the server answered as not stored, with
+// its answer: nats.ErrNoResponders (nothing, not even a stream, took it) or the stream's error
+// acknowledgement (*nats.APIError). It is ErrForwardNotStored and matches the answer, and it is no
+// ErrUnacknowledged: the server's answer says the stream did not store the forward. A fake of a
+// forward's wait (cmd/listener's tests) returns it for a forward the server answered so.
+func ForwardAnswered(answer error) error {
+	return &forwardNotStored{answer: answer}
+}
 
 // StartRequestStoredTo publishes a forward of item to subject and returns once the server has it,
 // leaving the wait for the stream's acknowledgement to the returned forward's Wait, so a caller
@@ -2397,7 +2440,11 @@ var ErrForwardNotStored = errors.New("bus: the stream did not acknowledge storin
 // recipient, however many attempts it makes, and the stream acknowledges each repeat as a
 // duplicate, which counts as stored. An error here is the publish's own, before any reply could
 // arrive (a refused, denied or invalid forward, a connection that never came back within
-// timeout); every returned forward must be waited for, which releases its reply subscription.
+// timeout); every returned forward must be waited for, which releases its reply subscription. A
+// publish nats.go took whose flush failed or ran out of the window is ErrUnacknowledged too: its
+// bytes may still reach the server from the connection's buffer, and the stream store them, with
+// no reply subscription left to hear of it. A failure before nats.go took the publish, and a
+// denial, store nothing and are not.
 func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, msgID string, timeout time.Duration) (*PendingForward, error) {
 	if msgID == "" {
 		return nil, fmt.Errorf("%w: to %q", ErrNoForwardMsgID, subject)
@@ -2427,9 +2474,17 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 		Data:    data,
 		Header:  nats.Header{nats.MsgIdHdr: []string{msgID}, nats.ExpectedStreamHdr: []string{Stream}},
 	}
-	err = c.publishConfirmed(ctx, conn, forward, conn.PublishMsg)
+	published := false
+	err = c.publishConfirmed(ctx, conn, forward, func(msg *nats.Msg) error {
+		err := conn.PublishMsg(msg)
+		published = err == nil
+		return err
+	})
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		_ = replies.Unsubscribe()
+		if published && !errors.Is(err, ErrPublishDenied) {
+			err = fmt.Errorf("%w: %w", ErrUnacknowledged, err)
+		}
 		return nil, err
 	}
 	return &PendingForward{client: c, subject: subject, replies: replies, deadline: deadline, unconfirmed: err}, nil
@@ -2450,13 +2505,15 @@ type PendingForward struct {
 }
 
 // Wait reads the forward's replies until the stream has acknowledged storing it or its window
-// ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
-// error answer, and the server's no-responders answer (nothing captured the subject) are each
-// ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
-// publish, the reason for that. The no-responders answer and another stream's refusal of a
-// subject this build stores and the deployed stream, as the client last read it, leaves out are
-// ErrStreamLacksSubject too (lacksSubject), which every forward to that subject meets while the
-// stream stays so.
+// ends, and releases its reply subscription. Every failure is ErrForwardNotStored, wrapping the
+// reason and, when publishConfirmed could not confirm the publish, the reason for that. Two are
+// the server's answers (ForwardAnswered), which say the stream did not store the forward: the
+// stream's error answer, and the no-responders answer (nothing captured the subject). The rest got
+// no answer and are ErrUnacknowledged, since the stream may hold the forward: no acknowledgement
+// by the deadline, and a wait that failed, such as one whose connection closed. The no-responders
+// answer and another stream's refusal of a subject this build stores and the deployed stream, as
+// the client last read it, leaves out are ErrStreamLacksSubject too (lacksSubject), which every
+// forward to that subject meets while the stream stays so.
 func (f *PendingForward) Wait() error {
 	defer f.replies.Unsubscribe()
 	for {
@@ -2471,9 +2528,10 @@ func (f *PendingForward) Wait() error {
 		if err != nil {
 			// The server's no-responders answer: nothing, not even a stream, took the forward.
 			if errors.Is(err, nats.ErrNoResponders) {
-				return f.client.lacksSubject(f.subject, fmt.Errorf("%w: %w", ErrForwardNotStored, err))
+				return f.client.lacksSubject(f.subject, ForwardAnswered(err))
 			}
-			return err
+			// The wait itself failed, with no answer read: the forward may be stored.
+			return fmt.Errorf("%w: %w", ErrForwardNotStored, err)
 		}
 		ack, ok := readPublishAcknowledgement(response.Data)
 		if !ok {
@@ -2481,7 +2539,7 @@ func (f *PendingForward) Wait() error {
 		}
 		// The stream's error answer to the forward, which no later reply changes.
 		if ack.Error != nil {
-			return f.client.lacksSubject(f.subject, fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error))
+			return f.client.lacksSubject(f.subject, ForwardAnswered(ack.Error))
 		}
 		return nil
 	}

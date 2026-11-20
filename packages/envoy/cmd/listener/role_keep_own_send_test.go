@@ -70,18 +70,25 @@ func TestAKeepWhoseOwnSendWentUnansweredSaysMaybeStoredHoweverItEnds(t *testing.
 	}
 }
 
-// A role send whose earlier forward failed with no refusal may have stored the message for its
-// holder (sendToRole's unanswered), so a later forward the stream refuses for want of the holder's
-// subject is answered with the maybe-stored 503, recorded bus_unavailable, and not with the
-// missing-subject 503 that says nothing stored it: the same rule as the keep's above. The control
-// is the same refusal on the send's first forward, which still answers the missing-subject 503,
-// recorded stream_lacks_subject.
+// A role send whose earlier forward went out and got no answer may have stored the message for its
+// holder (sendToRole's unanswered: the bus marks such a forward bus.ErrUnacknowledged), so a later
+// forward the stream refuses for want of the holder's subject is answered with the maybe-stored
+// 503, recorded bus_unavailable, and not with the missing-subject 503 that says nothing stored it:
+// the same rule as the keep's above. A forward with no answer is one whose acknowledgement did not
+// come within its window, or whose publish the client could not confirm. The controls are the same
+// refusal where no earlier forward went unanswered, which still answers the missing-subject 503,
+// recorded stream_lacks_subject: the refusal of the send's first forward, and the refusal after a
+// forward the server answered, that nothing took it (no responders) or with the stream's own error,
+// since such a forward stored nothing.
 func TestARoleSendWhoseEarlierForwardWentUnansweredSaysMaybeStoredWhenTheNextLacksTheSubject(t *testing.T) {
 	const holder = "ses_forward_own_send_holder"
 	subject := contracts.LegacyAgentSubject(holder)
+	noResponders := bus.ForwardAnswered(natsgo.ErrNoResponders)
+	streamError := bus.ForwardAnswered(&natsgo.APIError{Code: 503, ErrorCode: 10077, Description: "maximum messages exceeded"})
+	unconfirmed := fmt.Errorf("%w: %w", bus.ErrForwardNotStored, fmt.Errorf("%w: the connection's last error changed", bus.ErrPublishUnconfirmed))
 	lacks := fmt.Errorf("%w: %s at generation 1000000 carries no subject capturing %q: %w",
-		bus.ErrStreamLacksSubject, bus.Stream, subject, fmt.Errorf("%w: %w", bus.ErrForwardNotStored, natsgo.ErrNoResponders))
-	for _, row := range []struct {
+		bus.ErrStreamLacksSubject, bus.Stream, subject, noResponders)
+	for i, row := range []struct {
 		name     string
 		answers  []error // what each forward's wait returns; the last one answers every later forward
 		forwards int32
@@ -91,9 +98,12 @@ func TestARoleSendWhoseEarlierForwardWentUnansweredSaysMaybeStoredWhenTheNextLac
 	}{
 		{"control: the first forward refused for want of the holder's subject", []error{lacks}, 1, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
 		{"the forward after an unanswered one refused for want of the holder's subject", []error{bus.ErrForwardNotStored, lacks}, 2, listenerwire.CodeMaybeStored, busUnansweredPrefix, outcomeBusUnavailable},
+		{"the forward after one whose unconfirmed publish went unanswered refused for want of the holder's subject", []error{unconfirmed, lacks}, 2, listenerwire.CodeMaybeStored, busUnansweredPrefix, outcomeBusUnavailable},
+		{"control: the forward after one the server answered no responders refused for want of the holder's subject", []error{noResponders, lacks}, 2, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
+		{"control: the forward after one the stream answered with its error refused for want of the holder's subject", []error{streamError, lacks}, 2, "", streamLacksSubjectPrefix, outcomeStreamLacksSubject},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			role := fmt.Sprintf("forward-own-send-%d", len(row.answers))
+			role := fmt.Sprintf("forward-own-send-%d", i)
 			harness := newListenerDeliveryHarness(t)
 			forwards := &atomic.Int32{}
 			config := harness.config

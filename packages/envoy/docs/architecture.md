@@ -445,8 +445,11 @@ stream did not acknowledge storing the forward,
 it, the stream captures no subject of the holder's (`bus.ErrStreamLacksSubject`) ends the send at
 once instead, after that one forward, with a 503 of "Send and publish answers": every later
 attempt would meet the same refusal. It is the `stream_lacks_subject` one, or the `maybe_stored`
-one when an earlier forward of the same send failed with no refusal and so may have stored the
-message for its holder. The route publishes no exception: its sender has the answer.
+one when an earlier forward of the same send went out and got no answer (no acknowledgement
+within its window, a wait that failed, or a publish the client could not flush), and so may have
+stored the message for its holder. An earlier forward the server answered, that no stream took
+it or with the stream's own error, stored nothing and leaves the `stream_lacks_subject` one. The
+route publishes no exception: its sender has the answer.
 
 The listener keeps a role message on a stored subject of its own,
 `notifications.envoy.kept.role.<role>`. No session may register that subject, and no consumer of

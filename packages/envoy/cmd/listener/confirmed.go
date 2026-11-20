@@ -316,9 +316,10 @@ func (s *roleSend) unresolved(err error) {
 // denies (forwardRefused), or one the notifications stream did not take for want of the holder's
 // subject (bus.ErrStreamLacksSubject), as requestRecord.refuseBusUnavailable maps it: the 413, the
 // 400, the 403, or the 503 of a stream that does not capture the subject. The refused forward
-// stored nothing, so it marks nothing: an earlier forward of the same send that may have stored
-// the message has marked the charge already (sendToRole), and has made a refusal for want of the
-// subject the maybe-stored 503 instead, since that earlier forward may be on the stream.
+// stored nothing, so it marks nothing: an earlier forward of the same send that failed with no
+// refusal has marked the charge already (sendToRole), and one of them that got no answer has made
+// a refusal for want of the subject the maybe-stored 503 instead, since that earlier forward may be
+// on the stream.
 func (s *roleSend) refused(err error) {
 	s.record.holder = s.holder
 	s.record.refuseBusUnavailable(s.w, err)
@@ -405,9 +406,12 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // did not take because, as the listener last read it, the stream captures no subject of the
 // holder's (bus.ErrStreamLacksSubject) ends the send at once with the 503 of that refusal
 // (refused): every attempt would forward to a subject the stream does not capture, so the
-// attempts left would store nothing either. After an earlier forward of the send that failed with
-// no refusal, which may have stored the message, that refusal wraps bus.ErrUnacknowledged, so the
-// 503 is the maybe-stored one (writeBusUnavailable) and does not say that nothing stored it.
+// attempts left would store nothing either. After an earlier forward of the send that went out and
+// got no answer (unanswered: bus.ErrUnacknowledged, no acknowledgement within its window, or a
+// publish nats.go took and could not flush), which may have stored the message, that refusal wraps
+// bus.ErrUnacknowledged, so the 503 is the maybe-stored one (writeBusUnavailable) and does not say
+// that nothing stored it. An earlier forward the server answered - no responders, or the stream's
+// own error - stored nothing, and the refusal keeps its own 503.
 // expectsReply is the expects_reply its answers write (expectsReplyAnswer, api.go), the request's
 // own dialect; the envelope this send forwards and keeps carries the envelope's own value.
 func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
@@ -438,8 +442,9 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 	forwarded := send.item
 	forwarded.DedupeKey = roleForwardDedupePrefix + item.DedupeKey
 	resolved := first
-	// unanswered is whether an earlier forward of this send failed with no refusal, which may have
-	// stored the message for its holder.
+	// unanswered is whether an earlier forward of this send went out and got no answer
+	// (mayHaveStored: the bus marks such a forward bus.ErrUnacknowledged), which may have stored
+	// the message for its holder. A forward the server answered stored nothing and does not set it.
 	unanswered := false
 	for pass := 0; ; pass++ {
 		if pass > 0 || !sessionIsLive(first.HolderState) || roles.ResolutionTooOld(resolvedAt, d.delivery.now()) {
@@ -491,10 +496,12 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 				send.refused(err)
 				return
 			}
-			// A forward that failed with no refusal may have been stored for its holder, so it
-			// costs its sender one whatever this send answers next.
+			// A forward that failed with no refusal costs its sender one whatever this send
+			// answers next, as one the stream may have stored for its holder, whether or not the
+			// server answered it. Only one that got no answer may have been stored (mayHaveStored),
+			// and it makes the send's later refusal for want of the holder's subject say so.
 			send.record.charge.stored()
-			unanswered = true
+			unanswered = unanswered || mayHaveStored(err)
 		}
 		// Any resolution not answered above (a holder past the live window, which keeps its
 		// claim, or a read that failed) fails this attempt only.
