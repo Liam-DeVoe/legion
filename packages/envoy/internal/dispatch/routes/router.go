@@ -146,10 +146,7 @@ type AppContextOptions struct {
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
-	// LegionStatusScope turns on the refusal of three writes of a Legion issue from a credential
-	// that holds neither the person scope nor legion-status: a write of its status, the removal
-	// of its legion label, and a move that leaves it under no labelled issue (cmd/dispatch:
-	// DISPATCH_LEGION_STATUS_SCOPE). See api.Deps.LegionStatusScope.
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See api.Deps.LegionStatusScope.
 	LegionStatusScope bool
 	// Files is the uploaded-file store main built from DISPATCH_FILE_STORE_BUCKET; nil keeps
 	// files in Postgres. See api.DepsInput.

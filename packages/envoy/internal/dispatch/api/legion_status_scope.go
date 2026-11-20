@@ -74,9 +74,8 @@ type legionStatusStep struct {
 	// parentBefore and parentAfter are the issue's parent before and after the call. Nil is no
 	// parent.
 	parentBefore, parentAfter *string
-	// parentChanged is true for a call that writes the issue's parent, the current parent
-	// included. A call that writes the current parent leaves the same chain, so rule (c) cannot
-	// refuse it.
+	// parentChanged is true for a call that changes the issue's parent. A call that names the
+	// current parent changes nothing.
 	parentChanged bool
 	// labelsBefore and labelsAfter are the issue's labels before and after the call.
 	labelsBefore, labelsAfter []string

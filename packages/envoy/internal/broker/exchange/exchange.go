@@ -88,12 +88,10 @@ var (
 const MaxSessionBytes = 200
 
 // LegionDaemonSessionPrefix starts the session name a Legion daemon writes its project's issues
-// under: legion-daemon:<PROJECT>. An account entry that names a project and fixes the session
-// LegionDaemonSessionPrefix + that project is a Legion daemon's own entry, and Pod answers its
-// pods Claims.LegionStatus. Two other spellings of the prefix change together with this one: the
-// daemon's DaemonSession (packages/daemon/internal/dispatch/client.go), which writes the name,
-// and Dispatch's legionDaemonSessionPrefix (internal/dispatch/api/issue_collaborators.go), which
-// reads it.
+// under: legion-daemon:<PROJECT>. It marks a Legion daemon's own entry (Claims.LegionStatus). Two
+// other spellings of the prefix change together with this one: the daemon's DaemonSession
+// (packages/daemon/internal/dispatch/client.go), which writes the name, and Dispatch's
+// legionDaemonSessionPrefix (internal/dispatch/api/issue_collaborators.go), which reads it.
 const LegionDaemonSessionPrefix = "legion-daemon:"
 
 // accountPattern is a Kubernetes service account's subject, the one a pod's projected token
@@ -379,8 +377,10 @@ type Claims struct {
 	// oauthwire.ScopeLegionStatus too (oauth.writeProjectScope), which Dispatch reads as leave to
 	// write a Legion issue's status. Pod alone sets it, and reads the session the entry fixes,
 	// never Session: an entry that fixes no session takes Session from the request, which may
-	// name any session. No other decision sets it: a read entry, a workflow, a machine, a person's
-	// sign-in and a dev box never do, whatever session they carry.
+	// name any session. So a pod whose request names legion-daemon:<its project> gets no
+	// LegionStatus, and neither does an entry that fixes the daemon session of another project or
+	// that names no project. No other decision sets it: a read entry, a workflow, a machine, a
+	// person's sign-in and a dev box never do, whatever session they carry.
 	LegionStatus bool
 	// Principal is who the session name belongs to, and is not a claim of the minted token: it is
 	// what the broker records as the name's holder, so a caller that may exchange cannot mint a
@@ -440,8 +440,8 @@ type AccountEntry struct {
 	// request naming any other is refused. It is how a long-running service keeps writing under
 	// one name it does not get to choose per request. The name is one of the set's Reservations,
 	// held for the account however many of its pods exchange and refused to every other caller.
-	// LegionDaemonSessionPrefix + Project makes the entry a Legion daemon's own, whose tokens
-	// carry Claims.LegionStatus.
+	// LegionDaemonSessionPrefix + Project makes the entry a Legion daemon's own
+	// (Claims.LegionStatus).
 	Session string
 }
 
@@ -810,14 +810,7 @@ func checkGrant(where, project, person, session string, noProject bool) error {
 // person, no project and no Instance. Its token names no person, so a request of its pod naming
 // a project is refused (ErrProjectsNoPerson), as a machine's whose entry names no person is.
 //
-// An account entry that names a project and fixes the session LegionDaemonSessionPrefix + that
-// project is a Legion daemon's own entry, and Pod answers its pods LegionStatus. The decision
-// reads the session the entry fixes, compared exactly, case included, and never the session the
-// request names: an entry that fixes no session takes its name from the request, which may name
-// any session. So a pod whose request names legion-daemon:<its project> gets no LegionStatus, and
-// neither does an entry that fixes the daemon session of another project or that names no
-// project. A read entry never gets it, whatever session it fixes, and no other decision of this
-// package sets it.
+// Pod answers LegionStatus for a Legion daemon's own entry alone (Claims.LegionStatus).
 func (s *Set) Pod(token map[string]any, session string, projects []string) (Claims, error) {
 	account, err := claimString(token, "sub")
 	if err != nil {
@@ -852,9 +845,7 @@ func (s *Set) Pod(token map[string]any, session string, projects []string) (Clai
 	return claims, nil
 }
 
-// isLegionDaemon reports whether entry is a Legion daemon's own entry: it names a project and
-// fixes the session LegionDaemonSessionPrefix + that project, compared exactly. It reads the
-// session the entry fixes and nothing a request names.
+// isLegionDaemon reports whether entry is a Legion daemon's own entry (Claims.LegionStatus).
 func isLegionDaemon(entry AccountEntry) bool {
 	project, fixesDaemonSession := strings.CutPrefix(entry.Session, LegionDaemonSessionPrefix)
 	return fixesDaemonSession && entry.Project != "" && project == entry.Project

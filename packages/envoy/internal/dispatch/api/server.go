@@ -267,9 +267,7 @@ type DepsInput struct {
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
-	// LegionStatusScope turns on the refusal of a Legion issue's status, label and parent writes
-	// from a credential that holds neither the person scope nor legion-status; see
-	// Deps.LegionStatusScope.
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See Deps.LegionStatusScope.
 	LegionStatusScope bool
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store

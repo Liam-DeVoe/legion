@@ -31,15 +31,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// legionTestDaemon is the session the Legion daemon of brokerTestProject writes as. The daemon
-// spells it legion-daemon:<PROJECT> (DaemonSession, packages/daemon/internal/dispatch/client.go),
-// and every issue of these tests is in brokerTestProject.
-const legionTestDaemon = "legion-daemon:" + brokerTestProject
-
-// The names of the two credentials of the inventory that a test selects by name.
+// The names of the four credentials of the inventory that a test selects by name.
 const (
-	legionSharedToken = "the shared token"
-	legionDaemonToken = "the daemon's broker token"
+	legionSharedToken       = "the shared token"
+	legionDaemonToken       = "the daemon's broker token"
+	legionBrowserSignIn     = "a browser sign-in"
+	legionPersonScopedToken = "a broker token scoped to a person"
 )
 
 // legionVerdict is what the server does with a credential's write of a Legion issue.
@@ -71,8 +68,6 @@ type legionCredential struct {
 // brokerTestProject, and the inventory of credentials that may write in that project.
 type legionStatusRig struct {
 	*brokerTokenRig
-	// on is Deps.LegionStatusScope: false makes R26 refuse nothing.
-	on          bool
 	credentials []legionCredential
 	// made counts the issues the rig made, so that each title is a new one.
 	made int
@@ -96,7 +91,6 @@ func newLegionStatusRig(t *testing.T, on bool) *legionStatusRig {
 	issuer := newServiceTokenIssuer(t)
 	rig := &legionStatusRig{
 		brokerTokenRig: newBrokerTokenRigOn(t, testServerOptions{legionStatusScope: on, oidc: issuer.verifier(t)}),
-		on:             on,
 	}
 	if created := rig.asPerson(t, http.MethodPost, "/api/v1/projects", map[string]any{
 		"key": brokerTestProject, "name": "Broker",
@@ -124,27 +118,25 @@ func newLegionStatusRig(t *testing.T, on bool) *legionStatusRig {
 	}
 	personScoped := liveNamedToken(caller.jkt)
 	personScoped.ProjectScope, personScoped.Projects = brokertoken.ProjectScopePerson, nil
-	daemon := liveNamedToken(caller.jkt)
-	daemon.Session, daemon.Scope = legionTestDaemon, "legion-status"
 	rig.credentials = []legionCredential{
 		{name: legionSharedToken, verdict: legionRefused, send: bearer("agent-token", sessionActor())},
 		{name: "the shared token naming the daemon's session", verdict: legionRefused,
-			send: bearer("agent-token", map[string]any{"kind": "session", "id": legionTestDaemon})},
+			send: bearer("agent-token", daemonSessionOf(brokerTestProject))},
 		{name: "a personal token holding no scope", verdict: legionRefused,
 			send: bearer(personalTokenHolding(t, rig.database), sessionActor())},
 		{name: "a project's broker token", verdict: legionRefused,
 			send: broker("a-project-token", liveNamedToken(caller.jkt))},
 		{name: "a pod's Kubernetes token", verdict: legionRefused,
 			send: bearer(issuer.mint(t, serviceTokenAudience), sessionActor())},
-		{name: "a browser sign-in", verdict: legionTaken,
+		{name: legionBrowserSignIn, verdict: legionTaken,
 			send: func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
 				return dispatchRequest(t, rig.handler, method, path, body, brokerTestPerson)
 			}},
 		{name: "a personal token holding person", verdict: legionTaken,
 			send: bearer(personalTokenHolding(t, rig.database, model.ScopePerson), sessionActor())},
-		{name: "a broker token scoped to a person", verdict: legionTaken,
+		{name: legionPersonScopedToken, verdict: legionTaken,
 			send: broker("a-person-scoped-token", personScoped)},
-		{name: legionDaemonToken, verdict: legionTaken, send: broker("the-daemon-token", daemon)},
+		{name: legionDaemonToken, verdict: legionTaken, send: broker("the-daemon-token", liveDaemonToken(caller.jkt))},
 		{name: "a read-only broker token", verdict: legionRefusedFirst, code: contracts.DispatchReadOnlyToken,
 			send: broker("a-read-only-token", readOnlyToken(caller.jkt))},
 		{name: "a broker token naming a service and no person", verdict: legionRefusedFirst, code: contracts.DispatchSignInRequired,
@@ -225,9 +217,8 @@ func (s legionIssueState) String() string {
 }
 
 func (s legionIssueState) equal(other legionIssueState) bool {
-	sameParent := (s.parent == nil && other.parent == nil) ||
-		(s.parent != nil && other.parent != nil && *s.parent == *other.parent)
-	return s.status == other.status && slices.Equal(s.labels, other.labels) && sameParent && s.lastSeq == other.lastSeq
+	return s.status == other.status && slices.Equal(s.labels, other.labels) &&
+		stringPointersEqual(s.parent, other.parent) && s.lastSeq == other.lastSeq
 }
 
 // requireLegionIssueUnchanged fails unless key is as before: a refused write changes no status,
@@ -254,12 +245,11 @@ func requireRefused(t *testing.T, response *httptest.ResponseRecorder, status in
 // RFC 6750 gives a credential that lacks that scope.
 func requireLegionStatusRefusal(t *testing.T, response *httptest.ResponseRecorder) {
 	t.Helper()
+	requireRefused(t, response, http.StatusForbidden, codeLegionStatusScopeRequired)
 	var refusal refusalAnswer
 	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
-	if response.Code != http.StatusForbidden || refusal.Code != "LEGION_STATUS_SCOPE_REQUIRED" ||
-		!strings.Contains(refusal.Error, "legion-status") {
-		t.Errorf("status=%d body=%s, want 403 LEGION_STATUS_SCOPE_REQUIRED naming the legion-status scope",
-			response.Code, response.Body.String())
+	if !strings.Contains(refusal.Error, "legion-status") {
+		t.Errorf("the refusal's message %q names no legion-status scope", refusal.Error)
 	}
 	if got, want := response.Header().Get("WWW-Authenticate"), `Bearer error="insufficient_scope", scope="legion-status"`; got != want {
 		t.Errorf("the refusal's challenge = %q, want %q", got, want)
@@ -284,7 +274,7 @@ func (rig *legionStatusRig) answered(t *testing.T, credential legionCredential, 
 		requireRefused(t, response, http.StatusForbidden, credential.code)
 		requireLegionIssueUnchanged(t, rig.database, key, before)
 		return false
-	case judged && rig.on && credential.verdict == legionRefused:
+	case judged && rig.deps.LegionStatusScope && credential.verdict == legionRefused:
 		requireLegionStatusRefusal(t, response)
 		requireLegionIssueUnchanged(t, rig.database, key, before)
 		return false
@@ -400,7 +390,7 @@ func legionHandOver() legionWrite {
 			"status":            "todo",
 			"labels_add":        []string{"legion"},
 			"expected_sequence": readLegionIssue(t, rig.database, key).lastSeq,
-			"actor":             map[string]any{"kind": "session", "id": legionTestDaemon},
+			"actor":             daemonSessionOf(brokerTestProject),
 		}, written: []legionCheck{hasStatus("todo"), hasLabels("legion")}}
 	}}
 }
@@ -587,13 +577,8 @@ func TestACallIsJudgedByTheLabelsAndChainBeforeAndAfterIt(t *testing.T) {
 	t.Run("an issue made under a labelled issue", func(t *testing.T) {
 		for _, credential := range rig.credentials {
 			t.Run(credential.name, func(t *testing.T) {
-				children := func() int {
-					var count int
-					if err := rig.database.Pool.QueryRow(context.Background(),
-						`select count(*) from issues where parent_key = $1`, labelled).Scan(&count); err != nil {
-						t.Fatalf("count the children of %s: %v", labelled, err)
-					}
-					return count
+				children := func() int64 {
+					return countRows(t, rig.database, `select count(*) from issues where parent_key = $1`, labelled)
 				}
 				before := children()
 				made := credential.send(t, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -726,33 +711,20 @@ func TestALabelledIssueLeavesItsLabelledParentWithoutTheScope(t *testing.T) {
 func TestNoMintHoldsLegionStatus(t *testing.T) {
 	rig := newLegionStatusRig(t, true)
 	personal := personalTokenHolding(t, rig.database, model.ScopePerson, model.ScopeApprove)
-	caller := newBrokerCaller(t)
-	const brokerToken = "a-person-scoped-token-that-mints"
-	personScoped := liveNamedToken(caller.jkt)
-	personScoped.ProjectScope, personScoped.Projects = brokertoken.ProjectScopePerson, nil
-	rig.broker.Says(brokerToken, personScoped)
+	signIn, personScoped := rig.credential(t, legionBrowserSignIn), rig.credential(t, legionPersonScopedToken)
 	minters := []struct {
 		name string
 		send func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder
 	}{
-		{"a browser sign-in", func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
-			return dispatchRequest(t, rig.handler, method, path, body, brokerTestPerson)
-		}},
+		{signIn.name, signIn.send},
 		{"a personal token holding person and approve", func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
 			return rig.serve(brokerRequest(t, method, path, body, "Bearer "+personal, ""))
 		}},
-		{"a broker token scoped to a person", func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
-			return rig.serve(caller.presenting(t, method, path, brokerToken, body))
-		}},
+		{personScoped.name, personScoped.send},
 	}
-	tokens := func(t *testing.T) int {
+	tokens := func(t *testing.T) int64 {
 		t.Helper()
-		var count int
-		if err := rig.database.Pool.QueryRow(context.Background(),
-			`select count(*) from agent_tokens where owner = $1`, brokerTestPerson).Scan(&count); err != nil {
-			t.Fatalf("count the person's tokens: %v", err)
-		}
-		return count
+		return countRows(t, rig.database, `select count(*) from agent_tokens where owner = $1`, brokerTestPerson)
 	}
 	minted := rig.asPerson(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "held"})
 	if minted.Code != http.StatusCreated {
@@ -770,7 +742,7 @@ func TestNoMintHoldsLegionStatus(t *testing.T) {
 	}
 	for _, minter := range minters {
 		t.Run(minter.name, func(t *testing.T) {
-			for _, scopes := range [][]string{{"legion-status"}, {model.ScopePerson, "legion-status"}} {
+			for _, scopes := range [][]string{{model.ScopeLegionStatus}, {model.ScopePerson, model.ScopeLegionStatus}} {
 				before := tokens(t)
 				response := minter.send(t, http.MethodPost, "/api/v1/me/agent-tokens", map[string]any{"name": "probe", "scopes": scopes})
 				requireRefused(t, response, http.StatusBadRequest, codeTokenScopesInput)
@@ -780,7 +752,7 @@ func TestNoMintHoldsLegionStatus(t *testing.T) {
 			}
 			before := heldScopes(t)
 			edited := minter.send(t, http.MethodPatch, "/api/v1/me/agent-tokens/"+held, map[string]any{
-				"scopes": []string{model.ScopePerson, "legion-status"},
+				"scopes": []string{model.ScopePerson, model.ScopeLegionStatus},
 			})
 			requireRefused(t, edited, http.StatusBadRequest, codeTokenScopesInput)
 			if after := heldScopes(t); !slices.Equal(after, before) {
@@ -789,7 +761,7 @@ func TestNoMintHoldsLegionStatus(t *testing.T) {
 		})
 	}
 	t.Run("a row written straight into the table", func(t *testing.T) {
-		for _, scopes := range [][]string{{"legion-status"}, {model.ScopePerson, "legion-status"}} {
+		for _, scopes := range [][]string{{model.ScopeLegionStatus}, {model.ScopePerson, model.ScopeLegionStatus}} {
 			plaintext, hash, err := newAgentToken()
 			if err != nil {
 				t.Fatalf("make a token: %v", err)

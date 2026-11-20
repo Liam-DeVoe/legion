@@ -273,6 +273,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	if parentProvided {
 		afterParent = parent
 	}
+	parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
 	afterLabels := before.Labels
 	switch {
 	case input.Labels != nil:
@@ -292,7 +293,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		writesStatus:  input.Status != nil,
 		parentBefore:  before.Parent,
 		parentAfter:   afterParent,
-		parentChanged: parentProvided,
+		parentChanged: parentChanged,
 		labelsBefore:  before.Labels,
 		labelsAfter:   afterLabels,
 	}); err != nil {
@@ -517,7 +518,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	statusChanged := input.Status != nil && before.Status != status
-	parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
 	// Every owner this transaction appends to must be in one LockOwners call before the
 	// first append: the issue itself, the status-change parent, and both ends of a reparent.
 	// lockPatchOwnersAndParent already holds each of those owner locks, so LockOwners returns at once.

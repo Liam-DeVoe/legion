@@ -3,12 +3,12 @@ package oauth_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
@@ -207,7 +207,7 @@ func newDispatchVerifier(t *testing.T) (*brokertokentest.StubBroker, *brokertoke
 		BrokerURL:      broker.Server.URL,
 		Account:        brokertoken.NewAccountToken(accountToken),
 		Origin:         dispatchOrigin,
-		Replay:         &spentProofs{},
+		Replay:         unusedProofs{},
 		Address:        auth.ForwardedAddress,
 		ServesReadOnly: true,
 	})
@@ -230,21 +230,10 @@ func liveCaller(t *testing.T, verifier *brokertoken.Verifier, token string) brok
 	return caller
 }
 
-// spentProofs is a DPoP replay store in memory. It records each proof by its key, its jti and its
-// target URI, and answers a proof it saw before as used.
-type spentProofs struct {
-	mu   sync.Mutex
-	seen map[string]bool
-}
+// unusedProofs is a DPoP replay store that Verifier.Live never reaches. It records no proof and
+// answers every call with an error, so a proof check that reaches it fails the test.
+type unusedProofs struct{}
 
-func (s *spentProofs) CheckAndSetDPoPProofUsed(_ context.Context, jti, jkt, _, _, htu string, _ time.Time) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.seen == nil {
-		s.seen = map[string]bool{}
-	}
-	key := jkt + "\x00" + jti + "\x00" + htu
-	used := s.seen[key]
-	s.seen[key] = true
-	return used, nil
+func (unusedProofs) CheckAndSetDPoPProofUsed(context.Context, string, string, string, string, string, time.Time) (bool, error) {
+	return false, errors.New("a DPoP proof reached the replay store, but Verifier.Live checks no proof")
 }

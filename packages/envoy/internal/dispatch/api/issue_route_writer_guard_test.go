@@ -24,13 +24,20 @@ import (
 // transaction.
 const issueRouteWriter = "internal/dispatch/api/issue_patch.go"
 
-// routeWrite matches a statement, lower-cased with its whitespace collapsed, that writes the route
-// column of Dispatch's issues table: an update that sets it, an insert or a copy that lists it.
-var routeWrite = []*regexp.Regexp{
-	regexp.MustCompile(`\bupdate (only )?(public\.)?issues\b( (as )?\w+)? set\b[^;]{0,400}?\broute ?=`),
-	regexp.MustCompile(`\binsert into (public\.)?issues ?\([^)]*\broute\b`),
-	regexp.MustCompile(`\bcopy (public\.)?issues ?\([^)]*\broute\b`),
+// issuesColumnWrites matches a statement, lower-cased with its whitespace collapsed, that writes
+// a column of Dispatch's issues table that columns names: an update that sets it, an insert or a
+// copy that lists it. columns is one column's name, or a group of names such as (status|labels).
+func issuesColumnWrites(columns string) []*regexp.Regexp {
+	return []*regexp.Regexp{
+		regexp.MustCompile(`\bupdate (only )?(public\.)?issues\b( (as )?\w+)? set\b[^;]{0,400}?\b` + columns + ` ?=`),
+		regexp.MustCompile(`\binsert into (public\.)?issues ?\([^)]*\b` + columns + `\b`),
+		regexp.MustCompile(`\bcopy (public\.)?issues ?\([^)]*\b` + columns + `\b`),
+	}
 }
+
+// routeWrite matches a statement that writes the route column of Dispatch's issues table
+// (issuesColumnWrites).
+var routeWrite = issuesColumnWrites("route")
 
 func writesRoute(statement string) bool {
 	for _, pattern := range routeWrite {
@@ -54,10 +61,8 @@ func routeSetCalls(file *ast.File) int {
 		if !ok || name.Name != "set" {
 			return true
 		}
-		if literal, ok := call.Args[0].(*ast.BasicLit); ok && literal.Kind == token.STRING {
-			if value, err := strconv.Unquote(literal.Value); err == nil && value == "route" {
-				calls++
-			}
+		if value, ok := goStringLiteral(call.Args[0]); ok && value == "route" {
+			calls++
 		}
 		return true
 	})
@@ -262,18 +267,18 @@ func statusLabelsOrParentWriter(path string) (int, bool) {
 	return 0, false
 }
 
+// judgedIssueColumns is the three columns of Dispatch's issues table whose write R26 judges, as
+// the alternation of a regular expression.
+const judgedIssueColumns = "status|labels|parent_key"
+
 // statusLabelsOrParentWrite matches a statement, lower-cased with its whitespace collapsed, that
 // writes the status, labels or parent_key column of Dispatch's issues table: an update that sets
-// one, an insert or a copy that lists one, and a fragment that assigns one, which is the shape of
-// the pieces the PATCH builds its update from ("status = "+placeholder). The update's pattern
-// also matches an update that only compares such a column after its set list. That can add a
-// finding, and it never hides one.
-var statusLabelsOrParentWrite = []*regexp.Regexp{
-	regexp.MustCompile(`\bupdate (only )?(public\.)?issues\b( (as )?\w+)? set\b[^;]{0,400}?\b(status|labels|parent_key) ?=`),
-	regexp.MustCompile(`\binsert into (public\.)?issues ?\([^)]*\b(status|labels|parent_key)\b`),
-	regexp.MustCompile(`\bcopy (public\.)?issues ?\([^)]*\b(status|labels|parent_key)\b`),
-	regexp.MustCompile(`^ ?(status|labels|parent_key) = `),
-}
+// one, an insert or a copy that lists one (issuesColumnWrites), and a fragment that assigns one,
+// which is the shape of the pieces the PATCH builds its update from ("status = "+placeholder).
+// The update's pattern also matches an update that only compares such a column after its set
+// list. That can add a finding, and it never hides one.
+var statusLabelsOrParentWrite = append(issuesColumnWrites("("+judgedIssueColumns+")"),
+	regexp.MustCompile(`^ ?(`+judgedIssueColumns+`) = `))
 
 func writesStatusLabelsOrParent(statement string) bool {
 	return slices.ContainsFunc(statusLabelsOrParentWrite, func(pattern *regexp.Regexp) bool {
@@ -281,9 +286,10 @@ func writesStatusLabelsOrParent(statement string) bool {
 	})
 }
 
-// judgedIssueColumn says whether column is one of the three columns whose write R26 judges.
+// judgedIssueColumn says whether column is one of the three columns whose write R26 judges
+// (judgedIssueColumns).
 func judgedIssueColumn(column string) bool {
-	return column == "status" || column == "labels" || column == "parent_key"
+	return slices.Contains(strings.Split(judgedIssueColumns, "|"), column)
 }
 
 // statusLabelsOrParentWrites names, one line each, every write of an issue's status, labels or
@@ -302,26 +308,28 @@ func statusLabelsOrParentWrites(source moduleSource, constants map[string]string
 			found = append(found, statement)
 		}
 	}
+	line := func(node ast.Node) string {
+		return "line " + strconv.Itoa(source.positions.Position(node.Pos()).Line) + ": "
+	}
 	ast.Inspect(source.file, func(node ast.Node) bool {
 		call, ok := node.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
-		at := "line " + strconv.Itoa(source.positions.Position(call.Pos()).Line) + ": "
 		switch callee := call.Fun.(type) {
 		case *ast.Ident:
 			if callee.Name != "set" || len(call.Args) == 0 {
 				return true
 			}
 			if column, ok := goStringLiteral(call.Args[0]); ok && judgedIssueColumn(column) {
-				found = append(found, at+"set("+strconv.Quote(column)+", ...)")
+				found = append(found, line(call)+"set("+strconv.Quote(column)+", ...)")
 			}
 		case *ast.SelectorExpr:
 			if callee.Sel.Name != "CopyFrom" || len(call.Args) < 3 || !namesTheIssuesTable(call.Args[1]) {
 				return true
 			}
 			if columns, read := goStringLiterals(call.Args[2]); !read || slices.ContainsFunc(columns, judgedIssueColumn) {
-				found = append(found, at+"CopyFrom into issues")
+				found = append(found, line(call)+"CopyFrom into issues")
 			}
 		}
 		return true

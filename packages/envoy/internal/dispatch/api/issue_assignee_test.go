@@ -521,9 +521,7 @@ func TestWhoamiAnswersTheScopesEachCredentialHolds(t *testing.T) {
 			name: "a Legion daemon's own broker token, named, whose broker granted legion-status",
 			call: func() *httptest.ResponseRecorder {
 				caller := newBrokerCaller(t)
-				daemon := liveNamedToken(caller.jkt)
-				daemon.Session, daemon.Scope = legionTestDaemon, "legion-status"
-				rig.broker.Says("the-daemon-token", daemon)
+				rig.broker.Says("the-daemon-token", liveDaemonToken(caller.jkt))
 				return rig.serve(caller.presenting(t, http.MethodGet, "/api/v1/whoami", "the-daemon-token", nil))
 			},
 			kind:   "agent",
