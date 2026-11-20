@@ -8,8 +8,8 @@
 package api_test
 
 import (
-	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -17,9 +17,11 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/requests"
 )
 
 const (
@@ -32,6 +34,11 @@ const (
 	privReason = "PRIV-12: rotate the deploy key"
 	// elsewhere is a broker address other than the test server's.
 	elsewhere = "https://the-old-public-url.example"
+	// sharedKeyJudgeSeconds is how long a grant of SHARED_KEY the judge of sharedKeyJudged may
+	// make, and the lifetime every request here signs, so the judge's rules admit each.
+	sharedKeyJudgeSeconds = 300
+	// hiddenJudgeModel is the model the judge of sharedKeyJudged decides as.
+	hiddenJudgeModel = "claude-opus-4-6"
 )
 
 // missingRecord is a record id no record has.
@@ -47,24 +54,40 @@ func privDispatch(t *testing.T) *projectaccesstest.Server {
 }
 
 // hiddenServer is a test server reading privDispatch through a Swappable, so a test can take
-// Dispatch down (downDispatch) and bring it back.
-func hiddenServer(t *testing.T) (*testServer, *projectaccesstest.Swappable) {
+// Dispatch down (downDispatch) and bring it back, with each of adjust applied after.
+func hiddenServer(t *testing.T, adjust ...func(*api.Deps)) (*testServer, *projectaccesstest.Swappable) {
 	t.Helper()
 	access := &projectaccesstest.Swappable{}
 	access.Serve(privDispatch(t))
-	return newTestServerWith(t, func(d *api.Deps) { d.Machine.Projects = access }), access
+	return newTestServerWith(t, func(d *api.Deps) {
+		d.Machine.Projects = access
+		for _, change := range adjust {
+			change(d)
+		}
+	}), access
 }
 
-// askPrivate has a session of testApprover's, on a box of its own, ask for SHARED_KEY with
-// privReason, and answers the request it opened, pending on a record whose approver is anyone.
-func (ts *testServer) askPrivate(t *testing.T, box string) wireCreateRequestResponse {
+// sharedKeyJudged wires a judge to the server's machine whose airlock rules give it
+// sharedKeyJudgeSeconds of SHARED_KEY and nothing else, as withJudge does without DEEL_API_KEY,
+// which stays testApprover's to approve. Its hook does nothing, so a request for SHARED_KEY is
+// held for the test to decide as the judge (requests.Machine.ApplyJudgeDecision).
+func sharedKeyJudged(d *api.Deps) {
+	d.Machine.Airlock = airlock.Rules{Secrets: []airlock.SecretRule{
+		{Name: "SHARED_KEY", Judge: new(uint32(sharedKeyJudgeSeconds))},
+	}}
+	d.Machine.Judge = func(requests.PendingRequest) {}
+}
+
+// askPrivate has a session of testApprover's, on a box of its own, ask for name with privReason
+// and a lifetime of sharedKeyJudgeSeconds, and answers the request it opened, pending on a record.
+func (ts *testServer) askPrivate(t *testing.T, box, name string) wireCreateRequestResponse {
 	t.Helper()
 	enrollmentID, key := ts.newSessionEnrollment(t, "session-"+box+"-"+t.Name(), testApprover)
 	status, body := ts.session(t, key, enrollmentID, http.MethodPost, "/v1/requests",
-		map[string]any{"request": signAgentSecretRequest(t, key, ts.URL, privReason, "SHARED_KEY"), "session_id": nil})
+		map[string]any{"request": signAgentSecretRequestFor(t, key, ts.URL, privReason, sharedKeyJudgeSeconds, name), "session_id": nil})
 	created := decode[wireCreateRequestResponse](t, body)
 	if status != http.StatusOK || created.State != "pending" || created.RecordID == nil {
-		t.Fatalf("POST /v1/requests for SHARED_KEY (%q) on %s = %d %s; want a pending request on a record", privReason, box, status, body)
+		t.Fatalf("POST /v1/requests for %s (%q) on %s = %d %s; want a pending request on a record", name, privReason, box, status, body)
 	}
 	return created
 }
@@ -142,7 +165,7 @@ func (ts *testServer) writtenRows(t *testing.T) []string {
 // 404. Nothing is written by any of them.
 func TestTheDecideRoutesAnswerAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecordHas(t *testing.T) {
 	ts, access := hiddenServer(t)
-	hidden := *ts.askPrivate(t, "box-hidden").RecordID
+	hidden := *ts.askPrivate(t, "box-hidden", "SHARED_KEY").RecordID
 	_, stale := ts.askPrivateElsewhere(t, "box-stale")
 	ids := map[string]string{
 		"a request of PRIV": hidden,
@@ -186,7 +209,7 @@ func TestTheDecideRoutesAnswerAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecor
 		}
 	})
 
-	if _, err := ts.Store.Pool.Exec(context.Background(), `update requests set judge_until = now() + interval '10 minutes' where record_id=$1`, hidden); err != nil {
+	if _, err := ts.Store.Pool.Exec(t.Context(), `update requests set judge_until = now() + interval '10 minutes' where record_id=$1`, hidden); err != nil {
 		t.Fatalf("hold the request for the model judge: %v", err)
 	}
 	t.Run("while the model judge holds it, a person on PRIV's list reads JUDGE_DECIDES", func(t *testing.T) {
@@ -219,26 +242,38 @@ func TestTheDecideRoutesAnswerAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecor
 	}
 }
 
-// TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas: two grants of
-// SHARED_KEY, each on a session of testApprover's whose request named a PRIV issue: one
-// testApprover approved, and one whose approver is anyone, as the model judge's grant of a shared
-// secret records it. mallory, outside PRIV, through Dispatch's revoke and through her own machine
-// login's operator route, is answered for each the one answer of a grant id no grant has, 404
-// NOT_FOUND, byte for byte, where the first answered 403 NOT_APPROVER and the second ended the
-// grant; both stay live. While Dispatch cannot answer, testApprover's revoke of either, as its
-// operator, is 503 PROJECT_ACCESS_UNAVAILABLE and ends nothing. Once it answers, carol, on PRIV's
-// list, ends the anyone grant through Dispatch, and testApprover's machine login ends the other.
+// TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas: two grants, each on a
+// session of testApprover's whose request named a PRIV issue. The model judge approved one, of
+// SHARED_KEY, in anyone's stead while PRIV was public, so the grant records anyone as its
+// approver; PRIV then turned private. testApprover approved the other, of DEEL_API_KEY, their own
+// secret. mallory, outside PRIV, through Dispatch's revoke and through her own machine login's
+// operator route, is answered for each the one answer of a grant id no grant has, 404 NOT_FOUND,
+// byte for byte, where the judged grant was ended and the other answered 403 NOT_APPROVER; both
+// stay live. While Dispatch cannot answer, testApprover's revoke of either, as its operator, is
+// 503 PROJECT_ACCESS_UNAVAILABLE and ends nothing. Once it answers, carol, on PRIV's list, ends
+// the judged grant through Dispatch, and testApprover's machine login ends the other.
 func TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas(t *testing.T) {
-	ts, access := hiddenServer(t)
+	ts, access := hiddenServer(t, sharedKeyJudged)
 	credID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	malloryID, malloryKey := ts.mintLauncherCredential(t, hiddenOutsider, "example-host-devbox-m")
-	byPerson := ts.approveAs(t, ts.askPrivate(t, "box-person"), testApprover)
-	byAnyone := ts.approveAs(t, ts.askPrivate(t, "box-anyone"), testApprover)
-	if _, err := ts.Store.Pool.Exec(context.Background(), `update grants set approver=$2 where id=$1`, byAnyone, record.AnyoneApprover); err != nil {
-		t.Fatalf("record anyone as the grant's approver: %v", err)
+	// The judge's grant asks Dispatch afresh whether a reader naming no person sees PRIV, which
+	// only a public PRIV allows (requests.Machine.ApplyJudgeDecision).
+	access.Serve(projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+		"PRIV": {Visibility: "public", Owner: testApprover},
+	}, nil))
+	held := ts.askPrivate(t, "box-anyone", "SHARED_KEY")
+	judged, err := ts.machine.ApplyJudgeDecision(t.Context(), *held.RecordID, hiddenJudgeModel, map[string]any{"verdict": "grant"})
+	if err != nil || judged.GrantID == "" {
+		t.Fatalf("the judge's approval of SHARED_KEY while PRIV is public = %+v, %v; want a grant", judged, err)
 	}
+	byAnyone := judged.GrantID
+	if got := ts.column(t, `select approver from grants where id=$1`, byAnyone); !slices.Equal(got, []string{record.AnyoneApprover}) {
+		t.Fatalf("the judged grant's approver = %v; want [%s]", got, record.AnyoneApprover)
+	}
+	access.Serve(privDispatch(t))
+	byPerson := ts.approveAs(t, ts.askPrivate(t, "box-person", "DEEL_API_KEY"), testApprover)
 	missingGrant := uuid.NewString()
-	grants := map[string]string{"testApprover's grant": byPerson, "anyone's grant": byAnyone}
+	grants := map[string]string{"testApprover's grant": byPerson, "the judged grant": byAnyone}
 	liveGrants := func(t *testing.T) []string {
 		t.Helper()
 		return ts.column(t, `select id::text from grants where id in ($1, $2) and revoked_at is null order by id`, byPerson, byAnyone)
@@ -247,22 +282,24 @@ func TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas(t
 	before := ts.writtenRows(t)
 
 	t.Run("a person outside PRIV reads the answer of a grant id no grant has", func(t *testing.T) {
-		for name, grantID := range grants {
-			answers := map[string]answerRead{}
-			for what, id := range map[string]string{name: grantID, "a grant id no grant has": missingGrant} {
-				status, body := ts.ui(t, http.MethodPost, "/v1/grants/"+id+"/revoke-by-approver", map[string]any{"approver": hiddenOutsider})
-				answers[what] = answerOf(t, status, body)
-			}
-			requireSameAnswers(t, "revoke-by-approver relayed for "+hiddenOutsider, answers)
-			requireAnswered(t, "revoke-by-approver of a grant id no grant has", answers["a grant id no grant has"], http.StatusNotFound, "NOT_FOUND")
+		for _, name := range slices.Sorted(maps.Keys(grants)) {
+			t.Run(name, func(t *testing.T) {
+				answers := map[string]answerRead{}
+				for what, id := range map[string]string{name: grants[name], "a grant id no grant has": missingGrant} {
+					status, body := ts.ui(t, http.MethodPost, "/v1/grants/"+id+"/revoke-by-approver", map[string]any{"approver": hiddenOutsider})
+					answers[what] = answerOf(t, status, body)
+				}
+				requireSameAnswers(t, "revoke-by-approver relayed for "+hiddenOutsider, answers)
+				requireAnswered(t, "revoke-by-approver of a grant id no grant has", answers["a grant id no grant has"], http.StatusNotFound, "NOT_FOUND")
 
-			answers = map[string]answerRead{}
-			for what, id := range map[string]string{name: grantID, "a grant id no grant has": missingGrant} {
-				status, body := ts.launcher(t, malloryKey, malloryID, http.MethodPost, "/v1/operator/grants/"+id+"/revoke", nil)
-				answers[what] = answerOf(t, status, body)
-			}
-			requireSameAnswers(t, "the operator revoke by "+hiddenOutsider+"'s machine login", answers)
-			requireAnswered(t, "the operator revoke of a grant id no grant has", answers["a grant id no grant has"], http.StatusNotFound, "NOT_FOUND")
+				answers = map[string]answerRead{}
+				for what, id := range map[string]string{name: grants[name], "a grant id no grant has": missingGrant} {
+					status, body := ts.launcher(t, malloryKey, malloryID, http.MethodPost, "/v1/operator/grants/"+id+"/revoke", nil)
+					answers[what] = answerOf(t, status, body)
+				}
+				requireSameAnswers(t, "the operator revoke by "+hiddenOutsider+"'s machine login", answers)
+				requireAnswered(t, "the operator revoke of a grant id no grant has", answers["a grant id no grant has"], http.StatusNotFound, "NOT_FOUND")
+			})
 		}
 		if got := liveGrants(t); !slices.Equal(got, bothLive) {
 			t.Fatalf("live grants after %s's revokes = %v, want %v", hiddenOutsider, got, bothLive)
@@ -284,13 +321,13 @@ func TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas(t
 		}
 	})
 	if after := ts.writtenRows(t); !slices.Equal(after, before) {
-		t.Fatalf("rows written = %v after the refused revokes, want %v as before", after, before)
+		t.Errorf("rows written = %v after the refused revokes, want %v as before", after, before)
 	}
 
 	access.Serve(privDispatch(t))
 	t.Run("a person on PRIV's list and the session's operator still revoke", func(t *testing.T) {
 		if status, body := ts.ui(t, http.MethodPost, "/v1/grants/"+byAnyone+"/revoke-by-approver", map[string]any{"approver": hiddenInsider}); status != http.StatusOK || decode[stateBody](t, body).State != "revoked" {
-			t.Fatalf("%s's revoke of anyone's grant = %d %s; want 200 revoked", hiddenInsider, status, body)
+			t.Fatalf("%s's revoke of the judged grant = %d %s; want 200 revoked", hiddenInsider, status, body)
 		}
 		if status, body := ts.launcher(t, machineKey, credID, http.MethodPost, "/v1/operator/grants/"+byPerson+"/revoke", nil); status != http.StatusOK || decode[stateBody](t, body).State != "revoked" {
 			t.Fatalf("testApprover's operator revoke = %d %s; want 200 revoked", status, body)
@@ -310,7 +347,7 @@ func TestARevokeAnswersAPersonAPrivateGrantIsHiddenFromAsForAGrantIDNoGrantHas(t
 // answers, testApprover dismisses it.
 func TestADismissalAnswersAPersonAPrivateRequestIsHiddenFromAsForAnIDNoRecordHas(t *testing.T) {
 	ts, access := hiddenServer(t)
-	created := ts.askPrivate(t, "box-hidden")
+	created := ts.askPrivate(t, "box-hidden", "SHARED_KEY")
 	ts.overdue(t, created.RequestID)
 	hidden := *created.RecordID
 	staleRequest, stale := ts.askPrivateElsewhere(t, "box-stale")
