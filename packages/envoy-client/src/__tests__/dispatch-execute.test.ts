@@ -34,6 +34,7 @@ import type { ExecFn } from "../dispatch-cwd";
 import {
   type DispatchToolResult,
   dispatchRefFromUrl,
+  dryRunAsksDispatch,
   executeDispatchTool as executeTool,
   formatOpenAsksSummary,
   linkBaseOf,
@@ -8239,6 +8240,46 @@ describe("executeDispatchTool", () => {
     expect(asked).toEqual([]);
   });
 
+  // A CI job's record of a check of the spec files (`project`) has no dry run Dispatch answers:
+  // its dry run prints the arguments and sends nothing, as every dry run but an issue's record
+  // does. Asked to run one, the executor refuses it before any request, so the dry run records no
+  // result, here against a Dispatch that would store the record it was sent.
+  test("a dispatch_result dry run of a CI job's result of the spec files records nothing", async () => {
+    const asked: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      asked.push(`${init?.method ?? "GET"} ${new URL(String(url)).pathname}`);
+      return response(
+        routeAnswer("POST /api/v1/projects/{key}/results", {
+          id: "00000000-0000-4000-8000-000000000043",
+          seq: 43,
+        }),
+        201
+      );
+    };
+    const args = { project: "ACME", check: "p-1", verdict: "pass", commit: "1".repeat(40) };
+
+    const outcome = await executeDispatchTool({
+      tool: "dispatch_result",
+      args,
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      sessionId: "session-one",
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      dryRun: true,
+    }).then(
+      (result) => `ran: ${result.text.slice(0, 80)}`,
+      (error: Error) => error.message
+    );
+    expect({ outcome, asked, asksDispatch: dryRunAsksDispatch("dispatch_result", args) }).toEqual({
+      outcome: "dispatch dispatch_result's dry run asks Dispatch nothing",
+      asked: [],
+      asksDispatch: false,
+    });
+  });
+
   // One check with the three shapes a reader must tell apart: a result that stands at the head
   // the check compared with, a result retracted after it was recorded, and a result at a commit
   // that head is not. Every result prints, in the order the API served them, because the gate is
@@ -11371,10 +11412,12 @@ describe("executeDispatchTool", () => {
         const preflight = uploadPreflight(url, init);
         if (preflight !== undefined) return preflight;
         requests.push(init ?? {});
-        return response({
-          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md" },
-          version: { number: 2 },
-        });
+        return response(
+          routeAnswer("POST /api/v1/issues/{key}/artifacts", {
+            artifact: { id: "artifact-42", issue_key: "DSP-42", name: "spec.md", slug: "spec-md" },
+            version: { number: 2 },
+          })
+        );
       };
       await executeDispatchTool({
         tool: "dispatch_artifact",

@@ -2207,7 +2207,9 @@ describe("a redirect to another origin", () => {
 
   // The refusal says where the redirect points, so an operator who wrote `http://` for an
   // `https://` Dispatch fixes the URL from the line: the scheme and the host, never a path, a
-  // query or a user, any of which can carry a secret.
+  // query or a user, any of which can carry a secret. The line is the one every answer something
+  // in Dispatch's place wrote reads as (`#gatewayError`): its status, the origin the redirect
+  // names, and its body as one redacted line.
   test("a refused redirect names the origin it points at, and nothing else of it", async () => {
     // A target that carries a user and a secret, built from its parts; the secret is made for
     // this run, so no line of the test holds a credential.
@@ -2242,7 +2244,9 @@ describe("a redirect to another origin", () => {
           (error: unknown) => error
         );
         const message = refusal instanceof Error ? refusal.message : String(refusal);
-        expect(message, location).toContain(`answered 302, redirecting to ${origin}, `);
+        expect(message, location).toContain(
+          `answered 302 (a redirect to ${origin}, which this client does not follow)`
+        );
         for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "next="]) {
           expect(message, location).not.toContain(part);
         }
@@ -2250,91 +2254,9 @@ describe("a redirect to another origin", () => {
     }
   });
 
-  // A redirector writes its target into the body as well (Express's `Found. Redirecting to <url>`,
-  // as text or as a link's text), so the line quotes nothing of a redirect's body: the status and
-  // the origin say all an operator needs.
-  test("a refused redirect quotes nothing of its body, where a redirector writes its target", async () => {
-    // The path and the query of the target are made for this run.
-    const path = `login-${crypto.randomUUID()}`;
-    const state = crypto.randomUUID();
-    const target = `https://sso.example.com/${path}?state=${state}&next=%2Fapi`;
-    for (const [type, body] of [
-      ["text/plain", `Found. Redirecting to ${target}`],
-      ["text/html", `<p>Found. Redirecting to <a href="${target}">${target}</a></p>`],
-      ["application/json", JSON.stringify({ code: "MOVED", error: `Redirecting to ${target}` })],
-    ] as const) {
-      const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-        new Response(body, {
-          status: 302,
-          headers: { Location: target, "Content-Type": type },
-        })) as typeof fetch;
-      const client = new DispatchClient(
-        "http://dispatch.test",
-        bearerCredential("secret"),
-        fetchImpl,
-        {
-          sleep: async () => undefined,
-        }
-      );
-      for (const call of [
-        () => client.getIssue("DSP-1"),
-        () => client.comment("DSP-1", { body: "Review", actor }),
-      ]) {
-        const refusal = await call().then(
-          () => undefined,
-          (error: unknown) => error
-        );
-        const message = refusal instanceof Error ? refusal.message : String(refusal);
-        expect({
-          origin: message.includes("answered 302, redirecting to https://sso.example.com, "),
-          path: message.includes(path),
-          query: message.includes(state),
-          body: message.includes("Redirecting to"),
-        }).toEqual({ origin: true, path: false, query: false, body: false });
-      }
-    }
-  });
-
-  // No request reads the body of a redirect: a body that never ends delays no refusal, since
-  // nothing waits on it, and the client cancels it.
-  test("a refused redirect's body is not read", async () => {
-    let cancelled = 0;
-    const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      new Response(
-        new ReadableStream<Uint8Array>({
-          pull: () => new Promise<void>(() => {}),
-          cancel() {
-            cancelled += 1;
-          },
-        }),
-        { status: 302, headers: { Location: "https://sso.example.com/login" } }
-      )) as typeof fetch;
-    const client = new DispatchClient(
-      "http://dispatch.test",
-      bearerCredential("secret"),
-      fetchImpl,
-      { sleep: async () => undefined }
-    );
-    const started = performance.now();
-    for (const call of [
-      () => client.getIssue("DSP-1"),
-      () => client.comment("DSP-1", { body: "Review", actor }),
-    ]) {
-      const refusal = await call().then(
-        () => undefined,
-        (error: unknown) => error
-      );
-      expect(refusal).toBeInstanceOf(DispatchGatewayError);
-    }
-    expect({ cancelled, atOnce: performance.now() - started < 10_000 }).toEqual({
-      cancelled: 2,
-      atOnce: true,
-    });
-  });
-
-  // The /healthz probe carries the credential's proof too, and its answer decides whether a write
-  // is sent again under its key: a probe that followed the redirect would hand the proof to the
-  // other origin, and take that origin's `idempotency_keys` as Dispatch's word.
+  // The /healthz probe's answer decides whether a write is sent again under its key: a probe that
+  // followed the redirect would take another origin's `idempotency_keys` as Dispatch's word, and a
+  // redirect's own body is not read as it (`#probeKeyedLayer`).
   test("the /healthz probe is not followed there, so another origin's answer resends nothing", async () => {
     const elsewhere: string[] = [];
     const other = Bun.serve({
@@ -2353,10 +2275,11 @@ describe("a redirect to another origin", () => {
         const path = new URL(request.url).pathname;
         asked.push(`${request.method} ${path}`);
         if (path === "/healthz") {
-          return new Response(null, {
-            status: 302,
-            headers: { Location: `http://127.0.0.1:${other.port}/healthz` },
-          });
+          // A redirect whose body says what Dispatch's /healthz says: no word of Dispatch's.
+          return Response.json(
+            { status: "ok", idempotency_keys: true },
+            { status: 302, headers: { Location: `http://127.0.0.1:${other.port}/healthz` } }
+          );
         }
         return new Response("<html><body>Bad Gateway</body></html>", {
           status: 502,

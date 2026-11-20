@@ -88,6 +88,7 @@ import {
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_KEY_IN_FLIGHT,
+  IDEMPOTENCY_KEY_REUSED,
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   jitteredDelay,
@@ -474,14 +475,26 @@ export class DispatchNoRouteError extends DispatchServiceError {
  * says the failure sent nothing to any server (a refused connection, a name that did not resolve):
  * a write attempt that failed so cannot have landed, where one that failed otherwise (a reset after
  * Dispatch read the request) may have, since Dispatch runs a keyed write it received to its end.
+ * `code` is the runtime's code of the failure (`ECONNRESET`, `ECONNREFUSED`), where it gave one
+ * of the shape `errorClass` prints, which a CI job's outcome line names
+ * (`{"write_outcome_unknown": <code>}`, dispatch-cli.ts). It is no code of Dispatch's, so
+ * `messageFor` prints none before the message.
  */
 export class DispatchUnreachableError extends Error {
   constructor(
     message: string,
-    readonly reachedNothing: boolean
+    readonly reachedNothing: boolean,
+    readonly code?: string | undefined
   ) {
     super(message);
   }
+}
+
+/** The runtime's code of a transport failure, where it is one of the shape `errorClass` prints
+ *  (`@legion/contracts/log-text`), else undefined. */
+function transportCode(error: Error): string | undefined {
+  const { code } = error as { code?: unknown };
+  return typeof code === "string" && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(code) ? code : undefined;
 }
 
 /**
@@ -972,6 +985,10 @@ async function writeAnswer(response: Response, echoed: boolean): Promise<WriteAn
  *   handler ran ({@link TOKEN_NOT_CHECKED}, which never carry the key back), are `try-later`, as a
  *   408 or a 429 is: nothing ran, so the write may be asked again under its key, and a write that
  *   ends on one stored nothing, though one of them is a 5xx.
+ * - Two refusals that carry the key back are no verdict on what became of the write: a `401` the
+ *   handler answered, on which the keyed layer releases the key though the handler may have
+ *   committed (`released`, `storedStatus`, request_keys.go); and `422 KEY_REUSED`, which says only
+ *   that this request was not run, and nothing of an earlier attempt under the key (`unjudged`).
  */
 function answerEvent(
   answer: WriteAnswer,
@@ -1000,6 +1017,8 @@ function answerEvent(
     if (status === 409) return "in-flight";
     return status >= 500 ? "server-error" : "try-later";
   }
+  if (answer.echoed && status === 401) return "released";
+  if (answer.echoed && status === 422 && answer.code === IDEMPOTENCY_KEY_REUSED) return "unjudged";
   return answer.echoed ? "judged" : "unjudged";
 }
 
@@ -1230,11 +1249,12 @@ export class DispatchClient {
           // Bun's and undici's fetch reject a request that reached no server with a TypeError; a
           // deadline or a caller's stop is a DOMException, which passes on unchanged. The error
           // keeps whether the failure reached nothing at all (`reachedNothing`), which the write
-          // loop reads before the runtime's error is dropped.
+          // loop reads, and the runtime's code, before the runtime's error is dropped.
           if (error instanceof TypeError) {
             throw new DispatchUnreachableError(
               `Dispatch at ${shown} is unreachable: ${errorClass(error)}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`,
-              reachedNothing(error)
+              reachedNothing(error),
+              transportCode(error)
             );
           }
           throw error;
@@ -2423,7 +2443,12 @@ export class DispatchClient {
    * the call goes under one `Idempotency-Key`: the caller's own, where it has one intent across
    * calls and processes, else one minted for this call alone. A read, a PUT or a DELETE has none.
    */
-  #writeCall(method: WriteMethod, url: string, key: string | undefined, writes: boolean): WriteCall {
+  #writeCall(
+    method: WriteMethod,
+    url: string,
+    key: string | undefined,
+    writes: boolean
+  ): WriteCall {
     return {
       key: key ?? crypto.randomUUID(),
       request: `${method} ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`,
@@ -2605,6 +2630,11 @@ export class DispatchClient {
     // a deadline or a stop that ends the wait for the next presentation ends the write with it,
     // not with the wait's own error.
     let credentialFailure: unknown;
+    // Dispatch's answer that its check of the token judged nothing ({@link TOKEN_NOT_CHECKED}), where
+    // the last attempt that went out got one. Before anything may have landed, it is why nothing
+    // ran, so a deadline or a stop that ends the wait after it ends the write with that answer,
+    // which says nothing was stored, as it does with a credential's failure.
+    let notChecked: WriteAnswer | undefined;
     // The identity the write's attempts went out as (`RequestCredential.identity`). Dispatch
     // keys a write per login, the person or the service and never the session (`requestKeyLogin`,
     // request_keys.go), so a repeat as another person or as the machine is a new key there and can
@@ -2714,12 +2744,21 @@ export class DispatchClient {
     };
     // The next attempt, and the loop's own state it moves: a presentation that answered clears
     // the credential's last failure and one that failed sets it; an attempt that went out pins the
-    // identity it went as.
+    // identity it went as, and keeps its answer where that is the token check's that ran nothing.
     const next = async (): Promise<WriteAttempt> => {
       const result = await attempt();
       if (result.presented !== undefined) credentialFailure = undefined;
       if (result.credentialFailure !== undefined) credentialFailure = result.credentialFailure;
-      if (result.sent !== undefined) login = result.sent.as;
+      if (result.sent !== undefined) {
+        login = result.sent.as;
+        const { answer } = result;
+        notChecked =
+          answer !== undefined &&
+          !answer.echoed &&
+          tokenNotCheckedAnswer(answer.response.status, answer.code)
+            ? answer
+            : undefined;
+      }
       return result;
     };
     // A pause or a rolling-release wait the deadline or the caller's stop ended: nothing was in
@@ -2743,21 +2782,23 @@ export class DispatchClient {
             throw new Error(`${write.request}: the write table settled on ${event} with no answer`);
           }
           return last.answer;
-        case "end":
+        case "end": {
+          // A stop that ended a wait before anything may have landed ends the write with why
+          // nothing was sent or run: the credential's failure, else the token check's answer.
+          const stoppedWait =
+            state === "nothing-sent" && (event === "deadline" || event === "cancelled");
+          const why = stoppedWait && credentialFailure === undefined ? notChecked : undefined;
           throw await this.#endWrite(
             method,
             url,
             state,
             event === "exhausted" ? last.event : event,
-            last.answer,
-            state === "nothing-sent" &&
-              credentialFailure !== undefined &&
-              (event === "deadline" || event === "cancelled")
-              ? credentialFailure
-              : last.failure,
+            why ?? last.answer,
+            stoppedWait && credentialFailure !== undefined ? credentialFailure : last.failure,
             write,
             event === "exhausted" && last.event === "no-route" && this.#retryNoRoute
           );
+        }
         case "retry-at-once":
           deadTokenTold = true;
           this.#credential.stale?.(undefined, last.sent?.with);
@@ -2916,12 +2957,18 @@ export class DispatchClient {
     let own: unknown = failure;
     if (answer?.response.ok === true) {
       const { status } = answer.response;
-      const read = new Error(
-        answer.notJson
-          ? `${request} answered ${status} with ${bodyForText(answer.text, this.#sent.with(this.token), "JSON")}, though every Dispatch write answers JSON, so something in Dispatch's place answered`
-          : event === "foreign-2xx"
-            ? `${request} answered ${status} without carrying back its ${IDEMPOTENCY_KEY_HEADER}, though this Dispatch answers every keyed write with it, so something in Dispatch's place answered`
-            : `${request} answered ${status} with a body that is not the JSON its Content-Type says`
+      // The reading carries `HTTP_<status>` as its code, as a gateway's answer does, which a CI
+      // job's outcome line names (`{"write_outcome_unknown": <code>}`, dispatch-cli.ts); it is
+      // no refusal of Dispatch's, so `messageFor` prints no code before it.
+      const read = Object.assign(
+        new Error(
+          answer.notJson
+            ? `${request} answered ${status} with ${bodyForText(answer.text, this.#sent.with(this.token), "JSON")}, though every Dispatch write answers JSON, so something in Dispatch's place answered`
+            : event === "foreign-2xx"
+              ? `${request} answered ${status} without carrying back its ${IDEMPOTENCY_KEY_HEADER}, though this Dispatch answers every keyed write with it, so something in Dispatch's place answered`
+              : `${request} answered ${status} with a body that is not the JSON its Content-Type says`
+        ),
+        { code: `HTTP_${status}` }
       );
       // A call that writes nothing (`WriteCall.writes`) made nothing whatever answered it, so a 2xx
       // that is not its answer is its missing answer, which says asking again is safe.
@@ -3033,6 +3080,11 @@ export class DispatchClient {
         headers: { Accept: "application/json" },
         signal: AbortSignal.timeout(KEY_LAYER_PROBE_MS),
       });
+      // A redirect is no word of Dispatch's, whatever its type says: its body is not read.
+      if (response.status >= 300 && response.status < 400) {
+        response.body?.cancel().catch(() => undefined);
+        return false;
+      }
       if (!isJson(response)) return false;
       const health: unknown = await response.json();
       return (

@@ -357,7 +357,8 @@ describe("DispatchClient's writes", () => {
   // A Dispatch without the layer would run a repeat as a second write, and says nothing: it echoes
   // no key and its /healthz has no idempotency_keys. Every failure that may have landed is the
   // call's. A 429 ran nothing (Dispatch stores none), so a repeat of it is no second write: it is
-  // asked again on the pacing, and nothing asks /healthz first.
+  // asked again on the pacing, and nothing asks /healthz first. The 2xx that then names no key
+  // back is no answer of the call's (`#writtenRow`), so the write ends unsettled under its key.
   test("ask a Dispatch that runs no keyed layer once, whatever the failure", async () => {
     for (const answer of [
       refusal(500, "INTERNAL", "internal server error"),
@@ -385,9 +386,9 @@ describe("DispatchClient's writes", () => {
     });
     const { retry, pauses } = pacing();
 
-    await expect(client(limited.fetchImpl, retry).comment("DSP-1", comment)).resolves.toEqual(
-      posted
-    );
+    const error = await failure(client(limited.fetchImpl, retry).comment("DSP-1", comment));
+
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
 
     expect(limited.sent).toHaveLength(2);
     expect(pauses).toEqual([1_000]);
@@ -591,55 +592,6 @@ describe("DispatchClient's writes", () => {
     );
     await probing;
     const second = client(fetchImpl, pacing().retry)
-      .comment("DSP-1", comment)
-      .then(
-        () => "posted",
-        (error: Error) => `${error.name}: ${error.message}`
-      );
-    const { promise: turned, resolve: turn } = Promise.withResolvers<void>();
-    setImmediate(turn);
-    await turned;
-    cancel.abort();
-    await first;
-    release();
-    expect({ second: await second, posts }).toEqual({ second: "posted", posts: 3 });
-  });
-
-  // The probe's credential waits where a broker credential waits, on the trade its callers share,
-  // so it is given the probe's own bound and never a write's signal: the write that started the
-  // probe is cancelled while the probe's credential waits, and the write that joined the probe
-  // still reads its answer and asks again.
-  test("a write's own end never ends the shared /healthz probe's wait on its credential", async () => {
-    const { promise: trading, resolve: traded } = Promise.withResolvers<void>();
-    const { promise: held, resolve: release } = Promise.withResolvers<void>();
-    const credential: RequestCredential = {
-      ...bearerCredential("secret"),
-      headers: async (_method, url, _session, signal) => {
-        if (url.endsWith("/healthz")) {
-          traded();
-          const { promise: aborted, reject } = Promise.withResolvers<never>();
-          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-          await Promise.race([held, aborted]);
-        }
-        return { Authorization: "Bearer secret" };
-      },
-    };
-    let posts = 0;
-    const fetchImpl = keyedLayer(async (input: RequestInfo | URL, _init?: RequestInit) => {
-      if (String(input).endsWith("/healthz")) return json({ status: "ok", idempotency_keys: true });
-      posts += 1;
-      if (posts <= 2) throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
-      return json(posted, 201);
-    }) as typeof fetch;
-    const dispatch = (signal?: AbortSignal) =>
-      new DispatchClient("http://dispatch.test", credential, fetchImpl, {
-        signal,
-        writeRetry: pacing().retry,
-      });
-    const cancel = new AbortController();
-    const first = failure(dispatch(cancel.signal).comment("DSP-1", comment));
-    await trading;
-    const second = dispatch()
       .comment("DSP-1", comment)
       .then(
         () => "posted",
@@ -1775,9 +1727,13 @@ describe("DispatchClient's writes", () => {
     expect(new Set(sent.map((request) => request.headers["Idempotency-Key"])).size).toBe(1);
   });
 
-  // A 2xx that carries no body (a 204, a 205) has nothing to read whole, so it settles once the
-  // keyed layer answered it; and a 2xx Dispatch replayed from the key settles once its body is read.
-  test.each([204, 205])("a %i the keyed layer answers settles the write", async (status) => {
+  // A 2xx that carries no body (a 204, a 205) has nothing to read whole, so the table settles it
+  // once the keyed layer answered it; a comment's row needs a body, so the settled answer is a
+  // landing whose answer was lost (`#writtenRow`), never a payload its caller reads. A 2xx
+  // Dispatch replayed from the key settles once its body is read.
+  test.each([
+    204, 205,
+  ])("a %i the keyed layer answers to a write whose row needs a body is a landing whose answer was lost", async (status) => {
     // A bodiless status is no JSON, so the scripted Dispatch echoes nothing; this fetch echoes the
     // key as the keyed layer does on every answer it gives.
     const { fetchImpl, sent } = scripted([new Response(null, { status })]);
@@ -1788,9 +1744,10 @@ describe("DispatchClient's writes", () => {
       return response;
     }) as typeof fetch;
 
-    const answer: unknown = await client(echoing, pacing().retry).comment("DSP-1", comment);
+    const error = await failure(client(echoing, pacing().retry).comment("DSP-1", comment));
 
-    expect(answer).toBe("");
+    expect(error).toBeInstanceOf(DispatchWriteLandedError);
+    expect((error as DispatchWriteLandedError).code).toBe("ANSWER_LOST");
     expect(sent).toHaveLength(1);
   });
 
@@ -2142,14 +2099,20 @@ describe("DispatchClient's writes", () => {
     );
   });
 
-  // Its twin: a Dispatch this process knows nothing of (an old build without the layer) answers
-  // without the key, and its 2xx is the write's answer, as it always was.
-  test("a 2xx without the key from a Dispatch not known to run the keyed layer settles the write", async () => {
-    const { fetchImpl } = scripted([json(posted, 201)], { noKeyedLayer: true });
+  // Its twin: a Dispatch this process knows nothing of (an old build without the layer, or
+  // something in its place) answers without the key. Every answer the keyed layer gives a keyed
+  // write carries the key, so such a 2xx is no answer of the call's whatever it holds, and the
+  // write may have reached Dispatch behind what answered it: unsettled under its key.
+  test("a 2xx without the key from a Dispatch not known to run the keyed layer leaves the write unsettled", async () => {
+    const { fetchImpl, sent } = scripted([json(posted, 201)], { noKeyedLayer: true });
 
-    await expect(client(fetchImpl, pacing().retry).comment("DSP-1", comment)).resolves.toEqual(
-      posted
+    const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
+
+    expect(error).toBeInstanceOf(DispatchWriteUnsettledError);
+    expect((error as DispatchWriteUnsettledError).key).toBe(
+      sent[0]?.headers["Idempotency-Key"] as string
     );
+    expect(writeOutcomeUnknown(error)).toBe(true);
   });
 
   // F5: a write behind a redirect names the origin the redirect pointed at, which is what tells a
@@ -2681,7 +2644,8 @@ describe("a DispatchClient write as one call", () => {
       {
         writeRetry: retry,
         sleep: async () => {},
-        ...(options.deadline === undefined ? {} : { deadline: options.deadline }),
+        // The call's deadline is the client's signal, which a timeout ends as the deadline.
+        ...(options.deadline === undefined ? {} : { signal: options.deadline }),
       }
     );
 

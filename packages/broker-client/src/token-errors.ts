@@ -59,13 +59,17 @@ export class BrokerRefusedError extends Error {
   readonly podSessionUnregistered: boolean;
 
   /** `refused` names the identity traded, as its source describes it: this machine's, or a
-   *  person's sign-in on it; `context` is what the trade sent that a known refusal may name. */
+   *  person's sign-in on it; `context` is what the trade sent that a known refusal may name.
+   *  `retryAfterMs` is the wait the answer's `Retry-After` names (RFC 9110 Section 10.2.3), which
+   *  the broker's 429 carries, and null where it names none: the retry loop trades again when it
+   *  says (`BrokerTokenClient`). */
   constructor(
     readonly status: number,
     code: string,
     description: string,
     refused: string,
-    context: RefusalContext = {}
+    context: RefusalContext = {},
+    readonly retryAfterMs: number | null = null
   ) {
     const shownCode = shownOAuthCode(code);
     const said =
@@ -151,6 +155,20 @@ export class RegistrationPendingError extends Error {
 }
 
 /**
+ * What a {@link TradeRetryingError} says of the retry loop's last failed trade: its class as the
+ * loop reads it (`busy`, the broker's 429, a DPoP refusal or a person Dispatch holds;
+ * `unanswered`, no answer within the trade's own time, no connection, a 5xx, or an answer that is
+ * not this grant's; `unsent`, a trade its identity's source could not make this once), the
+ * broker's refusal where the broker refused, and how long until the loop trades again, which a
+ * caller with a bound of its own reads to tell whether that trade comes within it.
+ */
+export interface TradeRetry {
+  readonly kind: "busy" | "unanswered" | "unsent";
+  readonly refusal?: BrokerRefusedError | undefined;
+  readonly nextTradeInMs: number;
+}
+
+/**
  * A trade failure a later trade may cure, told to a caller with no live token in hand while the
  * client's retry loop trades again: at once to a caller that fails fast, and to one that waits for
  * ready once its own signal ends. A pod session not registered yet is
@@ -158,10 +176,14 @@ export class RegistrationPendingError extends Error {
  * (`TRADE_ATTEMPT_MS`), no connection, a 5xx, the broker's 429 or a DPoP refusal, or a trade that
  * could not be made.
  * The loop goes on, so it is not final ({@link isFinalRefusal}). Its message is the loop's own
- * line for that failure (`Retried.said`), which names nothing a peer wrote.
+ * line for that failure (`Retried.said`), which names nothing a peer wrote; `retry` says what the
+ * failure was and when the loop trades again, where the loop told it.
  */
 export class TradeRetryingError extends Error {
-  constructor(said: string) {
+  constructor(
+    said: string,
+    readonly retry?: TradeRetry | undefined
+  ) {
     super(`${said}, and the trade is being retried in the background`);
     this.name = "TradeRetryingError";
   }

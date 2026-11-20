@@ -18,8 +18,8 @@ import {
   type ParsedCommand,
   parseCommand,
 } from "./dispatch-command";
-import { specCheckResultCommand } from "./dispatch-commands/issues";
 import { defined } from "./dispatch-commands/context";
+import { specCheckResultCommand } from "./dispatch-commands/issues";
 import { type ActiveDispatchConfig, ownIdentityDispatch } from "./dispatch-config";
 import type { DispatchHost } from "./dispatch-cwd";
 import {
@@ -133,15 +133,26 @@ const NOT_NOW_STEP_MS = 1_000;
  * Why a call of `ownIdentityResult` was turned away before anything was stored, so it may be sent
  * again, and how long to wait first; undefined for every other failure. Two answers say so: the
  * broker client's retry loop trading the job's token again (`TradeRetryingError`: the broker's
- * rate limit, a broker that could not answer the trade, or no answer within the trade's own time;
- * a trade stores nothing), and Dispatch's check of the job's token, which answered before any
+ * rate limit, a broker that could not answer the trade, or a trade that could not be made; a
+ * trade stores nothing), and Dispatch's check of the job's token, which answered before any
  * handler ran (`tokenNotChecked`: its 429 of a spent bucket, its 503 for a broker that answered
- * nothing). An answer of the write itself is never one: a refusal is final, and a write that may
- * have stored is `writeOutcomeUnknown`'s.
+ * nothing). The loop trades again when it says (`TradeRetry.nextTradeInMs`: the broker's
+ * `Retry-After` for its 429, else the loop's own schedule), so the call asks no sooner. An answer
+ * of the write itself is never one: a refusal is final, and a write that may have stored is
+ * `writeOutcomeUnknown`'s.
  */
 function notNow(error: unknown): { readonly why: string; readonly waitMs: number } | undefined {
   if (error instanceof TradeRetryingError) {
-    return { why: "the secrets broker could not make the trade now", waitMs: NOT_NOW_STEP_MS };
+    const { retry } = error;
+    return {
+      why:
+        retry?.refusal?.status === 429
+          ? "the secrets broker's rate limit refused the trade"
+          : retry?.kind === "unanswered"
+            ? "the secrets broker could not answer the trade"
+            : "the secrets broker could not make the trade now",
+      waitMs: Math.max(NOT_NOW_STEP_MS, retry?.nextTradeInMs ?? 0),
+    };
   }
   if (tokenNotChecked(error)) {
     return {
