@@ -46,6 +46,11 @@
 --               updated_at, which every write that moves a row's value moves. A day whose rows
 --               no longer match it has moved, and its figures and every range that holds it are
 --               folded again.
+-- eval_day_figures_eval_day, (project_key, eval_id, day), is the stored figures' read of an eval's
+-- stored day rows over a span of days, which names no repository: the moved-day test every write
+-- of day rows makes (evals.movedFigureDays) and the figures walk's read of the day rows it deletes
+-- (evals.buildFigureEnds), one range of it for each eval, where the primary key bounds only the
+-- project.
 --
 -- eval_figures_built holds one row per project whose figures are built: the first whole walk of
 -- them, by any build, sets it, and a read of an offered range folds the stored figures from then
@@ -88,6 +93,7 @@ create table eval_day_figures (
     primary key (project_key, repo, day, eval_id, deploy_repo),
     constraint eval_day_figures_eval_of_project check (starts_with(eval_id, project_key || '/'))
 );
+create index eval_day_figures_eval_day on eval_day_figures (project_key, eval_id, day);
 
 create table eval_figures_built (
     project_key text primary key references projects (key) on delete cascade,

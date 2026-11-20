@@ -23,7 +23,7 @@ import (
 // read with; each row of it is attributed to the projects it counts for; each project's rows are
 // built into day parts by the measures package's day builders, the builders the delivery routes
 // build their window's parts with (DeliveryDay.Rows); and the refresher writes the parts as that
-// project's rows of the day (refresh.writeDelivery, through WriteProjectDay), which the eval
+// project's rows of the day (refresh.writeDelivery, through writeDeliveryDay), which the eval
 // routes and the delivery routes fold through the same folds.
 //
 // A day holds the population pull requests merged that day (merge-to-production,
@@ -200,7 +200,7 @@ type DeliveryDay struct {
 	// Day is the day's UTC midnight.
 	Day        time.Time
 	deployRepo string
-	// since is the start of deployRepo's history (deployRepo.since): a day before it holds no row
+	// since is the start of deployRepo's history (keptRepo.since): a day before it holds no row
 	// and no item of the repository.
 	since   time.Time
 	cards   []measures.DeployJobCard
@@ -215,7 +215,8 @@ type DeliveryDay struct {
 // deliveryRead is one UTC day's delivery and CI rows (readDeliveryDay): the day's pull requests
 // alone, with no deploy repository (days[0]), and the day as read with each of repos as the deploy
 // repository (days[1:], in repos' order). Its rows are theirs together: those of the evals no
-// deploy repository moves once, and those of the evals that read it once for each repository.
+// deploy repository moves once, and those of the evals that read it once for each repository. The
+// settings rewrite's day holds the reads of the repositories it rewrites alone (rewriteSettings).
 type deliveryRead struct {
 	// Day is the day's UTC midnight.
 	Day   time.Time
@@ -251,7 +252,7 @@ type repoReads struct {
 // day of the walk takes its part of rather than reading every run created from its own start to
 // now again; and its repo_projects from mapped where it is not nil, a read the refresher makes once
 // a page (refresh.repos). The reads depend on none of each other, and are read side by side.
-func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, repos []deployRepo, day time.Time,
+func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, repos []keptRepo, day time.Time,
 	applyRows map[string]*delivery.ApplyRows, mapped *repoProjects) (deliveryRead, error) {
 	pool := s.database.Pool
 	day = measures.Midnight(day)
@@ -707,13 +708,12 @@ func (d DeliveryDay) build(project, repo string, rows familyRows) []DayRow {
 // or not (ZeroDeliveryDay's). Each part's via_repository is the n the same builder counts over the
 // family's rows that reached the project through their repository alone. A day read with a deploy
 // repository builds the rows of the evals that read it, keyed by it, and the read of the pull
-// requests alone those of the evals no deploy repository moves (readsDeployRepo).
+// requests alone those of the evals no deploy repository moves (readsDeployRepo): a builder whose
+// evals the read does not keep is not run.
 func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every bool) []DayRow {
 	var built []DayRow
+	keyed := d.deployRepo != ""
 	add := func(slug string, parts, viaParts []measures.DayPart) {
-		if readsDeployRepo(slug) != (d.deployRepo != "") {
-			return
-		}
 		via := make(map[string]int, len(viaParts))
 		for _, part := range viaParts {
 			via[part.Series] = part.N
@@ -744,10 +744,12 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 			{SlugPROpenToMerge, measures.OpenToMergeDay},
 			{SlugReworkShare, measures.ReworkShareDay},
 		} {
-			add(builder.slug, builder.build(d.Day, prs), builder.build(d.Day, viaPRs))
+			if readsDeployRepo(builder.slug) == keyed {
+				add(builder.slug, builder.build(d.Day, prs), builder.build(d.Day, viaPRs))
+			}
 		}
 	}
-	if every || len(rows.deploys) > 0 {
+	if keyed && (every || len(rows.deploys) > 0) {
 		var runs, viaRuns []measures.Run
 		for i, deploy := range rows.deploys {
 			runs = append(runs, deploy.run)
@@ -759,11 +761,11 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 		add(SlugDeployRunSuccess, measures.DeployRunSuccessDay(d.Day, runs), measures.DeployRunSuccessDay(d.Day, viaRuns))
 	}
 	// Every CI run reaches its project through its repository, so every result it counts does.
-	if every || len(rows.checks) > 0 {
+	if keyed && (every || len(rows.checks) > 0) {
 		parts := measures.PRChecksDay(d.Day, rows.checks, d.checkJobs)
 		add(SlugPRCI, parts, parts)
 	}
-	if every || len(rows.pushes) > 0 {
+	if keyed && (every || len(rows.pushes) > 0) {
 		parts := measures.DeployJobsDay(d.Day, rows.pushes, d.pushJobs, d.cards)
 		for _, card := range d.cards {
 			add(cardSlugs[card.CardID], parts[card.CardID], parts[card.CardID])
@@ -785,7 +787,13 @@ func (d DeliveryDay) buildFamilies(project, repo string, rows familyRows, every 
 // project, another day or another eval, and an item of another family, is refused before anything
 // is written.
 func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy string) error {
-	return s.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, builtBy, true)
+	return s.writeDeliveryDay(ctx, day, builtBy, true)
+}
+
+// writeDeliveryDay is WriteProjectDay, folding the stored figures of the days whose rows it moved
+// where figures is set, as the refresher's write of a day outside a walk does (writeProjectDay).
+func (s *Store) writeDeliveryDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
+	return s.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, builtBy, figures)
 }
 
 // WriteUnownedP0Day writes project's unowned-p0 row of the UTC day day is on: the count of its

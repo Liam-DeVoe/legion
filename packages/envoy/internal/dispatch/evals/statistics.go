@@ -169,7 +169,7 @@ type DayPoint struct {
 // does, bit for bit.
 func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
 	listed, headline := listedAndHeadline(entry)
-	slices.SortStableFunc(rows, func(a, b WindowRow) int { return a.Part.Day.Compare(b.Part.Day) })
+	sortByDay(rows)
 	var windowParts, compareParts []measures.DayPart
 	byDay := map[time.Time][]measures.DayPart{}
 	via := map[string]int{}
@@ -193,20 +193,37 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 	days := slices.SortedFunc(maps.Keys(byDay), func(a, b time.Time) int { return a.Compare(b) })
 	daily := make([]dayFold, len(days))
 	for index, day := range days {
-		folded := FoldStatistics(definition, headline, byDay[day], Range{From: day, To: day.AddDate(0, 0, 1)})
-		kept := map[string]Statistics{}
-		for _, series := range headline {
-			if holds(byDay[day], series.Series) {
-				kept[series.Series] = folded[series.Series]
-			}
-		}
-		daily[index] = dayFold{day: day, folded: kept}
+		daily[index] = dayFold{day: day, folded: foldDay(definition, headline, byDay[day], day)}
 	}
 	return valuesOf(listed, windowed, via, compared, daily, firsts, window, compare)
 }
 
+// sortByDay sorts rows by day in place, keeping their order within a day: the order a read of the
+// day rows (SeriesValuesOf) and the stored figures (newFigureGroup) both fold them in.
+func sortByDay(rows []WindowRow) {
+	slices.SortStableFunc(rows, func(a, b WindowRow) int { return a.Part.Day.Compare(b.Part.Day) })
+}
+
+// foldDay is the fold of parts, one day's parts of definition's eval, of each of headline, its
+// headline series, that holds a part that day, over that day alone: a day of a headline series'
+// per-day array, which a read of the day rows (SeriesValuesOf) and the stored figures
+// (figureGroup.dayFigure) both answer through it. With no headline series it is empty.
+func foldDay(definition Definition, headline []Series, parts []measures.DayPart, day time.Time) map[string]Statistics {
+	kept := map[string]Statistics{}
+	if len(headline) == 0 {
+		return kept
+	}
+	folded := FoldStatistics(definition, headline, parts, Range{From: day, To: day.AddDate(0, 0, 1)})
+	for _, series := range headline {
+		if holds(parts, series.Series) {
+			kept[series.Series] = folded[series.Series]
+		}
+	}
+	return kept
+}
+
 // dayFold is one day of a window that holds a row of the eval: the fold of that day's rows alone of
-// each headline series that holds a row that day.
+// each headline series that holds a row that day (foldDay).
 type dayFold struct {
 	day    time.Time
 	folded map[string]Statistics

@@ -52,12 +52,9 @@
 -- delivery run (eval_days.deploy_repo, 20261117100006), and a read chooses among them. A pass that
 -- reads delivery settings other than these rewrites, before it writes a day under them, every day
 -- of the evals the difference moves, in one transaction that records the settings it read here
--- (evals.rewriteSettings), and every eval a setting can move where another build moved a row or a
--- member since updated_at (the release before this one during a roll, which records nothing here);
--- a pass that finds no row begins the delivery walk again, which builds every day under the
--- settings it reads, and records them.
---   updated_at when the row was last recorded, which that check reads the rows' and the members'
---              updated_at against.
+-- (evals.rewriteSettings); a pass that finds no row begins the delivery walk again, which builds
+-- every day under the settings it reads, and records them.
+--   updated_at when the row was last recorded.
 --
 -- Three new tables, all empty: nothing existing is read or rewritten, and the release before this
 -- one neither reads nor writes any of them, so the two builds roll together (cmd/dispatch/README.md,

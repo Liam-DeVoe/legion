@@ -84,6 +84,17 @@ func (s *Store) Current(ctx context.Context, projects []string, kind string, lim
 	if err != nil {
 		return Page[Entry]{}, fmt.Errorf("read the evals of %v: %w", projects, err)
 	}
+	entries, err := entriesOf(ctx, tx, definitions, fmt.Sprint(projects))
+	if err != nil {
+		return Page[Entry]{}, err
+	}
+	return Page[Entry]{Items: entries, Total: total}, nil
+}
+
+// entriesOf is definitions, each as an entry with the newest version of each of its series, the
+// primary series first and then by name, read in q (eval_series_current): the part of a read of
+// evals that Current and readEntries share. what names the evals in an error.
+func entriesOf(ctx context.Context, q delivery.Querier, definitions []Definition, what string) ([]Entry, error) {
 	entries := make([]Entry, len(definitions))
 	ids := make([]string, len(definitions))
 	position := make(map[string]int, len(definitions))
@@ -92,24 +103,25 @@ func (s *Store) Current(ctx context.Context, projects []string, kind string, lim
 		ids[index] = definition.EvalID
 		position[definition.EvalID] = index
 	}
-	if len(ids) > 0 {
-		rows, err := tx.Query(ctx, `
-			select `+seriesColumns+` from eval_series_current where eval_id = any($1)
-			order by eval_id, is_primary desc, series
-		`, ids)
-		if err != nil {
-			return Page[Entry]{}, fmt.Errorf("read the series of the evals of %v: %w", projects, err)
-		}
-		series, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Series, error) { return scanSeries(row) })
-		if err != nil {
-			return Page[Entry]{}, fmt.Errorf("read the series of the evals of %v: %w", projects, err)
-		}
-		for _, one := range series {
-			entry := &entries[position[one.EvalID]]
-			entry.Series = append(entry.Series, one)
-		}
+	if len(ids) == 0 {
+		return entries, nil
 	}
-	return Page[Entry]{Items: entries, Total: total}, nil
+	rows, err := q.Query(ctx, `
+		select `+seriesColumns+` from eval_series_current where eval_id = any($1)
+		order by eval_id, is_primary desc, series
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the series of the evals of %s: %w", what, err)
+	}
+	series, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Series, error) { return scanSeries(row) })
+	if err != nil {
+		return nil, fmt.Errorf("read the series of the evals of %s: %w", what, err)
+	}
+	for _, one := range series {
+		entry := &entries[position[one.EvalID]]
+		entry.Series = append(entry.Series, one)
+	}
+	return entries, nil
 }
 
 // EvalVersions reads one eval as Eval does and one page of the versions of its definition, newest
@@ -282,7 +294,7 @@ type Counted struct {
 }
 
 // CountedIn reads the items family's day rows of project counted on the days of window, under
-// deployRepo (” for the items counted whatever the deploy repository is, a repository's name for
+// deployRepo ("" for the items counted whatever the deploy repository is, a repository's name for
 // those the evals that read it counted with it as the deploy repository; DeployRepoOf), those of
 // repos where repos names any, by day and then by row key, through eval_day_members_day: the pull
 // requests and deploy runs the delivery evals' rows of those days count, or the runs the CI evals'

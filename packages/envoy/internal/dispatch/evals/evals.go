@@ -264,7 +264,7 @@ type Reading struct {
 
 // DayRow is one stored day row, every column of eval_days but its writer, which each write of a
 // row knows and each read names (Definition.writer): its key's project, eval, deploy repository
-// (” for an eval no deploy repository moves; deploy_repos.go) and repository, its listing and its
+// ("" for an eval no deploy repository moves; deploy_repos.go) and repository, its listing and its
 // bookkeeping (built_by, updated_at) beside its part, the columns the folds read
 // (measures.DayPart: its series, its day, the day's UTC midnight, and its values), so a builder's
 // part is written as the row that holds it and a stored row is folded as its part.

@@ -22,7 +22,7 @@ import (
 // (WriteUnownedP0Day) writes its row through too.
 
 // Member is one item a project's day counted, as eval_day_members records it beside the day: its
-// family (KindDelivery, KindCI or KindLegion), the deploy repository it was counted under (” for
+// family (KindDelivery, KindCI or KindLegion), the deploy repository it was counted under ("" for
 // an item no deploy repository moves; deploy_repos.go), its row key (PullRequestMember, RunMember,
 // an issue's key), its repository and, for a pull request a deploy shipped, the deploy run's row
 // key (ShippedBy), which is how the refresher finds the day of the run that shipped it once
@@ -85,7 +85,7 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 		evalIDs[i] = EvalID(day.Project, slug)
 	}
 	for _, row := range slices.Concat(day.Rows, day.Gaps) {
-		if keyed := readsDeployRepo(strings.TrimPrefix(row.EvalID, day.Project+"/")); keyed != (row.DeployRepo != "") {
+		if keyed := readsDeployRepo(slugOf(day.Project, row.EvalID)); keyed != (row.DeployRepo != "") {
 			return fmt.Errorf("evals: a %s day row of %s on %s is of %s and deploy repository %q, and that eval is keyed by the deploy repository %t",
 				what, day.Project, date.Format(time.DateOnly), row.EvalID, row.DeployRepo, keyed)
 		}
@@ -162,19 +162,17 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 	`, day.Project, date, memberFamilies, deployRepos, keys, shippedBy, families, KindDelivery); err != nil {
 		return fmt.Errorf("record the days %s's items left for %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
-	// A member that moved records this build and this moment (built_by, updated_at), and one that
-	// stands keeps those of the write that last moved it, as a day row keeps its updated_at.
+	// A member whose day, repository and shipping run stand is not written again.
 	if _, err := tx.Exec(ctx, `
-		insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by, built_by)
-		select $1, member.family, member.deploy_repo, member.row_key, $2, member.repo, member.shipped_by, $8
+		insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by)
+		select $1, member.family, member.deploy_repo, member.row_key, $2, member.repo, member.shipped_by
 		from unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[]) as member(family, deploy_repo, row_key, repo, shipped_by)
 		order by member.family, member.deploy_repo, member.row_key
 		on conflict (project_key, family, deploy_repo, row_key) do update
-		set day = excluded.day, repo = excluded.repo, shipped_by = excluded.shipped_by, built_by = excluded.built_by,
-			updated_at = now()
+		set day = excluded.day, repo = excluded.repo, shipped_by = excluded.shipped_by
 		where (eval_day_members.day, eval_day_members.repo, eval_day_members.shipped_by)
 			is distinct from (excluded.day, excluded.repo, excluded.shipped_by)
-	`, day.Project, date, memberFamilies, deployRepos, keys, memberRepos, shippedBy, builtBy); err != nil {
+	`, day.Project, date, memberFamilies, deployRepos, keys, memberRepos, shippedBy); err != nil {
 		return fmt.Errorf("record the items %s counted on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	if _, err := tx.Exec(ctx, `
@@ -260,18 +258,34 @@ func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time
 	if _, err := tx.Exec(ctx, `
 		with stale as (
 			select project_key, eval_id, writer, deploy_repo, series, repo, day,
-				case when sum is not null then 0 end as sum, case when num is not null then 0 end as num,
-				case when den is not null then 0 end as den,
-				case when samples is not null then '{}'::double precision[] end as samples,
-				coalesce((select jsonb_object_agg(key, 0) from jsonb_object_keys(counts) as key), '{}'::jsonb) as counts
+				`+staleZeroColumns+`
 			from eval_days
 			where project_key = $1 and day = $2 and eval_id = any($3) and writer = $8
 				and (eval_id, deploy_repo, series, repo) not in (select * from unnest($4::text[], $9::text[], $5::text[], $6::text[]))
-		)
+		)`+zeroStaleUpdate("$7"), project, day, evalIDs, evals, series, repos, builtBy, writerComputation, deployRepos); err != nil {
+		return fmt.Errorf("write the day rows %s no longer holds on %s as zero rows: %w", project, day.Format(time.DateOnly), err)
+	}
+	return nil
+}
+
+// staleZeroColumns is the columns of a stale row's zero row that depend on what it holds, as the
+// stale rows of zeroStaleDays and zeroStaleSettingsDays select them from eval_days: a zero sum,
+// numerator and denominator where the row holds one, an empty sample list where it holds one, and
+// each named count 0.
+const staleZeroColumns = `case when sum is not null then 0 end as sum, case when num is not null then 0 end as num,
+				case when den is not null then 0 end as den,
+				case when samples is not null then '{}'::double precision[] end as samples,
+				coalesce((select jsonb_object_agg(key, 0) from jsonb_object_keys(counts) as key), '{}'::jsonb) as counts`
+
+// zeroStaleUpdate is the statement that writes each row of a `stale` CTE before it (each row's key
+// and staleZeroColumns) as its zero row, as zeroStaleDays says, recording the build the parameter
+// builtBy names: the update zeroStaleDays and zeroStaleSettingsDays end in.
+func zeroStaleUpdate(builtBy string) string {
+	return `
 		update eval_days
 		set n = 0, sum = stale.sum, num = stale.num, den = stale.den, max = null, samples = stale.samples,
 			last_value = null, last_at = null, last_recorded_at = null, last_reading = null, counts = stale.counts,
-			via_repository = 0, built_by = $7,
+			via_repository = 0, built_by = ` + builtBy + `,
 			updated_at = case
 				when (eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max, eval_days.samples,
 						eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at, eval_days.last_reading,
@@ -287,11 +301,8 @@ func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time
 				eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at, eval_days.last_reading,
 				eval_days.counts, eval_days.via_repository, eval_days.built_by)
 			is distinct from (0, stale.sum, stale.num, stale.den, null::double precision, stale.samples,
-				null::double precision, null::timestamptz, null::timestamptz, null::uuid, stale.counts, 0, $7::text)
-	`, project, day, evalIDs, evals, series, repos, builtBy, writerComputation, deployRepos); err != nil {
-		return fmt.Errorf("write the day rows %s no longer holds on %s as zero rows: %w", project, day.Format(time.DateOnly), err)
-	}
-	return nil
+				null::double precision, null::timestamptz, null::timestamptz, null::uuid, stale.counts, 0, ` + builtBy + `::text)
+	`
 }
 
 // insertMissingDays writes each of rows that the table holds no row of the same key for, in one

@@ -20,7 +20,7 @@ import (
 // work since only such an issue has a row, and the filings its Legion sessions made that day
 // (legionfacts.ReadFilingsIn, through issue_filings_day). The legion/metrics day builders turn
 // them into parts (LegionDay.Rows), and the refresher's write of the day (refresh.writeLegion,
-// through WriteLegionProjectDay) writes the parts as the project's rows of the day, which the eval
+// through writeLegionDay) writes the parts as the project's rows of the day, which the eval
 // routes fold through the six legion/metrics folds the evals' source names.
 //
 // A project's Legion rows of a day are, for each eval with input that day, every series its
@@ -279,5 +279,12 @@ func ZeroLegionDay(project string, day time.Time, slugs ...string) ProjectDay {
 // row of another project, another day or an eval that is not a Legion one, and an item of another
 // family, is refused before anything is written.
 func (s *Store) WriteLegionProjectDay(ctx context.Context, day ProjectDay, builtBy string) error {
-	return s.writeProjectDay(ctx, "Legion", day, legionDaySlugs, legionDayFamilies, builtBy, true)
+	return s.writeLegionDay(ctx, day, builtBy, true)
+}
+
+// writeLegionDay is WriteLegionProjectDay, folding the stored figures of the days whose rows it
+// moved where figures is set, as the refresher's write of a day outside a walk does
+// (writeProjectDay).
+func (s *Store) writeLegionDay(ctx context.Context, day ProjectDay, builtBy string, figures bool) error {
+	return s.writeProjectDay(ctx, "Legion", day, legionDaySlugs, legionDayFamilies, builtBy, figures)
 }

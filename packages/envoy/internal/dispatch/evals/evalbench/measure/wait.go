@@ -179,7 +179,9 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 	}); err != nil {
 		return consumerState{}, fmt.Errorf("read the day rows' builds: %w", err)
 	}
-	projects, err := pool.Query(ctx, `select distinct project_key from eval_days order by project_key`)
+	// One probe of eval_days' primary key for each project, where a distinct read of project_key
+	// would scan the whole table on every poll, beside the count above.
+	projects, err := pool.Query(ctx, `select key from projects p where exists (select 1 from eval_days d where d.project_key = p.key) order by key`)
 	if err != nil {
 		return consumerState{}, fmt.Errorf("read the projects that hold day rows: %w", err)
 	}

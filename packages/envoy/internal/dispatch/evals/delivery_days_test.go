@@ -270,7 +270,7 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	settings := seedAttribution(t, r)
 	ctx := t.Context()
 
-	read, err := r.registry.readDeliveryDay(ctx, settings, []deployRepo{{name: alphaRepo, deploys: true}}, attributionDay, nil, nil)
+	read, err := r.registry.readDeliveryDay(ctx, settings, []keptRepo{{name: alphaRepo, deploys: true}}, attributionDay, nil, nil)
 	if err != nil {
 		t.Fatalf("read the day: %v", err)
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -42,7 +41,7 @@ import (
 //
 // The first day of each of a repository's series, which a read names (data_since, each series its
 // own) and before which a range reads "no data", is that repository's own, and never earlier than
-// the start of the history the reconcile holds for it (deployRepo.since): no row of it is kept
+// the start of the history the reconcile holds for it (keptRepo.since): no row of it is kept
 // before its first deploy or PR-checks run. A lead time to production begins on the merge day of
 // the first pull request the repository ships (dropUnshipped): a day before it whose pull requests
 // none of the repository's deploys ships counts nothing toward a lead time, and holds no row of
@@ -103,7 +102,7 @@ func deployRepoCase(column, keyed, deployRepo string) string {
 	return column + ` = case when eval_id = any(` + keyed + `::text[]) then ` + deployRepo + `::text else '' end`
 }
 
-// deployRepo is one repository whose rows of the evals that read the deploy repository are kept,
+// keptRepo is one repository whose rows of the evals that read the deploy repository are kept,
 // whether it holds a deploy run, which the production rule and the deploy cards read, and since,
 // the UTC midnight of its first deploy or PR-checks run, before which no row of it is kept.
 //
@@ -115,7 +114,7 @@ func deployRepoCase(column, keyed, deployRepo string) string {
 // runs, per repository. The pull requests reach further back, the whole population's history, so
 // a first deploy that ships a pull request merged before the repository's history began would
 // otherwise time a lead time from before it: such a day holds no row of the repository.
-type deployRepo struct {
+type keptRepo struct {
 	name    string
 	deploys bool
 	since   time.Time
@@ -123,12 +122,11 @@ type deployRepo struct {
 
 // readDeployRepos reads the repositories whose rows of the evals that read the deploy repository
 // are kept: every repository that holds a delivery run, in the byte order of their names, each
-// with whether it holds a deploy run and the start of its history (deployRepo.since). One
+// with whether it holds a deploy run and the start of its history (keptRepo.since). One
 // statement walks delivery_runs' primary key from one repository to the next (repo, run_id), one
 // probe each, and reads delivery_runs_kind_started_at's first entry of each repository and kind,
-// so it reads a handful of index entries however many runs there are. A repository that holds
-// neither a deploy run nor a PR-checks run has no history, and none of its rows is kept.
-func readDeployRepos(ctx context.Context, q delivery.Querier) ([]deployRepo, error) {
+// so it reads a handful of index entries however many runs there are.
+func readDeployRepos(ctx context.Context, q delivery.Querier) ([]keptRepo, error) {
 	rows, err := q.Query(ctx, `
 		with recursive held as (
 			(select repo from delivery_runs order by repo limit 1)
@@ -141,13 +139,13 @@ func readDeployRepos(ctx context.Context, q delivery.Querier) ([]deployRepo, err
 				(select min(started_at) from delivery_runs run where run.repo = held.repo and run.kind = $2) as checks
 			from held where held.repo is not null
 		)
-		select repo, deploy is not null, least(deploy, checks) from first where least(deploy, checks) is not null
+		select repo, deploy is not null, least(deploy, checks) from first
 	`, string(delivery.DeliveryRunKindDeploy), string(delivery.DeliveryRunKindPRChecks))
 	if err != nil {
 		return nil, fmt.Errorf("read the repositories that hold a delivery run: %w", err)
 	}
-	var repos []deployRepo
-	var one deployRepo
+	var repos []keptRepo
+	var one keptRepo
 	if _, err := pgx.ForEachRow(rows, []any{&one.name, &one.deploys, &one.since}, func() error {
 		one.since = measures.Midnight(one.since)
 		repos = append(repos, one)
@@ -155,12 +153,12 @@ func readDeployRepos(ctx context.Context, q delivery.Querier) ([]deployRepo, err
 	}); err != nil {
 		return nil, fmt.Errorf("read the repositories that hold a delivery run: %w", err)
 	}
-	slices.SortFunc(repos, func(a, b deployRepo) int { return cmp.Compare(a.name, b.name) })
+	slices.SortFunc(repos, func(a, b keptRepo) int { return cmp.Compare(a.name, b.name) })
 	return repos, nil
 }
 
 // deployRepoNames is the names of repos, in their order.
-func deployRepoNames(repos []deployRepo) []string {
+func deployRepoNames(repos []keptRepo) []string {
 	names := make([]string, len(repos))
 	for i, repo := range repos {
 		names[i] = repo.name
@@ -198,7 +196,7 @@ var leadTimeSlugs = []string{SlugMergeToProduction, SlugFirstCommitToProduction,
 func dropUnshipped(rows []DayRow, first map[evalKey]time.Time, day time.Time) []DayRow {
 	unshipped := map[evalKey]bool{}
 	for _, row := range rows {
-		if row.DeployRepo == "" || row.Repo != "" || row.N != 0 || !slices.Contains(leadTimeSlugs, strings.TrimPrefix(row.EvalID, row.ProjectKey+"/")) {
+		if row.DeployRepo == "" || row.Repo != "" || row.N != 0 || !slices.Contains(leadTimeSlugs, slugOf(row.ProjectKey, row.EvalID)) {
 			continue
 		}
 		if since, held := first[keyOf(row)]; !held || day.Before(since) {

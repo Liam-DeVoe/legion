@@ -15,13 +15,14 @@
 --
 -- The two builds of a roll read the change log as before. A settings change is still a row of kind
 -- `settings` with no repository, which both read as "every window may have moved": the release
--- before this one begins its delivery walk again on each it reads, and this one rewrites the
--- evals the change moves (evals.rewriteSettings). A write of updated_by and updated_at alone
--- moved nothing either build reads, so neither misses a change by its absence, and neither begins
--- a walk or a rewrite for it. The function is replaced in place, and 0106's trigger keeps calling
--- it by name, so every write of the settings, by either build, runs this body once it commits; a
--- write that committed before it logged its change under 0156's body, which both builds read as
--- they read any settings change.
+-- before this one, which keeps no eval day rows, marks every delivery view of its live hub, and
+-- this one marks its views too and rewrites the evals the change moves (evals.rewriteSettings). A
+-- write of updated_by and updated_at alone moved nothing either build reads, so neither misses a
+-- change by its absence: the release before this one marks no view for it, and this one rewrites
+-- nothing. The function is replaced in place, and 0106's trigger keeps calling it by name, so
+-- every write of the settings, by either build, runs this body once it commits; a write that
+-- committed before it logged its change under 0156's body, which both builds read as they read any
+-- settings change.
 --
 -- The census answers 0: one function's body is replaced, and no table is locked or row rewritten.
 create or replace function delivery_settings_changed() returns trigger language plpgsql as $$

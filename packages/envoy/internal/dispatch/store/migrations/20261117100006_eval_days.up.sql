@@ -28,7 +28,7 @@
 --                   holds a delivery run, each from that repository's own runs. The eval list reads
 --                   the rows of the repository the delivery settings name (evals.DeployRepoOf), so
 --                   a move of the deploy repository is a selection at read time, which rewrites no
---                   row and whose move back finds the old repository's rows as it left them; a
+--                   row and whose move back finds the old repository's rows as they stand; a
 --                   repository that holds no run has no such row, and reads "no data".
 --   repo            '' for the row of all the project's repositories, and a repository's name for
 --                   that repository's own row, so a read cut by repository folds those rows and
@@ -69,6 +69,12 @@
 -- rows of its own writer and deploy repository from what the range holds. The primary key is the
 -- read and the upsert of one writer's days of one series of one deploy repository, and its first
 -- day (evals.Store.FirstDays) is one probe of it.
+-- eval_days_stamps, (project_key, eval_id, writer, day) over the listed rows, is the stored
+-- figures' read of the rows a write may have moved (evals.movedFigureDays): one range of an eval's
+-- days of every series, repository and deploy repository, which every write of day rows reads for
+-- the evals it wrote, where the primary key bounds only the project, the eval and the writer. It
+-- holds no updated_at, so a write that moves a row's values and not its listing can stay a
+-- heap-only (HOT) update.
 --
 -- eval_day_members holds, for each item a family of day rows counted, where it was last counted:
 -- the day and the repository. An item whose day moves, an issue closed again on another day or a
@@ -90,11 +96,6 @@
 --                   request, moves which run ships it (containment), and the run it left counts it
 --                   in its own day's rows: this is how the refresher finds that day once the
 --                   stored rows no longer say it.
---   built_by        the build that last moved the item (its day, repository or shipping run), and
---   updated_at      when; a write that leaves the item where it stands writes neither, as a day
---                   row's updated_at moves with its values alone. So the refresher's settings pass
---                   sees an item another build moved since it recorded the settings the rows
---                   stand built under (evals.writtenByAnotherBuild), as it sees a day row.
 -- eval_days_owed holds each project's day of a family whose rows count an item that a write of
 -- another day took from them: a write that moves a member's day off this one (an issue closed
 -- again on another day, a pull request merged again), or moves a pull request's shipped_by off a
@@ -148,6 +149,7 @@ create table eval_days (
     constraint eval_days_eval_of_project check (starts_with(eval_id, project_key || '/'))
 );
 create index eval_days_window on eval_days (project_key, repo, day) where listed;
+create index eval_days_stamps on eval_days (project_key, eval_id, writer, day) where listed;
 
 create table eval_day_members (
     project_key text not null references projects (key) on delete cascade,
@@ -157,8 +159,6 @@ create table eval_day_members (
     day date not null,
     repo text not null default '',
     shipped_by text not null default '',
-    built_by text not null,
-    updated_at timestamptz not null default now(),
     primary key (project_key, family, deploy_repo, row_key)
 );
 create index eval_day_members_day on eval_day_members (project_key, family, day);

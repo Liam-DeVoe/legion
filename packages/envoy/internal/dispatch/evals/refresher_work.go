@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // refresher_work.go is what one refresher pass does with what its feeds read (refresher.go has the
@@ -79,11 +80,10 @@ type refresh struct {
 	// unwritten: without them no production rule judges a run and no deploy card follows a job.
 	settings *delivery.DeliverySettings
 	// builtUnder is the delivery settings the stored delivery and CI rows stand built under
-	// (eval_days_settings), and builtAt when they were recorded, read by the pass's first page that
-	// has settings (builtRead) and moved by each of its pages that brings the rows to the settings
-	// it reads (syncSettings); nil where none are recorded.
+	// (eval_days_settings), read by the pass's first page that has settings (builtRead) and moved by
+	// each of its pages that brings the rows to the settings it reads (syncSettings); nil where
+	// none are recorded.
 	builtUnder *delivery.DeliverySettings
-	builtAt    time.Time
 	builtRead  bool
 	first      map[walkKey]map[evalKey]time.Time
 	since      map[string]LegionSince
@@ -101,7 +101,7 @@ type refresh struct {
 	done        map[builtDay]bool
 	unowned     map[string]bool
 	repos       *repoProjects
-	deployRepos []deployRepo
+	deployRepos []keptRepo
 	// walkApplies is the deploy runs of each kept repository the delivery walk's batch read once
 	// from walkAppliesFrom on (deliveryWalkDay), for the pass's walk alone.
 	walkApplies     map[string]*delivery.ApplyRows
@@ -110,8 +110,8 @@ type refresh struct {
 	// behind a first day they move (gapsBehind), and whose days' stored figures are folded once
 	// the walks' batches are written (foldWalked) rather than in each day's own transaction.
 	walking bool
-	// walked is the days the pass's walks wrote, by family and project (noteWalked).
-	walked map[walkKey]map[time.Time]bool
+	// walked is the span of days the pass's walks wrote, by family and project (noteWalked).
+	walked map[walkKey]daySpan
 	report refreshed
 }
 
@@ -187,9 +187,6 @@ type pageWork struct {
 	// project's) and walkLogged (every project's).
 	restart  map[string]bool
 	settings bool
-	// settingsRow is whether the page holds a change of the delivery_settings row (a settings
-	// change that names no repository), which syncSettings checks against the other builds' writes.
-	settingsRow bool
 	// built is the delivery settings commitPage records in eval_days_settings with the cursors and
 	// the walks the page begins again (syncSettings), nil for none.
 	built *delivery.DeliverySettings
@@ -239,9 +236,7 @@ func (w *pageWork) addChange(change delivery.Change) {
 		// repository's mapping moves which project every row of the repository counts for, so it
 		// begins the walks again.
 		w.settings = true
-		if change.Repo == "" {
-			w.settingsRow = true
-		} else {
+		if change.Repo != "" {
 			w.restart[walkDelivery], w.restart[walkLegion] = true, true
 		}
 	case delivery.ChangeKindIssueFacts, delivery.ChangeKindIssueFilings:
@@ -554,7 +549,11 @@ func (r *refresh) rewriteDelivery(ctx context.Context, items []deliveryItem, fol
 	for i, item := range items {
 		members[i] = item.member
 	}
-	held, err := r.store.heldMembers(ctx, r.projects, deliveryDayFamilies, members)
+	kept, err := r.keptRepos(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	held, err := r.store.heldMembers(ctx, r.projects, deliveryDayFamilies, append([]string{""}, deployRepoNames(kept)...), members)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -622,7 +621,7 @@ func (r *refresh) rewriteDelivery(ctx context.Context, items []deliveryItem, fol
 
 // keptRepos is the repositories whose rows of the evals that read the deploy repository the pass
 // keeps (readDeployRepos), read once a page (refresh.deployRepos).
-func (r *refresh) keptRepos(ctx context.Context) ([]deployRepo, error) {
+func (r *refresh) keptRepos(ctx context.Context) ([]keptRepo, error) {
 	if r.deployRepos == nil {
 		repos, err := readDeployRepos(ctx, r.store.database.Pool)
 		if err != nil {
@@ -682,7 +681,7 @@ func (r *refresh) writeDelivery(ctx context.Context, read deliveryRead, project 
 		return nil
 	}
 	day.Gaps = r.gapsBehind(walkDelivery, project, read.Day, built.Rows, first)
-	if err := r.store.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, r.build, !r.walking); err != nil {
+	if err := r.store.writeDeliveryDay(ctx, day, r.build, !r.walking); err != nil {
 		return err
 	}
 	if r.walking {
@@ -763,7 +762,7 @@ func (r *refresh) writeLegion(ctx context.Context, project string, day time.Time
 		return nil
 	}
 	written.Gaps = r.gapsBehind(walkLegion, project, read.Day, built.Rows, first)
-	if err := r.store.writeProjectDay(ctx, "Legion", written, legionDaySlugs, legionDayFamilies, r.build, !r.walking); err != nil {
+	if err := r.store.writeLegionDay(ctx, written, r.build, !r.walking); err != nil {
 		return err
 	}
 	if r.walking {
@@ -883,7 +882,7 @@ func (r *refresh) gapsBehind(family, project string, day time.Time, built []DayR
 		if before := moved[key]; before != nil {
 			end = before.AddDate(0, 0, -1)
 		}
-		slug := strings.TrimPrefix(key.eval, project+"/")
+		slug := slugOf(project, key.eval)
 		for gap := day.AddDate(0, 0, 1); !gap.After(end); gap = gap.AddDate(0, 0, 1) {
 			var zero []DayRow
 			switch family {
@@ -1059,24 +1058,33 @@ func earliestOf(earliest *time.Time, first map[evalKey]time.Time) *time.Time {
 
 // deliveryWalkDay writes one day of the delivery walk: every project's delivery and CI rows of it,
 // of every kept repository. The deploy runs of each kept repository every day of a batch reads
-// from its own start on are read once, at the batch's first day (delivery.ReadApplyRows), and each
-// day takes its part of them: a batch's days run in order, so the first day's read holds every
-// later day's runs.
+// from its own start on are read once, at the batch's first day (delivery.ReadApplyRows), each
+// repository's read side by side, and each day takes its part of them: a batch's days run in
+// order, so the first day's read holds every later day's runs.
 func (r *refresh) deliveryWalkDay(ctx context.Context, day time.Time) error {
 	if r.walkApplies == nil || day.Before(r.walkAppliesFrom) {
 		kept, err := r.keptRepos(ctx)
 		if err != nil {
 			return err
 		}
-		r.walkApplies = make(map[string]*delivery.ApplyRows, len(kept))
-		for _, repo := range kept {
+		applies := make([]delivery.ApplyRows, len(kept))
+		reads := make([]func(context.Context) error, len(kept))
+		for i, repo := range kept {
 			settings := *r.settings
 			settings.DeployRepo = repo.name
-			applies, err := delivery.ReadApplyRows(ctx, r.store.database.Pool, settings, day)
-			if err != nil {
-				return fmt.Errorf("read the deploy runs of %s from %s on: %w", repo.name, day.Format(time.DateOnly), err)
+			reads[i] = func(ctx context.Context) (err error) {
+				if applies[i], err = delivery.ReadApplyRows(ctx, r.store.database.Pool, settings, day); err != nil {
+					return fmt.Errorf("read the deploy runs of %s from %s on: %w", repo.name, day.Format(time.DateOnly), err)
+				}
+				return nil
 			}
-			r.walkApplies[repo.name] = &applies
+		}
+		if err := store.ReadSideBySide(ctx, reads...); err != nil {
+			return err
+		}
+		r.walkApplies = make(map[string]*delivery.ApplyRows, len(kept))
+		for i, repo := range kept {
+			r.walkApplies[repo.name] = &applies[i]
 		}
 		r.walkAppliesFrom = day
 	}

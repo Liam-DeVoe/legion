@@ -139,17 +139,24 @@ func newStoredEvalsRig(t *testing.T) (*storedEvalsRig, func(statement string, ar
 	}, exec
 }
 
-// read is the list read of every eval of the rig's projects in shape, as both list routes and the
-// live view read it, at the rig's moment, and its JSON body.
+// read is the list read of every eval of the rig's projects in shape at the rig's moment
+// (readEvalShape).
 func (r *storedEvalsRig) read(t *testing.T, shape evalShape) (evalListResponse, []byte) {
+	t.Helper()
+	return readEvalShape(t, r.served, r.projects, r.now, shape)
+}
+
+// readEvalShape is the list read of every eval of projects in shape, as both list routes and the
+// live view read it, at now, and its JSON body.
+func readEvalShape(t *testing.T, served *server, projects []string, now time.Time, shape evalShape) (evalListResponse, []byte) {
 	t.Helper()
 	ranges := evalRanges{window: shape.window, compare: shape.compare, from: shape.window.From, to: shape.window.To}
 	if shape.compare != nil {
 		ranges.compareFrom, ranges.compareTo = shape.compare.From, shape.compare.To
 	}
-	answer, err := r.served.readEvalList(t.Context(), evalListRequest{
-		evalReadQuery: evalReadQuery{ranges: ranges, repos: shape.repos, limit: evalPageMax}, projects: r.projects,
-	}, r.now)
+	answer, err := served.readEvalList(t.Context(), evalListRequest{
+		evalReadQuery: evalReadQuery{ranges: ranges, repos: shape.repos, limit: evalPageMax}, projects: projects,
+	}, now)
 	if err != nil {
 		t.Fatalf("read %s: %v", shape.name, err)
 	}
@@ -187,8 +194,8 @@ func TestTheStoredFiguresAnswerWhatTheDayRowsAnswer(t *testing.T) {
 		}
 	}
 	marks := r.figuresBuilt(t)
-	if len(marks) == 0 {
-		t.Fatal("no project's figures stand built, so the read answers from the day rows throughout")
+	if len(marks) != len(r.projects) {
+		t.Fatalf("the figures of %d of the %d projects stand built (%v), so a read answers from the day rows where the stored figures should", len(marks), len(r.projects), marks)
 	}
 	exec(`delete from eval_figures_built`)
 	sample := map[string][]byte{}

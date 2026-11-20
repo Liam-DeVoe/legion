@@ -6,7 +6,6 @@ import (
 	"maps"
 	"math"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -589,19 +588,19 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 		first, "another-build", len(writtenFigures(state.figures, after.figures)))
 }
 
-// TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass: the release before the stored
-// figures writes day rows and no figures, and its refresher's pass reads the refresher's own
-// change cursor past the eval_days changes its writes log; the next pass of a build with the
-// figures reads those changes from the figures' own cursor and folds the figures of the days they
-// moved, and only those.
+// TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass: a build that holds the day rows and
+// not the stored figures writes day rows and no figures, and its refresher's pass reads the
+// refresher's own change cursor past the eval_days changes its writes log; the next pass of a
+// build with the figures reads those changes from the figures' own cursor and folds the figures of
+// the days they moved, and only those.
 func TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
 	r.settle(t)
 	state := r.figureState(t)
 	day := deliveries.To.AddDate(0, 0, -3)
-	// The old release's write of one day row, as its refresher writes a value, and its pass's
-	// read of the refresher's own cursor past the change the write logs.
+	// That build's write of one day row, as its refresher writes a value, and its pass's read of
+	// the refresher's own cursor past the change the write logs.
 	r.exec(t, "write a day row as a build with no figures does", `
 		update eval_days set n = n + 1, sum = sum + 1, updated_at = now()
 		where project_key = $1 and eval_id = $2 and series = $3 and repo = '' and day = $4`,
@@ -719,14 +718,6 @@ func TestTheDayRowsAreFoldedInDayOrderWhateverOrderTheReadAnswers(t *testing.T) 
 	reversed := SeriesValuesOf(entry, rows(2, 1, 0), firsts, window, nil)
 	want, got := inOrder[0].Window["sum"], reversed[0].Window["sum"]
 	if want == nil || *want != 1e16 || got == nil || math.Float64bits(*got) != math.Float64bits(*want) {
-		t.Errorf("the sum of rows answered in day order is %s and of rows answered the other way round %s, want 1e16 for both", showSum(want), showSum(got))
+		t.Errorf("the sum of rows answered in day order is %s and of rows answered the other way round %s, want 1e16 for both", showValue(want), showValue(got))
 	}
-}
-
-// showSum is a figure as a check's message prints it.
-func showSum(value *float64) string {
-	if value == nil {
-		return "null"
-	}
-	return strconv.FormatFloat(*value, 'g', -1, 64)
 }

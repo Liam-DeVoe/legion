@@ -46,11 +46,11 @@
 -- of the delivery intake is written into delivery_changes directly: pull_request, run, run_job and
 -- session_group, and the settings change of a delivery_settings write, which logs it last, in its
 -- one statement. Those writes are one statement each or transactions that take 6900 first or in
--- their last statement (delivery.LockChanges). A run's jobs write (delivery.UpsertRunJobs) is one
--- statement now, the run row and every job, and a session group's write takes 6900 after its
--- reads and before its first write: 0100's header, which describes the jobs write as two
--- statements and the group write taking 6900 in the middle of its transaction, stays as it
--- shipped.
+-- their last statement (delivery's lockChangesStatement). A run's jobs write
+-- (delivery.UpsertRunJobs) is one statement now, the run row and every job, and a session group's
+-- write takes 6900 after its reads and before its first write: 0100's header, which describes the
+-- jobs write as two statements and the group write taking 6900 in the middle of its transaction,
+-- stays as it shipped.
 --
 -- delivery_change_log_pending(kind, run_kind, repo, ref, t_old, t_new) inserts one pending row,
 -- answers its id (eval_days_change_log widens its own transaction's row by it), and notifies

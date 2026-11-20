@@ -86,7 +86,7 @@ const refresherPage = 1000
 // started RefresherGap after the one before it began (the loop's MinGap holds a pass asked for at
 // once to that), so the changes that arrive meanwhile are answered between two batches rather than
 // after the whole rebuild, and no pass holds the lease for the whole of it. Every day is a
-// transaction of its own per project (WriteProjectDay).
+// transaction of its own per project (writeDeliveryDay, writeLegionDay).
 const walkBatch = 28
 
 // The cursors, one row of eval_days_cursor each, named for the feed they are read by (feedCursors).
@@ -441,17 +441,13 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
 		}
 	}
-	var recorded time.Time
 	if built != nil {
-		if recorded, err = recordBuiltUnder(ctx, tx, *built); err != nil {
+		if err := recordBuiltUnder(ctx, tx, *built); err != nil {
 			return err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the eval day-row refresher's cursors: %w", err)
-	}
-	if built != nil {
-		r.builtAt = recorded
 	}
 	return nil
 }

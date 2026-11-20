@@ -16,7 +16,7 @@ import (
 )
 
 // The refresher's part of the stored figures (figures.go): the change log's read that folds again
-// the figures of the days a build with no figures wrote, and the figures walk, which builds a
+// the figures of the days whose rows a write left unfolded, and the figures walk, which builds a
 // build's figures whole and then each new end day.
 //
 // Every build that holds this code writes the figures, in the transaction of each write of day
@@ -37,14 +37,17 @@ import (
 // again, which every build then folds, or a later build's walk refolds it: the bound a day row the
 // old build wrote during the roll has.
 //
-// A write of day rows by a build that writes no figures (the release before this one, while the
-// two roll) is logged like any other, by eval_days' trigger (migration 20261117100014), and every
-// build that writes figures reads every such change from the figures' own cursor in the change log
-// (figureChanges, eval_days_cursor's `figures` row), which no build without the figures reads, so
-// a change the old build's refresher read off the refresher's own cursor is still folded. A read
-// sees figures older than the rows from that write's commit until the next pass of a build with the
-// figures, which the change's own notification wakes, one RefresherGap at most after the pass
-// before it began, and the pass's own length.
+// A write that leaves its fold to the next pass is logged like any other: a register write, which
+// moves an eval's fold key or listing and folds nothing, logs its eval_versions change, and a write
+// of day rows by a build that holds the day rows and not the figures (an earlier build of the
+// change that brought them; the release before both holds neither) logs its eval_days change, by
+// eval_days' trigger (migration 20261117100014). Every build that writes figures reads every such
+// change from the figures' own cursor in the change log (figureChanges, eval_days_cursor's
+// `figures` row), which no build without the figures reads, so a change such a build's refresher
+// read off the refresher's own cursor is still folded. A read sees figures older than the rows
+// from that write's commit until the next pass of a build with the figures, which the change's
+// own notification wakes, one RefresherGap at most after the pass before it began, and the pass's
+// own length.
 
 // figuresCursor names the figures' own cursor in eval_days_cursor (figureChanges).
 const figuresCursor = "figures"
@@ -235,16 +238,14 @@ func lockLogged(ctx context.Context, tx pgx.Tx, entries []Entry) error {
 }
 
 // noteWalked records that the pass's walk of family wrote project's rows of day, whose figures it
-// folds at the end of the walk (foldWalked).
+// folds at the end of the walk (foldWalked), by widening the walk's span of days to hold it: a
+// walk's day is never the zero time, which widen reads as no day.
 func (r *refresh) noteWalked(family, project string, day time.Time) {
 	key := walkKey{family: family, project: project}
 	if r.walked == nil {
-		r.walked = map[walkKey]map[time.Time]bool{}
+		r.walked = map[walkKey]daySpan{}
 	}
-	if r.walked[key] == nil {
-		r.walked[key] = map[time.Time]bool{}
-	}
-	r.walked[key][day] = true
+	r.walked[key] = r.walked[key].widen(day)
 }
 
 // foldWalked folds the figures of the days the pass's walks wrote (noteWalked) whose rows moved,
@@ -258,17 +259,16 @@ func (r *refresh) foldWalked(ctx context.Context) error {
 	walked := r.walked
 	r.walked = nil
 	byProject := map[string]map[string]daySpan{}
-	for key, days := range walked {
+	for key, span := range walked {
 		slugs := legionDaySlugs
 		if key.family == walkDelivery {
 			slugs = deliveryDaySlugs
 		}
-		ordered := slices.SortedFunc(maps.Keys(days), time.Time.Compare)
 		if byProject[key.project] == nil {
 			byProject[key.project] = map[string]daySpan{}
 		}
 		for _, slug := range slugs {
-			addSpan(byProject[key.project], EvalID(key.project, slug), ordered[0], ordered[len(ordered)-1])
+			addSpan(byProject[key.project], EvalID(key.project, slug), span.first, span.last)
 		}
 	}
 	for _, project := range slices.Sorted(maps.Keys(byProject)) {

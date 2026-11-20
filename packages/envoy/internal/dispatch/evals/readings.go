@@ -143,8 +143,21 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 					addSpan(spans, evalID, day, day)
 				}
 			}
-			if err := foldFiguresInTx(ctx, w.Tx, batch.BuiltBy, batch.Project, spans); err != nil {
-				return err
+			if len(spans) > 0 {
+				// The stored figures of the days moved, folded under the definition and the series this
+				// write read under the eval's lock (registerMissing), which a read of them again
+				// (foldFiguresInTx) would answer alike; their order reaches no figure, since
+				// foldKeyOf and encodeFigures read the series by name.
+				scope, ok, err := readFigureScope(ctx, w.Tx, batch.BuiltBy, batch.Project)
+				if err != nil {
+					return err
+				}
+				if ok {
+					entry := Entry{Definition: definition, Series: slices.Collect(maps.Values(byName))}
+					if err := refoldFigures(ctx, w.Tx, scope, map[string]Entry{evalID: entry}, spans); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		written = Written{Definition: definition, Registered: registered, Series: series, Readings: readings}

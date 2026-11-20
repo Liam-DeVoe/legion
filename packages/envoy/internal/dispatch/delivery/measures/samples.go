@@ -1,6 +1,7 @@
 package measures
 
 import (
+	"cmp"
 	"math"
 	"slices"
 	"sort"
@@ -87,14 +88,10 @@ func MergedSamples(parts []DayPart, series string) SortedSamples {
 }
 
 // ascends reports whether samples are in ascending order and hold no -0 and no NaN
-// (SortableSamples).
+// (SortableSamples): over samples with no NaN, which SortableSamples refuses, slices.IsSorted's
+// order is <.
 func ascends(samples []float64) bool {
-	for index, value := range samples {
-		if math.IsNaN(value) || value == 0 && math.Signbit(value) || index > 0 && value < samples[index-1] {
-			return false
-		}
-	}
-	return true
+	return slices.IsSorted(samples) && SortableSamples(samples)
 }
 
 // SortableSamples reports whether samples hold no -0 and no NaN, the lists MergedSamples reads as
@@ -150,15 +147,7 @@ func kth(lists [][]float64, k int) float64 {
 				total += n
 			}
 		}
-		slices.SortFunc(candidates, func(a, b candidate) int {
-			switch {
-			case a.value < b.value:
-				return -1
-			case a.value > b.value:
-				return 1
-			}
-			return 0
-		})
+		slices.SortFunc(candidates, func(a, b candidate) int { return cmp.Compare(a.value, b.value) })
 		pivot, seen := candidates[len(candidates)-1].value, 0
 		for _, c := range candidates {
 			seen += c.weight

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"sync"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -71,10 +70,10 @@ type StoredFigures struct {
 // delivery settings name deployRepo ("" where none are set): of an eval keyed by the deploy
 // repository the fold of that repository's rows, and of every other the fold of the rows of none
 // (DeployRepoOf). It reads side by side: the range rows of the window and of the compare range,
-// the `union all` of two ranges of eval_range_figures' primary key; and the day rows of the window
-// of the evals with a headline series, one range of eval_day_figures' primary key for each project,
-// after how far each project's figures are built (FiguresThrough), on the same connection. The
-// read is FiguresOffered's to make.
+// the `union all` of two ranges of eval_range_figures' primary key; and how far each project's
+// figures are built (FiguresThrough) and, one after the other in the same read, the day rows of
+// the window of the evals with a headline series, one range of eval_day_figures' primary key for
+// each project. The read is FiguresOffered's to make.
 func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entries []Entry, deployRepo, repo string, window Range, compare *Range) (StoredFigures, error) {
 	read := StoredFigures{window: map[string]storedRange{}, compare: map[string]storedRange{}, days: map[string][]storedDay{}}
 	evalIDs := make([]string, len(entries))
@@ -95,7 +94,6 @@ func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entrie
 		query += "\n\t\tunion all\n\t\t" + fmt.Sprintf(ranged, 8, 9)
 		args = append(args, rangeDays(*compare), compare.To)
 	}
-	var mu sync.Mutex
 	err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) error {
 			rows, err := s.database.Pool.Query(ctx, query, args...)
@@ -112,14 +110,12 @@ func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entrie
 					return fmt.Errorf("read the stored range figures of %v: %w", projects, err)
 				}
 				end, row.oldest = end.UTC(), row.oldest.UTC()
-				mu.Lock()
 				if int(days) == rangeDays(window) && end.Equal(window.To) {
 					read.window[evalID] = row
 				}
 				if compare != nil && int(days) == rangeDays(*compare) && end.Equal(compare.To) {
 					read.compare[evalID] = row
 				}
-				mu.Unlock()
 			}
 			if err := rows.Err(); err != nil {
 				return fmt.Errorf("read the stored range figures of %v: %w", projects, err)
@@ -151,9 +147,7 @@ func (s *Store) ReadStoredFigures(ctx context.Context, projects []string, entrie
 					return fmt.Errorf("read the stored day figures of %v: %w", projects, err)
 				}
 				row.day = row.day.UTC()
-				mu.Lock()
 				read.days[evalID] = append(read.days[evalID], row)
-				mu.Unlock()
 			}
 			if err := rows.Err(); err != nil {
 				return fmt.Errorf("read the stored day figures of %v: %w", projects, err)

@@ -190,14 +190,16 @@ type heldMember struct {
 	shippedBy string
 }
 
-// heldMembers is where each of members was last counted in each of projects, under families, with
-// the deploy run that shipped it then: the primary key's range of each project, family and key.
-func (s *Store) heldMembers(ctx context.Context, projects, families, members []string) ([]heldMember, error) {
+// heldMembers is where each of members was last counted in each of projects, under families and
+// deployRepos (the kept repositories and "", every deploy repository a member is counted under),
+// with the deploy run that shipped it then: the primary key's range of each project, family,
+// deploy repository and key.
+func (s *Store) heldMembers(ctx context.Context, projects, families, deployRepos, members []string) ([]heldMember, error) {
 	rows, err := s.database.Pool.Query(ctx, `
 		select project_key, row_key, day, shipped_by from eval_day_members
-		where project_key = any($1) and family = any($2) and row_key = any($3)
+		where project_key = any($1) and family = any($2) and deploy_repo = any($3) and row_key = any($4)
 		order by project_key, row_key, day
-	`, projects, families, members)
+	`, projects, families, deployRepos, members)
 	if err != nil {
 		return nil, fmt.Errorf("read where %d items were counted: %w", len(members), err)
 	}

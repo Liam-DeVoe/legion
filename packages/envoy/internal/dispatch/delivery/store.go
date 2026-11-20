@@ -1028,7 +1028,11 @@ func listEveryRunJobForRuns(ctx context.Context, pool *store.Pool, repo string, 
 }
 
 // runJobsByRun runs query, a read of delivery_run_jobs over the runs runIDs, and answers its jobs
-// keyed by run id, each run's in ListRunJobs' order (collectJobsByRun); no run is no read.
+// keyed by run id, each run's in ListRunJobs' order (collectJobsByRun); no run is no read. Each
+// run's jobs are sorted in Go rather than by an order by: Postgres cannot read delivery_run_jobs'
+// primary key in (run_id, ...) order for `run_id = any($2)`, so an order by sorts the whole 28-day
+// read (about 50,000 rows), on disk past work_mem, where sorting each run's few jobs costs a few
+// milliseconds.
 func runJobsByRun(ctx context.Context, pool *store.Pool, runIDs []int64, query string, arguments ...any) (map[int64][]DeliveryRunJob, error) {
 	if len(runIDs) == 0 {
 		return make(map[int64][]DeliveryRunJob), nil
@@ -1036,11 +1040,9 @@ func runJobsByRun(ctx context.Context, pool *store.Pool, runIDs []int64, query s
 	return collectJobsByRun(ctx, pool, len(runIDs), query, arguments...)
 }
 
-// collectJobsByRun runs query, a read of delivery_run_jobs over at most runs runs, and answers its
-// jobs keyed by run id, each run's in ListRunJobs' order. Each run's jobs are sorted here rather
-// than by an order by: Postgres cannot read delivery_run_jobs' primary key in (run_id, ...) order
-// for `run_id = any($2)`, so an order by sorts the whole 28-day read (about 50,000 rows), on disk
-// past work_mem, where sorting each run's few jobs costs a few milliseconds.
+// collectJobsByRun runs query, a read of delivery_run_jobs, and answers its jobs keyed by run id,
+// each run's sorted into ListRunJobs' order; runs is how many runs the caller expects, a capacity
+// hint (0 for none).
 func collectJobsByRun(ctx context.Context, pool *store.Pool, runs int, query string, arguments ...any) (map[int64][]DeliveryRunJob, error) {
 	byRun := make(map[int64][]DeliveryRunJob, runs)
 	rows, err := pool.Query(ctx, query, arguments...)

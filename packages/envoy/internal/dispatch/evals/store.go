@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -43,6 +44,12 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 // registry tables carry.
 func EvalID(project, slug string) string {
 	return project + "/" + slug
+}
+
+// slugOf is the slug of evalID, an eval of project: EvalID's inverse. An id of another project's
+// eval is answered whole.
+func slugOf(project, evalID string) string {
+	return strings.TrimPrefix(evalID, project+"/")
 }
 
 // writeTx is one registry write's transaction and what its commit owes: the ledger its document

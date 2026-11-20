@@ -112,24 +112,11 @@ func (r *deployRepoRig) moveTo(t *testing.T, repo string) {
 	r.refresh(t)
 }
 
-// read is the list read of every eval of the rig's projects in shape, at the rig's moment.
+// read is the list read of every eval of the rig's projects in shape at the rig's moment
+// (readEvalShape).
 func (r *deployRepoRig) read(t *testing.T, shape evalShape) (evalListResponse, []byte) {
 	t.Helper()
-	ranges := evalRanges{window: shape.window, compare: shape.compare, from: shape.window.From, to: shape.window.To}
-	if shape.compare != nil {
-		ranges.compareFrom, ranges.compareTo = shape.compare.From, shape.compare.To
-	}
-	answer, err := r.served.readEvalList(t.Context(), evalListRequest{
-		evalReadQuery: evalReadQuery{ranges: ranges, repos: shape.repos, limit: evalPageMax}, projects: r.projects,
-	}, r.now)
-	if err != nil {
-		t.Fatalf("read %s: %v", shape.name, err)
-	}
-	body, err := json.Marshal(answer)
-	if err != nil {
-		t.Fatalf("encode %s: %v", shape.name, err)
-	}
-	return answer, body
+	return readEvalShape(t, r.served, r.projects, r.now, shape)
 }
 
 // values is what answer states of each eval from its rows, one JSON line per eval: its id, its

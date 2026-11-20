@@ -101,8 +101,9 @@ const ChangesChannel = "delivery_changes"
 //     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
 //     the update that locks the row.
 //   - First, with this statement queued ahead of its writes (queueLockChanges): every write of
-//     the session groups (writeSessionGroup, after the reads that decide it); and the drain
-//     (DrainPending), whose function takes it before it locks the pending rows it moves.
+//     the session groups (writeSessionGroup, after the reads that decide it).
+//   - First, in SQL: the drain (DrainPending), whose function delivery_changes_drain takes it
+//     before it locks the pending rows it moves.
 //
 // Last is not after every row lock in a statement that changes several rows of a table with a
 // foreign key: Postgres fires the after-row triggers at the statement's end row by row, each row's

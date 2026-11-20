@@ -54,12 +54,18 @@ export function Sparkbars({ points, judged, max, write }: Props) {
       aria-label="per-day trend"
     >
       {points.map((p, i) => {
+        // Where no eval judges the chart (a null target), judgeFigure gives no verdict and writes
+        // the value's usual digits.
         const { met, text } =
           p.value === null
             ? { met: null, text: "no runs" }
-            : judged === undefined
-              ? { met: null, text: write(p.value)(0) }
-              : judgeFigure(judged.target, judged.statistic, "day", p.value, write(p.value));
+            : judgeFigure(
+                judged?.target ?? null,
+                judged?.statistic ?? "",
+                "day",
+                p.value,
+                write(p.value)
+              );
         return (
           <g key={p.label} opacity={p.partial ? 0.4 : 1}>
             <title>{`${p.label}${p.partial ? " (partial day)" : ""}: ${text}`}</title>

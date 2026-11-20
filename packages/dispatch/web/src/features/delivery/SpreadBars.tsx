@@ -57,14 +57,12 @@ export function SpreadBars({ days, judged, noun, write }: Props) {
     HEIGHT
   );
   // A day's value of statistic, null where it has none: its minutes, the verdict its bar takes and
-  // its title's text of them.
+  // its title's text of them, which judgeFigure writes in the usual digits under no verdict where
+  // no eval judges the chart (a null target).
   const figure = (statistic: Judge, minutes: number | null) => {
     if (minutes === null) return null;
-    const written =
-      judged === undefined
-        ? { met: null, text: write(minutes)(0) }
-        : judgeFigure(judged.target, statistic, "day", minutes, write(minutes));
-    return { minutes, ...written };
+    const target = judged?.target ?? null;
+    return { minutes, ...judgeFigure(target, statistic, "day", minutes, write(minutes)) };
   };
   return (
     <svg
