@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   symlinkSync,
   writeFileSync,
@@ -14,6 +15,7 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 
 import { identityOf, marksDirectory, startOf } from "../harness-postgres-marks";
+import { claimEventMs } from "./harness-postgres-waits";
 
 /** The start of the process `pid` as `/proc` gives it, or "" where it is gone or a zombie. */
 function startTimeOf(pid: number): string {
@@ -26,12 +28,35 @@ function startTimeOf(pid: number): string {
   }
 }
 
+/** Each process of the process group `group` that has not ended, by its state in `/proc`: one that
+ *  is gone, or a zombie, has ended, whoever reaps it. */
+export function groupRuns(group: number): number[] {
+  const runs: number[] = [];
+  for (const entry of readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const stat = readFileSync(`/proc/${entry}/stat`, "utf8");
+      const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+      if (Number(fields[2]) === group && fields[0] !== "Z" && fields[0] !== "X") {
+        runs.push(Number(entry));
+      }
+    } catch {
+      // A process that ended while it was read has ended.
+    }
+  }
+  return runs;
+}
+
 /** A live process whose working directory is `cwd`, as a postmaster's is its data directory. */
 export interface StandIn {
   readonly pid: number;
   alive(): boolean;
-  /** SIGKILL, only while `/proc` still names the process by its pid and its start. */
-  stop(): void;
+  /** Ends the stand-in and every process it started: SIGKILL to its process group, only while
+   *  `/proc` still names the stand-in by its pid and its start, and then waits until no process of
+   *  that group has not ended (`groupRuns`), as long as a row waits for one event of another
+   *  process (`claimEventMs`), and throws, naming those processes, where one has not; so the row
+   *  that stops it ends after it, on its pass and its failure paths alike. */
+  stop(): Promise<void>;
 }
 
 /** The command of a stand-in that lives until this process, the process of the row that starts
@@ -64,21 +89,44 @@ export const parentLives = 'read -r _ _ _ ppid _ </proc/$$/stat && [ "$ppid" = "
  *  descriptor of this process, which the child then holds open, or "pipe", a pipe whose other end
  *  this process holds, which a stand-in that reads it to its end reads until this process ends.
  *  `command` lives as long as the row needs it (`untilThisEnds`), never for a fixed time, which
- *  the source check of `harness-postgres-source-rules.test.ts` refuses (`fixedLives`). */
+ *  the source check of `harness-postgres-source-rules.test.ts` refuses (`fixedLives`). It runs in
+ *  a process group of its own, so its stop ends each process it started too (`StandIn.stop`). A
+ *  stand-in that ends with its parent instead (`untilParentEnds`, `parentLives`) ends as an orphan,
+ *  which the PID namespace's PID 1 reaps: a namespace whose PID 1 is `bun test` itself reaps no
+ *  process it did not start, so each such zombie holds a task of the run's limit until the run
+ *  ends (20 reruns of the removal files reached a limit of 512 so in 4 minutes on 2026-11-20), and
+ *  such a run needs a PID 1 that reaps, as bash does. */
 export function standIn(cwd: string, command: readonly string[], stdin?: number | "pipe"): StandIn {
   const child: Subprocess = Bun.spawn([...command], {
     cwd,
     stdin: stdin ?? "ignore",
     stdout: "ignore",
     stderr: "ignore",
+    detached: true,
   });
   const start = startTimeOf(child.pid);
   const alive = () => start !== "" && startTimeOf(child.pid) === start;
   return {
     pid: child.pid,
     alive,
-    stop: () => {
-      if (alive()) child.kill("SIGKILL");
+    stop: async () => {
+      if (alive()) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          // The group ended between the check and the signal.
+        }
+      }
+      const deadline = Date.now() + claimEventMs;
+      for (let runs = groupRuns(child.pid); runs.length > 0; runs = groupRuns(child.pid)) {
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `the stand-in ${child.pid}'s processes ${runs.join(", ")} had not ended ${claimEventMs / 1000} s after its stop`
+          );
+        }
+        await Bun.sleep(20);
+      }
+      await child.exited;
     },
   };
 }

@@ -102,7 +102,7 @@ test.skipIf(!onLinux)(
         1
       );
     } finally {
-      hostile.live.stop();
+      await hostile.live.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -134,7 +134,7 @@ test.skipIf(!onLinux)(
       expect(left[0]).toContain(data);
       expect(left[0]).toContain("is not removed");
     } finally {
-      live.stop();
+      await live.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -372,7 +372,7 @@ test.skipIf(!onLinux)(
 
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: where the target of a TMPDIR link changed between the write of a mark and the teardown, the teardown reads the stack's postmaster under the mark's one spelling, the path the sweep acts on",
-  () => {
+  async () => {
     const { tmp } = scratch();
     const link = `${tmp}-link`;
     const moved = `${tmp}-moved`;
@@ -401,7 +401,7 @@ test.skipIf(!onLinux)(
 
       expect(servingPostmasters(run)).toEqual([served]);
     } finally {
-      postmaster?.stop();
+      await postmaster?.stop();
       rmSync(link, { force: true });
       rmSync(moved, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });

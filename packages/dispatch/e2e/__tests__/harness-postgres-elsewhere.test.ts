@@ -125,7 +125,7 @@ test.skipIf(!onLinux)(
     try {
       await removedByAStart(row, await sweep(row, tmp), left);
     } finally {
-      left.postmaster?.stop();
+      await left.postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -149,7 +149,7 @@ test.skipIf(!onLinux)(
       await removedByAStart(row, lines, left);
       expect(holding(lines, `left what it cannot read: ${gone} (ENOENT`)).toHaveLength(1);
     } finally {
-      left.postmaster?.stop();
+      await left.postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -175,7 +175,7 @@ test.skipIf(!onLinux)(
       ]).toEqual([true, true]);
       expect(holding(lines, left.run)).toEqual([]);
     } finally {
-      left.postmaster?.stop();
+      await left.postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -202,7 +202,7 @@ test.skipIf(!onLinux)(
         )
       ).toHaveLength(1);
     } finally {
-      left.postmaster?.stop();
+      await left.postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -239,8 +239,8 @@ test.skipIf(!onLinux)(
         true,
       ]);
     } finally {
-      inside.postmaster?.stop();
-      beside.postmaster?.stop();
+      await inside.postmaster?.stop();
+      await beside.postmaster?.stop();
       rmSync(inside.other, { recursive: true, force: true });
       rmSync(sibling, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
@@ -259,7 +259,7 @@ test.skipIf(!onLinux)(
 // that directory, does not.
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start's walk of the kernel's processes, by its own default, looks for run directories on the whole machine: it lists a postmaster served beside the file's own directory, which a row's walk under that directory does not",
-  () => {
+  async () => {
     const sibling = realpathSync(mkdtempSync(join(dirname(plantsRoot()), "marks-sibling-")));
     const beside = leaveElsewhere(undefined, true, sibling);
     try {
@@ -271,7 +271,7 @@ test.skipIf(!onLinux)(
         realpathSync(beside.run)
       );
     } finally {
-      beside.postmaster?.stop();
+      await beside.postmaster?.stop();
       rmSync(sibling, { recursive: true, force: true });
     }
   }
@@ -331,7 +331,7 @@ test.skipIf(!onLinux)(
       expect([existsSync(data), existsSync(mark)]).toEqual([false, false]);
       expect(readdirSync(dirname(data)).filter((name) => name.startsWith("pgdata"))).toEqual([]);
     } finally {
-      postmaster.stop();
+      await postmaster.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -365,6 +365,7 @@ test.skipIf(!onLinux)(
     } finally {
       for (const { child } of [ended, runs]) {
         if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await child.exited;
       }
     }
   },
@@ -401,7 +402,7 @@ test.skipIf(!onLinux)(
       expect([existsSync(claimed), existsSync(mark)]).toEqual([false, false]);
       expect(holding(lines, `removed the postmaster of ${data}`)).toHaveLength(1);
     } finally {
-      postmaster.stop();
+      await postmaster.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -440,7 +441,7 @@ test.skipIf(!onLinux)(
         dirname(dirname(left.data))
       );
     } finally {
-      postmaster?.stop();
+      await postmaster?.stop();
       rmSync(left.other, { recursive: true, force: true });
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -528,8 +529,8 @@ test.skipIf(!onLinux)(
       }
     } finally {
       if (claimer !== undefined) await endChild(claimer);
-      heldPostmaster?.stop();
-      otherPostmaster?.stop();
+      await heldPostmaster?.stop();
+      await otherPostmaster?.stop();
       rmSync(parent, { recursive: true, force: true });
     }
   },

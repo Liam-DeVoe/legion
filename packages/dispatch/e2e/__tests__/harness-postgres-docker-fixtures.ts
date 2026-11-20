@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import type { RemovalBounds } from "../harness-postgres-container-removal";
 import * as marks from "../harness-postgres-marks";
 import { boundsEnv, holding, inChild } from "./harness-postgres-removal-fixtures";
-import type { Row, Waits } from "./harness-postgres-waits";
+import { claimEventMs, type Row, type Waits } from "./harness-postgres-waits";
 
 const containerRemovalModule = fileURLToPath(
   new URL("../harness-postgres-container-removal.ts", import.meta.url)
@@ -229,9 +229,26 @@ export function waitLines(lines: readonly string[], id: string): string[] {
  *  twice the row's (20 s for 10 s). */
 export const clockRoomS = 6;
 
-/** Kills each `docker` stand-in a row's start ran that still runs, by its pid and start. */
-export function endStandIns(docker: StandInDocker): void {
-  for (const { pid, start } of [...docker.processes(), ...docker.running()]) {
-    if (marks.stillRuns(pid, start)) process.kill(pid, "SIGKILL");
+/** Kills each `docker` stand-in a row's start ran that still runs, by its pid and start, and waits
+ *  until each has ended, gone or a zombie by its state in `/proc`, as long as a row waits for one
+ *  event of another process (`claimEventMs`); throws naming those that have not, so the row ends
+ *  after them. */
+export async function endStandIns(docker: StandInDocker): Promise<void> {
+  const killed = [...docker.processes(), ...docker.running()].filter(({ pid, start }) =>
+    marks.stillRuns(pid, start)
+  );
+  for (const { pid } of killed) process.kill(pid, "SIGKILL");
+  const deadline = Date.now() + claimEventMs;
+  for (
+    let left = killed.filter(({ pid, start }) => marks.stillRuns(pid, start));
+    left.length > 0;
+    left = left.filter(({ pid, start }) => marks.stillRuns(pid, start))
+  ) {
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `the docker stand-ins ${left.map(({ pid }) => pid).join(", ")} had not ended ${claimEventMs / 1000} s after their kill`
+      );
+    }
+    await Bun.sleep(20);
   }
 }

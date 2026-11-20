@@ -339,7 +339,7 @@ for (const provider of [
         expect(hostile.kept()).toEqual(hostileMarkKept);
       } finally {
         if (killed !== undefined) kill(killed.child);
-        hostile?.live.stop();
+        await hostile?.live.stop();
         await stopPool(row, third, provider.variable);
         await stopStack(row, kept, provider.variable);
         await removeAll(

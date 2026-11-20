@@ -144,7 +144,7 @@ test.skipIf(!onLinux)(
         claimEventMs
       );
     } finally {
-      endStandIns(docker);
+      await endStandIns(docker);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -182,7 +182,7 @@ test.skipIf(!onLinux)(
         claimEventMs
       );
     } finally {
-      endStandIns(docker);
+      await endStandIns(docker);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -242,7 +242,7 @@ for (const docker of [
         );
         expect(ended - began).toBeLessThan(slowAskBounds.boundMs / 1000 + clockRoomS);
       } finally {
-        endStandIns(standIn);
+        await endStandIns(standIn);
         rmSync(tmp, { recursive: true, force: true });
       }
     },
@@ -551,7 +551,7 @@ test.skipIf(!onLinux)(
         callsOfTwo(stuck.id, next.id, "aborted")
       );
     } finally {
-      endStandIns(docker);
+      await endStandIns(docker);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -595,7 +595,7 @@ test.skipIf(!onLinux)(
         callsOfTwo(stuck.id, next.id, "answered")
       );
     } finally {
-      endStandIns(docker);
+      await endStandIns(docker);
       rmSync(tmp, { recursive: true, force: true });
     }
   },

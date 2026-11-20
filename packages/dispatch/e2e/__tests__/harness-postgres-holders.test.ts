@@ -289,14 +289,14 @@ test.skipIf(!onLinux)(
         expect.stringContaining(` ${holder.pid} still holds)`),
       ]);
 
-      holder.stop();
+      await holder.stop();
       await until(row, () => !holder.alive(), "the end of the holder", claimEventMs);
       const second = await sweep(row, tmp);
 
       expect([existsSync(data), existsSync(mark)]).toEqual([false, false]);
       expect(holding(second, `removed ${data} and ${sockets}`)).toHaveLength(1);
     } finally {
-      holder.stop();
+      await holder.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -331,14 +331,14 @@ test.skipIf(!onLinux)(
       ]);
 
       const ended = holder;
-      ended.stop();
+      await ended.stop();
       await until(row, () => !ended.alive(), "the end of the holder", claimEventMs);
       const second = await sweep(row, tmp);
 
       expect([existsSync(data), existsSync(mark)]).toEqual([false, false]);
       expect(holding(second, `removed ${data} and ${sockets}`)).toHaveLength(1);
     } finally {
-      holder?.stop();
+      await holder?.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -388,7 +388,7 @@ test.skipIf(!onLinux)(
       ]);
       expect(holding(lines, `${basename(process.execPath)} ${removal.claimer.pid}`)).toEqual([]);
     } finally {
-      holder?.stop();
+      await holder?.stop();
       if (removal !== undefined) await endChild(removal.claimer);
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -436,14 +436,14 @@ test.skipIf(!onLinux)(
         expect.stringContaining(` ${holder.pid} still holds)`),
       ]);
 
-      holder.stop();
+      await holder.stop();
       await until(row, () => !holder.alive(), "the end of the holder", claimEventMs);
       const second = await sweep(row, tmp);
 
       expect([existsSync(sockets), existsSync(mark)]).toEqual([false, false]);
       expect(holding(second, `removed ${sockets}`)).toHaveLength(1);
     } finally {
-      holder.stop();
+      await holder.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -491,7 +491,7 @@ test.skipIf(!onLinux)(
         holding(lines, `removed the postmaster of ${data}, that directory and ${sockets}`)
       ).toHaveLength(1);
     } finally {
-      postmaster.stop();
+      await postmaster.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -607,7 +607,7 @@ for (const holder of [
         }
       } finally {
         if (sweeping !== undefined) await endChild(sweeping);
-        holds.stop();
+        await holds.stop();
         rmSync(tmp, { recursive: true, force: true });
       }
     },
@@ -676,7 +676,7 @@ test.skipIf(!onLinux)(
       expect(waited).toHaveLength(1);
     } finally {
       if (sweeping !== undefined) await endChild(sweeping);
-      holds.stop();
+      await holds.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
@@ -805,8 +805,8 @@ for (const mounts of [
         }
       } finally {
         if (sweeping !== undefined) await endChild(sweeping);
-        holds.stop();
-        healthy.stop();
+        await holds.stop();
+        await healthy.stop();
         rmSync(tmp, { recursive: true, force: true });
       }
     },
@@ -892,8 +892,8 @@ test.skipIf(!onLinux)(
       expect(holding(lines, `: the read of what holds ${data} waits no longer on `)).toEqual([]);
     } finally {
       if (sweeping !== undefined) await endChild(sweeping);
-      onMount.stop();
-      healthy.stop();
+      await onMount.stop();
+      await healthy.stop();
       rmSync(tmp, { recursive: true, force: true });
     }
   },
