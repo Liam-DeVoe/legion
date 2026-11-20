@@ -293,7 +293,12 @@ type Client struct {
 	// export_test.go) to hold the flush until the connection it would flush is gone, the
 	// interleaving a flush begun after the connection turned reconnecting has.
 	beforeRequestFlush func()
-	mu                 sync.Mutex
+	// replyWaitBegins, when set, runs as a request this client builds itself begins its wait for
+	// the reply, its publish and flush confirmed (requestConfirmedOn, RequestCore). It is nil
+	// outside tests: a row sets it to know each request waits for its reply before it holds a
+	// reconnect's handshake.
+	replyWaitBegins atomic.Pointer[func()]
+	mu              sync.Mutex
 
 	// deniedPublishes holds, under mu, the server's refusals of publishes per subject it refused a
 	// publish to, as the connection reported them (recordPublishDenial), queued in arrival order

@@ -170,6 +170,10 @@ type window struct {
 	// request reads the connection's state (observeToSend). It is nil outside tests: a row sets it
 	// to hold a reconnect's handshake at that moment.
 	requestSubscribed atomic.Pointer[func()]
+	// requestWaitBegins, when set, runs as a Request's wait for its answer begins, with the inbox's
+	// replies, before the wait takes any of them. It is nil outside tests: a row sets it to hold a
+	// reconnect's handshake once the stream's answer is waiting in replies.
+	requestWaitBegins atomic.Pointer[func(replies <-chan *nats.Msg)]
 }
 
 func (w *window) PublishAsync(item contracts.Envelope) <-chan error {
@@ -480,11 +484,14 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		return nil, w.unsent(err, len(data))
 	}
 	return func() error {
-		// The inbox ends with the wait, on this goroutine only once a reply answered the request
-		// (endReplies): a wait that ends at the connection's loss, a refusal or the timeout may end
-		// while nats.go holds its connection lock, which the unsubscribe waits for.
+		// The inbox ends with the wait, on this goroutine only once the wait took a reply that
+		// answered the request as it arrived, on a connection still current (endReplies). A wait
+		// that ends at the connection's loss, a refusal or the timeout - even with an answer found
+		// waiting in replies then (drained) - may end while nats.go holds its connection lock,
+		// which the unsubscribe waits for, and so may one that took its answer after the
+		// connection was lost.
 		replied := false
-		defer func() { endReplies(inboxSub, replied) }()
+		defer func() { endReplies(inboxSub, replied && w.current()) }()
 		// The flush runs beside the wait for the answer rather than ahead of it. nats.go clears
 		// the flushes pending on a connection only as that connection turns from connected to
 		// reconnecting (clearPendingFlushCalls), so a flush begun after that moment - a server
@@ -550,7 +557,6 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 			if !ok || (ack.Error == nil && ack.Sequence == 0) {
 				return false, nil
 			}
-			replied = true
 			if ack.Error != nil {
 				return true, fmt.Errorf("bus: request to %q: the stream refused the copy: %w", subject, streamFull(ack.Error))
 			}
@@ -568,6 +574,9 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		}
 		lost := func() error {
 			return fmt.Errorf("bus: %w: the window's connection was lost or reconnected before the request to %q was answered", ErrUnavailable, subject)
+		}
+		if begins := w.requestWaitBegins.Load(); begins != nil {
+			(*begins)(replies)
 		}
 		timer := time.NewTimer(time.Until(deadline))
 		defer timer.Stop()
@@ -588,6 +597,7 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 				}
 			case reply := <-replies:
 				if settled, err := outcome(reply); settled {
+					replied = true
 					return err
 				}
 			case <-changed:

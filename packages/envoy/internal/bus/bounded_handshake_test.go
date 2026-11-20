@@ -397,9 +397,10 @@ func TestARequestWhoseContextEndedIsNamedWithinItDuringAHeldHandshake(t *testing
 // goroutine of its own (endReplies).
 //
 // The row sends the three requests to a subject a silent subscriber takes and never answers, so no
-// reply and no no-responders answer comes. Once each has reached the subscriber and the client's
-// own flush is answered, so each waits for its reply, it holds the reconnect's handshake. Then the
-// probe's and the consumer request's ctx is cancelled, and the forward's window, 3 s from its send,
+// reply and no no-responders answer comes. Once each has reached the subscriber, and the probe and
+// the consumer request have each begun their wait for the reply (the client's replyWaitBegins seam:
+// their publish and flush are confirmed then), it holds the reconnect's handshake. Then the
+// probe's and the consumer request's ctx is cancelled, and the forward's window, 4 s from its send,
 // runs out during the hold. Each answers within 1 s of its own end, within the attempt held when
 // they ended (no later attempt has reached the hold, and nats.go's lock is still held): the probe
 // with ctx's error, the consumer request with `bus: NATS is reconnecting`, which carries ctx's
@@ -410,7 +411,7 @@ func TestARequestWhoseContextEndedIsNamedWithinItDuringAHeldHandshake(t *testing
 // requests, so every unsubscribe left running has landed. The negative control is the unsubscribe
 // as it was, on the caller's goroutine: no request answers within 1 s of its end.
 func TestARequestWaitingForItsReplyAnswersAtItsBoundWhenAHandshakeIsHeldUnderIt(t *testing.T) {
-	const forwardWindow = 3 * time.Second
+	const forwardWindow = 4 * time.Second
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	silent := testnats.Connect(t, testnats.URL(t))
@@ -430,6 +431,10 @@ func TestARequestWaitingForItsReplyAnswersAtItsBoundWhenAHandshakeIsHeldUnderIt(
 		at   time.Time
 	}
 	answers := make(chan answer, 3)
+	waiting := make(chan struct{}, 2)
+	replyWait := func() { waiting <- struct{}{} }
+	client.replyWaitBegins.Store(&replyWait)
+	t.Cleanup(func() { client.replyWaitBegins.Store(nil) })
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 	go func() {
@@ -456,10 +461,14 @@ func TestARequestWaitingForItsReplyAnswersAtItsBoundWhenAHandshakeIsHeldUnderIt(
 			t.Fatal("control: a request did not reach the silent subscriber within 30 s")
 		}
 	}
-	// The client's own flush is answered after each request's, so each request now waits for its
-	// reply.
-	if err := conn.Flush(); err != nil {
-		t.Fatalf("control: flush the client's connection: %v", err)
+	// The forward's send returned once its flush was confirmed, so its wait is the reply's; the
+	// probe and the consumer request say when theirs begins.
+	for range 2 {
+		select {
+		case <-waiting:
+		case <-time.After(30 * time.Second):
+			t.Fatal("control: a request did not begin its wait for the reply within 30 s")
+		}
 	}
 	notYet := func(when string) {
 		t.Helper()
@@ -537,15 +546,20 @@ func (d *doneWatch) Done() <-chan struct{} {
 //
 // The row holds a reconnect's handshake, so the read waits for nats.go's lock. It starts the
 // publish under a ctx that reports the read's start (doneWatch), cancels ctx, then releases the
-// hold, so nats.go completes the handshake and lets the lock go within a few milliseconds and the
-// read answers. The publish answers `bus: window elapsed before the publish to "<subject>" was
-// flushed: context canceled`, and its publish is never called.
+// hold, so nats.go completes the handshake and lets the lock go, and the read answers. The publish
+// answers `bus: window elapsed before the publish to "<subject>" was flushed: context canceled`,
+// and its publish is never called. The read must answer within readWithin's floor after its start,
+// ConnLockWait (100 ms), which a handshake released under the race detector can outlast; the row
+// raises the floor to 3 s (readFloor), so it reads the case it is for and not the machine's speed.
 //
 // The controls: a publish with a live ctx before the hold and once the connection is back is
 // confirmed and calls its publish once each; and the answer is not ErrReconnecting, so the read
-// answered after ctx ended rather than leaving the publish unsent at ConnLockWait. The negative
+// answered after ctx ended rather than leaving the publish unsent at the floor. The negative
 // control is publishConfirmed as it was, reading ctx only before the read: it publishes.
 func TestAPublishWhoseContextEndsInItsLockWaitPublishesNothing(t *testing.T) {
+	const raisedFloor = 3 * time.Second
+	floor := readFloor.Swap(int64(raisedFloor))
+	t.Cleanup(func() { readFloor.Store(floor) })
 	client, hold := heldHandshakeClient(t)
 	conn := client.Connection()
 	subject := fmt.Sprintf("held-handshake.publish.%d", time.Now().UnixNano())
@@ -587,13 +601,13 @@ func TestAPublishWhoseContextEndsInItsLockWaitPublishesNothing(t *testing.T) {
 	select {
 	case err := <-answered:
 		if errors.Is(err, ErrReconnecting) {
-			t.Fatalf("control: the publish answered %v: its read did not answer within ConnLockWait of the hold's release, so the row did not reach its case", err)
+			t.Fatalf("control: the publish answered %v: its read did not answer within %s of its start, so the row did not reach its case", err, raisedFloor)
 		}
 		if err == nil || err.Error() != want || !errors.Is(err, context.Canceled) {
 			t.Errorf("the publish whose ctx ended in its lock wait answered %v, want %q", err, want)
 		}
-	case <-time.After(heldBound + heldMargin):
-		t.Fatalf("the publish whose ctx ended in its lock wait gave no answer within %s of the hold's release", heldBound+heldMargin)
+	case <-time.After(raisedFloor + heldMargin):
+		t.Fatalf("the publish whose ctx ended in its lock wait gave no answer within %s of the hold's release", raisedFloor+heldMargin)
 	}
 	if n := published.Load(); n != 0 {
 		t.Fatalf("the publish whose ctx ended in its lock wait was called %d time(s), want none", n)
@@ -695,4 +709,70 @@ func TestAWindowRequestAnswersAtItsDeadlineWhenAHandshakeIsHeldBeforeItsSend(t *
 		t.Fatalf("the request whose read met a held handshake reached the subscriber: %s", msg.Data)
 	case <-time.After(500 * time.Millisecond):
 	}
+}
+
+// A window's request whose answer is waiting in its inbox when nats.go begins a reconnect's
+// handshake answers at once, and its inbox ends off its goroutine. The wait took any answer it
+// read, also one found waiting once the connection changed (drained), for a reply over a live link
+// and unsubscribed on its own goroutine, which waits for nats.go's connection lock, so the request
+// answered only when the attempt ended, at the client's connect timeout (connectTimeout, 5 s). Now
+// it unsubscribes there only for a reply it took as the reply arrived, while the window's
+// connection is still current (window.request, endReplies).
+//
+// The row sends a request the stream acknowledges, on a subject the stream captures. As the
+// request's wait begins (the window's requestWaitBegins seam), the row waits until the stream's
+// acknowledgement is in the inbox, then holds the reconnect's handshake. The wait then finds the
+// acknowledgement, whichever of its cases it takes first: the reply's or the connection's change.
+// It answers nil within 1 s of the hold, during the attempt held then, and the inbox is gone once
+// the hold is released.
+//
+// The controls: the lock is still held, and no later attempt has reached the hold, when the
+// request answers. The negative control is the wait as it was, which took every answer for a reply
+// over a live link: it answers only when the attempt ends.
+func TestAWindowRequestAnsweredOnceItsLinkChangedEndsItsInboxOffItsGoroutine(t *testing.T) {
+	client, hold := heldHandshakeClient(t)
+	conn := client.Connection()
+	subject := contracts.LegacyAgentSubject(fmt.Sprintf("ses_held_handshake_window_answer_%d", time.Now().UnixNano()))
+	item := contracts.Envelope{EventID: "evt-held-handshake-window-answer", Topic: subject}
+	w := client.WindowUntil(nil).(*window)
+	before := conn.NumSubscriptions()
+
+	var (
+		attempt int64
+		held    time.Time
+	)
+	holdOnAnswer := func(replies <-chan *nats.Msg) {
+		deadline := time.Now().Add(30 * time.Second)
+		for len(replies) == 0 {
+			if time.Now().After(deadline) {
+				t.Fatal("control: the stream's acknowledgement did not reach the request's inbox within 30 s")
+			}
+			time.Sleep(time.Millisecond)
+		}
+		hold.HoldReconnect(t, conn)
+		attempt = hold.Attempts()
+		held = time.Now()
+	}
+	w.requestWaitBegins.Store(&holdOnAnswer)
+	t.Cleanup(func() { w.requestWaitBegins.Store(nil) })
+	wait, err := w.request(subject, item, RequestOptions{MsgID: ForwardMsgID("held-handshake-window-answer", subject), Timeout: time.Minute})
+	if err != nil {
+		t.Fatalf("control: the request was refused before it was sent: %v", err)
+	}
+	answer := wait()
+	took := time.Since(held)
+	if took > heldBound+heldMargin {
+		t.Fatalf("the request answered %s after the handshake was held, want within %s: its inbox's end waited for nats.go's lock", took, heldBound+heldMargin)
+	}
+	if after := hold.Attempts(); after != attempt {
+		t.Fatalf("the request answered only after %d more handshake attempt(s) had reached the hold: it waited out the attempt held when its wait began", after-attempt)
+	}
+	testnats.RequireLockHeld(t, conn)
+	if answer != nil {
+		t.Errorf("the request whose acknowledgement was in its inbox answered %v, want nil", answer)
+	}
+
+	releaseUntilConnected(t, hold, conn)
+	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the request's inbox to be gone once the hold was released",
+		func() bool { return conn.NumSubscriptions() == before })
 }

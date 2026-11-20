@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -356,10 +357,10 @@ func waitWhileConnecting(ctx context.Context, conn *nats.Conn) error {
 // request's read before its send, which its own deadline bounds (window.observeToSend), and the
 // read that names a request's error (namedOn).
 //
-// The wait lasts at least ConnLockWait from the start, whatever ctx does. A read with the lock free
-// answers in that time, so a ctx that has ended already, or that ends a moment after the start,
-// still gets the read's answer. So a caller can answer up to ConnLockWait (100 ms) after its ctx
-// ended, for each such read it makes once ctx has ended. A ctx that can never end
+// The wait lasts at least ConnLockWait from the start (readFloor), whatever ctx does. A read with
+// the lock free answers in that time, so a ctx that has ended already, or that ends a moment after
+// the start, still gets the read's answer. So a caller can answer up to ConnLockWait (100 ms) after
+// its ctx ended, for each such read it makes once ctx has ended. A ctx that can never end
 // (context.Background) bounds nothing: read is then made on the caller's goroutine, as it would be
 // without readWithin.
 //
@@ -396,7 +397,7 @@ func readWithin[T any](ctx context.Context, read func() T) (value T, answered bo
 		return value, true
 	case <-ctx.Done():
 	}
-	if rest := ConnLockWait - time.Since(began); rest > 0 {
+	if rest := time.Duration(readFloor.Load()) - time.Since(began); rest > 0 {
 		floor := time.NewTimer(rest)
 		defer floor.Stop()
 		select {
@@ -414,13 +415,23 @@ func readWithin[T any](ctx context.Context, read func() T) (value T, answered bo
 	}
 }
 
+// readFloor is how long readWithin waits for a read at the least, whatever its ctx does. It is
+// ConnLockWait outside tests. A row that must have a read answer after its ctx ended, once a held
+// handshake ends, raises it, since under the race detector a handshake can take longer than
+// ConnLockWait to end once it is released.
+var readFloor atomic.Int64
+
+func init() { readFloor.Store(int64(ConnLockWait)) }
+
 // endReplies unsubscribes sub, the reply inbox of a request whose wait has ended. The unsubscribe
-// waits for nats.go's connection lock. A request a reply answered unsubscribes at once on the
-// caller's goroutine: the reply came over a live link a moment ago. A request whose wait ended with
-// no reply - at its caller's bound, at a refusal or at the connection's loss - may end while nats.go
-// holds that lock through a reconnect's handshake, so it unsubscribes on a goroutine of its own and
-// its caller answers at once. That goroutine ends when nats.go lets the lock go; until then the
-// inbox can take a late reply, which nothing reads.
+// waits for nats.go's connection lock. replied says a reply answered the request over a live link
+// a moment ago: the request's wait took the reply as it arrived, and, for a window's request, the
+// window's connection is still current (window.request). Such a request unsubscribes at once on the
+// caller's goroutine. Any other request - one whose wait ended with no reply, at its caller's
+// bound, at a refusal or at the connection's loss, or found its reply already waiting once the
+// connection had changed - may end while nats.go holds that lock through a reconnect's handshake,
+// so it unsubscribes on a goroutine of its own and its caller answers at once. That goroutine ends
+// when nats.go lets the lock go; until then the inbox can take a late reply, which nothing reads.
 func endReplies(sub *nats.Subscription, replied bool) {
 	if replied {
 		_ = sub.Unsubscribe()

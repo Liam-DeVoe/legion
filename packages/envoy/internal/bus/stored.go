@@ -321,6 +321,9 @@ func (c *Client) requestConfirmedOn(ctx context.Context, conn *nats.Conn, subjec
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}
+	if begins := c.replyWaitBegins.Load(); begins != nil {
+		(*begins)()
+	}
 	reply, waitErr := replies.NextMsgWithContext(ctx)
 	if waitErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -380,6 +383,9 @@ func (c *Client) RequestCore(ctx context.Context, subject string, header nats.He
 	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Header: header}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
+	}
+	if begins := c.replyWaitBegins.Load(); begins != nil {
+		(*begins)()
 	}
 	select {
 	case reply := <-replies:
