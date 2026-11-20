@@ -3119,8 +3119,7 @@ func (s *Postgres) ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.T
 	// drop's delete, a statement of its own, sees the lease, or it waits for the drop and finds the
 	// row gone when the drop deleted it. A row of another kind, a notice that is no catch-up, and a
 	// row finished and gone each select nothing and lock nothing.
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('legion.outbox.catch-up:' || issue)) from outbox
-		where id = $1 and kind = $2 and payload->>'kind' = 'catch-up'`, id, string(OutboxKindNotice)); err != nil {
+	if _, err := tx.Exec(ctx, claimCatchUpLockSQL, id, string(OutboxKindNotice)); err != nil {
 		return OutboxRow{}, false, fmt.Errorf("claim outbox row %d: %w", id, err)
 	}
 	row, err := scanOutbox(tx.QueryRow(ctx, claimRowSQL, outboxDueArgs(now, id, token, now.Add(leaseFor))...))
@@ -3137,6 +3136,31 @@ func (s *Postgres) ClaimRow(ctx context.Context, tx pgx.Tx, id int64, now time.T
 var claimRowSQL = `update outbox set lease_token = $7, lease_until = $8
 		where outbox.id = $6 and ` + outboxClaimable + `
 		returning ` + outboxColumns
+
+// catchUpLockKey is the key of the transaction-scoped advisory lock of an issue's catch-ups, for
+// the issue the SQL expression issue names: the one lock a catch-up's claim (ClaimRow) and the
+// drop of the issue's queued catch-ups (DropCatchUps, through LockCatchUps) take.
+func catchUpLockKey(issue string) string {
+	return "hashtext('legion.outbox.catch-up:' || " + issue + ")"
+}
+
+// claimCatchUpLockSQL is ClaimRow's take of the catch-up lock of row $1's issue, a select over the
+// row, so a row that is no catch-up notice, or one finished and gone, locks nothing.
+var claimCatchUpLockSQL = `select pg_advisory_xact_lock(` + catchUpLockKey("issue") + `) from outbox
+		where id = $1 and kind = $2 and payload->>'kind' = 'catch-up'`
+
+// lockCatchUpsSQL is LockCatchUps' take of the catch-up lock of the issue $1.
+var lockCatchUpsSQL = `select pg_advisory_xact_lock(` + catchUpLockKey("$1::text") + `)`
+
+// LockCatchUps takes the advisory lock of issue's catch-ups for the rest of tx, the lock a
+// catch-up's claim (ClaimRow) and the drop of issue's queued catch-ups (DropCatchUps) take: while
+// tx holds it, no catch-up of issue is claimed and none is dropped by another transaction.
+func LockCatchUps(ctx context.Context, tx pgx.Tx, issue string) error {
+	if _, err := tx.Exec(ctx, lockCatchUpsSQL, issue); err != nil {
+		return fmt.Errorf("lock the claims of the catch-ups of %s: %w", issue, err)
+	}
+	return nil
+}
 
 // RenewOutboxLease moves the lease on row id to until while leaseToken still holds it, so a lane
 // running a long row keeps it from the lapse that would let another claim it mid-run. False is a
@@ -3397,9 +3421,8 @@ func (s *Postgres) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, no
 	// decisions it claimed, which the callers of this drop have locked first (workflow.Adopt and
 	// spentKept lock them through UnclaimedKept before they queue a catch-up), so a row lock here
 	// would close a deadlock (TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting).
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('legion.outbox.catch-up:' || $1::text))`,
-		issue); err != nil {
-		return fmt.Errorf("lock the claims of the catch-ups of %s: %w", issue, err)
+	if err := LockCatchUps(ctx, tx, issue); err != nil {
+		return err
 	}
 	// A catch-up that carries kept decisions and one of whose telling's rows (itself, the row it
 	// copies, or a copy of either) is under a live lease is kept: that row may be publishing now,

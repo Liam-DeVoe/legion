@@ -146,9 +146,6 @@ func TestTreeRunsIsServedForEveryRootState(t *testing.T) {
 			t.Errorf("%s is served treeRuns %v, want %t", tc.key, served, tc.runs)
 		}
 	}
-	if served := body.Issues[parked].TreeRuns; served != nil {
-		t.Logf("%s, at status backlog with its linger set and its lifecycle open, is served treeRuns %t", parked, *served)
-	}
 	if served := body.Issues[child].TreeRuns; served != nil {
 		t.Errorf("%s, a child of %s, is served treeRuns %t, want no such key on an issue that roots no tree", child, running, *served)
 	}

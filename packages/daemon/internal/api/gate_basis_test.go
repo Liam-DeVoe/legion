@@ -439,6 +439,9 @@ func TestBasisGateRefusals(t *testing.T) {
 			if len(statuses.writes) != 0 {
 				t.Fatalf("the refused registration wrote %+v to Dispatch, want no write", statuses.writes)
 			}
+			if len(statuses.taken) != 0 {
+				t.Fatalf("the refused registration made the Dispatch writes %q, want no write", statuses.taken)
+			}
 			t.Logf("refused %s; the record of %s and its Dispatch issue are as they were, and Dispatch took no write", tc.code, basisR)
 		})
 	}

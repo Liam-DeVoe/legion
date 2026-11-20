@@ -434,22 +434,29 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 	// standing open (classify.StandingGate), so it sends the tree's roles nothing; the opening that
 	// follows a close is read in TestBasisGateRefusals. Whatever is queued, on R for its architect,
 	// on P for P's architect or to a role of R's tree, nothing says a person approved R's
-	// document: in R's own words "its" is R, and P's words would name R.
+	// document: in R's own words "its" is R, and P's words would name R. The phrase read in R's
+	// words keeps its subject, so the daemon's own "No person approved version N of its spec
+	// document" (workflow's gate messages) is not read as an approval.
 	versions := []int{c.rootVersion}
 	if c.ownApproval != 0 {
 		versions = append(versions, c.ownApproval)
 	}
 	var ofItsOwn, namingRoot []string
 	for _, version := range versions {
-		ofItsOwn = append(ofItsOwn, fmt.Sprintf("approved version %d of its", version))
+		ofItsOwn = append(ofItsOwn, fmt.Sprintf("a person approved version %d of its", version))
 		namingRoot = append(namingRoot, fmt.Sprintf("approved version %d of the primary document of %s", version, root.Key),
 			fmt.Sprintf("approved %s's spec document at version %d", root.Key, version))
 	}
+	for index, phrase := range namingRoot {
+		namingRoot[index] = strings.ToLower(phrase)
+	}
 	rootNotices, parentNotices, roleMessages := r.noticeReasons(root.Key), r.noticeReasons(parent.Key), r.roleMessages(root.Key)
+	// saysApproved fails when one of said holds one of phrases, all lower case, in any case.
 	saysApproved := func(whose string, said, phrases []string) {
 		for _, words := range said {
+			lowered := strings.ToLower(words)
 			for _, phrase := range phrases {
-				if strings.Contains(strings.ToLower(words), strings.ToLower(phrase)) {
+				if strings.Contains(lowered, phrase) {
 					t.Fatalf("%s says a person approved %s's own document (%q): %q", whose, root.Key, phrase, words)
 				}
 			}

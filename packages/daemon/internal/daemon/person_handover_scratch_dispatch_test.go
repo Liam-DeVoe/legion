@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
@@ -540,7 +541,8 @@ func (r *personHandoverRig) approvalRequest(artifactID string, request map[strin
 // route requires (PRECONDITION_REQUIRED otherwise), and a first upload names none
 // (documentToken). Dispatch refuses a check whose `serves` names a block its block index does not
 // hold (CheckBlockPointers), so a refusal naming a block no document holds is asked again while a
-// version written just before is indexed; any other refusal fails the proof.
+// version written just before is indexed; any other refusal fails the proof. A refused upload
+// writes nothing, so the token read before the first upload holds for every upload asked again.
 func (r *personHandoverRig) writeDocument(key, name, content string) string {
 	t := r.t
 	t.Helper()
@@ -550,13 +552,14 @@ func (r *personHandoverRig) writeDocument(key, name, content string) string {
 			Primary bool   `json:"primary"`
 		} `json:"artifact"`
 	}
+	upload := map[string]any{"name": name, "content": content}
+	if token := r.documentToken(key, name); token != "" {
+		upload["precondition"] = map[string]string{"document": token}
+	}
+	body := withSessionActor(t, upload)
 	var last []byte
 	testwait.Eventually(t, "Dispatch to take "+name+" on "+key, func() bool {
-		upload := map[string]any{"name": name, "content": content}
-		if token := r.documentToken(key, name); token != "" {
-			upload["precondition"] = map[string]string{"document": token}
-		}
-		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", withSessionActor(t, upload), asSession)
+		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", body, asSession)
 		last = answer
 		switch {
 		case status == http.StatusOK || status == http.StatusCreated:
@@ -578,30 +581,35 @@ func (r *personHandoverRig) writeDocument(key, name, content string) string {
 
 // documentToken is the token of the version key's document name stands at now, which an upload
 // replacing it names, and "" where key holds no document of that name, whose upload is a first
-// one: the issue's artifact listing gives the document by its name or slug, and its text read
-// (GET /api/v1/artifacts/{id}/text, what `dispatch doc-read` prints as `Document token:`) the
-// token, as a session reads them.
+// one: the issue's document text read by name or slug (GET
+// /api/v1/issues/{key}/artifacts/{name}/text, what `dispatch doc-read` prints as `Document
+// token:`), which answers 404 ARTIFACT_NOT_FOUND for no such document. Any other answer fails the
+// proof.
 func (r *personHandoverRig) documentToken(key, name string) string {
 	r.t.Helper()
-	var listed []struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-		Slug string `json:"slug"`
-	}
-	dispatchCallAs(r.t, r.baseURL, http.MethodGet, "/api/v1/issues/"+key+"/artifacts", nil, &listed, asSession)
-	for _, artifact := range listed {
-		if artifact.Name != name && artifact.Slug != name {
-			continue
-		}
+	path := "/api/v1/issues/" + key + "/artifacts/" + url.PathEscape(name) + "/text"
+	status, answer := dispatchAnswerAs(r.t, r.baseURL, http.MethodGet, path, nil, asSession)
+	switch status {
+	case http.StatusOK:
 		var text struct {
 			Token string `json:"token"`
 		}
-		dispatchCallAs(r.t, r.baseURL, http.MethodGet, "/api/v1/artifacts/"+artifact.ID+"/text", nil, &text, asSession)
+		if err := json.Unmarshal(answer, &text); err != nil {
+			r.t.Fatalf("decode the text read of %s's document %s from %s: %v", key, name, answer, err)
+		}
 		if text.Token == "" {
-			r.t.Fatalf("the text read of %s's document %s (%s) names no token", key, name, artifact.ID)
+			r.t.Fatalf("the text read of %s's document %s names no token: %s", key, name, answer)
 		}
 		return text.Token
+	case http.StatusNotFound:
+		var refusal struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal(answer, &refusal); err == nil && refusal.Code == "ARTIFACT_NOT_FOUND" {
+			return ""
+		}
 	}
+	r.t.Fatalf("GET %s as %s = %d: %s, want 200 with the document's token or 404 ARTIFACT_NOT_FOUND", path, asSession, status, answer)
 	return ""
 }
 
