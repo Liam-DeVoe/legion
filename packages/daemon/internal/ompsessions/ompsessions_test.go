@@ -210,8 +210,10 @@ func TestOnlyAStoreThatDidNotAnswerTheStartIsTheStoresFault(t *testing.T) {
 	answering := func(code, message string) string {
 		return "postgres://legion@" + testdb.Refusing(t, code, message) + "/sessions?sslmode=disable&connect_timeout=5"
 	}
-	// ended is the error a lookup meets on a connection the store ends under it once the connection
-	// is open, by a reset or by an end of file: the path the lookup sends is where it ends it.
+	// ended is the error an operation the package makes after the store ended its connection:
+	// the first statement sends marker, which makes the store reset or close it, then Written
+	// meets pgx's replacement error `conn closed`. ConnectURL recorded the socket failure under
+	// the first statement; ended must attach that fact to Written's otherwise blind error.
 	ended := func(reset bool) error {
 		const marker = "the store ends this connection"
 		conn, err := ConnectURL(context.Background(), testdb.Breaking(t, dsn, marker, reset))
@@ -219,7 +221,10 @@ func TestOnlyAStoreThatDidNotAnswerTheStartIsTheStoresFault(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer conn.Close(context.Background())
-		_, _, err = Written(context.Background(), conn, marker)
+		if _, err := conn.Exec(context.Background(), "SELECT '"+marker+"'"); err == nil {
+			t.Fatal("the store left the connection open")
+		}
+		_, _, err = Written(context.Background(), conn, sessionPath)
 		return err
 	}
 	// A role the server does not have, whatever its authentication method, so the server refuses
