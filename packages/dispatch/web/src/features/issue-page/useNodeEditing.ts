@@ -620,7 +620,7 @@ export function useNodeEditing({
           return document.activeElement === stop;
         });
         if (to === undefined) (document.activeElement as HTMLElement | null)?.blur();
-        else if (row.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`)?.contains(to) === true) return;
+        else if (inEditorBox(row, to)) return;
         if (to === row) stopEditing();
         else setEditing(undefined);
       },
@@ -722,6 +722,11 @@ export function inputMethodKey(event: KeyboardEvent): boolean {
   return event.isComposing || event.keyCode === 229;
 }
 
+/** Whether `node` is inside the box the editor of `row` is drawn in (`EDITOR_BOX_ATTRIBUTE`). */
+function inEditorBox(row: HTMLElement, node: Node | null): boolean {
+  return row.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`)?.contains(node) === true;
+}
+
 /** Whether the focus is still the edited row's: on the row itself, or inside the box its editor
  *  is drawn in (`EDITOR_BOX_ATTRIBUTE`). A press of the reader's in that box before the node's
  *  block is drawn is the row's, and the caret goes to that block once it is, since a key may
@@ -730,7 +735,7 @@ export function inputMethodKey(event: KeyboardEvent): boolean {
 function holdsRowsFocus(row: HTMLElement): boolean {
   const active = document.activeElement;
   if (active === row) return true;
-  return row.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`)?.contains(active) === true;
+  return inEditorBox(row, active);
 }
 
 /** Whether `target` is the editor's own, which the editing of `row` goes on through: inside the
@@ -741,8 +746,7 @@ function holdsRowsFocus(row: HTMLElement): boolean {
  *  it went down on such an element, or where the focus is on one once it has ended. */
 function editorsOwn(row: HTMLElement, target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
-  const box = row.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`);
-  return box?.contains(target) === true || target.closest(ACTION_BAR) !== null;
+  return inEditorBox(row, target) || target.closest(ACTION_BAR) !== null;
 }
 
 /** Whether `offset` in `node` is still a place in `editable` a caret can be put: the editor can

@@ -148,8 +148,8 @@ test("a node draws its kind at the right of its row and every node starts at one
             async () => {
               const row = nodeRow(page, question).first();
               const below = await belowWhatStays(row);
-              const top = rowOf(await drawnRows(page), question)?.box?.y ?? -1;
-              return below !== undefined && below >= 0 && top < size.height;
+              const top = (await row.boundingBox())?.y;
+              return below !== undefined && below >= 0 && top !== undefined && top < size.height;
             },
             {
               message: `${where} holds the top of that question's row under what stays at the top or off screen`,

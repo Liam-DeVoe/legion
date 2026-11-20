@@ -51,12 +51,10 @@ export function StageSlot({
   const { preset } = address;
   const outline = !filled[preset] && address.target !== undefined && address.document === undefined;
   const View = outline ? undefined : views[preset];
-  // The outline's box: a view's is its stage's own (`ViewStage`).
-  const box = useRef<HTMLDivElement>(null);
   return (
     <DocumentStages>
       {View === undefined ? (
-        <StageBox box={box}>
+        <StageBox>
           <BodySlot {...props} />
         </StageBox>
       ) : (
@@ -96,8 +94,8 @@ export const SLOT_FILLED: SlotsFilled = {
   verification: false,
 };
 
-/** A view's tree itself, which holds the focus only where it has no row to give it to. */
-const VIEW_TREE = '[role="tree"]';
+/** A slot's tree itself, which holds the focus only where it has no row to give it to. */
+const SLOT_TREE = '[role="tree"]';
 
 /**
  * One view, drawn where the outline is, which takes the keyboard focus on its tree's tab-stop
@@ -161,7 +159,7 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
     // the reader or a script put elsewhere in that frame stays.
     const take = (): boolean => {
       const active = document.activeElement;
-      const onTree = active?.matches(VIEW_TREE) === true && stage.contains(active);
+      const onTree = active?.matches(SLOT_TREE) === true && stage.contains(active);
       if (!focusIsLoose(stage) && !onTree) return true;
       const to =
         stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
@@ -192,7 +190,7 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
     // focused in the frame it did so (`placed`).
     const treeFocused = (event: FocusEvent) => {
       const target = event.target;
-      if (!(target instanceof Element) || !target.matches(VIEW_TREE)) return;
+      if (!(target instanceof Element) || !target.matches(SLOT_TREE)) return;
       const from = event.relatedTarget;
       if (from instanceof Node && from !== placed && stage.contains(from)) return;
       if (stage.querySelector(TAB_STOP_ROW) !== null) return;
@@ -219,12 +217,16 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
  * page's body, where nothing says where the reader was.
  */
 function StageBox({
-  box,
+  box: given,
   children,
 }: {
-  box: RefObject<HTMLDivElement | null>;
+  /** The box's element, for a caller that reads it too (`ViewStage`): the box keeps a ref of its
+   *  own where none is given. */
+  box?: RefObject<HTMLDivElement | null>;
   children: ReactNode;
 }): ReactNode {
+  const own = useRef<HTMLDivElement>(null);
+  const box = given ?? own;
   // The line calls this while React takes it off the page, before what replaces it is drawn: the
   // focus is placed once that render is on the page.
   const lineLeaves = useCallback(() => {
@@ -234,7 +236,7 @@ function StageBox({
       const to =
         stage.querySelector<HTMLElement>(FAILED_READ_RETRY) ??
         stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
-        stage.querySelector<HTMLElement>(VIEW_TREE);
+        stage.querySelector<HTMLElement>(SLOT_TREE);
       if (to !== null) focusOn(to);
     });
   }, [box]);

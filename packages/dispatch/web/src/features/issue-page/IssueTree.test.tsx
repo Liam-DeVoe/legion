@@ -84,6 +84,7 @@ import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { addressesAsShortForms } from "./tree-drafts";
+import { TAB_STOP_ROW } from "./tree-focus";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 
 /**
@@ -8612,8 +8613,8 @@ function drawnRowIds(container: HTMLElement): (string | undefined)[] {
  *  name, and not the whole page, which `waitFor` adds by default. */
 const OWN_WORDS = { onTimeout: (error: Error) => error };
 
-/** The failed reads' lines the page in `container` draws, once there are `count` of them, and
- *  where the first stands to the tree: before it, and outside it. */
+/** The failed reads' lines the page in `container` draws, once there are `count` of them, where
+ *  the first stands to the tree - before it, and outside it - and the first's Retry. */
 async function failedLines(container: HTMLElement, count: number, read: string) {
   await waitFor(
     () =>
@@ -8626,17 +8627,49 @@ async function failedLines(container: HTMLElement, count: number, read: string) 
   const line = container.querySelector<HTMLElement>("[data-failed-read]");
   const tree = container.querySelector('[role="tree"]');
   if (line === null || tree === null) throw new Error("the page drew no line or no tree");
+  const retry = line.querySelector<HTMLElement>(FAILED_READ_RETRY);
+  if (retry === null) throw new Error(`the failed ${read} read's line drew no Retry`);
   return {
     inTree: tree.contains(line),
     line,
     overTree: (line.compareDocumentPosition(tree) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+    retry,
   };
 }
 
-// A names read that failed was silent: `namesFailed` was read by nothing, so every chip kept its
-// raw address, or names from before, with no word. Its line is drawn over the tree, the rows
-// still drawn under it and the page opened on its first row as ever (the names place no row);
-// its Retry asks the names read again, and its answer takes the line away.
+/** Waits until the page in `container` draws no failed read's line, once the `read` read that
+ *  failed has answered. */
+async function failedLinesGone(container: HTMLElement, read: string): Promise<void> {
+  await waitFor(
+    () =>
+      expect(
+        container.querySelectorAll("[data-failed-read]").length,
+        `the failed ${read} read's line stayed once it answered`
+      ).toBe(0),
+    OWN_WORDS
+  );
+}
+
+/** Waits until the focus in `container` is on the tree's tab-stop row (`TAB_STOP_ROW`), where the
+ *  focus the `read` read's Retry held goes as its line leaves. */
+async function focusOnTabStopRow(container: HTMLElement, read: string): Promise<void> {
+  await waitFor(
+    () =>
+      expect(
+        focusPlace(container),
+        `the focus the failed ${read} read's Retry held did not go to the tree's tab-stop row as its line left`
+      ).toBe(
+        container.querySelector<HTMLElement>(TAB_STOP_ROW)?.dataset.nodeId ?? "the tab-stop row"
+      ),
+    OWN_WORDS
+  );
+}
+
+// A names read that failed was silent: what the tree said of it (`IssueTreeView.namesFailure`)
+// was read by nothing, so every chip kept its raw address, or names from before, with no word.
+// Its line is drawn over the tree, the rows still drawn under it and the page opened on its first
+// row as ever (the names place no row); its Retry asks the names read again, and its answer takes
+// the line away.
 test("a failed names read draws its line over the tree with every row drawn, and its Retry reads the names again", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -8646,7 +8679,7 @@ test("a failed names read draws its line over the tree with every row drawn, and
   try {
     const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
     const { container } = view;
-    const { inTree, line, overTree } = await failedLines(container, 1, "names");
+    const { inTree, line, overTree, retry } = await failedLines(container, 1, "names");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.names_unreadable);
     expect({ inTree, overTree }, "the names' line is not drawn over the tree").toEqual({
       inTree: false,
@@ -8664,17 +8697,8 @@ test("a failed names read draws its line over the tree with every row drawn, and
       expect.arrayContaining(["head-a", "head-b"])
     );
 
-    const retry = line.querySelector<HTMLElement>("button");
-    if (retry === null) throw new Error("the names' line drew no Retry");
     await user.click(retry);
-    await waitFor(
-      () =>
-        expect(
-          container.querySelectorAll("[data-failed-read]").length,
-          "the names' line stayed once their read answered"
-        ).toBe(0),
-      OWN_WORDS
-    );
+    await failedLinesGone(container, "names");
     expect(names.mock.calls.length, "the Retry did not ask the names again").toBe(2);
     expect(messages.mock.calls.length, "the names' Retry asked another read again").toBe(0);
     expect(drawnRowIds(container), "the rows changed once the names answered").toEqual(drawn);
@@ -8702,7 +8726,7 @@ test("a failed asks read draws its line over the tree and opens the page on its 
       ["asks", KEY],
     ]);
     const { container } = view;
-    const { inTree, line, overTree } = await failedLines(container, 1, "asks");
+    const { inTree, line, overTree, retry } = await failedLines(container, 1, "asks");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.asks_unreadable);
     expect({ inTree, overTree }, "the asks' line is not drawn over the tree").toEqual({
       inTree: false,
@@ -8711,8 +8735,6 @@ test("a failed asks read draws its line over the tree and opens the page on its 
     expect(drawnRowIds(container), "the failed asks read took the comments' rows away").toEqual(
       expect.arrayContaining(["head-a", "head-b"])
     );
-    const retry = container.querySelector<HTMLElement>(FAILED_READ_RETRY);
-    if (retry === null) throw new Error("the asks' line drew no Retry");
     const onRetry = () =>
       expect(
         document.activeElement === retry,
@@ -8724,28 +8746,11 @@ test("a failed asks read draws its line over the tree and opens the page on its 
     onRetry();
 
     await user.click(retry);
-    await waitFor(
-      () =>
-        expect(
-          container.querySelectorAll("[data-failed-read]").length,
-          "the asks' line stayed once their read answered"
-        ).toBe(0),
-      OWN_WORDS
-    );
+    await failedLinesGone(container, "asks");
     expect(asks.mock.calls.length, "the Retry did not ask the asks again").toBe(2);
     expect(messages.mock.calls.length, "the asks' Retry asked another read again").toBe(0);
     expect(rowsFor(container, WAITING_QUESTION.id).length, "the question drew no row").toBe(1);
-    await waitFor(
-      () =>
-        expect(
-          focusedRow(container) ?? "no row",
-          "the focus the asks' Retry held did not go to the tree's tab-stop row as its line left"
-        ).toBe(
-          container.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')?.dataset.nodeId ??
-            "the tab-stop row"
-        ),
-      OWN_WORDS
-    );
+    await focusOnTabStopRow(container, "asks");
   } finally {
     asks.mockRestore();
     messages.mockRestore();
@@ -8778,9 +8783,7 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
       ["asks", KEY],
     ]);
     const { container } = view;
-    const { line } = await failedLines(container, 1, "asks");
-    const retry = line.querySelector<HTMLElement>("button");
-    if (retry === null) throw new Error("the asks' line drew no Retry");
+    const { line, retry } = await failedLines(container, 1, "asks");
     await waitFor(
       () =>
         expect(focusPlace(container), "the page did not open on the asks' Retry").toBe(
@@ -8846,26 +8849,9 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
     await user.click(retry);
     await heldOut("second", 3);
     await act(async () => answering.resolve([WAITING_QUESTION] as never));
-    await waitFor(
-      () =>
-        expect(
-          container.querySelectorAll("[data-failed-read]").length,
-          "the asks' line stayed once their read answered"
-        ).toBe(0),
-      OWN_WORDS
-    );
+    await failedLinesGone(container, "asks");
     expect(rowsFor(container, WAITING_QUESTION.id).length, "the question drew no row").toBe(1);
-    await waitFor(
-      () =>
-        expect(
-          focusPlace(container),
-          "the focus the asks' Retry held did not go to the tree's tab-stop row as its line left"
-        ).toBe(
-          container.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')?.dataset.nodeId ??
-            "the tab-stop row"
-        ),
-      OWN_WORDS
-    );
+    await focusOnTabStopRow(container, "asks");
   } finally {
     asks.mockRestore();
     messages.mockRestore();

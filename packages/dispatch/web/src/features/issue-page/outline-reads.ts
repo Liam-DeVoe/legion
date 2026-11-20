@@ -1,27 +1,15 @@
-import {
-  notifyManager,
-  type QueryFilters,
-  type QueryObserverResult,
-  useIsFetching,
-  useQueries,
-  useQueryClient,
-} from "@tanstack/react-query";
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { type QueryObserverResult, useQueries } from "@tanstack/react-query";
+import { useMemo } from "react";
 
 import { api } from "../../api/client";
 import { primarySpec, roleDocument } from "../../api/issue-cache";
-import {
-  artifactBlocksQuery,
-  issueCoverageQuery,
-  issueResultsQuery,
-  referenceTargetsQuery,
-} from "../../api/queries";
+import { artifactBlocksQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { refetchFailedOnFocus } from "../refs/reference-target";
 import type { IssueTreeReads, TreeNode } from "./issue-tree";
 import { STATE_LINES } from "./page-words";
-import { issueAsksQuery, treeDocumentIds, useIssueTree } from "./useIssueTree";
+import { issueAsksQuery, standsFailed, treeDocumentIds, useIssueTree } from "./useIssueTree";
 
 /** What each read the outline waits on takes: a copy of the tree's own rule for its reads,
  *  `useIssueTree.ts`'s `EVENT_FRESH`, which this file is to import once that file exports it.
@@ -54,14 +42,9 @@ export interface FailedRead {
   readonly retrying: boolean;
 }
 
-/** What the outline's reads give (`useOutlineReads`). Each field is one value for as long as the
+/** What the tree's reads give (`useTreeReads`). Each field is one value for as long as the
  *  reads say the same; the object holding them is new on every render. */
-export interface OutlineReads {
-  /** Each read the tree's rows or their names come from that stands failed (`standsFailed`), in
-   *  the order the reads are given: the six reads below, each document's blocks
-   *  (`treeDocumentIds`), and the names last, as the tree reads them last (`useIssueTree`).
-   *  Empty while none does. */
-  readonly failed: readonly FailedRead[];
+export interface TreeReads {
   /** The reads of the issue's conversation the tree's turns come from, each undefined until it
    *  has answered, and whether each of the six reads the tree's other nodes come from - the
    *  coverage, the decisions, the results, the asks, the comments and the messages - holds its
@@ -84,64 +67,97 @@ export interface OutlineReads {
   readonly root: TreeNode;
 }
 
+/** What the outline's reads give (`useOutlineReads`): the tree's reads, and the line of each that
+ *  stands failed. */
+export interface OutlineReads extends TreeReads {
+  /** Each read the tree's rows or their names come from that stands failed (`standsFailed`), in
+   *  the order the reads are given: the six reads (`reads`), each document's blocks
+   *  (`treeDocumentIds`), and the names last, as the tree reads them last (`useIssueTree`).
+   *  Empty while none does. */
+  readonly failed: readonly FailedRead[];
+}
+
 /** No read stands failed: the same empty list on every render, so the tree's lines and its
  *  opening, which read it, see one value; the tree's own where the page gives it none. */
 export const NO_FAILED_READS: readonly FailedRead[] = [];
 
-/** The key each of the six reads' lines is drawn under and what it says, in the order
- *  `useOutlineReads` gives the reads. */
-const SIX_READS = [
-  ["coverage", STATE_LINES.coverage_unreadable],
-  ["decisions", STATE_LINES.issue_decisions_unreadable],
-  ["results", STATE_LINES.results_unreadable],
-  ["asks", STATE_LINES.asks_unreadable],
-  ["comments", STATE_LINES.comments_unreadable],
-  ["messages", STATE_LINES.messages_unreadable],
-] as const;
-
-/**
- * Whether a read stands failed, by its state (TanStack Query's; a read's observer gives the same
- * fields): it holds no answer, and a fetch of it has failed (`errorUpdateCount`). That count goes
- * back to 0 only with the read's answer - the read reset, or taken out of the cache - so a
- * failure it counts came after the read last held an answer.
- *
- * The read's status is not the rule, for two reasons. A read that holds an answer and whose
- * refresh failed reads `error`, though its rows are still drawn from that answer: it is not
- * failed, and draws no line, which would stand over rows that are all drawn and take the page's
- * opening. And TanStack sets a read that holds no answer back to `pending`, its error cleared,
- * the moment it fetches again: a failed read goes on standing failed while it runs again - its
- * Retry, or window focus - so its line stays, with the focus its Retry holds, until the read
- * answers.
- */
-function standsFailed(state: {
-  readonly data: unknown;
-  readonly errorUpdateCount: number;
-}): boolean {
-  return state.data === undefined && state.errorUpdateCount > 0;
+/** The six reads the tree's nodes other than the issue's children and the documents' blocks come
+ *  from, in the order they are given, each under the key and with the freshness `useIssueTree`
+ *  reads it by, so they cost no request of their own; and the key each one's line is drawn under
+ *  and what it says (`failedLines`). */
+function sixReads(key: string) {
+  return [
+    {
+      line: "coverage",
+      message: STATE_LINES.coverage_unreadable,
+      query: { ...issueCoverageQuery(key), ...EVENT_FRESH },
+    },
+    {
+      line: "decisions",
+      message: STATE_LINES.issue_decisions_unreadable,
+      query: { ...issueDecisionsQuery(key, true), ...EVENT_FRESH },
+    },
+    {
+      line: "results",
+      message: STATE_LINES.results_unreadable,
+      query: { ...issueResultsQuery(key), ...EVENT_FRESH },
+    },
+    {
+      line: "asks",
+      message: STATE_LINES.asks_unreadable,
+      query: { ...issueAsksQuery(key), ...EVENT_FRESH },
+    },
+    {
+      line: "comments",
+      message: STATE_LINES.comments_unreadable,
+      query: { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...EVENT_FRESH },
+    },
+    {
+      line: "messages",
+      message: STATE_LINES.messages_unreadable,
+      query: {
+        queryFn: () => api.listIssueMessages(key),
+        queryKey: ["issue-messages", key],
+        ...EVENT_FRESH,
+      },
+    },
+  ] as const;
 }
 
-/** `answer`'s line, under `key` and in the words `message`, where its read stands failed
- *  (`standsFailed`), and none where it does not: while its read runs again the line stays,
- *  busy (`retrying`). Its Retry is the read's own `refetch`, which asks that read alone again
- *  and is one function for as long as the read is observed, so a line that says the same is
- *  the same value. */
-function failedLine(
-  answer: QueryObserverResult<unknown>,
-  key: string,
-  message: string
+/** Each of `reads`' queries, in their order: a tuple, since `useQueries` types each answer by
+ *  its query's place. */
+function queriesOf<T extends readonly { readonly query: object }[]>(
+  reads: T
+): { [K in keyof T]: T[K] extends { readonly query: infer Q } ? Q : never } {
+  return reads.map((read) => read.query) as {
+    [K in keyof T]: T[K] extends { readonly query: infer Q } ? Q : never;
+  };
+}
+
+/** The line of each of `answers`' reads that stands failed (`standsFailed`), in their order, and
+ *  none for a read that does not: while its read runs again the line stays, busy (`retrying`).
+ *  The read at `index` draws its line under the key and in the words `lineOf(index)` gives, which
+ *  is asked only for a read that stands failed. Its Retry is the read's own `refetch`, which asks
+ *  that read alone again and is one function for as long as the read is observed, so a line that
+ *  says the same is the same value. */
+function failedLines(
+  answers: readonly QueryObserverResult<unknown>[],
+  lineOf: (index: number) => { readonly key: string; readonly message: string }
 ): FailedRead[] {
-  return standsFailed(answer)
-    ? [
-        {
-          failure: answer.errorUpdateCount,
-          key,
-          message,
-          placesRows: true,
-          retry: answer.refetch,
-          retrying: answer.isFetching,
-        },
-      ]
-    : [];
+  return answers.flatMap((answer, index) => {
+    if (!standsFailed(answer)) return [];
+    const { key, message } = lineOf(index);
+    return [
+      {
+        failure: answer.errorUpdateCount,
+        key,
+        message,
+        placesRows: true,
+        retry: answer.refetch,
+        retrying: answer.isFetching,
+      },
+    ];
+  });
 }
 
 /** What the outline says where the blocks of the document `id` could not be read: the document
@@ -155,99 +171,71 @@ function blocksUnreadable(issue: IssueDetails, id: string): string {
 }
 
 /**
- * The tree's names reads that stand failed (`standsFailed`): every names read of the page shares
- * its key's head (`referenceTargetsQuery`), and the tree's own - the batched one and the one more
- * (`useIssueTree`) - are the only ones a mounted caller observes, which are the active ones.
- * Their keys are the sets of addresses the tree holds, which only `useIssueTree` reads, so they
- * are reached by that head: an older set no caller observes any more is not asked again.
+ * The issue's tree and the reads it is built from, for whatever reads the tree and draws no
+ * outline: the view row, which counts each view's nodes once every read holds its answer
+ * (`readsHeld`). It builds no line of a read that stands failed, which the outline alone draws
+ * (`useOutlineReads`).
  */
-const FAILED_NAMES: QueryFilters = {
-  predicate: (query) => standsFailed(query.state),
-  queryKey: [referenceTargetsQuery([]).queryKey[0]],
-  type: "active",
-};
-
-/**
- * The names' line where a names read stands failed, and none where none does, by the rule every
- * read of the outline stands failed by (`standsFailed`): a names read under a new set of
- * addresses that failed, or that runs again after it failed, holds no answer of its own, though
- * the tree draws the names an older set's read gave meanwhile (`useIssueTree`). Only the tree
- * observes those reads, so whether one stands failed, how many times those that do have failed
- * and whether one runs again are read from the cache, as `useIsFetching` reads it; its Retry
- * asks those reads again and no other.
- */
-function useNamesLine(): readonly FailedRead[] {
-  const client = useQueryClient();
-  const cache = client.getQueryCache();
-  // Each read counted here has failed at least once, so none stands failed where this is 0.
-  const failure = useSyncExternalStore(
-    useCallback(
-      (changed: () => void) => cache.subscribe(notifyManager.batchCalls(changed)),
-      [cache]
-    ),
-    () => cache.findAll(FAILED_NAMES).reduce((sum, query) => sum + query.state.errorUpdateCount, 0)
-  );
-  const retrying = useIsFetching(FAILED_NAMES) > 0;
-  const retry = useCallback(() => void client.refetchQueries(FAILED_NAMES), [client]);
-  return useMemo(
-    () =>
-      failure > 0
-        ? [
-            {
-              failure,
-              key: "names",
-              message: STATE_LINES.names_unreadable,
-              placesRows: false,
-              retry,
-              retrying,
-            },
-          ]
-        : NO_FAILED_READS,
-    [failure, retry, retrying]
-  );
+export function useTreeReads(issue: IssueDetails): TreeReads {
+  return useReads(issue, false);
 }
 
 /**
- * The issue's tree and the reads the outline waits on, for whatever draws or lands on the
- * outline: one place for those reads and how they are kept fresh, so every caller reads each
- * of them under the one key and with the one freshness, and two callers on one page cost no
+ * The tree's reads (`useTreeReads`), and the line of each that stands failed (`failed`), for
+ * whatever draws or lands on the outline.
+ */
+export function useOutlineReads(issue: IssueDetails): OutlineReads {
+  return useReads(issue, true);
+}
+
+/**
+ * The issue's tree and the reads the outline waits on, and where `lines` the line of each that
+ * stands failed: one place for those reads and how they are kept fresh, so every caller reads
+ * each of them under the one key and with the one freshness, and two callers on one page cost no
  * request more than one.
  *
  * Whether every read the tree's nodes come from holds its answer (`readsHeld`): the issue's
  * children come with the issue, the documents' blocks are `blocksHeld`, and every other node
  * comes from one of the six reads here, read under the keys `useIssueTree` reads them by, so
  * they cost no request of their own. A read that stands failed holds nothing either
- * (`standsFailed`): the page cannot say what it would have held, so it says that the read failed
- * (`failed`). One whose refresh failed holds the answer it had, which its rows are drawn from,
- * and says nothing. The conversation's reads are kept too, which tell a turn the outline leaves
- * out (`useAddressFallback`).
+ * (`standsFailed`): the page cannot say what it would have held, so the outline says that the
+ * read failed (`failed`). One whose refresh failed holds the answer it had, which its rows are
+ * drawn from, and says nothing. The names' line says the tree's names reads that stand failed
+ * (`IssueTreeView.namesFailure`) - the tree draws the names an older set's read gave meanwhile -
+ * and its Retry asks those reads again and no other. The conversation's reads are kept too,
+ * which tell a turn the outline leaves out (`useAddressFallback`).
  */
-export function useOutlineReads(issue: IssueDetails): OutlineReads {
-  const { blocksHeld, root } = useIssueTree(issue);
+function useReads(issue: IssueDetails, lines: boolean): OutlineReads {
+  const { blocksHeld, namesFailure, root } = useIssueTree(issue);
   const key = issue.key;
   const documentIds = treeDocumentIds(issue);
   const documents = useQueries({
-    combine: (answers): { failed: FailedRead[]; settled: boolean } => ({
-      failed: answers.flatMap((answer, index) => {
-        const id = documentIds[index] ?? "";
-        return failedLine(answer, `blocks:${id}`, blocksUnreadable(issue, id));
-      }),
+    combine: (answers): { failed: readonly FailedRead[]; settled: boolean } => ({
+      failed: lines
+        ? failedLines(answers, (index) => {
+            const id = documentIds[index] ?? "";
+            return { key: `blocks:${id}`, message: blocksUnreadable(issue, id) };
+          })
+        : NO_FAILED_READS,
       settled: answers.every((answer) => !answer.isPending),
     }),
     // The keys and the freshness `useIssueTree` reads each document's blocks under, so these
     // cost no request of their own.
     queries: documentIds.map((id) => ({ ...artifactBlocksQuery(id), ...EVENT_FRESH })),
   });
+  const six = sixReads(key);
   const own = useQueries({
     combine: (
       answers
-    ): { failed: FailedRead[]; reads: OutlineReads["reads"]; settled: boolean } => {
+    ): { failed: readonly FailedRead[]; reads: OutlineReads["reads"]; settled: boolean } => {
       const [, , , asks, comments, messages] = answers;
       return {
-        failed: answers.flatMap((answer, index) => {
-          const [line, message] = SIX_READS[index] ?? ["", ""];
-          return failedLine(answer, line, message);
-        }),
+        failed: lines
+          ? failedLines(answers, (index) => ({
+              key: six[index].line,
+              message: six[index].message,
+            }))
+          : NO_FAILED_READS,
         reads: {
           asks: asks.data,
           comments: comments.data,
@@ -257,20 +245,22 @@ export function useOutlineReads(issue: IssueDetails): OutlineReads {
         settled: answers.every((answer) => !answer.isPending),
       };
     },
-    queries: [
-      { ...issueCoverageQuery(key), ...EVENT_FRESH },
-      { ...issueDecisionsQuery(key, true), ...EVENT_FRESH },
-      { ...issueResultsQuery(key), ...EVENT_FRESH },
-      { ...issueAsksQuery(key), ...EVENT_FRESH },
-      { queryFn: () => api.listComments(key), queryKey: ["comments", key], ...EVENT_FRESH },
-      {
-        queryFn: () => api.listIssueMessages(key),
-        queryKey: ["issue-messages", key],
-        ...EVENT_FRESH,
-      },
-    ],
+    queries: queriesOf(six),
   });
-  const names = useNamesLine();
+  const names = useMemo(
+    (): readonly FailedRead[] =>
+      lines && namesFailure !== undefined
+        ? [
+            {
+              ...namesFailure,
+              key: "names",
+              message: STATE_LINES.names_unreadable,
+              placesRows: false,
+            },
+          ]
+        : NO_FAILED_READS,
+    [lines, namesFailure]
+  );
   const failed = useMemo(
     () =>
       own.failed.length + documents.failed.length + names.length === 0

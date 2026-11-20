@@ -6,7 +6,7 @@ import { focusOnDocument } from "../shell/roving";
  * so a view that imported the stage would close a cycle of imports.
  */
 
-/** The row of a view's tree that holds its one tab stop (the WAI-ARIA tree pattern). */
+/** The row of a slot's tree that holds its one tab stop (the WAI-ARIA tree pattern). */
 export const TAB_STOP_ROW = '[role="tree"] [role="treeitem"][tabindex="0"]';
 
 /** The outline's row whose key is `rowKey` (`tree-keys.ts`'s `rowKeyOf`), as a selector. */
