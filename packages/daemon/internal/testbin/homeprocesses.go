@@ -154,28 +154,43 @@ func holdsEntry(environ, want []byte) bool {
 }
 
 // startOf answers pid's start ticks, and whether it still runs. A zombie runs no code and writes
-// nothing, so it has ended for this file's purposes whoever reaps it.
+// nothing, so it has ended for this file's purposes whoever reaps it, and so has a process whose
+// record cannot be read.
 func startOf(pid int) (ticks uint64, running bool) {
-	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-	if err != nil {
-		return 0, false
-	}
-	// The command name, field 2, is in parentheses and may hold either; field 3 onwards follows
-	// the last one.
-	end := bytes.LastIndexByte(stat, ')')
-	if end < 0 {
-		return 0, false
-	}
-	fields := strings.Fields(string(stat[end+1:]))
-	const state, starttime = 0, 22 - 3
-	if len(fields) <= starttime || fields[state] == "Z" || fields[state] == "X" {
-		return 0, false
-	}
-	ticks, err = strconv.ParseUint(fields[starttime], 10, 64)
-	if err != nil {
+	state, ticks, gone, err := ProcessStat(pid)
+	if err != nil || gone || state == "Z" || state == "X" {
 		return 0, false
 	}
 	return ticks, true
+}
+
+// ProcessStat decodes pid's record in /proc/<pid>/stat: its state (field 3) and its start ticks
+// (field 22), which tell it from a later process given the same pid, or gone when no process has
+// the pid. The command name, field 2, is in parentheses and may hold spaces and either
+// parenthesis, so the fields are counted from after the last ")". It is the one decoder of that
+// record the tests share (this file's cleanup, and internal/daemon's local runtime for the live
+// proofs), and each caller keeps its own policy for a zombie and for a record it cannot read.
+func ProcessStat(pid int) (state string, ticks uint64, gone bool, err error) {
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", 0, true, nil
+		}
+		return "", 0, false, err
+	}
+	end := bytes.LastIndexByte(stat, ')')
+	if end < 0 {
+		return "", 0, false, fmt.Errorf("malformed /proc/%d/stat line: %s", pid, strings.TrimSpace(string(stat)))
+	}
+	fields := strings.Fields(string(stat[end+1:]))
+	const stateField, starttime = 0, 22 - 3
+	if len(fields) <= starttime {
+		return "", 0, false, fmt.Errorf("malformed /proc/%d/stat line (no starttime field)", pid)
+	}
+	if ticks, err = strconv.ParseUint(fields[starttime], 10, 64); err != nil {
+		return "", 0, false, fmt.Errorf("malformed /proc/%d/stat starttime: %w", pid, err)
+	}
+	return fields[stateField], ticks, false, nil
 }
 
 // ended is whether p has gone: no process has its pid, or the one that has it started later.
