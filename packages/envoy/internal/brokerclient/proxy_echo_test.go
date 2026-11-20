@@ -5,8 +5,9 @@
 // shows the request back: its Authorization header and its form, the credential this machine
 // trades among them. Every error these identities return reaches a person (agent-secrets prints
 // it, the helper logs it), so these rows send the real requests to such a page and read the error
-// each one returns: no credential the request carried is in it (redact.OAuth2's answer, and
-// redact.RefusalClient for the external_account exchange).
+// each one returns: no credential the request carried is in it (redact.OAuth2's answer and
+// redact.RefusalClient for the external_account exchange, and redact.Class, which prints the
+// sign-in issuer's answer as its class alone).
 
 package brokerclient
 
@@ -204,17 +205,18 @@ func signInStandIn(t *testing.T) (string, *proxyEcho) {
 	return server.URL, stand
 }
 
-// TestProxyEchoDeviceSignInNamesThePageWithoutItsCredentials: the device grant's poll carries the
+// TestProxyEchoDeviceSignInPrintsTheClassAndNoCredential: the device grant's poll carries the
 // client secret and the device code, and a renewal the client secret and the person's refresh
-// token; a stand-in for the token endpoint echoes them.
-func TestProxyEchoDeviceSignInNamesThePageWithoutItsCredentials(t *testing.T) {
+// token; a stand-in for the token endpoint echoes them. The sign-in issuer is a server other than
+// the broker, so its answer prints as its class (redact.Class), the page's status, and none of it.
+func TestProxyEchoDeviceSignInPrintsTheClassAndNoCredential(t *testing.T) {
 	const secret = "device-client-secret-RDX-c41f"
 	t.Run("Wait", func(t *testing.T) {
 		issuer, stand := signInStandIn(t)
 		flow := &DeviceFlow{Issuer: issuer, ClientID: "device-client", ClientSecret: secret}
 		const deviceCode = "device-code-RDX-8d7e6f50"
 		_, err := flow.Wait(context.Background(), &oauth2.DeviceAuthResponse{DeviceCode: deviceCode, Interval: 1, Expiry: time.Now().Add(time.Minute)})
-		assertNamedWithoutCredentials(t, "brokerclient.proxy-echo-wait", err, stand.credentials(), secret, deviceCode)
+		assertClassWithoutCredentials(t, "brokerclient.proxy-echo-wait", err, stand.credentials(), secret, deviceCode)
 		var re *oauth2.RetrieveError
 		if !errors.As(err, &re) || re.Response.StatusCode != http.StatusBadGateway {
 			t.Errorf("Wait = %v, which no longer unwraps to the token endpoint's RetrieveError", err)
@@ -225,9 +227,34 @@ func TestProxyEchoDeviceSignInNamesThePageWithoutItsCredentials(t *testing.T) {
 		flow := &DeviceFlow{Issuer: issuer, ClientID: "device-client", ClientSecret: secret}
 		const refresh = "person-refresh-RDX-2f9c0b77"
 		_, err := flow.Refresh(context.Background(), refresh)
-		assertNamedWithoutCredentials(t, "brokerclient.proxy-echo-refresh", err, stand.credentials(), secret, refresh)
+		assertClassWithoutCredentials(t, "brokerclient.proxy-echo-refresh", err, stand.credentials(), secret, refresh)
 		if errors.Is(err, ErrSignInEnded) {
 			t.Error("a gateway's page reads as a sign-in the issuer ended")
 		}
 	})
+}
+
+// assertClassWithoutCredentials fails the row when err's text holds any of bare (the credentials
+// the page showed on lines of their own) or of others, or does not name the page's status as its
+// class (redact.Class). bare must not be empty: a row that saw none could not have failed. It
+// captures err's text under capture and fails a credential it holds with `REDACT-ASSERT
+// <capture>`, as assertNamedWithoutCredentials does.
+func assertClassWithoutCredentials(t *testing.T, capture string, err error, bare []string, others ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("the call through the stand-in succeeded")
+	}
+	if len(bare) == 0 {
+		t.Fatal("the stand-in showed no credential, so this row could not fail")
+	}
+	printed := err.Error()
+	redacttest.Capture(t, capture, printed)
+	for _, credential := range append(others, bare...) {
+		if strings.Contains(printed, credential) {
+			t.Errorf("REDACT-ASSERT %s: the error carries the credential %q the request sent:\n%s", capture, credential, printed)
+		}
+	}
+	if !strings.HasSuffix(printed, ": the server answered HTTP 502") {
+		t.Errorf("the error does not end in the page's status as its class:\n%s", printed)
+	}
 }

@@ -5,9 +5,9 @@ body: |-
   other error those libraries answer into a `redact.LibraryError`, each printing only the rule's
   reading of the other party's words while `errors.Is` and `errors.As` find what they found
   before, so an issuer's or the broker's words no longer print raw where an error is wrapped with
-  `%w`: `oidc.CheckClient`'s error for an answer that is neither ready nor rejected, a refused
-  sign-in refresh's (`brokerclient.DeviceFlow.Refresh`), a discovery error's, which quoted the
-  issuer's body, and the external-account exchange's, which quoted the security token service's.
+  `%w`: `oidc.CheckClient`'s error for an answer that is neither ready nor rejected, an OIDC
+  discovery error's, which quoted the issuer's body, and the external-account exchange's, which
+  quoted the security token service's.
   A token source handed to another library crosses the same boundary (`redact.TokenSource`).
   Every word of a refusal, its code, description, error_uri, body and reason phrase, is read with
   every credential its own request carried redacted first: every value of a header, of the URL's

@@ -242,15 +242,6 @@
         "capture": "oidc.check-client"
       },
       {
-        "row": "site-device-refresh",
-        "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": [
-          "packages/envoy/internal/brokerclient/boundary_rows_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokerclient.device-refresh"
-      },
-      {
         "row": "site-ts-token-type-minted",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
         "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
@@ -312,15 +303,6 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.secret-manager-token"
-      },
-      {
-        "row": "leak-proxy-echo-refresh",
-        "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
-        "files": [
-          "packages/envoy/internal/brokerclient/proxy_echo_test.go",
-          "packages/envoy/internal/redact/redacttest/redacttest.go"
-        ],
-        "capture": "brokerclient.proxy-echo-refresh"
       },
       {
         "row": "leak-proxy-echo-impersonation",
@@ -1812,6 +1794,11 @@
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
       },
       {
+        "file": "packages/envoy/internal/brokerclient/device.go",
+        "callee": "(net/http.RoundTripper).RoundTrip",
+        "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
+      },
+      {
         "file": "packages/envoy/internal/brokerclient/dpop.go",
         "callee": "(net/http.RoundTripper).RoundTrip",
         "why": "an http.RoundTripper calling the transport it wraps: the one library type that implements http.RoundTripper is *oauth2.Transport, whose RoundTrip answers the error its Source answers, and this census fails every token source handed to x/oauth2 that the boundary did not make and every library HTTP client built without one (Config.Client), so no transport here answers a library's refusal raw"
@@ -2350,13 +2337,6 @@
       "package": "./internal/oidc",
       "test": "TestACheckClientsErrorPrintsNoneOfTheIssuersWords",
       "production": "oidc.CheckClient"
-    },
-    {
-      "id": "site-device-refresh",
-      "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
-      "test": "TestARenewedSignInsErrorPrintsNoneOfTheIssuersWords",
-      "production": "brokerclient.DeviceFlow.Refresh"
     },
     {
       "id": "r4-quoted-refusal",
@@ -3213,25 +3193,11 @@
       "production": "redact.Remote step 8: the known residual"
     },
     {
-      "id": "leak-proxy-echo-refresh",
-      "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
-      "test": "TestProxyEchoDeviceSignInNamesThePageWithoutItsCredentials/Refresh",
-      "production": "brokerclient.DeviceFlow.Refresh, redact.OAuth2's answer"
-    },
-    {
       "id": "leak-proxy-echo-impersonation",
       "requirement": "r3-each-site",
       "package": "./internal/brokerclient",
       "test": "TestProxyEchoExternalAccountMintNamesThePageWithoutItsCredentials/impersonation",
       "production": "brokerclient.ExternalAccountIdentity.Token, redact.RefusalClient"
-    },
-    {
-      "id": "site-proxy-echo-wait",
-      "requirement": "r3-each-site",
-      "package": "./internal/brokerclient",
-      "test": "TestProxyEchoDeviceSignInNamesThePageWithoutItsCredentials/Wait",
-      "production": "brokerclient.DeviceFlow.Wait, redact.OAuth2's answer"
     },
     {
       "id": "site-proxy-echo-sts",
@@ -4671,11 +4637,6 @@
       "guard": "site-oidc-client-check"
     },
     {
-      "site": "brokerclient/device.go:146, x/oauth2's answer wrapped with %w",
-      "source": "the review of #4368 at f0d00b1c26, F1",
-      "guard": "site-device-refresh"
-    },
-    {
       "site": "oidc/clientcheck.go:67, a token endpoint that answers nothing",
       "source": "the leak rows' base run",
       "guard": "site-oidc-client-check",
@@ -4710,11 +4671,6 @@
       "site": "agent-secrets secret forms, the credentials' token refusal inside the Secret Manager client's error (the auth library prints the answer's body)",
       "source": "the token-source hand-off census at a87a6767ca",
       "guard": "site-gcp-secret-manager-token"
-    },
-    {
-      "site": "brokerclient DeviceFlow.Refresh, a page in the token endpoint's place echoing the refresh token and the client secret",
-      "source": "the proxy-echo rows at c40c4751f9",
-      "guard": "leak-proxy-echo-refresh"
     },
     {
       "site": "brokerclient external_account impersonation, a page in the call's place echoing the access token the exchange minted",
