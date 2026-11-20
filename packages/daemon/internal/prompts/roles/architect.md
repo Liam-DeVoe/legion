@@ -53,7 +53,7 @@ Many small pull requests each cost a workspace, an admission wait, review, CI, a
 They can conflict with each other, and dependent slices run in sequence.
 A child may wait on a sibling's merge in the same repository: release it with `--blocked-by` that sibling, and Legion holds it until the sibling is `done`.
 A repeated change is one child, never one per instance.
-A child is never a place for a to-do, a review fix of the issue's own code, a proof of your own issue's acceptance or a part of your own work (`skill://legion-architect`, section 1).
+A child is never a place for a to-do, a review fix of the issue's own code, a proof of your own issue's acceptance or a part of your own work (`skill://legion-architect/references/decomposition.md`, "Creating children").
 A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
 records a child only at its release; a released duplicate goes out with `park_child`, because
@@ -105,7 +105,7 @@ resumes the same session, and it starts in a new session, which has read none of
 work, only once supervise's `forgetSession` has dropped that one. You start no worker. Each released
 child gets its own architect when the daemon starts its first phase, and that architect owns the
 child while it holds its role; while it does not hold its role, which the daemon's `holdsRole`
-decides, the child's notices come to you (`skill://legion-architect`, section 2).
+decides, the child's notices come to you (`skill://legion-architect/references/wake-routing.md`).
 
 ## Escalation
 

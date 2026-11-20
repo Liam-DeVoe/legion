@@ -32,9 +32,10 @@ type Client interface {
 	// Artifacts is every document and file the issue holds, in the order Dispatch lists them:
 	// what each is on the issue and its latest version.
 	Artifacts(ctx context.Context, key string) ([]Artifact, error)
-	// UploadArtifact writes a markdown document on the issue under name, as the next version of
-	// the document of that name when the issue holds one, and answers the slug Dispatch filed it
-	// under.
+	// UploadArtifact writes a markdown document on the issue under name, and answers the slug
+	// Dispatch filed it under. It names no token, so it is a first upload: Dispatch refuses a name
+	// the issue already holds 400 PRECONDITION_REQUIRED, and the outbox uploads only a name the
+	// issue lists no document under (messageArtifact).
 	UploadArtifact(ctx context.Context, key, name, content string) (slug string, err error)
 	// EventsAfter is the issue's event log after a sequence, oldest first, each event as Dispatch
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
