@@ -397,6 +397,19 @@ type Options struct {
 	// (*leakguard.Source); nil is a daemon that runs with no GitHub App, which refuses the start of
 	// every role whose launcher names a tag and starts a launcher that names none as it is.
 	LeakCheck LeakCheckReader
+	// LeakCheckIndex reads the leak check's index of sandbox lines as the builder publishes it
+	// (*leakguard.IndexSource, which keeps nothing). The runtime reads it as it starts and every
+	// LeakCheckIndexPoll after (launchers.pollLeakCheckIndex), and pushes each new index to every
+	// pod launcher whose hello says it takes one (shimwire.LauncherHello.LeakCheckIndex), and,
+	// before each start of a role, the newest it holds to that role's launcher where the launcher
+	// has not reported it installed (launchers.start): the launcher writes it where the check in
+	// each role of its pod reads it, so no check in a pod downloads it. A push that fails starts
+	// the role all the same. Nil is a daemon that pushes no index: the check in a pod reads the
+	// index the pod holds, or UNKNOWN where it holds none.
+	LeakCheckIndex LeakCheckIndexReader
+	// LeakCheckIndexPoll is how often the runtime reads LeakCheckIndex; zero is every 10 minutes
+	// (leakCheckIndexPoll). A span below zero is refused.
+	LeakCheckIndexPoll time.Duration
 	// Now stamps observations and ages pods and orphans; time.Now when nil.
 	Now func() time.Time
 	// Log receives what the runtime decides without being asked; slog.Default() when nil.

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"slices"
 	"strconv"
 	"sync"
 	"time"
@@ -36,6 +37,13 @@ type LeakCheckReader interface {
 	Get(ctx context.Context, tag string) (leakguard.Served, error)
 }
 
+// LeakCheckIndexReader reads the leak check's index of sandbox lines as the builder publishes it
+// now: *leakguard.IndexSource, which keeps nothing, so each read asks GitHub. Each error is one
+// sentence naming what was read and why it was not.
+type LeakCheckIndexReader interface {
+	Read(ctx context.Context) (leakguard.Index, error)
+}
+
 type launchers struct {
 	mu       sync.Mutex
 	sessions map[claim.Token]*launcherSession
@@ -45,6 +53,15 @@ type launchers struct {
 	// of it to a launcher, leakCheckHopBound outside the tests.
 	leakCheck    LeakCheckReader
 	leakCheckHop time.Duration
+	// leakCheckIndex reads the leak check's index of sandbox lines (Options.LeakCheckIndex); nil
+	// is a daemon that pushes no index. indexMu guards index, the newest index a read answered
+	// (refreshLeakCheckIndex), and indexFrames, the launcher_leak_check_index sequence that
+	// carries it (shimwire.SplitLeakCheckIndex), sliced once for every push of it. Both are empty
+	// until a read answers.
+	leakCheckIndex LeakCheckIndexReader
+	indexMu        sync.Mutex
+	index          leakguard.Index
+	indexFrames    []shimwire.LauncherLeakCheckIndex
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
 	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored).
 	// A launchers built without the pair restores nothing.
@@ -93,6 +110,15 @@ type launcherSession struct {
 	// to the push on this connection did (serveLeakCheck).
 	leakCheckTag       string
 	leakCheckInstalled bool
+	// leakCheckIndex is this launcher's hello saying it takes the leak check's index of sandbox
+	// lines from the daemon (shimwire.LauncherHello.LeakCheckIndex). leakCheckIndexSHA256 is the
+	// digest of the index whose install it reported on this connection, "" before any
+	// (serveLeakCheckIndex): the digest a launcher_leak_check_index sequence declares, of the
+	// whole file, so a build whose list did not change is another index all the same. indexPush
+	// holds the one push of the index to this launcher that runs at a time (serveLeakCheckIndex).
+	leakCheckIndex       bool
+	leakCheckIndexSHA256 string
+	indexPush            chan struct{}
 }
 
 func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored,
@@ -107,7 +133,8 @@ func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle,
 func (d *launchers) accept(token claim.Token, issue string, podCreated time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled,
+		leakCheckIndex: hello.LeakCheckIndex, indexPush: make(chan struct{}, 1)}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -160,6 +187,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 		case shimwire.LauncherBundleResult:
 			s.deliver(bundleWaiter(value.ID, value.Index), value)
 		case shimwire.LauncherLeakCheckResult:
+			s.deliver(bundleWaiter(value.ID, value.Index), value)
+		case shimwire.LauncherLeakCheckIndexResult:
 			s.deliver(bundleWaiter(value.ID, value.Index), value)
 		case shimwire.LauncherRestored:
 			s.owner.restoreReported(s, value)
@@ -345,6 +374,17 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 	if err := d.serveLeakCheck(ctx, token, podUID); err != nil {
 		return err
 	}
+	// The leak check's index of sandbox lines goes over next, so the check in the role's pod reads
+	// the newest index the daemon holds from the role's first write. It never stops the start: a
+	// launcher that did not install it keeps the index it holds, or holds none, and the check in
+	// its roles reads that index, or UNKNOWN, and says why, until the push after the daemon's next
+	// read (refreshLeakCheckIndex).
+	if session, err := d.await(ctx, token, podUID); err == nil {
+		if err := d.serveLeakCheckIndex(ctx, session); err != nil {
+			d.log.Warn("launcher leak check index: the leak check index did not reach the pod's launcher before the role's start, so the role starts and the check in its pod reads the index the pod holds, or UNKNOWN where it holds none",
+				"launcher", token, "pod", podUID, "error", err)
+		}
+	}
 	// The work the release took off the pod this one replaces goes over next: the launcher holds
 	// the bundle and restores it into the workspace before it runs the role's command, so the
 	// restore has to be in its hands before any generation of the pod is started, this one
@@ -376,7 +416,9 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 // run and its rename, and this is a slow connection's room. It runs under the start's own
 // context, as the bundle's hop does, so the launch's own bound needs no term for it. A hop that
 // outruns it refuses the start; the launcher's install goes on under its own bound, and the next
-// start is answered Installed at once.
+// start is answered Installed at once. The push of the leak check's index to one launcher
+// (serveLeakCheckIndex) is held to the same bound, and a push of it that outruns the bound costs
+// that push and never the start.
 const leakCheckHopBound = 2 * time.Minute
 
 // serveLeakCheck pushes the shared public leak check to token's launcher in podUID and waits for
@@ -450,6 +492,185 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 		return nil
 	}
 	return refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)
+}
+
+// leakCheckIndexPoll is how often the daemon reads the leak check's index where
+// Options.LeakCheckIndexPoll gives no other span. The builder publishes an index each hour, the
+// daemon must read it at least that often, and a read every 10 minutes keeps the index in a pod
+// within about 70 minutes of a build, far inside the 6 hours after which the check reads an index
+// UNKNOWN.
+const leakCheckIndexPoll = 10 * time.Minute
+
+// pollLeakCheckIndex reads the leak check's index of sandbox lines at once and then every every,
+// until ctx ends, and pushes each index it reads to every pod launcher that takes one
+// (refreshLeakCheckIndex). Runtime.start runs it on the informers' lifetime when the options give
+// a reader.
+func (d *launchers) pollLeakCheckIndex(ctx context.Context, every time.Duration) {
+	tick := time.NewTicker(every)
+	defer tick.Stop()
+	for {
+		d.refreshLeakCheckIndex(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+// refreshLeakCheckIndex is one read of the poll, and the pushes after it. An index the read
+// answers is the newest the daemon holds from then on. The daemon keeps no order of its own among
+// the indexes it reads: a launcher keeps an index built later than one pushed after it
+// (leakguard.InstallIndex), and an index built ahead of the clock, which every launcher refuses,
+// holds the daemon only until the next read. A read that fails logs one warning and keeps the
+// newest index held, so a read GitHub does not answer costs no pod the index the daemon already
+// holds.
+//
+// Then, whether the read answered or not, it pushes the newest index held to each launcher that
+// said it takes one and has not reported it installed (serveLeakCheckIndex), one goroutine for
+// each, and returns once every push has ended: a launcher whose push failed is pushed again after
+// the next read, and a push of one read never runs beside a push of the next. A push that fails
+// is logged naming the launcher and why.
+func (d *launchers) refreshLeakCheckIndex(ctx context.Context) {
+	index, err := d.leakCheckIndex.Read(ctx)
+	if err == nil {
+		err = d.holdLeakCheckIndex(index)
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		d.log.Warn("launcher leak check index: the daemon could not read a new leak check index, so each pod is pushed the newest one it read before",
+			"error", err)
+	}
+	_, frames := d.newestLeakCheckIndex()
+	if len(frames) == 0 {
+		return
+	}
+	digest := frames[0].SHA256
+	d.mu.Lock()
+	sessions := slices.Collect(maps.Values(d.sessions))
+	d.mu.Unlock()
+	var pushes sync.WaitGroup
+	for _, session := range sessions {
+		if !session.leakCheckIndex || session.installedLeakCheckIndex() == digest {
+			continue
+		}
+		pushes.Go(func() {
+			if err := d.serveLeakCheckIndex(ctx, session); err != nil && ctx.Err() == nil {
+				d.log.Warn("launcher leak check index: the leak check index did not reach the pod's launcher, so the check in its roles reads the index the pod holds until the push after the next read",
+					"launcher", session.token, "pod", session.podUID, "error", err)
+			}
+		})
+	}
+	pushes.Wait()
+}
+
+// holdLeakCheckIndex makes index the newest the daemon holds, with the sequence that carries it, or
+// refuses one no sequence can carry (shimwire.SplitLeakCheckIndex) and keeps the newest it held.
+func (d *launchers) holdLeakCheckIndex(index leakguard.Index) error {
+	frames, err := shimwire.SplitLeakCheckIndex(index.Body)
+	if err != nil {
+		return fmt.Errorf("the leak check index the daemon read cannot be pushed: %w", err)
+	}
+	d.indexMu.Lock()
+	d.index, d.indexFrames = index, frames
+	d.indexMu.Unlock()
+	return nil
+}
+
+// newestLeakCheckIndex is the newest index the daemon holds and the sequence that carries it, an
+// empty sequence before any read has answered.
+func (d *launchers) newestLeakCheckIndex() (leakguard.Index, []shimwire.LauncherLeakCheckIndex) {
+	d.indexMu.Lock()
+	defer d.indexMu.Unlock()
+	return d.index, d.indexFrames
+}
+
+// installedLeakCheckIndex is the digest of the index s's launcher reported installed on this
+// connection, "" for none.
+func (s *launcherSession) installedLeakCheckIndex() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.leakCheckIndexSHA256
+}
+
+// serveLeakCheckIndex pushes the newest leak check index the daemon holds to session's launcher and
+// waits for the launcher to install it, under leakCheckHopBound: its slices, each answer read
+// before the next slice goes, and the launcher's Installed, which sets the digest the daemon holds
+// the launcher on. The launcher answers Installed on the last slice, or on any slice of an index
+// whose digest it has already installed, and the sequence is then over: nothing more of it is
+// sent.
+//
+// Nothing is sent to a launcher that did not say it takes the index, since one built before the
+// frame ends its connection on it, nor while the daemon holds no index, nor to a launcher that has
+// reported the newest installed. One push to a launcher runs at a time (indexPush): a start's and
+// the poll's would otherwise send one sequence at once, whose answers share their waiters' names
+// (bundleWaiter), and the second, once the first has ended, finds the index installed and sends
+// nothing.
+//
+// Every other outcome is an error that says why: the launcher refused a slice or the install,
+// answered with another frame or a malformed one, the connection failed, or the hop, its wait for
+// a push already running included, ran past its bound. The caller logs it and goes on.
+func (d *launchers) serveLeakCheckIndex(ctx context.Context, session *launcherSession) error {
+	if !session.leakCheckIndex {
+		return nil
+	}
+	hop, cancel := context.WithTimeout(ctx, d.leakCheckHop)
+	defer cancel()
+	select {
+	case session.indexPush <- struct{}{}:
+	case <-hop.Done():
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("another push of the leak check index to the pod's launcher still ran when this push's bound of %s ran out", d.leakCheckHop)
+	}
+	defer func() { <-session.indexPush }()
+	index, frames := d.newestLeakCheckIndex()
+	if len(frames) == 0 {
+		return nil
+	}
+	digest := frames[0].SHA256
+	session.mu.Lock()
+	closed, installed := session.closed, session.leakCheckIndexSHA256 == digest
+	session.mu.Unlock()
+	// A connection that has closed since is replaced by one whose own start, or the poll's next
+	// push, carries the index.
+	if closed || installed {
+		return nil
+	}
+	name := fmt.Sprintf("the leak check index %s built at %s", digest[:12], index.BuiltAt.UTC().Format(time.RFC3339))
+	for _, frame := range frames {
+		answer, confirmed, err := d.request(hop, session.token, session.podUID, frame, bundleWaiter(frame.ID, frame.Index))
+		if err != nil {
+			if hop.Err() != nil && ctx.Err() == nil {
+				return fmt.Errorf("the pod's launcher did not answer the install of %s within %s", name, d.leakCheckHop)
+			}
+			return fmt.Errorf("the pod's launcher did not answer the install of %s: %w", name, err)
+		}
+		result, ok := answer.(shimwire.LauncherLeakCheckIndexResult)
+		if !ok {
+			return fmt.Errorf("the pod's launcher answered slice %d of %s with a %s frame", frame.Index, name, answer.FrameType())
+		}
+		if err := result.Validate(); err != nil {
+			return fmt.Errorf("the pod's launcher answered slice %d of %s with a malformed result: %w", frame.Index, name, err)
+		}
+		if !result.OK {
+			return fmt.Errorf("the pod's launcher refused %s: %s", name, result.Error)
+		}
+		if !result.Installed {
+			continue
+		}
+		confirmed.mu.Lock()
+		confirmed.leakCheckIndexSHA256 = digest
+		confirmed.mu.Unlock()
+		d.log.Info("launcher leak check index: the pod's launcher installed the leak check index the daemon read",
+			"launcher", session.token, "pod", session.podUID, "sha256", digest, "built", index.BuiltAt,
+			"bytes", len(index.Body), "slices", len(frames))
+		return nil
+	}
+	return fmt.Errorf("the pod's launcher took every slice of %s without installing it", name)
 }
 
 // bundleRestoreBound is how long the hop of one pod's saved bundle may take. The 40 MiB a release
@@ -722,9 +943,10 @@ func bundleFrames(issue string, b runtime.WorkspaceBundle) ([]shimwire.LauncherB
 	})
 }
 
-// bundleWaiter names the request one slice's answer belongs to, of a launcher_bundle sequence or
-// a launcher_leak_check one. A sequence is answered slice by slice, so its id alone would name as
-// many answers as it has slices; the launcher keys its own results by the same pair.
+// bundleWaiter names the request one slice's answer belongs to, of a launcher_bundle sequence, a
+// launcher_leak_check one or a launcher_leak_check_index one. A sequence is answered slice by
+// slice, so its id alone would name as many answers as it has slices; the launcher keys its own
+// results by the same pair.
 func bundleWaiter(sequence string, index int) string { return sequence + "/" + strconv.Itoa(index) }
 
 func (d *launchers) stop(ctx context.Context, token claim.Token, podUID string, command shimwire.LauncherStop) error {

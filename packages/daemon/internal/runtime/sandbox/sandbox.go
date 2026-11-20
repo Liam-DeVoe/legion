@@ -130,6 +130,9 @@ type Runtime struct {
 	// volumeTrim is Options.VolumeTrim: the cache trimmer settings an issue pod's launcher is
 	// handed on the answer to its hello (LauncherResolver), nil for a deployment that runs none.
 	volumeTrim *shimwire.LauncherVolumeTrim
+	// leakCheckIndexPoll is how often the launchers read the leak check's index when the options
+	// give a reader (Options.LeakCheckIndexPoll, leakCheckIndexPoll where that is zero).
+	leakCheckIndexPoll time.Duration
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every
 	// input of a shape — the image, the kind's reservation, the operator's volumes and mounts, the
@@ -317,6 +320,8 @@ func configureProber(opts Options) (*Runtime, error) {
 		return refuse("the registration deadline intervals %d is not positive", opts.RegistrationIntervals)
 	case opts.BusyBackoff <= 0:
 		return refuse("the busy backoff %s is not positive", opts.BusyBackoff)
+	case opts.LeakCheckIndexPoll < 0:
+		return refuse("the leak check index poll %s is negative; zero reads the index every %s", opts.LeakCheckIndexPoll, leakCheckIndexPoll)
 	case (opts.DispatchURL == "") != (opts.DispatchToken == ""):
 		return refuse("the Dispatch URL and its bearer are configured together (URL %q, bearer given: %t)",
 			opts.DispatchURL, opts.DispatchToken != "")
@@ -426,12 +431,18 @@ func configureProber(opts Options) (*Runtime, error) {
 	if r.log == nil {
 		r.log = slog.Default()
 	}
-	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
-	// before any of its roles start, take its memory guard's kill reports and its cache trimmer's
-	// sweep reports, and log what they could not carry or record, so they are built once the
-	// runtime's log is settled.
+	// The launchers carry the shared public leak check, the newest leak check index and one pod's
+	// saved workspace bundle to it before any of its roles start, push each new index to the pods
+	// whose launchers take one, take its memory guard's kill reports and its cache trimmer's sweep
+	// reports, and log what they could not carry or record, so they are built once the runtime's
+	// log is settled.
 	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, opts.MemoryGuardKilled,
 		opts.VolumeReported, r.log)
+	r.launchers.leakCheckIndex = opts.LeakCheckIndex
+	r.leakCheckIndexPoll = opts.LeakCheckIndexPoll
+	if r.leakCheckIndexPoll == 0 {
+		r.leakCheckIndexPoll = leakCheckIndexPoll
+	}
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape in each sandbox is encoded here and only
 	// read afterwards.
@@ -484,14 +495,18 @@ func checkRequirements(what string, requirements corev1.ResourceRequirements) er
 	return nil
 }
 
-// start runs the informers (startInformers) and then the GitHub credential refresher
-// (refreshGitHubCredentials) on ctx, the informers' lifetime, so it stops with the informers whose
-// pod store it walks.
+// start runs the informers (startInformers), then the GitHub credential refresher
+// (refreshGitHubCredentials) and, when the options give a reader of the leak check's index, the
+// poll that reads it and pushes each new one to the pods (launchers.pollLeakCheckIndex), on ctx,
+// the informers' lifetime, so the refresher stops with the informers whose pod store it walks.
 func (r *Runtime) start(ctx context.Context, c runtimeClients) error {
 	if err := r.startInformers(ctx, c); err != nil {
 		return err
 	}
 	go r.refreshGitHubCredentialsEvery(ctx, gitHubRefreshInterval)
+	if r.launchers.leakCheckIndex != nil {
+		go r.launchers.pollLeakCheckIndex(ctx, r.leakCheckIndexPoll)
+	}
 	return nil
 }
 
