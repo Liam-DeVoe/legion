@@ -3822,6 +3822,7 @@ the route and method, the actor's kind and id, the act's session, the personal t
 The outcomes are `findings` (a sentence breaks a rule; the write went on), `clean`, `exempt_person`, `exempt_daemon`, `exempt_system`, `exempt_unread_upload`, `exempt_no_reader`, `exempt_generated`, and the reader's fail-open outcomes with `no_model`.
 The table also admits the reviewer's outcomes (`held`, `passed`, `edited`, `posted_as_written`, `rewrite_posted`, `posted_unreviewed`, `reviewed_after`), a person's typed command (`exempt_person_typed`) and each Rewrite a person asks for (`rewrite_requested`, its `reader` the person who asked), which the reviewer and Rewrite record.
 A write that carries no prose text is not recorded, and neither is a write the route refuses after the check (a closed issue, an unknown check, a delivery never made), which writes nothing else either.
+Nor is a call a reply route answers with a 2xx status and nothing written: a reply to an attempt already answered, which posts nothing, and an error report repeated on an attempt already failed.
 The server inserts the row once the route answered the write with a 2xx status, outside the write's transaction, which has ended by then, and before the request ends; an insert that fails is logged with the route and the write stands.
 A daily sweep deletes the rows older than 90 days (Background loops, above).
 

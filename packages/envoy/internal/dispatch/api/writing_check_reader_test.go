@@ -4,7 +4,6 @@ import (
 	"context"
 	"maps"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -211,10 +210,7 @@ func (rig *writingCheckRig) insertID(statement string, args ...any) string {
 func (rig *writingCheckRig) wantReader(what, reader, route string, values map[string]string, input any) {
 	rig.t.Helper()
 	method, _, _ := strings.Cut(route, " ")
-	request := httptest.NewRequest(method, "/", nil)
-	for name, value := range values {
-		request.SetPathValue(name, value)
-	}
+	request := jsonRequest(rig.t, method, "/", nil, values)
 	got, err := rig.served.writingCheckReader(context.Background(), request, route, model.Actor{Kind: "session", ID: checkWriter}, input)
 	if err != nil || got != reader {
 		rig.t.Errorf("%s: the reader is %q (%v), want %s", what, got, err, reader)
@@ -268,8 +264,8 @@ func TestTheWritingCheckReaderOfADirectConversation(t *testing.T) {
 	reply := map[string]any{"body": badProse, "attempt": 1}
 	fromBob := rig.openConversation("user", "bob", checkWriter)
 	fromSession := rig.openConversation("session", "s-other", checkWriter)
-	rig.deliverMessage(fromBob, checkWriter)
-	rig.deliverMessage(fromSession, checkWriter)
+	rig.deliverMessage(fromBob, checkWriter, 1)
+	rig.deliverMessage(fromSession, checkWriter, 1)
 
 	rig.wantRead("a direct message to bob", "bob", rig.session(http.MethodPost, "/api/v1/messages/"+fromBob+"/reply", reply))
 	rig.wantUnread("a reply between two sessions", rig.session(http.MethodPost, "/api/v1/messages/"+fromSession+"/reply", reply))

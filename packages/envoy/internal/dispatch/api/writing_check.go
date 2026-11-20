@@ -26,7 +26,8 @@ import (
 // route's layer (recordTakenWrites) inserts it once the handler answered the write 2xx, outside
 // the write's transaction, which has ended by then, and before the request ends. A write the route
 // refused after the check - a closed issue, an unknown check, a delivery never made - records
-// nothing, as it writes nothing else. A failed insert is logged and fails nothing.
+// nothing, as it writes nothing else, and so does a call the route answers 2xx with nothing written
+// (dropWritingCheck). A failed insert is logged and fails nothing.
 
 // The outcomes writingCheck records besides the checker's own (writingcheck.Outcome*) and the
 // actor rule's exemptions (writingcheck.Exempt*).
@@ -302,11 +303,18 @@ type writingCheckRowsKey struct{}
 // has answered it.
 type writingCheckRows struct{ events []store.WritingCheckEvent }
 
+// writingCheckRowsFrom is the rows ctx keeps for its write (recordTakenWrites), nil for a request
+// served outside that layer.
+func writingCheckRowsFrom(ctx context.Context) *writingCheckRows {
+	kept, _ := ctx.Value(writingCheckRowsKey{}).(*writingCheckRows)
+	return kept
+}
+
 // keepWritingCheck keeps event, the check's decision about r's write, for the route's layer to
 // record once the write took place (recordTakenWrites). A write served outside that layer, which
 // no route of the table is, has it recorded at once, as no answer of its own is read.
 func (s *server) keepWritingCheck(r *http.Request, event store.WritingCheckEvent) {
-	if kept, ok := r.Context().Value(writingCheckRowsKey{}).(*writingCheckRows); ok {
+	if kept := writingCheckRowsFrom(r.Context()); kept != nil {
 		kept.events = append(kept.events, event)
 		return
 	}
@@ -314,21 +322,25 @@ func (s *server) keepWritingCheck(r *http.Request, event store.WritingCheckEvent
 }
 
 // dropWritingCheck drops the rows the writing check kept for r (keepWritingCheck), for a route that
-// answers 2xx for a write that does not take place, such as a result's dry run.
+// answers 2xx for a call that writes nothing: a reply to an attempt already answered that posts
+// nothing, and an error report repeated on an attempt already failed.
 func dropWritingCheck(r *http.Request) {
-	if kept, ok := r.Context().Value(writingCheckRowsKey{}).(*writingCheckRows); ok {
+	if kept := writingCheckRowsFrom(r.Context()); kept != nil {
 		kept.events = nil
 	}
 }
 
 // recordTakenWrites is a write route's layer for the writing check's rows: it records the rows
-// the check kept for the write (keepWritingCheck) once handler answered it 2xx, which a route
-// answers only for a write that took place, a write the reviewer holds among them. A write the
-// handler refused leaves no row, as it leaves no other: a refusal leaves every table as it found
-// it (TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused). Every transaction of the
-// handler has ended when it returns, so the insert takes a connection of its own, and it runs on
-// a context the client's going away does not cancel, since the write it records has committed
-// whatever the client does next.
+// the check kept for the write (keepWritingCheck) once handler answered it 2xx. A route answers
+// 2xx for a write that took place, a write the reviewer holds among them, and for a call that
+// writes nothing, which drops its rows before it answers (dropWritingCheck). A write the handler
+// refused leaves no row, as it leaves no other: a refusal leaves every table as it found it
+// (TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused). Every transaction of the handler
+// has ended when it returns, so the insert takes a connection of its own. It runs on a context
+// the client's going away does not cancel (outlivingTheClient), since the write it records has
+// committed whatever the client does next: on a keyed write that is the keyed run's own context,
+// which this layer runs inside and which is still live here, so the insert keeps the run's bound
+// (keyedRunLimit).
 func (s *server) recordTakenWrites(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		kept := &writingCheckRows{}
@@ -337,7 +349,7 @@ func (s *server) recordTakenWrites(handler http.HandlerFunc) http.HandlerFunc {
 		if len(kept.events) == 0 || !answer.taken() {
 			return
 		}
-		ctx := context.WithoutCancel(r.Context())
+		ctx := outlivingTheClient(r)
 		for _, event := range kept.events {
 			s.recordWritingCheck(ctx, event)
 		}
@@ -358,19 +370,11 @@ func (w *answerStatus) WriteHeader(status int) {
 	w.ResponseWriter.WriteHeader(status)
 }
 
-// Write is the answer's body; a first Write without WriteHeader answers 200, as net/http's does.
-func (w *answerStatus) Write(p []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	return w.ResponseWriter.Write(p)
-}
-
 // Unwrap is the writer this one wraps, for http.ResponseController.
 func (w *answerStatus) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// taken reports whether the handler answered 2xx, a handler that wrote nothing included, which
-// net/http answers 200.
+// taken reports whether the handler answered 2xx. A handler that gave no status, having written
+// a body or nothing, is answered 200 by net/http, so it is taken too.
 func (w *answerStatus) taken() bool {
 	return w.status == 0 || (w.status >= 200 && w.status < 300)
 }

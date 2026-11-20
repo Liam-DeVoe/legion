@@ -283,13 +283,13 @@ func newWritingCheckRig(t *testing.T, check *WritingCheck) *writingCheckRig {
 		t.Fatalf("create message: %d %s", message.Code, message.Body.String())
 	}
 	rig.fixture.message = decodeBody[model.Message](t, message).ID
-	rig.deliverMessage(rig.fixture.message, checkWriter)
+	rig.deliverMessage(rig.fixture.message, checkWriter, 1)
 	comment := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": "The cache is warm."}, "alice")
 	if comment.Code != http.StatusCreated {
 		t.Fatalf("create comment: %d %s", comment.Code, comment.Body.String())
 	}
 	rig.fixture.comment = decodeBody[model.Comment](t, comment).ID
-	rig.deliverComment(rig.fixture.comment, checkWriter)
+	rig.deliverComment(rig.fixture.comment, checkWriter, 1)
 	// A result checkWriter recorded on the issue, so its retraction is text on that issue and the
 	// writer's to take back.
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
@@ -301,32 +301,27 @@ func newWritingCheckRig(t *testing.T, check *WritingCheck) *writingCheckRig {
 	return rig
 }
 
-// deliverMessage records the message's first attempt as sent to session, as the send leaves it,
-// so session's reply to attempt 1 takes place.
-func (rig *writingCheckRig) deliverMessage(messageID, session string) {
+// deliverMessage records the message's attempt as sent to session, as the send leaves it, so
+// session's reply to that attempt takes place.
+func (rig *writingCheckRig) deliverMessage(messageID, session string, attempt int) {
 	rig.t.Helper()
-	if _, err := rig.database.Pool.Exec(context.Background(), `
+	rig.exec(`
 		insert into message_deliveries (message_id, attempt, delivery, session_id, state)
-		values ($1::uuid, 1, 'btw', $2, 'sent')`, messageID, session); err != nil {
-		rig.t.Fatalf("deliver message %s to %s: %v", messageID, session, err)
-	}
+		values ($1::uuid, $3, 'btw', $2, 'sent')`, messageID, session, attempt)
 }
 
-// deliverComment records the comment's mention of session and the mention's first attempt, sent
-// to session, as the comment's create and its send leave them, so session's reply to attempt 1
+// deliverComment records the comment's mention of session, once, and the mention's attempt, sent
+// to session, as the comment's create and its send leave them, so session's reply to that attempt
 // takes place.
-func (rig *writingCheckRig) deliverComment(commentID, session string) {
+func (rig *writingCheckRig) deliverComment(commentID, session string, attempt int) {
 	rig.t.Helper()
-	for _, statement := range []string{`
+	rig.exec(`
 		insert into comment_mentions (comment_id, target, delivery, resolved_session_id)
-		values ($1::uuid, 'session:' || $2::text, 'steer', $2::text)`, `
+		values ($1::uuid, 'session:' || $2::text, 'steer', $2::text)
+		on conflict (comment_id, target) do nothing`, commentID, session)
+	rig.exec(`
 		insert into comment_deliveries (comment_id, target, attempt, delivery, session_id, state, claimed_at)
-		values ($1::uuid, 'session:' || $2::text, 1, 'steer', $2::text, 'sent', now())`,
-	} {
-		if _, err := rig.database.Pool.Exec(context.Background(), statement, commentID, session); err != nil {
-			rig.t.Fatalf("deliver comment %s to %s: %v", commentID, session, err)
-		}
-	}
+		values ($1::uuid, 'session:' || $2::text, $3, 'steer', $2::text, 'sent', now())`, commentID, session, attempt)
 }
 
 // breakNextLoad leaves the document id out of every room and hands its next load a history that
@@ -431,8 +426,8 @@ type proseRouteCase struct {
 	wantStatus int
 }
 
-// proseDryRunRoutes are the routes that answer 2xx for a write that does not take place (a
-// result's dry run): the check reads its words as the write's, and the route records no row.
+// proseDryRunRoutes are the routes whose request carries prose and that write nothing (a result's
+// dry run): the check does not read such a route's words, and the route records no row.
 var proseDryRunRoutes = map[string]bool{"POST /api/v1/issues/{key}/results/dry-run": true}
 
 func proseRouteCases() []proseRouteCase {
@@ -474,6 +469,20 @@ func proseRouteCases() []proseRouteCase {
 			return rig.asSession(http.MethodPost, path(rig.fixture), map[string]any{"name": fmt.Sprintf("upload %d", names), "content": text})
 		}
 	}
+	// reply answers a delivered attempt of the text id names on kind's reply route: the first call
+	// answers the attempt the rig delivered, and each call after it a new attempt it delivers, so
+	// every call is a reply that posts. A second reply to one attempt is its replay, which posts
+	// nothing and records no row (TestTheWritingCheckRecordsNoRowForAReplyThatWritesNothing).
+	reply := func(kind string, id func(f writingCheckFixture) string, deliver func(rig *writingCheckRig, id, session string, attempt int)) func(*writingCheckRig, string) *httptest.ResponseRecorder {
+		attempt := 0
+		return func(rig *writingCheckRig, text string) *httptest.ResponseRecorder {
+			attempt++
+			if attempt > 1 {
+				deliver(rig, id(rig.fixture), checkWriter, attempt)
+			}
+			return rig.asSession(http.MethodPost, "/api/v1/"+kind+"/"+id(rig.fixture)+"/reply", map[string]any{"body": text, "attempt": attempt})
+		}
+	}
 	return []proseRouteCase{
 		{"POST /api/v1/issues", "title", session(post, func(writingCheckFixture) string { return "/api/v1/issues" }, field("title", "project", "WCK")), http.StatusCreated},
 		{"PATCH /api/v1/issues/{key}", "title", session(patch, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue }, field("title")), http.StatusOK},
@@ -490,7 +499,7 @@ func proseRouteCases() []proseRouteCase {
 			return "/api/v1/results/" + f.result + "/retract"
 		}, field("reason")), 0},
 		{"POST /api/v1/issues/{key}/messages", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/messages" }, field("body")), http.StatusCreated},
-		{"POST /api/v1/messages/{id}/reply", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/messages/" + f.message + "/reply" }, field("body", "attempt", 1)), 0},
+		{"POST /api/v1/messages/{id}/reply", "body", reply("messages", func(f writingCheckFixture) string { return f.message }, (*writingCheckRig).deliverMessage), http.StatusCreated},
 		{"POST /api/v1/agents/{session_id}/messages", "body", token(http.MethodPost, func(writingCheckFixture) string { return "/api/v1/agents/s-reader/messages" }, field("body", "delivery", "btw")), 0},
 		{"POST /api/v1/broadcasts", "body", token(http.MethodPost, func(writingCheckFixture) string { return "/api/v1/broadcasts" }, field("body", "delivery", "btw", "session_ids", []string{"s-reader"})), 0},
 		{"POST /api/v1/issues/{key}/asks", "question", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/asks" }, field("question")), http.StatusCreated},
@@ -501,7 +510,7 @@ func proseRouteCases() []proseRouteCase {
 		{"POST /api/v1/asks/{id}/decline", "note", token(http.MethodPost, func(f writingCheckFixture) string { return "/api/v1/asks/" + f.askDecline + "/decline" }, field("note")), 0},
 		{"POST /api/v1/issues/{key}/comments", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/comments" }, field("body")), http.StatusCreated},
 		{"POST /api/v1/artifacts/{id}/comments", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/artifacts/" + f.projectDocID + "/comments" }, field("body")), http.StatusCreated},
-		{"POST /api/v1/comments/{id}/reply", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/comments/" + f.comment + "/reply" }, field("body", "attempt", 1)), 0},
+		{"POST /api/v1/comments/{id}/reply", "body", reply("comments", func(f writingCheckFixture) string { return f.comment }, (*writingCheckRig).deliverComment), http.StatusCreated},
 		{"PATCH /api/v1/comments/{id}", "body", token(http.MethodPatch, func(f writingCheckFixture) string { return "/api/v1/comments/" + f.comment }, field("body")), 0},
 		{"POST /api/v1/artifacts/{id}/rebuild", "markdown", func(rig *writingCheckRig, text string) *httptest.ResponseRecorder {
 			rig.breakNextLoad(rig.fixture.rebuildID)
@@ -576,10 +585,11 @@ func (rig *writingCheckRig) multipartUpload(target, name, contentType, content, 
 // with the rule, its field and its reader, and a clean one is recorded clean. A route whose text
 // no person reads (readerNone) writes the body, recorded exempt_no_reader. A write the route
 // refuses records nothing, as it writes nothing else (recordTakenWrites), and every route takes
-// at least one of its writes, which records exactly one row; a dry run records none. The cases are held to the registry:
-// a route that starts to carry prose needs a case here. Every reader in the rig is alice: she
-// holds the issue, the project defaults to her, she wrote the comment and the message the replies
-// answer, and she opened the direct conversation.
+// at least one of its writes, which records exactly one row; a dry run, which the check does not
+// read, records none. The cases are held to the registry: a route that starts to carry prose
+// needs a case here. Every reader in the rig is alice: she holds the issue, the project defaults
+// to her, she wrote the comment and the message the replies answer, and she opened the direct
+// conversation.
 func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
 	rig := newWritingCheckRig(t, writingCheckOn(nil))
 	cases := proseRouteCases()
@@ -597,7 +607,8 @@ func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
 			rig.t = t
 			method, route, _ := strings.Cut(c.route, " ")
 			if proseDryRunRoutes[c.route] {
-				// A dry run writes nothing, so it records nothing, whatever its words break.
+				// The check does not read a dry run, which writes nothing, so it records nothing,
+				// whatever its words break.
 				for _, text := range []string{badProse, cleanProse} {
 					rig.clearEvents()
 					if answered := c.call(rig, text); answered.Code != c.wantStatus {
@@ -655,6 +666,41 @@ func TestTheWritingCheckRecordsAndWritesOnEveryProseRoute(t *testing.T) {
 	}
 }
 
+// TestTheWritingCheckRecordsNoRowForAReplyThatWritesNothing: a reply route answers 2xx for a call
+// that writes nothing - a reply to an attempt already answered, which is its replay, an error
+// report on such an attempt, and an error report repeated on an attempt already failed - and such a
+// call records no row, while the reply and the report it repeats record one each.
+func TestTheWritingCheckRecordsNoRowForAReplyThatWritesNothing(t *testing.T) {
+	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig.deliverComment(rig.fixture.comment, checkWriter, 2)
+	rig.deliverMessage(rig.fixture.message, checkWriter, 2)
+	for _, target := range []string{
+		"/api/v1/comments/" + rig.fixture.comment + "/reply",
+		"/api/v1/messages/" + rig.fixture.message + "/reply",
+	} {
+		for _, call := range []struct {
+			what   string
+			body   map[string]any
+			status int
+			rows   int
+		}{
+			{"a reply to attempt 1", map[string]any{"body": badProse, "attempt": 1}, http.StatusCreated, 1},
+			{"the reply's replay", map[string]any{"body": badProse, "attempt": 1}, http.StatusOK, 0},
+			{"an error report on the answered attempt 1", map[string]any{"error": badProse, "attempt": 1}, http.StatusOK, 0},
+			{"an error report on attempt 2", map[string]any{"error": badProse, "attempt": 2}, http.StatusOK, 1},
+			{"the error report repeated", map[string]any{"error": badProse, "attempt": 2}, http.StatusOK, 0},
+		} {
+			rig.clearEvents()
+			if response := rig.asSession(http.MethodPost, target, call.body); response.Code != call.status {
+				t.Fatalf("%s on %s: %d %s, want %d", call.what, target, response.Code, response.Body.String(), call.status)
+			}
+			if events := rig.events(); len(events) != call.rows {
+				t.Errorf("%s on %s recorded %+v, want %d rows", call.what, target, events, call.rows)
+			}
+		}
+	}
+}
+
 // asSessionGenerated writes as checkWriter with the generated-text header, as a plugin posts the
 // text it generates.
 func (rig *writingCheckRig) asSessionGenerated(method, target string, body map[string]any) *httptest.ResponseRecorder {
@@ -680,19 +726,22 @@ func (rig *writingCheckRig) asSessionGenerated(method, target string, body map[s
 // read (the negative controls).
 func TestTheWritingCheckRecordsAGeneratedReplyExemptGenerated(t *testing.T) {
 	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	// The reply with no header answers attempt 2: a second reply to attempt 1 would be its replay,
+	// which posts nothing and records no row.
+	rig.deliverComment(rig.fixture.comment, checkWriter, 2)
+	rig.deliverMessage(rig.fixture.message, checkWriter, 2)
 	for _, target := range []string{
 		"/api/v1/comments/" + rig.fixture.comment + "/reply",
 		"/api/v1/messages/" + rig.fixture.message + "/reply",
 	} {
-		body := map[string]any{"body": badProse, "attempt": 1}
 		rig.clearEvents()
-		rig.asSessionGenerated(http.MethodPost, target, body)
+		rig.asSessionGenerated(http.MethodPost, target, map[string]any{"body": badProse, "attempt": 1})
 		if event := rig.lastEvent("a generated reply to " + target); event.Outcome != writingCheckGenerated ||
 			event.Reader != "alice" || len(event.Rules) != 0 || event.Candidates != 0 {
 			t.Errorf("a generated reply to %s: event = %+v, want %s with reader alice and nothing read", target, event, writingCheckGenerated)
 		}
 		rig.clearEvents()
-		rig.asSession(http.MethodPost, target, body)
+		rig.asSession(http.MethodPost, target, map[string]any{"body": badProse, "attempt": 2})
 		if event := rig.lastEvent("an agent's reply to " + target); event.Outcome != writingCheckFindings {
 			t.Errorf("an agent's reply to %s: event = %+v, want %s", target, event, writingCheckFindings)
 		}

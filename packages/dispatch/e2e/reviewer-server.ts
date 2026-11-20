@@ -7,8 +7,8 @@
  *  server of their own instead: `run-server.sh` against the stack's database and fakes, under the
  *  reviewer's settings and the stand-in model, started once per worker that runs one of them and
  *  stopped with that worker. No other spec pays for it. In CI its rows run in the `ask-card` job of
- *  `.github/workflows/dispatch-browser.yaml` on the pull-request lane, with the other
- *  `ask-card-*` files, and in the full lane's shards.
+ *  `.github/workflows/dispatch-browser.yaml` on the pull-request lane, beside `ask-card-rewrite`,
+ *  `ask-card-define`, `ask-card-menu` and `ask-card-quote`, and in the full lane's shards.
  *
  *  Both servers serve one database, which `e2e/test.ts` empties before every row. The writes a
  *  row means to be held go to this server, and so does the person's browser, which signs in here

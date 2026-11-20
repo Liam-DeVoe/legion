@@ -39,12 +39,9 @@ type WritingCheckEvent struct {
 // its own, never inside the write's own transaction, so the caller logs a failure and lets the
 // write go on.
 //
-// The row is the check's record of a write, and no part of the write: the check records it
-// before the write opens its transaction, and records it for a write that may never commit. So
-// its transaction takes no commit step a keyed request's context carries
-// (WithoutBeforeCommit). A mark taken here would answer a repeat after a crash KEY_COMMITTED for
-// a write nobody made; without it the repeat runs the write, and its check records a row of its
-// own.
+// The row is the check's record of a write, and no part of the request's own write, so its
+// transaction takes no commit step a keyed request's context carries (WithoutBeforeCommit): that
+// step marks the request's Idempotency-Key committed, which only the request's own write does.
 func (s *Store) InsertWritingCheckEvent(ctx context.Context, event WritingCheckEvent) error {
 	rules, fields := event.Rules, event.Fields
 	if rules == nil {

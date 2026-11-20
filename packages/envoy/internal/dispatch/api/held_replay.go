@@ -340,12 +340,13 @@ func heldTargetParam(pattern string) string {
 
 // heldTargetSelf are the writes naming a held text by their path that awaitHeldTarget does not
 // hold, each with why: the three create routes on an issue, which the reviewer's hook holds
-// beside a held issue under an id of their own (reviewWrite), and the routes of a delivery,
-// which a held text has never had.
+// beside a held issue under an id of their own (reviewWrite), a result's dry run, which writes
+// nothing, and the routes of a delivery, which a held text has never had.
 var heldTargetSelf = map[string]string{
 	"POST /api/v1/issues/{key}/asks":                         "reviewWrite holds a new ask on a held issue beside it, under an id of the ask's own",
 	"POST /api/v1/issues/{key}/comments":                     "reviewWrite holds a new comment on a held issue beside it, under an id of the comment's own",
 	"POST /api/v1/issues/{key}/messages":                     "reviewWrite holds a new message on a held issue beside it, under an id of the message's own",
+	"POST /api/v1/issues/{key}/results/dry-run":              "a result's dry run writes nothing and answers its line now: kept beside a held issue, its replay would answer nobody",
 	"POST /api/v1/messages/{id}/reply":                       "a reply to a delivered message: a held message was delivered to no session, a held text's id here is the writer's answer to its findings (answerHeldFrame), and a definition's id the asking session's answer to its side question (answerDefinitionFrame)",
 	"POST /api/v1/comments/{id}/reply":                       "a reply to a delivered mention: a held comment was delivered to no session, so no attempt of it can be answered",
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": "accepts a delivery attempt: a held message has none",

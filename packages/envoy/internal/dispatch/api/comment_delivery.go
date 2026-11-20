@@ -1356,8 +1356,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	// A replay of a callback that already posted its reply writes nothing and answers the stored
 	// reply as it is, with no ask_waiting_on: that names whom the ask waits on once a reply is its
-	// newest, which a replayed reply need no longer be.
+	// newest, which a replayed reply need no longer be. Writing nothing, it records no writing
+	// check row.
 	if attempt.ReplyID != nil {
+		dropWritingCheck(r)
 		reply, err := s.loadComment(r.Context(), tx, *attempt.ReplyID)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -1378,7 +1380,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		WriteJSON(w, http.StatusOK, reply)
 		return
 	}
+	// An error report repeated on an attempt already failed writes nothing, and records no
+	// writing check row.
 	if attempt.State == "failed" && input.Error != nil {
+		dropWritingCheck(r)
 		if err := tx.Commit(r.Context()); err != nil {
 			s.writeHandlerError(w, err)
 			return

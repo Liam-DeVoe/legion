@@ -1089,6 +1089,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			// The hydration wrote the block into the row the shape stands in front of, so the
 			// shape is taken again over it (display_trees.go).
 			shapeBuilt(wantsDisplayTrees(r), read.shape)
+			// A retry of the answer, or a follow-up already posted, writes nothing, and records no
+			// writing check row.
+			dropWritingCheck(r)
 		}
 		response = read
 		if posted != nil {
@@ -1096,6 +1099,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusCreated
 		}
 	case input.Error != nil && attempt.State == "failed":
+		// An error report repeated on an attempt already failed writes nothing, and records no
+		// writing check row.
+		dropWritingCheck(r)
 		response = attempt
 	case input.Error != nil:
 		updated, err := scanMessageDelivery(tx.QueryRow(r.Context(), `

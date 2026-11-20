@@ -7938,16 +7938,6 @@
                 }
               }
             }
-          },
-          "202": {
-            "description": "Accepted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HeldDeferred"
-                }
-              }
-            }
           }
         },
         "x-auth": "any",
