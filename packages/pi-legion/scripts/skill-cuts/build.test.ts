@@ -126,6 +126,13 @@ function setReadTarget(lines: Record<string, unknown>[], index: number, target: 
   call.arguments = { ...(call.arguments as Record<string, unknown>), path: target };
 }
 
+/** Sets the model F1's `model_change` line names. */
+function setModel(lines: Record<string, unknown>[], model: string) {
+  const change = lines.find((line) => line.type === "model_change");
+  if (change === undefined) throw new Error("F1 has no model_change line");
+  change.model = model;
+}
+
 const SECRET_TOKEN = fixtureSecret("tok");
 const PEM_BODY = fixtureSecret("pem");
 const PEM = [
@@ -169,12 +176,31 @@ const SESSIONS: Record<
     store: "store_a",
     change: (lines) => setText(lines, 0, (text) => `${text} ${RESTATED}`),
   },
+  // A model whose id the gateway serves, under another provider than Anthropic.
   openai: {
     store: "store_a",
-    change: (lines) => {
-      const change = lines.find((line) => line.type === "model_change");
-      if (change !== undefined) change.model = "openai/gpt-6.1-sol";
-    },
+    change: (lines) => setModel(lines, "openai/gpt-6.1-sol"),
+  },
+  // An Anthropic model behind a gateway's prefix: served, since its id is.
+  "gateway-model": {
+    store: "store_a",
+    change: (lines) => setModel(lines, "ossv-gateway/claude-opus-5-5"),
+  },
+  // A model no route serves: dropped before any reader reads the session.
+  "not-served": {
+    store: "store_a",
+    change: (lines) => setModel(lines, "openai-codex/gpt-6-astra"),
+  },
+  // A served model at the skill's read, then one no route serves, before the step.
+  "switched-model": {
+    store: "store_a",
+    change: (lines) =>
+      insertAfter(lines, lines.filter((line) => line.type === "message")[6] ?? {}, {
+        type: "model_change",
+        id: "c0de0001",
+        timestamp: "2026-11-20T01:59:53.300Z",
+        model: "openai-codex/gpt-6-astra",
+      }),
   },
   "by-path": {
     store: "store_a",
@@ -648,6 +674,7 @@ beforeAll(() => {
     JSON.stringify({
       ...fixture,
       stores: [...fixture.stores, { name: "store_b", context: "legion:ACME" }],
+      servedModels: [...fixture.servedModels, "anthropic/claude-opus-5-5"],
       psqlCommand: psql,
       gatewayBaseUrl: recorder.url,
     })
@@ -822,11 +849,14 @@ interface Summary {
     detail?: string;
     pulls?: number;
     context?: string;
+    model?: string;
+    readerUsd: number;
     windows?: number;
     restatementCheck?: { read: number; before: number; windows: number };
     audit?: { verdict: string; reason: string };
   }[];
   readerSpend: { usd: number; models: Record<string, { calls: number }> };
+  byModel: Record<string, { tried: number; drops: Partial<Record<DropReason, number>> }>;
 }
 
 const summaryOf = (out: string): Summary => JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
@@ -864,6 +894,8 @@ describe("build-cases over every made-up session", () => {
         "claimed-reviewer",
         "subagent",
         "third-window",
+        "openai",
+        "gateway-model",
       ]
         .map((name) => pathHash(sessionPath(name)))
         .sort()
@@ -1136,6 +1168,45 @@ describe("build-cases over every made-up session", () => {
     expect(c?.messages[0]?.content?.[0]?.text).toContain(`Bearer ${SECRET_REMOVED}`);
   });
 
+  test("a session whose model id the gateway serves is kept on its own model, whatever its prefix, and one on a model no route serves is dropped, before any reader when none of its models is served", () => {
+    expect(byName("openai")?.model).toBe("openai/gpt-6.1-sol");
+    expect(byName("gateway-model")?.model).toBe("ossv-gateway/claude-opus-5-5");
+    const summary = summaryOf(out);
+    const record = (name: string) =>
+      summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)));
+    expect(record("not-served")).toMatchObject({
+      reason: "model-not-served",
+      model: "openai-codex/gpt-6-astra",
+      detail:
+        "openai-codex/gpt-6-astra (id gpt-6-astra): no route of the gateway serves it; no servedModels entry has its id",
+    });
+    expect(record("not-served")?.windows).toBeUndefined();
+    expect(record("not-served")?.readerUsd).toBe(0);
+    // Served at the read, so the reader reads it; the step's model is not served.
+    expect(record("switched-model")).toMatchObject({
+      reason: "model-not-served",
+      model: "openai-codex/gpt-6-astra",
+      windows: 1,
+    });
+    expect(summary.byModel["openai-codex/gpt-6-astra"]).toEqual({
+      tried: 2,
+      drops: { "model-not-served": 2 },
+    });
+    expect(summary.byModel["openai/gpt-6.1-sol"]).toEqual({ tried: 1, drops: {} });
+    expect(summary.byModel["ossv-gateway/claude-opus-5-5"]).toEqual({ tried: 1, drops: {} });
+    // Each session tried and each drop is under one model.
+    const rows = Object.values(summary.byModel);
+    expect(rows.reduce((total, row) => total + row.tried, 0)).toBe(summary.sessionsTried);
+    for (const [reason, count] of Object.entries(summary.drops)) {
+      const counted = rows.reduce(
+        (total, row) => total + (row.drops[reason as DropReason] ?? 0),
+        0
+      );
+      expect(counted).toBe(count);
+    }
+    expect(summary.byModel.none?.tried).toBeGreaterThan(0);
+  });
+
   test("each drop is counted by its reason", () => {
     const summary = summaryOf(out);
     expect(summary.drops).toEqual({
@@ -1147,7 +1218,7 @@ describe("build-cases over every made-up session", () => {
       "restatement-check-incomplete": 2,
       "audit-breaks": 1,
       "audit-not-governed": 1,
-      "model-not-anthropic": 1,
+      "model-not-served": 2,
       "read-by-path": 1,
       "no-read": 1,
       "no-step": 1,
@@ -1159,7 +1230,7 @@ describe("build-cases over every made-up session", () => {
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
     expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length + 1);
-    expect(summary.casesBuilt).toBe(9);
+    expect(summary.casesBuilt).toBe(11);
     const reasonOf = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
     expect(reasonOf("quoted")).toBe("line-quoted");
@@ -1171,6 +1242,8 @@ describe("build-cases over every made-up session", () => {
     expect(reasonOf("other-copy")).toBe("not-cut-copy");
     expect(reasonOf("compacted")).toBe("read-before-compaction");
     expect(reasonOf("bad-init")).toBe("bad-session-init");
+    expect(reasonOf("not-served")).toBe("model-not-served");
+    expect(reasonOf("switched-model")).toBe("model-not-served");
     // Every reader call is counted: one case reader call a window of each session the reader
     // reached, one restatement call a window of each case checked (READER_TRIES for the window
     // whose answer was refused, none for the case with too many windows, up to the window of a

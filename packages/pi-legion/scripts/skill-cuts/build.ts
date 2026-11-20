@@ -92,13 +92,20 @@
  * before the step quotes the line (less a leading list, heading or quote mark); the case reader or
  * the restatement check finds a message before the step that states the line's instruction in
  * other words, or the check cannot read them all; the audit finds the real step breaks the line,
- * or the line does not govern it, or gives no answer; the model before the step is not an
- * `anthropic/` one, or there is none; a read before the step reads a file of the skill by its path
+ * or the line does not govern it, or gives no answer; no route of the gateway serves the model
+ * before the step, or there is none; a read before the step reads a file of the skill by its path
  * or with a selector, which arms.ts does not rebuild (a path that ends `/<skill>/SKILL.md`, holds
  * `skills/<skill>/`, or is under the skill's installed directory); a GitHub read the profile needs
  * fails; or the profile's units install no copy of the skill from the cut repository. A session
  * the readers reach costs one case reader call a window, one restatement call a window, and one
  * audit call.
+ *
+ * **The model.** A case runs on the session's own model, as its last `model_change` before the
+ * step names it (`<gateway>/claude-opus-5-5`, `openai/gpt-6.1-sol`), and on no other. The
+ * gateway serves a model when some route does: its id (the text after the last `/`, a thinking
+ * suffix left out) is the id of one of the configuration's `servedModels`, the read count's rule
+ * (attribute.ts). A session on a model no route serves is dropped (`model-not-served`), before any
+ * reader reads it when none of its models from the skill's read on is served.
  *
  * **A subagent's session** (a transcript under its parent's, `<parent less .jsonl>/<Name>.jsonl`)
  * starts with a `session_init` line that records the system prompt it was given (its blocks, the
@@ -150,9 +157,9 @@
  *
  * Output: the case file `--out` (one JSON line per case, written whole after each case and checked
  * with cases.ts's `loadCases` against `--old` at the end) and `<out>.summary.json`: the seed and
- * the order, the sessions tried, each session's outcome and the reader's dollars on it, the cases
- * built, the drops by reason, the bounds, the pulls, the gateway's spend, and why the build
- * stopped, if it did.
+ * the order, the sessions tried, each session's outcome, model and the reader's dollars on it, the
+ * cases built, the drops by reason, the sessions tried and the drops of each model (`byModel`), the
+ * bounds, the pulls, the gateway's spend, and why the build stopped, if it did.
  *
  * **build-tasks** (plan, R6 "Load test"): the tasks reader reads the skill's name and description
  * (`--skill`'s SKILL.md frontmatter) with no messages and proposes search terms; tasks.sql runs
@@ -180,6 +187,7 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
+import { modelId, sessionModel } from "./attribute";
 import {
   Case,
   loadCases,
@@ -279,7 +287,8 @@ export const DROP_REASONS = {
     "the audit, which reads no criterion, finds that the line does not govern the real step",
   "audit-failed": "the audit reader's every reply was refused, or its call failed",
   "no-model": "no model_change or thinking_level_change before the step",
-  "model-not-anthropic": "the model before the step is not an anthropic/ one",
+  "model-not-served":
+    "no route of the gateway serves the session's model before the step (its id is the id of none of the configuration's servedModels), or none of its models from the skill's read on",
   "read-by-path": "a read before the step reads a file of the skill by its path or with a selector",
   "profile-failed": "a GitHub read the profile needs failed",
 } as const;
@@ -818,6 +827,27 @@ function lastBefore<T>(
     if (value !== undefined) return value;
   }
   return undefined;
+}
+
+/** The model a `model_change` entry names, or undefined for any other entry. */
+function modelChange(entry: SessionEntry): string | undefined {
+  return entry.type === "model_change" && typeof entry.model === "string" ? entry.model : undefined;
+}
+
+/** `model`'s id and whether a route of the gateway serves it, by the read count's rule
+ *  (attribute.ts's `sessionModel`): a thinking suffix left out, its id (the text after the last
+ *  `/`, whatever gateway or provider names it) is one of `servedIds`. */
+function served(model: string, servedIds: ReadonlySet<string>): { id: string; served: boolean } {
+  const known = sessionModel({ model, source: "model_change" }, servedIds);
+  return { id: modelId(known?.model ?? model), served: known?.served === true };
+}
+
+/** The detail of a `model-not-served` drop: each model and its id. */
+function notServed(models: readonly string[], servedIds: ReadonlySet<string>): string {
+  const named = models.map((model) => `${model} (id ${served(model, servedIds).id})`).join(", ");
+  return models.length === 1
+    ? `${named}: no route of the gateway serves it; no servedModels entry has its id`
+    : `the session's models from the skill's read on, ${named}: no route of the gateway serves any of them; no servedModels entry has their ids`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1595,13 +1625,17 @@ interface CaseRun {
   readonly copies: Copies;
   readonly github: GithubReads;
   readonly gateway: Gateway;
+  /** The ids (attribute.ts's `modelId`) of the configuration's `servedModels`. */
+  readonly servedIds: ReadonlySet<string>;
 }
 
-/** One session's record in the summary. `windows`: how many windows of the session the case
- *  reader read. `restatementCheck`, once a step is found and the case's messages are known: how
- *  many of the messages before the step the restatement check must read (the case's messages less
- *  the skill's own read results), how many it read whole, and in how many windows; a case is kept
- *  only when `read` is `before`. `audit`: the audit's verdict on the real step and its reason. */
+/** One session's record in the summary. `model`: the session's model as its last `model_change`
+ *  names it, before the step once a step is found, else before the skill's first successful read
+ *  (absent when there is none). `windows`: how many windows of the session the case reader read.
+ *  `restatementCheck`, once a step is found and the case's messages are known: how many of the
+ *  messages before the step the restatement check must read (the case's messages less the skill's
+ *  own read results), how many it read whole, and in how many windows; a case is kept only when
+ *  `read` is `before`. `audit`: the audit's verdict on the real step and its reason. */
 interface SessionRecord {
   store: string;
   hash: string;
@@ -1612,6 +1646,7 @@ interface SessionRecord {
   reason?: DropReason;
   detail?: string;
   context?: string;
+  model?: string;
   windows?: number;
   restatementCheck?: { read: number; before: number; windows: number };
   audit?: { verdict: string; reason: string };
@@ -1651,6 +1686,8 @@ async function caseOf(
       `${reads.length} read results of skill://${run.skill} files, none successful`
     );
   }
+  const firstAt = t.items[first.index]?.at ?? 0;
+  record.model = lastBefore(t.branch, firstAt, modelChange);
   const copyRows = run.copies.prefixes.filter(
     (row) => row.name === run.skill && prefixMatches(row.prefix ?? "", first.header ?? "")
   );
@@ -1661,6 +1698,18 @@ async function caseOf(
         ? `no prefix row of ${run.skill} maps ${first.header}`
         : `${first.header} maps to ${copyRows.map((row) => `${row.repository} ${row.path}`).join(", ")}`
     );
+  }
+
+  // The models: the step's must be one the gateway serves, and the step comes after the read, so
+  // a session none of whose models from the read on is served gives no case, and no reader reads
+  // it.
+  const models = new Set(record.model === undefined ? [] : [record.model]);
+  for (const entry of t.branch.slice(firstAt + 1)) {
+    const model = modelChange(entry);
+    if (model !== undefined) models.add(model);
+  }
+  if (models.size > 0 && ![...models].some((model) => served(model, run.servedIds).served)) {
+    return drop("model-not-served", notServed([...models], run.servedIds));
   }
 
   // The context: a subagent's, from its recorded session_init; else, for a Legion store, the
@@ -1705,7 +1754,6 @@ async function caseOf(
   // run out. No window reads past the first compaction or context reset after the skill's read,
   // since a step after it is dropped (`read-before-compaction`) whatever the reader says.
   const from = Math.min(first.call, first.index);
-  const firstAt = t.items[first.index]?.at ?? 0;
   const boundaryAfterRead = t.branch.findIndex(
     (entry, at) => at > firstAt && (entry.type === "compaction" || entry.type === "reset_boundary")
   );
@@ -1803,10 +1851,10 @@ async function caseOf(
     return drop("no-step", `message ${stepIndex} is no assistant message`);
   }
 
-  // The model and thinking level before the step.
-  const model = lastBefore(t.branch, stepItem.at, (entry) =>
-    entry.type === "model_change" && typeof entry.model === "string" ? entry.model : undefined
-  );
+  // The model and thinking level before the step. The case keeps the model as the session names
+  // it, and runs on no other.
+  const model = lastBefore(t.branch, stepItem.at, modelChange);
+  if (model !== undefined) record.model = model;
   const thinking = Thinking.safeParse(
     lastBefore(t.branch, stepItem.at, (entry) =>
       entry.type === "thinking_level_change" && typeof entry.thinkingLevel === "string"
@@ -1820,7 +1868,9 @@ async function caseOf(
       model === undefined ? "no model_change" : "no thinking level Oh My Pi takes"
     );
   }
-  if (!model.startsWith("anthropic/")) return drop("model-not-anthropic", model);
+  if (!served(model, run.servedIds).served) {
+    return drop("model-not-served", notServed([model], run.servedIds));
+  }
 
   // The messages before the step, and the checks of the line against them.
   const before = messagesBefore(t, stepItem.at, firstAt);
@@ -2038,6 +2088,28 @@ async function caseOf(
   return { case: built, step: stepIndex };
 }
 
+/** One model's line of the summary's `byModel`. */
+interface ModelCounts {
+  tried: number;
+  drops: Partial<Record<DropReason, number>>;
+}
+
+/** The sessions tried and the drops by reason of each model, a session under its record's
+ *  `model`, or under `none` when the build found no model of it. */
+function byModel(sessions: readonly SessionRecord[]): Record<string, ModelCounts> {
+  const counts: Record<string, ModelCounts> = {};
+  for (const session of sessions) {
+    const key = session.model ?? "none";
+    const row = counts[key] ?? { tried: 0, drops: {} };
+    counts[key] = row;
+    row.tried += 1;
+    if (session.reason !== undefined) {
+      row.drops[session.reason] = (row.drops[session.reason] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
+
 /** `skill-cuts build-cases`. */
 async function buildCases(argv: readonly string[], io: BuildIo): Promise<number> {
   const values = parse(
@@ -2108,6 +2180,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     copies,
     github: new GithubReads(io.gh, copies.branches),
     gateway: readerGateway(config, given["key-file"], budgetUsd),
+    servedIds: new Set(config.servedModels.map(modelId)),
   };
   const summaryFile = `${given.out}.summary.json`;
   const cases: Case[] = [];
@@ -2146,6 +2219,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
           sessionsTried: sessions.length,
           casesBuilt: cases.length,
           drops,
+          byModel: byModel(sessions),
           sessions,
           cases: caseRecords,
           sessionQueries,
