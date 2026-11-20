@@ -2440,18 +2440,23 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // bound (B4 of the review of 2f29345b8d, its two rows). The bound here ends before the first
   // pause, so the job prints write_outcome_unknown, which a second run makes safe, and exits 1,
   // within the bound. The stand-in Dispatch is a raw socket, so the status line and the first bytes
-  // of the body surely reach the job before the connection closes or goes silent. The bound is
-  // moved on the fake clock (`onFakeClock`) once the 201's headers came, since that bound is what
-  // the row tests.
+  // of the body surely reach the job before the connection closes or goes silent.
+  // A body cut short, or one that is not the JSON it says it is, ends the write by itself: no ask
+  // fits in the bound's window, so nothing waits on the clock, and its row leaves the fake clock
+  // (`onFakeClock`) where it is. The line then names the body's own failure, a plain `Error`. A
+  // row that moved the clock once the 201's headers came would race the bound against the body:
+  // the bound won on an idle machine and the cut on a loaded one, so that row tested the bound and
+  // failed under load. Only the body that stalls waits for the bound, so only its row moves the
+  // clock, once the 201's headers came, and its line names the bound, `TimeoutError`.
   const bodyStart = '{"id":"00000000-0000-4000-8000-';
   /** The `Idempotency-Key` a raw request carries, which a stand-in of Dispatch on a raw socket names
    *  back itself: `keyedLayer` wraps a fetch-shaped answer, and a socket gives none. */
   const keyOf = (request: Buffer): string =>
     /\r\nidempotency-key: *([^\r\n]*)/i.exec(request.toString("latin1"))?.[1]?.trim() ?? "";
-  for (const [name, length, close] of [
-    ["is cut", 400, true],
-    ["stalls past the bound", 400, false],
-    ["is not the JSON it says it is", bodyStart.length, false],
+  for (const [name, length, close, endedBy] of [
+    ["is cut", 400, true, "Error"],
+    ["stalls past the bound", 400, false, "TimeoutError"],
+    ["is not the JSON it says it is", bodyStart.length, false, "Error"],
   ] as const) {
     test(`a 201 whose body ${name} prints write_outcome_unknown and exits 1`, async () => {
       let posts = 0;
@@ -2476,11 +2481,13 @@ describe("dispatch result --project, as a CI job writes it", () => {
           record,
           { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${lost.port}` },
           shortBound(1_000, 200),
-          async (clock) => {
-            await Promise.race([clock.ended, arrived(() => answersHeard >= 1)]);
-            clock.advance(1_000);
-            await clock.ended;
-          }
+          endedBy === "TimeoutError"
+            ? async (clock) => {
+                await Promise.race([clock.ended, arrived(() => answersHeard >= 1)]);
+                clock.advance(1_000);
+                await clock.ended;
+              }
+            : (clock) => clock.ended
         );
         expect({
           code: ran.code,
@@ -2488,12 +2495,14 @@ describe("dispatch result --project, as a CI job writes it", () => {
           stderr: ran.stderr,
           posts,
           withinTheBound: ran.ms !== undefined && ran.ms <= 1_000,
+          clockStill: ran.ms === 0,
         }).toEqual({
           code: 1,
-          stdout: `${JSON.stringify({ write_outcome_unknown: "TimeoutError" })}\n`,
+          stdout: `${JSON.stringify({ write_outcome_unknown: endedBy })}\n`,
           stderr: "",
           posts: 1,
           withinTheBound: true,
+          clockStill: endedBy === "Error",
         });
       } finally {
         lost.stop(true);
