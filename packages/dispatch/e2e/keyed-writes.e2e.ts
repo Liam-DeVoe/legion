@@ -17,6 +17,7 @@ import {
   slowWrites,
   userHeaders,
 } from "./api";
+import { holdFirstRequest } from "./editor";
 import {
   cutFirstAnswerBody,
   dropFirstAnswer,
@@ -30,8 +31,14 @@ import {
 } from "./keyed-writes";
 import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
-import { shellLoads, tabReloads } from "./shell";
-import { expect, type Page, type Route, test } from "./test";
+import {
+  fetchedChunk,
+  KEPT_WRITES_CHUNK,
+  shellLoads,
+  tabReloads,
+  WRITE_KINDS_CHUNK,
+} from "./shell";
+import { expect, type Page, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
@@ -1229,30 +1236,14 @@ test("a pin on a turn and a priority pick pressed during an outage survive a rel
     // chunks: the take-up's ask is then the one download out that a reader waits on. Every later
     // document gets the chunk.
     const load = await shellLoads(page);
-    let kindsAsked = 0;
-    const kindsHeld = Promise.withResolvers<Route>();
-    await page.route(/\/assets\/kinds-[\w-]{8}\.js$/u, (route) => {
-      kindsAsked += 1;
-      if (kindsAsked === 1) kindsHeld.resolve(route);
-      else void route.fallback();
-    });
+    const kindsCode = await holdFirstRequest(page, WRITE_KINDS_CHUNK);
     const statuses = watchWrites(page, "PATCH", path);
     await page.goto(`/issues/${issue.key}`);
-    const kinds = await kindsHeld.promise;
+    const kinds = await kindsCode.held;
     await page.getByLabel("Status").selectOption("todo");
     await expect(pendingWrites(page)).toContainText("Waiting to send");
     expect(statuses, "a write pressed before the take-up is held").toEqual([]);
-    await expect
-      .poll(() =>
-        page.evaluate(() =>
-          performance
-            .getEntriesByType("resource")
-            .some((entry) =>
-              /\/assets\/KeptWrites-[\w-]{8}\.js$/u.test(new URL(entry.name).pathname)
-            )
-        )
-      )
-      .toBe(true);
+    await fetchedChunk(page, KEPT_WRITES_CHUNK);
     await load().settled();
     await kinds.abort();
     await expect

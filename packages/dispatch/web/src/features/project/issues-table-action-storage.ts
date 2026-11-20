@@ -4,14 +4,14 @@
  * and it lives in `issues-table-storage.ts`. Each name is imported from the module that defines
  * it: neither half re-exports the other's.
  *
- * Why the two halves are two modules. The table's write kind is registered by the shell at boot
- * so that a reload finds a kept table write's kind (`features/writes/kinds.ts`), and that kind
- * reads an interrupted action from here (`issues-table-recovery.ts`). The layout half read
- * `COLUMN_SIZES` and `PINNED`, built from the table's whole column list, so a shell that
- * reached this storage was pulling the table model and its match ranking - about 16,000
- * bytes - into the entry chunk every page of the dashboard parses before it draws anything
- * (dispatch://INFRA-1109, R13). The layout half takes that list from its caller now
- * (`ISSUE_TABLE_COLUMNS`, in the table model), so the shell reaches the model through
+ * Why the two halves are two modules. The table's write kind is registered from the kinds chunk
+ * the write store's take-up fetches as the person signs in, so that a reload finds a kept table
+ * write's kind (`features/writes/kinds.ts`), and that kind reads an interrupted action from here
+ * (`issues-table-recovery.ts`). The layout half read `COLUMN_SIZES` and `PINNED`, built from the
+ * table's whole column list, so a kinds chunk that reached this storage would pull the table
+ * model and its match ranking - about 16,000 bytes - into what every signed-in page downloads
+ * at sign-in (dispatch://INFRA-1109, R13). The layout half takes that list from its caller now
+ * (`ISSUE_TABLE_COLUMNS`, in the table model), so the kinds chunk reaches the model through
  * neither half, and this one is all a reload's kind needs.
  * Nothing of the table is drawn by a first paint: it is a page.
  *

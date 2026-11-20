@@ -7,12 +7,13 @@ import { readStore, writeStore } from "./issues-table-action-storage";
  *
  * The other half - the record of an action a reload interrupted - and the box both halves read
  * through are `issues-table-action-storage.ts`, and a reader of that half imports it from
- * there. The two are two modules because the shell registers the table's write kind at boot
- * and that kind reads an interrupted action, which through this module reached the table model
- * and its match ranking - about 16,000 bytes of the entry chunk every page parses before it
- * draws anything, for a page no first paint draws (dispatch://INFRA-1109, R13). The layout
- * half takes the column list it validates against from its caller (`StoredColumns`), so no
- * module the shell loads reaches the table's columns.
+ * there. The two are two modules because the table's write kind is registered from the kinds
+ * chunk the write store's take-up fetches as the person signs in (`features/writes/kinds.ts`),
+ * and that kind reads an interrupted action, which through this module would reach the table
+ * model and its match ranking - about 16,000 bytes every signed-in page would download at
+ * sign-in, for a page no first paint draws (dispatch://INFRA-1109, R13). The layout half takes
+ * the column list it validates against from its caller (`StoredColumns`), so no module the
+ * kinds chunk loads reaches the table's columns.
  *
  * One failure rule, for every field: a browser that refuses storage, a full quota or a corrupt
  * value is a table with no saved preferences, never an exception out of a click. The URL still

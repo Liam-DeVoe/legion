@@ -71,9 +71,11 @@ export function PendingWritesHost(): ReactNode {
   // recovery. The kept writes' chunk is started here too, because the sign-in page that shows
   // them follows this shell when the session lapses, and with the chunk in, the list draws with
   // that page rather than a moment after it. So are the kinds of write: the take-up asked for
-  // them as the person signed in, and this finds that download in or on its way; one it lost
-  // with no reload to follow - the page was being left, or the tab's recovery reloads are spent -
-  // comes down here, for the next press, which asks for them again (`Writes.run`).
+  // them as the person signed in, and this finds that download in or on its way. One the take-up
+  // lost before the page drew, with no reload to follow - the page was being left, the reader
+  // chose to stay at the leave prompt a kept write opens, or the tab's recovery reloads are
+  // spent - is asked for again here, and once it is in, its kinds end the take-up
+  // (`kindsRegistered`) with no press to ask for them (`Writes.run`).
   const drawn = useContentDrawn();
   useEffect(() => {
     if (!drawn) return;

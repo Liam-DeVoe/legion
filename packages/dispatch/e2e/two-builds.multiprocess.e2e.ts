@@ -33,6 +33,7 @@ import {
 } from "./harness-processes";
 import { withIssuePage } from "./issue-page-option";
 import { sql } from "./psql";
+import { fetchedChunk, writesChunks } from "./shell";
 import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
 import { signIn } from "./users";
@@ -336,39 +337,6 @@ function issueHeading(page: Page, name: string): Locator {
 /** A document open in the editor and connected: the editor chunk ran and the Yjs stack synced. */
 function openDocument(page: Page, text: string): readonly Locator[] {
   return [documentEditor(page).filter({ hasText: text }), connectedDot(page)];
-}
-
-/** The shell's two lists of writes, which the writes host fetches once the page has drawn and
- *  draws only while it holds a write (`web/src/features/writes/write-hosts.tsx`), and every kind
- *  of write, which the store's take-up of what a reload kept waits for and nothing draws from
- *  (`web/src/features/writes/kinds.ts`). */
-const writesChunks = [
-  /\/assets\/PendingWritesIndicator-[\w-]{8}\.js$/u,
-  /\/assets\/KeptWrites-[\w-]{8}\.js$/u,
-  /\/assets\/kinds-[\w-]{8}\.js$/u,
-] as const;
-
-/** Waits until the page has fetched a script whose path `chunk` matches: for a chunk the page
- *  starts of its own accord and draws nothing from until a reader needs it, so that no landmark
- *  can show that it came down. It reads the page's own resource timing, which keeps every fetch
- *  of the document, so a fetch that ended before the wait began is found as well as one still to
- *  come; the visit's own wait for its asset requests then holds it to an answer. */
-async function fetchedChunk(page: Page, chunk: RegExp): Promise<void> {
-  await expect
-    .poll(
-      () =>
-        page.evaluate(
-          ({ flags, source }) => {
-            const pattern = new RegExp(source, flags);
-            return performance
-              .getEntriesByType("resource")
-              .some((entry) => pattern.test(new URL(entry.name).pathname));
-          },
-          { flags: chunk.flags, source: chunk.source }
-        ),
-      `the page never fetched ${chunk}`
-    )
-    .toBe(true);
 }
 
 /** The timeline fixture's day (`seedDeliveryFixture`). */

@@ -217,6 +217,42 @@ export const MARGIN_CHUNK = /\/assets\/Margin-[^/]+\.js$/u;
  *  which the shell asks for at the same moment. */
 const REF_PREVIEW_CHUNK = /\/assets\/RefPreview-[^/]+\.js$/u;
 
+/** The paths of the shell's two lists of writes, which the writes host fetches once the page has
+ *  drawn and draws only while it holds a write (`web/src/features/writes/write-hosts.tsx`). */
+export const PENDING_WRITES_CHUNK = /\/assets\/PendingWritesIndicator-[\w-]{8}\.js$/u;
+export const KEPT_WRITES_CHUNK = /\/assets\/KeptWrites-[\w-]{8}\.js$/u;
+
+/** The path of every kind of write, which the store's take-up of what a reload kept waits for and
+ *  nothing draws from (`web/src/features/writes/kinds.ts`). */
+export const WRITE_KINDS_CHUNK = /\/assets\/kinds-[\w-]{8}\.js$/u;
+
+/** The three chunks of writes every signed-in page fetches, none of which a page without a write
+ *  draws from, so no landmark shows they came down (`fetchedChunk`). */
+export const writesChunks = [PENDING_WRITES_CHUNK, KEPT_WRITES_CHUNK, WRITE_KINDS_CHUNK] as const;
+
+/** Waits until the page has fetched a script whose path `chunk` matches: for a chunk the page
+ *  starts of its own accord and draws nothing from until a reader needs it, so that no landmark
+ *  can show that it came down. It reads the page's own resource timing, which keeps every fetch
+ *  of the document, so a fetch that ended before the wait began is found as well as one still to
+ *  come; how that fetch ended is the caller's to hold it to. */
+export async function fetchedChunk(page: Page, chunk: RegExp): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          ({ flags, source }) => {
+            const pattern = new RegExp(source, flags);
+            return performance
+              .getEntriesByType("resource")
+              .some((entry) => pattern.test(new URL(entry.name).pathname));
+          },
+          { flags: chunk.flags, source: chunk.source }
+        ),
+      `the page never fetched ${chunk}`
+    )
+    .toBe(true);
+}
+
 /** One node of a tree React commits, as far as `lazyComponentsRendered` reads it. */
 interface Fiber {
   readonly child: Fiber | null;

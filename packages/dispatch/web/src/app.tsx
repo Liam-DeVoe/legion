@@ -280,11 +280,11 @@ export function preloadRouteChunk(pathname: string): void {
 // on may be passed over, which is what every `prefetchChunk` call is: the preload above, the
 // Inbox peek's chunk after a page's first paint (`features/inbox/InboxHost.tsx`), the search
 // bar's after the same paint (`features/search/SearchPaletteHost.tsx`), the two lists of writes'
-// once the page has drawn (`features/writes/write-hosts.tsx`) and the boot warm of the
-// Markdown engine (`features/shell/DeploymentResilience.tsx`). Left bare, a route chunk that
-// failed while one of those prefetches was still out would be read as that prefetch's and reload
-// nothing, leaving the reader in front of a page that cannot draw (dispatch://INFRA-1109);
-// `lazy` itself is refused here by the repository's `biome.json`.
+// and the kinds of write's once the page has drawn (`features/writes/write-hosts.tsx`) and the
+// boot warm of the Markdown engine (`features/shell/DeploymentResilience.tsx`). Left bare, a
+// route chunk that failed while one of those prefetches was still out would be read as that
+// prefetch's and reload nothing, leaving the reader in front of a page that cannot draw
+// (dispatch://INFRA-1109); `lazy` itself is refused here by the repository's `biome.json`.
 
 const PrioritiesPage = lazyChunk(() =>
   import("./features/priorities/PrioritiesPage").then((module) => ({
@@ -1367,26 +1367,14 @@ export function AuthGate(): ReactNode {
   const [shellFor, setShellFor] = useState<string>();
   useEffect(() => {
     if (!known) return;
-    writesOf(queryClient).signedIn(login);
+    const writes = writesOf(queryClient);
+    writes.signedIn(login);
     // Signed in, the writes this person's reload interrupted go on under their keys, and their
-    // refusals show again (`Writes.resume`): a composer's send, a broadcast, a pin, a read mark
-    // and every other write. In an effect, not in the render: a resume sends requests and writes
-    // to the store, which a render must not do, and React runs the render twice under StrictMode.
-    // The store takes them up once, so a later sign-in takes up nothing.
-    //
-    // A kept write is made again by its kind, and the kinds are a chunk of their own
-    // (`features/writes/kinds.ts`, `loadWriteKinds`): about 22,000 bytes that no first paint
-    // draws, out of the entry chunk every page parses first (dispatch://INFRA-1109, R13). So the
-    // take-up waits until that chunk is in, since a kept write whose kind no module has
-    // registered yet would be dropped unsent. A page's own write waits for the take-up in turn
-    // (`Writes.run`), at most for that one chunk, and then joins its line behind the writes the
-    // take-up put there. That order must not hang on the order React runs effects in: this tree
-    // once awaited the registry's `import()` in an effect of the shell, with nothing held, and the
-    // resume then ran after the shell's other mount effects, which "the shell writes the
-    // browser's old pins one at a time" (`web/src/__tests__/responsive-shell.test.tsx`) caught
-    // writing a pin a second time. The take-up also begins here, a commit before the shell is
-    // drawn (`shellFor`, below), so it has begun before any page exists to press a write.
-    if (login !== undefined) writesOf(queryClient).resume(login, loadWriteKinds);
+    // refusals show again. The take-up waits for the kinds of write, a chunk of their own
+    // (`loadWriteKinds`), and every write pressed meanwhile waits for the take-up; so the take-up
+    // begins here, a commit before the shell is drawn (`shellFor`, below), before any page exists
+    // to press a write (`Writes.resume`, `Writes.run`).
+    if (login !== undefined) writes.resume(login, loadWriteKinds);
     draftStoresSignedIn(queryClient, login);
     signIns.signedIn(login ?? null);
     if (login !== undefined) setShellFor(login);

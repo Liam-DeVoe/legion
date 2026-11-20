@@ -104,7 +104,8 @@ export function keptUntilRejected<T>(load: () => Promise<T>): () => Promise<T> {
  * What loads through it: the chunks of a document - the editor, Yjs, Hocuspocus and the
  * pending-edit store, code-split so the issue route does not pay for them until a document
  * mounts (`features/doc/editor.ts`, `features/doc/connection.ts`,
- * `features/doc/ProofDocument.tsx`) - and every `lazyChunk`.
+ * `features/doc/ProofDocument.tsx`) - the kinds of write the write store's take-up waits for
+ * (`features/writes/write-hosts.tsx`, `loadWriteKinds`), and every `lazyChunk`.
  */
 export async function importWhenOnline<T>(load: () => Promise<T>): Promise<T> {
   for (;;) {

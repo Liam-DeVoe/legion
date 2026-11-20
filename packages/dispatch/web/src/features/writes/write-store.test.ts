@@ -31,7 +31,7 @@ import {
   WriteDiscardedError,
 } from "./keyed-write";
 import { KEPT_SEND_RESUME_MS, type KeptState } from "./write-storage";
-import { defineWriteKind, plainWrite, type Write, Writes } from "./write-store";
+import { defineWriteKind, kindsRegistered, plainWrite, type Write, Writes } from "./write-store";
 
 /** A page's query client, signed in: the store stamps every write with this login at its press
  *  and resumes only this login's, as the app's does. */
@@ -396,6 +396,19 @@ test("a write survives a reload and resumes once, PUT included, and an old one c
   });
 });
 
+/** A pick of CORE-1's status on the issue's line, made from its request alone, as the issue page
+ *  presses one: its body names the status picked. */
+function statusPick(writes: Writes, status: string): Promise<unknown> {
+  return writes.run({
+    detail: null,
+    kind: plainWrite,
+    label: `CORE-1 set to ${status}`,
+    presentation: "indicator",
+    request: { ...patch, body: { status } },
+    target: "issue:CORE-1",
+  });
+}
+
 // The app's take-up of what a reload kept waits for every kind of write, which is a chunk of its
 // own (`kinds.ts`), and the store holds every write pressed meanwhile, whatever order the page's
 // effects pressed it in: kept in the tab from its press, it sends nothing while the take-up
@@ -412,25 +425,16 @@ test("a write pressed before the take-up of a reload's writes waits for it, then
       if (bodies.length === 1) await Promise.withResolvers<never>().promise;
       return null as never;
     });
-    const press = (writes: Writes, status: string) =>
-      writes.run({
-        detail: null,
-        kind: plainWrite,
-        label: `CORE-1 set to ${status}`,
-        presentation: "indicator",
-        request: { ...patch, body: { status } },
-        target: "issue:CORE-1",
-      });
     const before = new Writes(signedIn(), tab.page(), memoryFiles());
     try {
-      void press(before, "done").catch(() => {});
+      void statusPick(before, "done").catch(() => {});
       await settle();
       const keptKey = row(before)?.key ?? "";
       const after = new Writes(signedIn(), tab.page(), memoryFiles());
 
       const kinds = Promise.withResolvers<void>();
       after.resume("alice", () => kinds.promise);
-      const pressed = [press(after, "todo"), press(after, "backlog")];
+      const pressed = [statusPick(after, "todo"), statusPick(after, "backlog")];
       await settle();
       expect(bodies).toEqual([{ status: "done" }]);
       expect(after.rows().map((write) => [write.label, write.status])).toEqual([
@@ -455,6 +459,54 @@ test("a write pressed before the take-up of a reload's writes waits for it, then
         ...heldKeys,
       ]);
       expect(await Promise.all(pressed)).toEqual([null, null]);
+      expect(after.rows()).toEqual([]);
+    } finally {
+      send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// The take-up ends once the kinds of write are in, whichever load brought them: its own ask can
+// fail with no reload to follow - the page being left, or the tab's recovery reloads spent - and
+// another load of the same chunk then brings them in (the writes host's prefetch), which
+// `kinds.ts` reports once its imports have defined every kind (`kindsRegistered`). The write
+// pressed meanwhile then goes out behind the kept one, as it does after a take-up's own load.
+test("a take-up whose own ask for the kinds of write failed ends once another load registers them, and the write pressed meanwhile goes out behind the kept one", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const bodies: unknown[] = [];
+    const send = spyOn(api, "send").mockImplementation(async (request) => {
+      bodies.push(request.body);
+      // The page before the reload never hears back; the reloaded one hears at once.
+      if (bodies.length === 1) await Promise.withResolvers<never>().promise;
+      return null as never;
+    });
+    const before = new Writes(signedIn(), tab.page(), memoryFiles());
+    try {
+      void statusPick(before, "done").catch(() => {});
+      await settle();
+      const keptKey = row(before)?.key ?? "";
+      const after = new Writes(signedIn(), tab.page(), memoryFiles());
+
+      after.resume("alice", () => Promise.reject(new TypeError("Failed to fetch")));
+      await settle();
+      const pressed = statusPick(after, "todo");
+      await settle();
+      expect(bodies).toEqual([{ status: "done" }]);
+      expect(after.rows().map((write) => [write.label, write.status])).toEqual([
+        ["CORE-1 set to todo", "queued"],
+      ]);
+      const pressedKey = row(after)?.key ?? "";
+
+      kindsRegistered();
+      await settle();
+      expect(bodies).toEqual([{ status: "done" }, { status: "done" }, { status: "todo" }]);
+      expect(send.mock.calls.slice(1).map(([, bounds]) => bounds?.key)).toEqual([
+        keptKey,
+        pressedKey,
+      ]);
+      expect(await pressed).toBeNull();
       expect(after.rows()).toEqual([]);
     } finally {
       send.mockRestore();
@@ -1146,22 +1198,27 @@ test("a store tells each kind of itself and its client once, as it is made", () 
 // The app's kinds come in a chunk of their own, after its store was made (`kinds.ts`), and a kind
 // keeps of a client from its store's start: a kind defined after a store is opened on it then,
 // once, as a store opens every kind defined before it. Any other store still alive in this file
-// is opened too, so the row reads the calls made with its own.
+// is opened too, so the row reads the calls made with its own. A kind once defined stays for the
+// whole process, so it records only while the row runs (`told`, above), and keeps no store alive
+// after it.
 test("a kind defined after a store was made is told once of that store and its client", () => {
   const tab = keptTab();
+  let openedOn: unknown[][] | undefined = [];
   try {
     const client = signedIn();
     const writes = new Writes(client, tab.page(), memoryFiles());
-    const opened = jest.fn();
     defineWriteKind<null>({
       kept: (value): value is null => value === null,
       // New on each run, since a name defined before opens nothing: `--rerun-each` runs the row
       // again in the same process.
       name: `test-defined-after-the-store-${crypto.randomUUID()}`,
-      opened,
+      opened: (of, store) => {
+        openedOn?.push([of, store]);
+      },
     });
-    expect(opened.mock.calls.filter(([, store]) => store === writes)).toEqual([[client, writes]]);
+    expect(openedOn.filter(([, store]) => store === writes)).toEqual([[client, writes]]);
   } finally {
+    openedOn = undefined;
     tab.close();
   }
 });
