@@ -30,13 +30,17 @@ const turnOutcomePath = "/legion/v1/claims/turn-outcome"
 //
 // For a worker on the current contract only this report finishes a task, so it is sent until the
 // daemon answers it (daemonLink.untilAnswered), as Oh My Pi's reporter sends its own
-// (packages/pi-legion/src/turn-outcome.ts): the failures daemonLink.unanswered lists, and also any
-// 500 the route answers, which is the daemon's failure to record the report (recordFailed). The
-// daemon stores one outcome per (generation, sequence) and applies a repeat once, so a report sent
-// again whose first attempt landed changes nothing, and one whose write failed is applied. A 2xx
-// ends the sending, and so does a refusal; a 4xx applied nothing, so the task a clean report named
-// is still owed, and the loop is told (refused) to hold that number finished no longer (take.go's
-// reportRefused).
+// (packages/pi-legion/src/turn-outcome.ts): every failure daemonLink.unanswered names, any failure
+// of an attempt that got no status among them, whatever the transport names it, and also any 500
+// the route answers, which is the daemon's failure to record the report (recordFailed). No list of
+// the transport's failures decides it: a report a failure stopped would leave its task's turn
+// started on the daemon, which arms no bound over it, while the loop holds the number finished
+// from the turn's end, so nothing would finish the task or take it again until a newer task or the
+// process's end. The daemon stores one outcome per (generation, sequence) and applies a repeat
+// once, so a report sent again whose first attempt landed changes nothing, and one whose write
+// failed is applied. A 2xx ends the sending, and so does a refusal; a 4xx applied nothing, so the
+// task a clean report named is still owed, and the loop is told (refused) to hold that number
+// finished no longer (take.go's reportRefused).
 //
 // Each report is sent from a goroutine of its own and nothing waits for it: the bridge's loop must
 // stay answerable to the shim, to Claude Code and to its own end at every moment. The sending
@@ -85,7 +89,7 @@ func (r *turnReports) turnEnded(task uint64, refusal *claim.ProviderError) {
 
 // recordFailed is the turn-outcome route's own failure to record a report (api's claimFailure:
 // 500 `turn outcome failed: the daemon could not record it`, with no code), which is sent again as
-// the failures daemonLink.unanswered lists are (the plan's decision 8).
+// the failures daemonLink.unanswered names are (the plan's decision 8).
 func recordFailed(status int) string {
 	if status != http.StatusInternalServerError {
 		return ""

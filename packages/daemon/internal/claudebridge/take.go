@@ -82,9 +82,11 @@ import (
 //     asked about again only at its next revision.
 //
 // A seen report or a take the daemon gave no answer to is sent again (daemonLink.untilAnswered)
-// until the daemon answers it or a newer value replaces it (replace): the failures
-// daemonLink.unanswered lists, and nothing else. Such a re-send is the same ask, not a second
-// one, and the daemon answers a take repeated for a number it accepted with the same text.
+// until the daemon answers it or a newer value replaces it (replace): every failure
+// daemonLink.unanswered names, which is any failure of an attempt that got no status, a
+// connection lost before its answer was read whole, and a proxy's uncoded 502, 503 or 504. Such a
+// re-send is the same ask, not a second one, and the daemon answers a take repeated for a number
+// it accepted with the same text.
 
 // The task routes the bridge calls.
 const (

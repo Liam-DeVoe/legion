@@ -842,11 +842,13 @@ test("reports a task value seen and takes it, reading every take answer the daem
   expect(() => client.take({ ...taken, number: 0 })).toThrow();
 });
 
-// A request sent until it is answered reads the same failures of the network and of timeouts as
-// the ready's retry does, one list of them: a fetch's NetworkError, which names no code, is no
-// answer from the daemon, so it is sent again after the first wait of the one back-off pair. A
-// refusal that names a code is the daemon's answer and is handed back, sent once.
-test("a request sent until it is answered is sent again after a NetworkError, and a coded refusal is handed back", async () => {
+// A request sent until it is answered is sent again after any failure that carries no HTTP
+// status, whatever the transport names it: a fetch's NetworkError, which names no code, and a code
+// no list holds are no answer from the daemon, so each is sent again after the first wait of the
+// one back-off pair. A refusal that names a code is the daemon's answer and is handed back, sent
+// once; so is a success whose body the contract does not describe, and a request the contract does
+// not describe, which never leaves the pane.
+test("a request sent until it is answered is sent again after a failure with no HTTP status, and an answer or a malformed request is handed back", async () => {
   const send = async (failure: Error) => {
     const waits: number[] = [];
     let attempts = 0;
@@ -877,11 +879,16 @@ test("a request sent until it is answered is sent again after a NetworkError, an
   };
 
   const networkError = Object.assign(new Error("Network request failed"), { name: "NetworkError" });
-  expect(await send(networkError)).toEqual({
-    answer: "answered",
-    attempts: 2,
-    waits: [DAEMON_RESTART_FIRST_DELAY_MS],
+  const unlisted = Object.assign(new TypeError("FailedToOpenSocket: the socket did not open"), {
+    code: "FailedToOpenSocket",
   });
+  for (const failure of [networkError, unlisted]) {
+    expect(await send(failure)).toEqual({
+      answer: "answered",
+      attempts: 2,
+      waits: [DAEMON_RESTART_FIRST_DELAY_MS],
+    });
+  }
   const coded = new LegionDaemonApiError(
     "POST",
     "/legion/v1/claims/take",
@@ -890,4 +897,14 @@ test("a request sent until it is answered is sent again after a NetworkError, an
     "refused"
   );
   expect(await send(coded)).toEqual({ answer: coded, attempts: 1, waits: [] });
+  const undescribed = new LegionDaemonContractError(
+    "POST",
+    "/legion/v1/claims/take",
+    200,
+    "not JSON"
+  );
+  expect(await send(undescribed)).toEqual({ answer: undescribed, attempts: 1, waits: [] });
+  const malformed = LegionReadyRequest.safeParse({}).error;
+  expect(malformed).toBeDefined();
+  expect(await send(malformed as Error)).toEqual({ answer: malformed, attempts: 1, waits: [] });
 });

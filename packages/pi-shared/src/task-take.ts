@@ -66,14 +66,14 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * follow-up's answer settles once the host has queued it, so a drop of one after that is not seen.
  *
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
- * gave no answer to — a refused, reset or closed connection, an unreachable host or network, a
- * connect or read timeout, a DNS failure, a fetch's network error, no answer within
- * `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no Legion error code — is sent
- * again, the same request, after a doubling wait with no attempt limit, until the daemon answers
- * it or a newer value replaces it: a take the daemon never received would otherwise be lost,
- * since the worker asks once per revision. Such a re-send is the same ask, not a second one, and
- * the daemon answers a take repeated for the number it accepted with the same text until that
- * task finishes, whether or not its turn has started.
+ * gave no answer to — any failure that carries no HTTP status, whatever the transport names it (a
+ * refused, reset or closed connection, an unreachable host or network, a timeout, a DNS failure
+ * among them), no answer within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no
+ * Legion error code — is sent again, the same request, after a doubling wait with no attempt
+ * limit, until the daemon answers it or a newer value replaces it: a take the daemon never
+ * received would otherwise be lost, since the worker asks once per revision. Such a re-send is the
+ * same ask, not a second one, and the daemon answers a take repeated for the number it accepted
+ * with the same text until that task finishes, whether or not its turn has started.
  * Every refusal of these routes names a code, so a coded refusal is an answer and is not sent
  * again.
  *

@@ -293,6 +293,36 @@ test("a report whose first two attempts meet an uncoded 504 and a DNS failure is
   ]);
 });
 
+// A failure that carries no answer of the daemon is sent again whatever the transport names it,
+// not only where a list names it: an attempt that never reached the daemon applied nothing, and
+// one that did is applied once however often it comes. Here a code Bun gives a socket it could
+// not open, a code no list holds, and an error with no code.
+test("a report whose attempts meet transport failures no list names is sent again, the same report, and delivered", async () => {
+  const tasks = taskStandIn();
+  const value = tasks.give("Implement LEGION-208 on its branch.");
+  const { report, posted, debugged, waits } = rig({
+    answer: (attempt, body) => {
+      if (attempt === 1) throw transport("FailedToOpenSocket");
+      if (attempt === 2) throw transport("ECONNABORTED");
+      if (attempt === 3) throw new Error("the socket hung up");
+      tasks.answer("/legion/v1/claims/turn-outcome", body);
+      return Response.json({ refusedRun: 0, failed: false });
+    },
+  });
+
+  expect(await report(SESSION, clean, value.number)).toBe("recorded");
+
+  expect(posted).toHaveLength(4);
+  expect(posted.slice(1)).toEqual([posted[0], posted[0], posted[0]]);
+  expect(waits).toEqual([
+    DAEMON_RESTART_FIRST_DELAY_MS,
+    DAEMON_RESTART_FIRST_DELAY_MS * 2,
+    DAEMON_RESTART_FIRST_DELAY_MS * 4,
+  ]);
+  expect(tasks.registered()).toEqual({ task: null, finished: value.number });
+  expect(debugged).toEqual(["legion: reported a turn's outcome"]);
+});
+
 // The daemon answers a report whose store write it could not make with a 500 that names no code,
 // and applies a repeated report once. Here the first attempt is that 500, the second is applied
 // but its answer is lost to a reset connection, and the third is answered: the same report is

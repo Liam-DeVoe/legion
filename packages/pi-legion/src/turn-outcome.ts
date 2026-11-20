@@ -40,14 +40,18 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * its start task's naming that task's number.
  *
  * Because only the report finishes the task, a report is sent until the daemon answers it
- * (`sendUntilAnswered`, the policy a take is sent by): a refused, reset or closed connection, an
- * unreachable host or network, a connect or read timeout, a DNS failure, no answer within five
- * minutes, and a 502, 503 or 504 that names no Legion error code are sent again, the same
- * request, after a doubling wait with no attempt limit, and so is any 500 the route answers,
- * which is the daemon's own failure to record the report (`turn outcome failed: the daemon could
- * not record it`). The daemon stores one outcome per `(generation, sequence)` and applies a repeat
- * once, so a report sent again whose first attempt landed changes nothing, and one whose write
- * failed is applied. A 2xx ends the sending, and so does a refusal
+ * (`sendUntilAnswered`, the policy a take is sent by): any failure that carries no HTTP status,
+ * whatever the transport names it (a refused, reset or closed connection, an unreachable host or
+ * network, a connect or read timeout, a DNS failure among them), no answer within five minutes,
+ * and a 502, 503 or 504 that names no Legion error code are sent again, the same request, after a
+ * doubling wait with no attempt limit, and so is any 500 the route answers, which is the daemon's
+ * own failure to record the report (`turn outcome failed: the daemon could not record it`). No
+ * list of the transport's codes decides it: a report a failure stopped would leave its task's turn
+ * started on the daemon, which arms no bound over it, while the take holds the number finished
+ * from the turn's end, so nothing would finish the task or take it again until a newer task or
+ * the process's end. The daemon stores one outcome per `(generation, sequence)` and applies a
+ * repeat once, so a report sent again whose first attempt landed changes nothing, and one whose
+ * write failed is applied. A 2xx ends the sending, and so does a refusal
  * (a 4xx, or any other answer the daemon names a code for), which is warned about once: nothing
  * this pane can do changes it. The session's end stops what is still being sent for it
  * (`sessionEnded`). The report resolves how the daemon answered it (`TurnReportAnswer`): a 4xx

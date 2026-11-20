@@ -1419,23 +1419,27 @@ func reconnected(m *Machine, ctx context.Context, _ Event) error {
 // hello (askedAt) is relaunched there, uncharged (reconnectDeadline). The bound is armed by the
 // first unanswered ask and kept by the ones after it; a second hello, which disarms the reconnect
 // deadline as every hello does, arms it again for what is left of it.
+//
+// A claim with no connection to ask on is held by the same bound. The stream queues a hello and
+// then the close of its connection, and the close can come before the decision that reads the
+// hello asks; a shim that cannot reach the daemon again sends no other hello. The relaunch waits
+// for the answer, and the stale plugin holds the take's two waits until that relaunch
+// (claimHold), so without the bound nothing would end the wait while the process lives.
 func (m *Machine) askRestoredTurn(ctx context.Context) {
-	conn, ok := m.deps.Conns.Conn(m.claim.Token)
-	if !ok {
-		return
+	if conn, ok := m.deps.Conns.Conn(m.claim.Token); ok {
+		if _, answered := m.streaming(ctx, conn); answered {
+			m.unansweredAsks = 0
+			m.log.Info("supervise: the agent of a claim the daemon's start restored said whether it is in a turn; its stale-plugin relaunch is decided behind the frames its shim replayed")
+			return
+		}
+		m.unansweredAsks++
+		level := slog.LevelInfo
+		if m.unansweredAsks >= unansweredAsksWarn {
+			level = slog.LevelWarn
+		}
+		m.log.Log(ctx, level, "supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn; its stale-plugin relaunch waits, and the next sweep asks again",
+			"unanswered", m.unansweredAsks, "askedAt", m.askedAt)
 	}
-	if _, answered := m.streaming(ctx, conn); answered {
-		m.unansweredAsks = 0
-		m.log.Info("supervise: the agent of a claim the daemon's start restored said whether it is in a turn; its stale-plugin relaunch is decided behind the frames its shim replayed")
-		return
-	}
-	m.unansweredAsks++
-	level := slog.LevelInfo
-	if m.unansweredAsks >= unansweredAsksWarn {
-		level = slog.LevelWarn
-	}
-	m.log.Log(ctx, level, "supervise: the agent of a claim the daemon's start restored did not say whether it is in a turn; its stale-plugin relaunch waits, and the next sweep asks again",
-		"unanswered", m.unansweredAsks, "askedAt", m.askedAt)
 	if _, armed := m.timers[TimerRegistration]; !armed {
 		bound := runtime.RegistrationDeadline(m.deps.Timeouts.Boot, m.deps.Timeouts.RegistrationIntervals, 0)
 		m.arm(TimerRegistration, max(m.askedAt.Add(bound).Sub(m.deps.Clock.Now()), 0), "")

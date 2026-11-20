@@ -131,8 +131,8 @@ func missingDaemonInputs(cfg Config) string {
 // the turn-outcome report it says how an answer that is sent again was answered — a 500, the
 // daemon's failure to record it (recordFailed) — and is "" for any other. The first attempt sent
 // again is logged, once, naming what and why. ctx ending — the request replaced by a newer value,
-// or the bridge ending — ends the sending with ctx's error. An error that is no failure
-// `unanswered` lists is returned as the request's answer, and nothing sends it again.
+// or the bridge ending — ends the sending with ctx's error. An error that came with a status
+// `unanswered` does not name is returned as the request's answer, and nothing sends it again.
 func (d *daemonLink) untilAnswered(ctx context.Context, what, path string, request any, alsoAgain func(status int) string) (int, []byte, error) {
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -197,14 +197,18 @@ func (d *daemonLink) attempt(ctx context.Context, path string, body []byte) (sta
 var errNoAnswerInTime = errors.New("no answer within the attempt's bound")
 
 // unanswered names why an attempt got no answer from the daemon, and is "" for an attempt it
-// answered: the failures listed here, and nothing else. A refused, reset or closed
-// connection, an unreachable host or network, a name that did not resolve, and a dial or a read
-// that timed out — which any error in the chain may say (timedOut) — never reached the daemon or
-// lost its answer on the way; an attempt past calls.answerTimeout is a daemon that took the
-// request and never answered; and a 502, 503 or 504 that names no Legion error code is a proxy in
-// front of a daemon that is not serving. Every refusal the daemon itself makes names a code (api's
-// taskRefusal), so a coded answer, whatever its status, is the daemon's word and is never sent
-// again.
+// answered. A refused, reset or closed connection, an unreachable host or network, a name that
+// did not resolve, and a dial or a read that timed out — which any error in the chain may say
+// (timedOut) — never reached the daemon or lost its answer on the way, before its status or
+// after it; an attempt past calls.answerTimeout is a daemon that took the request and never
+// answered; any other failure of an attempt that got no status at all is no answer either,
+// whatever it names itself (a code no case here lists, a malformed answer of something in the
+// daemon's place); and a 502, 503 or 504 that names no Legion error code is a proxy in front of a
+// daemon that is not serving. No list of failures decides the attempt that got no status: one that
+// never reached the daemon applied nothing, and one that did is applied once however often it
+// arrives, which is what every request untilAnswered sends is. Every refusal the daemon itself
+// makes names a code (api's taskRefusal), so a coded answer, whatever its status, is the daemon's
+// word and is never sent again.
 func (d *daemonLink) unanswered(status int, body []byte, err error) string {
 	var dns *net.DNSError
 	switch {
@@ -225,6 +229,8 @@ func (d *daemonLink) unanswered(status int, body []byte, err error) string {
 		return "the daemon's name did not resolve"
 	case timedOut(err):
 		return "the connection timed out"
+	case status == 0:
+		return fmt.Sprintf("the transport failed: %v", err)
 	default:
 		return ""
 	}

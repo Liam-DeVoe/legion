@@ -259,6 +259,10 @@ func (h *harness) wantFinishedOnceAndRelaunchedEmpty() {
 //     the task is finished once.
 //   - An ask the agent does not answer: asked again at the next sweep, and relaunched at the
 //     reconnect deadline counted from the hello, by the lane, charged nothing.
+//   - A hello whose connection closed before the daemon asked on it, from a shim that cannot
+//     reach the daemon again: no ask is made, and the claim is relaunched at the same deadline,
+//     the same way. Negative control: askRestoredTurn arming no bound with no connection — the
+//     hello disarmed the boot's reconnect deadline, and the relaunch never comes.
 //   - No hello: relaunched at the reconnect deadline, as departure 7's never_reconnected.
 //
 // The negative controls are the boot's relaunch made before the hello (refreshPlugin with no
@@ -347,6 +351,30 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 		h.observe(runtime.Alive)
 		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 2 {
 			t.Fatalf("the asks the agent left unanswered are %q, want the hello's and the sweep's", asks)
+		}
+		h.advance(deadline - deadline/2 - time.Second)
+		h.wantCalls("Resume", 0)
+		h.advance(time.Second)
+
+		h.wantCalls("Resume", 1)
+		h.wantState(StateLaunching)
+		h.wantBudgets(Budgets{})
+		if cause := h.claim().PendingCause; cause != "" {
+			t.Fatalf("the relaunch is pending cause %q, want none: the lane's relaunch is charged nothing", cause)
+		}
+	})
+	t.Run("a hello whose connection closed before its ask", func(t *testing.T) {
+		h := restoreStaleMigrated(t)
+		// The stream queued the hello and then the close of its connection, which went before
+		// the decision that reads the hello could ask on it; the shim cannot reach the daemon
+		// again, and the process it runs lives.
+		h.advance(deadline / 2)
+		h.must(StreamHello{Claim: h.token, Generation: h.generation()})
+		h.must(StreamClosed{Claim: h.token})
+		h.advance(deadline / 2)
+		h.observe(runtime.Alive)
+		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 0 {
+			t.Fatalf("the asks made are %q, want none: no connection was there to ask on", asks)
 		}
 		h.advance(deadline - deadline/2 - time.Second)
 		h.wantCalls("Resume", 0)

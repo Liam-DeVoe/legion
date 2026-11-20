@@ -2007,6 +2007,43 @@ func TestTheFirstEndReportDroppedThenTheTaskFinishesOnce(t *testing.T) {
 	}
 }
 
+// An end report whose attempt fails with no answer the daemon gave is sent again whatever the
+// transport names the failure, not only where unanswered's list names it: an attempt that never
+// reached the daemon applied nothing, and one that did is applied once. Here something in the
+// daemon's place answers what is no HTTP response, and then a response whose header is malformed,
+// two failures no case of the list names; the third attempt lands, and the task finishes once.
+func TestAnEndReportIsSentAgainOnATransportFailureNoListNames(t *testing.T) {
+	notHTTP := func(answer string) func(http.ResponseWriter, *http.Request) {
+		return func(w http.ResponseWriter, _ *http.Request) {
+			if conn := hijack(t, w); conn != nil {
+				_, _ = conn.Write([]byte(answer))
+				_ = conn.Close()
+			}
+		}
+	}
+	d := newTaskDaemon(t)
+	d.answerReports(notHTTP("not an answer of HTTP\r\n\r\n"), notHTTP("HTTP/1.1 200 OK\r\nContent-Length: many\r\n\r\n"))
+	r := newTakingRig(t, d, "", quickCalls)
+	r.handReady()
+
+	r.handTask(testTask, 1)
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	r.logged("claims/turn-outcome of turn 1 got no answer from the daemon (the transport failed:")
+	if report := d.reportOf(1); report.Task != testTask || report.Outcome != claim.TurnClean {
+		t.Fatalf("the daemon recorded %+v, want the clean report of task %d's turn", report, testTask)
+	}
+	r.quiet()
+
+	attempts := d.reportsAttempted()
+	if len(attempts) != 3 || attempts[1] != attempts[0] || attempts[2] != attempts[0] {
+		t.Fatalf("the bridge sent the reports %+v, want the one report three times", attempts)
+	}
+	if texts := r.userTexts(); !slices.Equal(texts, []string{"say the task"}) {
+		t.Errorf("Claude Code read %q, want the task's text once", texts)
+	}
+}
+
 // runFollowedByOneOfItsOwn is the turn of the card "wait r1", which the case holds open, whose
 // next step is a card that replays a recorded stream: that stream ends the card's turn and then has
 // Claude Code start a turn of its own (backgroundTurn), whose result the gate holds back. A value

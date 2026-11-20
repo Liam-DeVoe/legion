@@ -725,6 +725,8 @@ for (const [name, attempt] of [
   // Bun's fetch gives a read that timed out no code, only the name (Bun 1.4.4).
   ["a read timeout", { fail: new DOMException("The operation timed out.", "TimeoutError") }],
   ["a DNS failure", { fail: transport("ENOTFOUND") }],
+  ["a transport failure no list names", { fail: transport("FailedToOpenSocket") }],
+  ["a failure that names no code", { fail: new Error("the socket hung up") }],
   ["no answer within 5 minutes", { silent: true }],
   ["a 502 with no code", { fail: uncoded(502) }],
   ["a 503 with no code", { fail: uncoded(503) }],

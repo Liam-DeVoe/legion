@@ -46,7 +46,7 @@ import {
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
 import { bodyForText } from "@legion/envoy-client/excerpt";
-import type { z } from "zod";
+import { z } from "zod";
 
 /**
  * The plugin's client for the daemon (`packages/daemon`), the one `extensions/legion.ts` boots
@@ -456,19 +456,25 @@ class DaemonAnswerTimeout extends Error {
 
 /**
  * Whether `error` is an attempt the daemon gave no answer to (dispatch://INFRA-2811, the plan's
- * departure 7): a refused, reset or closed connection (`daemonUnreachable`), any failure of the
- * network or timeout the ready's retry reads too (`isNetworkOrTimeoutError`: an unreachable host
- * or network, a connect or read timeout, a DNS failure, a fetch's `NetworkError`), no answer
- * within `DAEMON_ANSWER_TIMEOUT_MS`, or a 502, 503 or 504 that names no Legion error code, which a
- * proxy in front of the daemon answers. Every refusal the daemon itself gives names a code or is
- * a 4xx, and is an answer.
+ * departure 7): every failure that carries no HTTP status — a refused, reset or closed
+ * connection, an unreachable host or network, a connect or read timeout, a DNS failure, a fetch's
+ * `NetworkError`, no answer within `DAEMON_ANSWER_TIMEOUT_MS`, and any other failure of the
+ * transport, whatever code or name it carries — and a 502, 503 or 504 that names no Legion error
+ * code, which a proxy in front of the daemon answers. No list of codes decides it: an attempt that
+ * never reached the daemon applied nothing, and one that did is applied once however often it
+ * arrives, which is what every request sent through `sendUntilAnswered` is. Every refusal the
+ * daemon itself gives names a code or is a 4xx, and is an answer; so is a success whose body the
+ * contract does not describe (`LegionDaemonContractError`). A request the contract does not
+ * describe never leaves the pane (the schema's `ZodError`), so no attempt of it can pass.
  */
 function daemonGaveNoAnswer(error: unknown): boolean {
-  if (error instanceof DaemonAnswerTimeout || daemonUnreachable(error) !== undefined) return true;
   if (error instanceof LegionDaemonApiError) {
-    return error.status === 504 && error.code === undefined;
+    return (
+      (error.status === 502 || error.status === 503 || error.status === 504) &&
+      error.code === undefined
+    );
   }
-  return isNetworkOrTimeoutError(error);
+  return !(error instanceof LegionDaemonContractError || error instanceof z.ZodError);
 }
 
 /** Resolves `true` once `ms` have passed, or `false` as soon as `signal` aborts: a timer that
