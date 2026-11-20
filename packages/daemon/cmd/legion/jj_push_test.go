@@ -1418,6 +1418,23 @@ func TestARevisionJJRefusesWithTheRewrittenIDsGoesToThePushAsWritten(t *testing.
 	})
 }
 
+// `jj git push -c latest(<C>, <D>)`, where D is a number that the id of C, the commit the push
+// sends, alone starts with: the step follows D as C, rewrites C, and jj refuses the argument with
+// the new C in D's place. The commit id C the role wrote is still a commit the step rewrote, so the
+// real push gets the new C in C's place, and D as the role wrote it: the remote's commit has its
+// trailer's author, and -c makes no bookmark on the old, hidden C, so no change is divergent.
+func TestACommitIDBesideARefusedNumberSendsTheRewrittenCommit(t *testing.T) {
+	t.Parallel()
+	impl, rev := rolePushImplementer, rolePushReviewer
+	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+		f := newRolePushFixture(t, form, "")
+		message := rolePushMessage("work", "implementer")
+		c := f.commitOn(rev, impl, "main", message)
+		c, count := f.decimalPrefixed(c, impl, message, false)
+		f.pushAndCheck([]string{"git", "push", "-c", "latest(" + c.commit + ", " + count + ")"}, rolePushSends("push-"+c.change[:12], c, "implementer", impl))
+	})
+}
+
 // rolePushRefusedRows are the pushes that make a bookmark of their own, -c and --named, of a
 // commit id: of @-, and of @- whose change is divergent (rolePushDivergentRefusedRow).
 func rolePushRefusedRows() []rolePushRow {
