@@ -55,26 +55,27 @@ function specifiers(read: string, importer: string): string[] {
   return names;
 }
 
-// Importing ci_job_reads runs `go list` for the darwin vet tag sets (go_build_tags.tag_sets):
-// 3 to 5 s on a loaded machine, and past bun's 5 s default on CI's lint runner (run 44775089251).
-// The bound fits that import.
-test("each line ci_job_reads.py cites in a file that imports the read holds that import", () => {
-  const listed = Bun.spawnSync(
+// Every Read of GATES and RULES, as ci_job_reads.py lists them. Importing ci_job_reads runs `go
+// list` for the darwin vet tag sets (go_build_tags.tag_sets), 3 to 5 s on a loaded machine, so
+// the list is read once, when this file loads, and the test below is timed on its own work alone.
+const listed = Bun.spawnSync(
+  [
+    "python3",
+    "-c",
     [
-      "python3",
-      "-c",
-      [
-        "import json, sys",
-        "sys.path.insert(0, '.github/scripts')",
-        "import ci_job_reads as c",
-        "from ci_filter_coverage import Read",
-        "rows = [(g.filter, r.glob, r.why) for g in c.GATES for r in g.reads]",
-        "rows += [(s, r.glob, r.why) for s, rs in c.RULES.items() for r in rs if isinstance(r, Read)]",
-        "print(json.dumps(rows))",
-      ].join("\n"),
-    ],
-    { cwd: root }
-  );
+      "import json, sys",
+      "sys.path.insert(0, '.github/scripts')",
+      "import ci_job_reads as c",
+      "from ci_filter_coverage import Read",
+      "rows = [(g.filter, r.glob, r.why) for g in c.GATES for r in g.reads]",
+      "rows += [(s, r.glob, r.why) for s, rs in c.RULES.items() for r in rs if isinstance(r, Read)]",
+      "print(json.dumps(rows))",
+    ].join("\n"),
+  ],
+  { cwd: root }
+);
+
+test("each line ci_job_reads.py cites in a file that imports the read holds that import", () => {
   expect(listed.stderr.toString()).toBe("");
   expect(listed.exitCode).toBe(0);
   const reads = JSON.parse(listed.stdout.toString()) as [string, string, string][];
@@ -111,7 +112,7 @@ test("each line ci_job_reads.py cites in a file that imports the read holds that
   }
   expect(checked).toBeGreaterThan(0);
   expect(wrong).toEqual([]);
-}, 60_000);
+});
 
 test.skipIf(base === "")(
   "a comment of ci.yaml names a package's test helper by a name, not a line",
