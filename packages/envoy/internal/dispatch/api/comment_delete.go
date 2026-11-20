@@ -118,7 +118,10 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// every row on them written without the words (docs.RewriteTakenAnchors), here, before the
 	// margin write below refreshes the document's anchors. A row rejected before the reject
 	// recorded them holds none, and nothing stored tells which anchors that reject's removal took
-	// text from, so the delete of such a row rewrites no other anchor.
+	// text from, so the delete of such a row rewrites no other anchor. That holds only for a reject
+	// made before this release, and no later reject can make such a row. The production Dispatch
+	// held no reject at all when its whole event log was read on 2026-11-20 (dispatch://INFRA-1523,
+	// census row 11.4).
 	//
 	// Everything up to Commit is the read phase (Docs.Join): this route and the document
 	// operations queue their writes on the ledger, in the order made, and Commit sends them as
