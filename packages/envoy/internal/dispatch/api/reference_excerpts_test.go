@@ -37,11 +37,6 @@ func (d *readCountingDocs) Blocks(ctx context.Context, artifactID string) ([]mod
 	return d.API.Blocks(ctx, artifactID)
 }
 
-func (d *readCountingDocs) TextWithBlocks(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error) {
-	d.reads.Add(1)
-	return d.API.TextWithBlocks(ctx, artifactID)
-}
-
 func (d *readCountingDocs) TextWithBlocksAsItStands(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error) {
 	d.reads.Add(1)
 	return d.API.TextWithBlocksAsItStands(ctx, artifactID)

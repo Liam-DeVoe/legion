@@ -1351,9 +1351,10 @@ func (s *Service) TextWithToken(ctx context.Context, artifactID string) (string,
 // rendering the cold reads' cache answered) and the rendering it answers; then it asks whether the
 // document owes the repair of its email links before this answer (settleBeforeAnswer, which only
 // decides), and where it does, runs the room's owed settlement on the calling goroutine
-// (settleOwedNow) and reads again. A read with nothing to weigh - the latest version's text served
-// as the document's (storedText), or a document with no state - hands back no tree and no
-// rendering, and is answered as it read.
+// (settleOwedNow) and reads again. It counts each settlement it runs in settled, which the
+// decision's bound reads, and dates their deadline from the first. A read with nothing to weigh -
+// the latest version's text served as the document's (storedText), or a document with no state -
+// hands back no tree and no rendering, and is answered as it read.
 //
 // It is the read half of the boundary a token crosses while a person's typed or pasted address the
 // renderer cannot write is in the room (R4 of INFRA-4224): until the settlement repairs it, the
@@ -1362,8 +1363,8 @@ func (s *Service) TextWithToken(ctx context.Context, artifactID string) (string,
 // in its transaction's own fork, and which a read inside that transaction reads. No settlement
 // runs inside a transaction (settleBeforeAnswer decides none there): the settlement's own
 // transaction takes the owner lock the caller's may hold. settleOwedNow is the one call here that
-// takes a lock, each settlement in a transaction it opens and commits itself; read and the
-// decision take none.
+// takes a database lock (the copy lock, the owner lock), each settlement in a transaction it
+// opens and commits itself; read and the decision take no database lock.
 func (s *Service) readBeforeAnswer(ctx context.Context, room string, read func() (tree *pmdoc.Node, rendering string, err error)) error {
 	var settled readSettlements
 	for {
@@ -1371,9 +1372,13 @@ func (s *Service) readBeforeAnswer(ctx context.Context, room string, read func()
 		if err != nil {
 			return err
 		}
-		if !s.settleBeforeAnswer(ctx, room, tree, rendering, &settled) {
+		if !s.settleBeforeAnswer(ctx, room, tree, rendering, settled) {
 			return nil
 		}
+		if settled.attempts == 0 {
+			settled.deadline = time.Now().Add(readSettleBudget)
+		}
+		settled.attempts++
 		settled.err = s.settleOwedNow(ctx, room, settled.deadline)
 	}
 }
@@ -1389,8 +1394,8 @@ const (
 )
 
 // readSettlements is what one read of a document's token or blocks has spent of its settlements
-// (readBeforeAnswer): the settlements settleBeforeAnswer decided it runs, the deadline of their
-// waits, from the first, and the last one's error.
+// (readBeforeAnswer): the settlements it has run, the deadline of their waits, from the first,
+// and the last one's error.
 type readSettlements struct {
 	attempts int
 	deadline time.Time
@@ -1408,13 +1413,13 @@ type readSettlements struct {
 // settlement repairs it the document's tree is not the one a version or an edit stores, so the
 // token the read would answer is one no edit can pass. A person's typing can land a new such
 // address between a settlement and the read again, so it decides on readSettleAttempts
-// settlements at most; past that bound it logs the room and the attempts, and the read answers
-// the document as it stands. It counts each settlement it decides on in settled, and dates their
-// deadline from the first. A read inside a transaction reads its fork, which the transaction's
-// writes repaired (applyLiveWritten): the settlement's own transaction takes the owner lock the
-// caller's may hold, so it decides on none there. It only decides: it takes no lock and runs no
-// settlement, which its caller runs (settleOwedNow).
-func (s *Service) settleBeforeAnswer(ctx context.Context, room string, tree *pmdoc.Node, rendering string, settled *readSettlements) bool {
+// settlements at most, read off settled, what the read has spent; past that bound it logs the
+// room and the attempts, and the read answers the document as it stands. A read inside a
+// transaction reads its fork, which the transaction's writes repaired (applyLiveWritten): the
+// settlement's own transaction takes the owner lock the caller's may hold, so it decides on none
+// there. It only decides: it takes no database lock and runs no settlement, which its caller
+// runs (settleOwedNow).
+func (s *Service) settleBeforeAnswer(ctx context.Context, room string, tree *pmdoc.Node, rendering string, settled readSettlements) bool {
 	if ledgerFrom(ctx).inTransaction() {
 		return false
 	}
@@ -1449,10 +1454,6 @@ func (s *Service) settleBeforeAnswer(ctx context.Context, room string, tree *pmd
 	if ctx.Err() != nil || s.stopping.Load() {
 		return false
 	}
-	if settled.attempts == 0 {
-		settled.deadline = time.Now().Add(readSettleBudget)
-	}
-	settled.attempts++
 	return true
 }
 
@@ -1572,12 +1573,12 @@ func (s *Service) TextWithBlocks(ctx context.Context, artifactID string) (string
 	err := s.readBeforeAnswer(ctx, artifactID, func() (*pmdoc.Node, string, error) {
 		var err error
 		read, err = s.readBlocks(ctx, artifactID)
-		return read.tree, read.markdown, err
+		return read.tree, read.rendered.markdown, err
 	})
 	if err != nil {
 		return "", nil, err
 	}
-	return read.markdown, read.ownBlocks(), nil
+	return read.rendered.markdown, read.ownBlocks(), nil
 }
 
 // TextWithBlocksAsItStands is TextWithBlocks with no settlement before it answers: the document
@@ -1597,38 +1598,41 @@ func (s *Service) TextWithBlocksAsItStands(ctx context.Context, artifactID strin
 	if err != nil {
 		return "", nil, err
 	}
-	return read.markdown, read.ownBlocks(), nil
+	return read.rendered.markdown, read.ownBlocks(), nil
 }
 
 // blocksRead is one read of the document the caller sees with its blocks (readBlocks): the tree
 // it read (readDocument's, nil for a rendering the cold reads' cache answered or a document with
-// no state), the cache's read where the cache answered (cached), the markdown, and the blocks
-// whose byte ranges index into it where the read rendered them itself.
+// no state), the cache's read where the cache answered (cached), and the rendering: its markdown,
+// its document token beside that token's error, and the blocks whose byte ranges index into it
+// where the read rendered them itself.
 type blocksRead struct {
 	tree     *pmdoc.Node
 	cached   *documentRead
-	markdown string
-	blocks   []model.ArtifactBlock
+	rendered renderedDocument
 }
 
-// readBlocks renders the document the caller sees (readDocument) once into its markdown and the
-// blocks whose byte ranges index into it: the one read TextWithBlocks makes through
-// readBeforeAnswer and TextWithBlocksAsItStands makes alone.
+// readBlocks renders the document the caller sees (readDocument) once into its markdown, its
+// document token and the blocks whose byte ranges index into it (renderDocumentTree): the one
+// read TextWithBlocks and TextWithTokenAndBlocks make through readBeforeAnswer and
+// TextWithBlocksAsItStands makes alone. A tree holding a value the document token cannot encode
+// still renders, with that token's error beside it (renderedDocument.tokenErr), which only a read
+// answering the token refuses.
 func (s *Service) readBlocks(ctx context.Context, artifactID string) (blocksRead, error) {
 	read, tree, err := s.readDocument(ctx, artifactID)
 	switch {
 	case err != nil:
 		return blocksRead{}, err
 	case read != nil:
-		return blocksRead{tree: tree, cached: read, markdown: read.markdown}, nil
+		return blocksRead{tree: tree, cached: read, rendered: renderedDocument{markdown: read.markdown, token: read.token}}, nil
 	case tree == nil:
 		return blocksRead{}, nil
 	}
-	markdown, blocks, err := documentBlocks(tree)
+	rendered, err := renderDocumentTree(tree)
 	if err != nil {
 		return blocksRead{}, err
 	}
-	return blocksRead{tree: tree, markdown: markdown, blocks: blocks}, nil
+	return blocksRead{tree: tree, rendered: rendered}, nil
 }
 
 // ownBlocks is the read's blocks as the caller's own, which it may write into (References): the
@@ -1638,7 +1642,7 @@ func (r blocksRead) ownBlocks() []model.ArtifactBlock {
 	if r.cached != nil {
 		return slices.Clone(r.cached.blocks)
 	}
-	return r.blocks
+	return r.rendered.blocks
 }
 
 // TextWithTokenAndBlocks renders the document the caller sees (readDocument) once and returns its
@@ -1651,36 +1655,21 @@ func (r blocksRead) ownBlocks() []model.ArtifactBlock {
 // back and that owes a settlement takes the settlement first, and is read again, so the
 // document's token and each block's name the tree the document stores.
 func (s *Service) TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error) {
-	var read *documentRead
-	var rendered renderedDocument
+	var read blocksRead
 	err := s.readBeforeAnswer(ctx, artifactID, func() (*pmdoc.Node, string, error) {
-		var tree *pmdoc.Node
 		var err error
-		read, tree, err = s.readDocument(ctx, artifactID)
-		switch {
-		case err != nil:
+		if read, err = s.readBlocks(ctx, artifactID); err != nil {
 			return nil, "", err
-		case read != nil:
-			rendered = renderedDocument{markdown: read.markdown, token: read.token}
-		case tree == nil:
-			rendered = renderedDocument{}
-		default:
-			if rendered, err = renderDocumentTree(tree); err != nil {
-				return nil, "", err
-			}
-			if rendered.tokenErr != nil {
-				return nil, "", rendered.tokenErr
-			}
 		}
-		return tree, rendered.markdown, nil
+		if read.rendered.tokenErr != nil {
+			return nil, "", read.rendered.tokenErr
+		}
+		return read.tree, read.rendered.markdown, nil
 	})
 	if err != nil {
 		return "", "", nil, err
 	}
-	if read != nil {
-		rendered.blocks = slices.Clone(read.blocks)
-	}
-	return rendered.markdown, rendered.token, rendered.blocks, nil
+	return read.rendered.markdown, read.rendered.token, read.ownBlocks(), nil
 }
 
 // documentBlocks renders tree once into its canonical markdown and the blocks whose byte ranges
