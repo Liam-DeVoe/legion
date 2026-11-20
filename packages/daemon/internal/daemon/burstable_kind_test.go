@@ -129,14 +129,18 @@ runtime:
 // first launch, the provisioning token is one a public repository never needs, every role's gh
 // files hold a placeholder token, the agent is a sleep stub, the mapping names
 // burstableLiveRepository alone, so the repository cache an issue pod's launch makes is that
-// repository's, and the shared public leak check is boot's own reader's (leakCheckSource) through
-// the stand-in App outboxTokens, read under leakCheckAPI (serveLiveLeakCheck). It returns the
-// options the runtime was built from, which hold the issue pod's reservation as sandboxOptions
-// translated it and the runtime's reader of the leak check.
+// repository's, and the shared public leak check is the stand-in setting's (liveLeakCheckSetting),
+// read by boot's own reader (leakCheckSource) through the stand-in App outboxTokens under
+// leakCheckAPI (serveLiveLeakCheck). It returns the options the runtime was built from, which hold
+// the issue pod's reservation as sandboxOptions translated it and the runtime's reader of the leak
+// check.
 func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Config, listener *stream.Listener, leakCheckAPI string, log *slog.Logger) (*sandbox.Runtime, sandbox.Options, error) {
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
+		return nil, sandbox.Options{}, err
+	}
+	if cfg.LeakCheck, err = liveLeakCheckSetting(); err != nil {
 		return nil, sandbox.Options{}, err
 	}
 	opts, err := sandboxOptions(cfg, k, project, "placeholder-dispatch-token", lookup(nil), log)
@@ -169,7 +173,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 	opts.Agent = burstableLiveStub
 	// Each pod's launcher is pushed the check before any role of the pod starts, and a launch
 	// whose launcher names the image's pin is refused without a reader (launchers.serveLeakCheck).
-	opts.LeakCheck = leakCheckSource(outboxTokens{}, leakCheckAPI)
+	opts.LeakCheck = leakCheckSource(outboxTokens{}, leakCheckAPI, opts.LeakCheckSetting)
 	rt, err := sandbox.New(ctx, rc, opts)
 	if err != nil {
 		return nil, sandbox.Options{}, fmt.Errorf("sandbox.New: %w", err)
@@ -180,22 +184,23 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 
 // serveLiveLeakCheck stands in for GitHub's REST root under the kind proofs' runtimes: the root
 // boot's own reader of the shared public leak check (leakCheckSource) reads the check under, at
-// the tag a pod's launcher names, before that launcher is pushed it. It answers the check's
-// tarball route, at any tag, to the bearer of the read lease the stand-in App outboxTokens mints
-// and to no other, with a tarball of GitHub's shape whose check is leakguardtest.AnswersHelp:
-// that check passes the launcher's install and its --help verification and holds none of the
-// real check's rules, which no write of a stub agent reaches. So no credential is read, and no
-// request reaches GitHub.
+// the tag a pod's launcher names, before that launcher is pushed it. It answers the tarball route
+// of the repository the proofs' setting names (liveLeakCheckSetting), at any tag, to the bearer
+// of the read lease the stand-in App outboxTokens mints on that repository's owner and to no
+// other, with a tarball of GitHub's shape holding the stand-in check (liveLeakCheckMembers). So no
+// credential is read, and no request reaches GitHub.
 func serveLiveLeakCheck(t *testing.T) string {
 	t.Helper()
-	lease, err := outboxTokens{}.ReadToken(context.Background(), appauth.Implement, leakguard.CheckRepository.Owner())
+	setting, err := liveLeakCheckSetting()
 	if err != nil {
 		t.Fatal(err)
 	}
-	tarball := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(os.DevNull), Mode: 0o755},
-	})
-	route := "/repos/" + leakguard.CheckSlug + "/tarball/"
+	lease, err := outboxTokens{}.ReadToken(context.Background(), appauth.Implement, setting.Repository.Owner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tarball := leakguardtest.GitHubTarball(t, liveLeakCheckMembers())
+	route := "/repos/" + setting.Repository.String() + "/tarball/"
 	return githubtest.Server(t, githubtest.Spec{Token: lease.Token, Handle: func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, route) {
 			githubtest.Unexpected(t, w, r)
@@ -203,6 +208,38 @@ func serveLiveLeakCheck(t *testing.T) string {
 		}
 		_, _ = w.Write(tarball)
 	}})
+}
+
+// liveLeakCheckMembers is the stand-in check the kind proofs' pods install: every file its
+// manifest digest covers (leakguard.ManifestFiles), whose launcher answers its --help as the real
+// one does (leakguardtest.AnswersHelp). It passes the launcher's install and its --help
+// verification and holds none of the real check's rules, which no write of a stub agent reaches.
+func liveLeakCheckMembers() map[string]leakguardtest.Member {
+	return map[string]leakguardtest.Member{
+		leakguardtest.CheckName:    {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(os.DevNull), Mode: 0o755},
+		leakguardtest.ProgramName:  {Body: leakguardtest.Program, Mode: 0o644},
+		leakguardtest.ReadmeName:   {Body: leakguardtest.Readme, Mode: 0o644},
+		leakguardtest.MustPassName: {Body: leakguardtest.MustPass, Mode: 0o644},
+	}
+}
+
+// liveLeakCheckSetting is the deployment's shared leak check as the kind proofs configure it: the
+// stand-in repository these tests read (leakCheckSetting), with the manifest digest of the
+// stand-in check the proofs serve (liveLeakCheckMembers), so a role's install under it is the
+// check its pod was told (leakguard.Installed).
+func liveLeakCheckSetting() (leakguard.Setting, error) {
+	members := liveLeakCheckMembers()
+	digest, err := leakguard.Manifest(func(name string) ([]byte, error) {
+		member, ok := members[name]
+		if !ok {
+			return nil, os.ErrNotExist
+		}
+		return []byte(member.Body), nil
+	})
+	if err != nil {
+		return leakguard.Setting{}, fmt.Errorf("the stand-in check's manifest digest: %w", err)
+	}
+	return leakguard.Setting{Repository: leakCheckSetting.Repository, ManifestSHA256: digest}, nil
 }
 
 // liveSessionDSN is the session database URL the kind proofs' providers Secret holds: a
@@ -360,14 +397,20 @@ func TestTheBurstableKindProofBuildsItsRuntimesFromItsConfigurations(t *testing.
 
 // requireLiveLeakCheckInstalls holds reader, a kind proof's runtime's reader of the shared public
 // leak check, to the check a pod's launcher installs: reader answers the check at the image's pin
-// (leakCheckTag), and the launcher's own install (leakguard.InstallServed: the unpack, the tag and
-// the --help verification) takes what it served. A runtime with no reader, or a change to the read
-// or the install that the stand-in check no longer meets, fails on every `go test`, not the next
-// time a kind cluster runs the proofs.
+// (leakCheckTag), the launcher's own install (leakguard.InstallServed: the unpack, the tag and the
+// --help verification) takes what it served, and a role told the proofs' manifest digest
+// (liveLeakCheckSetting, under leakguard.CheckerVar) finds that install as its check
+// (leakguard.Installed). A runtime with no reader, or a change to the read, the install or the
+// digest that the stand-in check no longer meets, fails on every `go test`, not the next time a
+// kind cluster runs the proofs.
 func requireLiveLeakCheckInstalls(t *testing.T, reader sandbox.LeakCheckReader) {
 	t.Helper()
 	if reader == nil {
 		t.Fatal("the proof's runtime has no reader of the shared public leak check, so every launch whose launcher names the image's pin is refused")
+	}
+	setting, err := liveLeakCheckSetting()
+	if err != nil {
+		t.Fatal(err)
 	}
 	ctx := context.Background()
 	served, err := reader.Get(ctx, leakCheckTag)
@@ -380,7 +423,8 @@ func requireLiveLeakCheckInstalls(t *testing.T, reader sandbox.LeakCheckReader) 
 	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: served.Tag, Body: served.Body, Start: procgroup.NoReaper}); err != nil {
 		t.Fatalf("the launcher's install of the stand-in check: %v", err)
 	}
-	if installed, err := leakguard.Installed([]string{leakguard.TagVariable + "=" + leakCheckTag}, dir); err != nil || installed == "" {
-		t.Fatalf("the install at %s reads back as %q, %v; want the check at %s", dir, installed, err, leakCheckTag)
+	env := []string{leakguard.TagVariable + "=" + leakCheckTag, leakguard.CheckerVar + "=" + setting.ManifestSHA256}
+	if installed, err := leakguard.Installed(env, dir); err != nil || installed == "" {
+		t.Fatalf("the install at %s reads back as %q, %v; want the check at %s under the manifest digest %s", dir, installed, err, leakCheckTag, setting.ManifestSHA256)
 	}
 }

@@ -83,16 +83,19 @@ runtime:
 }
 
 // controllerSweepKindRuntime builds the Sandbox runtime from cfg as boot does: its cluster client
-// (kubeClient), sandboxOptions over the loaded configuration, then boot's own factory
-// (sandboxRuntime) on listener and st, which also registers the runtime's launcher acceptor, and
-// reads the shared public leak check with boot's own reader under githubAPI, the stand-in GitHub
-// serveLiveLeakCheck serves. What the proof stands in for: the agent is a sleep stub, the App
-// tokens are placeholders (outboxTokens), the leak check is a stand-in, and no repository is
-// mapped, so the controller's gh files name no owner.
+// (kubeClient), sandboxOptions over the loaded configuration under the proofs' leak check setting
+// (liveLeakCheckSetting), then boot's own factory (sandboxRuntime) on listener and st, which also
+// registers the runtime's launcher acceptor, and reads the shared public leak check with boot's own
+// reader under githubAPI, the stand-in GitHub serveLiveLeakCheck serves. What the proof stands in
+// for: the agent is a sleep stub, the App tokens are placeholders (outboxTokens), the leak check is
+// a stand-in, and no repository is mapped, so the controller's gh files name no owner.
 func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, githubAPI string, log *slog.Logger) (runtime.Runtime, error) {
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
+		return nil, err
+	}
+	if cfg.LeakCheck, err = liveLeakCheckSetting(); err != nil {
 		return nil, err
 	}
 	rc, err := kubeClient(k)
@@ -160,8 +163,13 @@ func TestTheControllerSweepKindProofBuildsItsRuntimeFromItsConfiguration(t *test
 	if _, err := controllerSweepKindRuntime(ctx, cfg, listener, st, github, quietLogger()); err != nil {
 		t.Fatalf("the proof's runtime: %v", err)
 	}
-	// The reader boot's factory builds over the stand-in App and that root (leakCheckSource).
-	requireLiveLeakCheckInstalls(t, leakCheckSource(outboxTokens{}, github))
+	// The reader boot's factory builds over the stand-in App, that root and the proofs' setting
+	// (leakCheckSource).
+	setting, err := liveLeakCheckSetting()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireLiveLeakCheckInstalls(t, leakCheckSource(outboxTokens{}, github, setting))
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
