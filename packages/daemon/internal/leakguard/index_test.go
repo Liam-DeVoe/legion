@@ -531,49 +531,53 @@ func TestInstallIndexRefusesAndLeavesNoNewFile(t *testing.T) {
 	})
 }
 
-// The check reads an index built more than 10 minutes ahead of the clock as a header it cannot
-// read, so such an index is never installed and never kept: one built 11 minutes ahead is refused
-// before anything is written, with the current index the folder holds left as it was, and a held
-// index built a day ahead is no index, which a current one replaces. The control: an index built
-// 9 minutes ahead is installed. The build times are read off the clock, to the second, as the
-// builder writes them, so each case is as far ahead of InstallIndex's own reading of the clock as
-// its name says, less the moments between the two readings.
+// The check reads an index built more than 60 s ahead of the clock as a header it cannot read, so
+// such an index is never installed and never kept: one built 61 s ahead is refused before anything
+// is written, with the current index the folder holds left as it was, and a held index built a day
+// ahead is no index, which a current one replaces. The control: an index built 59 s ahead is
+// installed. A build time is a whole second, as the builder writes it, counted here from the first
+// whole second after the test reads the clock, which is less than a second after that reading. So
+// 61 s is more than 60 s after InstallIndex's own reading of the clock, which follows the test's by
+// far less than a second, and 59 s is never more than 60 s after it, whatever the sub-second part
+// of either reading.
 func TestInstallIndexTakesNoIndexBuiltAheadOfTheClock(t *testing.T) {
 	underUmask(t, 0o022)
-	now := time.Now()
-	current := builtIndex(now, 1, 2)
+	current := func(now time.Time) []byte { return builtIndex(now, 1, 2) }
 	for _, tc := range []struct {
-		name     string
-		held     []byte
-		arriving time.Time
-		// refused is the start of the refusal's cause, after the directory; empty is an install.
-		refused string
+		name string
+		held func(now time.Time) []byte
+		// ahead is how far after the first whole second after the clock's reading the arriving
+		// index is built.
+		ahead   time.Duration
+		refused bool
 	}{
-		{name: "a held index a day ahead, under a current one", held: builtIndex(now.Add(24*time.Hour), 3, 4), arriving: now},
-		{name: "an index 11 minutes ahead, over a current one", held: current, arriving: now.Add(11 * time.Minute),
-			refused: "the index's built_at " + now.Add(11*time.Minute).UTC().Format("2006-01-02T15:04:05Z") +
-				" is more than 10 minutes ahead of this machine's clock, "},
-		{name: "the control: an index 9 minutes ahead, over a current one", held: current, arriving: now.Add(9 * time.Minute)},
+		{name: "a held index a day ahead, under a current one", held: func(now time.Time) []byte { return builtIndex(now.Add(24*time.Hour), 3, 4) }},
+		{name: "an index 61 s ahead, over a current one", held: current, ahead: 61 * time.Second, refused: true},
+		{name: "the control: an index 59 s ahead, over a current one", held: current, ahead: 59 * time.Second},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			path := filepath.Join(dir, "sandbox-lines.idx")
-			if err := os.WriteFile(path, tc.held, 0o644); err != nil {
+			now := time.Now()
+			held := tc.held(now)
+			if err := os.WriteFile(path, held, 0o644); err != nil {
 				t.Fatal(err)
 			}
-			arriving := builtIndex(tc.arriving, 5, 6)
+			builtAt := now.Truncate(time.Second).Add(time.Second + tc.ahead)
+			arriving := builtIndex(builtAt, 5, 6)
 			replaced, err := InstallIndex(dir, arriving)
 			want := arriving
-			if tc.refused == "" {
+			if !tc.refused {
 				if err != nil || !replaced {
 					t.Fatalf("InstallIndex = %v, %v; want it installed", replaced, err)
 				}
 			} else {
-				prefix := "the leak check index could not be installed in " + dir + ": " + tc.refused
+				prefix := "the leak check index could not be installed in " + dir + ": the index's built_at " +
+					builtAt.UTC().Format("2006-01-02T15:04:05Z") + " is more than 60 seconds ahead of this machine's clock, "
 				if err == nil || replaced || !strings.HasPrefix(err.Error(), prefix) {
 					t.Fatalf("InstallIndex = %v, %v; want it refused with %q and the clock's reading", replaced, err, prefix)
 				}
-				want = tc.held
+				want = held
 			}
 			if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, want) {
 				t.Fatalf("the folder's index holds %d bytes (%v), want %d: the index InstallIndex should leave there", len(got), err, len(want))

@@ -60,13 +60,25 @@ var indexBuiltAt = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9
 // indexBuiltAtLayout is that shape as a layout of the time package, which reads and writes it.
 const indexBuiltAtLayout = "2006-01-02T15:04:05Z"
 
-// indexMaxAhead is how far after the clock an index's build time may be: the check's own
-// INDEX_MAX_AHEAD, 600 s. The check reads an index built further ahead as a header it cannot read,
-// since such a time would keep the index alive past the 6 hours after which it reads an index
-// UNKNOWN. So InstallIndex neither installs such an index nor keeps one against a later index: one
-// held would read UNKNOWN in every role of the pod, and keep out every index pushed after it,
-// until the clock came within this bound of its build time.
-const indexMaxAhead = 10 * time.Minute
+// indexMaxAhead is how far after this machine's clock an index's build time may be: the check's
+// own INDEX_MAX_AHEAD, which moves from 600 s to 60 s with this bound. A correct index's built_at
+// leads the reader's clock by at most the builder's clock error plus the reader's, so the bound is
+// the skew those clocks can carry:
+//
+//   - Measured with chronyc on 2026-11-20: a Compute Engine dev box ran 2.8 µs slow, root
+//     dispersion 0.53 ms, synchronised to metadata.google.internal, the server Compute Engine VMs,
+//     and so GKE nodes, use (Google's "Configure NTP for a VM"); a GKE node's own offset was not
+//     measured. An operator's laptop ran 0.28 ms slow, root dispersion 1.95 ms, RMS offset 32 ms.
+//     The GitHub runner that builds the index was not measured.
+//   - RFC 5905's frequency tolerance PHI, 15 ppm (its section on dispersion), lets a clock left
+//     unsynchronised drift about 1.3 s a day, so 60 s also covers one clock left so for about 45
+//     days.
+//
+// An index dated wrongly by more than 60 s is refused, and a held one counts as no index: the
+// check reads it as a header it cannot read, so held, it would read UNKNOWN in every role of the
+// pod and keep out every index pushed after it. One dated wrongly by at most 60 s outlives R6's
+// 6 hours, after which the check reads an index UNKNOWN, by at most 60 s.
+const indexMaxAhead = 60 * time.Second
 
 // Index is an index of sandbox lines ParseIndex read: Body the file whole, SHA256 the digest of its
 // list its header holds, and BuiltAt the build time its header holds.
@@ -305,8 +317,8 @@ func InstallIndex(dir string, body []byte) (replaced bool, err error) {
 	}
 	latest := now.Add(indexMaxAhead)
 	if index.BuiltAt.After(latest) {
-		return false, fmt.Errorf("the index's built_at %s is more than %d minutes ahead of this machine's clock, %s",
-			index.BuiltAt.UTC().Format(indexBuiltAtLayout), int(indexMaxAhead/time.Minute), now.UTC().Format(indexBuiltAtLayout))
+		return false, fmt.Errorf("the index's built_at %s is more than %d seconds ahead of this machine's clock, %s",
+			index.BuiltAt.UTC().Format(indexBuiltAtLayout), int(indexMaxAhead/time.Second), now.UTC().Format(indexBuiltAtLayout))
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, err
