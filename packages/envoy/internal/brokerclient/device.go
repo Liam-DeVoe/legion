@@ -164,7 +164,10 @@ func (s *statusOf) RoundTrip(request *http.Request) (*http.Response, error) {
 	s.status, s.body = 0, nil
 	if err == nil {
 		s.status = response.StatusCode
-		s.body = &readOf{ReadCloser: response.Body}
+		// The body goes back to the library that asked for it, as a stream of data
+		// (redact.StreamAnswer): the library reads it, under the boundary, and this transport only
+		// watches how the read ends.
+		s.body = &readOf{ReadCloser: redact.StreamAnswer(response, 8<<20)}
 		response.Body = s.body
 	}
 	return response, err

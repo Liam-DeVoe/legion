@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -336,10 +335,13 @@ func (f *CodeFlow) Revoke(ctx context.Context, refreshToken string) error {
 		Error redact.RemoteText `json:"error"`
 	}
 	// A body that is not an OAuth error (a proxy's page) names no code; the status still stands.
-	if json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&body) != nil || body.Error.IsEmpty() {
+	// The code is read through redact.ReadAnswer, so it holds the request's record: an answer in
+	// the issuer's place can echo the refresh token or the client's secret there.
+	answer, err := redact.ReadAnswer(response, 4096)
+	if (err != nil && !errors.Is(err, redact.ErrAnswerTooLarge)) || answer.Decode(&body) != nil || body.Error.IsEmpty() {
 		return fmt.Errorf("oidc: revoke: the issuer answered HTTP %d", response.StatusCode)
 	}
-	return fmt.Errorf("oidc: revoke: the issuer answered HTTP %d %s", response.StatusCode, body.Error.WithoutTokens(redact.Carried(response)...))
+	return fmt.Errorf("oidc: revoke: the issuer answered HTTP %d %s", response.StatusCode, body.Error)
 }
 
 // session verifies the ID token of a token-endpoint answer and returns its claims with the refresh

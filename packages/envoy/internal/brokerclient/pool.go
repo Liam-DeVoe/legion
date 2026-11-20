@@ -7,13 +7,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 const (
@@ -149,8 +149,9 @@ func generateIDToken(ctx context.Context, client *http.Client, iamURL, serviceAc
 
 // postGoogle posts body to endpoint through client (nil is http.DefaultClient), with bearer on
 // the Authorization header when it is not empty, and decodes the answer into out. A non-2xx
-// answer is an error naming the status and the body Google's services put their reason in,
-// which carries no credential of this machine's.
+// answer is an error naming the status and the body Google's services put their reason in, read
+// through redact.ReadAnswer: Google's words, or a stand-in's, can quote the subject token or the
+// bearer the request carried, which print redacted.
 func postGoogle(ctx context.Context, client *http.Client, endpoint, bearer string, body []byte, out any) error {
 	ctx, cancel := context.WithTimeout(ctx, poolTimeout)
 	defer cancel()
@@ -170,14 +171,14 @@ func postGoogle(ctx context.Context, client *http.Client, endpoint, bearer strin
 		return err
 	}
 	defer resp.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	answer, err := redact.ReadAnswer(resp, 1<<20)
 	if err != nil {
 		return err
 	}
 	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(answer)))
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, answer.Words())
 	}
-	return json.Unmarshal(answer, out)
+	return answer.Decode(out)
 }
 
 // poolSubjectTokenType is the subjectTokenType the security token service reads an external

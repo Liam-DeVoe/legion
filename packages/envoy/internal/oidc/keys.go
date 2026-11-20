@@ -3,10 +3,8 @@ package oidc
 import (
 	"context"
 	"crypto"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -241,8 +239,12 @@ func (k *Keys) read(ctx context.Context) ([]jose.JSONWebKey, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%w: %s answered %s", ErrKeySet, k.jwksURI, resp.Status)
 	}
+	answer, err := redact.ReadAnswer(resp, maxKeySetBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%w: reading %s: %w", ErrKeySet, k.jwksURI, err)
+	}
 	var set jose.JSONWebKeySet
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxKeySetBytes)).Decode(&set); err != nil {
+	if err := answer.Decode(&set); err != nil {
 		return nil, fmt.Errorf("%w: parsing %s: %w", ErrKeySet, k.jwksURI, err)
 	}
 	return set.Keys, nil

@@ -24,10 +24,8 @@ package brokerclient
 import (
 	"context"
 	"crypto/ecdsa"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -666,19 +664,17 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		return nil, fmt.Errorf("trade %s at %s: %w", c.subject.Describe(), shown, c.brokerURL.Error(err))
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	// Whatever answers in the broker's place can echo any credential the trade carried (the subject
+	// token, the actor token, the proof), under any status: the answer is read through
+	// redact.ReadAnswer, so every word of it this trade prints is held with each of them redacted,
+	// and compares as it came, and a decode's error quotes none of it.
+	read, err := redact.ReadAnswer(resp, 1<<20)
 	if err != nil {
 		return nil, fmt.Errorf("read the broker's answer from %s: %w", shown, c.brokerURL.Error(err))
 	}
-	// Whatever answers in the broker's place can echo any credential the trade carried (the subject
-	// token, the actor token, the proof), under any status: every word of the answer this trade
-	// prints is held with each of them redacted (RemoteText.WithoutTokens), and compares as it came.
-	carried := redact.Carried(resp)
 	var answer tokenAnswer
-	if err := json.Unmarshal(body, &answer); err != nil && resp.StatusCode/100 == 2 {
-		// The decoder's error quotes the value it could not read, which is the answer's own
-		// text, so it prints as the address lets that text print (brokeraddr.Address.Words).
-		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %s", shown, c.brokerURL.Words(err.Error()))
+	if err := read.Decode(&answer); err != nil && resp.StatusCode/100 == 2 {
+		return nil, fmt.Errorf("the broker's answer from %s is not JSON: %w", shown, err)
 	}
 	if resp.StatusCode/100 != 2 {
 		// The broker's own words are its answer's text, and a caller prints what it is
@@ -691,7 +687,7 @@ func (c *Client) post(ctx context.Context, form url.Values) (*Token, error) {
 		// prints the status alone, since a broker, or anyone answering for it, can repeat
 		// the credential the address carries in the words it answers with; any other
 		// answer prints its words as the address lets them (brokeraddr.Address.WordsOf).
-		said, described := answer.Error.WithoutTokens(carried...), answer.ErrorDescription.WithoutTokens(carried...)
+		said, described := answer.Error, answer.ErrorDescription
 		if resp.StatusCode/100 == 4 && !said.IsEmpty() {
 			return nil, c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, said, described))
 		}

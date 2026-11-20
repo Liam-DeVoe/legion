@@ -5,8 +5,8 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -239,20 +239,23 @@ func (g *GoogleAccount) generateIDToken() (string, error) {
 		return "", fmt.Errorf("call generateIdToken: %w", err)
 	}
 	defer resp.Body.Close()
-	answer, err := io.ReadAll(io.LimitReader(resp.Body, maxMintAnswer))
+	if resp.StatusCode/100 != 2 {
+		// A refusal's reason is read no further than maxMintRefusal bytes (a longer one is cut
+		// there), and prints through redact.Answer.Words, with the request's credentials redacted.
+		refusal, err := redact.ReadAnswer(resp, maxMintRefusal)
+		if err != nil && !errors.Is(err, redact.ErrAnswerTooLarge) {
+			return "", fmt.Errorf("read generateIdToken's answer: %w", err)
+		}
+		return "", fmt.Errorf("generateIdToken answered HTTP %d: %s", resp.StatusCode, refusal.Words())
+	}
+	answer, err := redact.ReadAnswer(resp, maxMintAnswer)
 	if err != nil {
 		return "", fmt.Errorf("read generateIdToken's answer: %w", err)
-	}
-	if resp.StatusCode/100 != 2 {
-		reason := bytes.TrimSpace(answer)
-		reason = reason[:min(len(reason), maxMintRefusal)]
-		said := redact.NewRemoteText(string(bytes.ToValidUTF8(reason, nil))).WithoutTokens(redact.Carried(resp)...)
-		return "", fmt.Errorf("generateIdToken answered HTTP %d: %s", resp.StatusCode, said)
 	}
 	var minted struct {
 		Token string `json:"token"`
 	}
-	if json.Unmarshal(answer, &minted) != nil || minted.Token == "" {
+	if answer.Decode(&minted) != nil || minted.Token == "" {
 		return "", fmt.Errorf("generateIdToken answered HTTP %d with no token", resp.StatusCode)
 	}
 	return minted.Token, nil

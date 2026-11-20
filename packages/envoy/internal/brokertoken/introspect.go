@@ -2,9 +2,7 @@ package brokertoken
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -12,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // IntrospectPath is the broker's RFC 7662 introspection route, which answers what the broker
@@ -115,7 +114,7 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 		return Introspection{}, fmt.Errorf("%w: %w", ErrBrokerUnreachable, err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxIntrospectionBytes))
+	read, err := redact.ReadAnswer(response, maxIntrospectionBytes)
 	if err != nil {
 		return Introspection{}, fmt.Errorf("%w: read the broker's answer: %w", ErrBrokerUnreachable, err)
 	}
@@ -130,14 +129,26 @@ func (v *Verifier) introspect(ctx context.Context, token string) (Introspection,
 		// LegacyProject is the field a broker before the list answered a named token's one
 		// project under. This reader reads no such field, so an answer carrying it would pass as
 		// a named token naming no project — the public-session account's shape, which Dispatch
-		// holds to no project — and is refused instead, whatever else it says.
-		LegacyProject json.RawMessage `json:"project"`
+		// holds to no project — and is refused instead, whatever else it says, null included.
+		// Its value is only checked for presence, never kept.
+		LegacyProject presence `json:"project"`
 	}
-	if err := json.Unmarshal(body, &answer); err != nil {
+	// Decode's error names the member and quotes no value: the answer can echo the token the
+	// introspection carried.
+	if err := read.Decode(&answer); err != nil {
 		return Introspection{}, fmt.Errorf("%w: decode the broker's answer: %w", ErrBrokerUnreachable, err)
 	}
-	if answer.LegacyProject != nil {
+	if answer.LegacyProject {
 		return Introspection{}, ErrNotASession
 	}
 	return answer.Introspection, nil
+}
+
+// presence is whether a JSON member was in an answer at all, whatever its value, null included:
+// encoding/json calls UnmarshalJSON for each member it meets, and for no member it does not.
+type presence bool
+
+func (p *presence) UnmarshalJSON([]byte) error {
+	*p = true
+	return nil
 }
