@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -391,11 +392,12 @@ type failingTransport struct{ err error }
 func (f failingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, f.err }
 
 // A refusal of Get is a TransientRead exactly where GitHub's trouble caused it, so the same read
-// may pass when it is made again: the transport failing, the read's bound passing, an HTTP 5xx or
-// 429 answer, and a 401 to a Source that forgets the token, whose next read mints a fresh one.
-// GitHub's answer about the read (a 404 for a tag the repository does not hold, a 401 to a Source
-// that cannot forget its token, a 403), a tarball that does not pack, a failed mint and a tag not
-// of the published shape are not, and neither is a caller that stopped waiting, whose own
+// may pass when it is made again: the transport failing, the body included, the read's bound
+// passing, an HTTP 5xx answer, GitHub's rate limit (a 429, or a 403 carrying it), and a 401 to a
+// Source that forgets the token, whose next read mints a fresh one. GitHub's answer about the read
+// (a 404 for a tag the repository does not hold, a 401 to a Source that cannot forget its token, a
+// 403 that is no rate limit), a tarball that arrives whole and does not pack, a failed mint and a
+// tag not of the published shape are not, and neither is a caller that stopped waiting, whose own
 // context's end it wraps.
 func TestOnlyGitHubsTroubleIsATransientRead(t *testing.T) {
 	answered := func(status int) func(t *testing.T) (*Source, context.Context) {
@@ -438,7 +440,25 @@ func TestOnlyGitHubsTroubleIsATransientRead(t *testing.T) {
 			return source, ctx
 		}, theTag, true},
 		{"HTTP 401 to a Source that cannot forget its token", answered(http.StatusUnauthorized), theTag, false},
-		{"HTTP 403", answered(http.StatusForbidden), theTag, false},
+		{"HTTP 403 that is no rate limit", answered(http.StatusForbidden), theTag, false},
+		{"HTTP 403 carrying GitHub's rate limit", func(t *testing.T) (*Source, context.Context) {
+			fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) {
+				w.Header().Set("X-RateLimit-Remaining", "0")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = fmt.Fprintln(w, `{"message":"API rate limit exceeded"}`)
+			})
+			var mints atomic.Int32
+			return sourceOver(fake.url, &mints), bound(t)
+		}, theTag, true},
+		{"a tarball whose body stops arriving", func(t *testing.T) (*Source, context.Context) {
+			whole := wholeCheck(t, marked(theTag))
+			fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) {
+				w.Header().Set("Content-Length", strconv.Itoa(len(whole)))
+				_, _ = w.Write(whole[:len(whole)/2])
+			})
+			var mints atomic.Int32
+			return sourceOver(fake.url, &mints), bound(t)
+		}, theTag, true},
 		{"a tarball with no leak-check directory", func(t *testing.T) (*Source, context.Context) {
 			raw := leakguardtest.Tarball(t, map[string]leakguardtest.Member{
 				leakguardtest.TarballPrefix + "README.md": {Body: "the rest of the repository\n", Mode: 0o644},

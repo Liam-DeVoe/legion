@@ -146,13 +146,14 @@ func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p
 //
 // The boot makes one try of the install (ghtool.LeakCheck.Install). A cause that is not GitHub's
 // trouble refuses the boot, read by the boot App mint's own predicate (appTransient) over the
-// reader's failures as transientReads reports them: a tarball read answered 404, 401 or 403, a
-// tarball that does not pack, a tag the reader refuses, GitHub refusing the narrowing of the
+// reader's failures as transientReads reports them: a tarball read answered 404, a 403 that is no
+// rate limit, or a 401 where the reader cannot forget its token, a tarball that does not pack, a tag the reader refuses, GitHub refusing the narrowing of the
 // read's token, an App with no installation on the check's owner, any other mint failure GitHub
 // did not report as its own trouble, and a failed install of what was read, the `--help` run of a
 // check that does not answer among them. GitHub's trouble is waited out, as the boot waits it out
-// (run's boot rule): the transport failing, the read's bound passing, an HTTP 5xx or 429 answer,
-// and a mint GitHub failed so. The check is then answered not installed, so the gh tool refuses
+// (run's boot rule): the transport failing, the read's bound passing, an HTTP 5xx answer, GitHub's
+// rate limit (a 429 or a rate-limited 403), a 401 to a token the reader then forgets, so the next
+// try mints a fresh one, and a mint GitHub failed so. The check is then answered not installed, so the gh tool refuses
 // each call with the setup failure naming the pin and the last try's cause (ghtool.LeakCheck),
 // and the install is tried again in the background on appMintRetry's backoff, 5 s doubling to
 // 30 s, each failed try logged with its cause and the wait before the next, until one lands, one

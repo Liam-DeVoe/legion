@@ -110,11 +110,13 @@ func (s *Source) Get(ctx context.Context, tag string) (Served, error) {
 }
 
 // TransientRead reports a refusal of Get that GitHub's trouble caused, which the same read may
-// pass when it is made again: no answer at all (the transport failing), the read's bound passing,
-// an HTTP 5xx or 429 answer, and a 401 where the Source forgets the token (Forget), since the next
-// read mints a fresh one. Every other refusal of Get is GitHub's answer or the daemon's own, and
-// reading again changes nothing: a tag not of the published shape, a 404 (the tag is missing), a
-// 401 the Source cannot forget, a 403, a tarball that does not pack, and a mint that failed, whose
+// pass when it is made again: no answer at all or a body that stops arriving (the transport
+// failing), the read's bound passing, an HTTP 5xx answer, GitHub's rate limit (a 429, or a 403
+// that carries it, githubrest.RateLimited), and a 401 where the Source forgets the token (Forget),
+// since the next read mints a fresh one. Every other refusal of Get is GitHub's answer or the
+// daemon's own, and reading again changes nothing: a tag not of the published shape, a 404 (the
+// tag is missing), a 401 the Source cannot forget, a 403 that is no rate limit, a tarball that
+// arrives whole and does not pack, and a mint that failed, whose
 // own error underneath says whether it was GitHub's trouble (Token). This package imports nothing
 // of the App's, so the daemon carries this answer over to its own (internal/daemon's
 // transientReads).
@@ -222,14 +224,18 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		if strings.TrimSpace(string(body)) != "" {
 			what += ": " + firstLine(string(body))
 		}
-		if forgot || response.StatusCode >= http.StatusInternalServerError || response.StatusCode == http.StatusTooManyRequests {
+		if forgot || response.StatusCode >= http.StatusInternalServerError || githubrest.RateLimited(response, body) {
 			return Served{}, troubled(Cause(what, nil), nil)
 		}
 		return Served{}, refused(Cause(what, nil), nil)
 	}
-	body, err := PackTarball(response.Body)
+	// A body that stops arriving (the connection reset or cut short while it streams) is the
+	// transport failing, GitHub's trouble as a failed request is; a body that arrives whole and
+	// does not pack is GitHub's answer.
+	in := &bodyRead{r: response.Body}
+	body, err := PackTarball(in)
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || in.err != nil {
 			return Served{}, readFailure(ctx, tag, bound, err)
 		}
 		return Served{}, refused(Cause(fmt.Sprintf("the tarball of %s at %s %s", CheckSlug, tag, err), nil), err)
@@ -239,6 +245,21 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		return Served{}, refused(Cause(fmt.Sprintf("the daemon could not slice the check it read at %s", tag), err), err)
 	}
 	return Served{Tag: tag, Body: body, Frames: frames}, nil
+}
+
+// bodyRead reads r and keeps the first error of a read other than the end of the body, so the
+// read can tell a body that stopped arriving from one that arrived whole and did not pack.
+type bodyRead struct {
+	r   io.Reader
+	err error
+}
+
+func (b *bodyRead) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) && b.err == nil {
+		b.err = err
+	}
+	return n, err
 }
 
 // readFailure is the cause of a read that did not arrive, GitHub's trouble either way
