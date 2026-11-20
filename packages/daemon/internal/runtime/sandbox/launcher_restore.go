@@ -91,11 +91,14 @@ const leftForNextPodLine = "launcher bundle: the saved workspace copy was writte
 const refusedPushedLine = "launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded, so it is refused and no pod is sent it: restoring it would put the workspace back on work behind the pushed commits, which the roles would have to bring forward over them; its bytes stay in the daemon's database"
 
 // supersededLine is the line the older of the issue's two copies is closed unsent with
-// (runtime.WorkspaceBundleSuperseded). It names the newer copy, the one the decision offered
-// (runtime.WorkspaceRestore.Offered), and what this pod's ask did with it, since that copy is not
-// always sent here: its attempt can be spent already, this pod can be the one its work came off,
-// the push can refuse it, and it can have been written after this pod first asked.
-const supersededLine = "launcher bundle: the older of the issue's two saved workspace copies is closed unsent, since the newer one is the copy the issue's pods are offered and no pod may restore the older over its work; its bytes stay in the database"
+// (runtime.WorkspaceBundleSuperseded), by the take (runtime.DecideWorkspaceRestore) or by the drop
+// of the copies a kept volume holds (runtime.DecideKeptVolumeDrop). It names the newer copy
+// (runtime.WorkspaceRestore.Offered) and what this pod's ask did with it, `newerTake`, since that
+// copy is not always sent here. Beside a drop it is WorkspaceBundleHeldByVolume: the newer copy was
+// deleted, its work being on the volume this pod mounts. Beside a take it is what the take answered
+// the newer copy, which is no send where its attempt is spent already, this pod is the one its work
+// came off, the push refuses it, or it was written after this pod first asked.
+const supersededLine = "launcher bundle: the older of the issue's two saved workspace copies is closed unsent, since the newer one's work is later, offered to the issue's pods or already on this pod's kept volume, and no pod may restore the older over it; its bytes stay in the database"
 
 // withheldBranchLine is the one line a copy that holds the issue's branch `legion/<KEY>`, its
 // rescue branch `legion/<KEY>-rescue` or both is sent with. The restore sets every bookmark the
@@ -149,11 +152,13 @@ const keptVolumeDropFailedLine = "launcher bundle: the saved workspace copies th
 // runtime.DecideWorkspaceRestore): the newer copy is offered and the older closed unsent, a
 // running copy whose take began before the newest push of the issue's branch the daemon recorded
 // is refused, where a release bundle never is, and a copy written after this pod first asked is
-// left for the next pod. Every time that decision compares is the store's clock, so this hop passes
-// nothing of the pod but its uid. This hop only carries out what that answer says and logs each
-// copy it touched, so no state of the store depends on this hop finishing. Whatever copy it sends
-// goes without its own values of the issue's branch and its rescue branch (bundleFrames), so no
-// restore moves `legion/<KEY>` or `legion/<KEY>-rescue` off what GitHub holds.
+// left for the next pod. Every time that decision compares is the store's clock, so this hop
+// passes it nothing of the pod but its uid; the drop a pod of a kept Sandbox asks first is also
+// passed when that Sandbox was made (keptSince). This hop only carries out what that answer says
+// and logs each copy it touched, so no state of the store depends on this hop finishing. Whatever
+// copy it sends goes without its own values of the issue's branch and its rescue branch
+// (bundleFrames), so no restore moves `legion/<KEY>` or `legion/<KEY>-rescue` off what GitHub
+// holds.
 //
 // Nothing here stops a role. A slice the launcher refuses, a body that did not arrive as it was
 // sent, a store that cannot be read and a connection that fails are each logged and left: a pod
@@ -178,10 +183,10 @@ const keptVolumeDropFailedLine = "launcher bundle: the saved workspace copies th
 // store knows that pod by the uid the copy recorded and answers it nothing, leaving the copy for
 // the pod that replaces it. Every other pod is sent it the first time it asks after the copy was
 // written. A copy written after this pod's first ask, which is this pod's first role start, is not
-// sent here and nothing is recorded on it: this pod has been working since that ask, and the next
-// pod of the issue is sent the copy. That line is Info, since no work is lost; the refusal of a
-// running copy older than a recorded push is this hop's warning an operator must read — the work
-// is in the database and no pod will put it back on its own.
+// sent here and nothing is recorded on it: this pod has been working since that ask, and the copy
+// stays for the next pod of the issue. That line is Info, since the copy stays for the next pod;
+// the refusal of a running copy older than a recorded push is this hop's warning an operator must
+// read — the work is in the database and no pod will put it back on its own.
 //
 // A pod whose own kept volume holds a copy takes none of it, and the store drops that copy first
 // (store.DropHeldWorkspaceCopies, runtime.DecideKeptVolumeDrop). That pod's Sandbox owns the

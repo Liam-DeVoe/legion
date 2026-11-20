@@ -117,7 +117,7 @@ A tie goes to the release bundle, which was taken while the roles were idle.
 The bytes of a closed copy stay in the database for an operator.
 The copy a pod is sent is spent once a role of that pod registers, as a release bundle is ([Idle release](#idle-release)): a pod, or its `roles` container, that ends before then leaves it for the pod's restarted container or the pod after it, and a pod where a role registered is never sent it again.
 
-Every time the restore compares is the database's own clock, so no skew between a node, the Kubernetes API server and the database can turn its choice.
+Every time the restore's choice between the two copies compares is the database's own clock, so no skew between a node, the Kubernetes API server and the database can turn that choice; the drop of the copies a kept volume holds, which a pod of a kept Sandbox asks first, compares a copy's time with the API server's clock (below).
 [The times the restore compares](#the-times-the-restore-compares) names each of them in one table, with the clock and the statement that set it and the rule that reads it.
 A copy's time, the `at` of its row, is the database's clock when its take began, which the daemon reads before it asks the shim to read the workspace: the shim's own reading of when it took the copy is not kept.
 It is not the time the database wrote the copy, because the write lands seconds later, once the bundle is built and carried, and a copy read before a push and written just after the push was recorded would then carry a time after the push and be sent over the pushed commits.
@@ -127,12 +127,12 @@ Each row also keeps `written_at`, the database's clock when the copy was written
 A push's time is when the database recorded the push in the push's own transaction (the time rule below).
 A pod's time is when it first asked for a restore, which its launcher does at the pod's first role start, recorded by the database in the `workspace_restore_asks` table, one row per pod, keyed by the issue and the pod's uid.
 A later ask of the same pod leaves that row as it is, and each issue keeps the rows of its 16 newest pods.
-The pod's `creationTimestamp` is not read, so a pod the API server stamps created seconds before a copy is still sent that copy when it first asks after the copy was written.
+The pod's `creationTimestamp` is not read, so a pod the API server stamps created seconds before a copy is still sent that copy when it first asks after the copy was written, unless the pod's Sandbox owns a kept volume and was made before the copy was taken, when the daemon drops the copy, whose work the volume holds ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 Every write of a copy and every pod's ask first take one lock per issue in the database and read the clock only once they hold it, so whichever of a copy's write and a pod's first ask comes first has committed before the other reads the clock.
 A copy written before a pod's first ask is then always read at that ask, and a copy written after it always carries the later `written_at`.
 
-One comparison with another clock is left, on the pod's side: the launcher applies no copy to a workspace whose creation record, stamped by its own node's clock, is not after the copy's time, because that workspace is the one the copy came out of.
-It reads the node's clock because the workspace is made on the node, and its gap is not seconds: the workspace it refuses was made when the pod the copy came off started, that pod's whole life before the copy, and the workspace it accepts is made when a later pod starts, after the pod the copy came off has ended.
+Two comparisons with another clock are left: the drop of the copies a kept volume holds reads the `creationTimestamp` of the pod's Sandbox ([The times the restore compares](#the-times-the-restore-compares)), and on the pod's side the launcher applies no copy to a workspace whose creation record, stamped by its own node's clock, is not after the copy's time, because that workspace is the one the copy came out of.
+The launcher reads the node's clock because the workspace is made on the node, and its gap is not seconds: the workspace it refuses was made when the pod the copy came off started, that pod's whole life before the copy, and the workspace it accepts is made when a later pod starts, after the pod the copy came off has ended.
 A node clock a few seconds off the database's moves neither across.
 
 The copy offered to a pod is sent to it when the pod first asked at or after the copy was written.

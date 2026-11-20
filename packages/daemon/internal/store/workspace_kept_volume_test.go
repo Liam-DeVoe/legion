@@ -52,9 +52,10 @@ func requireRowAsItWas(t *testing.T, s *Store, copies copyTable, issue string, w
 //
 // The drop keeps the take's rules: the pod the work came off drops nothing, since its workspace
 // is the work and the copy is for the pod that replaces it; and a pod of a project that does not
-// record the issue drops nothing, since another project's daemon saved the copy for its own pod.
-// A drop that names no project, no pod, or no creation of the pod's Sandbox has nothing to read
-// the rule by and is refused: a zero creation would read as older than every copy.
+// record the issue drops nothing and leaves the copy in the database, since the row names no
+// project and the copy can be another project's daemon's, saved for its own pod. A drop that
+// names no project, no pod, or no creation of the pod's Sandbox has nothing to read the rule by
+// and is refused: a zero creation would read as older than every copy.
 func TestACopyAKeptVolumeHoldsIsDroppedWithoutItsBody(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -158,8 +159,9 @@ func TestASpentCopyIsDroppedByNoKeptVolume(t *testing.T) {
 }
 
 // The copies of an issue another project records, and of an issue no project records, are not
-// this project's: the drop of this project's pod answers nothing, records nothing on either copy
-// and records no ask of that pod, and each row stays for the pod of the daemon that saved it.
+// this project's to drop: the drop of this project's pod answers nothing, records nothing on
+// either copy and records no ask of that pod, and each row stays in the database as it was, here
+// for the pod of the daemon that saved it.
 func TestADropTakesNoCopyOfAnIssueAnotherProjectRecords(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)

@@ -17,17 +17,17 @@ import (
 
 // runningCopyPeriod is the most the cadence leaves between the starts of two copies of one
 // issue's workspace inside a turn, when the daemon's minute tick (idleTickInterval) arrives on
-// time. It is counted from the start of the copy before it, and an issue is due once less than
-// one tick of it is left (due), so the tick that starts the next copy comes at most one period
-// after the last copy started, and never less than a period less one tick after it. A copy holds
-// the workspace as it was when the copy started, so the work an eviction loses is the work since
-// the last copy's start, which is what the period bounds; counted from the end of the copy
-// instead, a copy that took two minutes would put the next start seven minutes or more after its
-// own. Counting from the start runs no copy into the next: a copy's budget ends it by the time the
-// next can fall due (runningCopyBudget), and the issue's one place in flight keeps a second copy
-// from starting beside it whatever the timing (runningCopies). Five minutes is the bound the change
-// holds itself to, and it is the cost as well, since each copy is a `git bundle create` in the
-// workspace a role is working in.
+// time and the project is not paused (runningCopyProjectPaused). It is counted from the start of
+// the copy before it, and an issue is due once less than one tick of it is left (due), so the tick
+// that starts the next copy comes at most one period after the last copy started, and never less
+// than a period less one tick after it. A copy holds the workspace as it was when the copy
+// started, so the work an eviction loses is the work since the last copy's start, which is what
+// the period bounds; counted from the end of the copy instead, a copy that took two minutes would
+// put the next start seven minutes or more after its own. Counting from the start runs no copy
+// into the next: a copy's budget ends it by the time the next can fall due (runningCopyBudget),
+// and the issue's one place in flight keeps a second copy from starting beside it whatever the
+// timing (runningCopies). Five minutes is the bound the change holds itself to, and it is the cost
+// as well, since each copy is a `git bundle create` in the workspace a role is working in.
 //
 // It is a constant and not a `legion.yaml` key on purpose. A deployment that had set a key could
 // not go back to an earlier daemon release without editing its file first, and editing the file
@@ -76,9 +76,10 @@ const (
 	// is live (runningCopy.retry), unless the copy was refused for its size (runningCopyTooLarge).
 	// A push's copy and an owed copy of an issue with no live role write it at Debug instead
 	// (copyWorkspaceAtPush, takeRunningCopy), and a copy off a pod an idle release has saved its
-	// bundle off writes it at Info, since nothing failed (runningCopyReleaseBundled), as does a
+	// bundle off writes it at Info, since nothing failed (runningCopyReleaseBundled), as do a
 	// copy the store refuses because the issue's running copy was taken after it
-	// (runningCopyNewerStands).
+	// (runningCopyNewerStands) and a copy of a paused project (runningCopyProjectPaused,
+	// pausedCopy).
 	runningCopyUnsavedLine = "running copy: no copy of the issue workspace was stored"
 	// runningCopyOvertakenLine is a copy that was being built when the daemon recorded a push of
 	// the issue's branch, at Info. It is not stored: it may have read the workspace before the
@@ -147,11 +148,16 @@ const (
 	// that a deployment counts.
 	runningCopyNewerStands = "newer_copy_stands"
 	// runningCopyProjectPaused: the daemon's project is paused (pause.Service.Paused), and a
-	// pause saves no workspace (docs/kubernetes.md, "Pausing a project"): it holds every pod it
-	// stopped a role of, with its disk, so nothing the copy would hold is lost while it stands. It
-	// is written at Info with the open pause's id, since nothing failed, and it owes a retry
-	// (runningCopy.retry): a turn that ended while the project was paused is in no copy, so the
-	// cadence takes it again once the project has resumed and a role of the issue is live.
+	// pause saves no workspace (docs/kubernetes.md, "Pausing a project"), so no copy starts while
+	// it stands. The pause's hold of a pod stops only the idle release and the update round: a
+	// close, a park, a teardown or an end from outside the pod still ends a held pod, and a role
+	// of it may still be in its turn. A pod that ends during the pause loses the work done since
+	// its last copy, which is from before the pause: the next pod restores that copy, and the
+	// turns that ended in the pause are in none. That cost is chosen, as a pause saves no
+	// workspace. It is written at Info with the open pause's id, since nothing failed, and it
+	// owes a retry (runningCopy.retry): a turn that ended while the project was paused is in no
+	// copy, so the cadence takes it again once the project has resumed and a role of the issue is
+	// live.
 	runningCopyProjectPaused = "project_paused"
 )
 
@@ -762,7 +768,7 @@ func (w *workflowRuntime) startOwedCopy(issue string) {
 func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, claims []supervise.Claim, noRole slog.Level) {
 	if pause, paused := w.projectPaused(); paused {
 		w.copies.untaken(issue, true)
-		w.log.Info(runningCopyUnsavedLine, "issue", issue, "reason", runningCopyProjectPaused, "pause", pause)
+		w.pausedCopy(issue, pause)
 		return
 	}
 	if claims == nil {
@@ -853,7 +859,7 @@ func (w *workflowRuntime) storeRunningCopy(ctx context.Context, issue string, ro
 	// so it reads the flag again before it asks the shim: only a copy already asking its shim
 	// when a pause commits runs to its end.
 	if pause, paused := w.projectPaused(); paused {
-		w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyProjectPaused, "pause", pause)
+		w.pausedCopy(issue, pause, "role", role)
 		return true
 	}
 	bundle, err := w.copyBundler.BundleWorkspace(ctx, issue, role)
@@ -917,6 +923,15 @@ func (w *workflowRuntime) unsavedCopy(issue string, args ...any) {
 		return
 	}
 	w.log.Warn(runningCopyUnsavedLine, append([]any{"issue", issue}, args...)...)
+}
+
+// pausedCopy logs a copy of issue that the open pause of the daemon's project kept from its shim,
+// at Info under runningCopyProjectPaused with the pause's id, since nothing failed
+// (runningCopyUnsavedLine). args are what the line names between the issue and the reason: the
+// role the copy was asked of, where one was chosen.
+func (w *workflowRuntime) pausedCopy(issue string, pause int64, args ...any) {
+	args = append(append([]any{"issue", issue}, args...), "reason", runningCopyProjectPaused, "pause", pause)
+	w.log.Info(runningCopyUnsavedLine, args...)
 }
 
 // issuesInTurn is every issue of the project with a turn in flight, each named once, in the order

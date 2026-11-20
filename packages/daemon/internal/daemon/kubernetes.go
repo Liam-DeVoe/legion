@@ -677,9 +677,11 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 
 // savedWorkspaceCopy is st's take of an issue's saved workspace copies for a pod of project, the
 // runtime's project token (sandbox.Options.Project), in the shape the runtime calls it
-// (runtime.SavedWorkspaceBundle). A copy is project's only where project records its issue
-// (store.Store.TakeWorkspaceCopyForRestore): on a database shared with another project's daemon,
-// a copy of that project's issue is that daemon's, whatever pod of this daemon asks.
+// (runtime.SavedWorkspaceBundle). A copy is project's to take only where project records its issue
+// (store.Store.TakeWorkspaceCopyForRestore): on a database shared with another project's daemon, a
+// copy of an issue project does not record is withheld from every pod of this daemon and stays in
+// the database, whether that daemon saved it or this daemon's cadence took it off an operator's
+// spawn of the issue, since a row names no project.
 func savedWorkspaceCopy(st *store.Store, project string) runtime.SavedWorkspaceBundle {
 	return func(ctx context.Context, issue, podUID string) (runtime.WorkspaceRestore, error) {
 		return st.TakeWorkspaceCopyForRestore(ctx, project, issue, podUID)
@@ -690,8 +692,9 @@ func savedWorkspaceCopy(st *store.Store, project string) runtime.SavedWorkspaceB
 // volume of a pod of project already holds, in the shape the runtime calls it
 // (runtime.HeldWorkspaceCopiesDrop). project is the runtime's project token
 // (sandbox.Options.Project). The drop follows the take's project rule
-// (store.Store.DropHeldWorkspaceCopies): a copy of an issue that project does not record is
-// another project's daemon's, and a pod of this daemon drops none of it.
+// (store.Store.DropHeldWorkspaceCopies): a pod of this daemon drops no copy of an issue that
+// project does not record, and the copy stays in the database, whether another project's daemon
+// saved it or this daemon's cadence took it off an operator's spawn of the issue.
 func heldWorkspaceCopies(st *store.Store, project string) runtime.HeldWorkspaceCopiesDrop {
 	return func(ctx context.Context, issue, podUID string, keptSince time.Time) (runtime.WorkspaceRestore, error) {
 		return st.DropHeldWorkspaceCopies(ctx, project, issue, podUID, keptSince)

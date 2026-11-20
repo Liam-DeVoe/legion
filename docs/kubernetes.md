@@ -2545,7 +2545,7 @@ the orphan sweep reads the image as drift and publishes one message to each role
 The daemon ends the pod once every role has answered, no turn runs and each role's report since its last turn names no running background work, or at the round's bound, `pod_update_grace_minutes` after the round opened, whatever the roles answered.
 So pinning such a release reaches a running issue pod by itself, without stopping a tree.
 A turn that still runs at the bound ends with the pod.
-The daemon reads nothing of the pod's disk before it replaces the pod: a role's own push is what keeps its work, and work a role did not push before the pod goes, a failed claim's included, is lost with the disk, unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)); an operator who wants such work kept runs [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) before the roll.
+The replacement reads nothing of the pod's disk: a role's own push is what keeps its work, and work a role did not push before the pod goes, a failed claim's included, comes back in the next pod only up to the daemon's last copy of the workspace ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)), and the rest is lost with the disk, unless the disk is a kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)); an operator who wants such work kept runs [Carrying unpushed work out of an issue's pod](#carrying-unpushed-work-out-of-an-issues-pod) before the roll.
 A role whose running plugin predates the contract that added the op is asked all the same:
 its message tells it to push its work, let its subagents and background jobs finish or stop them, push what they made, put scratch evidence on Dispatch and end its turn, and its round ends at the bound whatever it does, so its pod is replaced like every other and the role resumes in its own session on the new image.
 A role on Claude Code, whose plugin is its pod image's own and which no install can move, is carried by that same path and needs no operator step either ("Contract discipline" below).
@@ -6380,7 +6380,7 @@ Three ends differ in what reaches the issue's next pod, and this is how a reader
 - **an end the cluster made**, the bullet above.
   The disk goes with the pod, as it does at every end.
   What comes back is the newer of the issue's two saved copies, restored before any role starts:
-  the work of the last turn that ended, or of a turn still running up to its last copy, which the cadence bounds at 5 minutes ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
+  outside a pause, the work of the last turn that ended, or of a turn still running up to its last copy, which the cadence bounds at 5 minutes ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
   Each role keeps its session, keeps the task it owed and is charged no death and no launch failure, however often such ends come, except for the kubelet's evictions for the pod's own use, which are counted as a stop of each role's process ("An end from outside the pod", above): one for the pod's own disk, and one for its own memory or ephemeral storage over its request.
   What no copy holds goes with the disk:
   the issue's scratch, each role's temporary directory and logs, every ignored file and the workspace's CodeGraph index;
@@ -6448,7 +6448,7 @@ the daemon reads the issue's claims from the store again — which is how a clai
 An operator's suspension aborts it at any moment, and before the bound so does a claim that has not answered, a turn that started, or a claim whose report holds the round, as the store reads them after the replacement waited for the pod's launch turn:
 nothing is suspended, the round stays open, and the next sweep decides again.
 
-The daemon then replaces the pod with nothing read from its disk: a role's own push is what keeps its work, and work not pushed when the pod goes, a failed claim's included, is lost with the disk, so the agent does it again in the new pod, by the decision recorded at dispatch://INFRA-2848/ask/dc797d9e-49a6-49f6-b279-d27702c9ebd9.
+The daemon then replaces the pod with nothing read from its disk: a role's own push is what keeps its work, and work not pushed when the pod goes, a failed claim's included, comes back in the new pod only up to the daemon's last copy of the workspace, or whole on a kept volume (below), so the agent does the rest again in the new pod, by the decision recorded at dispatch://INFRA-2848/ask/dc797d9e-49a6-49f6-b279-d27702c9ebd9.
 An earlier release checked the disk first, from the shim, and pushed what the remote lacked; that check and the frame that asked for it are gone.
 A daemon of an earlier release that sends that frame still sends it to a shim of this image, which passes it to its agent unchanged, and the agent refuses a command it does not know, which that daemon reads as a shim that predates the check, so it replaces the pod with no check of the disk.
 A `legion-v20.14.0` daemon then replaces the pod once every role it asked has answered and no turn runs, or at the round's bound, and it asks no role a second time: it reads no activity report.
@@ -6541,7 +6541,7 @@ So only a new or replacement pod provisions afresh, and an agent resumed into a 
 it is told so before its next turn, by `LEGION_WORKSPACE_RECREATED` and the message its plugin saves from it ([Selecting the store](#selecting-the-store)).
 An agent's unpushed work is never lost at a role start into a live pod, and at an end of the pod it is kept only in the daemon's own copies of the workspace, which is why a phase pushes what it has done.
 A release keeps it as a bundle in the daemon's database and nowhere else ([Idle release](#idle-release)).
-At every other end that the issue's work outlives, the next pod of the issue restores the running copy the daemon took minutes before: an update round's replacement, a launch's replacement, the pod of an issue that comes back from a park and the pod after an end from outside the pod alike, since the restore does not read how the pod before it ended ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
+At every other end that the issue's work outlives, the next pod of the issue restores the running copy the daemon took minutes before, or before the project was paused: an update round's replacement, a launch's replacement, the pod of an issue that comes back from a park and the pod after an end from outside the pod alike, since the restore does not read how the pod before it ended ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
 What such an end loses is the work done since that copy was taken.
 An issue's close as `done` and its tree's close drop both copies, so what no role pushed goes with the pod.
 On a kept volume, a new pod finds the workspace as the last pod left it, unpushed work included, and its agents are told `LEGION_WORKSPACE_RECREATED=false`;
@@ -7016,8 +7016,8 @@ The daemon keeps a copy of each issue workspace's unpushed work outside the pod 
 Three triggers take that copy:
 the end of each turn of the issue, a cadence that takes one every 5 minutes while a turn of that issue runs (`runningCopyPeriod`, `packages/daemon/internal/daemon/workspace_copies.go`), and each push of the issue's branch that the daemon records (`copyWorkspaceAtPush`, the same file).
 The 5 minutes run from the start of the copy before it and not from its end, and no `legion.yaml` key changes them.
-The daemon reads the cadence on its own minute tick, and an issue is due once less than one tick of the 5 minutes is left since its last copy started, whatever took that copy, so while a turn runs and that tick comes on time, a cadence copy starts no less than 4 minutes and no more than 5 minutes after the copy before it, whatever took that one.
-That is the bound on a working turn's newest copy: the next copy of it starts no more than 5 minutes after the last one did.
+The daemon reads the cadence on its own minute tick, and an issue is due once less than one tick of the 5 minutes is left since its last copy started, whatever took that copy, so while a turn runs, the project is not paused and that tick comes on time, a cadence copy starts no less than 4 minutes and no more than 5 minutes after the copy before it, whatever took that one.
+That is the bound on a working turn's newest copy outside a pause (below): the next copy of it starts no more than 5 minutes after the last one did.
 Two cadence copies can be further apart than that when a turn's end, a push or an owed copy came between them, since each copy starts the 5 minutes again.
 The copies a turn's end and a push take, and a copy owed behind one in flight, start when they come, whatever the period.
 A copy the shim is still building after 4 minutes is abandoned and logged `budget_spent`, so even a slow copy has ended by the tick that starts the next one, and two copies of one workspace never run at once.
@@ -7070,6 +7070,7 @@ While the daemon's project is paused, no copy is taken at all, since a pause sav
 Each copy that a turn's end, the cadence or a push asks for then logs the same line at Info with the reason `project_paused` and the open pause's id as `pause`, which is no fault and is not one of the reasons above.
 A copy already asking its shim when the pause begins runs to its end, since it read the workspace before the pause.
 A skipped copy owes a retry, because a turn that ended while the project was paused is in no copy: the cadence takes it once the project has resumed and a role of the issue is live again.
+A pod that still ends during the pause, at a close, a park or an end from outside it, loses the work done since its last copy, which is from before the pause: the next pod restores that copy.
 
 A copy runs the shim's own `jj` in the workspace a role is working in, and two `jj` commands at once in one workspace can leave a divergent change there, which a role then has to clean up in its own turn.
 That race is not new — another role's `jj` makes it today — and the copy raises how often the workspace is inside a `jj` command of somebody else's.
@@ -7088,7 +7089,7 @@ A tie goes to the release bundle, which was taken while the roles were idle.
 The bytes of a closed copy stay in the database for an operator.
 The copy a pod is sent is spent once a role of that pod registers, as a release bundle is ([Idle release](#idle-release)): a pod, or its `roles` container, that ends before then leaves it for the pod's restarted container or the pod after it, and a pod where a role registered is never sent it again.
 
-Every time the restore compares is the database's own clock, so no skew between a node, the Kubernetes API server and the database can turn its choice.
+Every time the restore's choice between the two copies compares is the database's own clock, so no skew between a node, the Kubernetes API server and the database can turn that choice; the drop of the copies a kept volume holds, which a pod of a kept Sandbox asks first, compares a copy's time with the API server's clock (below).
 [The times the restore compares](#the-times-the-restore-compares) names each of them in one table, with the clock and the statement that set it and the rule that reads it.
 A copy's time, the `at` of its row, is the database's clock when its take began, which the daemon reads before it asks the shim to read the workspace: the shim's own reading of when it took the copy is not kept.
 It is not the time the database wrote the copy, because the write lands seconds later, once the bundle is built and carried, and a copy read before a push and written just after the push was recorded would then carry a time after the push and be sent over the pushed commits.
@@ -7098,12 +7099,12 @@ Each row also keeps `written_at`, the database's clock when the copy was written
 A push's time is when the database recorded the push in the push's own transaction (the time rule below).
 A pod's time is when it first asked for a restore, which its launcher does at the pod's first role start, recorded by the database in the `workspace_restore_asks` table, one row per pod, keyed by the issue and the pod's uid.
 A later ask of the same pod leaves that row as it is, and each issue keeps the rows of its 16 newest pods.
-The pod's `creationTimestamp` is not read, so a pod the API server stamps created seconds before a copy is still sent that copy when it first asks after the copy was written.
+The pod's `creationTimestamp` is not read, so a pod the API server stamps created seconds before a copy is still sent that copy when it first asks after the copy was written, unless the pod's Sandbox owns a kept volume and was made before the copy was taken, when the daemon drops the copy, whose work the volume holds ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
 Every write of a copy and every pod's ask first take one lock per issue in the database and read the clock only once they hold it, so whichever of a copy's write and a pod's first ask comes first has committed before the other reads the clock.
 A copy written before a pod's first ask is then always read at that ask, and a copy written after it always carries the later `written_at`.
 
-One comparison with another clock is left, on the pod's side: the launcher applies no copy to a workspace whose creation record, stamped by its own node's clock, is not after the copy's time, because that workspace is the one the copy came out of.
-It reads the node's clock because the workspace is made on the node, and its gap is not seconds: the workspace it refuses was made when the pod the copy came off started, that pod's whole life before the copy, and the workspace it accepts is made when a later pod starts, after the pod the copy came off has ended.
+Two comparisons with another clock are left: the drop of the copies a kept volume holds reads the `creationTimestamp` of the pod's Sandbox ([The times the restore compares](#the-times-the-restore-compares)), and on the pod's side the launcher applies no copy to a workspace whose creation record, stamped by its own node's clock, is not after the copy's time, because that workspace is the one the copy came out of.
+The launcher reads the node's clock because the workspace is made on the node, and its gap is not seconds: the workspace it refuses was made when the pod the copy came off started, that pod's whole life before the copy, and the workspace it accepts is made when a later pod starts, after the pod the copy came off has ended.
 A node clock a few seconds off the database's moves neither across.
 
 The copy offered to a pod is sent to it when the pod first asked at or after the copy was written.
@@ -7338,7 +7339,7 @@ It writes the claim and the stop's record, and with them:
 Every other stopped role stays stopped until its next wake, as the role of an idle-released pod does.
 
 **The pods.**
-The pause deletes no pod and saves no workspace: the idle release saves none, and no running copy of a workspace is taken while the project is paused ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
+The pause deletes no pod and saves no workspace: the idle release saves none, and no running copy of a workspace is started while the project is paused ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
 From the moment the pause stops one role of a pod, it holds that pod (`project_pause_pod_holds`), although another role of the pod may still run its turn.
 A held pod keeps its disk, with the work that its roles did not push.
 These rules pass over it:

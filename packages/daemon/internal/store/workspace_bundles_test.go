@@ -188,13 +188,15 @@ func TestARestoreConfirmationKeepsOnlyTheBundleOfTheReleaseItNames(t *testing.T)
 // The one writer of a release bundle is the save of an idle release, which an outbox row runs
 // (internal/daemon's bundleIssueWorkspace), and a daemon's outbox runs only the rows of its own
 // project's keys, of a release its idle rule marked over a record of its own project
-// (readIdleView). So the copies of an issue another project records were saved by that project's
-// daemon, for its own pod, on a database the two daemons share. The operator's spawn makes a
-// claim of that issue under this project's token, and a new pod of that claim is answered nothing
-// of either copy and records nothing: no attempt on either row, and not its first ask either, so a
-// role of it registering spends nothing, and the other daemon's next pod is sent its own copy. The
-// copies of an issue this project records are taken as before, and a take that names no project
-// is refused, since whose copies they are rests on the project.
+// (readIdleView). So the release bundle of an issue another project records was saved by that
+// project's daemon, for its own pod, on a database the two daemons share, and here its running
+// copy was too; a running copy of such an issue can also be this daemon's, taken off an operator's
+// spawn, and the take withholds it all the same, since the row names no project. The operator's
+// spawn makes a claim of that issue under this project's token, and a new pod of that claim is
+// answered nothing of either copy and records nothing: no attempt on either row, and not its first
+// ask either, so a role of it registering spends nothing, and the other daemon's next pod is sent
+// its own copy. The copies of an issue this project records are taken as before, and a take that
+// names no project is refused, since whose copies they are rests on the project.
 func TestARestoreTakesNoCopyOfAnIssueAnotherProjectRecords(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)

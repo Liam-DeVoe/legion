@@ -248,22 +248,25 @@ func keepReleaseBundleAsRunningCopy(ctx context.Context, tx pgx.Tx, issue string
 // runtime.DecideKeptVolumeDrop's. project is the token of the daemon whose pod asks
 // (claim.ProjectToken).
 //
-// It keeps the take's rules, read off the same rows (heldCopy, TakeWorkspaceCopyForRestore). A
-// copy whose work came off the asking pod stays, for the pod that replaces it. A spent copy stays,
-// as the record of its attempt. A copy is project's only where project records its issue
+// It is the take's own ask with the drop's decision in it (askWorkspaceCopies,
+// TakeWorkspaceCopyForRestore), so it keeps the take's rules, read off the same rows. A copy whose
+// work came off the asking pod stays, for the pod that replaces it. A spent copy stays, as the
+// record of its attempt. A copy is project's only where project records its issue
 // (issues.project), and where project does not, the drop answers an empty runtime.WorkspaceRestore
-// and records nothing at all, the pod's first ask included: another project's daemon saved those
-// copies for its own pod, and they stay for that pod.
+// and records nothing at all, the pod's first ask included, and both rows stay in the database: a
+// row names no project, so a copy another project's daemon saved for its own pod and this
+// daemon's running copy of an operator's spawn of the issue are kept alike, as the take withholds
+// both.
 //
-// It is one transaction under the issue's copy lock (lockWorkspaceCopies), shaped as the take's.
-// It records the pod's first ask for a restore if this is it (firstRestoreAsk), because the
-// runtime takes nothing more at the role start whose drop deleted a copy, and a copy written after
-// that start must be left for the next pod by every later ask of this pod. It reads both copies for
-// update, and writes what the decision answered. A copy the volume holds is deleted with none of
-// its body read, since a copy runs to tens of megabytes and the volume holds the work; its restore
-// id, its time, its size and its source are answered, so the runtime can name them. An older copy
-// the decision closed is recorded superseded against this pod, as the take records it (takeCopy),
-// and keeps its bytes for an operator. A release bundle's delete lifts the hold its row puts on the
+// It is one transaction under the issue's copy lock (lockWorkspaceCopies). It records the pod's
+// first ask for a restore if this is it (firstRestoreAsk), because the runtime takes nothing more
+// at the role start whose drop deleted a copy, and a copy written after that start must be left
+// for the next pod by every later ask of this pod. It reads both copies for update, and writes
+// what the decision answered. A copy the volume holds is deleted with none of its body read, since
+// a copy runs to tens of megabytes and the volume holds the work; its restore id, its time, its
+// size and its source are answered, so the runtime can name them (dropCopy). An older copy the
+// decision closed is recorded superseded against this pod, as the take records it (takeCopy), and
+// keeps its bytes for an operator. A release bundle's delete lifts the hold its row puts on the
 // issue's pod (workspaceBundleUnrestored), as the keep of a confirmed restore does.
 //
 // The drop refuses an empty project, an empty podUID and a zero keptSince: an empty podUID would
@@ -277,45 +280,9 @@ func (s *Store) DropHeldWorkspaceCopies(ctx context.Context, project, issue, pod
 	case keptSince.IsZero():
 		return runtime.WorkspaceRestore{}, fmt.Errorf("the drop of the saved workspace copies of %s that a kept volume holds needs when the Sandbox of the pod %s was created", issue, podUID)
 	}
-	var dropped runtime.WorkspaceRestore
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		dropped = runtime.WorkspaceRestore{}
-		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
-			return err
-		}
-		if recorded, err := projectRecordsIssue(ctx, tx, project, issue); err != nil || !recorded {
-			return err
-		}
-		var err error
-		if dropped.FirstAsked, err = firstRestoreAsk(ctx, tx, issue, podUID); err != nil {
-			return err
-		}
-		bundle, err := heldCopy(ctx, tx, releaseBundleCopies, issue)
-		if err != nil {
-			return err
-		}
-		running, err := heldCopy(ctx, tx, runningCopyCopies, issue)
-		if err != nil {
-			return err
-		}
-		var bundleTake, runningTake runtime.WorkspaceBundleTake
-		bundleTake, runningTake, dropped.Offered = runtime.DecideKeptVolumeDrop(bundle, running, podUID, keptSince)
-		for _, decided := range []struct {
-			copies copyTable
-			take   runtime.WorkspaceBundleTake
-			taken  *runtime.WorkspaceCopyTaken
-		}{{releaseBundleCopies, bundleTake, &dropped.ReleaseBundle}, {runningCopyCopies, runningTake, &dropped.Running}} {
-			switch decided.take {
-			case runtime.WorkspaceBundleHeldByVolume:
-				*decided.taken, err = dropCopy(ctx, tx, decided.copies, issue)
-			case runtime.WorkspaceBundleSuperseded:
-				*decided.taken, err = takeCopy(ctx, tx, decided.copies, issue, podUID, decided.take)
-			}
-			if err != nil {
-				return err
-			}
-		}
-		return nil
+	dropped, err := s.askWorkspaceCopies(ctx, project, issue, podUID, func(_ pgx.Tx, ask *runtime.WorkspaceRestore, bundle, running runtime.WorkspaceCopyHeld) (bundleTake, runningTake runtime.WorkspaceBundleTake, err error) {
+		bundleTake, runningTake, ask.Offered = runtime.DecideKeptVolumeDrop(bundle, running, podUID, keptSince)
+		return bundleTake, runningTake, nil
 	})
 	if err != nil {
 		return runtime.WorkspaceRestore{}, fmt.Errorf("drop the saved workspace copies of %s that the kept volume of the pod %s holds: %w", issue, podUID, err)

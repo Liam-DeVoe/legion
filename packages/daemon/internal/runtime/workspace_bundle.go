@@ -196,6 +196,15 @@ type WorkspaceCopyHeld struct {
 // Held is whether the issue holds the copy at all.
 func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 
+// openTo is whether an ask of the pod of podUID reaches the copy at all: the issue holds it, its
+// attempt is unspent, and its work came off another pod. Every other copy is answered
+// WorkspaceBundleNone and has nothing recorded on it, by the take (DecideWorkspaceRestore) and by
+// the drop of the copies a kept volume holds (DecideKeptVolumeDrop) alike, so both read this one
+// rule and a change to it is made here once.
+func (c WorkspaceCopyHeld) openTo(podUID string) bool {
+	return c.Held() && !c.Spent && c.Source != podUID
+}
+
 // NewerWorkspaceCopy is which of an issue's two copies of its workspace holds the newer work, and
 // empty when the issue holds neither. `at` orders them because it is the one thing both carry and
 // the only one that says which work descends from which: a running copy is taken while the roles
@@ -223,15 +232,19 @@ func NewerWorkspaceCopy(bundle, running WorkspaceCopyHeld) WorkspaceCopyKind {
 	return ""
 }
 
-// DecideWorkspaceRestore is the whole of the choice the restore of a new pod makes between the
-// two copies of its issue's workspace. It reads what each copy's row says of it, the newest push
-// of the issue's branch the daemon recorded, and the pod asking: its uid, podUID, and when it
-// first asked for a restore, firstAsked. It answers what the ask does to each copy, and the kind
-// of the copy it offers, which is the newer of the copies the issue holds, or empty when it holds
-// neither. It is a pure function so that it is one decision, read in one place: the store calls
+// DecideWorkspaceRestore is the choice the restore of a new pod makes between the two copies of
+// its issue's workspace. For a pod of a Sandbox that owns the issue's kept volume, the drop of the
+// copies that volume holds decides first (DecideKeptVolumeDrop), and the take this decides runs
+// only where the drop deleted no copy (sandbox's launchers.restoreWorkspace); for every other pod
+// this is the whole of the choice. It reads what each copy's row says of it, the newest push of
+// the issue's branch the daemon recorded, and the pod asking: its uid, podUID, and when it first
+// asked for a restore, firstAsked. It answers what the ask does to each copy, and the kind of the
+// copy it offers, which is the newer of the copies the issue holds, or empty when it holds
+// neither. It is a pure function so that the take's choice is read in one place: the store calls
 // it inside the transaction that holds both rows and records every take it answers but
 // WorkspaceBundleNone and WorkspaceBundleLeftForNextPod (store.Store.TakeWorkspaceCopyForRestore),
-// and a test outside the store drives the very same decision against real git and jj.
+// and a test outside the store drives the very same decision against real git and jj. Which
+// copies an ask reaches at all is one rule both decisions read (WorkspaceCopyHeld.openTo).
 //
 // Every time it compares is the store's clock, so no two machines' clocks meet in it: a copy's
 // `at` is when its take began, read before its bundler read the workspace
@@ -296,7 +309,8 @@ func NewerWorkspaceCopy(bundle, running WorkspaceCopyHeld) WorkspaceCopyKind {
 // running copies, the copy taken at each push among them, are newer than it.
 //
 // Two rules answer a copy WorkspaceBundleNone whatever the rules above say of it, and the store
-// records nothing on such a copy:
+// records nothing on such a copy, as on a copy the issue does not hold; the three are one
+// predicate (WorkspaceCopyHeld.openTo):
 //
 //   - None for a spent copy (Spent). A refusal and a supersession spend a copy at once. A send
 //     spends it once a role of the pod it was sent to registers (store.Store.RecordPodRegistration):
@@ -334,7 +348,7 @@ func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePus
 	offered = NewerWorkspaceCopy(bundle, running)
 	take := func(kind WorkspaceCopyKind, c WorkspaceCopyHeld) WorkspaceBundleTake {
 		switch {
-		case !c.Held(), c.Spent, c.Source == podUID:
+		case !c.openTo(podUID):
 			return WorkspaceBundleNone
 		case kind == WorkspaceCopyRunning && push.Recorded() && c.At.Before(push.At):
 			return WorkspaceBundleRefusedPushed
@@ -371,9 +385,10 @@ func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePus
 // the disk's shape replaced, and the drop answers it WorkspaceBundleNone, so the take restores it
 // as for any pod (DecideWorkspaceRestore).
 //
-// The take's own rules stand, so the drop answers WorkspaceBundleNone for every copy the take
-// answers nothing of: a copy the issue does not hold, a spent one, and one whose work came off the
-// pod asking, whose workspace is the work and whose copy stays for the pod that replaces it.
+// The take's own rules stand, read through the same predicate (WorkspaceCopyHeld.openTo), so the
+// drop answers WorkspaceBundleNone for every copy the take answers nothing of: a copy the issue
+// does not hold, a spent one, and one whose work came off the pod asking, whose workspace is the
+// work and whose copy stays for the pod that replaces it.
 //
 // The drop leaves the choice between the two copies as the take makes it. Where it deletes the
 // newer copy and the older stays, the older is answered WorkspaceBundleSuperseded, as the take
@@ -390,18 +405,17 @@ func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePus
 // change the answer. A zero keptSince is no kept volume, and nothing is dropped.
 func DecideKeptVolumeDrop(bundle, running WorkspaceCopyHeld, podUID string, keptSince time.Time) (bundleTake, runningTake WorkspaceBundleTake, newer WorkspaceCopyKind) {
 	newer = NewerWorkspaceCopy(bundle, running)
-	offerable := func(c WorkspaceCopyHeld) bool { return c.Held() && !c.Spent && c.Source != podUID }
 	held := func(c WorkspaceCopyHeld) WorkspaceBundleTake {
-		if keptSince.IsZero() || !offerable(c) || !c.At.Truncate(time.Second).After(keptSince) {
+		if keptSince.IsZero() || !c.openTo(podUID) || !c.At.Truncate(time.Second).After(keptSince) {
 			return WorkspaceBundleNone
 		}
 		return WorkspaceBundleHeldByVolume
 	}
 	bundleTake, runningTake = held(bundle), held(running)
 	switch {
-	case newer == WorkspaceCopyRunning && runningTake == WorkspaceBundleHeldByVolume && bundleTake == WorkspaceBundleNone && offerable(bundle):
+	case newer == WorkspaceCopyRunning && runningTake == WorkspaceBundleHeldByVolume && bundleTake == WorkspaceBundleNone && bundle.openTo(podUID):
 		bundleTake = WorkspaceBundleSuperseded
-	case newer == WorkspaceCopyReleaseBundle && bundleTake == WorkspaceBundleHeldByVolume && runningTake == WorkspaceBundleNone && offerable(running):
+	case newer == WorkspaceCopyReleaseBundle && bundleTake == WorkspaceBundleHeldByVolume && runningTake == WorkspaceBundleNone && running.openTo(podUID):
 		runningTake = WorkspaceBundleSuperseded
 	}
 	return bundleTake, runningTake, newer
