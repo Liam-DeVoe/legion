@@ -120,8 +120,9 @@ export function DecisionActions({
   nodeReference,
   tabStops = false,
 }: {
-  /** The decisions document this node is a block of, which the Keep writes against;
-   *  `undefined` for a decision whose document the issue read does not carry. */
+  /** The document this node's `decision` block stands in - the spec, or another document of the
+   *  issue - which the Keep writes against and the Change is anchored in; `undefined` for a
+   *  decision whose document the issue read does not carry. */
   document: Artifact | undefined;
   isClosed: boolean;
   /** The node's own `dispatch://` address, which is the decision's own (`Decision.ref`). */
@@ -317,8 +318,8 @@ function ChangeComposer({
       drafts?.set(decision.ref, input.body);
     },
   });
-  // Whether the send is reading the decisions document's text, which it does before the comment
-  // goes out: Send is off while it does, as it is while the comment is out.
+  // Whether the send is reading the text of the document the decision's block stands in, which it
+  // does before the comment goes out: Send is off while it does, as it is while the comment is out.
   const [reading, setReading] = useState(false);
   // The one place inside a row that takes the tab order, and only while it is open: this is a
   // form a reader is typing in, so Tab walks its field, Send change and Cancel as it does in
@@ -342,12 +343,12 @@ function ChangeComposer({
         // change twice. A refusal gives the words back to the draft (`onError`).
         keepFocusOnRow(event.currentTarget);
         drafts?.delete(decision.ref);
-        // Which of the quote's places in the decisions document is this decision's own, counted
-        // here, at the send, over the document's own reading, which the send reads once now:
-        // `changeAnchor` walks every decision above this one, which no render of a row pays for
-        // (decision 92). With no reading - the read failed - the anchor names no place: Dispatch
-        // takes it where the quote stands once, and refuses it where the quote stands more than
-        // once, which the form says in the page's words with the draft kept.
+        // Which of the quote's places in the document is this decision's own, counted here, at the
+        // send, over the document's own reading, which the send reads once now: `changeAnchor`
+        // walks the document's reading down to the decision's block, which no render of a row
+        // pays for (decision 92). With no reading - the read failed - the anchor names no place:
+        // Dispatch takes it where the quote stands once, and refuses it where the quote stands
+        // more than once, which the form says in the page's words with the draft kept.
         setReading(true);
         void queryClient
           .fetchQuery({
@@ -361,12 +362,7 @@ function ChangeComposer({
           )
           .then((tree) => {
             setReading(false);
-            const anchor = changeAnchor(
-              decision,
-              queryClient.getQueryData<IssueDecisions>(issueDecisionsQuery(issueKey, true).queryKey)
-                ?.decisions,
-              tree
-            );
+            const anchor = changeAnchor(decision, tree);
             send.mutate({ anchor: anchor ?? { quote }, body });
           });
       }}

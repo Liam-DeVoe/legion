@@ -17,6 +17,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { measureNearWords } from "./clamp-fixtures";
 import { issueDetails, KEY } from "./decisions-filter/decisions-fixtures";
 import type { NodeChip, TreeNode } from "./issue-tree";
+import { NodeGlyph } from "./NodeGlyph";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
@@ -27,6 +28,8 @@ import {
   BLOCK_TYPE_NAMES,
   CONTROL_LABELS,
   type GapKind,
+  GLYPH_NAMES,
+  GLYPH_TOKENS,
   NODE_TYPE_NAMES,
   type NodeType,
 } from "./page-words";
@@ -315,6 +318,57 @@ test("a plan's requirement row reads requirement with no statement mark, and a s
   });
 });
 
+// R34, R9: a reading is a typed node - an agent's reading of a person's answer, inside the ask or
+// the decision it reads - so its row draws its kind as one tag, its word and a shape no other
+// kind draws; and it is always an agent's words, so its bullet and its tag take an agent's quiet
+// grey, never the colour of the question or the decision it reads, and it never reads as the
+// person's decision itself.
+test("a reading row draws its own word and shape, in an agent's grey", () => {
+  const drawn = (type: NodeType) => {
+    const view = renderRow(node({ id: `spec#b-${type}`, text: "Keep the rail.", type }));
+    try {
+      const tag = view.container.querySelector("[data-node-margin] [data-node-tag]");
+      const dot = view.container.querySelector("[data-node-bullet] i");
+      return {
+        agentBullet: dot?.classList.contains(pageKindBullet.agent) ?? null,
+        agentTag: tag?.classList.contains(pageKindTag.agent) ?? null,
+        shape: tag?.querySelector("svg path")?.getAttribute("d") ?? null,
+        tag: tag?.textContent ?? null,
+        token: tag?.querySelector("svg")?.getAttribute("data-glyph") ?? null,
+      };
+    } finally {
+      view.unmount();
+    }
+  };
+  const reading = drawn("reading");
+  expect(reading).toMatchObject({
+    agentBullet: true,
+    agentTag: true,
+    tag: NODE_TYPE_NAMES.reading,
+    token: "reading",
+  });
+  // The negative controls: the question and the decision a reading reads draw their own colours,
+  // and no other shape the page draws - a kind's, a state's or an author's - is the reading's.
+  for (const type of ["ask", "decision"] as const) {
+    expect(drawn(type), `the ${type} drew an agent's grey`).toMatchObject({
+      agentBullet: false,
+      agentTag: false,
+    });
+  }
+  const shapes = Object.keys(GLYPH_NAMES)
+    .filter((token) => token !== GLYPH_TOKENS.types.reading)
+    .map((token) => {
+      const view = render(<NodeGlyph token={token} />);
+      try {
+        return view.container.querySelector("path")?.getAttribute("d") ?? null;
+      } finally {
+        view.unmount();
+      }
+    });
+  expect(shapes.length).toBeGreaterThan(0);
+  expect(shapes, "another shape the page draws is a reading's").not.toContain(reading.shape);
+});
+
 // R1, ruling 1: a folded branch is the one place a row draws one line of its node: the first
 // line, cut at its first sentence end, and how many nodes it holds. The focus draws its words
 // whole, and keeps the count of what the fold still hides after them.
@@ -421,7 +475,7 @@ test("an answered ask draws the answer in its own row, word for word", () => {
 test("a decision the model marks unsure says so in one word", () => {
   const unsure = (marked: boolean) => {
     const view = renderRow(
-      node({ id: "decisions-md#b-d3", type: "decision", ...(marked ? { unsure: true } : {}) })
+      node({ id: "spec#b-d3", type: "decision", ...(marked ? { unsure: true } : {}) })
     );
     try {
       return view.container.querySelector("[data-node-unsure]")?.textContent ?? null;
@@ -576,7 +630,7 @@ const MARKED_DRAWN = {
 // paragraph after it.
 test("a decision whose text holds bold draws no literal asterisks", () => {
   const decision = node({
-    id: "decisions-md#b-d1",
+    id: "spec#b-d1",
     text: MARKED,
     tree: displayTree(MARKED),
     type: "decision",
@@ -700,15 +754,15 @@ test("out of the tab order, a focused row's code block and table keep their tab 
   }
 });
 
-// Part G's R4, the tester's F20: a decision's text holds the source of a typed block its section
-// quotes, and the row draws the block's words but none of its source lines, whether it draws the
-// text as stored or from its reading.
+// Part G's R4, the tester's F20: a decision's text holds the source of a typed block inside its
+// own block, and the row draws the block's words but none of its source lines, whether it draws
+// the text as stored or from its reading.
 test("a decision whose text quotes a typed block draws none of its source lines", async () => {
   const text = "It names the statement.\n\n:::requirement{#r1}\nThe page draws no raw source.\n:::";
   for (const tree of [undefined, displayTree(text)]) {
     const view = renderRow(
       node({
-        id: "decisions-md#b-d1",
+        id: "spec#b-d1",
         text,
         type: "decision",
         ...(tree === undefined ? {} : { tree }),
@@ -767,7 +821,7 @@ test("a chip names its target by its first words and never by an address", () =>
           ref: "dispatch://CORE-1/artifact/plan-md#b-t1",
         },
       ],
-      id: "decisions-md#b-d1",
+      id: "spec#b-d1",
       text: "Keep one reading.",
       type: "decision",
     }),
@@ -852,7 +906,7 @@ test("a chip of an ambiguous short reference draws the reference as written, not
   const view = renderRow(
     node({
       chips: [ambiguous],
-      id: "decisions-md#b-d1",
+      id: "spec#b-d1",
       text: "Keep one reading.",
       type: "decision",
     }),
