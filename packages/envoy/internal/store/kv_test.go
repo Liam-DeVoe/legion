@@ -3370,15 +3370,26 @@ func pending(t *testing.T, sub *natsgo.Subscription) int {
 
 func putRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder string) uint64 {
 	t.Helper()
+	revision, err := putRoleClaimOffTest(kv, role, holder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return revision
+}
+
+// putRoleClaimOffTest is putRoleClaim for a goroutine that is not the test's, where FailNow may
+// not run: it answers a claim it could not store as an error, which the caller hands to the test's
+// goroutine.
+func putRoleClaimOffTest(kv natsgo.KeyValue, role, holder string) (uint64, error) {
 	value, err := json.Marshal(RoleClaim{HolderSessionID: holder, ClaimedAt: time.Now().UnixMilli()})
 	if err != nil {
-		t.Fatalf("encode claim: %v", err)
+		return 0, fmt.Errorf("encode claim: %v", err)
 	}
 	revision, err := kv.Put(role, value)
 	if err != nil {
-		t.Fatalf("store %s: %v", role, err)
+		return 0, fmt.Errorf("store %s: %v", role, err)
 	}
-	return revision
+	return revision, nil
 }
 
 // A restart's own log says how much of the role bucket it read. The SRE reading a staging restart

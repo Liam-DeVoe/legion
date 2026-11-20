@@ -331,7 +331,8 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 // related-item check (relatedAllowance, relatedMeaningAllowance) ends a query that waits. Each
 // issue create runs that check, whose meaning stage embeds the issue's text as a live query, so
 // a create paced by the limiter would never answer either: the creates run on goroutines of their
-// own and are waited for through the shared wait, which fails naming the create.
+// own and are waited for through the shared wait, which fails naming the create. Each goroutine
+// hands the create's refusal to the test's goroutine, which fails the row naming it.
 func throttledSearchHandler(t *testing.T) http.Handler {
 	t.Helper()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
@@ -343,12 +344,14 @@ func throttledSearchHandler(t *testing.T) http.Handler {
 	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, clock: clocktest.Held()})
 	create := func(project, title, spec string) {
 		t.Helper()
-		created := make(chan struct{})
+		created := make(chan error, 1)
 		go func() {
-			defer close(created)
-			createInteractionIssue(t, handler, project, title, spec)
+			_, err := createInteractionIssueOffTest(handler, project, title, spec)
+			created <- err
 		}()
-		testwait.Receive(t, fmt.Sprintf("the create of issue %s to answer, whose related-item check embeds the issue's text as a live query no limiter may pace", project), created)
+		if err := testwait.Receive(t, fmt.Sprintf("the create of issue %s to answer, whose related-item check embeds the issue's text as a live query no limiter may pace", project), created); err != nil {
+			t.Fatalf("the create of issue %s: %v", project, err)
+		}
 	}
 	create("PRIO", title, spec)
 	// Embeds while nothing is throttled yet: this is the content a later query below must still

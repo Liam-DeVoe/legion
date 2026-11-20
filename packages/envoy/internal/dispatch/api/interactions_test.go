@@ -115,26 +115,49 @@ func sessionRequest(t *testing.T, handler http.Handler, method, target string, b
 	return response
 }
 
-func createInteractionIssue(t *testing.T, handler http.Handler, project, title, spec string) struct {
+// interactionIssue is what the issue create answers that the interaction rows read.
+type interactionIssue struct {
 	Key               string `json:"key"`
 	PrimaryArtifactID string `json:"primary_artifact_id"`
-} {
+}
+
+// createInteractionIssue creates project and an issue in it as alice, failing the test when either
+// create is refused.
+func createInteractionIssue(t *testing.T, handler http.Handler, project, title, spec string) interactionIssue {
 	t.Helper()
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": project, "name": project + " project",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	issue, err := createInteractionIssueOffTest(handler, project, title, spec)
+	if err != nil {
+		t.Fatal(err)
 	}
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
-		"project": project, "title": title, "spec": spec,
-	}, "alice")
+	return issue
+}
+
+// createInteractionIssueOffTest is createInteractionIssue for a goroutine that is not the test's,
+// where FailNow may not run: it answers a refused create as an error, and the caller hands that
+// error to the test's goroutine, which fails the row naming it.
+func createInteractionIssueOffTest(handler http.Handler, project, title, spec string) (interactionIssue, error) {
+	post := func(target string, body map[string]string) *httptest.ResponseRecorder {
+		// A map of strings always encodes.
+		data, _ := json.Marshal(body)
+		request := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(data))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-Dispatch-User", "alice")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := post("/api/v1/projects", map[string]string{"key": project, "name": project + " project"}); response.Code != http.StatusCreated {
+		return interactionIssue{}, fmt.Errorf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	response := post("/api/v1/issues", map[string]string{"project": project, "title": title, "spec": spec})
 	if response.Code != http.StatusCreated {
-		t.Fatalf("create issue: status=%d body=%s", response.Code, response.Body.String())
+		return interactionIssue{}, fmt.Errorf("create issue: status=%d body=%s", response.Code, response.Body.String())
 	}
-	return decodeBody[struct {
-		Key               string `json:"key"`
-		PrimaryArtifactID string `json:"primary_artifact_id"`
-	}](t, response)
+	var issue interactionIssue
+	if err := json.Unmarshal(response.Body.Bytes(), &issue); err != nil {
+		return interactionIssue{}, fmt.Errorf("decode response body %q: %v", response.Body.String(), err)
+	}
+	return issue, nil
 }
 
 func sessionActor() map[string]any {

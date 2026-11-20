@@ -1099,28 +1099,38 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 			Kind: "ask", ID: fixture.asks[name], Owner: model.SearchOwner{Kind: "issue", Key: issueKey, Status: "todo"},
 		})
 	}
-	fill := func(ctx context.Context) (model.Suggestions, map[string]map[string]json.RawMessage) {
+	// fill answers its failure rather than failing a test: the "answers locked" case runs it on a
+	// goroutine of its own, where FailNow may not run, and each case fails on its own goroutine
+	// with the error it answers.
+	fill := func(ctx context.Context) (model.Suggestions, map[string]map[string]json.RawMessage, error) {
 		suggestions := model.Suggestions{}
 		fixture.srv.fillRelatedItems(ctx, relatedInput{project: "PARTIAL"}, slices.Clone(results), &suggestions)
 		encoded, err := json.Marshal(suggestions)
 		if err != nil {
-			t.Fatalf("encode the related items: %v", err)
+			return suggestions, nil, fmt.Errorf("encode the related items: %v", err)
 		}
 		var wire struct {
 			Related []map[string]json.RawMessage `json:"related"`
 		}
 		if err := json.Unmarshal(encoded, &wire); err != nil {
-			t.Fatalf("decode the related items: %v", err)
+			return suggestions, nil, fmt.Errorf("decode the related items: %v", err)
 		}
 		byID := map[string]map[string]json.RawMessage{}
 		for _, item := range wire.Related {
-			byID[rawString(t, item["id"])] = item
+			var id string
+			if err := json.Unmarshal(item["id"], &id); err != nil {
+				return suggestions, nil, fmt.Errorf("decode %s as a string: %v", item["id"], err)
+			}
+			byID[id] = item
 		}
-		return suggestions, byID
+		return suggestions, byID, nil
 	}
 
 	t.Run("answers read", func(t *testing.T) {
-		suggestions, wire := fill(context.Background())
+		suggestions, wire, err := fill(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, ok := wire[fixture.asks["closed"]]["ask"]; !ok {
 			t.Fatalf("related = %v, want the retracted ask's state", wire)
 		}
@@ -1149,16 +1159,20 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 		type filled struct {
 			suggestions model.Suggestions
 			wire        map[string]map[string]json.RawMessage
+			err         error
 		}
 		read := make(chan filled, 1)
 		go func() {
-			suggestions, wire := fill(ctx)
-			read <- filled{suggestions, wire}
+			suggestions, wire, err := fill(ctx)
+			read <- filled{suggestions, wire, err}
 		}()
 		// The answers' read waits on the lock; the case ends its context there.
 		awaitLockWait(t, fixture.database, "events")
 		cancel()
 		got := testwait.Receive(t, "the related items once the answers' read was given up", read)
+		if got.err != nil {
+			t.Fatalf("the related items once the answers' read was given up: %v", got.err)
+		}
 		suggestions, wire := got.suggestions, got.wire
 		if len(suggestions.Related) != 2 {
 			t.Fatalf("related = %+v, want both asks listed", suggestions.Related)
