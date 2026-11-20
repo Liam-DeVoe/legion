@@ -49,7 +49,7 @@ import type {
 } from "@legion/envoy-client/delivery-ledger";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
-import { natsFailureReason } from "@legion/envoy-client/errors";
+import { isNoRelaySubjectRefusal, natsFailureReason } from "@legion/envoy-client/errors";
 import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
@@ -10744,9 +10744,14 @@ console.log(JSON.stringify(args));
     // listener refuses a registration that carries none.
     expect(registrations).toEqual([]);
     const forked = live("ses_nd_fork");
-    await expect(claimEnvoyRole("ses_nd_fork", "legion-controller", forked)).rejects.toThrow(
-      "holds no relay subject"
+    const refused = await claimEnvoyRole("ses_nd_fork", "legion-controller", forked).then(
+      () => undefined,
+      (error: unknown) => error
     );
+    expect(String(refused)).toContain("holds no relay subject");
+    // The claim boot claims again after exactly this refusal (`isNoRelaySubjectRefusal`), whatever
+    // shape the pass wrapped it in.
+    expect(isNoRelaySubjectRefusal(refused)).toBe(true);
     expect(holders.has("legion-controller")).toBe(false);
     natsState.failConnects = 0;
     await claimEnvoyRole("ses_nd_fork", "legion-controller", forked);

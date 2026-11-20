@@ -101,7 +101,9 @@ message from Dispatch's Agents page as that person's own turn.
   cannot sign the hub's greeting (a hub that sends no nonce). The server dials a new connection
   as it dialed at start, warning of each redial on stderr, subscribes the relay subject on it and
   registers a new epoch, so the listener restarts the relay at the ack floor. Until then the
-  session is told once that it receives nothing, naming why, and once that it receives again. A
+  session is told once that it receives nothing, naming why, and once that it receives again,
+  also by a server Claude Code started again in the meantime, which reads what was told from the
+  session's state file. A
   dial that fails for good (an authorization refusal under a seed) is dialed again at the next
   heartbeat, and a `/clear` made meanwhile completes on the new connection.
   What the consumer does not hold: anything older than 72 hours, anything from before the session

@@ -1,0 +1,5 @@
+kind: Fixed
+body: A Legion pane whose Envoy role claim is refused because its session holds no relay subject yet (its NATS connection is not open, and pi-envoy opens it again at its next heartbeat pass) now claims the role again, at waits growing from 2 s to a minute, 284 s in all, and logs each wait. Before, the claim boot stopped the pane and the daemon launched it again, so the whole start ran again. Every other refusal, and a relay still missing after the last wait, still stops the pane.
+time: 2026-11-20T13:14:58.572911470Z
+custom:
+    Issue: pr4617

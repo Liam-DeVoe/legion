@@ -943,7 +943,11 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    * Loads the current id's state file: the ledger's record, and the consumer delivery snapshot
    * into a new relay for the id, whose subject it subscribes (`openRelay`). Returns the topics it
    * followed that a restore follows again (`rememberedTopics`). A file that cannot be read starts
-   * the session's record over; its next write replaces the file.
+   * the session's record over; its next write replaces the file. A file that says the session was
+   * told it receives nothing, and not told since that it receives again, is an outage an earlier
+   * process of this server told and did not live to end (Claude Code started the server again
+   * mid-session): it is this process's from here (`inboundOutage.resume`), so its first accepted
+   * registration tells the session it receives again.
    */
   const restoreDelivery = async (): Promise<readonly string[]> => {
     const sessionId = identity.id
@@ -956,6 +960,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
     })
     ledger.restore(snapshot)
     stateWriter = replayStateWriter(file, snapshot)
+    if (snapshot.inboundOutageTold === true) inboundOutage.resume()
     openRelay(sessionId, stateWriter, snapshot.consumer)
     ledgerBound = sessionId
     return rememberedTopics(snapshot.state?.topics)
@@ -1328,6 +1333,7 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           `envoy-channel: the session could not be told that it receives nothing — ${messageFor(noticeError)}\n`,
         )
       })
+      recordInboundOutage(true)
     },
     () => {
       if (shuttingDown) return
@@ -1339,8 +1345,23 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
           `envoy-channel: the session could not be told that it receives again — ${messageFor(noticeError)}\n`,
         )
       })
+      recordInboundOutage(false)
     },
   )
+
+  /**
+   * Records in the bound id's state file what the session was last told of its inbound, so a
+   * server that starts again mid-session tells the end of an outage this one told
+   * (`restoreDelivery`). A record that cannot be written leaves that end to this process alone,
+   * as before the record existed.
+   */
+  function recordInboundOutage(told: boolean): void {
+    stateWriter?.inboundOutage(told).catch((error: unknown) => {
+      process.stderr.write(
+        `envoy-channel: the state file could not record what the session was told of its inbound — ${messageFor(error)}\n`,
+      )
+    })
+  }
 
   /** The title last stamped, so a heartbeat stamps nothing new. */
   let stampedTitle: { readonly sessionID: string; readonly title: string } | undefined

@@ -11,6 +11,7 @@ import { agentStreamControlSubject, legacyAgentSubject } from "@legion/contracts
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { nkeys } from "nats"
 import { modSocketPath } from "../hooks/mod-protocol"
+import { readReplayState, replayStateFile, writeReplayState } from "../src/replay-state"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
@@ -27,13 +28,24 @@ const SESSION = "ses_reopen"
 const CONTROL = agentStreamControlSubject(SESSION)
 const DIRECT = legacyAgentSubject(SESSION)
 
-/** A Claude Code channel server for session `SESSION`; `env` adds the credential's variables. */
+/** A Claude Code channel server for session `SESSION`; `env` adds the credential's variables,
+ *  `prepare` writes its state directory before it starts, and `gateOpen: false` refuses its
+ *  dials until the row opens the gate. */
 function startServer(
-  options: { readonly nonce?: string; readonly env?: Readonly<Record<string, string>> } = {},
+  options: {
+    readonly nonce?: string
+    readonly env?: Readonly<Record<string, string>>
+    readonly prepare?: (stateDirectory: string) => Promise<void>
+    readonly gateOpen?: boolean
+  } = {},
 ): Promise<ReopenServer> {
   return startReopenServer({
     sessionId: SESSION,
     ...(options.nonce === undefined ? {} : { nonce: options.nonce }),
+    ...(options.prepare === undefined ? {} : { prepare: options.prepare }),
+    ...(options.gateOpen === undefined
+      ? {}
+      : { gateOpen: options.gateOpen, awaitRegistration: options.gateOpen }),
     env: (stateDirectory) => ({
       CLAUDE_CODE_SESSION_ID: SESSION,
       CLAUDE_PLUGIN_DATA: stateDirectory,
@@ -421,6 +433,81 @@ test(
       expect(broker.liveConnections).toBe(1)
       expect(run.deliveries[run.sessions.lastIndexOf(next)]).toMatchObject({ consumer: true })
     } finally {
+      await run.stop()
+    }
+  },
+  ROW_TIMEOUT_MS,
+)
+
+/** Starts a server for `SESSION` over a state file that holds no frames and `told` (omitted when
+ *  undefined), with its dials refused until its mod is up, then lets it register. */
+async function restartedOver(told: boolean | undefined) {
+  const run = await startServer({
+    gateOpen: false,
+    prepare: (stateDirectory) =>
+      writeReplayState(replayStateFile(stateDirectory, SESSION), {
+        ledger: [],
+        ...(told === undefined ? {} : { inboundOutageTold: told }),
+      }),
+  })
+  const session = await sessionMod(run)
+  run.gate.open()
+  await waitFor(
+    async () => run.deliveries.length > 0 && run.relaySubscriptions() === 1,
+    "the restarted server's first registration and its relay subscription",
+    run.state,
+    PROCESS_WAIT_MS,
+  )
+  return { run, ...session }
+}
+
+test(
+  "a server started again mid-session over a record of a told outage tells the session it receives again at its first accepted registration",
+  async () => {
+    const { run, mod, notices } = await restartedOver(true)
+    try {
+      await waitFor(
+        async () =>
+          notices("Envoy inbound restored").length > 0 &&
+          run.stderr().includes("envoy-channel: this session receives again"),
+        "the restored notice, in the session and on stderr",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
+      // Told once, and the outage it ends is not told again: the earlier process told it.
+      expect(notices("Envoy inbound restored")).toHaveLength(1)
+      expect(notices("Envoy inbound unavailable")).toHaveLength(0)
+      await waitFor(
+        async () =>
+          (await readReplayState(replayStateFile(run.stateDirectory, SESSION)))
+            .inboundOutageTold === false,
+        "the state file to record that the session was told it receives again",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
+    } finally {
+      await mod.stop()
+      await run.stop()
+    }
+  },
+  ROW_TIMEOUT_MS,
+)
+
+test.each([
+  ["no record of the outage", undefined],
+  ["a record that the session was told it receives again", false],
+] as const)(
+  "a server started again over %s tells the session nothing at its first accepted registration",
+  async (_what, told) => {
+    const { run, mod, notices } = await restartedOver(told)
+    try {
+      // The registration is accepted once the relay is answered; a heartbeat (200 ms) registers
+      // again, so a restored notice the start owed would be written by then.
+      await Bun.sleep(1_000)
+      expect(notices("Envoy inbound restored")).toHaveLength(0)
+      expect(run.stderr()).not.toContain("envoy-channel: this session receives again")
+    } finally {
+      await mod.stop()
       await run.stop()
     }
   },

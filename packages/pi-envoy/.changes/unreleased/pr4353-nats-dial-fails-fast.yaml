@@ -9,9 +9,8 @@ body: |-
   told, in the log, the UI and the transcript ("Envoy inbound restored"), once a registration is
   accepted again, where before the outage notice was the last word it had. The transcript records
   what the session was last told (`envoy-inbound-outage`), so a process that resumes the session
-  after the one that told the outage ended (a Legion claim boot refused for want of a relay subject
-  ends it) tells the outage's end at its first accepted registration; after a `/new`, the end is
-  told to the new session. A relay subject, or
+  after the one that told the outage ended tells the outage's end at its first accepted
+  registration; after a `/new`, the end is told to the new session. A relay subject, or
   the live view's control subject, that a session loses after its start (its NATS connection
   closed for good, or the subscription ended) is opened again by the next heartbeat's pass. Before,
   only the relay's own redial opened it, waiting 15 s after each failed dial, and the live view's

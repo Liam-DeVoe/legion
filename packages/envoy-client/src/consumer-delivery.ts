@@ -7,7 +7,7 @@ import {
   renderInbound,
 } from "./delivery";
 import { type DeliveryLedger, envoyNoticeText } from "./delivery-ledger";
-import { messageFor } from "./errors";
+import { messageFor, NO_RELAY_SUBJECT_ERROR_NAME } from "./errors";
 import { registrationTopics, subjectsOverlap } from "./stream-topics";
 import {
   type DeliveryAnswer,
@@ -946,9 +946,12 @@ export interface RelayRegistration<Result> {
 /**
  * `registerWithRelay`'s refusal of a session that holds no relay subject, so a host can tell it
  * from a refusal the listener sent. Its message names why the relay is missing when the host said
- * (`relayMissing`).
+ * (`relayMissing`). Its `name` is what a caller with another copy of this package tells it by
+ * (`isNoRelaySubjectRefusal`, `./errors`).
  */
-export class NoRelaySubjectError extends Error {}
+export class NoRelaySubjectError extends Error {
+  override readonly name = NO_RELAY_SUBJECT_ERROR_NAME;
+}
 
 /**
  * One registration, as every host that holds a relay makes it: the topics the listener will
