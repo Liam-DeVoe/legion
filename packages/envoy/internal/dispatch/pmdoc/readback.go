@@ -232,8 +232,8 @@ type StoredMisread struct {
 // StoredVerdict is RefuseMisreadStored's verdict on the text a write into a document stores.
 // Refusal is nil where the text may be stored, and otherwise the refusal an upload of that text
 // gets (ErrMisreadRendering, ErrRenderingRefused); Block is the id of the block it names, "" where
-// it names none; Excused is each block that reads back otherwise as it already did in the text the
-// document was stored as before the write.
+// it names none; Excused is each block that reads back otherwise, or that the parser refuses read
+// alone, as it already did in the text the document was stored as before the write.
 type StoredVerdict struct {
 	Refusal error
 	Block   string
@@ -259,15 +259,22 @@ type StoredVerdict struct {
 // that deletes that list makes them pair and names the spread of an item it left as it was.
 // previous is parsed only where markdown reads back otherwise, so a write whose text reads back
 // pays for one parse, as an upload does. A nil before - the document stood outside the schema,
-// and no text of it was read - excuses nothing, and neither does a previous the parser refuses. A
-// refusal of markdown by the parser itself names no block, and is never excused. Only a refusal
-// (ErrSchema) is a verdict; any other error, a panic (ErrPanic) among them, is the error.
+// and no text of it was read - excuses nothing, and neither does a previous the parser refuses.
+// A refusal of markdown by the parser itself names no block, and is excused only as one previous
+// already had (staleRefusal): a write into a document whose text the parser refuses is judged as
+// a replace's own check judges the block it lands in, which refuses only a block the replace
+// makes unreadable. Only a refusal (ErrSchema) is a verdict; any other error, a panic (ErrPanic)
+// among them, is the error.
 func RefuseMisreadStored(before *Node, previous string, after *Node, markdown string) (StoredVerdict, error) {
 	reading, refused, err := storedMisread(after, markdown)
 	switch {
 	case err != nil:
 		return StoredVerdict{}, err
 	case refused != nil:
+		excused, err := staleRefusal(before, previous, after, refused)
+		if err != nil || excused != nil {
+			return StoredVerdict{Excused: excused}, err
+		}
 		return StoredVerdict{Refusal: refuseMisread(misread{}, refused, nil)}, nil
 	case reading.difference == "":
 		return StoredVerdict{}, nil
@@ -290,6 +297,69 @@ func RefuseMisreadStored(before *Node, previous string, after *Node, markdown st
 		verdict.Refusal = refuseMisread(reading.misread(), nil, nil)
 	}
 	return verdict, nil
+}
+
+// staleRefusal is each document-level block of after that explains refused, the parser's refusal
+// of the text after is stored as, as a refusal the text before already had, or nil where they do
+// not explain it: previous, the text before was stored as, is refused by the parser too, every
+// document-level block of after the parser refuses read alone (ReadBackBlock) carries a block id
+// under which before holds a document-level block the parser refused alone with a refusal of the
+// same class (RefusalClass), and refused is of the class of one of them. A block refused anew, one
+// with no id or none before, or a refusal no block read alone explains, is the write's. Such a
+// text reads back as nothing, so nothing else in it is compared, as NewMisread compares nothing
+// against a before the parser refuses; the checks that read each block a write changed alone still
+// refuse one it leaves unreadable. Only a refusal (ErrSchema) reading a block alone is a verdict;
+// any other error is the error.
+func staleRefusal(before *Node, previous string, after *Node, refused error) ([]StoredMisread, error) {
+	if before == nil {
+		return nil, nil
+	}
+	if _, previousRefused, err := storedMisread(before, previous); err != nil || previousRefused == nil {
+		return nil, err
+	}
+	whole := RefusalClass(refused)
+	var held map[string]*Node
+	var excused []StoredMisread
+	explained := false
+	for _, block := range after.Children {
+		alone := ReadBackBlock(block).Read
+		if alone == nil {
+			continue
+		}
+		if !errors.Is(alone, ErrSchema) {
+			return nil, alone
+		}
+		id := blockIDOf(block)
+		if id == "" {
+			return nil, nil
+		}
+		if held == nil {
+			held = make(map[string]*Node, len(before.Children))
+			for _, stale := range before.Children {
+				if staleID := blockIDOf(stale); staleID != "" {
+					held[staleID] = stale
+				}
+			}
+		}
+		stale, ok := held[id]
+		if !ok {
+			return nil, nil
+		}
+		staleAlone := ReadBackBlock(stale).Read
+		if staleAlone != nil && !errors.Is(staleAlone, ErrSchema) {
+			return nil, staleAlone
+		}
+		class := RefusalClass(alone)
+		if staleAlone == nil || RefusalClass(staleAlone) != class {
+			return nil, nil
+		}
+		explained = explained || class == whole
+		excused = append(excused, StoredMisread{Block: id, Kind: class})
+	}
+	if !explained {
+		return nil, nil
+	}
+	return excused, nil
 }
 
 // storedMisreads is what previous, the text before was stored as, already read back otherwise
