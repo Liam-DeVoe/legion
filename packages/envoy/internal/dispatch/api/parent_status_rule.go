@@ -252,9 +252,9 @@ func (call *issueWriteCall) unlinkFrom(parent string) {
 // write, with the owner lock of each step's issue and of each step's current and new parent held.
 // It refuses with an error R26's refusal, while its setting is on, and what no setting lets
 // through. Then it answers the conflict with R24 (parentStatusConflictOf), or nil when the plan
-// keeps the rule. An unjudged plan answers nil and reads nothing, since its caller refuses no
-// conflict. Every other caller refuses the conflict only while the rule is on, but for a dry run
-// of the route.
+// keeps the rule. An unjudged plan answers nil without R24's read, since its caller refuses no
+// conflict; R26 judges it all the same. Every other caller refuses the conflict only while the
+// rule is on, but for a dry run of the route.
 func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issueWriter, plan issueWritePlan) (*parentStatusConflict, error) {
 	// R26 (legion_status_scope.go) comes first, so a call that R24 refuses too answers R26's code.
 	// It runs with the parent-status rule off too: an unjudged plan returns after it.

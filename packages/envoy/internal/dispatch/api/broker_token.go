@@ -171,18 +171,20 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// never as a scope a route could require.
 	//
 	// A token scoped to one project whose answer holds legion-status gets that scope alone
-	// (legionStatusScopes). The broker grants it to a Legion daemon's own token only. Dispatch
-	// reads the scope only on a named token that names exactly one project. A named token that
-	// names no project names a person, as the shared public-session account's token does.
-	// legion-status on such a token would pass R26 on the Legion issues of every project, so it
-	// gets no scope. Dispatch does not check the token's session: the broker decides who holds
-	// the scope. No credential holds it beside person, so an act's scopes, which only a
-	// credential holding person records (actingPerson), never carry it.
+	// (legionStatusScopes). The broker grants it to a Legion daemon's own token only. A named
+	// token that names no project names a person, as the shared public-session account's token
+	// does. legion-status on such a token would pass R26 on the Legion issues of every project,
+	// so it gets no scope. Dispatch does not check the token's session: the broker decides who
+	// holds the scope. No credential holds it beside person, so an act's scopes, which only a
+	// credential holding person records (actingPerson), never carry it. oneProject is also the
+	// test for the one project the token may write (actor.Project, below), so the two cannot
+	// drift apart.
+	oneProject := caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1
 	var scopes []string
 	switch {
 	case caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson:
 		scopes = model.Scopes
-	case caller.LegionStatus && caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1:
+	case caller.LegionStatus && oneProject:
 		scopes = legionStatusScopes
 	}
 	actor := model.Actor{
@@ -211,7 +213,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// dev box session's person writes wherever they may, and the token of a machine naming a
 	// service and no person names no project at all. Nor does a read-only token, whose project
 	// scope none names no project and writes none.
-	if caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
+	if oneProject {
 		project := caller.Projects[0]
 		actor.Project = &project
 	}
