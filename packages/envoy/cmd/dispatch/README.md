@@ -2810,8 +2810,8 @@ The column is nullable with no default, and null on each row a release before th
 Migration `20261119173616_commit_pull_reads` creates `commit_pull_reads`, the claim of the read-through of one commit that every process shares: the repository under its canonical name, the 40-hex commit, and `not_before`, the moment before which no process reads GitHub again for that commit's pull requests.
 The results read claims a commit first in its own process's memory (`delivery.CommitPullReads`), which refuses with no statement, and then in this table, with one insert that, on conflict, moves `not_before` only where it has passed, so two processes that ask at once are granted once (`CommitPullReads.ClaimAcrossProcesses`).
 A granted claim records five minutes past the read (`delivery.CommitPullReadStaleAfter`), and GitHub's answer that the pull request's head is another commit records an hour past it (`delivery.CommitPullSettledFor`, `CommitPullReads.SettleAcrossProcesses`); a process the table refused keeps the moment the table holds and asks again at it.
-The same statement deletes every other row whose moment has passed (`commit_pull_reads_not_before`), so the table holds about one row for each commit asked about in the last hour.
-Each statement locks the rows it writes for that statement alone, and nothing else reads or writes the table.
+A granted claim then deletes, in a statement of its own, every row whose moment has passed (`commit_pull_reads_not_before`), so the table holds about one row for each commit asked about in the last hour.
+That delete skips each row another statement holds (`for update skip locked`), and a claim, a settle and a release each lock the one row of their own pair, so no two statements on the table wait on each other; nothing else reads or writes the table.
 The moments are each process's clock, as its memory's are, so two processes whose clocks differ by a few seconds can read one commit through twice in a span that much shorter.
 A new table: nothing existing is read, locked or rewritten, the release before neither reads nor writes it and keeps its own memory alone while both serve, and its census answers `0`.
 

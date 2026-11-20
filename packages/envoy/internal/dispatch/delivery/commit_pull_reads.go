@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -159,7 +160,8 @@ func (c *CommitPullReads) hold(repoFull, sha string, until time.Time) {
 // the database holds in this process's memory, so the process asks again once that moment has
 // passed. A claim that fails grants nothing and leaves the pair free in this process's memory,
 // so the next read asks again; the read then answers from the stored rows, as a read that asks
-// GitHub nothing does.
+// GitHub nothing does. A granted claim then deletes the rows whose moment has passed
+// (sweepCommitPullReadsSQL).
 //
 // The moments are each process's clock, as the memory's are, so two processes whose clocks
 // differ by d can read one commit through twice in one span that is d shorter.
@@ -181,8 +183,15 @@ func (c *CommitPullReads) ClaimAcrossProcesses(ctx context.Context, pool *store.
 		return false, fmt.Errorf("claim the read of the pull requests of %s at %s: %w", repoFull, sha, err)
 	case !granted:
 		c.hold(repoFull, sha, notBefore)
+		return false, nil
 	}
-	return granted, nil
+	if _, err := pool.Exec(ctx, sweepCommitPullReadsSQL, now); err != nil {
+		// The claim stands: a row the sweep left refuses nothing, and the next granted claim
+		// deletes it.
+		slog.Warn("dispatch: delete the claims of reads of commits whose moment has passed; the next claim deletes them",
+			"repo", repoFull, "commit", sha, "error", err)
+	}
+	return true, nil
 }
 
 // claimCommitPullReadSQL is the claim of one repository and commit that every process shares:
@@ -191,14 +200,9 @@ func (c *CommitPullReads) ClaimAcrossProcesses(ctx context.Context, pool *store.
 // at once one is granted: the second waits on the row the first wrote, for that one statement,
 // and reads its moment. It answers one row, true and the new moment where it granted the claim,
 // and false and the moment held where it refused it; no row where another process inserted the
-// pair after this statement's snapshot. The same statement deletes every other row whose
-// moment has passed, which refuses nothing (commit_pull_reads_not_before), so the table holds
-// about one row for each commit asked about in the last CommitPullSettledFor.
+// pair after this statement's snapshot. It locks that one row and no other.
 const claimCommitPullReadSQL = `
-	with swept as (
-		delete from commit_pull_reads
-		where not_before < $3 and (repo, sha) <> ($1::text, $2::text)
-	), granted as (
+	with granted as (
 		insert into commit_pull_reads as held (repo, sha, not_before) values ($1, $2, $4)
 		on conflict (repo, sha) do update set not_before = excluded.not_before
 		where held.not_before <= $3
@@ -208,6 +212,21 @@ const claimCommitPullReadSQL = `
 	union all
 	select false, held.not_before from commit_pull_reads held
 	where held.repo = $1 and held.sha = $2 and not exists (select from granted)`
+
+// sweepCommitPullReadsSQL deletes every row whose moment has passed at $1, which refuses nothing
+// (commit_pull_reads_not_before), so the table holds about one row for each commit asked about
+// in the last CommitPullSettledFor. A granted claim runs it, in a statement of its own after the
+// claim, and it skips each row another statement holds, so it waits on no row. A claim, a settle
+// and a release each lock the one row of their own pair, so no two statements on this table wait
+// on each other. When the sweep ran in the claim's own statement, two claims of two passed pairs
+// each held its own row and waited on the other's, and Postgres ended one of the two as a
+// deadlock (TestTwoClaimsOfTwoPassedCommitsMadeAtOnceAreBothGranted).
+const sweepCommitPullReadsSQL = `
+	delete from commit_pull_reads
+	where (repo, sha) in (
+		select repo, sha from commit_pull_reads
+		where not_before < $1
+		for update skip locked)`
 
 // SettleAcrossProcesses is Settle for every process: it records CommitPullSettledFor past now in
 // this process's memory and in the claim every process shares, where it keeps the later of that

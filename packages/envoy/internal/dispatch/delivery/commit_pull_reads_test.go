@@ -1,7 +1,9 @@
 package delivery
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -223,4 +225,84 @@ func TestAClaimInTheDatabaseDeletesTheRowsNoMomentHolds(t *testing.T) {
 	if fmt.Sprint(held) != "[fresh settled]" {
 		t.Fatalf("the table holds %v after a claim one span later, want [fresh settled]: the row of old, whose moment passed, deleted", held)
 	}
+}
+
+// Two claims of two commits whose moments have both passed, made at once by two reads (of one
+// process or of two), are both granted. Each claim writes its own row and deletes the rows whose
+// moments have passed, the other's among them; a claim that held its own row while it waited on
+// the other's would deadlock with the other, and the read whose claim lost would ask GitHub
+// nothing. "at_a_barrier" makes the two claims 200 times; "rows_held" holds each claim's row for
+// 200 ms once the claim has locked it and before it writes it (a trigger that sleeps), so the two
+// claims overlap for certain. A claim the database did not take holds nothing in the process's
+// memory, so the next read's claim is granted and that read asks GitHub.
+func TestTwoClaimsOfTwoPassedCommitsMadeAtOnceAreBothGranted(t *testing.T) {
+	start := time.Date(2026, 11, 20, 3, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name   string
+		rounds int
+		hold   bool
+	}{{"at_a_barrier", 200, false}, {"rows_held", 3, true}} {
+		t.Run(c.name, func(t *testing.T) {
+			pool, ctx := deliveryTestPool(t)
+			if c.hold {
+				if _, err := pool.Exec(ctx, `
+					create function hold_commit_pull_read() returns trigger language plpgsql as
+						$$ begin perform pg_sleep(0.2); return new; end $$;
+					create trigger hold_commit_pull_read before update on commit_pull_reads
+						for each row execute function hold_commit_pull_read();`); err != nil {
+					t.Fatalf("SETUP: the trigger that holds a claim's row: %v", err)
+				}
+			}
+			granted, failed := 0, 0
+			var failures []string
+			for round := range c.rounds {
+				now := start.Add(time.Duration(round) * time.Second)
+				if _, err := pool.Exec(ctx, `delete from commit_pull_reads`); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := pool.Exec(ctx, `insert into commit_pull_reads (repo, sha, not_before) select 'acme/widgets', sha, $1 from unnest(array['x', 'y']) sha`,
+					now.Add(-time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+				begin := make(chan struct{})
+				var wait sync.WaitGroup
+				var mu sync.Mutex
+				for _, sha := range []string{"x", "y"} {
+					wait.Go(func() {
+						var reads CommitPullReads
+						<-begin
+						ok, err := reads.ClaimAcrossProcesses(ctx, pool, "acme/widgets", sha, now)
+						mu.Lock()
+						defer mu.Unlock()
+						if err != nil {
+							failed++
+							failures = append(failures, fmt.Sprintf("round %d, %s: %v", round, sha, err))
+						}
+						if ok {
+							granted++
+						}
+					})
+				}
+				close(begin)
+				wait.Wait()
+			}
+			t.Logf("%s: %d rounds, %d of %d claims granted, %d failed", c.name, c.rounds, granted, 2*c.rounds, failed)
+			if failed != 0 || granted != 2*c.rounds {
+				t.Errorf("%d of %d claims of two passed commits made at once were granted and %d failed, want every one granted: %s",
+					granted, 2*c.rounds, failed, strings.Join(failures[:min(len(failures), 3)], "; "))
+			}
+		})
+	}
+	t.Run("a_lost_claim_is_asked_again", func(t *testing.T) {
+		pool, ctx := deliveryTestPool(t)
+		var reads CommitPullReads
+		gone, cancel := context.WithCancel(ctx)
+		cancel()
+		if granted, err := reads.ClaimAcrossProcesses(gone, pool, "acme/widgets", "abc", start); err == nil || granted {
+			t.Fatalf("a claim whose statement could not run: granted %v, error %v; want an error and no grant", granted, err)
+		}
+		if granted, err := reads.ClaimAcrossProcesses(ctx, pool, "acme/widgets", "abc", start); err != nil || !granted {
+			t.Fatalf("the next read's claim at the same moment: granted %v, error %v; want it granted, since the lost claim holds nothing", granted, err)
+		}
+	})
 }
