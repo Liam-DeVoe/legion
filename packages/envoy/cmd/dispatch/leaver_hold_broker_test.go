@@ -24,6 +24,10 @@ func TestLeaverHoldBrokerCredentials(t *testing.T) {
 	r.refuse(adaEmail)
 	r.ageConfirmation(t, adaEmail, confirmationAge)
 	r.ageConfirmation(t, bobEmail, confirmationAge)
+	// The broker asked Dispatch about ada and bob as the rig gave them their machine logins and
+	// sessions, and keeps each not-held answer 30 seconds. They must lapse, or ada's rows below read
+	// the answer from before Google refused her rather than ask Dispatch, which now holds her.
+	r.pastBrokerCache(t)
 
 	for _, row := range []struct {
 		what   string
@@ -72,6 +76,10 @@ func TestLeaverHoldRelease(t *testing.T) {
 
 	r.refuse(adaEmail)
 	r.ageConfirmation(t, adaEmail, confirmationAge)
+	// The broker asked Dispatch about ada at her sign-in trade above and keeps that not-held answer
+	// 30 seconds. It must lapse for her enrollment below to ask Dispatch, which holds her once her
+	// personal token's request has had Google refuse her refresh.
+	r.pastBrokerCache(t)
 	expectAnswer(t, "ada@example.com's personal token, the first request after Google refuses her", http.StatusUnauthorized, "MEMBERSHIP_HELD").got(r.personalToken(t, ada.dsp))
 	expectAnswer(t, "ada@example.com's new enrollment before she signs in again", http.StatusForbidden, "MEMBERSHIP_HELD").got(r.enrol(t, ada))
 	if t.Failed() {
@@ -86,6 +94,10 @@ func TestLeaverHoldRelease(t *testing.T) {
 
 	r.refuse(adaEmail)
 	r.ageConfirmation(t, adaEmail, confirmationAge)
+	// The release wait above had the broker ask Dispatch about ada seconds ago, while she was served
+	// again, and the broker keeps that answer 30 seconds. It must lapse for the enrollment below to
+	// ask Dispatch, whose refresh of her Google now refuses.
+	r.pastBrokerCache(t)
 	expectAnswer(t, "ada@example.com's new enrollment while held for the 25-hour release", http.StatusForbidden, "MEMBERSHIP_HELD").got(r.enrol(t, ada))
 	if t.Failed() {
 		return

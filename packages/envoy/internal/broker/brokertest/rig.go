@@ -153,7 +153,10 @@ type rigConfig struct {
 	maxConns      int
 	minters       map[string]requests.Minter
 	projectAccess *projectaccess.Client
-	personSignIns *personSignInConfig
+	// projectAccessNow is the clock WithProjectAccess gives the client and the gate; nil is the
+	// wall clock.
+	projectAccessNow func() time.Time
+	personSignIns    *personSignInConfig
 }
 
 // ProviderOption changes the OAuth provider NewOAuthProvider constructs. It stays variadic so
@@ -195,10 +198,17 @@ func WithMinters(minters map[string]requests.Minter) Option {
 
 // WithProjectAccess wires the rig's broker to Dispatch at baseURL as cmd/broker wires one whose
 // BROKER_PROJECT_ACCESS_URL is set: the token exchange's Dispatch client, and the hold gate built
-// on that client and the rig's store, given to every field of the broker that takes it.
-func WithProjectAccess(baseURL string, account brokertoken.Account) Option {
+// on that client and the rig's store, given to every field of the broker that takes it. now is the
+// clock the client's 30-second cache of an answer (projectaccess.CacheTTL) and the gate's memories
+// are timed by, so a test can move it past an answer it would otherwise wait out; nil is the
+// wall clock, as main runs.
+func WithProjectAccess(baseURL string, account brokertoken.Account, now func() time.Time) Option {
 	return func(c *rigConfig) {
 		c.projectAccess = projectaccess.New(baseURL, account, nil)
+		if now != nil {
+			c.projectAccess.UseClock(now)
+		}
+		c.projectAccessNow = now
 	}
 }
 
@@ -277,7 +287,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	var gate *hold.Gate
 	providerOptions := []ProviderOption{}
 	if config.projectAccess != nil {
-		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry})
+		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry, Now: config.projectAccessNow})
 		providerOptions = append(providerOptions, func(c *providerConfig) {
 			c.projectAccess = config.projectAccess
 			c.hold = gate
