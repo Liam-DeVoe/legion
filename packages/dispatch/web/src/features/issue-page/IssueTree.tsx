@@ -546,12 +546,12 @@ export function IssueTree({
   const goToNode = useCallback(
     (id: string) => {
       const above = unfoldTo(id);
-      // Where the tree is read one node at a time, the rows are the zoomed node and the one
-      // level it holds (`treeRows` at `NARROW_LEVELS`), so a key that takes the reader to a node
-      // zooms to that node's parent: the node itself is then one of the rows, whatever the zoom
-      // was and however deep it sits. Leaving the zoom where it stood drew the second open
-      // question nowhere, and the key reported nothing because the row it asked for was never
-      // on the page.
+      // Where the tree is read one node at a time, the outline draws one level below the zoomed
+      // node (`NARROW_LEVELS`), and deeper only along the frontier or a branch opened deeper
+      // (`treeRows`), so a key that takes the reader to a node zooms to that node's parent: the
+      // node itself is then one of the rows, whatever the zoom was and however deep it sits.
+      // Leaving the zoom where it stood drew the second open question nowhere, and the key
+      // reported nothing because the row it asked for was never on the page.
       // A zoom that already names the target is left alone: that is `.`, which zooms into the
       // focused node and then takes the reader to it (`useTreeKeymap.ts`'s `tree-zoom-in`),
       // and zooming to the parent there undid the zoom the key had just made.
