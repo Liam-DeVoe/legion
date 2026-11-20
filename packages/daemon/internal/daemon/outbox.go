@@ -3300,12 +3300,14 @@ func (r *outbox) issueSandboxName(issue string) string {
 // as the stop transaction arms one (decision 12 of dispatch://INFRA-3759). The backstop is the
 // idle release's own (outbox.backstop), and the open phase's worker is the workflow's rule
 // (workflow.OpenPhaseRole). A wake that a role took after the release recorded it is then left
-// as the launch the pause owes that role, and the pause's resume runs its start. While the project
-// runs, the cancel drops that wake and its start instead, and the role's resume carries what the
-// role must still read of it (releaseResume).
+// as the launch the pause owes that role, and the pause's resume runs its start. The task of that
+// start becomes the task of a wake of a role the pause stopped (workflow.PausedWakeTask), since the
+// release took no pod. While the project runs, the cancel drops that wake and its start instead,
+// and the role's resume carries what the role must still read of it (releaseResume).
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	cancelled, err := r.trees.CancelIssueRelease(ctx, r.project, issue, nil, record.OutOfWorkflow,
-		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole}, r.releaseResume(issue, tree))
+		store.ReleaseCancelPause{At: r.now(), Backstop: r.backstop, OpenPhaseRole: workflow.OpenPhaseRole, WakeTask: workflow.PausedWakeTask},
+		r.releaseResume(issue, tree))
 	if err != nil {
 		return err
 	}

@@ -249,6 +249,70 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 	}
 }
 
+// A cancel made while the project is paused keeps a wake that a role of the mark's set took since
+// the mark (decision 12 of dispatch://INFRA-3759), and that wake's start was written for a session
+// a release stopped. The release took no pod, so the cancel rewrites the task of that start
+// through the workflow's rule (ReleaseCancelPause.WakeTask), and only that task: the start keeps
+// the rest of its payload, and no other start changes. A start below the release's last row, a
+// phase's start, and the start of a role with no wake under the mark are no such start.
+func TestACancelWhileThePausedProjectRetellsTheStartOfTheWakeItKeeps(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	openRunningTree(t, st)
+	servingReleasedClaim(t, st, claim.RoleArchitect)
+	servingReleasedClaim(t, st, claim.RoleImplementer)
+	queueStart(t, st, claim.RoleImplementer, "")
+	last := int64(pauseCount(t, st, `select coalesce(max(id), 0)::int from outbox where issue = $1`, rootIssue))
+	markRelease(t, st, last, last, last, 0, claim.RoleArchitect, claim.RoleImplementer)
+	pause, _ := pauseLegion(t, st, pausedAt)
+	records := podRecords(t, st)
+	inTx(t, st, func(tx pgx.Tx) error {
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, pausedAt, pause.ID); err != nil || !taken {
+			t.Fatalf("take the held wake = %t, %v", taken, err)
+		}
+		return nil
+	})
+	queueStart(t, st, claim.RoleImplementer, "")
+	queueStart(t, st, claim.RoleImplementer, "implementing")
+	queueStart(t, st, claim.RoleArchitect, "")
+	retell := func(kind, task string) string { return "the pause's " + kind + " wake: " + task }
+
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+		ReleaseCancelPause{At: pausedAt.Add(time.Minute), Backstop: time.Hour, OpenPhaseRole: implementingWorker, WakeTask: retell})
+	if err != nil || cancelled.Pause != pause.ID || len(cancelled.Resumed) != 0 {
+		t.Fatalf("cancel the release while paused = %+v, %v; want pause %d and no role resumed", cancelled, err, pause.ID)
+	}
+	rows, err := st.Pool().Query(ctx, `select payload->>'role', coalesce(payload->>'phase', ''), coalesce(payload->>'task', ''),
+		payload->>'generation' from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, rootIssue)
+	if err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	var starts []string
+	for rows.Next() {
+		var role, named, task, generation string
+		if err := rows.Scan(&role, &named, &task, &generation); err != nil {
+			t.Fatalf("read a queued start: %v", err)
+		}
+		starts = append(starts, role+"|"+named+"|"+task+"|"+generation)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the queued starts: %v", err)
+	}
+	want := []string{
+		"implementer||the wake's task|1",
+		"implementer||the pause's " + pods.WakeChecks + " wake: the wake's task|1",
+		"implementer|implementing|the phase's task|1",
+		"architect||the wake's task|1",
+	}
+	if !slices.Equal(starts, want) {
+		t.Fatalf("queued starts after the cancel = %q, want %q: only the kept wake's start is told again", starts, want)
+	}
+	if held, open := heldOpenResume(t, st, claim.RoleImplementer); !open || held != pause.ID {
+		t.Fatalf("the implementer's open resume = pause %d, open %t; want the kept wake, held by pause %d", held, open, pause.ID)
+	}
+}
+
 // Decision 12 of dispatch://INFRA-3759, for the pod of another project's issue: a cancel of its
 // release reads the pause of the project whose release it is, never the pause of the issue key's
 // project, so while LEGION is paused it records the roles the release stopped as stopped by

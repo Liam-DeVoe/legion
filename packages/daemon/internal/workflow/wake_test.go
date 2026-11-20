@@ -622,6 +622,36 @@ func TestTheWakeTaskOfASessionAPauseStoppedSaysThePauseStoppedIt(t *testing.T) {
 	}
 }
 
+// A woken role's wake text is true (dispatch://INFRA-3589), against decision 12 of
+// dispatch://INFRA-3759: a cancel of an idle release made while the project is paused keeps a wake
+// that the release let run, and the release took no pod. The kept start's task becomes the task
+// WakeTask writes for a session the pause stopped: the same wake and detail under the pause's
+// words, with the sentences the queue appended after it, such as a reviewer's review round. A task
+// that does not begin with the release's preamble is left as it is.
+func TestAPausedWakeTaskIsTheTaskOfAWakeOfARoleThePauseStopped(t *testing.T) {
+	const appended = " The review round's two sentences follow the wake's task."
+	for _, tc := range []struct{ kind, detail string }{
+		{kind: pods.WakeChecks, detail: "head1 failed build"},
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer"},
+		{kind: pods.WakeAgentMessage, detail: "session-1"},
+		{kind: pods.WakeBackstop, detail: "the backstop armed for LEGION-208's implementer came due"},
+		{kind: pods.WakeDelivery, detail: "a notice of LEGION-208"},
+	} {
+		for _, suffix := range []string{"", appended} {
+			released := WakeTask(tc.kind, tc.detail, StoppedByRelease) + suffix
+			want := WakeTask(tc.kind, tc.detail, StoppedByPause) + suffix
+			if got := PausedWakeTask(tc.kind, released); got != want {
+				t.Errorf("PausedWakeTask(%s, %q) = %q, want %q", tc.kind, released, got, want)
+			}
+		}
+	}
+	for _, task := range []string{"", "Implement LEGION-208.", WakeTask(pods.WakeChecks, "head1 failed build", StoppedByPause)} {
+		if got := PausedWakeTask(pods.WakeChecks, task); got != task {
+			t.Errorf("PausedWakeTask(%s, %q) = %q, want the task as it is: it says nothing of a release", pods.WakeChecks, task, got)
+		}
+	}
+}
+
 // seedWakePause opens a pause of project LEGION at at, as the pause's own transaction writes it,
 // and answers its id.
 func seedWakePause(t *testing.T, pool *pgxpool.Pool, at time.Time) int64 {

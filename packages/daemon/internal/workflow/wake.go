@@ -148,6 +148,18 @@ const (
 const wakePreamble = "Your issue's pod had been released while it was idle, and this wake brought it back. " +
 	"Your session, your workspace and any work you had not pushed are as you left them. "
 
+// pauseWakePreamble is the first sentences of the task of a wake whose session a project's pause
+// stopped (WakeTask, StoppedByPause): the pause stopped the session and kept its pod.
+const pauseWakePreamble = "Your project was paused, and its pause stopped your session. This wake started it again. " +
+	"Your pod, your workspace and any work you had not pushed are as you left them. "
+
+// The words of WakeTask for the time the woken role was away and for its backstop, by what
+// stopped its session: an idle release, which took the pod, or a project's pause, which kept it.
+const (
+	releaseAway, pauseAway         = "while your pod was gone", "while your session was stopped"
+	releaseBackstop, pauseBackstop = "the release's backstop", "your backstop"
+)
+
 // cancelledWakePreamble is the first two sentences of the task a cancelled release's resume
 // carries in place of a wake it dropped (CancelledWakeTask): the release did not finish, so the
 // pod never went away.
@@ -188,12 +200,9 @@ const (
 // settlement, so the wake is its newest task, and the review it then submits moves the commit it
 // read only when its footer names the entry that stands. The text here names no entry itself.
 func WakeTask(kind, detail string, stop WakeStop) string {
-	preamble := wakePreamble
-	away, backstop := "while your pod was gone", "the release's backstop"
+	preamble, away, backstop := wakePreamble, releaseAway, releaseBackstop
 	if stop == StoppedByPause {
-		preamble = "Your project was paused, and its pause stopped your session. This wake started it again. " +
-			"Your pod, your workspace and any work you had not pushed are as you left them. "
-		away, backstop = "while your session was stopped", "your backstop"
+		preamble, away, backstop = pauseWakePreamble, pauseAway, pauseBackstop
 	}
 	switch kind {
 	case pods.WakeChecks:
@@ -242,6 +251,32 @@ func CancelledWakeTask(kind, task string) string {
 		return ""
 	}
 	return cancelledWakePreamble + rest
+}
+
+// PausedWakeTask is the task of a wake that a cancel of an idle release keeps while the project
+// is paused (store.CancelIssueRelease, store.ReleaseCancelPause.WakeTask, decision 12 of
+// dispatch://INFRA-3759): kind is the kind of the kept resume, and task is the task its start
+// carries, which WakeTask wrote for a session an idle release stopped (StoppedByRelease). That
+// release did not finish, so it took no pod. The cancel records the role as stopped by the pause,
+// and the pause's resume starts the role in the pod it was in. So the answer is the task WakeTask
+// writes for a session the pause stopped (StoppedByPause): the same wake and detail, under the
+// pause's preamble, with the pause's words for the time away and for the backstop. The review
+// round's sentences that the queue appended stay. A task that does not begin with wakePreamble
+// says nothing of a release, and the answer is that task as it is.
+func PausedWakeTask(kind, task string) string {
+	rest, ok := strings.CutPrefix(task, wakePreamble)
+	if !ok {
+		return task
+	}
+	switch kind {
+	case pods.WakeRoleMessage, pods.WakeAgentMessage:
+		rest = strings.Replace(rest, ") "+releaseAway+". ", ") "+pauseAway+". ", 1)
+	case pods.WakeBackstop:
+		if after, found := strings.CutPrefix(rest, "The wake is "+releaseBackstop+" running out: "); found {
+			rest = "The wake is " + pauseBackstop + " running out: " + after
+		}
+	}
+	return pauseWakePreamble + rest
 }
 
 // listenerWake applies one wake report of the Envoy listener (intake.ListenerWake). A

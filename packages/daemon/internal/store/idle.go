@@ -395,7 +395,11 @@ type droppedWake struct {
 // a role of the mark's set took since the mark stays open in this case: it is the launch the pause
 // owes the role, which stopReleasedForPause records as owed (openPodResume), and its start runs
 // at the pause's resume. Dropped here, as a cancel drops it while the project runs, it would leave
-// the role no launch at all, since this cancel queues no resume.
+// the role no launch at all, since this cancel queues no resume. The task of that start was
+// written for a session a release stopped, and says that the release took the pod; the release
+// took none, and the cancel records the role as stopped by the pause. So this transaction rewrites
+// that task as the task of a wake of a role the pause stopped (ReleaseCancelPause.WakeTask,
+// retellWakesUnderPause).
 //
 // An issue the record no longer holds, one that has left the workflow, and one whose tree
 // lingers are given no resume at all, and the mark goes all the same: those claims are a close's
@@ -502,6 +506,9 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 				if err := stopReleasedForPause(ctx, tx, project, issue, held, roles, standing, paused); err != nil {
 					return err
 				}
+				if err := retellWakesUnderPause(ctx, tx, project, issue, roles, wake, last, paused.WakeTask); err != nil {
+					return err
+				}
 				cancelled.Pause = held.ID
 				for _, r := range roles {
 					cancelled.Stopped = append(cancelled.Stopped, r.role)
@@ -542,10 +549,15 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // (workflow.OpenPhaseRole), which the store does not restate (nil arms no backstop). At is
 // required of every cancel, since whether the project is paused is read inside the cancel's own
 // transaction; a cancel made while the project runs reads nothing else of it.
+//
+// WakeTask is the workflow's rule for the task of a wake the cancel keeps (workflow.PausedWakeTask):
+// it answers, from the kind of the kept resume and the task its start carries, the task that start
+// carries from now on. The store does not restate the wake's words. nil rewrites no task.
 type ReleaseCancelPause struct {
 	At            time.Time
 	Backstop      time.Duration
 	OpenPhaseRole func(phase.Phase) claim.Role
+	WakeTask      func(kind, task string) string
 }
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles
@@ -588,6 +600,62 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		}
 		if _, err := RecordPauseStopTx(ctx, tx, rec); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// retellWakesUnderPause rewrites the task of each start that a wake of one of roles queued while
+// the release stood, for a cancel made while the project is paused, which keeps those wakes
+// (CancelIssueRelease). The wakes and their starts are the ones dropWakesUnderRelease reads: a
+// role's resumes above wake, the mark's wake_row, and the starts of that role above last, the
+// release's last row, that have a wake's shape (resumeStartRow). retell answers the task a start
+// carries from now on, from the kind of the role's newest such resume and the task the start
+// carries now (ReleaseCancelPause.WakeTask). Only the task changes: the start keeps its role,
+// generation, wake kind, pause and the rest of its payload. A start of a role with no such resume
+// is no wake's, and keeps its task. A start whose task retell answers unchanged is not written,
+// and a nil retell writes nothing.
+func retellWakesUnderPause(ctx context.Context, tx pgx.Tx, project, issue string, roles []releasedRole, wake, last int64,
+	retell func(kind, task string) string) error {
+	if retell == nil || len(roles) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(roles))
+	for _, r := range roles {
+		names = append(names, string(r.role))
+	}
+	rows, err := tx.Query(ctx, `select outbox.id, coalesce(outbox.payload->>'task', ''), woken.kind from outbox
+		join lateral (select r.kind from pod_resumes r where r.project = $1 and r.issue = $2 and r.id > $3
+			and r.role = outbox.payload->>'role' order by r.id desc limit 1) woken on true
+		where outbox.issue = $2 and outbox.id > $5 and `+resumeStartRow+` and outbox.payload->>'role' = any($4)
+		order by outbox.id`, project, issue, wake, names, last)
+	if err != nil {
+		return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
+	}
+	type retold struct {
+		id   int64
+		task string
+	}
+	var writes []retold
+	for rows.Next() {
+		var id int64
+		var task, kind string
+		if err := rows.Scan(&id, &task, &kind); err != nil {
+			rows.Close()
+			return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
+		}
+		if told := retell(kind, task); told != task {
+			writes = append(writes, retold{id: id, task: told})
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the starts of the wakes taken while the release of %s stood: %w", issue, err)
+	}
+	for _, w := range writes {
+		if _, err := tx.Exec(ctx, `update outbox set payload = jsonb_set(payload, '{task}', to_jsonb($2::text)) where id = $1`,
+			w.id, w.task); err != nil {
+			return fmt.Errorf("rewrite the task of outbox row %d, the start of a wake the cancel of %s's release keeps: %w", w.id, issue, err)
 		}
 	}
 	return nil
