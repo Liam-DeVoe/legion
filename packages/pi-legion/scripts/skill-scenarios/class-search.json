@@ -143,6 +143,18 @@
       "check": "stand-ins: a behaviour a stand-in declares not modelled",
       "at": "daemon-standin\\.ts:\\d+ A head that conflicts with its base is not modelled, .* Unreachable: no world's head conflicts with its base, and no world's base moves during a run",
       "reason": "the architect's ruling of 2026-11-19T19:03Z: every fixture_write call in rig.sh gives no merge state, which gh-call.ts's mergeStateOn reads as CLEAN and gh-threads.ts's mergeStateOf moves only to BLOCKED, so no read is DIRTY or CONFLICTING; the run's remote refuses every push to the base (fixture_first_commit) and the world serves no merge"
+    },
+    {
+      "name": "what the daemon tells of a head's CI",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ What the daemon tells the roles of a head's CI is not modelled: .* Unreachable: no run's Envoy publishes a checks settlement, ",
+      "reason": "rig.sh unsets every ENVOY_* variable of its caller's environment at its start, and its start_listener starts each label's listener with ENVOY_API_TOKEN, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and PORT alone, no ENVOY_WEBHOOKS, so webhook.LoadWebhookConfig enables no GitHub route, the listener's ciStore is nil and cistore.StartSummaryLoop, the one publisher of a pr.<n>.checks settlement, never starts; and rig.sh's concluded_checks gives every head of every world test, lint and CodeQL completed with success, so no check of a world runs on or is skipped"
+    },
+    {
+      "name": "the wrapper's refusal of a write whose repository GitHub answers 404",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "gh-standin\\.ts:\\d+ The wrapper's refusal of a write whose repository GitHub answers 404 .* is not modelled\\. Unreachable: the only repository a run's world serves is its own, ",
+      "reason": "rig.sh's fixture_write gives each world one repository, its own, which exists (visibility public), so the leak guard's read of it is answered public and never 404; gh-standin.ts's ownerRefusal refuses a write naming an owner outside the world's project exit 2 before any route reads it; a write naming another repository of the world's owner meets no route, is recorded unrouted, and health.ts's rule 20 (unmodelledWrite) makes the run unhealthy, and an unhealthy run is replaced; and fixture_write's repository is fork:false, so cmd/legion's forkUpstreamDir is never asked"
     }
   ],
   "searches": [

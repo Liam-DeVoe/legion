@@ -1678,6 +1678,17 @@ stand-in writes neither, and declares both not modelled: no run begins in `admit
 `retro`, and the plan's one read, `GET /api/v1/projects/{key}/plans`, lists a project's finished
 issues alone, which the world's issue never is (`class-search.json`'s unreachable entries).
 
+What the daemon tells the roles of a head's CI is not modelled either, and the stand-in declares
+it so: the CI message naming each check of the pull request's head with what it came to, the
+task waking the worker of the open phase on a settlement, and what main's #4541 changed of both
+(a check GitHub skipped is named `skipped`, with the sentence that it ran nothing on the head; a
+settlement of a head the record does not stand at wakes nobody; a settlement the daemon drops is
+named by a line of its log). No run reaches any of it: no run's Envoy publishes a checks
+settlement, since `rig.sh` gives each label's listener no `ENVOY_WEBHOOKS`, so the listener
+opens no CI store, whose summary loop is the one publisher of a settlement; and every check a
+world's head reports is concluded `success` (`concluded_checks`), so no world holds CI running
+on a head or a check GitHub skipped (`class-search.json`'s unreachable entries).
+
 The record's shape is held to production's: `production-shapes.json`'s `legion read_record` is
 the shape of one issue's record as the tool answered it in a Legion issue pod at
 2026-11-17T16:49Z, the
@@ -1954,6 +1965,16 @@ Stated limits, each known and kept so:
   `unrouted`), which health reads as a refusal the scenario does not declare; a call carrying a
   refused option that the world routes is answered by that route, where production's wrapper
   refuses it.
+- Nor is the wrapper's refusal of a write whose repository GitHub answers 404 to the leak guard's
+  read of its visibility, exit 2 saying that GitHub answers 404 for the repository (main's since
+  #4551, leakguard's `NotFound`, where the guard's setup error refused it before). No world reaches
+  it: the only repository a world serves is its own, which exists, so the guard's read of it is
+  answered `public` (`fixture_write`); a write naming an owner outside the world's project is
+  refused exit 2 before any route reads it (`gh-standin.ts`'s `ownerRefusal`); a write naming
+  another repository of the world's owner meets no route, is recorded `unrouted`, and health's
+  unmodelled-write rule makes the run unhealthy, so it is replaced; and the world's repository is
+  no fork (`fork:false`), so the credential helper's answer for a fork (`forkUpstreamDir`) is never
+  asked (`class-search.json`'s unreachable entries).
 - Of gh's reads of the pull request, `gh pr list --search` is refused as a call the world does not
   model (`gh: Not Found (HTTP 404)`, recorded `unrouted`), and `--template`, `--web`, and `gh pr
   diff`'s `--patch`, `--exclude` and `--color always` are not read: such a call is answered as if

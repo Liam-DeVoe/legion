@@ -73,7 +73,7 @@ test("the class search finds no instance outside its residuals at this checkout,
     stderr: "",
   });
   expect(stdout).toContain(
-    "result: 0 findings outside the residuals, 8 residuals found, 12 declared unreachable found, 0 stale\n"
+    "result: 0 findings outside the residuals, 8 residuals found, 15 declared unreachable found, 0 stale\n"
   );
   for (const check of CHECKS) expect(stdout).toContain(`== ${check.name}\n`);
 }, 900_000);

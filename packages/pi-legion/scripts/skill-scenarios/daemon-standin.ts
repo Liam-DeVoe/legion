@@ -203,6 +203,20 @@
  * (daemon-pane.ts's `labelShapes`), so none is answered as an older daemon for a marker gone
  * stale.
  *
+ * What the daemon tells the roles of a head's CI is not modelled: the CI message naming each
+ * check of the head with what it came to (packages/daemon/internal/workflow/review.go's
+ * `tellChecks` and `settledChecks`), the task waking the worker of the open phase on a settlement
+ * (wake.go's `wakeOnSettlement` and `settlementDetail`), and what main's daemon changed of both in
+ * #4541 (6d50ef31): a check whose run GitHub skipped is named `skipped`, with the sentence that it
+ * ran nothing on the head (`skippedClause`), a settlement of a head the record does not stand at
+ * wakes nobody, and a settlement the daemon drops is named by an INFO line of its log
+ * (`logDroppedSettlement`). Unreachable: no run's Envoy publishes a checks settlement, since
+ * rig.sh's start_listener gives the label's listener no ENVOY_WEBHOOKS, so the listener mounts no
+ * `/webhook/github` route and opens no CI store (packages/envoy/cmd/listener/main.go's
+ * `webhookRoutes` and `ciStore`), whose summary loop is what publishes a settlement; and every
+ * check a world's head reports is concluded `success` from the moment the head reaches the remote
+ * (rig.sh's `concluded_checks`), so no world holds CI running on a head or a check GitHub skipped.
+ *
  * Every request appends one JSON line to the log file: `{at, method, path, status, role, code?,
  * grantId?, sessionId?, mintedGrantId?, handoffId?, handoffVersion?, to?, reason?, phase?,
  * failed?}`, the run's

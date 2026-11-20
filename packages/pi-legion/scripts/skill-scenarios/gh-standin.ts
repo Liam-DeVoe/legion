@@ -472,7 +472,19 @@ function exit(status: number): never {
  * call goes on to the world's GitHub as any other does, and gets what it answers for that owner:
  * GitHub's 404 for a repository the world does not hold, as GitHub answers a token that cannot see
  * it. A run with no world names no project; a world whose selectors cannot be read is the rig's
- * fault, and the call ends with 2, naming the file, as a world.json that is no world ends it. */
+ * fault, and the call ends with 2, naming the file, as a world.json that is no world ends it.
+ *
+ * The wrapper's refusal of a write whose repository GitHub answers 404 to the leak guard's read of
+ * its visibility, exit 2 saying that GitHub answers 404 for the repository (main's since #4551,
+ * leakguard's `NotFound`, where the guard's setup error refused it before), is not modelled.
+ * Unreachable: the only repository a run's world serves is its own, which exists, so the guard's
+ * read of it is answered `public` and never 404 (rig.sh's fixture_write); a write naming an owner
+ * outside the world's project is refused exit 2 here, before the world reads anything
+ * (`ownerRefusal`); a write naming another repository of the world's owner meets no route, is
+ * answered `unrouted` and makes the run unhealthy (health.ts's rule 20, `unmodelledWrite`), and an
+ * unhealthy run is replaced; and the world's repository is no fork (fixture_write's `fork:false`),
+ * so the git credential helper's answer for a fork (cmd/legion's `forkUpstreamDir`) is never
+ * asked. */
 if (as === "gh" && world !== undefined) {
   handler = "wrapper";
   let selectors: GhSelectors | undefined;
