@@ -392,8 +392,10 @@ a check, a `public-leak-check.sh` on `PATH` that is a dangling link or has no ex
 public writes, pushes included, are then refused under either setting, and the daemon logs a line
 per launch.
 With no setting, the daemon logs once at boot that the deployment leak check is not configured, and
-a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and this
-repository's own private-name rules alone.
+a pane's `legion gh` with no check named anywhere writes under the guard's visibility read and the
+deployment's private-name rules alone, where the deployment names a rule file; where it names
+none either, the call is cleared with nothing read
+([The deployment's private-name rules](kubernetes.md#the-deployments-private-name-rules)).
 
 The real gh is a compiled program, so when the first `gh` on the daemon's `PATH`
 is a script (a `gh` wrapper of the box's own, as the devbox's login `PATH` heads with, or asdf's

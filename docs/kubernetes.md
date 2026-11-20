@@ -3845,11 +3845,20 @@ Reversed, a daemon holding only the `legion-pane` seed connects as `legion-pane`
 
 ### The deployment's private-name rules
 
-The leak guard runs two checks before a role writes ([Worker image](#worker-image)):
-the shared public leak check, and the deployment's own private-name rules (`packages/daemon/internal/leakguard`).
+The leak guard runs up to two checks before a role writes ([Worker image](#worker-image)):
+the shared public leak check, where one is named for the role (the deployment's `leak_check` setting in a pod, or on a pane's machine the check its operator installed), and the deployment's own private-name rules, where the deployment names a rule file (`packages/daemon/internal/leakguard`).
 The `legion` binary carries no private-name rule.
 A deployment names its own rule file, in gitleaks' rule format.
-A deployment that names none runs the shared check alone.
+Each is the operator's to name, so a write gets one of four guards:
+
+- a shared check and a rule file named: the check runs, then the visibility read, then the rules over a public destination;
+
+- a rule file and no shared check: the visibility read, then the rules over a public destination;
+
+- a shared check and no rule file: the check alone, with no visibility read;
+
+- neither: no leak guard at all, and every write is cleared with nothing read; the daemon says so in two boot lines, one that no leak check is configured and one that no rule file is named.
+
 The key and the variable below work the same way under `runtime: tmux` (`docs/deployment.md`, "What a pane's Dispatch credential is").
 
 **Where the file is named.**

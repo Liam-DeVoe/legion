@@ -542,7 +542,7 @@ def legion_build(why):
 RULES = {
     # --- daemon
     f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:371 (runtime.Caller at :367 + ../../../..)")),
-    f"{DAEMON}/cmd/legion/gh_test.go": reads((f"{DAEMON}/docker/gh", "cmd/legion/gh_test.go:1003 ../../docker/gh")),
+    f"{DAEMON}/cmd/legion/gh_test.go": reads((f"{DAEMON}/docker/gh", "cmd/legion/gh_test.go:1721 ../../docker/gh")),
     f"{DAEMON}/cmd/legion/state_read_budget_test.go": reads(
         (f"{FIX}/daemon-api/state.json", "cmd/legion/state_read_budget_test.go:30 reads the daemon's state golden as the slow daemon's answer")),
     f"{DAEMON}/internal/admit/admit_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/admit/admit_test.go:1069")),
@@ -552,7 +552,7 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:47 lists ../supervise and :57 parses each .go file of it but the test files (:54)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1155 (path from goldenPath at :1144, declared :31)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1332 (path from goldenPath at :1321, declared :38)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
@@ -568,7 +568,7 @@ RULES = {
     f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
-    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
+    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1713")),
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
     # (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
     # `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
@@ -597,8 +597,8 @@ RULES = {
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
     f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
     f"{DAEMON}/internal/leakguard/gh_test.go": reads(
-        (f"{DAEMON}/cmd/legion/testdata/gh-help/api.txt", "internal/leakguard/gh_test.go:594 reads ../../cmd/legion/testdata/gh-help/<help>, api.txt for gh api (:590)"),
-        (f"{DAEMON}/cmd/legion/testdata/gh-help/workflow_run.txt", "internal/leakguard/gh_test.go:594 reads ../../cmd/legion/testdata/gh-help/<help>, workflow_run.txt for gh workflow run (:591)")),
+        (f"{DAEMON}/cmd/legion/testdata/gh-help/api.txt", "internal/leakguard/gh_test.go:650 reads ../../cmd/legion/testdata/gh-help/<help>, api.txt for gh api (:646)"),
+        (f"{DAEMON}/cmd/legion/testdata/gh-help/workflow_run.txt", "internal/leakguard/gh_test.go:650 reads ../../cmd/legion/testdata/gh-help/<help>, workflow_run.txt for gh workflow run (:647)")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
