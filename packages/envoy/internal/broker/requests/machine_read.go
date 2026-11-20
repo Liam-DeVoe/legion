@@ -426,12 +426,12 @@ func judgedAdminSecret(name string) error {
 // no entry has changed and nothing is compared. During a roll the two pods may read different
 // files for a moment; a grant the one with the newer file ends is simply asked for again.
 //
-// checkRelease and reuseLiveGrant compare before any check that only refuses a grant, because an
-// edit to a judged name's judge — taken off, or lowered below the grant's lifetime — fails two of
-// them as well: the chain, which admits a judge's approval only under the rules in force
-// (record.ChainVerifier.JudgeSeconds), and stillAllowed's judge arm (judgeStillDecides). A grant
-// either of those refused first would stay live, and release again once the old entry was put
-// back.
+// checkRelease and endMatchingLiveGrants compare before any check that only refuses a grant,
+// because an edit to a judged name's judge — taken off, or lowered below the grant's lifetime —
+// fails two of them as well: the chain, which admits a judge's approval only under the rules in
+// force (record.ChainVerifier.JudgeSeconds), and stillAllowed's judge arm (judgeStillDecides). A
+// grant either of those refused first would stay live, and release again once the old entry was
+// put back.
 func changedEntry(decidedVersion string, set *policy.Set, granted []requestedSecret) (string, bool) {
 	if decidedVersion == set.Version {
 		return "", false
@@ -593,8 +593,9 @@ func trimmedValue(value, name string) string {
 type requestedSecret struct{ name, source, decision, airlockDigest string }
 
 // requestedSecrets reads request requestID's names that the policy did not deny, in name order:
-// what a granted request's grant releases (Values, reuseLiveGrant), and what a pending request
-// waits to have approved (currentPolicyAdmits), since one denied name denies the whole request.
+// what a granted request's grant releases (Values), what Create checks before it reuses a grant
+// (endMatchingLiveGrants), and what a pending request waits to have approved
+// (currentPolicyAdmits), since one denied name denies the whole request.
 func requestedSecrets(ctx context.Context, q querier, requestID string) ([]requestedSecret, error) {
 	rows, err := q.Query(ctx, `select name, source, decision, airlock_digest from request_secrets where request_id=$1 and decision <> 'deny' order by name`, requestID)
 	if err != nil {
@@ -639,7 +640,7 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 // that sorts first and only pauses — a key granted at once that now wants an approval, or one
 // the policy no longer serves or now denies — would otherwise hide a later name's end, and the
 // grant would come back once that pause lifted. checkRelease ends the grant on end and refuses
-// the release on pause; reuseLiveGrant ends it on end and passes it over on pause.
+// the release on pause; endMatchingLiveGrants ends it on end and leaves the pause for reuse.
 func recheckGranted(set *policy.Set, rules airlock.Rules, granted []requestedSecret, decidedBy string, lifetime *int, requester policy.Requester) (end, pause error) {
 	for _, g := range granted {
 		err := stillAllowed(set, rules, g.name, g.source, g.decision, decidedBy, lifetime, requester)
@@ -765,10 +766,10 @@ func stillAllowed(set *policy.Set, rules airlock.Rules, name, frozenSource, froz
 // file that stops letting the judge decide this name, or that lowers it below what this grant
 // holds, refuses it. An entry that changed at all has already ended the grant for good by the
 // time this runs, through the frozen request_secrets.airlock_digest (changedEntry, which
-// checkRelease and reuseLiveGrant compare first), so this states the same rule where a reader of
-// the release checks it, over the one thing the judge's approval rested on. The admin tag, which
-// outranks whatever seconds a rules file gives the name, is stillAllowed's to read before this,
-// for every name of the grant.
+// checkRelease and endMatchingLiveGrants compare first), so this states the same rule where a
+// reader of the release checks it, over the one thing the judge's approval rested on. The admin
+// tag, which outranks whatever seconds a rules file gives the name, is stillAllowed's to read
+// before this, for every name of the grant.
 //
 // A grant with no lifetime — one that lasts until its session ends — is not live under a judge
 // decider: record.MayJudge refuses a record that names no lifetime, since an unbounded grant is
@@ -789,22 +790,22 @@ func judgeStillDecides(rules airlock.Rules, name string, lifetime *int) error {
 
 // errSourceMoved is stillAllowed's refusal of a name served from another source than its grant
 // froze: a type changed or removed, a secret replaced on AWS, the broker moved between stores.
-// Values and reuseLiveGrant end such a grant for good (endGrant, recheckGranted).
+// Values and endMatchingLiveGrants end such a grant for good (endGrant, recheckGranted).
 var errSourceMoved = errors.New("source moved")
 
 // errRequesterNotListed is stillAllowed's refusal of a granted name the secret's requesters tag
 // no longer lists this requester on: the list was narrowed after the grant was made. Values and
-// reuseLiveGrant end such a grant for good (endGrant, recheckGranted), so putting the person
-// back on the list never brings back a grant they held while they were off it; they ask again
-// instead.
+// endMatchingLiveGrants end such a grant for good (endGrant, recheckGranted), so putting the
+// person back on the list never brings back a grant they held while they were off it; they ask
+// again instead.
 var errRequesterNotListed = errors.New("requester not listed")
 
 // errJudgedAdminSecret is stillAllowed's refusal of a judged grant that holds a secret the live
 // policy tags as an administrator's (policy.TagAdmin): the tag was added after the model judge
 // decided the request, and a person approves every release of such a secret. Values and
-// reuseLiveGrant end such a grant for good (endGrant, recheckGranted), so taking the tag off
-// again never brings back a grant no person approved; the session asks again, as a new request,
-// which the judge refuses while the tag stands.
+// endMatchingLiveGrants end such a grant for good (endGrant, recheckGranted), so taking the tag
+// off again never brings back a grant no person approved; the session asks again, as a new
+// request, which the judge refuses while the tag stands.
 var errJudgedAdminSecret = errors.New("judged administrator's secret")
 
 // JudgePolicy answers what the live policy says about name for the enrollment that asked,
@@ -1137,69 +1138,47 @@ type querier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// liveMatch is one row matchingRequests answers: a request whose names are exactly the ones asked
-// for, and the live grant the row named beside it.
-type liveMatch struct {
+// liveGrant is one live grant this enrollment holds for exactly the names a request asks for:
+// the request that made it, the grant, the lifetime that request signed, and whether that request
+// was written before migration 0013 (writtenBeforeMigration13).
+type liveGrant struct {
 	requestID, grantID string
+	lifetime           *int
+	beforeMigration13  bool
 }
 
-// matchingRequests runs query (whose rows are a request id, that request's own live grant's id
-// and that request's secret names, with $1 bound to enrollmentID and $2 to lifetime, the lifetime
-// the request must have asked for) and answers every request whose names are exactly sorted, each
-// with the grant its row named, in the query's own order, or none. Names are compared as sets of
-// whole strings, never as one joined string, so a name containing a separator cannot pass for
-// two names. The grant's id is read beside the request's rather than looked up again because
-// reuseLiveGrant ends exactly the grant this row matched when the policy no longer allows it.
-// It reads every row and closes them before it returns, so no connection is held open while the
-// caller checks each match, which reads and writes on connections of its own.
-// Which column $1 is compared against is the query's own; every query here names the requests
-// row's own enrollment_id, the column an adoption rewrites.
-func matchingRequests(ctx context.Context, q querier, query, enrollmentID string, lifetime *int, sorted []string) ([]liveMatch, error) {
-	rows, err := q.Query(ctx, query, enrollmentID, lifetime)
-	if err != nil {
-		return nil, err
+// reusableFor reports whether a new request that signs lifetime may take this grant: one with the
+// same lifetime, or, for a request that signs none, one written before migration 0013.
+func (g liveGrant) reusableFor(lifetime *int) bool {
+	if lifetime == nil {
+		return g.lifetime == nil || g.beforeMigration13
 	}
-	defer rows.Close()
-	var matches []liveMatch
-	for rows.Next() {
-		var match liveMatch
-		var names []string
-		if err := rows.Scan(&match.requestID, &match.grantID, &names); err != nil {
-			return nil, err
-		}
-		sort.Strings(names)
-		if slices.Equal(names, sorted) {
-			matches = append(matches, match)
-		}
-	}
-	return matches, rows.Err()
+	return g.lifetime != nil && *g.lifetime == *lifetime
 }
 
-// liveGrantForRecheck is one live grant with the lifetime its own request signed. A new request
-// can touch it before its own lifetime pre-checks run, so it cannot use the new request's
-// lifetime to decide whether an older grant is over a current maximum.
-type liveGrantForRecheck struct {
-	liveMatch
-	lifetime *int
-}
-
-// liveGrantsWithNames finds every live grant this enrollment holds for exactly sorted, whatever
-// a new request for those names will later ask for its lifetime.
-func (m *Machine) liveGrantsWithNames(ctx context.Context, enr enrollmentRow, sorted []string) ([]liveGrantForRecheck, error) {
-	rows, err := m.Store.Pool.Query(ctx, `select r.id, g.id::text, array_agg(s.name), r.lifetime_seconds from requests r
+// liveGrantsWithNames answers every live grant this enrollment holds for exactly sorted, newest
+// first. Names are compared as sets of whole strings, never as one joined string, so a name
+// containing a separator cannot pass for two names. The lookup reads the requests row's own
+// enrollment_id, which an adoption rewrites. It reads every row and closes them before it
+// returns, so no connection is held open while the caller checks each match, which reads and
+// writes on connections of its own.
+func (m *Machine) liveGrantsWithNames(ctx context.Context, enr enrollmentRow, sorted []string) ([]liveGrant, error) {
+	rows, err := m.Store.Pool.Query(ctx, `select r.id, g.id::text, array_agg(s.name), r.lifetime_seconds,
+			coalesce(`+writtenBeforeMigration13("r")+`, false)
+		from requests r
 		join request_secrets s on s.request_id=r.id
 		join grants g on g.request_id=r.id
 		where r.enrollment_id=$1 and r.state='granted' and g.revoked_at is null and `+grantUnexpired("g")+`
-		group by r.id, g.id, r.lifetime_seconds order by g.created_at desc`, enr.ID)
+		group by r.id, g.id order by g.created_at desc`, enr.ID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var matches []liveGrantForRecheck
+	var matches []liveGrant
 	for rows.Next() {
-		var match liveGrantForRecheck
+		var match liveGrant
 		var names []string
-		if err := rows.Scan(&match.requestID, &match.grantID, &names, &match.lifetime); err != nil {
+		if err := rows.Scan(&match.requestID, &match.grantID, &names, &match.lifetime, &match.beforeMigration13); err != nil {
 			return nil, err
 		}
 		sort.Strings(names)
@@ -1224,18 +1203,6 @@ func writtenBeforeMigration13(alias string) string {
 		".created_at < (select applied_at from broker_schema_migrations where version = 13))"
 }
 
-// matchingLiveGrants finds every live grant that Create could reuse for this exact name set and
-// lifetime, newest first.
-func (m *Machine) matchingLiveGrants(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int) ([]liveMatch, error) {
-	return matchingRequests(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
-		join request_secrets s on s.request_id=r.id
-		join grants g on g.request_id=r.id
-		where r.enrollment_id=$1 and (
-			r.lifetime_seconds is not distinct from $2 or ($2::int is null and `+writtenBeforeMigration13("r")+`)
-		) and r.state='granted' and g.revoked_at is null and `+grantUnexpired("g")+`
-		group by r.id, g.id order by g.created_at desc`, enr.ID, lifetime, sorted)
-}
-
 // liveGrantPolicy reads the request data that recheckLiveGrant needs for a matching live grant.
 func (m *Machine) liveGrantPolicy(ctx context.Context, requestID string) (rulesVersion, decidedBy string, granted []requestedSecret, err error) {
 	if err = m.Store.Pool.QueryRow(ctx, `select rules_version, coalesce(decided_by, '') from requests where id=$1`, requestID).Scan(&rulesVersion, &decidedBy); err != nil {
@@ -1245,31 +1212,40 @@ func (m *Machine) liveGrantPolicy(ctx context.Context, requestID string) (rulesV
 	return rulesVersion, decidedBy, granted, err
 }
 
-// endMatchingLiveGrants visits every live grant for these exact names before Create can refuse
-// the new request. It uses each grant's own lifetime, ignores pauses that only decide whether
-// the new request can reuse it, and ends every grant whose current policy has a permanent cause.
-func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, sorted []string, set *policy.Set) error {
+// liveGrantCheck is a live grant endMatchingLiveGrants left live, with the pause its current rules
+// answered. reuseLiveGrant uses that pause and does not re-check the grant.
+type liveGrantCheck struct {
+	liveGrant
+	pause error
+}
+
+// endMatchingLiveGrants checks every live grant for these exact names before Create can refuse
+// the new request. It uses each grant's own lifetime and ends every grant whose current policy has
+// a permanent cause. It answers each grant it left live with its pause, for reuseLiveGrant.
+func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, sorted []string, set *policy.Set) ([]liveGrantCheck, error) {
 	matches, err := m.liveGrantsWithNames(ctx, enr, sorted)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	checked := make([]liveGrantCheck, 0, len(matches))
 	for _, match := range matches {
 		rulesVersion, decidedBy, granted, err := m.liveGrantPolicy(ctx, match.requestID)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		end, _, err := m.recheckLiveGrant(ctx, enr, rulesVersion, granted, decidedBy, match.lifetime, set)
+		end, pause, err := m.recheckLiveGrant(ctx, enr, rulesVersion, granted, decidedBy, match.lifetime, set)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if end == nil {
+			checked = append(checked, liveGrantCheck{liveGrant: match, pause: pause})
 			continue
 		}
 		if err := m.endLiveGrant(ctx, match.grantID, enr.ID, "reuse", end); !errors.Is(err, ErrGrantNotLive) {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return checked, nil
 }
 
 // reuseLiveGrant answers Create's own "request (or reuse the live grant)" contract: an exact
@@ -1277,74 +1253,52 @@ func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, 
 // requests), asking for the same lifetime (or, asking for none, a request written before
 // migration 0013: writtenBeforeMigration13), against a still-live grant (not revoked, not expired)
 // under this enrollment is returned as-is, with no new request row and no new record, as long as
-// the policy it was decided under is still current, no granted name is a service's
-// (anyServiceOwned: the policy's version does not cover which service BROKER_SERVICES' accounts
-// prove), no granted name carries a requesters tag (anyListed: an entry naming a service
-// matches by those same accounts) and the grant is no person's pod's (personPodGrant: the
-// policy's version does not cover which person BROKER_POD_OPERATORS maps the pod's account to),
-// or the current policy still allows it to the session (stillAllowed and overMaxGrant over every
-// name, the checks Values makes: recheckGranted, which holds a judged grant to the judge the
-// rules still give its names, over the lifetime this reuse matched it on, the grant's own, and
-// refuses one any of whose secrets the policy now tags as an administrator's), and its whole
-// approval chain still verifies (verifyChainForRelease, the same check Values makes). A caller
-// that already holds a live grant for these exact names never re-asks a human who already
-// approved it, a policy tightened since then is never bypassed by reuse, and neither is a chain
-// that no longer verifies.
-// Every exact match is a candidate, newest grant first, and each gets those checks in turn. A
-// candidate whose chain fails is passed over for the next, and logged (GrantChainInvalidMessage,
+// endMatchingLiveGrants left it live with no pause, and its whole approval chain still verifies
+// (verifyChainForRelease, the same check Values makes). endMatchingLiveGrants made the policy
+// checks Values makes before any refusal Create can return: a changed airlock entry
+// (changedEntry), and, when the policy version moved, a granted name is a service's
+// (anyServiceOwned), carries a requesters tag (anyListed) or the grant is a person's pod's
+// (personPodGrant), stillAllowed and overMaxGrant over every name under the grant's own lifetime.
+// It ended each grant those checks end. So a reuse never has an end of its own to make.
+//
+// The lookup runs again here, so a grant revoked or expired since the end pass is not handed
+// back. Every exact, reusable match that the end pass checked is a candidate, newest grant first.
+// A candidate whose chain fails is passed over for the next, and logged (GrantChainInvalidMessage,
 // at=reuse). A session's next enrollment adopts its earlier enrollment's live grants (enroll.go,
 // adopt), so a session that moved here from a broker of another BROKER_PUBLIC_URL sharing this
 // database can hold that broker's grant, whose chain fails here ("aud does not match"), and,
 // after its first grant here, a newer one of this broker for the same names. Without the order,
 // Postgres may answer the old grant first on any call, which would ask a person or the judge
-// again on each until the old grant expired. Newest first,
-// the grant the session was given last is the one handed back, and an older one is checked, and
-// its failed chain logged, only when every newer one was passed over. Every other outcome stops
-// at that candidate, as with one: a policy end (below) answers no reusable grant, a grant no
-// longer live answers none, and any other error is returned. With no candidate left there is
-// none, and Create asks afresh.
-// A grant whose secret no longer lists this requester, a judged grant any of whose secrets the
-// policy now tags as an administrator's, a grant one of whose names is now served from another
-// source, and a grant any of whose names' airlock entry changed since it was decided are not
-// merely passed over: each is ended for good here, as Values ends it (recheckGranted's end,
-// changedEntry), whatever another of its names answers, and Create goes on to ask for the names
-// afresh — the denied request that tells the session why, where the list dropped it, and the
-// card the tag's own person answers, where the tag ended it. The entry is compared first, as
-// Values compares it, since an edit to a judged name's judge would otherwise have stillAllowed
-// pass the grant over and leave it live; a chain that fails as well is still logged, as Values
-// logs it.
+// again on each until the old grant expired. Newest first, the grant the session was given last
+// is the one handed back, and an older one is checked, and its failed chain logged, only when
+// every newer one was passed over. A pause from the end pass stops at that candidate, as before:
+// ErrGrantNotLive answers no reusable grant, and any other pause is returned. A matching grant
+// made after the end pass has no check, so it is not handed back and Create asks afresh.
+//
 // An automatic grant a person's pod got as that person is not ended once BROKER_POD_OPERATORS no
 // longer maps the pod's account to that person, but its re-check refuses it (ErrGrantNotLive),
 // which answers no reusable grant, so Create asks for the names afresh. The grant is reusable
 // again when the entry comes back. The exception is a grant whose secret's requesters tag names
-// the person: the secret no longer lists the requester, so the grant is ended for good, as the
-// paragraph above says (errRequesterNotListed).
+// the person: the secret no longer lists the requester, so the end pass ends it for good
+// (errRequesterNotListed).
 // No live grant holds a withheld name nobody approved: the withhold ended each one (withhold).
 // The lookup reads the requests row's own enrollment_id, which an adoption rewrites, so a session
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
-func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set) (Request, bool, error) {
-	matches, err := m.matchingLiveGrants(ctx, enr, sorted, lifetime)
+func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, checked []liveGrantCheck) (Request, bool, error) {
+	pauses := make(map[string]error, len(checked))
+	for _, grant := range checked {
+		pauses[grant.grantID] = grant.pause
+	}
+	matches, err := m.liveGrantsWithNames(ctx, enr, sorted)
 	if err != nil {
 		return Request{}, false, err
 	}
 	for _, match := range matches {
-		rulesVersion, decidedBy, granted, err := m.liveGrantPolicy(ctx, match.requestID)
-		if err != nil {
-			return Request{}, false, err
-		}
-		end, pause, err := m.recheckLiveGrant(ctx, enr, rulesVersion, granted, decidedBy, lifetime, set)
-		if err != nil {
-			return Request{}, false, err
-		}
-		if end != nil {
-			// End the grant here as Values does, rather than leave it live and unrevoked,
-			// and answer no reusable grant so Create goes on to ask for the names afresh.
-			if err := m.endLiveGrant(ctx, match.grantID, enr.ID, "reuse", end); !errors.Is(err, ErrGrantNotLive) {
-				return Request{}, false, err
-			}
-			return Request{}, false, nil
+		pause, wasChecked := pauses[match.grantID]
+		if !wasChecked || !match.reusableFor(lifetime) {
+			continue
 		}
 		if errors.Is(pause, ErrGrantNotLive) {
 			return Request{}, false, nil

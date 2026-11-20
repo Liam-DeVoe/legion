@@ -722,9 +722,10 @@ The broker evaluates every name
   for its operator.
   A grant ends for good when a release, or a request from its enrollment for exactly its names,
   finds its secret's type changed (removed, or changed to another type), or finds its lifetime
-  over the current `max-grant`, whatever another secret of the grant answers. Before a new request
-  can refuse because another key is missing, waits for a value, wants an approval or has a
-  `max-grant`, the broker reads every matching live grant and ends one with a permanent cause.
+  over the current `max-grant`, whatever another secret of the grant answers. Before a
+  well-formed new request can refuse because another key is missing, waits for a value, wants an
+  approval or has a `max-grant`, the broker reads every matching live grant and ends one with a
+  permanent cause.
   A key the broker no longer serves, or one that now wants an approval, only pauses a grant when
   no key ends it. The ending release answers `GRANT_NOT_LIVE` and writes a `grant.revoked` audit
   row by `broker:release-recheck`, and the session asks again. A release of a stored secret checks
@@ -733,6 +734,11 @@ The broker evaluates every name
   the broker to read the new tags, before storing its App key or login. That retag checks the value
   the secret holds, so a sign-in that may read it is refused while it is no value of that type
   ([manage a secret](/legion/broker/guides/manage-a-secret/#change-its-owner-tier-type-requesters-or-max-grant)).
+  A change reverted before any release, or any request from its enrollment for exactly its
+  names, finds it leaves the grant as it was: it was approved for that secret, type and source,
+  and its next release mints a token of that same type from that same frozen source, never the
+  stored value. To end a grant, revoke it. A type secret the broker stops serving, such as one
+  whose `github-owners` is removed or malformed, stops releasing until the secret is served again.
 - A secret with `max-grant` needs a lifetime no longer than that duration. A request whose `--ttl`
   (or, with none, the default of 15 minutes for a human-tier secret and 12 hours otherwise, or session length under `default-grant=session`) is longer is refused `GRANT_REQUIRES_LIFETIME` before the broker writes a request. A
   `max-grant` set or lowered later holds what came before it to the new bound: a release, or a
@@ -1099,8 +1105,8 @@ not bound. On an entry that lists methods and paths, a request carrying
 acts on the method the header names and not on the one the entry allowed.
 Each entry's own fingerprint is part of what a grant was decided under, so
 an edit to one secret's entry ends the grants that entry affects and no others, at the release
-and at the next request that would reuse one, before the grant's approval chain and policy are
-checked again.
+and at a well-formed request from the grant's enrollment for exactly its names, before the
+grant's approval chain and policy are checked again.
 
 What the airlock does not stop is as much of the design as what it does:
 
@@ -1334,9 +1340,10 @@ does so at the release and at a request from that enrollment for exactly the gra
 putting the entry back does not bring the grant back (`GRANT_NOT_LIVE`). Each release also
 re-checks that the secret's entry still gives the judge at least the grant's lifetime. A key its
 owner tags as administrator's after the judge decided ends that grant for good too, whether the
-judge decided that key or the session got it at once beside the judged ones. Before that request
-can refuse because another requested key waits for a value, is not served, wants an approval or
-has a shorter `max-grant`, the broker reads every matching live grant with its own lifetime.
+judge decided that key or the session got it at once beside the judged ones. Before that
+well-formed request can refuse because another requested key waits for a value, is not served,
+wants an approval or has a shorter `max-grant`, the broker reads every matching live grant with
+its own lifetime.
 Any permanent cause on any key ends the grant; a key that only pauses it cannot hide that end.
 A person approves every release of an administrator's secret, so no judged grant goes on
 releasing it, and taking the tag off again does not bring the grant back: the session asks

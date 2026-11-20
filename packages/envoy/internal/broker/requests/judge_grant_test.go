@@ -23,7 +23,7 @@ import (
 // test in this file starts from.
 func judgedGrant(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKey, lifetime int, names ...string) string {
 	t.Helper()
-	req := pendingJudgeable(t, m, enrollmentID, key, "INFRA-1353 wants it", lifetime, names...)
+	req := pendingJudgeable(t, m, enrollmentID, key, "the release job wants it", lifetime, names...)
 	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant", "issue": "ACME-1353"})
 	if err != nil || dec.GrantID == "" {
 		t.Fatalf("ApplyJudgeDecision(%v) = %+v, %v; want a grant", names, dec, err)
@@ -101,7 +101,7 @@ func TestAJudgedGrantLivesByItsRulesEntryAndNotByAnOwner(t *testing.T) {
 			// Another session of the owner's holds a grant of the same secret that the owner
 			// approved themselves, which every assertion below answers for too.
 			own, ownKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-			pending := pendingJudgeable(t, m, own, ownKey, "INFRA-1353 wants it on the other box", 600, "DEEL_API_KEY")
+			pending := pendingJudgeable(t, m, own, ownKey, "the release job wants it on the other box", 600, "DEEL_API_KEY")
 			handOver(t, m, *pending.RecordID)
 			byOwner, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
 			if err != nil || byOwner.GrantID == "" {
@@ -240,7 +240,7 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 		// Another session of the owner's holds a grant of the same secret that the owner
 		// approved themselves, which every assertion below answers for too.
 		own, ownKey := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-		pending := pendingJudgeable(t, m, own, ownKey, "INFRA-1353 wants it on the other box", 600, "DEEL_API_KEY")
+		pending := pendingJudgeable(t, m, own, ownKey, "the release job wants it on the other box", 600, "DEEL_API_KEY")
 		handOver(t, m, *pending.RecordID)
 		byOwner, err := m.ApplyDecision(t.Context(), *pending.RecordID, true, fixtureOperator)
 		if err != nil || byOwner.GrantID == "" {
@@ -280,13 +280,13 @@ func TestAnAdministratorsTagEndsAJudgedGrantAndLeavesAPersonsAlone(t *testing.T)
 	t.Run("the next request ends it rather than handing it back", func(t *testing.T) {
 		m, session, key := newJudgeFixture(t)
 		judged := judgedGrant(t, m, session, key, 600, "DEEL_API_KEY")
-		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it again", 600, "DEEL_API_KEY"), "", nil)
+		reused, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "the release job wants it again", 600, "DEEL_API_KEY"), "", nil)
 		if err != nil || reused.GrantID == nil || *reused.GrantID != judged {
 			t.Fatalf("a request for the same name and lifetime while the secret is an ordinary one = %+v, %v; want the judged grant %s handed back", reused, err, judged)
 		}
 
 		retag(t, m, adminSecret("DEEL_API_KEY", "deel-v1"))
-		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "INFRA-1353 wants it once more", 600, "DEEL_API_KEY"), "", nil)
+		again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "the release job wants it once more", 600, "DEEL_API_KEY"), "", nil)
 		if err != nil || again.GrantID != nil || again.State != "pending" {
 			t.Fatalf("Create once the secret is an administrator's = %+v, %v; want no grant handed back and a card its person answers", again, err)
 		}
@@ -392,17 +392,15 @@ func TestAnAdministratorsTagOnAKeyGrantedAtOnceEndsTheJudgedGrantBesideIt(t *tes
 
 // TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause: a judged grant of DEEL_API_KEY,
 // which the judge decided, and of AUTO_TOKEN and ACME_TOKEN, which its session got at once.
-// ACME_TOKEN sorts first. Its owner first changes it so that it only pauses the grant: it now
-// wants an approval, or the policy no longer serves it, through a tag the loader refuses or a
-// value that is gone. The release refuses the grant and leaves it live, as a pause does. Then a
-// later key comes to end the grant for good: DEEL_API_KEY or AUTO_TOKEN tagged as an
-// administrator's, DEEL_API_KEY's requesters list dropping the session's person, DEEL_API_KEY
+// ACME_TOKEN sorts first. Its owner first changes it: most changes only pause the grant (it wants
+// an approval, or the policy no longer serves it through a tag the loader refuses or a value that
+// is gone), and a lowered ACME_TOKEN max-grant ends the grant before Create's own max-grant
+// refusal. Then a later key comes to end the grant for good: DEEL_API_KEY or AUTO_TOKEN tagged as
+// an administrator's, DEEL_API_KEY's requesters list dropping the session's person, DEEL_API_KEY
 // served from another source, or DEEL_API_KEY's max-grant lowered below the grant's 600 seconds;
 // or ACME_TOKEN's own max-grant is lowered while it still wants an approval. The release, or the
-// next request that would reuse the grant, must end it although ACME_TOKEN still pauses it, and
-// once every change is taken back the grant still releases nothing. No request reuses the grant
-// under a lowered max-grant: a request for its 600 seconds is refused when it is written, so the
-// release alone is asked.
+// next request for the grant's names, must end it whatever ACME_TOKEN answers, and once every
+// change is taken back the grant still releases nothing.
 func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) {
 	names := []string{"DEEL_API_KEY", "AUTO_TOKEN", "ACME_TOKEN"}
 	released := func(release Release) bool {
@@ -412,25 +410,29 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 		s.Tags[policy.TagMaxGrant] = "5m"
 		return s
 	}
-	pauses := map[string]func(t *testing.T, m *Machine){
-		"ACME_TOKEN wants an approval": func(t *testing.T, m *Machine) {
+	type setupChange struct {
+		apply     func(*testing.T, *Machine)
+		endsGrant bool
+	}
+	pauses := map[string]setupChange{
+		"ACME_TOKEN wants an approval": {apply: func(t *testing.T, m *Machine) {
 			retag(t, m, policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierHuman, "acme-v1"))
-		},
-		"ACME_TOKEN wants another person's approval": func(t *testing.T, m *Machine) {
+		}},
+		"ACME_TOKEN wants another person's approval": {apply: func(t *testing.T, m *Machine) {
 			retag(t, m, policytest.Secret("ACME_TOKEN", otherPerson, policy.TierHuman, "acme-v1"))
-		},
-		"ACME_TOKEN is not served under a tag the loader refuses": func(t *testing.T, m *Machine) {
+		}},
+		"ACME_TOKEN is not served under a tag the loader refuses": {apply: func(t *testing.T, m *Machine) {
 			refused := policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1")
 			refused.Tags[policy.TagAdmin] = "yes"
 			retag(t, m, refused)
-		},
-		"ACME_TOKEN is not served, its value gone": func(t *testing.T, m *Machine) {
+		}},
+		"ACME_TOKEN is not served, its value gone": {apply: func(t *testing.T, m *Machine) {
 			fixtureStore(m).Delete(policytest.ID("ACME_TOKEN"))
 			retag(t, m)
-		},
-		"ACME_TOKEN allows at most 5 minutes": func(t *testing.T, m *Machine) {
+		}},
+		"ACME_TOKEN allows at most 5 minutes": {apply: func(t *testing.T, m *Machine) {
 			retag(t, m, lowered(policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1")))
-		},
+		}, endsGrant: true},
 	}
 	ends := map[string]struct {
 		name   string
@@ -485,11 +487,12 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 				t.Fatalf("Values before any change = %+v, %v; want all three keys released", release, err)
 			}
 
-			// Most setup changes only pause the release. A lowered max-grant is itself a
-			// permanent end, but Create still must find that end before its own max-grant
-			// refusal would return.
-			pauses[c.pause](t, m)
-			if c.pause != "ACME_TOKEN allows at most 5 minutes" {
+			// The setup's own effect is data, not its label: most changes only pause the release,
+			// while a lowered max-grant is itself an end that Create must find before its own
+			// max-grant refusal returns.
+			setup := pauses[c.pause]
+			setup.apply(t, m)
+			if !setup.endsGrant {
 				if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
 					t.Fatalf("Values while %s = %+v, %v; want ErrGrantNotLive and nothing released", c.pause, release, err)
 				}
@@ -528,10 +531,10 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 	}
 }
 
-// TestAChainFailureDoesNotHideAnotherKeysEnd: an adopted grant may have an approval
-// chain signed for another broker address. Its release still writes that chain's warning,
-// but an administrator tag or the other permanent changes end the grant before the chain
-// refusal can leave it live.
+// TestAChainFailureDoesNotHideAnotherKeysEnd: an unserved key's changed airlock entry makes the
+// judged grant's approval chain fail at the release. The release still writes that chain's
+// warning, but an administrator tag or a requester drop ends the grant before the chain refusal
+// can leave it live.
 func TestAChainFailureDoesNotHideAnotherKeysEnd(t *testing.T) {
 	names := []string{"DEEL_API_KEY", "AUTO_TOKEN"}
 	for _, c := range []struct {
@@ -645,6 +648,109 @@ func TestAPendingValueDoesNotHideAnEndAtTheNextRequest(t *testing.T) {
 				t.Fatalf("Values after the pending-value control is restored = %+v, %v; want the live grant released", release, err)
 			}
 		})
+	}
+}
+
+// TestCreateRechecksEachLiveGrantUnderItsOwnLifetime: Create checks every live grant for exactly
+// the requested names before its own refusals, but it checks each one under the lifetime that
+// grant's request signed, not the new request's. So a request that cannot reuse the grant still
+// ends it for an administrator tag or a cap the grant is over, and a request over a cap does not
+// end a grant that is still inside that cap.
+func TestCreateRechecksEachLiveGrantUnderItsOwnLifetime(t *testing.T) {
+	names := []string{"DEEL_API_KEY", "AUTO_TOKEN", "ACME_TOKEN"}
+	released := func(release Release) bool {
+		return slices.ContainsFunc(names, func(name string) bool { return releasedValue(release, name) != "" })
+	}
+	acmeUnserved := func(t *testing.T, m *Machine) {
+		fixtureStore(m).Delete(policytest.ID("ACME_TOKEN"))
+		retag(t, m)
+	}
+	capped := func(name, value, limit string) func(*testing.T, *Machine) {
+		return func(t *testing.T, m *Machine) {
+			s := policytest.Secret(name, fixtureOperator, policy.TierAgent, value)
+			s.Tags[policy.TagMaxGrant] = limit
+			retag(t, m, s)
+		}
+	}
+	for _, c := range []struct {
+		name          string
+		grantSeconds  int
+		askedSeconds  int
+		change        func(*testing.T, *Machine)
+		adminTag      bool
+		createRefuses bool
+		endsGrant     bool
+	}{
+		{"an unserved key refuses a shorter request and leaves the grant live", 600, 300, acmeUnserved, false, true, false},
+		{"an unserved key refuses a shorter request but an administrator tag ends the grant", 600, 300, acmeUnserved, true, true, true},
+		{"a longer request over a cap leaves a grant inside it live", 600, 900, capped("ACME_TOKEN", "acme-v1", "10m"), false, true, false},
+		{"a longer request over a cap still ends a grant an administrator tag ends", 600, 900, capped("ACME_TOKEN", "acme-v1", "10m"), true, true, true},
+		{"a shorter request ends a grant over a lowered cap", 600, 300, capped("AUTO_TOKEN", "auto-v1", "5m"), false, false, true},
+		{"a longer request over a cap leaves a shorter grant inside it live", 300, 900, capped("AUTO_TOKEN", "auto-v1", "10m"), false, true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, session, key := newJudgeFixture(t)
+			retag(t, m, policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1"))
+			judged := judgedGrant(t, m, session, key, c.grantSeconds, names...)
+			c.change(t, m)
+			if c.adminTag {
+				retag(t, m, adminSecret("AUTO_TOKEN", "auto-v1"))
+			}
+
+			again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes again", c.askedSeconds, names...), "", nil)
+			if c.createRefuses && err == nil {
+				t.Fatalf("Create(%d seconds) = %+v; want its own refusal before any reuse", c.askedSeconds, again)
+			}
+			if !c.createRefuses && err != nil {
+				t.Fatalf("Create(%d seconds) = %v; want no refusal of its own", c.askedSeconds, err)
+			}
+			by, audits := endedForGood(t, m, judged)
+			if c.endsGrant && (by != GrantEndedActor || audits != 1) {
+				t.Fatalf("the %d-second grant after a %d-second request: revoked_by %q with %d grant.revoked rows; want one broker end", c.grantSeconds, c.askedSeconds, by, audits)
+			}
+			if !c.endsGrant && (by != "" || audits != 0) {
+				t.Fatalf("the %d-second grant after a %d-second request: revoked_by %q with %d grant.revoked rows; want it live", c.grantSeconds, c.askedSeconds, by, audits)
+			}
+
+			retag(t, m,
+				policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"),
+				policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1"),
+				policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1"))
+			release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{})
+			if c.endsGrant && (!errors.Is(err, ErrGrantNotLive) || released(release)) {
+				t.Fatalf("Values once every change is taken back = %+v, %v; want the grant still ended", release, err)
+			}
+			if !c.endsGrant && (err != nil || !released(release)) {
+				t.Fatalf("Values once every change is taken back = %+v, %v; want the live grant released", release, err)
+			}
+		})
+	}
+}
+
+// TestCreateRechecksEveryLiveGrantForTheNames: two live grants of the same names, the older over
+// AUTO_TOKEN's lowered cap and the newer inside it. A request for the newer grant's lifetime must
+// end the older grant before it hands the newer one back.
+func TestCreateRechecksEveryLiveGrantForTheNames(t *testing.T) {
+	names := []string{"DEEL_API_KEY", "AUTO_TOKEN"}
+	m, session, key := newJudgeFixture(t)
+	older := judgedGrant(t, m, session, key, 600, names...)
+	newer := judgedGrant(t, m, session, key, 300, names...)
+	if older == newer {
+		t.Fatalf("setup made one grant %s; want two", older)
+	}
+	capped := policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1")
+	capped.Tags[policy.TagMaxGrant] = "5m"
+	retag(t, m, capped)
+
+	again, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes again", 300, names...), "", nil)
+	if err != nil || again.GrantID == nil || *again.GrantID != newer {
+		t.Fatalf("Create(300 seconds) = %+v, %v; want the newer grant %s handed back", again, err, newer)
+	}
+	if by, audits := endedForGood(t, m, older); by != GrantEndedActor || audits != 1 {
+		t.Fatalf("the older grant over the cap: revoked_by %q with %d grant.revoked rows; want one broker end", by, audits)
+	}
+	if by, audits := endedForGood(t, m, newer); by != "" || audits != 0 {
+		t.Fatalf("the newer grant inside the cap: revoked_by %q with %d grant.revoked rows; want it live", by, audits)
 	}
 }
 

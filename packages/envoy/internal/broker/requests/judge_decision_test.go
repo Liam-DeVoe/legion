@@ -184,7 +184,7 @@ func TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
-			req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, c.secret)
+			req := pendingJudgeable(t, m, enr, key, "the release job wants the key", 600, c.secret)
 
 			dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant", "issue": "ACME-1353"})
 			if err != nil || dec.State != "granted" || dec.GrantID == "" {
@@ -222,7 +222,7 @@ func TestTheJudgesApprovalGrantsUnderTheRecordsOwnApprover(t *testing.T) {
 // decision event, no grant, and the request still waiting for the person who decides it today.
 func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
-	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+	req := pendingJudgeable(t, m, enr, key, "the release job wants the key", 600, "DEEL_API_KEY")
 
 	if err := m.LogJudged(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "refer", "why": "an answer outside grant and deny, which hands the request over"}); err != nil {
 		t.Fatalf("LogJudged: %v", err)
@@ -240,7 +240,7 @@ func TestAVerdictThatDecidesNothingWritesOnlyItself(t *testing.T) {
 
 	// A verdict a caller left nil is a row all the same: audit.detail is NOT NULL, so it is
 	// written as the empty object rather than refused.
-	bare := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key too", 600, "SHARED_KEY")
+	bare := pendingJudgeable(t, m, enr, key, "the release job wants the key too", 600, "SHARED_KEY")
 	if err := m.LogJudged(t.Context(), *bare.RecordID, judgeModel, nil); err != nil {
 		t.Fatalf("LogJudged(no detail): %v", err)
 	}
@@ -302,7 +302,7 @@ func TestOneDecisionBetweenThePersonAndTheJudge(t *testing.T) {
 	for name, judgeFirst := range map[string]bool{"the judge first": true, "the person after the hand-over": false} {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
-			req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+			req := pendingJudgeable(t, m, enr, key, "the release job wants the key", 600, "DEEL_API_KEY")
 			verdict := map[string]any{"verdict": "grant"}
 
 			if judgeFirst {
@@ -385,7 +385,7 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m, enr, key := newJudgeFixture(t)
-			req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+			req := pendingJudgeable(t, m, enr, key, "the release job wants the key", 600, "DEEL_API_KEY")
 			if c.before != nil {
 				c.before(t, m, enr)
 			}
@@ -421,7 +421,7 @@ func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
 // the owner's to approve, which is the path a person has had all along.
 func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
 	m, enr, key := newJudgeFixture(t)
-	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+	req := pendingJudgeable(t, m, enr, key, "the release job wants the key", 600, "DEEL_API_KEY")
 	if _, err := m.Store.Pool.Exec(t.Context(),
 		`insert into withheld_secrets (enrollment_id, name) values ($1,'DEEL_API_KEY')`, enr); err != nil {
 		t.Fatalf("withhold the name: %v", err)
@@ -463,11 +463,12 @@ func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
 // is the secret's, and the author of the rules file cannot undo it.
 //
 // The guard is the judge's alone: the same admin secret, on the same request, is still the
-// owner's to approve, which is the path a person has had all along.
+// owner's to approve, and the proxy reads the value adminSecret stored for that name.
 func TestTheJudgeSettlesNoAdminSecret(t *testing.T) {
+	const adminValue = "admin-console-value"
 	m, enr, key := newJudgeFixture(t)
-	retag(t, m, adminSecret(adminSecretName, "admin-v1"))
-	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the admin console", 600, adminSecretName)
+	retag(t, m, adminSecret(adminSecretName, adminValue))
+	req := pendingJudgeable(t, m, enr, key, "the release job wants the admin console", 600, adminSecretName)
 
 	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "grant"})
 	if !errors.Is(err, record.ErrNotApprover) {
@@ -484,5 +485,9 @@ func TestTheJudgeSettlesNoAdminSecret(t *testing.T) {
 	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
 	if err != nil || person.State != "granted" || person.GrantID == "" {
 		t.Fatalf("the owner's approval of the same administrator's secret = %+v, %v; want it granted, which is the only way one is ever released", person, err)
+	}
+	values, _, err := m.AirlockValues(t.Context(), person.GrantID)
+	if err != nil || values[adminSecretName].Slots[SlotValue] != adminValue {
+		t.Fatalf("AirlockValues(the owner's grant) = %v, %v; want the value adminSecret stored", values, err)
 	}
 }

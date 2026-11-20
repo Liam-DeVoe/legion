@@ -511,8 +511,11 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay
 // seam), requires iss to be this enrollment's own key and no login_hint (session requests never
 // name their own approver — that's the policy's job), rereads each name the live policy does not
-// serve (rereadMissing), and hands back a live grant for exactly these names when one may be
-// reused (reuseLiveGrant). Otherwise it decides and writes the request in one transaction: it
+// serve (rereadMissing), and checks every live grant for exactly these names before any refusal
+// of a well-formed request (endMatchingLiveGrants). That pass ends each grant its current rules
+// end, under that grant's own lifetime. Create then hands back a live grant for exactly these
+// names when one may be reused (reuseLiveGrant). Otherwise it decides and writes the request in
+// one transaction: it
 // takes the advisory locks that serialize pending requests for each requested name in one
 // enrollment (lockPendingNames), then locks the enrollment live (lockLiveEnrollment), so no
 // request or grant lands on an enrollment that ended after Create first read it (such an
@@ -553,13 +556,16 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // the enrollment's lock, end them, commit and then log each end naming the reused grant's request.
 // With none it opens no transaction and writes nothing beyond the jti Replay already wrote, so
 // such an ask waits on no writer of the enrollment row. An error of that read or of that
-// transaction is the ask's. An ask Create refuses before it writes a request ends nothing: an
+// transaction is the ask's. An ask Create refuses before it writes a request ends no request: an
 // invalid or replayed request object, an unknown name
 // (policy.ErrUnknownSecret, which the evaluation answers), a name whose value is pending, a
 // lifetime over a name's max-grant, a narrowing refusal or ErrMixedApprovers (the evaluation's
-// too). Each of them returns before any end runs, since the main transaction ends requests only
-// once the evaluation has answered and the reuse path only once a live grant has: no request of
-// that ask exists for the line to name, and the session's next valid ask ends that request.
+// too). Each of them returns before any request end runs, since the main transaction ends requests
+// only once the evaluation has answered and the reuse path only once a live grant has: no request
+// of that ask exists for the line to name, and the session's next valid ask ends that request. A
+// well-formed ask that Create refuses for a pending value, an unknown name, a max-grant or mixed
+// approvers can still end a live grant of the same names first (endMatchingLiveGrants). A
+// malformed or replayed request object is refused before that grant check.
 //
 // An end takes the request's row lock after the advisory locks, which every Create takes in
 // sorted name order, and after the enrollment's lock for share. applyDecisionAttempt, which
@@ -643,8 +649,10 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	sorted := sortedCopy(names)
 	// A matching live grant must be re-checked before this new request can refuse for a pending
 	// value, the judge pre-check, or a max-grant limit. Those refusals pause or reject the new
-	// request, but cannot keep an old grant live when any key now ends it permanently.
-	if err := m.endMatchingLiveGrants(ctx, enr, sorted, set); err != nil {
+	// request, but cannot keep an old grant live when any key now ends it permanently. The pass
+	// keeps each grant it left live, with its pause, for the reuse below.
+	checkedGrants, err := m.endMatchingLiveGrants(ctx, enr, sorted, set)
+	if err != nil {
 		return Request{}, err
 	}
 	// A secret `agent-secrets secret create` made and has not yet filled is refused as such, never
@@ -685,7 +693,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, fmt.Errorf("%w: %s allows at most %s; ask with agent-secrets --ttl %s", ErrGrantRequiresLifetime, name, limit, limit)
 		}
 	}
-	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set); err != nil {
+	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, checkedGrants); err != nil {
 		return Request{}, err
 	} else if ok {
 		if err := m.endBesideReusedGrant(ctx, enrollmentID, sorted, existing.ID); err != nil {
