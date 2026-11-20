@@ -464,7 +464,7 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
-		$55, $56, $57, $58, $59,
+		$55, $56, $57, $58, $59, $60,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -547,8 +547,8 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		updated_at = now()
 		returning token, issue, provider_errors_told_run)
 		insert into provider_errors_owed (claim_token, run, reason)
-		select token, $60::bigint, $61::text from claim
-		where issue <> '' and $60::bigint > 0 and $60::bigint > provider_errors_told_run
+		select token, $61::bigint, $62::text from claim
+		where issue <> '' and $61::bigint > 0 and $61::bigint > provider_errors_told_run
 		on conflict (claim_token, run) do update set reason = excluded.reason
 		where provider_errors_owed.reason <> excluded.reason`,
 		string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), int64(c.Generation), int64(c.TreeEpoch),
