@@ -181,7 +181,7 @@ func (f *fakeGitHub) newTestClient(options ...githubapp.Option) *githubapp.Clien
 
 // newAppClient is a GitHub App client, signed with a key made for the test, of the GitHub
 // stand-in spec describes, with options where a test needs them.
-func newAppClient(t *testing.T, spec githubtest.Spec, options ...githubapp.Option) *githubapp.Client {
+func newAppClient(t testing.TB, spec githubtest.Spec, options ...githubapp.Option) *githubapp.Client {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
