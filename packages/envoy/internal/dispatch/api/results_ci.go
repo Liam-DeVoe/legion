@@ -478,7 +478,7 @@ func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, r
 	answer := &model.CheckCI{
 		Run: run.name, State: verdict, Case: run.conclusion,
 		Detail: fmt.Sprintf("CI run %s concluded %s at %s.", run.name, run.conclusion, at),
-		Line: ciVerdictLine(check, name, verdict, head.HeadSHA, words),
+		Line:   ciVerdictLine(check, name, verdict, head.HeadSHA, words),
 		Commit: head.HeadSHA, Repo: head.Repo, Result: result.ID,
 	}
 	return answer, &result
