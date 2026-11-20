@@ -121,17 +121,51 @@ def _fakes(shell, words: list) -> frozenset:
     (`PATH="$bin:$PATH" cmd`, `env -u X PATH=… cmd`) or for the whole text by an assignment
     (`export PATH="$bin:$PATH"`). autodeploy_test.sh writes its fake docker to "$bin/docker" (its
     line 55, `cat >"$bin/docker"`) and runs autodeploy.sh under `PATH="$bin:$PATH"` (its line 334),
-    so in envoy-go-checks every docker call of autodeploy.sh reaches that fake and no registry;
-    airlock-check.test.sh fakes curl the same way for the k7 consumers it sources. In the script
-    such a command runs or sources, and the scripts that one runs in turn, a command of such a name
+    so in envoy-go-checks every docker call of autodeploy.sh reaches that fake and no registry. In
+    the script such a command runs, and the scripts that one runs in turn, a command of such a name
     is the fake and no install; a script the same text runs without that PATH gets no fake, and
-    every other command is read as anywhere else. A directory a PATH names after the runner's own is
-    no fake's: the real command comes first there."""
+    every other command is read as anywhere else. A script the text sources (`source x`, `. x`) is
+    read under every PATH the text sets for any of its commands: its functions run in the text,
+    under the PATH of the command that calls them, which this reader does not follow.
+    airlock-check.test.sh sources the k7 consumers and calls their curl only inside `env -u
+    BASH_ENV PATH="$work/consumer-bin:$PATH" bash -c …`, where its fake curl is first. A directory
+    a PATH names after the runner's own is no fake's: the real command comes first there."""
     own = shell.prefixes.get(tuple(words), {}).get("PATH")
-    values = ([own] if own is not None else []) + [value for name, value in shell.assignments if name == "PATH"]
+    values = [value for _, value in shell.paths] if tuple(words) in shell.sourced else \
+        [own] if own is not None else []
+    values += [value for name, value in shell.assignments if name == "PATH"]
     firsts = {value.split(":", 1)[0] for value in values}
     return frozenset(posixpath.basename(target) for target in shell.writes
                      if posixpath.dirname(target) and posixpath.dirname(target) in firsts)
+
+
+def _option_variables(assignments: list) -> dict:
+    """The variables a text builds of options alone, as the words one expands to: every value it
+    gives the name is empty, or, after the name itself where it starts with it (`forward="$forward
+    -e $name"`), words of which the first is an option. An unquoted one before a docker run's image
+    expands to those options, so the image is still the first word no option takes:
+    packages/dispatch/e2e/visual-run.sh forwards its harness variables to the container so."""
+    given: dict = {}
+    for name, value in assignments:
+        given.setdefault(name, []).append(value.split())
+    found = {}
+    for name, values in given.items():
+        own = (f"${name}", f"${{{name}}}")
+        tails = [words[1:] if words[:1] and words[0] in own else words for words in values]
+        if any(tails) and all(not tail or tail[0].startswith("-") for tail in tails) and \
+                not any(word in own for tail in tails for word in tail):
+            found[name] = max(tails, key=len)
+    return found
+
+
+def _expanded(words: list, options: dict) -> list:
+    """The words, each that names alone a variable of `options` (_option_variables) read as the
+    options it expands to."""
+    out: list = []
+    for word in words:
+        match = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?", word)
+        out += options[match.group(1)] if match and match.group(1) in options else [word]
+    return out
 
 
 @cache
@@ -371,6 +405,7 @@ class NetworkInstalls:
         shell = read_shell(run, WRAPPERS)
         environment(shell.assignments, site)
         local = local_urls(shell.assignments, known)
+        options = _option_variables(shell.assignments)
         found: list = []
         unfound: list = []
         for pipeline, loops, guards, cwd in zip(shell.pipelines, shell.loops, shell.guards, shell.cwds):
@@ -393,7 +428,7 @@ class NetworkInstalls:
                     self.read_wrapped(here, words, wrapped, loops, known)
                     continue
                 install = None if name == "go" and tuple(words) in shell.offline else \
-                    self.install_of(words, here, wrapped, local)
+                    self.install_of(words, here, wrapped, local, options)
                 if install:
                     found.append(install)
                 if name in ("curl", "wget") and name not in site.fakes and \
@@ -432,7 +467,8 @@ class NetworkInstalls:
                               f"directory, from $GITHUB_WORKSPACE or $GITHUB_ACTION_PATH, or from a variable the "
                               f"script sets to its own directory (`here=$(cd \"$(dirname \"$0\")\" && pwd)`)")
 
-    def install_of(self, words: list, site: Site, wrapped: list, local: frozenset = frozenset()) -> tuple | None:
+    def install_of(self, words: list, site: Site, wrapped: list, local: frozenset = frozenset(),
+                   options: dict | None = None) -> tuple | None:
         """The install a command makes, as network_install names it (its words and its kind), with
         what the job did before it read in: a container of an image an earlier wrapped `docker pull`
         of the job pulled, and a Lean command after a wrapped install of its toolchain, pull
@@ -444,6 +480,8 @@ class NetworkInstalls:
             return None if self.elan else (f"{name} (elan's download of the Lean toolchain lean-toolchain names)",
                                            "elan")
         if name in ("docker", "docker-compose"):
+            # A variable the text builds of options alone, before the image, is read as those options.
+            words = _expanded(words, options or {})
             docker = docker_command(name, words[1:])
             if docker and docker.verb == "docker build":
                 self.read_docker_build(site, words, wrapped)

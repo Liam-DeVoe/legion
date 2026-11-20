@@ -122,10 +122,13 @@ class Shell:
     commands among them run with the module proxy off (`offline`: GOPROXY `off` or `file://…`); and,
     one per pipeline, the directory a `cd` of a written-out relative path moved it to from where the
     text started ("" for none, None after a `cd` of any other word), a subshell's own ending with it
-    (`(cd packages/a && ../../x.sh)`)."""
+    (`(cd packages/a && ../../x.sh)`); and the commands a `source` or a `.` reads into the text
+    (`sourced`), by the tuple of their words: such a script's functions run in the text that read it,
+    under whatever PATH the text gives the command that calls them."""
 
     def __init__(self, pipelines: list, loops: list, assignments: list, writes: list, paths: list,
-                 guards: list | None = None, prefixes: dict | None = None, cwds: list | None = None) -> None:
+                 guards: list | None = None, prefixes: dict | None = None, cwds: list | None = None,
+                 sourced: set | None = None) -> None:
         self.pipelines = pipelines
         self.loops = loops
         self.assignments = assignments
@@ -135,6 +138,7 @@ class Shell:
         self.prefixes = prefixes or {}
         self.offline = {command for command, env in self.prefixes.items() if offline_proxy(env)}
         self.cwds = cwds if cwds is not None else [""] * len(pipelines)
+        self.sourced = sourced or set()
 
 
 # The test of an `if` that runs its branch only while a variable is unset or empty.
@@ -215,6 +219,7 @@ class Scanner:
         self.loop_of: list[tuple] = []
         self.guard_of: list[tuple] = []
         self.prefixes: dict[tuple, dict] = {}
+        self.sourced: set[tuple] = set()
         # The `if` blocks open around the command being read, innermost last: the variable each
         # holds unset in its `then` branch, or "" for any other test or branch; "?NAME" until the
         # `then`, so the test itself stands in no branch.
@@ -349,9 +354,12 @@ class Scanner:
         joined: list[list[str]] = []
         for words in self.pipeline:
             env = prefix_assignments(words)
+            sourcing = sources(words)
             reduced = command_of(words, self.through)
             for command in (command for pipeline in reduced for command in pipeline if env):
                 self.prefixes.setdefault(tuple(command), {}).update(env)
+            if sourcing:
+                self.sourced.update(tuple(command) for pipeline in reduced for command in pipeline)
             if len(reduced) == 1:
                 joined += reduced[0]
             else:
@@ -541,7 +549,16 @@ def read_shell(run: str, through: dict | None = None) -> Shell:
     scanner = Scanner(through)
     pipelines = scanner.scan(EXPRESSION.sub("EXPR", run))
     return Shell(pipelines, scanner.loop_of, scanner.assignments, scanner.writes, scanner.paths,
-                 scanner.guard_of, scanner.prefixes, scanner.cwd_of)
+                 scanner.guard_of, scanner.prefixes, scanner.cwd_of, scanner.sourced)
+
+
+def sources(words: list[str]) -> bool:
+    """Whether the words read a script into the shell that runs them (`source x`, `. x`), after the
+    assignments and keywords before them."""
+    index = 0
+    while index < len(words) and (ASSIGNMENT.match(words[index]) or words[index] in SKIP_WORDS):
+        index += 1
+    return index < len(words) and words[index] in ("source", ".")
 
 
 def pipelines_of(run: str, through: dict | None = None) -> list[list[list[str]]]:
