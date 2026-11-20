@@ -73,6 +73,8 @@ type rig struct {
 	*roleConn
 	// stderr is what the launcher and its children wrote to Config.Stderr.
 	stderr *lockedBuffer
+	// entries is the file a PID-one launcher of namespaceRig says its hostproc entries in.
+	entries string
 }
 
 // roleConn is the daemon end of one role's launcher connection: the frames it reads, the hello

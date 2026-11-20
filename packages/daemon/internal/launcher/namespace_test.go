@@ -3,6 +3,7 @@ package launcher
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -10,7 +11,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,13 +25,18 @@ import (
 // leaves such a child the environment its test hands it (helperChildVariables).
 const namespaceHelperEnv = "LEGION_LAUNCHER_NAMESPACE_HELPER"
 
-// This helper runs the real launcher as PID 1, without a Docker daemon or a model process.
+// This helper runs the real launcher as PID 1, without a Docker daemon or a model process. It first
+// writes the wrapper's record and the starting test it was given to the file
+// LEGION_LAUNCHER_TEST_ENV_FILE names (pidOneEntries), for the test that started it to read.
 func TestLauncherPIDOneHelper(t *testing.T) {
 	if os.Getenv(namespaceHelperEnv) != "1" {
 		return
 	}
 	if os.Getpid() != 1 {
 		t.Fatal("launcher namespace helper is not PID 1")
+	}
+	if err := os.WriteFile(os.Getenv("LEGION_LAUNCHER_TEST_ENV_FILE"), []byte(pidOneEntries()), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
@@ -75,25 +80,50 @@ func pidNamespace(t *testing.T) []string {
 // (helperChildVariables), and each helper it runs returns at once without it.
 const pidOneHelperEnv = "LEGION_LAUNCHER_PID_ONE_HELPER"
 
+// pidOneEntries is what a PID-one helper says of the hostproc entries of its environment, one
+// line: the wrapper's record, the starting test, and whether it was marked the binary go ran.
+func pidOneEntries() string {
+	_, binary := os.LookupEnv(hostproc.BinaryEnv)
+	return "pid-one entries: " + hostproc.RecordEnv + "=" + os.Getenv(hostproc.RecordEnv) + " " +
+		hostproc.TestEnv + "=" + os.Getenv(hostproc.TestEnv) + " " + hostproc.BinaryEnv + "=" + strconv.FormatBool(binary) + "\n"
+}
+
+// TestPIDOneHelperSaysItsEntries is the helper the test below runs as PID 1: it prints its entries.
+func TestPIDOneHelperSaysItsEntries(t *testing.T) {
+	if os.Getenv(pidOneHelperEnv) == "" {
+		return
+	}
+	fmt.Print(pidOneEntries())
+}
+
 // A PID-one helper clears its environment with env -i, so it carries the wrapper's record and the
-// test that started it explicitly. It never carries BinaryEnv: only go's own test binary has it.
+// test that started it explicitly, and never BinaryEnv: only go's own test binary has it. Each of
+// the two places that start one is run here as PID 1 of a namespace of its own, and the helper
+// says what it was given: runAsPIDOne, which the drain, reap, put-back and leak-check tests use,
+// and namespaceRig, which runs the launcher itself. Run by hand, the test gives itself a record.
 func TestPIDOneHelpersCarryThePrivateProcRecordAndStartingTest(t *testing.T) {
-	t.Setenv(hostproc.RecordEnv, "/private/scans")
-	t.Setenv(hostproc.BinaryEnv, "1")
-	got := pidOneHelperEnvironment(t, "PATH=/usr/bin:/bin", pidOneHelperEnv+"=1")
-	for _, want := range []string{
-		"PATH=/usr/bin:/bin",
-		pidOneHelperEnv + "=1",
-		hostproc.RecordEnv + "=/private/scans",
-		hostproc.ChildEnv(t),
-	} {
-		if !slices.Contains(got, want) {
-			t.Errorf("the PID-one helper environment is %q, which does not carry %q", got, want)
+	record := os.Getenv(hostproc.RecordEnv)
+	if record == "" {
+		record = filepath.Join(t.TempDir(), "scans")
+		if err := os.WriteFile(record, nil, 0o600); err != nil {
+			t.Fatal(err)
 		}
+		t.Setenv(hostproc.RecordEnv, record)
 	}
-	if slices.Contains(got, hostproc.BinaryEnv+"=1") {
-		t.Errorf("the PID-one helper environment is %q, which carries %s: only go's own binary is marked", got, hostproc.BinaryEnv)
-	}
+	t.Setenv(hostproc.BinaryEnv, "1")
+	want := "pid-one entries: " + hostproc.RecordEnv + "=" + record + " " + hostproc.ChildEnv(t) + " " + hostproc.BinaryEnv + "=false\n"
+	t.Run("runAsPIDOne", func(t *testing.T) {
+		if got := runAsPIDOne(t, "TestPIDOneHelperSaysItsEntries"); !strings.Contains(got, want) {
+			t.Fatalf("the PID-one helper said:\n%s\nwhich does not hold %q", got, want)
+		}
+	})
+	t.Run("namespaceRig", func(t *testing.T) {
+		g := namespaceRig(t, time.Second)
+		got, err := os.ReadFile(g.entries)
+		if err != nil || string(got) != want {
+			t.Fatalf("the PID-one launcher said %q (%v), want %q", got, err, want)
+		}
+	})
 }
 
 // pidOneHelperEnvironment is the only environment an env -i PID-one helper receives: the test's
@@ -139,13 +169,15 @@ func namespaceRig(t *testing.T, grace time.Duration) *rig {
 		t.Fatal(err)
 	}
 	g := &rig{t: t, listener: listener, private: t.TempDir(), result: make(chan error, 1)}
+	g.entries = filepath.Join(t.TempDir(), "pid-one-entries")
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	environment := pidOneHelperEnvironment(t, "PATH=/usr/bin:/bin", "GOMAXPROCS=1",
 		namespaceHelperEnv+"=1", "LEGION_LAUNCHER_TEST_ADDRESS=tcp://"+listener.Addr().String(),
-		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String())
+		"LEGION_LAUNCHER_TEST_PRIVATE="+g.private, "LEGION_LAUNCHER_TEST_GRACE="+grace.String(),
+		"LEGION_LAUNCHER_TEST_ENV_FILE="+g.entries)
 	args := append(append(append([]string{}, prefix...), "/usr/bin/env", "-i"), environment...)
 	args = append(args, self, "-test.run=^TestLauncherPIDOneHelper$")
 	command := exec.Command("sudo", args...)
