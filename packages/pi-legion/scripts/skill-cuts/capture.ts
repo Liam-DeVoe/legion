@@ -79,6 +79,7 @@ import {
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import { linkOmpNatives } from "@legion/pi-shared/test/omp-natives";
 import type { Arm, ArmName } from "./arms";
 import type { Case } from "./cases";
@@ -711,6 +712,33 @@ export async function captureBody(
       return new Response(null, { status: 204 });
     }
     const endpoint = request.path.split("?")[0];
+    // The stand-in Envoy listener, for the claim boot of a pane whose plugins register the
+    // session and claim its role before the first model request (cybermonklabs/legion before
+    // the claim moved to the session's first turn): the registration is answered with the
+    // session's interest and a consumer for it, which every client version parses (one that
+    // predates session consumers reads it as core delivery), and the role claim with that
+    // interest. The consumer is `@legion/envoy-client/test/subscribe-answer`'s, the one every
+    // stand-in listener of this repository answers, so it never drifts from what the client
+    // accepts. Every other Envoy route is refused.
+    if (
+      pane !== undefined &&
+      request.method === "POST" &&
+      (endpoint === "/envoy/v1/interests/subscribe" || endpoint === "/envoy/v1/roles/set")
+    ) {
+      const asked: unknown = request.body === "" ? {} : JSON.parse(request.body);
+      const named =
+        typeof asked === "object" && asked !== null ? Reflect.get(asked, "session_id") : undefined;
+      const session = typeof named === "string" ? named : "skill-cuts-capture";
+      return Response.json({
+        session_id: session,
+        machine_id: "skill-cuts-capture",
+        dir: context.workspace,
+        topics: [],
+        ...(endpoint === "/envoy/v1/interests/subscribe"
+          ? { delivery: consumerDelivery(session, { streamID: "skill-cuts-capture" }) }
+          : {}),
+      });
+    }
     if (
       request.method !== "POST" ||
       (endpoint !== "/v1/messages" && endpoint !== "/v1/responses")
@@ -811,6 +839,8 @@ export async function captureBody(
     const out = path.join(root, `omp-${runs}.out.jsonl`);
     const err = path.join(root, `omp-${runs}.err.txt`);
     hookLog = path.join(root, `hook-${runs}.jsonl`);
+    // Each arm of a case runs in the case's one directory: its log holds this run's lines only.
+    rmSync(hookLog, { force: true });
     const child = Bun.spawn(
       [
         options.omp,

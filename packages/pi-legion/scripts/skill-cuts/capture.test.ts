@@ -829,4 +829,116 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
     },
     ROW_TIMEOUT_MS
   );
+
+  test(
+    "a Legion pane whose plugin registers the session and claims its role before the first model request gets through its boot: the stand-in answers the registration and the claim in shapes the client parses",
+    async () => {
+      await captures();
+      // A made-up plugin whose boot does what the Legion plugins did before their role claim
+      // moved to the first turn: at session start it registers the session with the Envoy
+      // listener and claims the role, reads each answer as the Envoy client of this checkout
+      // reads it (`parseSubscribeAnswer` takes no registration without a consumer), defines its
+      // tool only then, and ends the process when either is refused, as that boot did.
+      const transport = path.resolve(import.meta.dir, "../../../envoy-client/src/transport.ts");
+      const repo = path.join(dir, "repos/acme/boot", COMMIT);
+      writeTree(path.join(repo, "packages/boot-probe"), {
+        "package.json": JSON.stringify({
+          name: "@acme/boot-probe",
+          files: ["dist"],
+          omp: { extensions: ["dist/boot.js"] },
+        }),
+        "src/boot.ts": `import { parseSubscribeAnswer } from ${JSON.stringify(transport)};
+
+const post = async (route, body) => {
+  const answer = await fetch(process.env.ENVOY_URL + route, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!answer.ok) {
+    console.error("[boot-probe] claim boot failed: POST " + route + " answered " + answer.status);
+    process.exit(1);
+  }
+  return answer.json();
+};
+
+export default function bootProbe(pi) {
+  pi.on("session_start", async (_event, context) => {
+    const session = context.sessionManager.getSessionId();
+    parseSubscribeAnswer(
+      await post("/v1/interests/subscribe", {
+        session_id: session,
+        dir: process.cwd(),
+        topics: [],
+        delivery: { consumer: true, epoch: "boot-probe" },
+      })
+    );
+    await post("/v1/roles/set", { session_id: session, role: "capture-role" });
+    pi.registerTool({
+      name: "boot_probe",
+      label: "boot_probe",
+      description: "A made-up tool its plugin defines once its boot has registered and claimed.",
+      parameters: pi.zod.object({}),
+      execute: async () => ({ content: [{ type: "text", text: "ok" }] }),
+    });
+    await pi.setActiveTools([...pi.getActiveTools(), "boot_probe"]);
+  });
+}
+`,
+      });
+      // Bundled as the Legion plugins are, so the client's own imports travel with it.
+      const built = Bun.spawnSync(
+        ["bun", "build", "src/boot.ts", "--outdir", "dist", "--target", "bun", "--format", "esm"],
+        { cwd: path.join(repo, "packages/boot-probe"), stderr: "pipe" }
+      );
+      expect({
+        code: built.exitCode,
+        stderr: built.exitCode === 0 ? "" : built.stderr.toString(),
+      }).toEqual({ code: 0, stderr: "" });
+      const base = f1Case("boot-1");
+      const c: Case = {
+        ...base,
+        context: "legion:acme:implementer",
+        profile: {
+          ...base.profile,
+          plugins: [
+            { repo: "acme/boot", commit: COMMIT, path: "packages/boot-probe", name: "boot-probe" },
+          ],
+          appendSystemPrompt: "You are a made-up role of a made-up project.",
+        },
+      };
+      const { record } = await captureBody(
+        c,
+        buildArm(c, "old", { old: path.join(dir, "old"), new: path.join(dir, "new") }, dir),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out"),
+          scratchDir: path.join(dir, "scratch"),
+          cacheDir: path.join(dir, "cache"),
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints,
+        }
+      );
+      expect(record.exit).toEqual({ code: 0, signal: null, reason: "" });
+      // In one value, so a failure shows why the plugin defined no tool.
+      expect({
+        defined: [...record.pluginTools.tools, ...record.pluginTools.devices].includes(
+          "boot_probe"
+        ),
+        extensionErrors: record.extensionErrors,
+        http: record.connections.http,
+      }).toEqual({
+        defined: true,
+        extensionErrors: [],
+        http: expect.arrayContaining([
+          "POST /envoy/v1/interests/subscribe",
+          "POST /envoy/v1/roles/set",
+          "POST /v1/messages",
+        ]),
+      });
+      expect(record.runs).toBe(1);
+    },
+    ROW_TIMEOUT_MS
+  );
 });
