@@ -425,7 +425,8 @@ var commentWriters = `
 // It is the one reading of who a comment names, read by two: the census's person row side
 // (commentPeople) and the sizing's people (sizingWritesWith), so the sizing counts the people
 // the census holds to a node. It reads no table of the store, so the sizing can read it on a
-// database the store does not exist in yet.
+// database the store does not exist in yet. Its proved-session arm (provedSessionOwner) is read by
+// the erase as well (ProvedSessionComments).
 var commentWriterPeople = `
 	select user_threads_login(author.login) as login, written.at, written.event
 	from (` + commentWriters + `) written
@@ -438,11 +439,36 @@ var commentWriterPeople = `
 		end
 		union all
 		select written.actor->>'owner'
-		where written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> ''
-		  and written.actor->'act'->>'session' = written.actor->>'id'
-		  and octet_length(written.actor->>'id') <= ` + addressBound + `
+		where ` + provedSessionOwner("written.actor") + `
 	) author (login)
 	where author.login is not null and user_threads_login(author.login) <> ''`
+
+// provedSessionOwner is true of a stored actor, the SQL expression actor, that is a session the
+// server proved: the actor is the session, its act names that same session, and the session is
+// within the store's bound. Its `owner`, where it names one, is then the person the session
+// belongs to, whom the write that stored the actor ties to the session by an alias_of tuple and
+// makes a node of (graphstore.AuthorFacts). It is commentWriterPeople's second arm, spelled once
+// here so that the census and the erase (ProvedSessionComments) read one rule.
+func provedSessionOwner(actor string) string {
+	return actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> ''
+		  and ` + actor + `->'act'->>'session' = ` + actor + `->>'id'
+		  and octet_length(` + actor + `->>'id') <= ` + addressBound
+}
+
+// ProvedSessionComments is the select of the id of every comments row that names the person
+// bound at $1 as the owner of the session that wrote it, in id order: a row of a comment the
+// store holds (commentInTheStore) whose author is a session the server proved
+// (provedSessionOwner) and whose `owner` is that person's login as user_threads_login reads it.
+// Each is a row the census names that person by (commentWriterPeople), though nothing the row
+// projects states a tuple into her: the comment's authored_by names the session, and only the
+// session's alias_of names her. The erase refuses a person while such a row stands (grapherase's
+// readBlockers), since the census would go on naming her from it once her node was gone.
+var ProvedSessionComments = `
+	select c.id::text from comments c` + commentStoreJoins + `
+	where ` + commentInTheStore + `
+	  and ` + provedSessionOwner("c.author") + `
+	  and user_threads_login(c.author->>'owner') = $1
+	order by c.id`
 
 // commentPeople are the people who wrote a comment the store holds or held, each once
 // (commentWriterPeople).

@@ -322,8 +322,9 @@ func (e *Erasure) readLeft(ctx context.Context, tx pgx.Tx, read *erasedRead) err
 // comment, and a search of that history after the run can tell those bytes from the node's own.
 //
 // It reads the stored history without taking the document's owner row or its room lock, as the
-// rest of the listing reads, so a run without --confirm lists them in its read-only transaction;
-// a confirmed run reads it again under its locks with the rest of its listing.
+// rest of the listing reads, so a run without --confirm lists them in its read-only transaction,
+// and a confirmed run lists them with the rest of its search for the rows it leaves, before it
+// takes any lock (searchLeft).
 func (e *Erasure) readKeptMargins(ctx context.Context, tx pgx.Tx, read *erasedRead) ([]string, error) {
 	var lines []string
 	for _, replaced := range read.replacedHistories() {
@@ -399,8 +400,14 @@ func leftDerived(ctx context.Context, tx pgx.Tx) (map[string][]derivedRows, erro
 
 // textColumns reads every column of every table a text can be written into, as graph-erase.sh's
 // held_anywhere reads them: a column of a type that holds no text - a number, a time, a uuid - is
-// left out. Each comes with the key its table names a row by: its primary key, or where it has
-// none its first unique index over columns alone with no predicate, as artifact_versions'
+// left out. So is a pgvector `vector`, which held_anywhere searches: it holds the numbers an
+// embedder made of a text and never the text, so the erased bytes stand in its text form only
+// where a text is itself made of digits and the marks a vector is written with, which is no copy
+// of that text, and the search would spell every row's numbers out as text to find nothing. A
+// tsvector stays: a text of one word the parser keeps as written is one of its lexemes, spelled
+// as the text spells it, which is how graph-erase.sh finds its erased word in a search vector.
+// Each column comes with the key its table names a row by: its primary key, or where it has none
+// its first unique index over columns alone with no predicate, as artifact_versions'
 // (artifact_id, number) is.
 func textColumns(ctx context.Context, tx pgx.Tx) ([]textColumn, error) {
 	rows, err := tx.Query(ctx, `
@@ -420,6 +427,7 @@ func textColumns(ctx context.Context, tx pgx.Tx) ([]textColumn, error) {
 		    'boolean', 'uuid', 'date', 'interval', 'time with time zone', 'time without time zone',
 		    'timestamp with time zone', 'timestamp without time zone', 'inet', 'cidr', 'macaddr',
 		    'macaddr8', 'oid', 'xid', 'xid8', 'pg_lsn', 'money', 'bit', 'bit varying')
+		  and c.udt_name <> 'vector'
 		order by 1, 2, 3`)
 	if err != nil {
 		return nil, fmt.Errorf("list the columns of the database: %w", err)

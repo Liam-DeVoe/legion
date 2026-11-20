@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -226,4 +227,44 @@ func TestTheEraseOfAPersonAfterHisCommentLeavesTheCensusAtZero(t *testing.T) {
 	requireCensusZero(t, database, "after the comment's erase")
 	requireErased(t, database, graphstore.KindPerson, erasedAuthorPerson)
 	requireCensusZero(t, database, "after the person's erase")
+}
+
+// R5, R19: a person is named by the row of a comment a session the server proved hers wrote. The
+// comment's author is the session, whose act names that same session and whose `owner` is dana,
+// and the census names dana from that row (graphcensus's commentWriterPeople). Nothing the row
+// projects states a tuple into her: the comment's authored_by names the session, and the session's
+// alias_of is her one tuple in, from a node no row projects. An erase that went on would leave the
+// census naming her from the row with her node gone. So the erase of dana refuses, naming the
+// comment, and changes nothing, her node stays live and the census reads zero; once the comment is
+// erased she is, and the census reads zero again.
+func TestTheEraseRefusesAPersonWhoseProvedSessionsCommentStands(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedCommentsOnlyTheyName(t, database)
+	projected := make([]string, len(projectedTables))
+	for index, held := range projectedTables {
+		projected[index] = `exists (select 1 from ` + held.Table + ` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`
+	}
+	var aliases, stated int64
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) filter (where t.kind = $3 and t.from_kind = $4 and t.from_id = $5),
+		       count(*) filter (where `+strings.Join(projected, " or ")+`)
+		from graph_tuples t where t.to_kind = $1 and t.to_id = $2`,
+		graphstore.KindPerson, erasedAuthorOwner, graphstore.TupleAliasOf, graphstore.KindSession, erasedAuthorSession).Scan(&aliases, &stated); err != nil {
+		t.Fatalf("read the tuples into %s:%s: %v", graphstore.KindPerson, erasedAuthorOwner, err)
+	}
+	if aliases != 1 || stated != 0 {
+		t.Fatalf("%s:%s holds %d alias_of tuple(s) from %s:%s and %d tuple(s) from a node a row projects, want one and none, or this test would prove nothing",
+			graphstore.KindPerson, erasedAuthorOwner, aliases, graphstore.KindSession, erasedAuthorSession, stated)
+	}
+
+	requireRefused(t, database, graphstore.KindPerson, erasedAuthorOwner, commentNodeKind+":"+seeded.bySession)
+	if held, found, err := graphstore.ReadNode(ctx, database.Pool, graphstore.KindPerson, erasedAuthorOwner); err != nil || !found || held.State != graphstore.StateLive {
+		t.Errorf("after the refused erase the store holds %s:%s found %t in state %q (%v), want it live", graphstore.KindPerson, erasedAuthorOwner, found, held.State, err)
+	}
+	requireCensusZero(t, database, "after the refused erase of the person")
+
+	requireErased(t, database, commentNodeKind, seeded.bySession)
+	requireErased(t, database, graphstore.KindPerson, erasedAuthorOwner)
+	requireCensusZero(t, database, "after the erases of the comment and the person")
 }

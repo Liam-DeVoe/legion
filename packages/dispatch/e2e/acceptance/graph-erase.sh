@@ -757,9 +757,9 @@ want_rows E4 "the refused runs wrote nothing" 1 "$version_sql"
 want_rows E4 "the refused runs recorded no erasure of the block" 0 \
   "select count(*) from graph_erasures where node_id = '$block'"
 
-# The block's erase confirmed by the digest of another listing, the comment's: the run reads its
-# own listing again under its locks, finds a digest other than the one it was given, and removes
-# nothing, so the store read whole is what it was.
+# The block's erase confirmed by the digest of another listing, the comment's: the run lists the
+# rows it leaves before it takes its locks, reads the rest of its listing again under them, finds a
+# digest other than the one it was given, and removes nothing, so the store read whole is what it was.
 query E4 "read the store whole before a run confirming another listing's digest" "$unchanged_sql"
 readonly store_before_mismatch="$answer"
 erase E4 --node "$block_node" --confirm "$comment_digest"

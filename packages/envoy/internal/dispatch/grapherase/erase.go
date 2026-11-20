@@ -95,15 +95,16 @@ func ParseNode(value string) (kind, id string, err error) {
 //
 // confirm is the digest of a listing. With none the run reads everything it would delete,
 // rewrite, redact or leave in a read-only transaction, which takes no write lock and waits on no
-// writer, and answers it with its digest, having written nothing. With one it takes its locks in
-// the store's lock order (lockInStoreOrder), reads the listing again under them, and erases only
-// when that listing has the digest it was given (Erasure.Mismatch); otherwise it answers both
-// digests and removes nothing. It refuses, removing nothing, while another node's row states
-// something about this one (Blockers), or while its document's live text holds the erased bytes
-// where its markdown spells them otherwise (Unredacted), since the seed would keep them. A tuple
-// another writer commits into the node after that listing was read ends the run as an error with
-// nothing removed (graphstore.EraseNode), since the run deletes the tuples it listed and no
-// others.
+// writer, and answers it with its digest, having written nothing. With one it first searches for
+// the rows it leaves in a read-only transaction of its own, which takes no lock (searchLeft), then
+// takes its locks in the store's lock order (lockInStoreOrder), reads the rest of the listing again
+// under them, and erases only when that listing has the digest it was given (Erasure.Mismatch);
+// otherwise it answers both digests and removes nothing. It refuses, removing nothing, while
+// another node's row states something about this one (Blockers), or while its document's live
+// text holds the erased bytes where its markdown spells them otherwise (Unredacted), since the
+// seed would keep them. A tuple another writer commits into the node after that listing was read
+// ends the run as an error with nothing removed (graphstore.EraseNode), since the run deletes the
+// tuples it listed and no others.
 //
 // It refuses a type node, a supertag or an attribute, before it opens a connection: a type is
 // data the block schema seeds (migration 20261109051232, pmdoc/schemanodes), and no route and no

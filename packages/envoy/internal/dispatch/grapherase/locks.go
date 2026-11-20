@@ -41,21 +41,37 @@ const eraseOwnerAttempts = 3
 // batches take their documents' owners in it too (graphcensus's lockBlockDocuments).
 //
 // Which owners those are is read before they are locked, so it is read again under them with the
-// rest of the listing (read), and the run goes on with that second read. A write that, between
-// the two reads, moved the node under an owner the run did not take could go on writing under
-// that owner while the run does. The run then rolls back and starts again rather than take that
-// owner after the node's row, and after eraseOwnerAttempts it refuses, naming each owner it found
-// untaken, having removed nothing.
+// rest of the listing (readDerived), and the run goes on with that second read. A write that,
+// between the two reads, moved the node under an owner the run did not take could go on writing
+// under that owner while the run does. The run then rolls back and starts again rather than take
+// that owner after the node's row, and after eraseOwnerAttempts it refuses, naming each owner it
+// found untaken, having removed nothing.
+//
+// Before it takes any lock, each try searches the database for the rows the run leaves
+// (searchLeft). That search sends one statement per text column of every base table, each a scan
+// of the whole table, and every writer of an issue or a document takes its owner's lock first and
+// waits there, holding a pool connection, while another transaction holds it: under the run's
+// locks, the search would hold every comment create, reply, version write and ask transition of
+// the node's issue or document for as long as it scans. The run changes none of the rows the
+// search lists, so listing them needs no lock. What that costs is that a row written between the
+// search and the locks that holds the erased bytes is not listed; the run leaves it as it leaves
+// every row the search lists. Once a try holds its locks, the run holds the writers of those
+// owners for the rest of its work: the read of the rest of the listing under them, the erase and
+// the commit.
 func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx.Tx, *Erasure, erasedRead, error) {
 	var untaken []string
 	for range eraseOwnerAttempts {
+		left, err := searchLeft(ctx, conn, kind, id)
+		if err != nil {
+			return nil, nil, erasedRead{}, err
+		}
 		tx, err := conn.Begin(ctx)
 		if err != nil {
 			return nil, nil, erasedRead{}, fmt.Errorf("begin: %w", err)
 		}
 		erasure := &Erasure{Kind: kind, ID: id, RanAt: time.Now().UTC()}
 		var read erasedRead
-		read, untaken, err = erasure.lockOwnersThenNode(ctx, tx)
+		read, untaken, err = erasure.lockOwnersThenNode(ctx, tx, left)
 		if err == nil && len(untaken) == 0 {
 			return tx, erasure, read, nil
 		}
@@ -68,11 +84,35 @@ func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx
 		kind, id, eraseOwnerAttempts, strings.Join(untaken, "; "))
 }
 
+// searchLeft is a confirmed run's search for the rows it leaves (readLeft, with the margin records
+// readKeptMargins lists), which a try of lockInStoreOrder runs before it takes any lock. It runs in
+// a read-only transaction of its own, as a run without --confirm reads its whole listing, over the
+// erased texts and the rows that derive from the node as that transaction reads them
+// (readDerived), and that transaction ends before the try's own begins, so the try holds none of
+// the table locks the search took. It answers the lines of the listing's section of rows left.
+func searchLeft(ctx context.Context, conn *pgx.Conn, kind, id string) ([]string, error) {
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, fmt.Errorf("begin the search for the rows the erase leaves: %w", err)
+	}
+	defer tx.Rollback(context.Background())
+	searched := &Erasure{Kind: kind, ID: id}
+	read, err := searched.readDerived(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if err := searched.readLeft(ctx, tx, &read); err != nil {
+		return nil, err
+	}
+	return read.listing.left, nil
+}
+
 // lockOwnersThenNode is one try of lockInStoreOrder: it reads which owner rows the erase writes
 // under (ownerRows, which reads no node, tuple or event), takes them (events.LockOwnerRows), the
-// node's row and the node's projection rows (lockProjectionRows), reads the whole listing under
-// those locks (read), and answers it with every owner it names that the try did not take.
-func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead, []string, error) {
+// node's row and the node's projection rows (lockProjectionRows), reads the rest of the listing
+// under those locks (readDerived), lists beside it the rows left that the try's search found
+// (searchLeft), and answers it with every owner it names that the try did not take.
+func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, left []string) (erasedRead, []string, error) {
 	before, err := e.ownerRows(ctx, tx)
 	if err != nil {
 		return erasedRead{}, nil, err
@@ -91,10 +131,12 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx) (erasedRead
 	if err := lockProjectionRows(ctx, tx, e.Kind, e.ID); err != nil {
 		return erasedRead{}, nil, err
 	}
-	locked, err := e.read(ctx, tx)
+	locked, err := e.readDerived(ctx, tx)
 	if err != nil {
 		return erasedRead{}, nil, err
 	}
+	locked.listing.left = left
+	e.list(&locked)
 	var untaken []string
 	for _, key := range slices.Sorted(maps.Keys(locked.owners)) {
 		if _, taken := before[key]; !taken {
