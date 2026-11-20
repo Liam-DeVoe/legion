@@ -1196,8 +1196,9 @@ export function Inbox({
   /** The element in the column that holds the focus, and the question the column showed as it
    *  took it: what the column's own hand-off reads once a commit has taken that element away
    *  (below `paneScroller`). Noted by the document's `focusin` below, and forgotten wherever the
-   *  focus lands outside the column and wherever it leaves the column for nothing
-   *  (`forgetPaneReturn`), so a reader who left the column is owed no hand-off. */
+   *  focus lands outside a column still drawn, wherever it leaves the column for nothing
+   *  (`forgetPaneReturn`), and at a step of the selection taken with the focus outside the column
+   *  (`move`), so a reader who left the column is owed no hand-off. */
   const paneFocus = useRef<{ element: Element; question: string | undefined } | null>(null);
   // The column shows another question, so the record is spent: the row it names belongs to a
   // question the reader has been carried off, whichever route carried them. Read after every
@@ -1235,7 +1236,11 @@ export function Inbox({
   // Escape's `run` reads the record before it focuses the row, so the drop that press makes
   // takes nothing it still needs. The same listener notes the element the focus lands on inside
   // the column for the column's own hand-off (`paneFocus`), and forgets it wherever the focus
-  // lands outside.
+  // lands outside a column still drawn. While the column is being let go, `paneRef` is already
+  // null: React detaches the wrapper's ref before the cleanups of the refs inside it, and the
+  // card's form hands the focus to the column's stop from its own (`AskCard`'s `handOffFocus`),
+  // a stop that goes with the column. That focus is no reader leaving the column, so the note
+  // stands for the column drawn next to hand the focus to its own stop.
   //
   // One listener for this component's life, not one put up and taken down around each record:
   // the record is a ref precisely so that `l` commits nothing, so there is no render to hang a
@@ -1252,7 +1257,7 @@ export function Inbox({
         return;
       }
       paneReturn.current = null;
-      paneFocus.current = null;
+      if (paneRef.current !== null) paneFocus.current = null;
     };
     document.addEventListener("focusin", followFocus);
     return () => document.removeEventListener("focusin", followFocus);
@@ -1288,10 +1293,16 @@ export function Inbox({
    *  editable target, and a step from an approval to a question the column draws as a card
    *  swaps `ApprovalBody` for `CardBody`, which unmounts the focused scroller and drops the
    *  focus to `document.body` - where neither of Escape's branches holds and the key would do
-   *  nothing. The reader then stands exactly where a click and then `j` leaves them today. */
+   *  nothing. The reader then stands exactly where a click and then `j` leaves them today. From
+   *  anywhere else the column's noted focus is forgotten: a control the column's own code took
+   *  away under the focus, with no render of the Inbox's to read that loss, leaves the note on
+   *  it, and the step's commit would hand the focus to the next question's stop (below
+   *  `paneScroller`), which no loss of this key took. */
   const move = (delta: 1 | -1) => {
     if (paneShown && focusInPane()) {
       paneSelection.selectedRow()?.focus();
+    } else {
+      paneFocus.current = null;
     }
     stepInMode(delta);
   };

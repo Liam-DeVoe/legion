@@ -4628,6 +4628,122 @@ test("in the reading column, a question withdrawn under the reader's focus hands
   }
 });
 
+// A question the server takes off the list while the reader's focus is in its answer box, with
+// nothing typed there, so the column keeps nothing of it, and with the page's focus rescue mounted
+// as the app shell mounts it (`RescuedMain`). The column goes in the commit that drops the row:
+// React lets go of the column's wrapper first and then of the card's form, whose hand-off puts
+// the focus on the column's stop as it goes (`AskCard`'s `handOffFocus`). The column drawn next
+// for the next question takes the focus on its own stop, so it is not left on the page.
+test("in the reading column, a question taken off the list under the focus in its answer box hands the focus to the next question's focus stop", async () => {
+  const narrow = widenToReadingPane();
+  const first = inboxIssue("ask-a", "CORE-1", "Which approach?");
+  const second = inboxIssue("ask-b", "CORE-2", "Which format?");
+  let served = [first, second];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const getAsk = mockAskReads([first, second]);
+  const getIssue = mockIssueReads();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RescuedMain>
+            <Inbox />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    expect(selectedIds()).toEqual(["ask-a"]);
+    const answer = within(pane).getByLabelText("Your answer");
+    act(() => answer.focus());
+    await afterRescue();
+    expect(answer).toHaveFocus();
+
+    // A refetch the reader did not cause takes the question off the list.
+    served = [second];
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ["inbox"] });
+    });
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    expect(rowIds()).toEqual(["ask-b"]);
+    expect(answer).not.toBeInTheDocument();
+    await afterRescue();
+
+    expect(within(screen.getByTestId("inbox-pane")).getByTestId("ask-ask-b")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Question body" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// A control the column's own code takes away under the reader's focus, with no render of the
+// Inbox's - a body component's own state - leaves the focus on the page and the Inbox's note of
+// the column's focus on the control that went; a control the case puts in the column and takes
+// away again stands for it. The reader's `j` from the page moves the selection, and the column
+// drawn for the next question takes no focus: no loss of that key took it from the column.
+test("in the reading column, j from the page after a control went from the column with no render of the Inbox's leaves the focus on the page", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RescuedMain>
+            <Inbox />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    expect(selectedIds()).toEqual(["ask-a"]);
+    const control = document.createElement("button");
+    control.type = "button";
+    control.textContent = "Show more";
+    screen.getByTestId("inbox-pane-scroller").append(control);
+    act(() => control.focus());
+    await afterRescue();
+    expect(control).toHaveFocus();
+    control.remove();
+    await afterRescue();
+    expect(document.activeElement).toBe(document.body);
+
+    await user.keyboard("j");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    expect(within(screen.getByTestId("inbox-pane")).getByTestId("ask-ask-b")).toBeTruthy();
+    await afterRescue();
+    expect(document.activeElement).toBe(document.body);
+  } finally {
+    view.unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
 // The reader's Snooze pick in the column's head, with the page's focus rescue mounted as the app
 // shell mounts it (`RescuedMain`). The write lands, the deferred question leaves the list, and the
 // column is drawn again for the next one, whose answer is a text box. The column's question went,
@@ -4685,12 +4801,11 @@ test("a Snooze pick in the column's head hands the focus to the next question's 
     await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
     expect(snoozeAsk).toHaveBeenCalledTimes(1);
     expect(rowIds()).toEqual(["ask-b", "ask-c"]);
-    const answer = within(screen.getByTestId("inbox-pane")).getByLabelText("Your answer");
+    expect(within(screen.getByTestId("inbox-pane")).getByLabelText("Your answer")).toBeTruthy();
     await afterRescue();
 
     const scroller = () => screen.getByTestId("inbox-pane-scroller");
     expect(scroller()).toHaveFocus();
-    expect(answer).not.toHaveFocus();
     expect(scrolled.filter((element) => element.closest("[data-inbox-row]") === null)).toEqual([]);
 
     await user.keyboard("j");

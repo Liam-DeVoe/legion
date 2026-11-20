@@ -1750,6 +1750,84 @@ test("a press whose region is drawn again for the same item hands the focus to i
   });
 });
 
+/** The reader's `press` on the Snooze of the region drawn for item `one`, in the main content
+ *  between Before and After, whose commit keeps that region, marks it with `item` and draws what
+ *  it holds again - the item's answer form first, then its Snooze - as React keeps the Inbox's
+ *  reading column wrapper and changes only its mark when the column shows another question: with
+ *  the `focusout` Chromium fires for the Snooze, or with none, as Firefox and WebKit. Answers the
+ *  region with what it holds now. */
+function snoozeInPlace(
+  press: (element: Element) => void,
+  withFocusout: boolean,
+  item: string
+): ItemRegion {
+  const { buttons, main } = mainOf("Before", "After");
+  const after = buttons[1] as HTMLButtonElement;
+  const shown = itemRegion("one");
+  main.insertBefore(shown.region, after);
+  shown.snooze.focus();
+  press(shown.snooze);
+  const drawn = itemRegion(item);
+  const redraw = () => {
+    shown.region.setAttribute(SHOWN_ITEM_ATTRIBUTE, item);
+    shown.region.replaceChildren(...drawn.region.children);
+  };
+  if (withFocusout) lose(shown.snooze, redraw);
+  else redraw();
+  return { ...drawn, region: shown.region };
+}
+
+// A press that takes away the item its region shows, whose commit keeps the region, marks it with
+// the next item and draws only what it holds again, as the Inbox keeps its reading column's
+// wrapper when the selection moves on with the column still shown. What arrived in the region
+// carries no mark of its own and is still the next item's, read off the region around it, so the
+// rescue lands in no control of that item's form. By a pointer press and by Enter, with
+// Chromium's `focusout` and without.
+test("a press whose region stays, marked with the next item, lands in no form of what the region draws again", async () => {
+  // Where each press landed, and where it belongs.
+  const landed: Record<string, string> = {};
+  const belongs: Record<string, string> = {};
+  for (const [by, press] of Object.entries(PRESSES)) {
+    for (const withFocusout of [true, false]) {
+      const named = `by ${by}, ${withFocusout ? "with" : "without"} a focusout`;
+      await withRescue(async () => {
+        const drawn = snoozeInPlace(press, withFocusout, "two");
+        await settled();
+        const form = drawn.region.querySelector("form");
+        landed[named] =
+          form?.contains(document.activeElement) === true
+            ? `in the next item's form, on ${focusedName()}`
+            : document.activeElement === document.body
+              ? "on the page"
+              : "on a control outside the next item's form";
+      });
+      belongs[named] = "on a control outside the next item's form";
+    }
+  }
+  expect(landed).toEqual(belongs);
+});
+
+// The same press whose commit keeps the region for the same item and draws what it holds again -
+// a form opened in place - is what the press drew where its control stood: the focus lands on the
+// form's first control, focused with no scroll. The Snooze went from inside the region, so once
+// it has gone no mark is around it to read, and the rescue reads the item it was in as it took
+// the focus. By a pointer press and by Enter, with Chromium's `focusout` and without.
+test("a press whose region stays for the same item, drawing what it holds again, hands the focus to its form's first control, scrolling nothing", async () => {
+  await scrollingNothing(async () => {
+    for (const press of Object.values(PRESSES)) {
+      for (const withFocusout of [true, false]) {
+        await withRescue(async () => {
+          const drawn = snoozeInPlace(press, withFocusout, "one");
+          const focus = spyOn(drawn.answer, "focus");
+          await settled();
+          expect(drawn.answer).toHaveFocus();
+          expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+        });
+      }
+    }
+  });
+});
+
 // (ak) A press that takes its control away with nothing drawn in its place still walks back to
 // the nearest control before it, however many went together: Dismiss on a thread's last row,
 // whose row goes with the row before it. The reply form standing before them was there before the

@@ -9,16 +9,17 @@ import { isIndefinite, SNOOZE_PRESETS } from "./snooze";
 import { useAskSnooze } from "./useAskSnooze";
 
 /** No ask: a control drawn outside an Inbox has no selection bar over it. */
-const NO_BAR_SNOOZE: ReadonlySet<string> = new Set();
+const NO_BULK_SNOOZING: ReadonlySet<string> = new Set();
 
 /**
  * The asks the selection bar's own Snooze write is over while that write is out
  * (`useInboxSelection`'s `snoozing`), which the bar empties once the write settles - refused or
  * stopped included. The Inbox provides it over every control it draws, a row's and the reading
- * column's head alike; the head is reached through `ReadingPane`'s bodies, which carry no prop
- * of the list's. With no provider no ask is under the bar.
+ * column's head alike. It is a context, as `AskHandOnLiveContext` is, so that neither the row
+ * nor the column's bodies and head pass down one more prop of the list's. With no provider no
+ * ask is under the bar.
  */
-export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BAR_SNOOZE);
+export const BulkSnoozingContext = createContext<ReadonlySet<string>>(NO_BULK_SNOOZING);
 
 /**
  * The per-row defer control. On an ordinary row it is the "Snooze" badge with the same
@@ -82,14 +83,14 @@ export function SnoozeControl({
   snoozedUntil: string | null;
 }): ReactNode {
   const write = useAskSnooze(askId);
-  const barSnoozing = useContext(BulkSnoozingContext).has(askId);
+  const bulkSnoozing = useContext(BulkSnoozingContext).has(askId);
   // The row held is the one the live snooze is of, which is this row's unless a host has drawn
   // the control for another ask since that press (`useAskSnooze`).
   useLiveRegistration(write.liveAskId, onLive);
   // A snooze out over this row: its own pick's write, whose variable is a moment where an
   // un-snooze's is null, or the bar's.
-  const snoozing = typeof write.pendingUntil === "string" || barSnoozing;
-  const held = useHeldThroughAnswer(write.pending || barSnoozing);
+  const snoozing = typeof write.pendingUntil === "string" || bulkSnoozing;
+  const held = useHeldThroughAnswer(write.pending || bulkSnoozing);
   const pickHeld = useHeldThroughAnswer(snoozing);
   const unsnoozeHeld = useHeldThroughAnswer(write.pendingUntil === null);
   // `basis-full` inside the header's wrapping row: a refusal is wider than the badge it
