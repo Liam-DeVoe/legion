@@ -236,22 +236,30 @@ export function quoteSelection(): boolean {
 
 /** The selection bar's two keys, in `scope`'s section of the shortcut help: `q` quotes the
  *  selected words of an ask, a comment, a reply or a message on the page in a reply, and `d`
- *  opens Define on the selected words of an ask, wherever the focus is. An ask card's own `d`
- *  (`ask-card-keys.ts`) acts only while the focus is inside the card, and a selection made with
- *  the mouse leaves the focus where the press put it, outside the card. */
-export function useSelectionBarKeys(scope: KeymapScope): void {
-  useKeymap(scope, [
-    quoteReplyKey("Quote selected words in a reply", quoteSelection),
-    {
-      id: "define-selected-ask-words",
-      keys: "d",
-      label: "Define selected words of an ask",
-      // The palette's own field takes the selection, so a row of it would define nothing.
-      palette: false,
-      run: () => quotableSelection()?.target.define?.(),
-      when: () => quotableSelection()?.target.define !== undefined,
-    },
-  ]);
+ *  opens Define on the selected words of an ask, wherever the focus is. Off the Inbox an ask
+ *  card's own `d` (`ask-card-keys.ts`) acts only while the focus is inside the card, and a
+ *  selection made with the mouse leaves the focus where the press put it, outside the card. A
+ *  page that draws no ask (`asks: false`, the Agents page) registers `q` alone, so its help
+ *  lists no `d` that never applies there. */
+export function useSelectionBarKeys(scope: KeymapScope, { asks = true } = {}): void {
+  const quote = quoteReplyKey("Quote selected words in a reply", quoteSelection);
+  useKeymap(
+    scope,
+    asks
+      ? [
+          quote,
+          {
+            id: "define-selected-ask-words",
+            keys: "d",
+            label: "Define selected words of an ask",
+            // The palette's own field takes the selection, so a row of it would define nothing.
+            palette: false,
+            run: () => quotableSelection()?.target.define?.(),
+            when: () => quotableSelection()?.target.define !== undefined,
+          },
+        ]
+      : [quote]
+  );
 }
 
 /** The binding `q` is, for a host that decides when it applies and what it quotes. */

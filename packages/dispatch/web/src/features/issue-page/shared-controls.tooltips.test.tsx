@@ -438,18 +438,13 @@ function pressing(name: string | RegExp) {
 
 /** The roots of what `AskCard`'s children of other files draw (the rule that no shared control
  *  sets a `title` leaves them out, since the new page draws no `AskCard`): each option row
- *  (`AskChoiceRow`, the label inside the options' fieldset), the decline control
- *  (`DeclineControl`, around its button), the recipients (`AskRecipients`), the replies
- *  (`AskThread`) and the question's Markdown body. */
+ *  (`AskChoiceRow`, the label inside the options' fieldset), the recipients (`AskRecipients`), the
+ *  replies (`AskThread`) and the question's Markdown body. */
 function askCardChildren(root: HTMLElement): Element[] {
-  const declines = within(root)
-    .queryAllByRole("button", { name: "Decline to answer" })
-    .flatMap((button) => (button.parentElement === null ? [] : [button.parentElement]));
   return [
     ...root.querySelectorAll(
       "form fieldset > label, section[aria-label='Recipients'], section[aria-label='Replies'], .dispatch-markdown"
     ),
-    ...declines,
   ];
 }
 

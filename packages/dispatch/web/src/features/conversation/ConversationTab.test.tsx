@@ -759,6 +759,69 @@ test("w on a rewritten message shows the agent's wording in place, and w again t
   }
 });
 
+// A reply the reviewer rewrote carries its own badge and original, and `w` on it, or on any reply
+// a press gave the focus to, is the reply's: the thread's rewritten root keeps the wording it
+// shows, since the replies are drawn outside the root's own row.
+test("w on a rewritten reply shows its original in place, and no press on a reply flips the root", async () => {
+  const user = userEvent.setup();
+  const stub = stubLists({
+    messages: [
+      thread(
+        message("message-root", {
+          body: "The mirror lags the ledger.",
+          rewrite: {
+            at: "2026-09-09T00:02:00Z",
+            by: "reviewer",
+            original: { body: "mirror slow" },
+            state: "rewritten",
+          },
+        }),
+        [
+          message("message-rewritten-reply", {
+            body: "The deploy waits for the migration.",
+            created_at: "2026-09-09T00:01:00Z",
+            in_reply_to: "message-root",
+            rewrite: {
+              at: "2026-09-09T00:02:00Z",
+              by: "reviewer",
+              original: { body: "R3 flip: deploy gated on mig." },
+              state: "rewritten",
+            },
+          }),
+          message("message-plain-reply", {
+            body: "Agreed.",
+            created_at: "2026-09-09T00:03:00Z",
+            in_reply_to: "message-root",
+          }),
+        ]
+      ),
+    ],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  try {
+    const replies = within(await screen.findByRole("list", { name: "Replies" }));
+    const words = await replies.findByText("The deploy waits for the migration.");
+    expect(replies.getByRole("button", { name: "Rewritten" })).toHaveAttribute(
+      "title",
+      "Show the original wording (w)"
+    );
+    await user.click(words);
+    await user.keyboard("w");
+    expect(await replies.findByText("R3 flip: deploy gated on mig.")).toBeTruthy();
+    expect(screen.getByText("The mirror lags the ledger.")).toBeTruthy();
+    await user.keyboard("w");
+    expect(await replies.findByText("The deploy waits for the migration.")).toBeTruthy();
+
+    await user.click(await replies.findByText("Agreed."));
+    await user.keyboard("w");
+    expect(screen.getByText("The mirror lags the ledger.")).toBeTruthy();
+    expect(screen.queryByText("mirror slow")).toBeNull();
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
+
 test("renders an anchored comment with the owner controls in Conversation", async () => {
   const user = userEvent.setup();
   const stub = stubLists({

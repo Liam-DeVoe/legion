@@ -146,8 +146,9 @@ export function useAgentsKeymap(
     requestAnimationFrame(() => act(row));
   };
   useKeymapScope("agents");
-  // Quote reply and Define on words of a message in an open row (`threads/quote-reply.ts`).
-  useSelectionBarKeys("agents");
+  // Quote reply on words of a message in an open row (`threads/quote-reply.ts`). The page draws no
+  // ask, so it has no Define.
+  useSelectionBarKeys("agents", { asks: false });
   useKeymap("agents", [
     // Shadows the `global` scope's `/`, which elsewhere opens the search dialog on its hits alone:
     // a session this page already lists is faster to find by typing here than by searching

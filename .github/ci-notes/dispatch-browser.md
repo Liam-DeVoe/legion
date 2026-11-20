@@ -845,8 +845,10 @@ nothing can make it launch another engine, and so keeps this one download.
 
 The image the harness starts each Playwright run's Postgres from, pulled here so the
 browser steps of its job after it do not pay for it inside their own budgets, as the visual job pulls
-it. The digest is the browser steps', written three times, and the three must stay the
-same: a pull of another digest leaves the browser step to pull its own. Each new step's
+it. The digest is the browser steps', written in each job that cites this section once in its pull
+and once in each of its browser steps: three times in the two-process job, twice in the embedder
+and ask-card jobs. A job's copies must stay the same: a pull of another digest leaves the browser
+step to pull its own. Each new step's
 name carries the lane, as the embedder job's build step's does, for the reason
 .github/ci-notes/dispatch-browser.md#why-the-embedder-jobs-server-build-carries-the-lane-in-its-name gives.
 

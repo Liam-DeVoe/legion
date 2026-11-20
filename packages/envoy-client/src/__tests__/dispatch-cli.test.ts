@@ -2517,6 +2517,38 @@ describe("the written rules before AskGate's marker", () => {
       requests.filter((r) => r.method === "POST" && r.path === "/api/v1/issues/DSP-1/messages")
     ).toHaveLength(1);
   }, 20_000);
+
+  // The rules themselves keep the rolling release's retries: a settings read that reached a pod
+  // with the refusal on, followed by a rules request that reached an older pod, waits for a pod
+  // that serves the rules rather than letting the write go on without them.
+  test("the rules request is asked again past a rolling release's no route, and the refusal shows them", async () => {
+    let rulesAsks = 0;
+    const rulesLate = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (request.method === "GET" && pathname === "/api/v1/settings/writing-rules") {
+        return Response.json({ refusal: "on", extra: [] });
+      }
+      if (request.method === "POST" && pathname === "/api/v1/writing-rules") {
+        rulesAsks += 1;
+        return rulesAsks === 1
+          ? Response.json(
+              { code: "NOT_FOUND", error: `no route for POST ${pathname}` },
+              { status: 404 }
+            )
+          : Response.json({ text: RULES });
+      }
+      return fetch(request);
+    }) as typeof fetch;
+
+    const refused = await run(MESSAGE, omp, "", rulesLate);
+    expect(refused.code).toBe(1);
+    expect(refused.stdout).toContain(RULES);
+    expect(rulesAsks).toBe(2);
+    expect(
+      requests.filter((r) => r.method === "POST" && r.path === "/api/v1/issues/DSP-1/messages")
+    ).toHaveLength(0);
+  }, 20_000);
 });
 
 // A reader of a transcript, the skill-scenario scorer among them, finds a refusal the CLI printed

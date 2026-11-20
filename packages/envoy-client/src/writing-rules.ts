@@ -65,8 +65,14 @@ export interface WritingRulesCall {
   readonly tool: string;
   /** The session's state directory (`sessionDirectory`). */
   readonly dir: string;
-  /** A client of the session's Dispatch for the two reads; it must send its writes. */
+  /** A client of the session's Dispatch for the rules (`POST /api/v1/writing-rules`), which asks
+   *  again a route a rolling release has not brought yet, as every request does; it must send its
+   *  writes. */
   readonly client: DispatchClient;
+  /** A client of the same Dispatch for the settings read (`GET /api/v1/settings/writing-rules`),
+   *  built with `retryNoRoute: false`: a Dispatch older than that route has no refusal, so its
+   *  first answer of no route decides, with none of the waits a rolling release asks for. */
+  readonly settingsClient: DispatchClient;
   /** Whether the call passes its own argument check (`checkDispatchCall`), which sends no
    *  request: a call that fails it goes on to its own refusal, and Dispatch is asked nothing. */
   readonly passesCheck: () => Promise<boolean>;
@@ -136,7 +142,7 @@ async function askedSettings(
 ): Promise<WritingRulesSettingsRead | undefined> {
   let answer: WritingRulesSettings | null;
   try {
-    answer = await call.client.writingRulesSettings();
+    answer = await call.settingsClient.writingRulesSettings();
   } catch {
     return undefined;
   }

@@ -70,7 +70,7 @@ import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
 import {
-  isOriginalToggleKey,
+  originalToggleProps,
   originalWording,
   toggleOriginal,
   useOriginalShown,
@@ -121,20 +121,15 @@ function ThreadTurnView({
   unread: boolean;
 }): ReactNode {
   const original = originalWording(turn.rewrite, useOriginalShown(turn.id));
-  const rewritten = turn.rewrite?.state === "rewritten";
+  // A rewritten message takes the focus, as a margin card does, so `w` can reach it.
+  const toggle = originalToggleProps(turn.id, turn.rewrite?.state === "rewritten");
   return (
     <article
       className={`rounded-lg p-2 text-sm ${surfaceMutedBg}`}
       data-inbox-thread-first-unread={first === true ? "" : undefined}
       data-inbox-thread-turn={turn.id}
       data-inbox-thread-unread={unread ? "" : undefined}
-      onKeyDown={(event) => {
-        if (!rewritten || !isOriginalToggleKey(event)) return;
-        event.preventDefault();
-        toggleOriginal(turn.id);
-      }}
-      // A rewritten message takes the focus, as a margin card does, so `w` can reach it.
-      tabIndex={rewritten ? -1 : undefined}
+      {...toggle}
     >
       <p className={`mb-1 flex flex-wrap items-center gap-x-2 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>

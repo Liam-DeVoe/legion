@@ -39,7 +39,7 @@ import {
 import { deliveryAttempts } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
 import {
-  isOriginalToggleKey,
+  originalToggleProps,
   originalWording,
   toggleOriginal,
   useOriginalShown,
@@ -249,11 +249,23 @@ function ConversationReply({
     (candidate) => candidate.in_reply_to === reply.id && candidate.author.kind === "session"
   );
   const parent = [root.root, ...root.replies].find((node) => node.id === reply.in_reply_to);
+  // A reply the reviewer rewrote before the reader saw it: its badge beside the author and time,
+  // or `w` while the reply holds the focus, shows the agent's wording in place, as the root's
+  // does (`MessageTurn`).
+  const original = originalWording(reply.rewrite, useOriginalShown(reply.id));
   return (
     <ReplyTurn
       actions={<CopyRefButton route={{ id: reply.id, key: issueKey, kind: "message" }} />}
       at={reply.created_at}
       author={reply.author}
+      badge={
+        <RewriteBadge
+          onToggle={() => toggleOriginal(reply.id)}
+          rewrite={reply.rewrite}
+          showingOriginal={original !== undefined}
+          toggleKey="w"
+        />
+      }
       body={
         <QuotableText
           onQuote={
@@ -263,9 +275,9 @@ function ConversationReply({
           }
         >
           <MarkdownBody
-            markdown={reply.body}
+            markdown={original?.body ?? reply.body}
             source={textSourceOf("message", reply.id)}
-            tree={reply.body_tree}
+            tree={original === undefined ? reply.body_tree : undefined}
           />
           <Unfurl body={reply.body} source={textSourceOf("message", reply.id)} />
         </QuotableText>
@@ -289,6 +301,7 @@ function ConversationReply({
             }
       }
       onReply={() => onReply(replyTargetFor(reply, root, issueKey))}
+      originalToggle={originalToggleProps(reply.id, reply.rewrite?.state === "rewritten")}
       quote={{
         author: parent?.author,
         block: reply.reply_block,
@@ -390,24 +403,21 @@ function MessageTurn({
 }): ReactNode {
   const author = item.root.author;
   // A message the reviewer rewrote before the reader saw it: its badge beside the author and
-  // time, or `w` while the message holds the focus, shows the agent's wording in place.
+  // time, or `w` while the message holds the focus, shows the agent's wording in place. The
+  // message's own row takes the focus, as a margin card does, so `w` can reach it; its thread's
+  // replies are drawn outside that row, so a press on a reply, and its `w`, are the reply's.
   const original = originalWording(item.root.rewrite, useOriginalShown(item.root.id));
-  const rewritten = item.root.rewrite?.state === "rewritten";
   return (
     <li
       aria-current={current ? "true" : undefined}
       className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg}`}
       data-turn={item.id}
-      onKeyDown={(event) => {
-        if (!rewritten || !isOriginalToggleKey(event)) return;
-        event.preventDefault();
-        toggleOriginal(item.root.id);
-      }}
       ref={register}
-      // A rewritten message takes the focus, as a margin card does, so `w` can reach it.
-      tabIndex={rewritten ? -1 : undefined}
     >
-      <div className="flex gap-3">
+      <div
+        className="flex gap-3"
+        {...originalToggleProps(item.root.id, item.root.rewrite?.state === "rewritten")}
+      >
         <Avatar actor={author} />
         <div className="min-w-0 flex-1">
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>

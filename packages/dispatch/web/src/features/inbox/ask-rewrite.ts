@@ -3,7 +3,7 @@
 // - which wording a page shows of a rewritten text, and where the words a reader defines stand.
 // The routes themselves are the typed client's (`api.rewriteAsk`, `api.defineWords`,
 // `api.getDefinition`).
-import { useSyncExternalStore } from "react";
+import { type KeyboardEvent, useSyncExternalStore } from "react";
 
 import type { TextRewrite, TextWording } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -56,13 +56,7 @@ export function useOriginalShown(id: string): boolean {
 
 /** Whether `event`, pressed on a rewritten text that holds the focus, is the `w` that shows or
  *  hides its original wording: no modifier, and not typed into a field inside the text. */
-export function isOriginalToggleKey(event: {
-  readonly altKey: boolean;
-  readonly ctrlKey: boolean;
-  readonly key: string;
-  readonly metaKey: boolean;
-  readonly target: EventTarget | null;
-}): boolean {
+function isOriginalToggleKey(event: KeyboardEvent<HTMLElement>): boolean {
   return (
     event.key === "w" &&
     !event.metaKey &&
@@ -73,6 +67,31 @@ export function isOriginalToggleKey(event: {
       (event.target.isContentEditable || event.target.closest("input, textarea") !== null)
     )
   );
+}
+
+/** What the element holding a text spreads so that `w` shows or hides the text's original
+ *  wording (`originalToggleProps`). */
+export interface OriginalToggleProps {
+  readonly onKeyDown: (event: KeyboardEvent<HTMLElement>) => void;
+  readonly tabIndex: -1 | undefined;
+}
+
+/**
+ * The props of the element that holds the text `id`, a margin card or a message, which make `w`
+ * show or hide its original wording while `rewritten`: the element takes the focus a press on
+ * the text gives it, and its own `w` toggles the text (`isOriginalToggleKey`). A text that is not
+ * rewritten takes neither. A `w` a text drawn inside the element already took - a rewritten
+ * reply inside its thread's card - is that text's alone, so the element leaves it.
+ */
+export function originalToggleProps(id: string, rewritten: boolean): OriginalToggleProps {
+  return {
+    onKeyDown: (event) => {
+      if (!rewritten || event.defaultPrevented || !isOriginalToggleKey(event)) return;
+      event.preventDefault();
+      toggleOriginal(id);
+    },
+    tabIndex: rewritten ? -1 : undefined,
+  };
 }
 
 /** Where the words a reader selected stand, as `POST /api/v1/definitions` names it: in an ask,

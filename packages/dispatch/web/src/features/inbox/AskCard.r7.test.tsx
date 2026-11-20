@@ -3,7 +3,6 @@ import { expect, spyOn, test } from "bun:test";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
-import { settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
 import type { AnswerAskInput, Ask, TextRewrite } from "../../api/types";
@@ -398,20 +397,19 @@ test("the card's send key sends nothing while a picture pasted into the answer u
     // The box sends nothing itself while the picture uploads, and leaves the press to the card's
     // key, which must send nothing either.
     await user.keyboard("{Control>}{Enter}{/Control}");
-    await act(settle);
-    expect(sent).toEqual([]);
 
     land();
-    await waitFor(() =>
-      expect(answer.value).toBe("This one ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
-    );
-    // Answer sends it once the picture is in.
-    await user.click(card().getByRole("button", { name: "Answer" }));
-    await waitFor(() =>
-      expect(sent.map((input) => input.text)).toEqual([
-        "This one ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)",
-      ])
-    );
+    const withPicture = "This one ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)";
+    await waitFor(() => expect(answer.value).toBe(withPicture));
+    // The same key sends it once the picture is in, pressed on the picked option, where the card's
+    // key alone takes it. The row waits for that answer to arrive and then reads every answer
+    // sent, rather than reading none a count of turns after the first press, which a send may
+    // outlast: an answer the first press sent, without the picture's link, arrives first, or
+    // keeps the form busy so that this press sends nothing.
+    act(() => card().getByRole("radio", { name: /^Ship/ }).focus());
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await waitFor(() => expect(sent).not.toHaveLength(0));
+    expect(sent.map((input) => input.text)).toEqual([withPicture]);
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();

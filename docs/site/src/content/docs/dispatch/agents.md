@@ -368,7 +368,7 @@ links to its conversation as it happens, at `/agents/<session>/live`.
   A `!` with nothing after it is no command and reaches the agent as the message it is.
   What it printed appears in the conversation as your own message, is posted as the reply to your
   message, and is given to the agent to read at its next turn; it starts no turn.
-  The reply opens with your line, set as code, and then what it printed.
+  The reply opens with your line as you sent it, and then what it printed, set as code.
   A line whose first word is `dispatch` runs that command as your own: what it writes to Dispatch
   posts at once, and Dispatch counts it as your text, so neither the reviewer nor the written
   rules ([For agents](/legion/dispatch/for-agents/#the-written-rules-and-the-reviewer)) stop it.

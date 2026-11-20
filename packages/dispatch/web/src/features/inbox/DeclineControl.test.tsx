@@ -181,15 +181,15 @@ async function menuItems(user: UserEvent, container: HTMLElement): Promise<strin
   return items.map((item) => item.firstElementChild?.textContent ?? "");
 }
 
-/** Whether the card offers Decline to answer: the item its split button's menu lists, which is
- *  where the card offers it (INFRA-3231's R7). A card that draws no split button, as a closed
- *  question's does, offers none. It opens the menu to read it, and closes it again. */
+/** Whether the card offers Decline to answer anywhere: a button of its own, as `main`'s card
+ *  drew, or the item its split button's menu lists, which is where the card offers it now
+ *  (INFRA-3231's R7). A card that draws no split button, as a closed question's does, has no menu
+ *  to list it. It opens the menu to read it (`menuItems`), and closes it again. */
 async function offersDecline(user: UserEvent, container: HTMLElement): Promise<boolean> {
+  if (within(container).queryByRole("button", { name: "Decline to answer" }) !== null) return true;
   const more = within(container).queryByRole("button", { name: "More actions" });
   if (more === null) return false;
-  await user.click(more);
-  const menu = await within(document.body).findByRole("menu", { name: "More actions" });
-  const offered = within(menu).queryByRole("menuitem", { name: "Decline to answer" }) !== null;
+  const offered = (await menuItems(user, container)).includes("Decline to answer");
   await user.click(more);
   await waitFor(() =>
     expect(within(document.body).queryByRole("menu", { name: "More actions" })).toBeNull()

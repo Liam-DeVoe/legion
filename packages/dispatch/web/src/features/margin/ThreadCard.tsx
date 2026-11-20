@@ -37,7 +37,7 @@ import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
 import {
-  isOriginalToggleKey,
+  originalToggleProps,
   originalWording,
   toggleOriginal,
   useOriginalShown,
@@ -184,7 +184,8 @@ function CommentBody({
   const suggestion = comment.suggestion;
   const reference = itemRoute("comment", comment, owner.kind === "document" ? owner : undefined);
   // A comment the reviewer rewrote before anyone read it: its badge beside the author and time,
-  // and, while it is pressed (or `w` with the card in focus), the agent's wording in place.
+  // and, while it is pressed (or `w` with the comment in focus: the card for the thread's root,
+  // the reply's own row for a reply), the agent's wording in place.
   const rewrite = comment.rewrite;
   const original = originalWording(rewrite, useOriginalShown(comment.id));
   let orphanNotice: ReactNode = null;
@@ -300,8 +301,10 @@ export function ThreadCard({
   const root = thread.root.comment;
   const rootSuggestion = root.suggestion;
   // The root the reviewer rewrote: `w`, with the card in focus, shows its agent's wording in
-  // place as its badge does (`CommentBody`), and the folded preview reads the same wording.
+  // place as its badge does (`CommentBody`), and the folded preview reads the same wording. A
+  // rewritten reply takes the focus and its own `w` (`originalToggleProps`), which the card leaves.
   const rootRewritten = root.rewrite?.state === "rewritten";
+  const rootToggle = originalToggleProps(root.id, rootRewritten);
   const rootOriginal = originalWording(root.rewrite, useOriginalShown(root.id));
   const terminalSuggestion = rootSuggestion !== null && rootSuggestion.accepted !== null;
   // The server refuses accept and reject on an orphaned anchor (409 ANCHOR_ORPHANED), so the
@@ -463,13 +466,10 @@ export function ThreadCard({
           }
         }}
         // A card whose root was rewritten takes the focus, so `w` can reach it.
-        tabIndex={rootRewritten ? -1 : undefined}
+        tabIndex={rootToggle.tabIndex}
         onKeyDown={(event) => {
-          if (rootRewritten && isOriginalToggleKey(event)) {
-            event.preventDefault();
-            toggleOriginal(root.id);
-            return;
-          }
+          rootToggle.onKeyDown(event);
+          if (event.defaultPrevented) return;
           if (
             event.target !== event.currentTarget ||
             (event.key !== "Enter" && event.key !== " ")
@@ -584,6 +584,7 @@ export function ThreadCard({
                     key={reply.id}
                     ref={reply === newestReply ? markRead : undefined}
                     style={{ marginLeft: "0px" }}
+                    {...originalToggleProps(reply.id, reply.rewrite?.state === "rewritten")}
                   >
                     {editing(reply) ? (
                       renderEditor(reply)
