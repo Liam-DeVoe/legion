@@ -1300,7 +1300,10 @@ async function bootDirectSession(
           if (replies.length >= waiter.count) waiter.resolve();
           else replyWaiters.push(waiter);
         }
-        return new Response(JSON.stringify({}), { status: 201 });
+        // Typed JSON, as Dispatch answers every write: an untyped 2xx is something in Dispatch's
+        // place (`foreign-2xx`, dispatch-http.ts), so the reply would fail and the session would
+        // post its failure as a second reply after the row had read the first.
+        return Response.json({}, { status: 201 });
       }
       const read = await options.dispatch?.(url, init);
       if (read !== undefined) return read;
@@ -20887,9 +20890,9 @@ console.log(JSON.stringify(args));
         setInterval: () => {},
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?redial-first-dial");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?redial-first-dial");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
 
       expect(natsState.failConnects).toBe(0);
@@ -20939,9 +20942,11 @@ console.log(JSON.stringify(args));
         setInterval: () => {},
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?redial-resumed-start");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?redial-resumed-start"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
 
       expect(natsState.failConnects).toBe(0);
@@ -20975,9 +20980,9 @@ console.log(JSON.stringify(args));
         setInterval: (callback) => intervals.push(callback),
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?inbound-restored");
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?inbound-restored");
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
       const transcript = () =>
         fixture.entries
@@ -21032,9 +21037,11 @@ console.log(JSON.stringify(args));
         setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
-      const { default: envoyExtension } = await import("./envoy.ts?relay-lost-mid-session");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?relay-lost-mid-session"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       const heartbeat = () => {
         for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
       };
@@ -21141,9 +21148,11 @@ console.log(JSON.stringify(args));
         ...sessionContext(id),
         setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       };
-      const { default: envoyExtension } = await import("./envoy.ts?control-lost-mid-session");
+      const { default: envoyExtension }: EnvoyModule = await import(
+        "./envoy.ts?control-lost-mid-session"
+      );
       const fixture = createPi();
-      envoyExtension(fixture.pi);
+      await envoyExtension(fixture.pi);
       try {
         await fixture.handlers.get("session_start")?.({}, context);
         const first = natsState.controls.get(control);
@@ -21181,9 +21190,9 @@ console.log(JSON.stringify(args));
       setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, context);
     const written = (word: string) =>
       fixture.entries
@@ -21390,9 +21399,9 @@ console.log(JSON.stringify(args));
           setInterval: () => {},
           ui: sessionContext().ui,
         };
-        const { default: envoyExtension } = await import("./envoy.ts?pass-budget");
+        const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pass-budget");
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
         // The rest of the pass needs 20.25 s, more than the 7.5 s it has, so no redial fits.
         expect(bounds).toHaveLength(1);
@@ -21434,11 +21443,11 @@ console.log(JSON.stringify(args));
           setInterval: () => {},
           ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
         };
-        const { default: envoyExtension } = await import(
+        const { default: envoyExtension }: EnvoyModule = await import(
           `./envoy.ts?named-failure-${withheld.length}`
         );
         const fixture = createPi();
-        envoyExtension(fixture.pi);
+        await envoyExtension(fixture.pi);
         await fixture.handlers.get("session_start")?.({}, context);
 
         const parts = {
@@ -24671,9 +24680,9 @@ describe("an envelope that carries the role field", () => {
           })
         : responseWithRegistration(input, init, answer)) as typeof fetch;
     // Each caller's own query loads an instance of its own, so the specifier cannot be static.
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
     const fixture = createPi();
-    envoyExtension(fixture.pi);
+    await envoyExtension(fixture.pi);
     const context = sessionContext(SESSION);
     await fixture.handlers.get("session_start")?.({}, context);
     const agent = natsState.controls.get(AGENT);
