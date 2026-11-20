@@ -1421,6 +1421,105 @@ test("a priority's own page writes its title and description and lists only its 
   }
 });
 
+// INFRA-2947 R7 (spec v76, its third point) and check 138e9e4d (Verification v57): at 1280 by
+// 800 the work under a priority takes the whole of its box. Title takes all the width the key,
+// the project and the status leave, so no space stands empty at the table's right: the last
+// column that draws anything ends at the box's right edge, less the room a filling column leaves
+// there for the box's borders and a scrollbar (`EDGE_ROOM`, 20 px,
+// `features/project/issues-table-layout.ts`). An issue title of 34 characters, and one of 60,
+// the most R7 names, reads whole there: no ellipsis, no clamp, nothing of it past its box.
+// SLOW(>=2s): the seed, two more issues, and one page read at the desktop's size.
+test("at 1280 by 800 a priority's work table leaves no empty room at its right and reads a title of up to 60 characters whole", async ({
+  browser,
+}) => {
+  const seed = await seedPriorities();
+  const titles = [
+    "Daemon rollout to every build host",
+    "Daemon rollout to every build host and each developer laptop",
+  ] as const;
+  expect(titles.map((title) => title.length)).toEqual([34, 60]);
+  const keys: string[] = [];
+  for (const title of titles) {
+    const issue = await createIssue({ project: "CORE", title });
+    await patchIssue(issue.key, { advances: [seed.ids[0]], status: "in_progress" });
+    keys.push(issue.key);
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(DESKTOP);
+    await page.goto(`/priorities/${seed.ids[0]}`);
+    const work = section(page, "Work advancing this priority");
+    await expectRowNames(work, [
+      `${seed.rollout} Daemon rollout to the fleet`,
+      `${seed.smoke} Daemon smoke suite`,
+      ...titles.map((title, at) => `${keys[at]} ${title}`),
+    ]);
+    await expect.poll(() => tablesOverflow(page)).toEqual({ "Priority issues table": 0 });
+    const soft = expect.configure({ soft: true });
+
+    // The room between the right edge of the last column that draws anything - a header's words
+    // or a cell's visible element - and the box's inner right edge.
+    const emptyRoom = () =>
+      work.locator('[data-testid$="-table-scroll"]').evaluate((box) => {
+        // A cell or header draws something where an element in it is on screen and holds words,
+        // or is a control or a picture, which hold none.
+        const drawn = (element: Element) =>
+          [element, ...element.querySelectorAll("*")].some((node) => {
+            const style = getComputedStyle(node);
+            const rect = node.getBoundingClientRect();
+            return (
+              rect.width > 0 &&
+              rect.height > 0 &&
+              style.visibility !== "hidden" &&
+              style.opacity !== "0" &&
+              ((node.textContent ?? "").trim() !== "" || node.matches("input, button, svg, img"))
+            );
+          });
+        const headers = [...box.querySelectorAll("thead th")];
+        const rows = [...box.querySelectorAll("tbody tr[data-issue-row]")];
+        let last = -1;
+        headers.forEach((header, at) => {
+          const cells = rows.map((row) => row.querySelectorAll("td")[at]);
+          if (drawn(header) || cells.some((cell) => cell !== undefined && drawn(cell))) last = at;
+        });
+        const inner = box.getBoundingClientRect().left + box.clientLeft + box.clientWidth;
+        const right =
+          headers[last]?.getBoundingClientRect().right ?? box.getBoundingClientRect().left;
+        return Math.round(inner - right);
+      });
+    await soft.poll(emptyRoom).toBeLessThanOrEqual(20);
+
+    // Each title, drawn whole in its cell: nothing from the title up to its cell holds more than
+    // its box shows, which is what an ellipsis or a clamp needs.
+    for (const [at, text] of titles.entries()) {
+      const row = work.getByRole("row", { exact: true, name: `${keys[at]} ${text}` });
+      const title = (await cellUnder(work, row, "Title")).getByText(text, { exact: true });
+      await expect(title).toBeVisible();
+      await soft
+        .poll(
+          () =>
+            title.evaluate((element) => {
+              const cut: string[] = [];
+              const cell = element.closest("td");
+              for (let node: Element | null = element; node !== null; node = node.parentElement) {
+                if (node.scrollWidth > node.clientWidth || node.scrollHeight > node.clientHeight)
+                  cut.push(
+                    `${node.tagName.toLowerCase()} ${node.clientWidth}x${node.clientHeight}`
+                  );
+                if (node === cell) break;
+              }
+              return cut;
+            }),
+          { message: `the ${text.length}-character title reads whole` }
+        )
+        .toEqual([]);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
 // SLOW(>=2s): the seed, two reloads, and two writes read back from the server.
 test("what a reader types into a priority survives a reload made before the typing rests", async ({
   browser,
