@@ -15,8 +15,10 @@
 //
 // As gh does: `--json a,b` picks fields of an object or of each object of a list, `--jq`/`-q` runs
 // jq, `--slurp` wraps a `--paginate` answer in a list, and `-i`/`--include` prints the status line
-// and headers first. A route with `exit` other than 0 is an error answer: gh prints its body as
-// GitHub sent it, unfiltered and with no newline, then the route's `stderr`.
+// and headers first. A route with an HTTP `status` of 400 or more is GitHub's refusal: gh prints its
+// body as GitHub sent it, unfiltered and with no newline, then the route's `stderr`, and exits with
+// the route's `exit` (1). A route with an `exit` and no such status is a porcelain command's own
+// answer, such as `gh pr checks` exiting 8 while a check runs: its output is filtered as any other.
 //
 // Writes a later read sees, as GitHub's next read would:
 //   - a pull request body edit (`gh pr edit --body`, `--body-file`, or a PATCH through `gh api`):
@@ -323,13 +325,14 @@ function include(status: number) {
       `HTTP/2.0 ${status} ${REASONS[status] ?? ""}\r\nContent-Type: application/json; charset=utf-8\r\nX-Github-Api-Version-Selected: 2022-11-28\r\n\r\n`
     );
 }
-/** gh's answer to an HTTP error: the body as GitHub sent it, unfiltered, then the message. */
-function refuse(status: number, answer: unknown, message: string): never {
+/** gh's answer to an HTTP error: the body as GitHub sent it, unfiltered, then the message, and
+ * the route's exit status (gh exits 1 on an HTTP error). */
+function refuse(status: number, answer: unknown, message: string, code: number): never {
   include(status);
   if (answer !== undefined && answer !== "")
     process.stdout.write(typeof answer === "string" ? answer : JSON.stringify(answer));
   process.stderr.write(message);
-  exit(1);
+  exit(code);
 }
 if (route.lookup === "review") {
   const id = Number(/\/reviews\/(\d+)/.exec(args.join(" "))?.[1]);
@@ -348,11 +351,15 @@ if (route.lookup === "review") {
           "https://docs.github.com/rest/pulls/reviews#get-a-review-for-a-pull-request",
         status: "404",
       },
-      "gh: Not Found (HTTP 404)\n"
+      "gh: Not Found (HTTP 404)\n",
+      1
     );
   output = found;
 }
-if ((route.exit ?? 0) !== 0) refuse(route.status ?? 404, route.stdout, route.stderr ?? "");
+// A route with an HTTP status of 400 or more is GitHub refusing the call. A route with an exit
+// status alone is a porcelain command's own answer (`gh pr checks` exits 8 while a check runs, and
+// prints its table all the same), so its output goes through `--json`, `--jq` and `-i` below.
+if ((route.status ?? 0) >= 400) refuse(route.status ?? 404, route.stdout, route.stderr ?? "", route.exit ?? 1);
 
 // gh's `--json` picks the named fields of the answer, or of each object of a list: gh's own answer
 // is the whole object, which the routes hold.

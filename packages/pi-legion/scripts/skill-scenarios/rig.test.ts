@@ -26,8 +26,8 @@ import { RIG_WORLD } from "./rig-world";
 import { fileRowLimit, RIG_STEP, SCRIPT_RUN, VCS_COMMAND } from "./test-limit";
 
 /** rig.sh's world variables as its header sets them from rig-world.json, for a row that runs one
- * of its functions alone. */
-const WORLD_VARS = `worker_repo=${RIG_WORLD.repository} worker_base=${RIG_WORLD.defaultBranch}`;
+ * of its functions alone, and `here`, the directory whose rig-world.json they come from. */
+const WORLD_VARS = `here=${import.meta.dir} worker_repo=${RIG_WORLD.repository} worker_base=${RIG_WORLD.defaultBranch}`;
 
 // Every test here runs rig.sh and its stand-ins as real processes, which a loaded machine
 // stretches with no bound, so each test gets the limit test-limit.ts computes from the bounds of
@@ -2298,8 +2298,10 @@ describe("heads_fixture", () => {
       return { all, answer };
     };
     const reviewer = routes("reviewer");
+    // gh prints a check run's own link, the job's page in its workflow run (rig-world.json's run 41
+    // and check run 9101 for go-checks, as Dispatch's stand-in serves them).
     expect(reviewer.answer("^gh pr checks")).toBe(
-      "lint\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\ntest\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\ngo-checks\tpending\t0\thttps://github.com/example/widgets/actions/runs/41"
+      "lint\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\ntest\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\ngo-checks\tpending\t0\thttps://github.com/example/widgets/actions/runs/41/job/9101"
     );
     expect(reviewer.answer(`^gh api .*commits/${head}/check-runs`)).toMatchObject({
       total_count: 3,
@@ -2536,14 +2538,145 @@ describe("heads_fixture", () => {
       .stdout.toString()
       .trim();
     const world = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"));
+    const named = { repository: RIG_WORLD.repository, defaultBranch: RIG_WORLD.defaultBranch };
     expect({
       addressing: { repository: told?.[1], defaultBranch: told?.[2] },
       githubStandIn: { repository: repoRead?.full_name, defaultBranch: repoRead?.default_branch },
       remote: { repository: world.repo, defaultBranch: remoteHead },
-    }).toEqual({
-      addressing: RIG_WORLD,
-      githubStandIn: RIG_WORLD,
-      remote: RIG_WORLD,
+    }).toEqual({ addressing: named, githubStandIn: named, remote: named });
+  }, 600_000);
+
+  // Catches: a named CI job that the two GitHub worlds of one run number apart. Dispatch's stand-in
+  // (heads-world.ts) served docs as check run 9001 of run 40, the agent's gh stand-in served it as
+  // 8002 of run 1, and no route answered a read of job 9001: a ci-only reviewer read the id that
+  // `dispatch results` printed, and the run was a rig error.
+  for (const [scenario, scenarioCase, world] of [
+    ["reviewer-own-head", "ci-only", "ci-only"],
+    ["ci-pass-and-fail", "reviewer", "ci-pass-and-fail"],
+  ] as const) {
+    test(`${scenario} ${scenarioCase}: the named CI job is the check run, workflow run and suite rig-world.json names, and a read of it by its id answers`, () => {
+      const { code, run } = build("heads_fixture");
+      expect(code).toBe(0);
+      writeFileSync(
+        path.join(run, "fixture.json"),
+        JSON.stringify({
+          issue: "LWEVAL-9",
+          title: "A usage page",
+          lines: { "702": "- Check k1 (before_merge): pass at the head by implementer, tester" },
+        })
+      );
+      // The rig's read of the results before the agent starts: a named job's Pull request line.
+      const head702 = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+      writeFileSync(
+        path.join(run, "results-before.txt"),
+        `Checks of LWEVAL-9:\n\n- k1 (before_merge): its CI job's results below.\n  - #702 at ${head702}: yes\n    Pull request line: - Check k1 (before_merge): pass at ${head702} by ci\n`
+      );
+      const made = bash(
+        [
+          "set -euo pipefail",
+          fn("fail"),
+          fn("heads_routes"),
+          `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+          `heads_routes ${scenario} ${scenarioCase}`,
+        ].join("\n"),
+        [run]
+      );
+      expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
+      const job = RIG_WORLD.ciJobs[world];
+      const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"));
+      const gh = (...args: string[]) => {
+        const result = spawnWithin(
+          { ...SCRIPT_RUN, part: "gh-standin.ts" },
+          ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+          { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+        );
+        return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+      };
+      const done = job.status === "completed";
+      expect(
+        gh("api", `repos/example/widgets/actions/jobs/${job.checkRun}`, "--jq", "[.id,.run_id,.name,.status]|@tsv")
+      ).toEqual({ code: 0, stdout: `${job.checkRun}\t${job.run}\t${job.name}\t${job.status}\n`, stderr: "" });
+      expect(
+        gh(
+          "api",
+          `repos/example/widgets/commits/${heads["702"]}/check-runs`,
+          "--jq",
+          `.check_runs[] | select(.name == "${job.name}") | [.id,.run_id,.check_suite.id,.html_url]|@tsv`
+        ).stdout
+      ).toBe(
+        `${job.checkRun}\t${job.run}\t${job.suite}\thttps://github.com/example/widgets/actions/runs/${job.run}/job/${job.checkRun}\n`
+      );
+      expect(gh("api", `repos/example/widgets/actions/runs/${job.run}`, "--jq", "[.name,.status]|@tsv").stdout).toBe(
+        `${job.name}\t${job.status}\n`
+      );
+      expect(gh("pr", "checks", "702").code).toBe(done ? 0 : 8);
+      expect(gh("api", "repos/example/widgets/actions/jobs/1234567", "--jq", ".id")).toMatchObject({
+        code: 1,
+        stderr: "gh: Not Found (HTTP 404)\n",
+      });
+      expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
+    }, 600_000);
+  }
+
+  // Catches: a world with no route for a read of a file at a head, which this round's architects
+  // made with Dispatch's state hidden (`contents/docs/usage.md?ref=<head>`, `git/trees/<head>`),
+  // and which the stand-in failed loudly as a rig error: each read answers as GitHub answers it, a
+  // path no commit holds is GitHub's 404, and each file's bytes are the commit's own.
+  test("heads_routes answer the reads of a head's files as GitHub does", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({
+        issue: "LWEVAL-9",
+        title: "A usage page",
+        lines: { "702": "- Check k1 (before_merge): pass at the head by implementer, tester" },
+      })
+    );
+    const made = bash(
+      [
+        "set -euo pipefail",
+        fn("fail"),
+        fn("heads_routes"),
+        `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+        "heads_routes architect-pass-and-fail",
+      ].join("\n"),
+      [run]
+    );
+    expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    const gitShow = (spec: string) =>
+      spawnWithin({ ...VCS_COMMAND, part: "git show" }, ["git", "-C", path.join(run, "remote.git"), "show", spec], {
+        env: childEnv,
+      }).stdout.toString();
+    const usage = gitShow(`${head}:docs/usage.md`);
+    expect(usage.length).toBeGreaterThan(0);
+    const gh = (...args: string[]) => {
+      const result = spawnWithin(
+        { ...SCRIPT_RUN, part: "gh-standin.ts" },
+        ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
+        { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
+      );
+      return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+    };
+    const content = gh("api", `repos/example/widgets/contents/docs/usage.md?ref=${head}`, "--jq", ".content");
+    expect(content.code).toBe(0);
+    expect(Buffer.from(content.stdout.replace(/\n/g, ""), "base64").toString()).toBe(usage);
+    expect(
+      gh("api", "-H", "Accept: application/vnd.github.raw", `repos/example/widgets/contents/docs/usage.md?ref=${head}`)
+        .stdout
+    ).toBe(usage);
+    expect(
+      gh("api", "repos/example/widgets/contents/docs?ref=legion/LWEVAL-9-702", "--jq", ".[].name").stdout
+    ).toBe("usage.md\n");
+    expect(
+      gh("api", `repos/example/widgets/git/trees/${head}?recursive=1`, "--jq", ".tree[].path").stdout.split("\n")
+    ).toContain("docs/usage.md");
+    expect(gh("api", `repos/example/widgets/commits/${head}`, "--jq", ".sha").stdout).toBe(`${head}\n`);
+    expect(gh("api", `repos/example/widgets/contents/no/such/file.md?ref=${head}`, "--jq", ".content")).toMatchObject({
+      code: 1,
+      stderr: "gh: Not Found (HTTP 404)\n",
     });
+    expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
   }, 600_000);
 });

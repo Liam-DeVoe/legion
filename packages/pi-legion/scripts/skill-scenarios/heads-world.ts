@@ -30,11 +30,12 @@ type HeadsWorld =
   | "reviewer-pass-and-fail"
   | "architect-pass-and-fail"
   | `ci-pass-and-fail-${(typeof CI_ROLES)[number]}`;
-/** The job of k1's `ci_check` in the case ci-only, whose check run the GitHub stand-in serves. */
-const CI_JOB = "docs";
-/** The job of k1's `ci_check` in ci-pass-and-fail, whose third attempt at #702's head is still
- * going while its first two recorded a pass and then a fail there (rig.sh's ci_job_results). */
-const CI_RUNNING_JOB = "go-checks";
+/** The job of k1's `ci_check` in the case ci-only, whose check run the GitHub stand-in serves, and
+ * the job of k1's `ci_check` in ci-pass-and-fail, whose third attempt at #702's head is still going
+ * while its first two recorded a pass and then a fail there (rig.sh's ci_job_results). Each is
+ * rig-world.json's, which the agent's gh stand-in (rig.sh's heads_routes) serves too. */
+const CI_JOB = RIG_WORLD.ciJobs["ci-only"];
+const CI_RUNNING_JOB = RIG_WORLD.ciJobs["ci-pass-and-fail"];
 /** The run of k1 with no `ci_check`, which every recorded result names. */
 const K1_RUN = "grep -c widgets docs/usage.md";
 const HandoffRef = z.object({ id: z.string(), version: z.number().int() });
@@ -155,7 +156,11 @@ export async function headsIssue(file: string, world: HeadsWorld): Promise<void>
     { as: "agent" }
   );
   const ciJob =
-    world === "ci-only" ? CI_JOB : world.startsWith("ci-pass-and-fail-") ? CI_RUNNING_JOB : "";
+    world === "ci-only"
+      ? CI_JOB.name
+      : world.startsWith("ci-pass-and-fail-")
+        ? CI_RUNNING_JOB.name
+        : "";
   const attributes =
     ciJob !== ""
       ? `ci_check="${ciJob}" when="before_merge" negative_control="Drop the line from docs/usage.md and the ${ciJob} job fails."`
@@ -264,16 +269,16 @@ export async function headsEvents(
           check_runs: {
             [headOf("702")]: [
               {
-                id: 9001,
-                name: CI_JOB,
-                check_suite_id: 41,
+                id: CI_JOB.checkRun,
+                name: CI_JOB.name,
+                check_suite_id: CI_JOB.suite,
                 status: "completed",
                 conclusion: "success",
                 completed_at: new Date(Date.now() - 60_000).toISOString(),
-                html_url: `https://github.com/${HEADS_REPO}/actions/runs/40/job/9001`,
+                html_url: `https://github.com/${HEADS_REPO}/actions/runs/${CI_JOB.run}/job/${CI_JOB.checkRun}`,
                 output: {
-                  title: `${CI_JOB} success`,
-                  summary: `The ${CI_JOB} job concluded success.`,
+                  title: `${CI_JOB.name} success`,
+                  summary: `The ${CI_JOB.name} job concluded success.`,
                 },
               },
             ],
@@ -284,16 +289,16 @@ export async function headsEvents(
             check_runs: {
               [headOf("702")]: [
                 {
-                  id: 9101,
-                  name: CI_RUNNING_JOB,
-                  check_suite_id: 41,
+                  id: CI_RUNNING_JOB.checkRun,
+                  name: CI_RUNNING_JOB.name,
+                  check_suite_id: CI_RUNNING_JOB.suite,
                   status: "in_progress",
                   conclusion: null,
                   completed_at: null,
-                  html_url: `https://github.com/${HEADS_REPO}/actions/runs/41/job/9101`,
+                  html_url: `https://github.com/${HEADS_REPO}/actions/runs/${CI_RUNNING_JOB.run}/job/${CI_RUNNING_JOB.checkRun}`,
                   output: {
-                    title: `${CI_RUNNING_JOB} in progress`,
-                    summary: `The ${CI_RUNNING_JOB} job is running its third attempt.`,
+                    title: `${CI_RUNNING_JOB.name} in progress`,
+                    summary: `The ${CI_RUNNING_JOB.name} job is running its third attempt.`,
                   },
                 },
               ],

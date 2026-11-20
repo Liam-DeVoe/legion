@@ -1940,26 +1940,29 @@ heads_world() {
 # a moment after the upload, so the insert is tried every 2 s, at most 31 times (60 s), until it
 # writes both rows.
 ci_job_results() {
-  local database artifact head out attempt
+  local database artifact head out attempt job
   database=$(jq -r .database "$R/dispatch.json")
   artifact=$(jq -r .verification "$R/fixture.json")
   head=$(jq -r '."702"' "$R/heads.json")
+  # The named job of the world, rig-world.json's, which Dispatch's GitHub stand-in serves too.
+  job=$(jq -er '.ciJobs["ci-pass-and-fail"].name' "$here/rig-world.json") ||
+    fail "$here/rig-world.json names no CI job of ci-pass-and-fail"
   for ((attempt = 1; ; attempt++)); do
     out=$(docker exec -i "$tag-pg" psql -U postgres -d "$database" -v ON_ERROR_STOP=1 -qAt \
       -v issue="$worker_key" -v artifact="$artifact" -v head="$head" -v branch="legion/$worker_key-702" \
-      -v session="ci-results:$worker_repo/.github/workflows/ci-results.yaml" 2>&1 <<'SQL'
+      -v job="$job" -v session="ci-results:$worker_repo/.github/workflows/ci-results.yaml" 2>&1 <<'SQL'
 with written as (
   insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
     check_version, check_sha256, run, surface, negative_control, observed, commit_sha, branch,
     verdict, attestation, session, actor, created_at)
   select :'issue', :'issue', b.artifact_id, b.block_id, b.changed_version, b.text_sha256,
-    'go-checks', 'cli', 'Drop the line from docs/usage.md and the go-checks job fails.',
+    :'job', 'cli', 'Drop the line from docs/usage.md and the ' || :'job' || ' job fails.',
     r.observed, :'head', :'branch', r.verdict, '{}'::jsonb, :'session',
     jsonb_build_object('kind', 'session', 'id', :'session'), now() - r.ago
   from document_blocks b
   cross join (values
-    ('pass', 'Attempt 1 of go-checks passed: docs/usage.md names widgets --help.', interval '2 minutes'),
-    ('fail', 'Attempt 2 of go-checks failed: the runner lost its checkout before the docs check ran.', interval '0 seconds')
+    ('pass', 'Attempt 1 of ' || :'job' || ' passed: docs/usage.md names widgets --help.', interval '2 minutes'),
+    ('fail', 'Attempt 2 of ' || :'job' || ' failed: the runner lost its checkout before the docs check ran.', interval '0 seconds')
   ) as r(verdict, observed, ago)
   where b.artifact_id = :'artifact'::uuid and b.block_id = 'k1'
   returning 1
@@ -1990,9 +1993,11 @@ SQL
 # git refs of each branch; the comparison of the base with each head; the rules and rulesets of the base
 # (none); `/user` (403, as for an App's token); and the reviews and issue comments of each pull
 # request: a review or comment the run writes is answered as GitHub answers it and then listed, and
-# a read of one review by its id answers it or GitHub's 404. In ci-only, #702's head also has a
-# success of k1's named job, docs; in ci-pass-and-fail, its named job go-checks is still in progress
-# there, as a workflow run of its own. A read lists no review but, in architect-pass-and-fail and
+# a read of one review by its id answers it or GitHub's 404, and so does a read of one job by its id.
+# In ci-only, #702's head also has a success of k1's named job, and in ci-pass-and-fail its named job
+# is still in progress there: each is rig-world.json's `ciJobs` entry, the check run, workflow run
+# and suite that Dispatch's GitHub stand-in serves (heads-world.ts), so both worlds name one job.
+# A read lists no review but, in architect-pass-and-fail and
 # ci-pass-and-fail's architect case, #702's one APPROVED review, whose Legion footer names #702's
 # head. A `gh pr` read of a number the world holds no pull request of is refused, as GitHub refuses
 # it. `gh run` has no route: its watch of a run in progress cannot end here as it does on GitHub.
@@ -2007,7 +2012,7 @@ SQL
 # that head; with none, `not yet run`. So no body disagrees with the results, and a reviewer's
 # refusal cannot come from a body.
 heads_routes() {
-  local scenario=$1 scenario_case=${2:-} pr head line body files jobs pending approved title branches main pulls='[]' prs=(702 703)
+  local scenario=$1 scenario_case=${2:-} pr head line body files jobs named approved title branches main pulls='[]' prs=(702 703)
   case $scenario in architect-pass-and-fail | ci-pass-and-fail) prs=(702) ;; esac
   title=$(jq -r .title "$R/fixture.json")
   for pr in "${prs[@]}"; do
@@ -2037,23 +2042,43 @@ ${line:-- Check k1 (before_merge): not yet run}
 **Chain:** not stacked."
     files=$(git -C "$R/remote.git" diff --numstat "$worker_base" "$head" |
       jq -R -s -c 'split("\n") | map(select(. != "") | split("\t") | {path:.[2], additions:(.[0]|tonumber), deletions:(.[1]|tonumber)})')
+    # The world's named CI job at #702's head (rig-world.json, which Dispatch's GitHub stand-in
+    # serves too, heads-world.ts): the same check run, workflow run and suite in both worlds.
     jobs='["lint","test"]'
-    [ "$scenario_case:$pr" != ci-only:702 ] || jobs='["lint","test","docs"]'
-    pending='[]'
-    [ "$scenario" != ci-pass-and-fail ] || pending='["go-checks"]'
+    named='[]'
+    [ "$scenario_case:$pr" != ci-only:702 ] || named=$(jq -c '[.ciJobs["ci-only"]]' "$here/rig-world.json")
+    [ "$scenario:$pr" != ci-pass-and-fail:702 ] || named=$(jq -c '[.ciJobs["ci-pass-and-fail"]]' "$here/rig-world.json")
     pulls=$(jq -c --argjson n "$pr" --arg head "$head" --arg body "$body" --argjson files "$files" --argjson jobs "$jobs" \
-      --argjson pending "$pending" --arg diff "$(git -C "$R/remote.git" diff "$worker_base" "$head")" --arg url "https://github.com/$worker_repo/pull/$pr" \
+      --argjson named "$named" --arg diff "$(git -C "$R/remote.git" diff "$worker_base" "$head")" --arg url "https://github.com/$worker_repo/pull/$pr" \
       --arg subject "$(git -C "$R/remote.git" log -1 --format=%s "$head")" \
-      '. + [{number:$n, head:$head, body:$body, files:$files, jobs:$jobs, pending:$pending, diff:$diff, url:$url, subject:$subject}]' <<<"$pulls")
+      '. + [{number:$n, head:$head, body:$body, files:$files, jobs:$jobs, named:$named, diff:$diff, url:$url, subject:$subject}]' <<<"$pulls")
   done
   branches=$(git -C "$R/remote.git" for-each-ref --format='%(refname:short)%09%(objectname)' refs/heads |
     jq -R -s -c 'split("\n") | map(select(. != "") | split("\t") | {name:.[0], sha:.[1]})')
   main=$(git -C "$R/remote.git" rev-parse "$worker_base")
+  # Each commit an agent may read the files of, the base and each head: its tree, and each entry of
+  # it with its mode, type, object and size, and a file's bytes in base64 as GitHub sends them (60
+  # characters a line). The contents, trees, blobs and commit reads below answer from them.
+  local trees='[]' sha entries
+  for sha in "$main" $(jq -r '.[].head' <<<"$pulls"); do
+    entries=$(git -C "$R/remote.git" ls-tree -r -t --long "$sha" |
+      while IFS=$'\t' read -r meta path; do
+        read -r mode type object size <<<"$meta"
+        content=''
+        [ "$type" != blob ] || content=$(git -C "$R/remote.git" cat-file blob "$object" | base64 -w60)
+        jq -cn --arg path "$path" --arg mode "$mode" --arg type "$type" --arg sha "$object" --arg size "$size" \
+          --arg content "$content" '{$path, $mode, $type, $sha, size:(if $size == "-" then 0 else ($size | tonumber) end),
+            content:(if $type == "blob" then $content + "\n" else null end)}'
+      done | jq -cs .)
+    trees=$(jq -c --arg sha "$sha" --arg tree "$(git -C "$R/remote.git" rev-parse "$sha^{tree}")" \
+      --arg message "$(git -C "$R/remote.git" log -1 --format=%B "$sha")" --arg parent "$(git -C "$R/remote.git" rev-parse "$sha^" 2>/dev/null || true)" \
+      --argjson entries "$entries" '. + [{sha:$sha, tree:$tree, message:$message, parent:$parent, entries:$entries}]' <<<"$trees")
+  done
   approved=false
   [ "$scenario" != architect-pass-and-fail ] && [ "$scenario:$scenario_case" != ci-pass-and-fail:architect ] || approved=true
   jq -n --argjson pulls "$pulls" --arg key "$worker_key" --arg title "$title" --arg repo "$worker_repo" \
     --argjson approved "$approved" --argjson branches "$branches" --arg main "$main" --arg base "$worker_base" \
-    --arg at "$(date -u +%FT%TZ)" '
+    --argjson trees "$trees" --arg at "$(date -u +%FT%TZ)" '
     def ref: "legion/\($key)-\(.number)";
     def api: "https://api.github.com/repos/\($repo)";
     # A branch name as a path may spell it: its slashes as they are or escaped.
@@ -2068,12 +2093,13 @@ ${line:-- Check k1 (before_merge): not yet run}
       body:"No findings at this head.\n\nSecurity: none.\nFast-follow: none.\n\n<!-- legion: {\"session\":\"rig-reviewer\",\"phase\":\"review\",\"head\":\"\(.head)\"} -->"};
     def reviews: if $approved and .number == 702 then [approval] else [] end;
     # GitHub: CLEAN is mergeable with every check passed; UNSTABLE, mergeable with one not passed.
-    def mss: if (.pending | length) > 0 then "UNSTABLE" else "CLEAN" end;
+    # A named job still going: GitHub reads the head UNSTABLE, its rollup PENDING, gh pr checks exit 8.
+    def running: [.named[] | select(.status == "in_progress")] | length > 0;
+    def mss: if running then "UNSTABLE" else "CLEAN" end;
     def adds: [.files[].additions] | add // 0;
     def dels: [.files[].deletions] | add // 0;
-    # The workflow run of the head'"'"'s finished jobs, and of its running one.
+    # The workflow run of the head'"'"'s finished jobs; each named job is in the run the world names.
     def run: 1 + 100 * .index;
-    def pendingRun: 41 + 100 * .index;
     def pr: {number, id:"PR_rig\(.number)", url, html_url:.url, title:"\($title) (\($key))", state:"OPEN", isDraft:false,
       closed:false, author:{login:"rig-implementer[bot]", is_bot:true}, isCrossRepository:false, createdAt:$at, updatedAt:$at,
       headRefName:ref, headRefOid:.head, baseRefName:$base, body, mergeable:"MERGEABLE", mergeStateStatus:mss,
@@ -2083,7 +2109,7 @@ ${line:-- Check k1 (before_merge): not yet run}
         authors:[{name:"Fixture", email:"fixture@example.invalid", login:""}]}],
       comments:[],
       statusCheckRollup:([.jobs[] | {name:., status:"COMPLETED", conclusion:"SUCCESS"}] +
-        [.pending[] | {name:., status:"IN_PROGRESS", conclusion:""}]),
+        [.named[] | {name, status:(.status | ascii_upcase), conclusion:(if .status == "completed" then "SUCCESS" else "" end)}]),
       reviews:[reviews[] | {author:{login:.user.login}, state, body, submittedAt:.submitted_at, commit:{oid:.commit_id}}],
       latestReviews:[reviews[] | {author:{login:.user.login}, state, body, submittedAt:.submitted_at, commit:{oid:.commit_id}}]};
     def rest: {url:"\(api)/pulls/\(.number)", html_url:.url, id:(9000000 + .number), node_id:"PR_rig\(.number)", number,
@@ -2093,30 +2119,31 @@ ${line:-- Check k1 (before_merge): not yet run}
       base:{label:"\($repo | split("/")[0]):\($base)", ref:$base, sha:$main, repo:{full_name:$repo}},
       commits:1, additions:adds, deletions:dels, changed_files:(.files | length), created_at:$at, updated_at:$at};
     def checks: . as $p | [($p.jobs[] | "\(.)\tpass\t10s\thttps://github.com/\($repo)/actions/runs/\($p | run)"),
-      ($p.pending[] | "\(.)\tpending\t0\thttps://github.com/\($repo)/actions/runs/\($p | pendingRun)")] | join("\n");
-    def checkrun($p; $id; $run): {id:$id, name:., head_sha:$p.head, run_id:$run, check_suite:{id:$run},
+      ($p.named[] | "\(.name)\t\(if .status == "completed" then "pass\t10s" else "pending\t0" end)\thttps://github.com/\($repo)/actions/runs/\(.run)/job/\(.checkRun)")] | join("\n");
+    def checkrun($p; $id; $run; $suite): {id:$id, name:., head_sha:$p.head, run_id:$run, check_suite:{id:$suite},
       html_url:"https://github.com/\($repo)/actions/runs/\($run)/job/\($id)",
       details_url:"https://github.com/\($repo)/actions/runs/\($run)/job/\($id)",
       app:{slug:"github-actions", name:"GitHub Actions"}, started_at:$at};
     def checkruns: . as $p |
       [($p.jobs | to_entries[] | (8000 + .key + 100 * $p.index) as $id |
-         .value | checkrun($p; $id; $p | run) + {status:"completed", conclusion:"success", completed_at:$at}),
-       ($p.pending | to_entries[] | (9100 + .key + 100 * $p.index) as $id |
-         .value | checkrun($p; $id; $p | pendingRun) + {status:"in_progress", conclusion:null, completed_at:null})];
+         .value | checkrun($p; $id; $p | run; $p | run) + {status:"completed", conclusion:"success", completed_at:$at}),
+       ($p.named[] | . as $j | .name | checkrun($p; $j.checkRun; $j.run; $j.suite) +
+         (if $j.status == "completed" then {status:"completed", conclusion:"success", completed_at:$at}
+          else {status:"in_progress", conclusion:null, completed_at:null} end))];
     def runs: {total_count:(checkruns | length), check_runs:checkruns};
     def wfrun($id; $name; $status; $conclusion): {id:$id, name:$name, display_title:"\($title) (\($key))",
       event:"pull_request", status:$status, conclusion:$conclusion, head_sha:.head, head_branch:ref, run_number:$id,
       run_attempt:1, html_url:"https://github.com/\($repo)/actions/runs/\($id)", jobs_url:"\(api)/actions/runs/\($id)/jobs",
       created_at:$at, updated_at:$at, pull_requests:[{number}]};
     def wfruns: (if (.jobs | length) > 0 then [wfrun(run; "ci"; "completed"; "success")] else [] end) +
-      (if (.pending | length) > 0 then [wfrun(pendingRun; .pending[0]; "in_progress"; null)] else [] end);
+      [. as $p | .named[] | . as $j | $p | wfrun($j.run; $j.name; $j.status; (if $j.status == "completed" then "success" else null end))];
     def graphql: {data:{repository:{nameWithOwner:$repo, defaultBranchRef:{name:$base},
       ref:{name:$base, branchProtectionRule:null}, branchProtectionRules:{totalCount:0, nodes:[]},
       pullRequest:{number, id:"PR_rig\(.number)", state:"OPEN", mergeable:"MERGEABLE", mergeStateStatus:mss,
         reviewDecision:(if reviews == [] then null else "APPROVED" end), headRefName:ref, headRefOid:.head,
         baseRefName:$base, baseRef:{name:$base, branchProtectionRule:null},
         reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]},
-        commits:{nodes:[{commit:{oid:.head, statusCheckRollup:{state:(if (.pending | length) > 0 then "PENDING" else "SUCCESS" end),
+        commits:{nodes:[{commit:{oid:.head, statusCheckRollup:{state:(if running then "PENDING" else "SUCCESS" end),
           contexts:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[checkruns[] | {__typename:"CheckRun", name,
             status:(.status | ascii_upcase), conclusion:(if .conclusion == null then null else (.conclusion | ascii_upcase) end),
             isRequired:false, detailsUrl:.details_url}]}}}}]}}}}};
@@ -2137,6 +2164,27 @@ ${line:-- Check k1 (before_merge): not yet run}
       base_commit:{sha:$main}, merge_base_commit:{sha:$main},
       commits:[{sha:.head, commit:{message:.subject, author:{name:"Fixture", email:"fixture@example.invalid"}}}],
       files:[.files[] | {filename:.path, additions, deletions, changes:(.additions + .deletions)}]};
+    # A commit'"'"'s files, as the contents, trees, blobs and commit reads answer them. A ref names the
+    # commit by its sha, by a branch at it, or, for the base, by nothing.
+    def refsOf($t): [$t.sha] + [$branches[] | select(.sha == $t.sha) | .name] ;
+    def name($path): $path | split("/") | last;
+    def fileOf($t; $e): {type:"file", encoding:"base64", size:$e.size, name:name($e.path), path:$e.path,
+      content:$e.content, sha:$e.sha, url:"\(api)/contents/\($e.path)?ref=\($t.sha)",
+      git_url:"\(api)/git/blobs/\($e.sha)", html_url:"https://github.com/\($repo)/blob/\($t.sha)/\($e.path)",
+      download_url:"https://raw.githubusercontent.com/\($repo)/\($t.sha)/\($e.path)"};
+    def childrenOf($t; $dir): [$t.entries[] | select((.path | startswith(if $dir == "" then "" else $dir + "/" end))
+      and ((.path | ltrimstr(if $dir == "" then "" else $dir + "/" end)) | contains("/") | not))];
+    def listOf($t; $dir): [childrenOf($t; $dir)[] | {type:(if .type == "blob" then "file" else "dir" end), size,
+      name:name(.path), path, sha, url:"\(api)/contents/\(.path)?ref=\($t.sha)"}];
+    def treeOf($t; $sha; $dir; $recursive): {sha:$sha, url:"\(api)/git/trees/\($sha)", truncated:false,
+      tree:[(if $recursive then [$t.entries[] | select((.path | startswith(if $dir == "" then "" else $dir + "/" end)))]
+        else childrenOf($t; $dir) end)[] | {path:(.path | ltrimstr(if $dir == "" then "" else $dir + "/" end)), mode,
+        type, sha, url:"\(api)/git/\(if .type == "blob" then "blobs" else "trees" end)/\(.sha)"} + (if .type == "blob" then {size} else {} end)]};
+    # Each read of contents a commit answers: the path, with or without a final slash, then the ref
+    # spelled after ?ref= (or none, for the base), then the end of the path argument.
+    def contentsAt($t; $path):
+      (if $t.sha == $main then ["(?![?&]ref=)"] else [] end) + [refsOf($t)[] | "[?&]ref=(\(. | literal | branchpat))"]
+      | map("^gh api (.* )?/?repos/\($repo | literal)/contents\(if $path == "" then "" else "/" + ($path | literal) end)/?\(.)([ &]|$)");
     # Each number the world holds a pull request of, for the refusals of any other.
     ([$pulls[].number | tostring] | join("|")) as $numbers |
     ($pulls | to_entries | map(.value + {index:.key})) as $pulls |
@@ -2160,10 +2208,10 @@ ${line:-- Check k1 (before_merge): not yet run}
         stderr:"GraphQL: Could not resolve to a PullRequest with that number. (repository.pullRequest)\n", exit:1},
        {match:"^gh pr checks(?=.* --required( |$))", stderr:"no required checks reported on the \u0027\($first | ref)\u0027 branch\n", exit:1}] +
       [$others[] | {match:"^gh pr view .*\\b\(.number)\\b", stdout:pr}, {match:"^gh pr diff .*\\b\(.number)\\b", stdout:.diff},
-        {match:"^gh pr checks .*\\b\(.number)\\b", stdout:checks, exit:(if (.pending | length) > 0 then 8 else 0 end)},
+        {match:"^gh pr checks .*\\b\(.number)\\b", stdout:checks, exit:(if running then 8 else 0 end)},
         {match:"^gh pr edit .*\\b\(.number)\\b", stdout:.url}] +
       [{match:"^gh pr view", stdout:($first | pr)}, {match:"^gh pr diff", stdout:$first.diff},
-       {match:"^gh pr checks", stdout:($first | checks), exit:(if ($first.pending | length) > 0 then 8 else 0 end)},
+       {match:"^gh pr checks", stdout:($first | checks), exit:(if ($first | running) then 8 else 0 end)},
        {match:"^gh pr list", stdout:[$pulls[] | pr]}, {match:"^gh pr edit", stdout:$first.url}] +
       # GraphQL: the pull request a query names, by its number or its variable n, else the first.
       [$others[] | {match:"^gh api .*graphql(?=.*(number: ?\(.number)\\b|\\bn=\(.number)\\b))", stdout:graphql}] +
@@ -2188,6 +2236,39 @@ ${line:-- Check k1 (before_merge): not yet run}
       [{match:"^gh api .*git/refs?/heads/[^ ?]+([ ?]|$)"} +
         refused(404; "Not Found"; "https://docs.github.com/rest/git/refs#get-a-reference")] +
       [$pulls[] | {match:"^gh api .*compare/(\($base | branchpat)|\($main))(\\.\\.\\.|%2E%2E%2E)(\(ref | branchpat)|\(.head))([ ?]|$)", stdout:compare}] +
+      # The files of the base and each head, as GitHub answers them: contents (the JSON object, or
+      # the file'"'"'s bytes under the raw media type, and a directory'"'"'s listing), trees (recursive or
+      # not, by the tree'"'"'s or the commit'"'"'s sha or a branch), blobs, and the commit itself. A path or
+      # an object no commit holds is GitHub'"'"'s 404.
+      [$trees[] | . as $t | ($t.entries[] | select(.type == "blob")) as $e | contentsAt($t; $e.path)[] |
+        {match:("^(?=.*application/vnd\\.github(\\.v3)?\\.raw)" + ltrimstr("^")), stdout:($e.content | gsub("\n"; "") | @base64d)},
+        {match:., stdout:fileOf($t; $e)}] +
+      [$trees[] | . as $t | ([""] + [$t.entries[] | select(.type == "tree") | .path])[] as $dir | contentsAt($t; $dir)[] |
+        {match:., stdout:listOf($t; $dir)}] +
+      [{match:"^gh api (.* )?/?repos/\($repo | literal)/contents([/?]| |$)"} +
+        refused(404; "Not Found"; "https://docs.github.com/rest/repos/contents#get-repository-content")] +
+      [$trees[] | . as $t | (([$t.tree] + refsOf($t)) | map({sha:., root:true})) +
+        [$t.entries[] | select(.type == "tree") | {sha, root:false, dir:.path}] | .[] as $node |
+        ($node.sha | literal | branchpat) as $s | (if $node.root then [$t.tree, ""] else [$node.sha, $node.dir] end) as [$sha, $dir] |
+        {match:"^gh api (.* )?/?repos/\($repo | literal)/git/trees/\($s)(?=\\S*[?&]recursive=(1|true))", stdout:treeOf($t; $sha; $dir; true)},
+        {match:"^gh api (.* )?/?repos/\($repo | literal)/git/trees/\($s)([ ?]|$)", stdout:treeOf($t; $sha; $dir; false)}] +
+      [{match:"^gh api (.* )?/?repos/\($repo | literal)/git/trees/"} +
+        refused(404; "Not Found"; "https://docs.github.com/rest/git/trees#get-a-tree")] +
+      [$trees[] | .entries[] | select(.type == "blob") |
+        {match:"^gh api (.* )?/?repos/\($repo | literal)/git/blobs/\(.sha)([ ?]|$)",
+         stdout:{sha, node_id:"B_rig", size, url:"\(api)/git/blobs/\(.sha)", content, encoding:"base64"}}] +
+      [{match:"^gh api (.* )?/?repos/\($repo | literal)/git/blobs/"} +
+        refused(404; "Not Found"; "https://docs.github.com/rest/git/blobs#get-a-blob")] +
+      [$trees[] | . as $t | ([$pulls[] | select(.head == $t.sha) | .files][0] // []) as $files | refsOf($t)[] |
+        (. | literal | branchpat) as $s |
+        {match:"^gh api (.* )?/?repos/\($repo | literal)/commits/\($s)([ ?]|$)",
+         stdout:{sha:$t.sha, node_id:"C_rig", url:"\(api)/commits/\($t.sha)", html_url:"https://github.com/\($repo)/commit/\($t.sha)",
+           commit:{message:$t.message, tree:{sha:$t.tree, url:"\(api)/git/trees/\($t.tree)"},
+             author:{name:"Fixture", email:"fixture@example.invalid", date:$at}, committer:{name:"Fixture", email:"fixture@example.invalid", date:$at}},
+           parents:(if $t.parent == "" then [] else [{sha:$t.parent, url:"\(api)/commits/\($t.parent)"}] end),
+           files:[$files[] | {filename:.path, status:"added", additions, deletions, changes:(.additions + .deletions)}]}},
+        {match:"^gh api (.* )?/?repos/\($repo | literal)/git/commits/\($s)([ ?]|$)",
+         stdout:{sha:$t.sha, message:$t.message, tree:{sha:$t.tree}, parents:(if $t.parent == "" then [] else [{sha:$t.parent}] end)}}] +
       # Each head'"'"'s workflow runs and their jobs.
       [$pulls[] | {match:"^gh api .*actions/runs\\?\\S*head_sha=\(.head)", stdout:{total_count:(wfruns | length), workflow_runs:wfruns}}] +
       [{match:"^gh api .*actions/runs\\?\\S*head_sha=", stdout:{total_count:0, workflow_runs:[]}}] +
@@ -2195,7 +2276,12 @@ ${line:-- Check k1 (before_merge): not yet run}
         | {id, run_id, name, head_sha, status, conclusion, started_at, completed_at, html_url, steps:[]}] as $jobs |
         {match:"^gh api .*actions/runs/\($w.id)/jobs([ ?]|$)", stdout:{total_count:($jobs | length), jobs:$jobs}},
         {match:"^gh api .*actions/runs/\($w.id)([ ?]|$)", stdout:$w}] +
-      [{match:"^gh api .*actions/runs/[0-9]+"} +
+      # A job by its id: each check run the heads hold, else GitHub'"'"'s 404.
+      [$pulls[] | checkruns[] | {match:"^gh api .*actions/jobs/\(.id)([ ?/]|$)",
+        stdout:{id, run_id, name, head_sha, status, conclusion, started_at, completed_at, html_url, steps:[]}}] +
+      [{match:"^gh api .*actions/jobs/[0-9]+"} +
+        refused(404; "Not Found"; "https://docs.github.com/rest/actions/workflow-jobs#get-a-job-for-a-workflow-run"),
+       {match:"^gh api .*actions/runs/[0-9]+"} +
         refused(404; "Not Found"; "https://docs.github.com/rest/actions/workflow-runs#get-a-workflow-run"),
        {match:"^gh api .*actions/runs([ ?]|$)", stdout:{total_count:([$pulls[] | wfruns[]] | length), workflow_runs:[$pulls[] | wfruns[]]}}] +
       # The pull requests over REST, the repository, and the token'"'"'s account (an App'"'"'s, which /user refuses).
