@@ -67,9 +67,10 @@
 # write to a regular file waits until it is done, so the file holds every byte. Over that, a
 # list is held whole: a program's output that is empty, or whose last line has no newline, is a
 # refusal naming that line, and so is any line of a program's list or of a metafile's `inputs`
-# that names no file this check can find, inside the repository or outside it, since tsc lists
-# only files it read and Bun only modules it loaded. Each leaves its source unknown, as a
-# command that fails does.
+# that names no file this check can find, inside the repository or outside it, an empty line
+# among them, since tsc lists only files it read and Bun only modules it loaded; and so is a
+# program's list that keeps no file of the program's own directory, since a program holds at least
+# its own sources. Each leaves its source unknown, as a command that fails does.
 #
 # Files a test reads by relative path - the JSON fixtures and corpora a test of one package
 # reads out of another package's directory - are part of no tsc program, so they stay hand-kept
@@ -261,7 +262,11 @@ def scrubbed(text: str, scratch: str) -> str:
 def program_files(project: str) -> list | None:
     """Every file of the project's tsc program that is inside the repository and outside
     node_modules, repository-relative. None when the command fails, or when its list is not
-    whole: empty, ended by a line with no newline, or holding a line that names no file (kept)."""
+    whole: empty, ended by a line with no newline, holding a line that names no file (kept), or
+    keeping no file of the program's own directory - the project itself, or the directory of the
+    tsconfig file it names. A program holds at least its own sources, so a list cut at a line end
+    after TypeScript's own library files, which no other guard sees, is refused by name rather
+    than read as a program of no files, which every filter covers."""
     command = ["bunx", "tsc", "-p", project, "--noEmit", "--listFilesOnly"]
     shown = " ".join(command)
     result = run_whole(command)
@@ -277,7 +282,17 @@ def program_files(project: str) -> list | None:
         problems.append(engine.error(project, f"`{shown}` exited 0 and its last line, {last!r}, has no newline at its "
                                               f"end, so its output is cut and the files its program holds are unknown"))
         return None
-    return kept(project, shown, result.stdout.splitlines(), "printed {} line(s)", "program holds")
+    files = kept(project, shown, result.stdout.splitlines(), "printed {} line(s)", "program holds")
+    if files is None:
+        return None
+    own = (Path(project).parent if project.endswith(".json") else Path(project)).as_posix()
+    if not any(file.startswith(f"{own}/") for file in files):
+        problems.append(engine.error(project, f"`{shown}` exited 0 and its list keeps {len(files)} file(s) of this "
+                                              f"repository, none of them under {own}, the program's own directory, so "
+                                              f"the list is cut or is another program's, and the files its program "
+                                              f"holds are unknown: a program holds at least its own sources"))
+        return None
+    return files
 
 
 def bundle_files(entry: str) -> list | None:

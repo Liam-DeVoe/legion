@@ -7,12 +7,15 @@
 # it excludes a file of the program, passed over when it excludes files outside it - a refusal
 # of the engine's, written to the log as the workflow command the engine writes for it, a
 # filters file that is absent, which ends the run naming the file, and a list read whole: in
-# full where a pipe would cut it, and refused by its line where it is empty, cut or names no file.
+# full where a pipe would cut it, and refused by its line where it is empty, cut or names no file
+# (an empty line, or a path outside the repository that is not there, among them), or keeps no
+# file of the program's own directory.
 # The same holds for every module a bundle loads, with a bundle refused by its entry when it does
-# not build, leaves no metafile, or leaves one naming no module of the repository or one that is
-# no file, each refusal showing the scratch directory as <scratch>; and a listed block holds
-# exactly the files its sources give, the union where it names two of them, a tsc program and a
-# bundle, as the browser suite's block of the real ci_ts_programs.py does.
+# not build (its report read whole where a pipe would cut it), leaves no metafile, or leaves one
+# naming no module of the repository or one that is no file, each refusal showing the scratch
+# directory as <scratch>; and a listed block holds exactly the files its sources give, the union
+# where it names two of them, a tsc program and a bundle, as the browser suite's block of the real
+# ci_ts_programs.py does.
 #
 # Each case builds a miniature repository under a temporary directory - a ci.yaml whose changes
 # job hands its paths-filter step .github/ci-filters.yaml, that file defining two filters through
@@ -76,8 +79,9 @@ LIST
 #!/usr/bin/env bash
 # A stand-in bunx for the fixtures: `bunx tsc -p <project> --noEmit --listFilesOnly` prints the
 # lines of <project>/listed, each made absolute against the fixture root unless it already starts
-# with / or ./, as tsc prints absolute paths and the script must read either. With a <project>/fails
-# file it prints that file and exits 2, as tsc does on a project it cannot read.
+# with / or ./, as tsc prints absolute paths and the script must read either; an empty line it
+# prints empty. With a <project>/fails file it prints that file and exits 2, as tsc does on a
+# project it cannot read.
 # It writes the list in two writes, split at the byte that <project>/cut or <project>/pipe-cut
 # names, and exits 0. With `cut` the second write is lost. With `pipe-cut` it is lost when stdout
 # is a pipe, as Bun loses what a full pipe has not taken when tsc exits (check-ts-filters.sh, THE
@@ -96,6 +100,7 @@ whole=$(mktemp)
 trap 'rm -f "$whole"' EXIT
 while IFS= read -r line; do
   case $line in
+    '') printf '\n' ;;
     /* | ./*) printf '%s\n' "$line" ;;
     *) printf '%s\n' "$PWD/$line" ;;
   esac
@@ -119,8 +124,10 @@ SH
 # so a line may reach into node_modules or climb out of the fixture. It records <dir> in the file
 # `outdir` beside <entry>, so a case can tell whether a refusal shows that directory. With a
 # `fails` file beside <entry> it prints that file, each @outdir@ in it written as <dir>, and exits
-# 1, as Bun does on an entry it cannot build; with a `nometa` file beside it, it exits 0 and
-# writes no metafile.
+# 1, as Bun does on an entry it cannot build: in two writes, the first line and then the rest,
+# where a `pipe-cut` file beside <entry> makes it lose the second when stderr is a pipe, as Bun
+# loses what a full pipe has not taken when it exits. With a `nometa` file beside it, it exits 0
+# and writes no metafile.
 set -euo pipefail
 if [ "$#" -ne 7 ] || [ "$1" != build ] || [ "$3" != --target ] || [ "$4" != bun ] || [ "$5" != --outdir ] \
   || [ "$7" != "--metafile=$6/meta.json" ]; then
@@ -130,9 +137,14 @@ fi
 beside=$(dirname "$2")
 printf '%s\n' "$6" > "$beside/outdir"
 if [ -f "$beside/fails" ]; then
+  lines=()
   while IFS= read -r line; do
-    printf '%s\n' "${line//@outdir@/"$6"}"
-  done < "$beside/fails" >&2
+    lines+=("${line//@outdir@/"$6"}")
+  done < "$beside/fails"
+  printf '%s\n' "${lines[0]}" >&2
+  if [ ! -f "$beside/pipe-cut" ] || [ ! -p /dev/stderr ]; then
+    if [ "${#lines[@]}" -gt 1 ]; then printf '%s\n' "${lines[@]:1}" >&2; fi
+  fi
   exit 1
 fi
 if [ -f "$beside/nometa" ]; then
@@ -272,6 +284,26 @@ check "names each line that names no file" \
 check "takes neither for a file no filter selects" "$(is "$(contains "$out" 'does not select')" false)"
 check "holds the filter to no list" "$(is "$(contains "$out" '^pkg/app: ')" false)"
 
+# A line outside the repository is held to being a file too (tsc lists only files it read), and an
+# empty line is a line that names no file, never one passed over: either may be what a cut left.
+echo "case: a tsc list naming a file outside the repository that is not there"
+root=$(fixture outside-missing)
+printf 'pkg/app/src/main.ts\n%s\npkg/lib/lib.ts\n' "$work/outside/typescript/lib/lib.gone.d.ts" > "$root/pkg/app/listed"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the line outside the repository that names no file" \
+  "$(contains "$out" "::error file=pkg/app::\`bunx tsc -p pkg/app --noEmit --listFilesOnly\` exited 0 and printed 1 line(s) that name no file this check can find: '$work/outside/typescript/lib/lib.gone.d.ts', so the list is cut or holds a name that is no path")"
+check "holds the filter to no list" "$(is "$(contains "$out" '^pkg/app: ')" false)"
+
+echo "case: a tsc list holding an empty line"
+root=$(fixture empty-line)
+printf 'pkg/app/src/main.ts\n\npkg/lib/lib.ts\n' > "$root/pkg/app/listed"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the empty line as a line that names no file" \
+  "$(contains "$out" "::error file=pkg/app::\`bunx tsc -p pkg/app --noEmit --listFilesOnly\` exited 0 and printed 1 line(s) that name no file this check can find: '', so the list is cut or holds a name that is no path")"
+check "holds the filter to no list" "$(is "$(contains "$out" '^pkg/app: ')" false)"
+
 echo "case: a tsc that exits 0 and prints nothing"
 root=$(fixture empty-list)
 : > "$root/pkg/app/listed"
@@ -280,6 +312,23 @@ check "fails" "$(is "$status" 1)"
 check "names the command and says a program holds at least the library files" \
   "$(contains "$out" "::error file=pkg/app::\`bunx tsc -p pkg/app --noEmit --listFilesOnly\` exited 0 and printed nothing, so the files its program holds are unknown: a program holds at least TypeScript's own library files")"
 check "holds the filter to no list" "$(is "$(contains "$out" '^pkg/app: ')" false)"
+
+# A program holds at least its own sources, so a list whose kept files are none of them - a list
+# cut at a line end after TypeScript's own library files, which the newline guard cannot see - is
+# a refusal by name, never a program of no files that every filter covers.
+echo "case: a tsc list naming no file of the program's own directory"
+root=$(fixture no-own-file)
+printf 'node_modules/typescript/lib/lib.es5.d.ts\n%s\n' "$work/outside/typescript/lib/lib.dom.d.ts" \
+  > "$root/pkg/app/listed"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the command, the directory and what a program holds at least" \
+  "$(contains "$out" "::error file=pkg/app::\`bunx tsc -p pkg/app --noEmit --listFilesOnly\` exited 0 and its list keeps 0 file(s) of this repository, none of them under pkg/app, the program's own directory, so the list is cut or is another program's, and the files its program holds are unknown: a program holds at least its own sources")"
+check "holds the filter to no list" "$(is "$(contains "$out" '^pkg/app: ')" false)"
+printf 'pkg/lib/lib.ts\n' > "$root/pkg/app/listed"
+run_check "$root"
+check "one keeping only another directory's files fails the same way" \
+  "$(contains "$out" "exited 0 and its list keeps 1 file(s) of this repository, none of them under pkg/app, the program's own directory")"
 
 echo "case: a pair naming a filter the changes job does not define"
 root=$(fixture unknown-filter)
@@ -521,6 +570,19 @@ check "the write mode fails too" "$(is "$status" 1)"
 check "and writes no block" "$(contains "$out" 'wrote no listed block: the files a block holds are computed from programs and bundles this run could not list, build or read')"
 check "so the block keeps the module rather than going empty" \
   "$(contains "$(<"$root/.github/ci-filters.yaml")" "^  - 'pkg/lib/runtime.ts'$")"
+
+# `bun build` is read from a regular file too: what it printed is only refusal text, but a pipe
+# would cut the text a refusal quotes, as it cuts a tsc list, and Bun writes its report in pieces.
+echo "case: a bundle that does not build, whose report a pipe would cut"
+root=$(fixture bundle-fails-pipe-cut)
+bundled "$root"
+printf 'error: ModuleNotFound resolving "pkg/cli/main.ts" (entry point)\nerror: the half of the report a pipe loses\n' \
+  > "$root/pkg/cli/fails"
+: > "$root/pkg/cli/pipe-cut"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "quotes the whole report, the half a pipe loses included" \
+  "$(contains "$out" 'error: / ModuleNotFound .* error: / the / half / of / the / report / a / pipe / loses')"
 
 echo "case: a bundle that builds and leaves no metafile"
 root=$(fixture bundle-no-metafile)
