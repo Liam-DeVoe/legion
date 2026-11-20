@@ -185,6 +185,10 @@ type Deps struct {
 	// contracts.LiveSocketMaxAge), so the sockets a deploy opened together do not all end
 	// together; a test returns a fixed age.
 	LiveSocketAge func() time.Duration
+	// ResultsClock is the clock GET /api/v1/issues/{key}/results reads each moment from
+	// (server.resultsNow). Nil is time.Now, as every deployment leaves it; a test sets one it
+	// moves, to read past the span an answer is believed for without waiting that span out.
+	ResultsClock func() time.Time
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that

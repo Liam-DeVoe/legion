@@ -3474,19 +3474,19 @@ func TestAReadOnlyResultsReadStoresNothingAndAnswersAsAWriter(t *testing.T) {
 		var answers delivery.CommitPullAnswers
 		start := time.Date(2026, 11, 20, 1, 0, 0, 0, time.UTC)
 		commit := func(n int) string { return fmt.Sprintf("%040x", n) }
-		// One answer more than the bound, each read a millisecond after the one before, so each
-		// stands a millisecond longer and the first ends soonest.
+		// One answer more than the bound, each read a millisecond after the one before, so the
+		// first is the one learned longest ago.
 		for n := 0; n <= delivery.ReadOnlyAnswerBound; n++ {
 			answers.Keep("acme/widgets", commit(n), delivery.CommitPulls{}, start.Add(time.Duration(n)*time.Millisecond))
 		}
 		at := start.Add(time.Duration(delivery.ReadOnlyAnswerBound) * time.Millisecond)
 		for _, n := range []int{delivery.ReadOnlyAnswerBound, 1} {
-			if _, recall := answers.Claim("acme/widgets", commit(n), at); recall != delivery.CommitPullRecalled {
+			if recall := answers.Claim("acme/widgets", commit(n), at); recall != delivery.CommitPullRecalled {
 				t.Fatalf("the answer for commit %d = %v, want it kept", n, recall)
 			}
 		}
-		if _, recall := answers.Claim("acme/widgets", commit(0), at); recall != delivery.CommitPullAsk {
-			t.Fatalf("the answer that ends soonest = %v past the bound, want it dropped and the commit asked again", recall)
+		if recall := answers.Claim("acme/widgets", commit(0), at); recall != delivery.CommitPullAsk {
+			t.Fatalf("the answer learned longest ago = %v past the bound, want it dropped and the commit asked again", recall)
 		}
 	})
 }

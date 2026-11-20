@@ -1,8 +1,10 @@
 package delivery
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 )
@@ -136,85 +138,93 @@ func (c *CommitPullReads) Settle(repoFull, sha string, now time.Time) {
 // CommitPullAnswers for the pull requests of a commit, and Branches' own for a commit's place on
 // a branch. An answer of either is a handful of short strings (a pull request's head row keeps
 // its title and URL, never its body), so the bound holds each memory to a few megabytes at most.
-// A process whose read-only reads ask about more commits than this inside one span drops the
-// answers that end soonest and says so in its log (readOnlyAnswers.keep): a dropped answer costs
-// one more GitHub read of that commit, and never a wrong answer.
+// A process whose read-only reads ask about more commits than this drops the answer it learned
+// longest ago and says so in its log (readOnlyAnswers.keep). That is the one place a read-only
+// read may ask GitHub where a writer's stored row would answer: a dropped answer costs one more
+// GitHub read of that commit.
 const ReadOnlyAnswerBound = 1024
 
 // readOnlyAnswers is what a read-only caller's results read remembers of GitHub's answers, since
-// it stores none of them: one value per key, each standing until its own moment, and at most
-// ReadOnlyAnswerBound of them. Its zero value is an empty memory, and the process holds one per
-// kind of answer, shared by every goroutine reading results, as it holds CommitPullReads.
+// it stores none of them: one value per key, each learned at a moment and standing until a moment
+// of its own or for good, and at most ReadOnlyAnswerBound of them. Its zero value is an empty
+// memory, and the process holds one per kind of answer, shared by every goroutine reading
+// results, as it holds CommitPullReads.
 type readOnlyAnswers[K comparable, V any] struct {
 	mu      sync.Mutex
 	entries map[K]readOnlyAnswer[V]
 }
 
-// readOnlyAnswer is one remembered value and the moment it stops standing.
+// readOnlyAnswer is one remembered value, when it was learned, and the moment it stops standing:
+// the zero moment for a value that stands for good, as the row a writer's read stores does.
 type readOnlyAnswer[V any] struct {
 	value V
+	at    time.Time
 	until time.Time
 }
 
-// recall answers the value kept for key, and whether it still stands at now.
-func (a *readOnlyAnswers[K, V]) recall(key K, now time.Time) (V, bool) {
+// standsAt is whether the answer still stands at now.
+func (a readOnlyAnswer[V]) standsAt(now time.Time) bool {
+	return a.until.IsZero() || now.Before(a.until)
+}
+
+// recall answers what is kept for key, and whether it still stands at now.
+func (a *readOnlyAnswers[K, V]) recall(key K, now time.Time) (readOnlyAnswer[V], bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.recallLocked(key, now)
 }
 
-func (a *readOnlyAnswers[K, V]) recallLocked(key K, now time.Time) (V, bool) {
+func (a *readOnlyAnswers[K, V]) recallLocked(key K, now time.Time) (readOnlyAnswer[V], bool) {
 	held, found := a.entries[key]
-	if !found || !now.Before(held.until) {
-		var none V
-		return none, false
+	if !found || !held.standsAt(now) {
+		return readOnlyAnswer[V]{}, false
 	}
-	return held.value, true
+	return held, true
 }
 
-// keep remembers value for key until until, replacing whatever was kept for key.
+// keep remembers answer for key, replacing whatever was kept for key.
 //
 // A new key in a memory at ReadOnlyAnswerBound first drops every answer that no longer stands at
-// now. Where every answer still stands, it drops the one that ends soonest and logs that it did,
-// naming the bound and the key, so a memory at its bound is seen in the log rather than in a
+// now. Where every answer still stands, it drops the one learned longest ago and logs that it
+// did, naming the bound and the key, so a memory at its bound is seen in the log rather than in a
 // GitHub bill. Nothing grows past the bound.
-func (a *readOnlyAnswers[K, V]) keep(key K, value V, until, now time.Time) {
+func (a *readOnlyAnswers[K, V]) keep(key K, answer readOnlyAnswer[V], now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.keepLocked(key, value, until, now)
+	a.keepLocked(key, answer, now)
 }
 
-func (a *readOnlyAnswers[K, V]) keepLocked(key K, value V, until, now time.Time) {
+func (a *readOnlyAnswers[K, V]) keepLocked(key K, answer readOnlyAnswer[V], now time.Time) {
 	if a.entries == nil {
 		a.entries = map[K]readOnlyAnswer[V]{}
 	}
 	if _, replacing := a.entries[key]; !replacing && len(a.entries) >= ReadOnlyAnswerBound {
 		a.makeRoomLocked(now)
 	}
-	a.entries[key] = readOnlyAnswer[V]{value: value, until: until}
+	a.entries[key] = answer
 }
 
 // makeRoomLocked frees one place at least in a memory at its bound, as keep's doc comment says.
 func (a *readOnlyAnswers[K, V]) makeRoomLocked(now time.Time) {
 	for key, held := range a.entries {
-		if !now.Before(held.until) {
+		if !held.standsAt(now) {
 			delete(a.entries, key)
 		}
 	}
 	if len(a.entries) < ReadOnlyAnswerBound {
 		return
 	}
-	var soonest K
-	var end time.Time
+	var oldest K
+	var learned time.Time
 	first := true
 	for key, held := range a.entries {
-		if first || held.until.Before(end) {
-			soonest, end, first = key, held.until, false
+		if first || held.at.Before(learned) {
+			oldest, learned, first = key, held.at, false
 		}
 	}
-	delete(a.entries, soonest)
-	slog.Warn("dispatch: a read-only results read's memory of GitHub's answers is at its bound; it dropped the answer that ends soonest, which costs one more GitHub read if that commit is read again",
-		"bound", ReadOnlyAnswerBound, "dropped", fmt.Sprintf("%+v", soonest), "until", end)
+	delete(a.entries, oldest)
+	slog.Warn("dispatch: a read-only results read's memory of GitHub's answers is at its bound; it dropped the answer learned longest ago, which costs one more GitHub read if that commit is read again",
+		"bound", ReadOnlyAnswerBound, "dropped", fmt.Sprintf("%+v", oldest), "learned", learned)
 }
 
 // CommitPullAnswers is CommitPullReads' twin for a read-only caller's results read: a claim of
@@ -223,57 +233,116 @@ func (a *readOnlyAnswers[K, V]) makeRoomLocked(now time.Time) {
 // A read-only read never touches CommitPullReads, so a writer's read of the same commit inside
 // the span still reads through and stores exactly as it would had no read-only read come first.
 //
-// The answer is kept for CommitPullReadStaleAfter past the read, or for CommitPullSettledFor
-// where GitHub named pull requests and none of them has the commit as its head: the two spans a
-// writer's read is held off for (Claim, Settle), so a read-only read asks GitHub no more often
-// than a writer's does. A read that failed keeps no answer, and its claim refuses the commit for
-// the rest of CommitPullReadStaleAfter, as a writer's failed read is claimed with the rest.
+// The claim holds a commit off for the two spans a writer's read is held off for (Claim, Settle):
+// CommitPullReadStaleAfter past a claim, and CommitPullSettledFor past an answer that named pull
+// requests none of which has the commit as its head. So a read-only read asks GitHub no more and
+// no less often than a writer's does. A read that failed keeps no answer, and its claim refuses
+// the commit for the rest of CommitPullReadStaleAfter, as a writer's failed read is claimed with
+// the rest.
+//
+// The answer outlives its claim, as the rows a writer's read stores outlive the writer's claim:
+// every later read-only read reads the stored rows as they would stand had each answer been
+// stored (Learned), until a newer answer for the same commit replaces it or the bound drops it.
 //
 // Its zero value is an empty memory, and the server holds one for the process
 // (api.server.readOnlyCommitPulls). It holds at most ReadOnlyAnswerBound commits.
 type CommitPullAnswers struct {
-	answers readOnlyAnswers[commitPullKey, *CommitPulls]
+	answers readOnlyAnswers[commitPullKey, commitPullAnswer]
+}
+
+// commitPullAnswer is what CommitPullAnswers holds for one commit: GitHub's last answer, nil until
+// a read keeps one, and the moment before which the commit is not claimed again.
+type commitPullAnswer struct {
+	pulls     *CommitPulls
+	notBefore time.Time
+}
+
+// held is the entry of a memory that answer makes, learned at: one that stands for good where it
+// holds an answer, and only while its claim does otherwise.
+func (answer commitPullAnswer) held(at time.Time) readOnlyAnswer[commitPullAnswer] {
+	held := readOnlyAnswer[commitPullAnswer]{value: answer, at: at}
+	if answer.pulls == nil {
+		held.until = answer.notBefore
+	}
+	return held
 }
 
 // CommitPullRecall is what CommitPullAnswers.Claim found for one commit.
 type CommitPullRecall int
 
 const (
-	// CommitPullAsk is a commit nothing stands for: Claim recorded the claim, so the caller asks
+	// CommitPullAsk is a commit no claim holds: Claim recorded the claim, so the caller asks
 	// GitHub (ReadCommitPulls) and hands the answer to Keep.
 	CommitPullAsk CommitPullRecall = iota
-	// CommitPullRecalled is GitHub's answer to an earlier read-only read, still standing, which
-	// Claim answers in place of asking GitHub again.
+	// CommitPullRecalled is a commit an earlier read-only read claimed and kept an answer for,
+	// inside the claim's span: the caller asks GitHub nothing, as a writer's read whose claim is
+	// refused asks nothing, and the answer is already among those it reads (Learned).
 	CommitPullRecalled
 	// CommitPullHeld is a commit an earlier read-only read claimed and kept no answer for: that
-	// read is still asking GitHub, or its read failed. The caller answers from the stored rows
-	// alone, as a writer's read does whose claim is refused.
+	// read is still asking GitHub, or its read failed. The caller asks GitHub nothing, as a
+	// writer's read whose claim is refused asks nothing.
 	CommitPullHeld
 )
 
-// Claim answers what stands for sha's pull requests in repoFull at now and, where nothing does,
+// Claim answers what holds sha's pull requests in repoFull at now and, where nothing does,
 // records the claim under the one lock that read it, so two read-only reads that ask at once
-// spend one GitHub call.
-func (c *CommitPullAnswers) Claim(repoFull, sha string, now time.Time) (CommitPulls, CommitPullRecall) {
+// spend one GitHub call. An answer an earlier read kept stays kept across the claim.
+func (c *CommitPullAnswers) Claim(repoFull, sha string, now time.Time) CommitPullRecall {
 	c.answers.mu.Lock()
 	defer c.answers.mu.Unlock()
 	key := commitPullKey{repo: repoFull, sha: sha}
-	if kept, stands := c.answers.recallLocked(key, now); stands {
-		if kept == nil {
-			return CommitPulls{}, CommitPullHeld
+	held, kept := c.answers.recallLocked(key, now)
+	if kept && now.Before(held.value.notBefore) {
+		if held.value.pulls == nil {
+			return CommitPullHeld
 		}
-		return *kept, CommitPullRecalled
+		return CommitPullRecalled
 	}
-	c.answers.keepLocked(key, nil, now.Add(CommitPullReadStaleAfter), now)
-	return CommitPulls{}, CommitPullAsk
+	at := now
+	if kept {
+		at = held.at
+	}
+	claimed := commitPullAnswer{pulls: held.value.pulls, notBefore: now.Add(CommitPullReadStaleAfter)}
+	c.answers.keepLocked(key, claimed.held(at), now)
+	return CommitPullAsk
 }
 
-// Keep remembers pulls, GitHub's answer for sha's pull requests in repoFull read at now, for the
-// span CommitPullAnswers' doc comment gives.
+// Keep remembers pulls, GitHub's answer for sha's pull requests in repoFull read at now, in place
+// of the answer kept for it before, and holds the commit off for the span CommitPullAnswers' doc
+// comment gives.
 func (c *CommitPullAnswers) Keep(repoFull, sha string, pulls CommitPulls, now time.Time) {
 	span := CommitPullReadStaleAfter
 	if len(pulls.Heads) > 0 && !pulls.AtHead {
 		span = CommitPullSettledFor
 	}
-	c.answers.keep(commitPullKey{repo: repoFull, sha: sha}, &pulls, now.Add(span), now)
+	kept := commitPullAnswer{pulls: &pulls, notBefore: now.Add(span)}
+	c.answers.keep(commitPullKey{repo: repoFull, sha: sha}, kept.held(now), now)
+}
+
+// Learned is every answer the memory keeps, in the order they were read, two read at one moment
+// in the order of their repository and commit: what a read-only read reads the stored rows with,
+// as they would stand had a writer's read stored each answer in turn (HeadsAttributedToWith,
+// HeadStoredAtWith, BaseBranchMergedForWith, Branches.ReadCommitOnBranch).
+func (c *CommitPullAnswers) Learned() []CommitPulls {
+	type learned struct {
+		key   commitPullKey
+		pulls *CommitPulls
+		at    time.Time
+	}
+	c.answers.mu.Lock()
+	kept := make([]learned, 0, len(c.answers.entries))
+	for key, held := range c.answers.entries {
+		if held.value.pulls != nil {
+			kept = append(kept, learned{key: key, pulls: held.value.pulls, at: held.at})
+		}
+	}
+	c.answers.mu.Unlock()
+	slices.SortFunc(kept, func(a, b learned) int {
+		return cmp.Or(a.at.Compare(b.at), cmp.Compare(a.key.repo, b.key.repo), cmp.Compare(a.key.sha, b.key.sha))
+	})
+	answers := make([]CommitPulls, 0, len(kept))
+	for _, one := range kept {
+		answers = append(answers, *one.pulls)
+	}
+	return answers
 }

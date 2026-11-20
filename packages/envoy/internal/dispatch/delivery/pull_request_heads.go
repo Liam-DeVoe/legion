@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -1056,8 +1057,8 @@ func ReadThroughCommitPulls(
 // pull request GitHub named would be written as, in the order GitHub named them, and whether any
 // of them has the commit as its head (AtHead). A writer's read stores it (StoreCommitPulls). A
 // read-only caller's read keeps it in memory instead (CommitPullAnswers) and reads the stored
-// rows as they would stand had it been stored (HeadsAttributedToWith, BaseBranchMergedForWith,
-// Branches.ReadCommitOnBranch), so both reads answer alike.
+// rows as they would stand had it been stored (HeadsAttributedToWith, HeadStoredAtWith,
+// BaseBranchMergedForWith, Branches.ReadCommitOnBranch), so both reads answer alike.
 type CommitPulls struct {
 	Heads  []PullRequestHead
 	AtHead bool
@@ -1170,6 +1171,27 @@ func HeadsAttributedToWith(ctx context.Context, pool *store.Pool, issueKey strin
 	return heads, nil
 }
 
+// HeadStoredAtWith is HeadStoredAt as it would answer had StoreCommitPulls stored each answer of
+// learned, in turn: what a read-only caller's results read asks before it reads GitHub for a
+// commit, so a head its own or an earlier read-only read learned holds that read off as the row
+// a writer's read stored holds the writer's off (api/results_comparison.go,
+// comparisonReader.headStoredAt). With nothing learned it is HeadStoredAt itself.
+func HeadStoredAtWith(ctx context.Context, pool *store.Pool, repoFull, sha string, learned []CommitPulls) (bool, error) {
+	if !anyLearnedHead(learned) {
+		return HeadStoredAt(ctx, pool, repoFull, sha)
+	}
+	rows, err := foldedHeadRows(ctx, pool, learned, `lower(repo) = lower($3) and head_sha = $4`, repoFull, sha)
+	if err != nil {
+		return false, fmt.Errorf("read the stored pull request heads of %s at %s: %w", repoFull, sha, err)
+	}
+	for _, row := range rows {
+		if strings.EqualFold(row.repo, repoFull) && row.headSHA == sha && (row.state == "open" || row.state == "merged") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // BaseBranchMergedForWith is BaseBranchMergedFor as it would answer had StoreCommitPulls stored
 // each answer of learned, in turn: the branch a read-only caller's results read measures an
 // `after_merge` check against once its own read-throughs have learned a merge it stores nowhere
@@ -1218,8 +1240,8 @@ func anyLearnedHead(learned []CommitPulls) bool {
 	return slices.ContainsFunc(learned, func(pulls CommitPulls) bool { return len(pulls.Heads) > 0 })
 }
 
-// learnedHeadRow is the columns of one pull_request_heads row that HeadsAttributedTo and
-// BaseBranchMergedFor read, as learnedHeadRows folds a learned head into it.
+// learnedHeadRow is the columns of one pull_request_heads row that HeadsAttributedTo,
+// HeadStoredAt and BaseBranchMergedFor read, as foldedHeadRows folds a learned head into it.
 type learnedHeadRow struct {
 	repo      string
 	number    int
@@ -1239,11 +1261,21 @@ type learnedHeadKey struct {
 }
 
 // learnedHeadRows is the rows attributed to issueKey as they would stand had StoreCommitPulls
-// stored each answer of learned, in turn. It reads, in one statement, every row attributed to
-// issueKey and every row a learned head would write or drop, then folds each learned head into
-// the row it lands on as the write would (foldLearnedHead), drops what the write would drop, and
-// keeps the rows attributed to issueKey. Nothing is written.
+// stored each answer of learned, in turn (foldedHeadRows). Nothing is written.
 func learnedHeadRows(ctx context.Context, pool *store.Pool, issueKey string, learned []CommitPulls) ([]learnedHeadRow, error) {
+	rows, err := foldedHeadRows(ctx, pool, learned, `issue_key = $3`, issueKey)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(rows, func(row learnedHeadRow) bool { return row.issueKey == nil || *row.issueKey != issueKey }), nil
+}
+
+// foldedHeadRows is the rows match selects, and every row a learned head would write or drop, as
+// they would stand had StoreCommitPulls stored each answer of learned, in turn. It reads them in
+// one statement, match's parameters numbered from $3 and given as args, then folds each learned
+// head into the row it lands on as the write would (foldLearnedHead) and drops what the write
+// would drop. Nothing is written. The caller keeps the rows its question is about.
+func foldedHeadRows(ctx context.Context, pool *store.Pool, learned []CommitPulls, match string, args ...any) ([]learnedHeadRow, error) {
 	var repos []string
 	var numbers []int32
 	for _, pulls := range learned {
@@ -1257,8 +1289,8 @@ func learnedHeadRows(ctx context.Context, pool *store.Pool, issueKey string, lea
 	query, err := pool.Query(ctx, `
 		select repo, number, head_sha, base_ref, state, issue_key, checked_at, event_at
 		from pull_request_heads
-		where issue_key = $1 or (repo, number) in (select * from unnest($2::text[], $3::integer[]))
-	`, issueKey, repos, numbers)
+		where (repo, number) in (select * from unnest($1::text[], $2::integer[])) or (`+match+`)
+	`, append([]any{repos, numbers}, args...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -1285,13 +1317,7 @@ func learnedHeadRows(ctx context.Context, pool *store.Pool, issueKey string, lea
 			}
 		}
 	}
-	var rows []learnedHeadRow
-	for _, row := range stored {
-		if row.issueKey != nil && *row.issueKey == issueKey {
-			rows = append(rows, row)
-		}
-	}
-	return rows, nil
+	return slices.Collect(maps.Values(stored)), nil
 }
 
 // foldLearnedHead is upsertHeadRow's statement made in memory: the row head's write leaves behind,
