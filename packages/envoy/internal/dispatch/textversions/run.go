@@ -72,9 +72,10 @@ type Config struct {
 	// Latency is the statistic of the answers reads this process serves, which the server
 	// records and the fill pauses on before each batch (pauser).
 	Latency *sessionanswers.Latency
-	// Listening is closed once the server listens. Run takes nothing and writes nothing until
-	// then, so the fill never runs inside a migration or before the server answers.
-	Listening <-chan struct{}
+	// Serving is closed once this process serves: it listens and the registry of live server
+	// processes admitted it (cmd/dispatch). Run takes nothing and writes nothing before, and
+	// nothing at all in a process the registry refuses.
+	Serving <-chan struct{}
 	// Events is signalled after each commit that wrote an event (the listener hub's wake on the
 	// events channel, api.EventsChannel): the holder's passes run on it. Nil wakes no pass but the
 	// first of each hold and the horizon's own re-reads.
@@ -89,7 +90,7 @@ type Config struct {
 
 // Run fills the keyword table in a serving process until ctx ends, under the fill's hold
 // (fillHoldName), so one process of all those serving the database writes it at a time. It waits
-// for cfg.Listening first, and takes nothing and writes nothing before.
+// for cfg.Serving first, and takes nothing and writes nothing before.
 //
 // A process that does not hold the hold stands by: it tries for it at once, each time
 // cfg.Released is signalled and every standbyRetry, so it takes a released hold at once and a dead
@@ -133,8 +134,8 @@ func newRunner(cfg Config) (*runner, error) {
 		return nil, errors.New("keyword fill: no event horizon to read the log up to")
 	case cfg.Latency == nil:
 		return nil, errors.New("keyword fill: no answers read latency to pause on")
-	case cfg.Listening == nil:
-		return nil, errors.New("keyword fill: no channel that says the server listens")
+	case cfg.Serving == nil:
+		return nil, errors.New("keyword fill: no channel that says the process serves")
 	}
 	logger := cfg.Logger
 	if logger == nil {
@@ -156,13 +157,13 @@ const (
 	caughtUpMessage     = "dispatch: the keyword fill is caught up"
 )
 
-// run waits for the server to listen, then stands by and fills under the hold in turn until ctx
+// run waits for the process to serve, then stands by and fills under the hold in turn until ctx
 // ends.
 func (r *runner) run(ctx context.Context) {
 	select {
 	case <-ctx.Done():
 		return
-	case <-r.cfg.Listening:
+	case <-r.cfg.Serving:
 	}
 	for {
 		hold := r.standBy(ctx)

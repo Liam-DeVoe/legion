@@ -22,7 +22,8 @@ It holds the keyword table of each past version of the searchable text, in two t
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, and no row is ever updated.
 `search_text_versions_fill` holds the one cursor row of the keyword fill: every event at or below its `event_id` has its rows.
 `internal/dispatch/textversions` is the fill, the one writer of both tables, and no migration writes them.
-It runs in a serving process once the server listens, under the hold `search-text-versions-fill`, so one process writes at a time and the others stand by.
+It runs in a serving process, under the hold `search-text-versions-fill`, so one process writes at a time and the others stand by.
+It starts only after the server listens and the registry of live server processes admits the process, so a process that the registry refuses writes nothing.
 It reads the event log up to the safe horizon in batches of at most 500 events and 2 MB of text, and after each batch it rests for as long as the batch ran.
 Before each batch it pauses while an answers read that its process serves took longer than 800 ms within the last 10 s, or has run longer than 800 ms (`sessionanswers.Latency`).
 A reset of the event log (`events.EventLogWasReset`) empties both tables and starts the cursor again at the first event.

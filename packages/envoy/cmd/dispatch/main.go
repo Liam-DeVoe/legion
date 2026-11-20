@@ -1088,12 +1088,17 @@ func main() {
 
 	routesHandler, background := routes.New(appCtx)
 	// waitFill waits for the keyword fill to stop once ctx is cancelled, which releases its hold
-	// through the pool as it stops. The fill starts once the server listens (below), and there is
-	// nothing to wait for before.
+	// through the pool as it stops. The fill's goroutine starts once the server listens (below),
+	// and there is nothing to wait for before. The fill itself starts only once the registry of
+	// live server processes admits this process (serving, below). So a process that the registry
+	// refuses, or that stops while it waits for admission, cancels ctx, and the fill returns
+	// having taken nothing and written nothing.
 	waitFill := func() {}
-	// exitAfterIntakes ends a process that started its intakes, and maybe its keyword fill, and
-	// will not serve: it stops them, releasing their holds, and exits 1. The deferred stop
-	// (stopIntakesOnExit) does not run on an os.Exit, so every exit here goes through this.
+	// exitAfterIntakes ends a process that started its intakes, and maybe its keyword fill's
+	// goroutine, and will not serve: it stops them, releasing the intakes' holds, and exits 1. The
+	// fill holds nothing then, since it waits for an admission that no such process got. The
+	// deferred stop (stopIntakesOnExit) does not run on an os.Exit, so every exit here goes
+	// through this.
 	exitAfterIntakes := func() {
 		cancel()
 		waitIntakes()
@@ -1150,23 +1155,27 @@ func main() {
 	// api.EventsChannel, above), and every other process stands by for the hold, woken by a
 	// hold's release and a 10 s retry. A lease taken per pass (duty.RunWoken) would move the fill
 	// between processes from pass to pass, and the pause each batch asks first reads the answers
-	// reads of the process that writes (answersLatency). It starts here, once the server's socket
-	// answers, so it never runs inside a migration or before Dispatch listens. The background wait
-	// (waitBackground) waits for it: as it stops, its batch in flight commits or rolls back and it
-	// releases its hold, before the pool closes.
-	listening := make(chan struct{})
-	close(listening)
+	// reads of the process that writes (answersLatency). Its goroutine starts here, once the
+	// server's socket answers, so every way out from here waits for it: exitAfterIntakes, the stop
+	// while the process waits for admission, and the background wait (waitBackground). The fill
+	// itself starts only once serving closes, after the server listens AND the registry of live
+	// server processes admitted this process (joinRegistry, below). So it never runs inside a
+	// migration, and never in a process that the registry refuses or is still waiting to admit:
+	// its pause reads the answers reads this process serves, and a process the registry has not
+	// admitted serves none. As it stops, its batch in flight commits or rolls back and it releases
+	// its hold, before the pool closes.
+	serving := make(chan struct{})
 	fillStopped := make(chan struct{})
 	waitFill = func() { <-fillStopped }
 	go func() {
 		defer close(fillStopped)
 		if err := textversions.Run(ctx, textversions.Config{
-			Leases:    textVersionsLeases,
-			Horizon:   background.EventHorizon(),
-			Latency:   answersLatency,
-			Listening: listening,
-			Events:    textVersionsEventsWake,
-			Released:  textVersionsReleasedWake,
+			Leases:   textVersionsLeases,
+			Horizon:  background.EventHorizon(),
+			Latency:  answersLatency,
+			Serving:  serving,
+			Events:   textVersionsEventsWake,
+			Released: textVersionsReleasedWake,
 		}); err != nil {
 			slog.Error("dispatch: start the keyword fill", "error", err)
 		}
@@ -1206,6 +1215,8 @@ func main() {
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
+	// The registry admitted this process, so it serves: the keyword fill starts (above).
+	close(serving)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
 	// background wait: shutdown runs it before waitUntilIdle and pool.Close, and a sync still
 	// fetching then would write into a closing pool. The keyword fill is waited for here too, so

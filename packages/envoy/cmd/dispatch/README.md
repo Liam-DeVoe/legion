@@ -1557,7 +1557,9 @@ The pass records each try in the database (`doc_settlements_pending.tried_at`), 
 It writes `search_text_versions`, the keyword table of each past version of the searchable text, from the event log (Search, below).
 One process at a time holds its `duty.Hold`, named `search-text-versions-fill`, and fills the table for as long as it serves.
 A lease taken per pass would move the fill from one process to another at each pass, and the pause below reads only the answers reads of the process that writes.
-The fill starts only after the server listens, so it never runs inside a migration or before Dispatch answers.
+The fill starts only after the server listens and the registry of live server processes admits this process (Running more than one process, above).
+So the fill never runs inside a migration, and it never runs in a process that the registry refuses or has not admitted yet.
+A process that the registry has not admitted serves no answers read, so the pause below would read nothing.
 
 - The hold has the values of the delivery intakes' holds.
   It lasts 15 s on the database's clock after each renewal, the holder renews it every 5 s, and the holder stops writing 2 s before it lapses.

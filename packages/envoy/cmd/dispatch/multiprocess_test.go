@@ -43,7 +43,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
 	natsgo "github.com/nats-io/nats.go"
@@ -57,7 +56,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/crafted"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
@@ -8598,22 +8596,15 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 // (recordKeywordFillWrites), against the holder each process's line names when it takes the hold
 // (keywordFillHolder). None of them needs NATS, so every process here runs without it.
 
-// The fill's lines these rows read.
-const (
-	keywordFillTookLine     = `msg="dispatch: the keyword fill took its hold; this process fills the keyword table"`
-	keywordFillStandbyLine  = `msg="dispatch: another process holds the keyword fill's hold; standing by"`
-	keywordFillLostHoldLine = `msg="dispatch: the keyword fill's hold is lost; it writes nothing more and stands by"`
-)
+// The line a holder logs as it finds its hold lost, which these rows read beside the two lines of
+// main_test.go (keywordFillTookLine, keywordFillStandbyLine).
+const keywordFillLostHoldLine = `msg="dispatch: the keyword fill's hold is lost; it writes nothing more and stands by"`
 
 // keywordFillTakeOverWithin is what a standby gets to take the hold of a holder that renews it no
 // more, killed or frozen: the hold's whole 15 s TTL, since a holder stopped the moment after a
 // renewal leaves the hold its full life to lapse on the database's clock; one 10 s retry of the
 // standby's, which finds it lapsed; and a margin for the take and a first pass.
 const keywordFillTakeOverWithin = 15*time.Second + 10*time.Second + 5*time.Second
-
-// keywordFillIssue is the issue whose comments the rows write, each comment.created event one
-// version, so each event has exactly one row.
-const keywordFillIssue = "KWF-1"
 
 // A killed holder does not release its hold, so its hold lapses and the process that stood by takes
 // it and writes the events written since: within keywordFillTakeOverWithin of the kill, well inside
@@ -8759,60 +8750,6 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 	}
 }
 
-// seedKeywordFillIssue writes keywordFillIssue and its project.
-func seedKeywordFillIssue(t *testing.T, database *store.Store) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx,
-		`insert into projects (key, name, default_assignee) values ('KWF', 'Keyword fill', 'alice')`); err != nil {
-		t.Fatalf("seed the keyword fill's project: %v", err)
-	}
-	if _, err := database.Pool.Exec(ctx, `
-		insert into issues (key, project_key, number, title, created_by, rank)
-		values ($1, 'KWF', 1, 'Rotate the signing keys', '{"kind":"user","id":"alice"}', 'A')`, keywordFillIssue); err != nil {
-		t.Fatalf("seed the keyword fill's issue: %v", err)
-	}
-}
-
-// writeKeywordFillComments commits count comment.created events of keywordFillIssue, each a new
-// comment, appended through the broker as the routes append them, at most 500 to a transaction,
-// and answers their ids in order.
-func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []int64 {
-	t.Helper()
-	ctx := context.Background()
-	broker := events.NewBroker()
-	issue := keywordFillIssue
-	actor := model.Actor{Kind: "user", ID: "alice"}
-	ids := make([]int64, 0, count)
-	for written := 0; written < count; {
-		inThisOne := min(count-written, 500)
-		tx, err := database.Pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin the comments' transaction: %v", err)
-		}
-		err = store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
-			for n := range inThisOne {
-				body := fmt.Sprintf("The signing keys of region %d rotate on Monday.", written+n)
-				if err := broker.QueueAppend(batch, model.Event{IssueKey: &issue, Type: "comment.created", Actor: actor,
-					Payload: map[string]any{"id": uuid.NewString(), "issue_key": issue, "body": body}},
-					func(appended model.Event) { ids = append(ids, appended.ID) }); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-		if err == nil {
-			err = tx.Commit(ctx)
-		}
-		_ = tx.Rollback(context.Background())
-		if err != nil {
-			t.Fatalf("write %d comments: %v", inThisOne, err)
-		}
-		written += inThisOne
-	}
-	return ids
-}
-
 // keywordFillWrite is one write of the fill's cursor row: the holder that wrote it and the cursor
 // it left.
 type keywordFillWrite struct {
@@ -8889,17 +8826,6 @@ func requireKeywordFillWritersInTurn(t *testing.T, recorded []keywordFillWrite, 
 	if turn != second {
 		t.Fatalf("the cursor row was never written by %s, which took the hold: %+v", second, recorded)
 	}
-}
-
-// readKeywordCursor reads the fill's cursor, 0 before its first batch.
-func readKeywordCursor(t *testing.T, database *store.Store) int64 {
-	t.Helper()
-	var cursor int64
-	if err := database.Pool.QueryRow(context.Background(),
-		`select coalesce((select event_id from search_text_versions_fill where id = 1), 0)`).Scan(&cursor); err != nil {
-		t.Fatalf("read the keyword fill's cursor: %v", err)
-	}
-	return cursor
 }
 
 // keywordRowsThrough is what tells the keyword table's rows of the events through cursor apart

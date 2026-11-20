@@ -259,7 +259,7 @@ func TestTheKeywordTableHoldsEachVersionOfEachItem(t *testing.T) {
 }
 
 // TestTheKeywordFillWritesWhileTheServerAnswers runs the fill as a serving process runs it
-// (textversions.Run, its server listening) beside the handler of a server whose log holds 2,000
+// (textversions.Run, its process serving) beside the handler of a server whose log holds 2,000
 // earlier events, and once the fill has begun catching them up, runs rounds of requests that write
 // issues, comments, asks and messages and read them, until the fill has caught up. A second server,
 // with the same log and no fill, answers the same rounds: each request answers alike, status and
@@ -1003,7 +1003,7 @@ func newKeywordServer(t *testing.T) keywordServer {
 }
 
 // keywordFill is the fill a serving process runs (textversions.Run) beside a keywordServer: its
-// lease pool reserved as the server reserves it, its server listening, its answers reads the
+// lease pool reserved as the server reserves it, its process serving, its answers reads the
 // server's, its events wake the test's, and its lines logged at debug level.
 type keywordFill struct {
 	logs    *storetest.LockedLog
@@ -1023,18 +1023,18 @@ func startKeywordFill(t *testing.T, server keywordServer) *keywordFill {
 	if err != nil {
 		t.Fatalf("reserve the keyword fill's leases: %v", err)
 	}
-	listening := make(chan struct{})
-	close(listening)
+	serving := make(chan struct{})
+	close(serving)
 	fill := &keywordFill{logs: &storetest.LockedLog{}, events: make(chan struct{}, 1), stopped: make(chan struct{})}
 	ctx, cancel := context.WithCancel(context.Background())
 	fill.cancel = cancel
 	config := textversions.Config{
-		Leases:    leases,
-		Horizon:   events.NewHorizon(server.database.Pool),
-		Latency:   server.latency,
-		Listening: listening,
-		Events:    fill.events,
-		Logger:    slog.New(slog.NewJSONHandler(fill.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Leases:  leases,
+		Horizon: events.NewHorizon(server.database.Pool),
+		Latency: server.latency,
+		Serving: serving,
+		Events:  fill.events,
+		Logger:  slog.New(slog.NewJSONHandler(fill.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	}
 	go func() {
 		defer close(fill.stopped)
