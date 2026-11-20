@@ -2359,7 +2359,9 @@ describe("a listener answer that redirects to another origin", () => {
       const failure = await client.getRole("reviewer").catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(EnvoyApiError);
       const { message } = failure as EnvoyApiError;
-      expect(message, location).toContain(`(a redirect to ${origin}, which this client does not follow)`);
+      expect(message, location).toContain(
+        `(a redirect to ${origin}, which this client does not follow)`
+      );
       for (const part of ["/start", "s3cr3t-query", "frag", hidden, "user:", "again=1"]) {
         expect(message, location).not.toContain(part);
       }
