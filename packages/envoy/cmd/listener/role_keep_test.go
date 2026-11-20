@@ -1008,14 +1008,14 @@ func TestAPublishToARoleNoClaimCanNameIsRefusedAndKeepsNothing(t *testing.T) {
 	}
 }
 
-// A keep that fails for a reason other than the stream lacking the kept lane's subject keeps
-// nothing, so the publish is answered as a publish that kept nothing is (roleSend.noHolder): the
-// 404 that names the role's state, with nothing on the kept lane, for both states the listener
-// keeps for (roleKeepable): unclaimed, recorded role_unclaimed, for a role nobody claims, and
-// holder_lapsed naming the holder, recorded role_lapsed, for a claim whose holder is not live. A
-// full stream is such a reason: the stream captures the kept lane and refuses the copy because it
-// holds its byte limit (bus.ErrStreamFull). Only a keep the stream refuses for want of the kept
-// lane's subject is answered 503 at once
+// A keep that fails for a reason other than the stream lacking the kept lane's subject is answered
+// as a publish that kept nothing is (roleSend.noHolder): the 404 that names the role's state, for
+// both states the listener keeps for (roleKeepable): unclaimed, recorded role_unclaimed, for a role
+// nobody claims, and holder_lapsed naming the holder, recorded role_lapsed, for a claim whose
+// holder is not live. A full stream is such a reason, and it keeps nothing on the kept lane: the
+// stream captures the kept lane and refuses the copy because it holds its byte limit
+// (bus.ErrStreamFull). Only a keep the stream refuses for want of the kept lane's subject is
+// answered 503 at once
 // (TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOnce).
 func TestAPublishWhoseKeepTheFullStreamRefusesIsRefusedAndKeepsNothing(t *testing.T) {
 	for _, row := range []struct {
