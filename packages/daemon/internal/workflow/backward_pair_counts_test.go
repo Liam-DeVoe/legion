@@ -129,7 +129,7 @@ func marksConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head str
 // The fifth move is made while the daemon's record holds the head conflicting with its base. It
 // raises no pair at all: nobody sent the work back, so the move is of no kind a hook or an
 // operator counts (recordPass). The pass rises on all five, because a phase completion's key is
-// built from it (record.PhaseRow.Pass, api/handoff.go's handoffPosition) and two passes through
+// built from it (record.PhaseRow.Pass, api's handoffPosition) and two passes through
 // one phase that carried the same number would collide.
 //
 // The review rounds review_round_cap bounds are counted apart from the pairs, and only a review
