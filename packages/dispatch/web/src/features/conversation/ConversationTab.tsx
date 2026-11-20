@@ -713,10 +713,10 @@ function CommentTurn({
   hideReplyComposer?: boolean;
   /** Drops the card's `New` mark. The phone thread dialog sets it: the reader has the
    *  conversation open and is reading it, so the badge says nothing above the card they are in,
-   *  and a card that never draws one cannot move the thread's rows when it goes. The tab keeps
-   *  each mark for the whole visit (`visitMarks`), through the read mark this card writes a
-   *  second after it is on screen, but a live event that brings newer activity takes the
-   *  boundary again, and a mark that goes then goes under whatever the reader is pressing. */
+   *  and a card that never draws one cannot move the thread's rows when it changes. The tab keeps
+   *  each mark for the whole visit (`visitBoundary`), through the read mark this card writes a
+   *  second after it is on screen, but it marks a conversation a live event makes newer, and a
+   *  mark that comes then comes under whatever the reader is pressing. */
   hideUnreadMark?: boolean;
   isClosed: boolean;
   isPhone?: boolean;
@@ -1038,21 +1038,32 @@ export function ConversationTab({
     queryFn: () => api.getIssueEvents(issueKey, { limit: 1, order: "desc" }),
   });
   const headSeq = head.data?.[0]?.seq ?? 0;
-  // The New marks of this visit stay where they were first drawn, as a chat's new-messages line
-  // stays where the reader came in: the boundary the visit's first settled read answered, beside
-  // the newest activity the lists held then. The read mark moves `lastReadSeq` a second after the
-  // newest card is on screen, and the read under the new key starts empty; marks that went with
-  // it would take their height out from under whatever the reader was pressing below them. The
-  // boundary is taken again only on a visit to another issue and back (`issueKey`), and when a
-  // live event brings activity newer than the lists held (a new turn, a reply, an answer), once
-  // the read under the current key has answered it.
-  const [visitMarks, setVisitMarks] = useState<{
+  // A visit's New marks are only ever added to, as a chat's new-messages line stays where the
+  // reader came in: each turn is marked from the earliest boundary a read of this visit answered.
+  // The read mark moves `lastReadSeq` a second after the newest card is on screen, and the read
+  // under the new key answers a later boundary, or none; marks that went with it would take their
+  // height out from under whatever the reader was pressing below them. A turn a live event adds
+  // after the kept boundary is marked as it is drawn; one added while nothing was unread is marked
+  // once the read under the current key answers its event, which can be after the list drew it. A
+  // read mark moved back, which a refocus reads, answers an earlier boundary and adds its marks.
+  // The boundary starts afresh on a visit to another issue and back (`issueKey`).
+  const [visitBoundary, setVisitBoundary] = useState<{
     readonly issueKey: string;
-    readonly unreadFrom: string | undefined;
-    readonly newestAt: string | undefined;
+    readonly unreadFrom: string;
   }>();
-  const marks = visitMarks?.issueKey === issueKey ? visitMarks : undefined;
-  const unreadFrom = marks?.unreadFrom;
+  const keptFrom = visitBoundary?.issueKey === issueKey ? visitBoundary.unreadFrom : undefined;
+  // Read only once the reader's state is known: before that `lastReadSeq` is 0, and the issue's
+  // first event would mark every turn for the rest of the visit.
+  const answeredFrom = state === undefined ? undefined : unreadBoundary.data?.[0]?.created_at;
+  const unreadFrom =
+    answeredFrom !== undefined &&
+    (keptFrom === undefined || compareTimestamps(answeredFrom, keptFrom) < 0)
+      ? answeredFrom
+      : keptFrom;
+  if (unreadFrom !== undefined && unreadFrom !== keptFrom) {
+    // Set while rendering; this render already draws the marks from `unreadFrom`.
+    setVisitBoundary({ issueKey, unreadFrom });
+  }
   const conversations = useMemo(
     () =>
       buildConversations({
@@ -1064,31 +1075,6 @@ export function ConversationTab({
       }),
     [asks.data, comments.data, handoffs.data, messages.data, unreadFrom]
   );
-  const newestAt = conversations.reduce<string | undefined>(
-    (newest, item) =>
-      newest === undefined || compareTimestamps(item.at, newest) > 0 ? item.at : newest,
-    undefined
-  );
-  const boundarySettled =
-    state !== undefined &&
-    unreadBoundary.isSuccess &&
-    !unreadBoundary.isFetching &&
-    !asks.isPending &&
-    !comments.isPending &&
-    !messages.isPending &&
-    !handoffs.isPending;
-  const newerActivity =
-    marks !== undefined &&
-    newestAt !== undefined &&
-    (marks.newestAt === undefined || compareTimestamps(newestAt, marks.newestAt) > 0);
-  if (boundarySettled && (marks === undefined || newerActivity)) {
-    // Set while rendering, so the marks are drawn in the same commit as the read that placed them.
-    setVisitMarks({
-      issueKey,
-      newestAt,
-      unreadFrom: unreadBoundary.data[0]?.created_at,
-    });
-  }
   // The messages and comments the issue's reads hold, whatever the filter shows of them: a draft
   // a composer keeps for one goes back by its Reply, and one kept for a reply the reads no longer
   // hold is drawn itself (`ListedReplies`).
@@ -1346,7 +1332,7 @@ export function ConversationTab({
   // unread for a reader who had just read its newest conversation in the thread.
   // A thread over any older conversation holds the mark until its own Back gives the list back:
   // the newest conversation is behind the thread, unread, so the issue is not marked read for
-  // it. The list's `New` marks stay drawn either way (`visitMarks`). The exits that write no
+  // it. The list's `New` marks stay drawn either way (`visitBoundary`). The exits that write no
   // mark for such a thread are the ones that never give the list back: the browser's back and the
   // drawer. A dwell already counting when an older thread opens is cancelled rather than
   // completed, since `useDwell` drops its timers as `enabled` goes false.
