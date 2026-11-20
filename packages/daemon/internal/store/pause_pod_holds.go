@@ -190,9 +190,10 @@ func (s *Store) PausePodHoldsSince(ctx context.Context, project string, since ti
 }
 
 // IssuePausePodHoldsSince is PausePodHoldsSince over the pod of one issue of project, by when each
-// hold began: what the ask of an update round reads as it is written (internal/daemon's
-// askRound), so the bound the ask states counts each hold as it stands then, not as the sweep read
-// it at its top, before a walk that can wait. project is the Dispatch key.
+// hold began: what each act of an update round that a pause changes reads as it is made — the end
+// its ask states, its opening, its late-round notice and its pod's replacement (internal/daemon's
+// roundClockNow) — so the act counts each hold as it stands then, not as the sweep read it at its
+// top, before a walk that can wait. project is the Dispatch key.
 func (s *Store) IssuePausePodHoldsSince(ctx context.Context, project, issue string, since time.Time) ([]PausePodHold, error) {
 	return s.pausePodHoldsSince(ctx, project, issue, since)
 }

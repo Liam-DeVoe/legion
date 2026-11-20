@@ -1427,6 +1427,12 @@ type supervision struct {
 	// neither waits on what the other is doing.
 	podUpdateRoundsMu sync.Mutex
 	podUpdateRounds   api.PodUpdateRounds
+	// beforePodHoldsRead runs inside each read an act of the update-round sweep makes of one
+	// issue's pod holds (roundClockNow), after that act's read of the clock and before its read of
+	// the holds, with the issue; nil, in production, is nothing. It is the seam a test ends a hold
+	// in between the two reads, a window of one in-memory clock read that no store read can hold
+	// open.
+	beforePodHoldsRead func(issue string)
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore
