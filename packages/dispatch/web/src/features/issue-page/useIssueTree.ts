@@ -12,6 +12,7 @@ import {
 } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import type { PostDeletion } from "../refs/post-marks";
 import { refetchFailedOnFocus } from "../refs/reference-target";
 import {
   buildIssueTree,
@@ -115,6 +116,10 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
  *  the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
 const NO_EDITED_TARGETS: ReadonlySet<string> = new Set();
 
+/** The references the page publishes as deleted until the batched name read answers: none, and
+ *  the same empty map on every render, as `NO_TARGET_NAMES` is the same empty map. */
+const NO_DELETED_TARGETS: ReadonlyMap<string, PostDeletion> = new Map();
+
 /**
  * The set of addresses a names read answered last: `refs` while its read under them holds an
  * answer (`answered`), and the set it last held one for while its read under a new set is out or
@@ -148,7 +153,10 @@ export const issueAsksQuery = (key: string) =>
  * What every read of the tree takes: it is kept fresh by events, never by its age. The page's
  * stage mounts the tree's slot again on every press of a view, so under the app's 30 s
  * `staleTime` (`main.tsx`) a press more than 30 s after the load would read every one of the
- * tree's reads again, though nothing they hold has changed.
+ * tree's reads again, though nothing they hold has changed. Staleness is per observer, so the
+ * page's writer (`outline-writer.tsx`), which observes the asks, the comments and the messages
+ * under the tree's keys, takes it too: under the app's defaults a window focus more than 30 s
+ * after the load would read all three again for the writer alone.
  * The feed's rules (`api/event-refresh.ts`) refresh each read when an event can change it; among
  * them, `["comments", key]` on a comment event and on a document's upload or new version;
  * `["asks", key]` on an ask event, a reply on an ask, a review of a document and a block
@@ -160,11 +168,11 @@ export const issueAsksQuery = (key: string) =>
  * rename, removal or review, and an ask or comment in it; and a names read
  * (`["reference-targets", …]`) on an event that changes the words or the name under an address
  * its key holds, on the issue or project document that address is of: a comment's or an issue
- * message's edit or delete, an ask's edit, a document's new version, rename or removal, and an
- * issue's write that changes its title (`referenceNameTargets`). A post's edit or delete also
- * reaches an address that names the post by its whole id under another owner, which the server
- * reads as the post, and writes its own marks into every answer the cache holds that names the
- * post, the one the page draws while a read under a new set is out or has failed among them
+ * message's edit or delete, an ask's edit, a document's creation, new version, rename or removal,
+ * and an issue's write that changes its title (`referenceNameTargets`). A post's edit or delete
+ * also reaches an address that names the post by its whole id under another owner, which the
+ * server reads as the post, and writes its own marks into every answer the cache holds that names
+ * the post, the one the page draws while a read under a new set is out or has failed among them
  * (`useLastAnswered`), so a read that fails leaves no deleted post's words, and no edited one's
  * without its mark (`markCorrectedPost`). A names read's key is the set of addresses it names,
  * so a tree that comes to hold another set reads again under a key of its own, and only a change
@@ -173,7 +181,7 @@ export const issueAsksQuery = (key: string) =>
  * the app holds (`refreshQueries`), these among them, and window focus fetches again only a read
  * in error (`refetchFailedOnFocus`).
  */
-const EVENT_FRESH = {
+export const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,
   staleTime: Number.POSITIVE_INFINITY,
 } as const;
@@ -385,19 +393,26 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // name, as a gone one has none, and a link draws it as written and links nothing where it
   // reads a gone one's own, which the names alone would not tell it. And beside them go the
   // references whose post its author edited, which a link marks ` · edited` after it cuts the
-  // name to its own length, so no cut takes the mark. A chip's name is read from the issue, the
-  // documents' blocks and the names alone (`treeContext`), so the map and the sets are built
-  // from those and nothing else: an answer of any other read - an ask, a comment, the coverage,
-  // the reader's login - publishes nothing new, which would draw every link beside the tree
-  // again. Until the names answer there is nothing to publish.
-  const { ambiguous, edited, names } = useMemo(
+  // name to its own length, so no cut takes the mark, and those whose post its author deleted,
+  // by the delete, which a row's words draw as the deleted line with its actor named as the page
+  // names an author. A chip's name is read from the issue, the documents' blocks and the names
+  // alone (`treeContext`), so the maps and the sets are built from those and nothing else: an
+  // answer of any other read - an ask, a comment, the coverage, the reader's login - publishes
+  // nothing new, which would draw every link beside the tree again. Until the names answer there
+  // is nothing to publish.
+  const { ambiguous, deleted, edited, names } = useMemo(
     () =>
       named === undefined
-        ? { ambiguous: NO_AMBIGUOUS_TARGETS, edited: NO_EDITED_TARGETS, names: NO_TARGET_NAMES }
+        ? {
+            ambiguous: NO_AMBIGUOUS_TARGETS,
+            deleted: NO_DELETED_TARGETS,
+            edited: NO_EDITED_TARGETS,
+            names: NO_TARGET_NAMES,
+          }
         : targetNaming({ documents: documents.blocks, issue, targets: named }),
     [documents.blocks, issue, named]
   );
-  usePublishReferenceNames(names, ambiguous, edited);
+  usePublishReferenceNames(names, ambiguous, edited, deleted);
   const root = useMemo(
     () =>
       named === undefined || named === first

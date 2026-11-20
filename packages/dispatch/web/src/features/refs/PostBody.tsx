@@ -14,13 +14,21 @@ import { Timestamp } from "./Timestamp";
  * seat in the thread.
  *
  * The author's name is static here: a preview sits inside the host's own control, so a link
- * inside it would be a link inside a link.
+ * inside it would be a link inside a link. A host that names the actors it draws by a rule of its
+ * own passes the name that rule gives (`actorName`), and the line draws it in place of
+ * `AgentName`: the new issue page's rows name the actor as the page names an author
+ * (`AgentText.author`), by INFRA-1196's decision 342, so a session nothing names reads as the
+ * page's word for an agent and never as its short id.
  */
 export function DeletedBody({
+  actorName,
   className = "",
   deleted,
   onRendered,
 }: {
+  /** The actor's name as the host names it, where the host names actors by its own rule; absent
+   *  everywhere else, where `AgentName` names the actor. */
+  actorName?: string;
   className?: string;
   deleted: PostDeletion;
   /** Called once the line is on the page, as `MarkdownBody` calls it once a body is. */
@@ -32,9 +40,7 @@ export function DeletedBody({
       {deleted.by === null ? (
         "Deleted"
       ) : (
-        <>
-          Deleted by <AgentName actor={deleted.by} inline kind="static" />
-        </>
+        <>Deleted by {actorName ?? <AgentName actor={deleted.by} inline kind="static" />}</>
       )}{" "}
       · <Timestamp at={deleted.at} />
     </span>

@@ -14,6 +14,7 @@ import type {
   MessageRead,
   ReferenceTarget,
 } from "../../api/types";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
@@ -108,9 +109,10 @@ export interface NodeChip {
    *  is of, deleted it, as the batched reference read answers it (`ReferenceTarget.deleted_at`);
    *  absent for every other target. The deleted line is the name of a comment's or a message's
    *  chip only: a chip naming a block of a deleted post is `gone`, with name `""`, though it
-   *  carries the marks. A view that draws a comment's or a message's chip carrying this must draw
+   *  carries the marks. A view that draws a comment's or a message's chip carrying this draws
    *  its name, the deleted line, in the deleted line's italic, as a link to the post does
-   *  (`RefLink`); no view draws a chip yet (`slots/view-row.tsx`). */
+   *  (`RefLink`), and names the actor from `deletedBy` as the page names an author, as a row's
+   *  chip does (`NodeRow.tsx`'s `Chip`, INFRA-1196's decision 342). */
   readonly deletedAt?: string;
   /** Who deleted it (`ReferenceTarget.deleted_by`); absent where `deletedAt` is absent, and where
    *  the read names nobody. */
@@ -191,6 +193,18 @@ export interface NodeOption {
 
 /** The one line a filter's row draws for its node's parent (R2, R1's first-line rule). */
 export interface ParentLine {
+  /** When its author deleted the parent, a comment or a message (`TreeNode.deletedAt`); absent
+   *  for every other parent. Its `line` is then the deleted line as the model writes it, and the
+   *  child's row draws the line from the delete instead, as the parent's own row does
+   *  (`NodeRow.tsx`'s `DeletedLine`, INFRA-1523 R3). */
+  readonly deletedAt?: string;
+  /** Who deleted the parent (`TreeNode.deletedBy`); absent where `deletedAt` is, and where the
+   *  read names nobody. */
+  readonly deletedBy?: Actor;
+  /** When its author last edited the parent, a comment or a message (`TreeNode.editedAt`),
+   *  which the child's row says ` · edited` after the line for (`EditedMark`, INFRA-1523 R2);
+   *  absent for every other parent. */
+  readonly editedAt?: string;
   readonly id: string;
   /** The parent's own first line, cut by R1's rule (`firstLineOf`) from the words of its
    *  reading's first block (`lineWords`) and drawn as `drawnLine` reads it: an ellipsis only
@@ -619,17 +633,26 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  *   message or a block of either (`NodeChip.editedAt`). A link that draws a published name cuts
  *   it to its own length and then marks it ` · edited` (`editedName`), so no cut takes the mark:
  *   a mark published inside the name would be cut off a long one.
+ * - **`deleted`**: the references among `names` whose comment or message its author deleted, by
+ *   its delete (`NodeChip.deletedAt`, `deletedBy`), each named in `names` by its deleted line. A
+ *   row's words draw that line in the deleted line's italic and name its actor as the page names
+ *   an author, where the published name holds the actor as no registry knows it
+ *   (`RowText.tsx`, INFRA-1196's decision 342); every other link draws the published name.
  *
  * No reference is in both `names` and `ambiguous`: an ambiguous chip's name is `""`. Every
- * reference in `edited` is in `names`: a name of no words takes no mark.
+ * reference in `edited` and in `deleted` is in `names`: a name of no words takes no mark, and a
+ * block of a deleted post is gone. None is in both `edited` and `deleted`: a deleted post's chip
+ * carries no edit.
  */
 export function targetNaming(reads: IssueTreeReads): {
   readonly ambiguous: ReadonlySet<string>;
+  readonly deleted: ReadonlyMap<string, PostDeletion>;
   readonly edited: ReadonlySet<string>;
   readonly names: ReadonlyMap<string, string>;
 } {
   const context = namingContext(reads);
   const ambiguous = new Set<string>();
+  const deleted = new Map<string, PostDeletion>();
   const edited = new Set<string>();
   const names = new Map<string, string>();
   for (const target of reads.targets ?? []) {
@@ -638,8 +661,10 @@ export function targetNaming(reads: IssueTreeReads): {
     if (chip.name === "") continue;
     names.set(target.ref, chip.name);
     if (chip.editedAt !== undefined) edited.add(target.ref);
+    const deletion = postDeletion({ deleted_at: chip.deletedAt, deleted_by: chip.deletedBy });
+    if (deletion !== null) deleted.set(target.ref, deletion);
   }
-  return { ambiguous, edited, names };
+  return { ambiguous, deleted, edited, names };
 }
 
 /** How many nodes a branch holds below `children`, at any depth. */

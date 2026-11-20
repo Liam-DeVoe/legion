@@ -232,6 +232,11 @@ function filterView(
             // The parent's own address, which makes its line the link a reader follows to it
             // (R18, and R26: a step's row reaches the statement it serves).
             ...(node.reference === undefined ? {} : { reference: node.reference }),
+            // A comment's or a message's marks, which its child's row draws with the line
+            // (INFRA-1523, R2 and R3).
+            ...(node.deletedAt === undefined ? {} : { deletedAt: node.deletedAt }),
+            ...(node.deletedBy === undefined ? {} : { deletedBy: node.deletedBy }),
+            ...(node.editedAt === undefined ? {} : { editedAt: node.editedAt }),
             type: node.type,
           };
     const below = parts.flatMap((part) =>
