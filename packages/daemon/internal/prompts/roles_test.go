@@ -420,10 +420,12 @@ func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
 		}
 	}
 	// The pod half is what survives, and the two parts that carry it are listed rather than
-	// counted: a part that stopped telling a role how to answer an update round fails here.
+	// counted: a part that stopped telling a role how to answer an update round fails here, and so
+	// does one that lost the step that lets a role's own background work finish before it answers
+	// (dispatch://INFRA-4203 R2).
 	for _, part := range []string{"go/worker-common.md", "go/architect-common.md"} {
 		body := goPart(t, part)
-		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles"} {
+		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles", "Step 2: let each subagent and each background job that you started finish."} {
 			if !strings.Contains(body, want) {
 				t.Errorf("%s does not say %q", part, want)
 			}
@@ -573,8 +575,8 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 // tree, which a later core would copy from. R6 sits in the tester's core, the part that tells a
 // phase worker what to do about CI, and its limit for the reviewer in the reviewer's Go overlay.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
-	// The phrase every text of dispatch://INFRA-3204's rule carries once, the skills included
-	// (packages/pi-legion/src/skills-guard.test.ts).
+	// The phrase every part below carries for that rule. Outside these parts,
+	// packages/pi-legion/src/skills-guard.test.ts counts it once, in go/worker-common.md.
 	const ciCheckRule = "check carrying `ci_check` is CI's"
 	for _, pin := range []struct{ file, rule string }{
 		// R1: the simplify pass covers every file of the diff and reports what it sees.
