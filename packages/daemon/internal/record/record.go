@@ -2666,9 +2666,11 @@ func EntriesDiffer(entry, rowEntry int64) bool {
 // the silence sweep does not nudge a role whose completion stands, so a hold on such a claim's
 // reported wake would never end, and a backstop would wake it every backstop_minutes to do
 // nothing where its later work comes as a daemon task or message, which wakes the pod. The one
-// claim the backstop keeps is behind its entry and holds a task of that entry the daemon has not
-// delivered (internal/daemon's holdsUndeliveredEntryTask): that delivery waits for the claim to
-// come back, and nothing else brings the pod back for it.
+// claim the backstop keeps is behind its entry and holds a task of the issue's run and phase the
+// daemon has not delivered, of that entry or of an earlier one (internal/daemon's
+// holdsUndeliveredEntryTask): that delivery waits for the claim to come back, admission's
+// owed-entry repair passes over a claim that holds such a task, and nothing else brings the pod
+// back for it.
 func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mergeForwardHeld, merged bool) bool {
 	return serving != 0 && serving == generation && !EntriesDiffer(entry, rowEntry) && !completed && !mergeForwardHeld && !merged
 }

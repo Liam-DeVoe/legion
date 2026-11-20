@@ -13,11 +13,11 @@ import (
 )
 
 // dispatch://INFRA-2746 R1 at the release of a pod (check
-// c-idle-keeps-nothing-for-a-claim-that-owes-nothing, its daemon row and its second control),
-// through the writer a release's last step runs (outbox.armBackstops) on the pause rig's store,
-// with no pause: the released worker of LEGION-208's open phase gets the backstop the release
-// arms while it owes its phase by the owed answer's rule (record.PhaseOwed), and while it is the
-// one claim that owes nothing and still gets one (holdsUndeliveredEntryTask), and gets none
+// c-idle-keeps-nothing-for-a-claim-that-owes-nothing, its daemon row and its second and third
+// controls), through the writer a release's last step runs (outbox.armBackstops) on the pause
+// rig's store, with no pause: the released worker of LEGION-208's open phase gets the backstop the
+// release arms while it owes its phase by the owed answer's rule (record.PhaseOwed), and while it
+// is the one claim that owes nothing and still gets one (holdsUndeliveredEntryTask), and gets none
 // otherwise. TestIdleOfAClaimThatOwesNothingArmsNoBackstopForItsRole drives a recorded completion
 // through the daemon a deployment runs; these rows are shapes that rig does not build, each read
 // from the whole claim and from the record in the store (store.ClaimTx, record.FillIdleClaims).
@@ -26,13 +26,22 @@ import (
 // 1, was handed the task of entry 2, which its row stands on, and the send of that task failed
 // before any turn, so the claim holds it unconfirmed, is given entry 2 and serves entry 1. That
 // delivery waits for the claim to come back, and admission's owed-entry repair passes over a
-// claim already given its entry, so the release arms its backstop. The same claim with its
+// claim that holds a task of the issue's run and phase it still works
+// (supervise.Delivery.StillWorked), so the release arms its backstop. The same claim with its
 // completion of that entry recorded gets none, and so does the tester of testing holding such a
-// task while a merge forward holds it. A claim behind its entry that holds no task of it gets
-// none either: the repair sends it that entry's task, which wakes its pod. A merger in merging
-// whose pull request is merged gets none, since the merge finished its merging
-// (record.MergedInMerging). The controls, an implementer that serves its row's entry and a merger
-// whose pull request is open, each owe their phase and get one.
+// task while a merge forward holds it. A claim behind its entry that holds no task of the issue's
+// run and phase gets none either: the repair sends it that entry's task, which wakes its pod.
+//
+// The third control is a relaunch that kept the task it held (keepsStartTask): the implementer
+// took entry 1 and holds the task of entry 2 unconfirmed, while its row stands on entry 3. That
+// task is of an earlier entry than the row's, and the repair passes over the claim all the same,
+// so the release arms its backstop: the exception reads a task of the issue's run and phase of
+// the row's entry or an earlier one. The same claim with its completion of the row's entry
+// recorded gets none, since the exception's other terms are read at the row's entry.
+//
+// A merger in merging whose pull request is merged gets none, since the merge finished its
+// merging (record.MergedInMerging). The controls, an implementer that serves its row's entry and
+// a merger whose pull request is open, each owe their phase and get one.
 func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliveredTaskOfItsEntry(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -64,6 +73,12 @@ func TestIdleOfAClaimThatOwesNothingStillGetsABackstopOnItsReleaseForAnUndeliver
 		{name: "it holds the task of its entry and its completion of that entry is recorded", at: phase.Implementing,
 			role: claim.RoleImplementer, served: 1, rowEntry: 2, task: 2, completed: true,
 			why: "its completion stands, so it owes nothing a wake could bring back"},
+		{name: "the third control: it took entry 1, its row stands on entry 3, and it holds the task of entry 2, which a relaunch kept",
+			at: phase.Implementing, role: claim.RoleImplementer, served: 1, rowEntry: 3, task: 2, backstop: true,
+			why: "admission's owed-entry repair passes over a claim that holds a task it still works, so the backstop is the one wake that brings its pod back"},
+		{name: "it holds the task of an earlier entry and its completion of its row's entry is recorded", at: phase.Implementing,
+			role: claim.RoleImplementer, served: 1, rowEntry: 3, task: 2, completed: true,
+			why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
 		{name: "it holds the task of its entry and a merge forward holds it", at: phase.Testing, role: claim.RoleTester,
 			served: 1, rowEntry: 2, task: 2, pullRequest: record.PullRequestOpen, mergeForward: true,
 			why: "the merge forward told it to wait for the landed message, which wakes its pod"},

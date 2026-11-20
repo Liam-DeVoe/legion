@@ -109,9 +109,11 @@ type Kubernetes struct {
 	TestPostgres bool
 	// IdleRelease is `runtime.kubernetes.idle_release`, settled: how long an issue pod with no
 	// turn in progress and no turn due is kept before the daemon releases it, and how long after
-	// a release the backstop wakes each phase worker of the pod whose phase is open. Both
-	// defaults apply when the file sets no block, so release is on for every Kubernetes
-	// deployment; `idle_minutes: 0` turns it off.
+	// a release the backstop wakes the phase worker of the pod whose phase is open and that gets
+	// a backstop by the backstop's rule: it owes that phase, or it is the one exception of
+	// dispatch://INFRA-2746 R1 (internal/daemon's getsBackstop). Both defaults apply when the
+	// file sets no block, so release is on for every Kubernetes deployment; `idle_minutes: 0`
+	// turns it off.
 	IdleRelease IdleReleaseConfig
 	// MemoryGuard is `runtime.kubernetes.memory_guard`, settled: what the memory guard in each
 	// issue pod's launcher process runs by. Every default applies when the file sets no block, so

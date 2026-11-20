@@ -1025,22 +1025,28 @@ func TestASuspendRowDropsOnlyTheBackstopOfTheRoleItStops(t *testing.T) {
 // which records the released role stopped by the pause in the store (outbox.cancelRelease,
 // store.ReleaseCancelPause.GetsBackstop), each arm no backstop for LEGION-208's implementer when
 // its completion of the entry its phases row stands on is recorded while the issue stays in
-// implementing, and none when it is behind that entry and holds no task of it, which the daemon
-// sends it itself: in neither case does it owe the phase anything a wake could bring back. The
-// behind rows read the entry the claim serves from the whole claim
-// (supervise.Claim.ServingEntry, store.ClaimTx).
+// implementing, and none when it is behind that entry and holds no task of the issue's run and
+// phase, since the daemon sends it its entry's task itself: in neither case does it owe the phase
+// anything a wake could bring back. The behind rows read the entry the claim serves from the
+// whole claim (supervise.Claim.ServingEntry, store.ClaimTx).
 //
 // The second control of the check is the one claim that owes nothing and still gets the
 // backstop (holdsUndeliveredEntryTask): the implementer took entry 1, was handed the task of
 // entry 2, which its row stands on, and the send of that task failed before any turn, so the
 // claim holds it unconfirmed and serves entry 1. Its delivery waits for the claim to come back,
-// and admission's owed-entry repair passes over a claim already given its entry, so both writers
-// arm its backstop. The stop transaction's row stops it owing no launch, as every row here does;
-// the machine's own stop of a claim holding such a task owes it a launch as well (supervise's
-// holdsTask), which the row leaves out so that the stop reads the backstop's rule. The control,
-// the same stop of an implementer that serves its row's entry and owes it, arms the backstop as
-// it always has. The stop is recorded in every case, so a case that arms none is a stop that
-// read the rule and not one that never ran.
+// and admission's owed-entry repair passes over a claim that holds a task of the issue's run and
+// phase it still works (supervise.Delivery.StillWorked), so both writers arm its backstop. The
+// third control is a relaunch that kept the task it held (keepsStartTask): the implementer took
+// entry 1 and holds the task of entry 2 unconfirmed, while its row stands on entry 3. The repair
+// passes over it all the same, so both writers arm its backstop: the exception reads a task of
+// the issue's run and phase of the row's entry or an earlier one. The same claim with its
+// completion of the row's entry recorded gets none from either writer, since the exception's
+// other terms are read at the row's entry. The stop transaction's row stops it owing no launch,
+// as every row here does; the machine's own stop of a claim holding such a task owes it a launch
+// as well (supervise's holdsTask), which the row leaves out so that the stop reads the backstop's
+// rule. The control, the same stop of an implementer that serves its row's entry and owes it,
+// arms the backstop as it always has. The stop is recorded in every case, so a case that arms
+// none is a stop that read the rule and not one that never ran.
 func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T) {
 	for _, writer := range []struct {
 		name string
@@ -1076,6 +1082,12 @@ func TestIdleOfAClaimThatOwesNothingArmsNoBackstopWhenAPauseStopsIt(t *testing.T
 			{name: "the second control: it took entry 1 and holds the task of entry 2, whose send failed before any turn",
 				served: 1, rowEntry: 2, task: 2, backstop: true,
 				why: "its delivery waits for it to come back, and the backstop is the one wake that brings its pod back"},
+			{name: "the third control: it took entry 1, its row stands on entry 3, and it holds the task of entry 2, which a relaunch kept",
+				served: 1, rowEntry: 3, task: 2, backstop: true,
+				why: "admission's owed-entry repair passes over a claim that holds a task it still works, so the backstop is the one wake that brings its pod back"},
+			{name: "it holds the task of an earlier entry and its completion of its row's entry is recorded",
+				served: 1, rowEntry: 3, task: 2, completed: true,
+				why: "its completion of its row's entry stands, so it owes nothing a wake could bring back"},
 			{name: "the control: its role owes its phase", served: 1, rowEntry: 1, backstop: true, why: "it owes its phase"},
 		} {
 			t.Run(writer.name+"/"+c.name, func(t *testing.T) {

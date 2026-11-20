@@ -310,7 +310,8 @@ type IdleDecision struct {
 //     worker's role and its claim serves the current generation (idlePhaseOpen), and it owes the
 //     phase by the rule the owed answer reads (record.PhaseOwed): its run is the issue's, it is
 //     neither behind nor above the entry its role's phases row stands on, the row records no
-//     completion of it and no merge forward holds its role;
+//     completion of it, no merge forward holds its role, and the issue does not stand in merging
+//     with its pull request merged (record.MergedInMerging);
 //
 //   - the pod has done nothing the daemon recorded for the whole idle period;
 //

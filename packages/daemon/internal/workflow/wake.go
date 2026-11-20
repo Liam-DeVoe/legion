@@ -360,8 +360,9 @@ func settlementDetail(fact intake.PullRequestChecks) string {
 // merge forward holding it, its merging finished by a merged pull request, or behind its entry
 // (record.PhaseOwed) — is armed no backstop (internal/daemon's armBackstops, dispatch://INFRA-2746
 // R1), since its later work comes as a daemon task or message, which wakes the pod. The one
-// exception is a claim behind its entry that holds a task of that entry the daemon has not
-// delivered: that delivery waits for the claim to come back, so it keeps its backstop
+// exception is a claim behind its entry that holds a task of the issue's run and phase the daemon
+// has not delivered, of that entry or of an earlier one: that delivery waits for the claim to
+// come back and admission's owed-entry repair passes over such a claim, so it keeps its backstop
 // (internal/daemon's holdsUndeliveredEntryTask). The row is fired under a conditional update, so
 // a backstop two passes read fires once, and the row survives a restart, so one that came due
 // while the daemon was down fires at the first pass after it starts.
@@ -492,10 +493,10 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
 // works, and the architect, whose phases (admitted and accepting) are the architect's own turn
 // rather than a worker's. It is the one statement of "the worker of the open phase" the release
-// reads: which role a release arms a backstop for — an architect gets none, because nothing of
-// its own is due and a sub-architect woken for nothing would hold a pod open for the backstop
-// period — which role a CI settlement wakes, and which live claim of a pod has a phase reminder
-// armed in it.
+// reads: the role a release may arm a backstop for, which armBackstops then asks getsBackstop
+// about (internal/daemon) — an architect gets none, because nothing of its own is due and a
+// sub-architect woken for nothing would hold a pod open for the backstop period — which role a
+// CI settlement wakes, and which live claim of a pod has a phase reminder armed in it.
 func OpenPhaseRole(p phase.Phase) claim.Role {
 	if role := phase.RoleFor(p); role != claim.RoleArchitect {
 		return role
