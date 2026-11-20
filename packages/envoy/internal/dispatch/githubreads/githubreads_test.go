@@ -331,7 +331,8 @@ func TestANoteThatCannotBeTheCauseMakesNoText(t *testing.T) {
 	})
 }
 
-// recorded is one call of a test's Recorder.
+// recorded is one call of a test's Recorder. deadline is whether the write's context ends one
+// period after Finish began it, the period the test's loop runs at (finishPeriod).
 type recorded struct {
 	read      Read
 	succeeded bool
@@ -339,10 +340,13 @@ type recorded struct {
 	deadline  bool
 }
 
+// finishPeriod is the period the test's loop runs at, which Finish gives its write.
+const finishPeriod = time.Hour
+
 // Finish records nothing without a recorder, for a caller that ended, or for an attempt that
 // sent nothing and noted nothing; otherwise it records failed with the first cause, or succeeded.
-// The write has a bound of its own, and one that fails is logged at ERROR and changes nothing
-// else.
+// The write is given one period of its loop, and with no period no bound but its caller's; one
+// that fails is logged at ERROR and changes nothing else.
 func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 	failure := errors.New("GET https://api.github.com/app/hook/deliveries: status 503: unavailable")
 	cases := []struct {
@@ -394,11 +398,12 @@ func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 			if tc.record {
 				record = func(ctx context.Context, read Read, succeeded bool, cause string) error {
 					deadline, ok := ctx.Deadline()
-					calls = append(calls, recorded{read: read, succeeded: succeeded, cause: cause, deadline: ok && time.Until(deadline) <= recordTimeout})
+					left := time.Until(deadline)
+					calls = append(calls, recorded{read: read, succeeded: succeeded, cause: cause, deadline: ok && left <= finishPeriod && left > finishPeriod-time.Minute})
 					return ctx.Err()
 				}
 			}
-			Finish(caller, CIReconcile, attempt, record, nil)
+			Finish(caller, CIReconcile, attempt, record, finishPeriod, nil)
 			switch {
 			case tc.want == nil && len(calls) != 0:
 				t.Fatalf("recorded %+v, want nothing", calls)
@@ -408,12 +413,26 @@ func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 		})
 	}
 
+	t.Run("a loop with no period", func(t *testing.T) {
+		ctx, attempt := Begin(context.Background())
+		NoteSent(ctx)
+		var deadlines []bool
+		Finish(context.Background(), WebhookRedelivery, attempt, func(ctx context.Context, _ Read, _ bool, _ string) error {
+			_, ok := ctx.Deadline()
+			deadlines = append(deadlines, ok)
+			return nil
+		}, 0, nil)
+		if len(deadlines) != 1 || deadlines[0] {
+			t.Fatalf("a write with no period was called %d times with a deadline %v, want once with none", len(deadlines), deadlines)
+		}
+	})
+
 	t.Run("a recorder that fails", func(t *testing.T) {
 		ctx, attempt := Begin(context.Background())
 		NoteSent(ctx)
 		logs := &logtest.Recorder{}
 		refused := errors.New("the database refused the write")
-		Finish(context.Background(), WebhookRedelivery, attempt, func(context.Context, Read, bool, string) error { return refused }, slog.New(logs))
+		Finish(context.Background(), WebhookRedelivery, attempt, func(context.Context, Read, bool, string) error { return refused }, finishPeriod, slog.New(logs))
 		records := logs.Records()
 		if len(records) != 1 || records[0].Level != slog.LevelError {
 			t.Fatalf("logged %d records (%v), want one at ERROR", len(records), records)
@@ -435,9 +454,9 @@ type loadAnswer struct {
 	err  error
 }
 
-// The copy loads the record at start and again after each wake, each load under its own bound.
-// It holds nothing until a load succeeds, and a failed load is logged at WARN and keeps the copy
-// the last good load made.
+// The copy loads the record at start and again after each wake, each load on Run's context with
+// no bound of its own. It holds nothing until a load succeeds, and a failed load is logged at WARN
+// and keeps the copy the last good load made.
 func TestCopyLoadsAtStartAndAfterAWakeAndKeepsItsCopyOnAFailedLoad(t *testing.T) {
 	var copied Copy
 	if rows, loaded := copied.Rows(); loaded || rows != nil {
@@ -448,8 +467,8 @@ func TestCopyLoadsAtStartAndAfterAWakeAndKeepsItsCopyOnAFailedLoad(t *testing.T)
 	calls := make(chan bool)
 	answers := make(chan loadAnswer)
 	load := func(ctx context.Context) ([]Recorded, error) {
-		deadline, ok := ctx.Deadline()
-		calls <- ok && time.Until(deadline) <= loadTimeout
+		_, bounded := ctx.Deadline()
+		calls <- bounded
 		answer := <-answers
 		return answer.rows, answer.err
 	}
@@ -465,8 +484,8 @@ func TestCopyLoadsAtStartAndAfterAWakeAndKeepsItsCopyOnAFailedLoad(t *testing.T)
 		t.Helper()
 		select {
 		case bounded := <-calls:
-			if !bounded {
-				t.Fatalf("%s: the load has no bound of %s", what, loadTimeout)
+			if bounded {
+				t.Fatalf("%s: the load has a bound of its own; it takes Run's context alone", what)
 			}
 		case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 			t.Fatalf("%s: no load started", what)

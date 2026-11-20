@@ -53,13 +53,6 @@ const CauseLimit = 1024
 // an attempt.
 const Channel = "dispatch_github_read_attempts"
 
-// recordTimeout bounds Finish's write and loadTimeout each read of the record Copy makes: one
-// statement each, which a healthy database answers in milliseconds.
-const (
-	recordTimeout = 5 * time.Second
-	loadTimeout   = 5 * time.Second
-)
-
 // Attempt is what one leased pass noted: whether it sent any request to GitHub, and the first
 // failure noted on it. It is safe for concurrent use, since a pass can send requests from several
 // goroutines at once.
@@ -339,10 +332,19 @@ type Recorder func(ctx context.Context, read Read, succeeded bool, cause string)
 // failure (the pass had nothing to read, and an attempt that asked GitHub nothing says nothing
 // about it). Otherwise it records failed with the first cause, or succeeded.
 //
-// The write runs on caller's values without its cancel, bounded by recordTimeout, because a pass
-// can end on its own deadline and its outcome is still worth recording. A failed write is logged
-// at ERROR on logger, or slog.Default() when it is nil, and changes nothing else of the pass.
-func Finish(caller context.Context, read Read, attempt *Attempt, record Recorder, logger *slog.Logger) {
+// The write runs on caller's values without its cancel, because a pass can end on its own
+// deadline and its outcome is still worth recording. It is given period, the interval the read's
+// loop runs its passes on and the span duty.Exclusive gives each of them, from the moment it
+// starts, and no bound of its own beyond that. By then the read's next pass is due: the next
+// period begins at most one period after this pass's tick, which came before the write, and the
+// pass of that period records the read's next attempt over this one. Until then a write that is
+// slow but answers costs nothing, so a database that answers late, behind a lock or under load,
+// still records the attempt. After it, the write would keep the read's lease (duty.Exclusive
+// gives it back only once the pass returns) and the loop's goroutine from the pass due next, for
+// a row that pass is about to write again. A period of zero or less, a loop a test builds with no
+// period, gives the write no bound but caller's values. A failed write is logged at ERROR on
+// logger, or slog.Default() when it is nil, and changes nothing else of the pass.
+func Finish(caller context.Context, read Read, attempt *Attempt, record Recorder, period time.Duration, logger *slog.Logger) {
 	if record == nil || caller.Err() != nil {
 		return
 	}
@@ -350,8 +352,12 @@ func Finish(caller context.Context, read Read, attempt *Attempt, record Recorder
 	if !sent && !failed {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(caller), recordTimeout)
-	defer cancel()
+	ctx := context.WithoutCancel(caller)
+	if period > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, period)
+		defer cancel()
+	}
 	if err := record(ctx, read, !failed, cause); err != nil {
 		if logger == nil {
 			logger = slog.Default()
@@ -379,9 +385,17 @@ type Copy struct {
 
 // Run loads the record at start and again after each wake, until ctx ends. wake is the
 // notification of Channel (pglisten.Hub.Wake signals it after each notification and after each
-// LISTEN that succeeds, so a write made while the hub had no connection is caught up on). Each
-// load is bounded by loadTimeout. A failed load is logged at WARN on logger, or slog.Default()
-// when it is nil, and keeps the copy the last good load made.
+// LISTEN that succeeds, so a write made while the hub had no connection is caught up on). A failed
+// load is logged at WARN on logger, or slog.Default() when it is nil, and keeps the copy the last
+// good load made.
+//
+// Each load takes ctx and no bound of its own. Run loads at start and on a wake, never on a
+// period, so no next load is due that a load still waiting would delay, and while one waits the
+// copy stays the last good load's, which is what GET /healthz answers from in any case. A wake
+// that comes during a load is kept (Hub.Wake's channel holds one signal), so the load after it
+// reads every write made meanwhile. A bound here would only end a load that is slow but answers
+// and leave the copy older until the next write's wake. A load ends when it answers, fails, or
+// ctx ends with the process.
 func (c *Copy) Run(ctx context.Context, load func(context.Context) ([]Recorded, error), wake <-chan struct{}, logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.Default()
@@ -399,9 +413,7 @@ func (c *Copy) Run(ctx context.Context, load func(context.Context) ([]Recorded, 
 // load reads the record once and keeps it. A load the ending of ctx cut short is not logged: it
 // is the process stopping, not the database failing.
 func (c *Copy) load(ctx context.Context, load func(context.Context) ([]Recorded, error), logger *slog.Logger) {
-	bounded, cancel := context.WithTimeout(ctx, loadTimeout)
-	defer cancel()
-	recorded, err := load(bounded)
+	recorded, err := load(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
 			logger.Warn("dispatch: the record of GitHub reads was not read; GET /healthz keeps the copy it has", "error", err)

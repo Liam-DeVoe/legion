@@ -287,7 +287,7 @@ func (s *Sweeper) Run(ctx context.Context, interval time.Duration, leases duty.L
 func (s *Sweeper) run(ctx context.Context, interval time.Duration, leases duty.Leases, exclusive duty.ExclusiveFunc) {
 	due := time.Now()
 	for {
-		exclusive(ctx, leases, webhookRedeliveryLease, due, interval, s.sweepAndReport)
+		exclusive(ctx, leases, webhookRedeliveryLease, due, interval, func(ctx context.Context) { s.sweepAndReport(ctx, interval) })
 		timer := time.NewTimer(jittered(interval))
 		select {
 		case <-ctx.Done():
@@ -303,11 +303,13 @@ func (s *Sweeper) run(ctx context.Context, interval time.Duration, leases duty.L
 // the GitHub client notes on it each request and each failure no caller takes as data, and the
 // sweep notes the failures only it can tell, a listing or a redelivery request GitHub refused
 // (Sweep, decide) and a rate limit that stopped the sweep (below). ctx is the context the lease
-// handed the pass, so a sweep this process's shutdown cut short records nothing.
-func (s *Sweeper) sweepAndReport(ctx context.Context) {
+// handed the pass, so a sweep this process's shutdown cut short records nothing. The record's
+// write is given interval, the period the lease serves, by when the next sweep is due
+// (githubreads.Finish).
+func (s *Sweeper) sweepAndReport(ctx context.Context, interval time.Duration) {
 	caller := ctx
 	ctx, attempt := githubreads.Begin(ctx)
-	defer githubreads.Finish(caller, githubreads.WebhookRedelivery, attempt, s.GitHubReads, s.Logger)
+	defer githubreads.Finish(caller, githubreads.WebhookRedelivery, attempt, s.GitHubReads, interval, s.Logger)
 	report, err := s.Sweep(ctx, Options{})
 	if err != nil {
 		s.Logger.Warn("webhook redelivery sweep failed", "error", err)

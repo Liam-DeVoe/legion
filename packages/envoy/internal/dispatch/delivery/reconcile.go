@@ -185,7 +185,9 @@ func (r *Reconcile) leasedPass(ctx context.Context, leases duty.Leases, due time
 func (r *Reconcile) runOnce(ctx context.Context) {
 	caller := ctx
 	ctx, attempt := githubreads.Begin(ctx)
-	defer githubreads.Finish(caller, githubreads.DeliveryReconcile, attempt, r.gitHubReads, nil)
+	// The record's write is given the interval the loop ticks on, the period the lease serves, by
+	// when the next pass is due (githubreads.Finish).
+	defer githubreads.Finish(caller, githubreads.DeliveryReconcile, attempt, r.gitHubReads, r.tickInterval(), nil)
 	now := time.Now()
 	headErr := r.reconcilePullRequestHeads(ctx, now)
 	// Where the pass returns before record() below exists, the head pass's failure can only be
