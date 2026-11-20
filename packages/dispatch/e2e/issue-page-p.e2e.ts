@@ -2038,6 +2038,9 @@ test("a focus given back to the title's heading opens no editor", async ({ brows
 // was not taken. Each focus is read once, after the pick is drawn, because a retrying read
 // passes in the frame before the pick disables the select. The status's writes are held open
 // with a route, so the save stays in flight while the row reads it.
+// SLOW(>=2s): 2,085 ms in one of three one-worker runs, Job e2e-rows-2chx9 at 2e3f0319 (1,573 and
+// 1,748 ms in the others): one load, the status's writes held open by a route, and keyboard picks
+// each followed by two frames and a read of the focus.
 test("a keyboard pick of the status keeps the focus on the status while it saves", async ({
   browser,
 }) => {
@@ -2818,6 +2821,10 @@ test("an approval entry's a approves that entry's document and no other", async 
 // The key card lists the two keys with their lines, applying while the focus is on the chip
 // whose request waits and greyed with it anywhere else; the palette offers the two as rows on
 // that same focus alone, and its Request changes row opens the dialog the key does.
+// SLOW(>=2s): 2,082 and 2,058 ms in two of three one-worker runs, Job e2e-rows-2chx9 at 2e3f0319
+// (1,901 ms in the third): one load after an approval request, the key card opened twice with both
+// its lines read each time, the palette opened twice, and Request changes opened from its row and
+// closed.
 test("the key card and the palette offer the approval chip's two keys while the focus is on it", async ({
   browser,
 }) => {
@@ -3077,6 +3084,10 @@ test("Approve by Enter on the header's chip leaves the focus on the approved chi
 // A change request sent by Enter from the header's Request changes answers the request, so the
 // header draws neither action any more, and the dialog gives the focus back to Request changes,
 // which the header then removes. The focus goes to the chip of the document the reader reviewed.
+// SLOW(>=2s): 2,048 ms in one of three one-worker runs, Job e2e-rows-2chx9 at 2e3f0319 (1,602 and
+// 1,657 ms in the others): one load after an approval request, the dialog opened by Enter and typed
+// in, the change request sent and polled until Dispatch records it, and two frames before the focus
+// is read.
 test("a change request sent from the header's Request changes leaves the focus on its chip", async ({
   browser,
 }) => {
@@ -3343,6 +3354,9 @@ test("Request changes in its dialog pressed again by Enter before the change req
 // write before it has ended, and "Copied" is what the button read back from it. The clipboard is
 // replaced, before the page loads, by one that counts its writes and holds each until the row
 // lets it land. Nothing disables the button, so the focus stays on it throughout.
+// SLOW(>=2s): 2,005 ms in one of three one-worker runs, Job e2e-rows-2chx9 at 2e3f0319 (1,475 and
+// 1,765 ms in the others): one load with a clipboard that holds its writes, three presses by Enter
+// each followed by two frames or a poll of the clipboard, and the held write let land in between.
 test("Copy issue key pressed again by Enter while its write is out makes no second write", async ({
   browser,
 }) => {
