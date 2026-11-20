@@ -1358,7 +1358,7 @@ package api
 // one the daemon was about to start from one nothing will start again.
 // `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of `LEGION_HELD_REASONS`,
 // which refuses a value it does not name rather than stripping it like an unknown key, so a word
-// added to the ladder later bumps this number again, as 189 did with `children_before_retro` and
+// added to the ladder later bumps this number again, as 190 did with `children_before_retro` and
 // `task_stopped`. The key itself is written on every body, empty
 // rather than null, and a caller from a pod whose claims record a contract below 98 is served the
 // admission block without it (api's stateFor, withoutHeld), as a caller below 94 is served every
@@ -1497,8 +1497,8 @@ package api
 // slot on this contract, so one not standing in `held` stands in that list under `at_work` where
 // no earlier word of the ladder is true of it, and one held from such a phase under
 // `unclassified` (`record.HeldAtWork`) — words the eleven of 98 already carry, so no strict
-// reader of 98 or above refuses them. From 189 a parent held there for the issues beneath it
-// reads `children_before_retro` and a task that was stopped there `task_stopped` (189 below).
+// reader of 98 or above refuses them. From 190 a parent held there for the issues beneath it
+// reads `children_before_retro` and a task that was stopped there `task_stopped` (190 below).
 // (This branch took 62 against the base 5a585b02, which carried 59; INFRA-2551's counts of the
 // moves back landed on main as 62 (cybermonklabs/legion#3522) and INFRA-312's spend attributes
 // as 64 (#3521), so this change takes a number above both. Read again on

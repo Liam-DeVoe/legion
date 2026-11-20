@@ -63,7 +63,7 @@ var (
 		record.AwaitingPersonNotice, record.ParkedDecisionNotice, record.UpdateStalledNotice, record.ProviderErrorsNotice,
 		record.TreeStalledNotice, record.ArchitectStalledNotice,
 	}
-	superviseOpsBeforeOwnerSteps = []record.SuperviseOp{"start", "suspend", "release", "tree_close", "issue_close"}
+	superviseOpsBeforeOwnerSteps = []record.SuperviseOp{"start", "suspend", "release", "tree_close", "issue_close", "pause_stop"}
 )
 
 // refusedBeforeOwnerSteps is why the release before refuses row, "" where it takes it. That
