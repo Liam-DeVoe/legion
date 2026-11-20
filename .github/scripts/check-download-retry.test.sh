@@ -6273,6 +6273,114 @@ check "exits 0" "$(is "$status" 0)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 check "refuses nothing" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
 
+# A sleep a call in a priced loop runs somewhere other than the loop's own body, where no loop of
+# the file writing it charges it, is refused by name: one in a script the loop runs, or in a
+# script that script runs (script_sleep, SLEEP_SCRIPT_REFUSAL); one in the body of a function of a
+# library the text sources (library_sleeps, SLEEP_LIBRARY_REFUSAL); and one in the body of a
+# function defined inside the loop, which this check reads as a command of the loop's body, once
+# a pass, where a pass calling it twice sleeps twice (SLEEP_FUNCTION_INSIDE;
+# dispatch://INFRA-1545, round 45). Until then the first three were charged 0 s and the fourth
+# 300 s a pass: the fourth step's passes each sleep 600 s. Each step runs r44-fetch.sh, 300 s, in
+# three passes, under 60 minutes, which no figure of these reaches, so each refusal is by name.
+# The script, the library function and the function defined in the loop that sleep nowhere pass,
+# and so does r45-polls.sh, whose sleep is in a loop of its own around a fetch and is charged
+# there at each run: 3 x 300 + 3 x (2 x 300 + 2 x 10) = 2760 s.
+echo "case: r45 a sleep a priced loop runs in a script, a library function or a function defined in it is refused by name"
+root=$(fixture r45-callee-sleeps)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/"
+printf '#!/usr/bin/env bash\nsleep 300\n' > "$root/.github/scripts/r45-nap.sh"
+printf '#!/usr/bin/env bash\n.github/scripts/r45-nap.sh\n' > "$root/.github/scripts/r45-runs-nap.sh"
+printf '#!/usr/bin/env bash\necho "nothing to wait for"\n' > "$root/.github/scripts/r45-quiet.sh"
+printf '#!/usr/bin/env bash\nfor try in 1 2; do\n  .github/scripts/r44-fetch.sh\n  sleep 10\ndone\n' \
+  > "$root/.github/scripts/r45-polls.sh"
+printf '#!/usr/bin/env bash\nlib_nap() { sleep 300; }\nlib_quiet() { echo quiet; }\n' \
+  > "$root/.github/scripts/r45-lib.sh"
+chmod +x "$root/.github/scripts/r44-fetch.sh" "$root/.github/scripts/r45-nap.sh" \
+  "$root/.github/scripts/r45-runs-nap.sh" "$root/.github/scripts/r45-quiet.sh" \
+  "$root/.github/scripts/r45-polls.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run a sleeping script in the loop
+        timeout-minutes: 60
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            .github/scripts/r45-nap.sh
+          done
+      - name: Run a script that runs a sleeping script in the loop
+        timeout-minutes: 60
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            .github/scripts/r45-runs-nap.sh
+          done
+      - name: Run a quiet script in the loop
+        timeout-minutes: 60
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            .github/scripts/r45-quiet.sh
+          done
+      - name: Call a sleeping function of a sourced library in the loop
+        timeout-minutes: 60
+        run: |
+          . .github/scripts/r45-lib.sh
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            lib_nap
+          done
+      - name: Call a quiet function of a sourced library in the loop
+        timeout-minutes: 60
+        run: |
+          . .github/scripts/r45-lib.sh
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            lib_quiet
+          done
+      - name: Call a sleeping function defined in the loop
+        timeout-minutes: 60
+        run: |
+          for pass in 1 2 3; do
+            snooze() { sleep 300; }
+            .github/scripts/r44-fetch.sh
+            snooze
+            snooze
+          done
+      - name: Call a quiet function defined in the loop
+        timeout-minutes: 60
+        run: |
+          for pass in 1 2 3; do
+            hush() { echo hush; }
+            .github/scripts/r44-fetch.sh
+            hush
+          done
+      - name: Run a script that sleeps in its own loop around a fetch
+        timeout-minutes: 60
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            .github/scripts/r45-polls.sh
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the run of the sleeping script by name, with the sleep in the loop as its cure" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Run a sleeping script in the loop' of job 'build' runs .\.github/scripts/r45-nap\.sh. in the loop opened on line 10, and a fetch, or a call of a script that fetches, is in that loop; \.github/scripts/r45-nap\.sh writes .sleep 300. on its line 2, outside every loop of that file whose passes this check reads around a fetch\..* Write the wait in this loop's body as the bare word .sleep. and literal seconds")"
+check "refuses the run of the script that runs the sleeping script by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=19::step 'Run a script that runs a sleeping script in the loop' of job 'build' runs .\.github/scripts/r45-runs-nap\.sh. in the loop opened on line 17,.*; \.github/scripts/r45-nap\.sh, which that run reaches, writes .sleep 300. on its line 2, outside every loop")"
+check "refuses the call of the library's sleeping function by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=34::step 'Call a sleeping function of a sourced library in the loop' of job 'build' calls .lib_nap., which \.github/scripts/r45-lib\.sh defines, in the loop opened on line 32,.*; \.github/scripts/r45-lib\.sh writes .sleep 300. on its line 2, in the body of .lib_nap., which that call runs\.")"
+check "refuses the sleeping function defined in the loop by name, for the calls a pass makes" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=48::step 'Call a sleeping function defined in the loop' of job 'build' writes .sleep 300. in the body of the function .snooze., which a call in the loop opened on line 47 runs,.* this check reads a sleep of a function defined in a loop's body as a command of that body, charged once a pass at most, so a pass that calls .snooze. more than once is charged less than it sleeps\.")"
+check "passes the quiet script, the quiet library function, the quiet function defined in the loop and the script sleeping in its own loop around a fetch" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 4)"
+
 # Two paths reaching one file with the same product of loop factors are both charged, each run
 # with the waits of the loops around it (dispatch://INFRA-1545, round 37; until then the file
 # was charged once, through the path whose loops waited longer). The step runs pa.sh and pz.sh
