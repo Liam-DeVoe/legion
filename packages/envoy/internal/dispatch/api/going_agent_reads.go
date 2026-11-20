@@ -27,6 +27,7 @@ import (
 
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 const (
@@ -54,7 +55,7 @@ func (a *AgentListener) githubRead(ctx context.Context, request agentwire.CallRe
 	if refusal != nil {
 		return agentwire.CallAnswer{}, refusal
 	}
-	repo := canonicalRepo(owner, name)
+	repo := refs.ExternalRepo(owner, name)
 	var project string
 	err := a.s.deps.Store.Pool.QueryRow(ctx, `select project from repo_projects where repo = $1`, repo).Scan(&project)
 	unmapped := goingAgentRefusal(agentwire.CodeRepositoryUnmapped,
