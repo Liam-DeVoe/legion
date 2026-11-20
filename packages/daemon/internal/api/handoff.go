@@ -962,7 +962,7 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 // reads and the completion route does not), its pull request record, nil while none is recorded
 // — the completion route judges the head a completion names against it, and the owed route
 // reads it in merging, where a merged pull request is what finishes the phase
-// (workflow.PhaseFinished), and for the merge forward that holds the asking role
+// (record.MergedInMerging), and for the merge forward that holds the asking role
 // (record.MergeForwardHolds) — and its production check, nil while none was ever opened.
 type completionPosition struct {
 	issue          *record.Issue
@@ -975,14 +975,6 @@ type completionPosition struct {
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
-}
-
-// merged is whether the position's phase is merging and its pull request is merged: the fact
-// that finishes merging, read by the rule workflow.PhaseFinished applies, since the merger
-// merges and a merged root then stands in merging until the rest of its tree leaves.
-func (p completionPosition) merged() bool {
-	return p.issue != nil && p.issue.Phase == phase.Merging &&
-		p.pullRequest != nil && p.pullRequest.State == record.PullRequestMerged
 }
 
 // handoffPosition reads key's position (completionPosition) for role, the completing role or the

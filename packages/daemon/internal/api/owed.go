@@ -179,9 +179,10 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 // (CHECK_LOOK_NOT_SERVED), and the look's task comes as the next prompt.
 //
 // Every other claim owes its phase while the five terms of R1 all hold, and nothing otherwise. The
-// second term is this function's own; the other four are record.PhaseOwed, the one rule the idle
-// release's reminder hold reads too (workflow's IdleRelease), so a pod is held for a reminder
-// only of a claim this route tells it owes its phase:
+// second term is this function's own but for its last clause; that clause and the other four are
+// record.PhaseOwed, the one rule the idle release's reminder hold and the idle backstop read too
+// (workflow's IdleRelease, internal/daemon's getsBackstop), so a pod is held for a reminder only
+// of a claim this route tells it owes its phase:
 //
 //   - The claim serves a run, and that run is the issue's current generation. The run and the
 //     entry are claimServes's, the one function the completion route (answerCompletion) reads for
@@ -192,11 +193,11 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //     unconfirmed and has served no run serves none either.
 //   - The claim's role works the phase the issue stands on (roleFor), the tree does not linger,
 //     where a completion records nothing, and the phase is not merging with its pull request
-//     merged, which is what finishes merging (workflow.PhaseFinished) while a merged root stands in
-//     merging until the rest of its tree leaves. So a role whose phase has ended owes nothing,
-//     whatever it was handed: the issue moved to another role's phase, to one no role works
-//     (awaiting_person, done, held), or its tree closed. A merger in merging whose pull request is
-//     not merged owes the merge, since the merger merges.
+//     merged (record.MergedInMerging), which is what finishes merging (workflow.PhaseFinished)
+//     while a merged root stands in merging until the rest of its tree leaves. So a role whose
+//     phase has ended owes nothing, whatever it was handed: the issue moved to another role's
+//     phase, to one no role works (awaiting_person, done, held), or its tree closed. A merger in
+//     merging whose pull request is not merged owes the merge, since the merger merges.
 //   - The claim is neither behind nor above the entry its role's phases row stands on
 //     (record.PhaseRow.Entry), where both are set; where either is 0 nothing is compared. The
 //     route's entry fence (entryFence) reads the same predicate (record.EntriesDiffer). A claim
@@ -234,12 +235,13 @@ func owedBy(c supervise.Claim, position completionPosition, owner claim.Token, r
 		}
 		return OwedResponse{Owes: true, Work: "the production check of " + issue.Key, Architect: owner}
 	}
-	if position.lingers || roleFor(issue.Phase) != c.Role || position.merged() {
+	if position.lingers || roleFor(issue.Phase) != c.Role {
 		return nothing
 	}
 	serving, entry, _ := claimServes(c, *issue)
 	if !record.PhaseOwed(serving, issue.Generation, entry, position.entry, position.completed,
-		record.MergeForwardHolds(position.pullRequest, issue.Phase, c.Role)) {
+		record.MergeForwardHolds(position.pullRequest, issue.Phase, c.Role),
+		record.MergedInMerging(position.pullRequest, issue.Phase)) {
 		return nothing
 	}
 	return OwedResponse{Owes: true, Work: fmt.Sprintf("the %s phase of %s", issue.Phase, issue.Key), Architect: owner}

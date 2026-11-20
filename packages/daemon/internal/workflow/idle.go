@@ -394,8 +394,8 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	// nothing, and the silence sweep does not nudge a role whose completion stands, so a past-due
 	// wake such a claim reported would hold the pod until the issue left its phase.
 	for _, c := range view.Claims {
-		if !c.Live() || !idlePhaseOpen(view, c) ||
-			!record.PhaseOwed(c.ServingGeneration, view.Generation, c.ServingEntry, c.RowEntry, c.RowCompleted, c.MergeForwardHeld) {
+		if !c.Live() || !idlePhaseOpen(view, c) || !record.PhaseOwed(c.ServingGeneration, view.Generation,
+			c.ServingEntry, c.RowEntry, c.RowCompleted, c.MergeForwardHeld, c.MergedInMerging) {
 			continue
 		}
 		if due := c.ActivityNextReminderAt; !due.IsZero() && !due.After(now) {

@@ -145,8 +145,9 @@ func TestTheIdleViewReadsTheUnrestoredBundleAndTheRunningHoldStreak(t *testing.T
 // (record.PhaseOwed): the entry the claim serves, by supervise.Claim.ServingEntry's own rule, and,
 // through the record's reader the daemon hands the store (ReadIdleRecordsWith,
 // record.FillIdleClaims), the entry its role's phases row stands on, whether that row records a
-// completion, and whether a merge forward of the issue's pull request holds the role. A claim that
-// has served no entry, a role with no row and an issue with no pull request read 0 and false.
+// completion, whether a merge forward of the issue's pull request holds the role, and whether
+// that pull request is merged while the issue stands in merging. A claim that has served no
+// entry, a role with no row and an issue with no pull request read 0 and false.
 func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -163,8 +164,9 @@ func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T
 	if err := st.PutClaim(ctx, tester); err != nil {
 		t.Fatal(err)
 	}
-	if got := idleViewOf(t, st, rootIssue).Claims[0]; got.ServingEntry != 0 || got.RowEntry != 0 || got.RowCompleted || got.MergeForwardHeld {
-		t.Fatalf("claim = %+v, want no entry served, no phases row and no merge forward", got)
+	if got := idleViewOf(t, st, rootIssue).Claims[0]; got.ServingEntry != 0 || got.RowEntry != 0 || got.RowCompleted ||
+		got.MergeForwardHeld || got.MergedInMerging {
+		t.Fatalf("claim = %+v, want no entry served, no phases row, no merge forward and no merged pull request", got)
 	}
 
 	// The tester left entry 2 behind and a turn confirmed the task of entry 3, which is the entry
@@ -192,8 +194,25 @@ func TestTheIdleViewReadsTheEntryServedAndTheRecordOfEachClaimsRole(t *testing.T
 	}); err != nil {
 		t.Fatalf("record the tester's row and the pull request of %s: %v", rootIssue, err)
 	}
-	if got := idleViewOf(t, st, rootIssue).Claims[0]; got.ServingEntry != 3 || got.RowEntry != 4 || !got.RowCompleted || !got.MergeForwardHeld {
-		t.Fatalf("claim = %+v, want entry 3 served, its row on entry 4 with its completion, and the merge forward holding it", got)
+	if got := idleViewOf(t, st, rootIssue).Claims[0]; got.ServingEntry != 3 || got.RowEntry != 4 || !got.RowCompleted ||
+		!got.MergeForwardHeld || got.MergedInMerging {
+		t.Fatalf("claim = %+v, want entry 3 served, its row on entry 4 with its completion, the merge forward holding it and the pull request open", got)
+	}
+
+	// The issue moves into merging and its pull request merges: the claim reads the merging
+	// finished (record.MergedInMerging), and the ask made in testing holds no role in merging.
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `update issues set phase = 'merging' where key = $1`, rootIssue); err != nil {
+			return err
+		}
+		return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: rootIssue,
+			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rootIssue, HeadSHA: "c0de", Failing: []string{},
+			MergeForward: &record.MergeForward{Head: "c0de", Base: "main", Phase: phase.Testing, AskedAt: now}})
+	}); err != nil {
+		t.Fatalf("move %s into merging on its merged pull request: %v", rootIssue, err)
+	}
+	if got := idleViewOf(t, st, rootIssue).Claims[0]; !got.MergedInMerging || got.MergeForwardHeld {
+		t.Fatalf("claim = %+v, want the merging finished by the merged pull request and no merge forward holding it", got)
 	}
 }
 

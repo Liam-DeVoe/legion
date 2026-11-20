@@ -363,7 +363,10 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 // phase, which is the control; its pod is released, with that past-due wake, when its row
 // records its completion of the entry, when a merge forward holds it, and when it is behind its
 // entry, since no reminder comes to a claim that owes nothing and the silence sweep does not
-// nudge a role whose completion stands, so such a hold would never end.
+// nudge a role whose completion stands, so such a hold would never end. The same holds of a
+// merger in merging whose pull request is merged (record.MergedInMerging), whose merging that
+// merge finished while a merged root stands in merging until the rest of its tree leaves; its
+// control, the same merger with its pull request not merged, owes the merge and is held.
 func TestIdleOfAClaimThatOwesNothingHoldsNoPodOnItsReminder(t *testing.T) {
 	decideIdleRows(t, []idleRuleRow{
 		{
@@ -404,6 +407,27 @@ func TestIdleOfAClaimThatOwesNothingHoldsNoPodOnItsReminder(t *testing.T) {
 				return v
 			}(),
 			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
+		},
+		{
+			name: "a reminder of a merger in merging whose pull request is merged",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Phase, v.Claims[0].Role = phase.Merging, claim.RoleMerger
+				v.Claims[0].MergedInMerging = true
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleMerger},
+		},
+		{
+			name: "the control: a reminder of a merger in merging whose pull request is not merged",
+			view: func() pods.IdleView {
+				v := idleChild()
+				v.Phase, v.Claims[0].Role = phase.Merging, claim.RoleMerger
+				v.Claims[0].ActivityNextReminderAt = idleNow.Add(-time.Minute)
+				return v
+			}(),
+			image: true, want: IdleHoldReminder,
 		},
 	})
 }

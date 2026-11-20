@@ -450,8 +450,8 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 }
 
 // armBackstops arms the backstop of a release that completed: backstop_minutes from now, for the
-// worker of the pod's open phase (workflow.OpenPhaseRole) while that worker owes its phase
-// (owesItsPhase). An architect gets none — nothing of its own is due, and a sub-architect woken
+// worker of the pod's open phase (workflow.OpenPhaseRole) while that worker gets one
+// (getsBackstop). An architect gets none — nothing of its own is due, and a sub-architect woken
 // for nothing would hold a pod open for the backstop period — and neither does an issue whose
 // phase no role works. The row records now as its arm time, the instant its due time is computed
 // from: the backstop of an issue the daemon records as waiting on another issue is measured from
@@ -459,12 +459,16 @@ func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role 
 //
 // A worker that owes its phase nothing gets none either (dispatch://INFRA-2746 R1): one whose
 // completion of the entry is recorded while the issue stays in the phase, as OSSV-732's reviewer's
-// approval stood while GitHub held the merge; one a merge forward holds; and one behind that
-// entry. A backstop would wake such a worker every backstop_minutes to do nothing, and each
-// release after that wake would arm the next. Any work it gets later comes as a task or message
-// of the daemon's — the task of the entry it is behind, the message of a landed merge forward, a
-// new phase's start — and that delivery wakes the pod itself. The release logs the facts it read
-// in place of the row.
+// approval stood while GitHub held the merge; one a merge forward holds; a merger whose merged
+// pull request finished merging; and one behind that entry that holds no task of it the daemon
+// has yet to deliver. A backstop would wake such a worker every backstop_minutes to do nothing,
+// and each release after that wake would arm the next. The work it gets later comes as a task or
+// message of the daemon's — the task of the entry it is behind, which admission's owed-entry
+// repair sends a claim not yet given it, the message of a landed merge forward, a new phase's
+// start — and that delivery wakes the pod itself. One worker that owes nothing still gets the
+// backstop, a claim behind its entry that holds a task of that entry the daemon has not
+// delivered (holdsUndeliveredEntryTask says why). The release logs the facts it read in place of
+// the row.
 //
 // It also cancels the backstops the release before this one armed, owed or not: that pod is gone,
 // and its backstop has nothing left to bring back.
@@ -491,21 +495,21 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 		// the entry the claim serves is read from (supervise.Claim.ServingEntry), so the claim is
 		// read whole in the transaction that reads its role's record.
 		var facts pods.IdleClaim
-		var owes bool
+		var gets bool
 		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 			whole, err := store.ClaimTx(ctx, tx, c.Token)
 			if err != nil {
 				return err
 			}
-			facts, owes, err = owesItsPhase(ctx, r.records, tx, issue.Phase, issue.Generation, whole)
+			facts, gets, err = getsBackstop(ctx, r.records, tx, issue.Phase, issue.Generation, whole)
 			return err
 		}); err != nil {
-			return fmt.Errorf("read whether %s's %s owes its phase before arming its backstop: %w", issue.Key, role, err)
+			return fmt.Errorf("read whether %s's %s gets a backstop before arming one: %w", issue.Key, role, err)
 		}
-		if !owes {
-			r.log.Info("wake: the release of an issue's pod arms no backstop for its open phase's role, which owes that phase nothing; its later work comes as a daemon task, which wakes the pod",
+		if !gets {
+			r.log.Info("wake: the release of an issue's pod arms no backstop for its open phase's role, which owes that phase nothing and holds no task of its entry the daemon has yet to deliver",
 				"issue", issue.Key, "role", role, "completed", facts.RowCompleted, "merge_forward_held", facts.MergeForwardHeld,
-				"entry", facts.ServingEntry, "row_entry", facts.RowEntry)
+				"merged", facts.MergedInMerging, "entry", facts.ServingEntry, "row_entry", facts.RowEntry)
 			return nil
 		}
 		armed := r.now().UTC()
@@ -518,35 +522,66 @@ func (r *outbox) armBackstops(ctx context.Context, issue record.Issue) error {
 	return nil
 }
 
-// owesItsPhase is whether c, a claim of the role that works the phase its issue stands at (at,
-// at the issue's generation), owes that phase its completion, by the rule the owed answer and the
-// idle release's reminder hold read (record.PhaseOwed): the run c serves and the entry it serves
-// (supervise.Claim.ServingEntry), and, read through tx as the idle view reads them
+// getsBackstop is whether c, a claim of the role that works the phase its issue stands at (at,
+// at the issue's generation), gets a backstop when its pod is released or a pause stops it: it
+// owes that phase its completion, by the rule the owed answer and the idle release's reminder
+// hold read (record.PhaseOwed), or it is the one claim that owes nothing and still gets one
+// (holdsUndeliveredEntryTask). It reads the run c serves and the entry it serves
+// (supervise.Claim.ServingEntry), and, through tx as the idle view reads them
 // (record.FillIdleClaims), the entry its role's phases row stands on, whether that row records
-// its completion and whether a merge forward of the issue's pull request holds its role. It
-// answers those facts beside the verdict, for the line of a caller that arms nothing. c is the
-// whole claim (store.ClaimTx), since the entry it serves is read from its pending delivery, the
-// entry it last served and its update round.
+// its completion, whether a merge forward of the issue's pull request holds its role and whether
+// that pull request is merged while the issue stands in merging. It answers those facts beside
+// the verdict, for the line of a caller that arms nothing. c is the whole claim (store.ClaimTx),
+// since the entry it serves is read from its pending delivery, the entry it last served and its
+// update round.
 //
 // Each writer of an open phase's backstop asks it before it arms one, so all three hold the
 // worker to one rule: a release (armBackstops), a pause's stop (projectPause.stopTx) and a
 // cancel of a release while the project is paused (outbox.cancelRelease, through
-// store.ReleaseCancelPause.OwesPhase).
-func owesItsPhase(ctx context.Context, records record.Store, tx pgx.Tx, at phase.Phase, generation uint64,
+// store.ReleaseCancelPause.GetsBackstop).
+func getsBackstop(ctx context.Context, records record.Store, tx pgx.Tx, at phase.Phase, generation uint64,
 	c supervise.Claim) (pods.IdleClaim, bool, error) {
 	facts := []pods.IdleClaim{{Role: c.Role, ServingGeneration: c.ServingGeneration, ServingEntry: c.ServingEntry()}}
 	if err := record.FillIdleClaims(ctx, records, tx, c.Issue, at, facts); err != nil {
 		return pods.IdleClaim{}, false, err
 	}
 	f := facts[0]
-	return f, record.PhaseOwed(f.ServingGeneration, generation, f.ServingEntry, f.RowEntry, f.RowCompleted, f.MergeForwardHeld), nil
+	owes := record.PhaseOwed(f.ServingGeneration, generation, f.ServingEntry, f.RowEntry, f.RowCompleted,
+		f.MergeForwardHeld, f.MergedInMerging)
+	return f, owes || holdsUndeliveredEntryTask(c, f, generation), nil
 }
 
-// owesPhase is owesItsPhase as the store asks it of a released role a cancel stops for a pause
-// (store.ReleaseCancelPause.OwesPhase), through the outbox's records.
-func (r *outbox) owesPhase(ctx context.Context, tx pgx.Tx, at phase.Phase, generation uint64, c supervise.Claim) (bool, error) {
-	_, owes, err := owesItsPhase(ctx, r.records, tx, at, generation, c)
-	return owes, err
+// holdsUndeliveredEntryTask is whether c is the one claim that owes its phase nothing and still
+// gets the backstop (dispatch://INFRA-2746 R1): "a claim behind its entry that holds a task of
+// that entry the daemon has not delivered, because a send can fail before any turn and then
+// waits for the claim to come back (supervise's delivery), admission's owed-entry repair passes
+// over a claim already given the entry, and the backstop is then the one wake that brings the pod
+// back for that delivery." f is what getsBackstop read of c's role, and generation the issue's
+// run. The reminder hold takes no such exception (workflow's IdleRelease): a claim behind its
+// entry is reminded of nothing.
+//
+// c holds such a task while its pending delivery is unconfirmed, the fact a pause's stop reads to
+// owe the role a launch (supervise's holdsTask), and that task is of the entry c's role's phases
+// row stands on (f.RowEntry), which the entry c serves (f.ServingEntry) is behind. Every other
+// term of the owed answer's rule still holds such a claim to it, read at the task's entry
+// (record.PhaseOwed): it serves the issue's run, the row records no completion, no merge forward
+// holds its role and no merged pull request has finished merging. So a claim whose completion is
+// recorded, or that a merge forward holds, gets no backstop for the task it holds either. A turn
+// that takes the task levels the claim with its row, and from then on it owes its phase by that
+// rule.
+func holdsUndeliveredEntryTask(c supervise.Claim, f pods.IdleClaim, generation uint64) bool {
+	p := c.Pending
+	return p != nil && p.ConfirmedAt.IsZero() && p.Entry == f.RowEntry &&
+		record.EntriesDiffer(f.ServingEntry, f.RowEntry) && f.ServingEntry < f.RowEntry &&
+		record.PhaseOwed(f.ServingGeneration, generation, p.Entry, f.RowEntry, f.RowCompleted, f.MergeForwardHeld,
+			f.MergedInMerging)
+}
+
+// getsBackstop is the package function of that name as the store asks it of a released role a
+// cancel stops for a pause (store.ReleaseCancelPause.GetsBackstop), through the outbox's records.
+func (r *outbox) getsBackstop(ctx context.Context, tx pgx.Tx, at phase.Phase, generation uint64, c supervise.Claim) (bool, error) {
+	_, gets, err := getsBackstop(ctx, r.records, tx, at, generation, c)
+	return gets, err
 }
 
 // takeOverRelease is what every path that suspends, stops or closes a claim does to a pod that

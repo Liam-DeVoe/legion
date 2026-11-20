@@ -465,23 +465,24 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 // backstop's due time are stamped with (At, the caller's clock), the backstop the stop of the
 // issue's open phase's worker arms (the idle release's backstop_minutes; zero arms none, as
 // where the deployment releases no pod), which role works an issue's open phase
-// (workflow.OpenPhaseRole), and whether such a worker owes that phase (OwesPhase), neither of
+// (workflow.OpenPhaseRole), and whether such a worker gets a backstop (GetsBackstop), neither of
 // which the store restates (nil arms no backstop). At is required of every cancel, since whether
 // the project is paused is read inside the cancel's own transaction; a cancel made while the
 // project runs reads nothing else of it.
 //
-// OwesPhase answers, through tx, whether c, a released claim of the worker of the phase at that
-// its issue stands at, serving the issue's generation, owes that phase its completion: the rule a
-// release's backstop reads (internal/daemon's owesItsPhase, record.PhaseOwed), which reads the
-// workflow's record of the claim's role and which this package cannot import (IdleRecords says
-// why). A worker that owes its phase nothing gets no backstop (dispatch://INFRA-2746 R1): a
-// backstop would wake it to do nothing, and any later work of it comes as a daemon task, which
-// wakes it.
+// GetsBackstop answers, through tx, whether c, a released claim of the worker of the phase at that
+// its issue stands at, serving the issue's generation, gets a backstop: the rule a release's
+// backstop reads (internal/daemon's getsBackstop, record.PhaseOwed), which reads the workflow's
+// record of the claim's role and which this package cannot import (IdleRecords says why). A
+// worker that owes its phase nothing gets no backstop (dispatch://INFRA-2746 R1), since a
+// backstop would wake it to do nothing, but for the one claim the rule keeps: one behind its
+// entry that holds a task of that entry the daemon has not delivered, whose delivery waits for
+// the claim to come back (internal/daemon's holdsUndeliveredEntryTask).
 type ReleaseCancelPause struct {
 	At            time.Time
 	Backstop      time.Duration
 	OpenPhaseRole func(phase.Phase) claim.Role
-	OwesPhase     func(ctx context.Context, tx pgx.Tx, at phase.Phase, generation uint64, c supervise.Claim) (bool, error)
+	GetsBackstop  func(ctx context.Context, tx pgx.Tx, at phase.Phase, generation uint64, c supervise.Claim) (bool, error)
 }
 
 // ReleaseCancelled is what one cancel of a release did (CancelIssueRelease). Resumed are the roles
@@ -505,11 +506,11 @@ type ReleaseCancelled struct {
 // pod's other roles do, as the stop transaction holds it while its pause stands: an update round
 // past its bound or an idle rule would otherwise take a pod that holds the stopped roles'
 // unpushed work; and, for the worker of the issue's open phase serving the issue's generation
-// that owes that phase (ReleaseCancelPause.OwesPhase, of its whole claim, ClaimTx, since the
-// entry it serves is supervise.Claim.ServingEntry's rule over what releasedRole does not carry),
-// its backstop, which the record arms only where the stop owes no launch. A wake taken since is
-// left open: it is the launch the role is owed, and its start row runs at the resume. The caller
-// holds the issue's lock and held's row for share.
+// that gets one (ReleaseCancelPause.GetsBackstop, of its whole claim, ClaimTx, since the entry it
+// serves and the task it holds are read from what releasedRole does not carry), its backstop,
+// which the record arms only where the stop owes no launch. A wake taken since is left open: it
+// is the launch the role is owed, and its start row runs at the resume. The caller holds the
+// issue's lock and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()
@@ -520,17 +521,17 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 		}
 		rec := PauseStopRecord{Pause: held, Stop: PauseStopClaim{Claim: r.token, Tree: r.tree, Issue: issue,
 			Role: r.role, Generation: r.generation}, At: at, LaunchOwed: owed, HoldPod: true}
-		if !owed && paused.Backstop > 0 && paused.OpenPhaseRole != nil && paused.OwesPhase != nil &&
+		if !owed && paused.Backstop > 0 && paused.OpenPhaseRole != nil && paused.GetsBackstop != nil &&
 			r.role == paused.OpenPhaseRole(standing.phase) && r.serving == standing.generation {
 			c, err := ClaimTx(ctx, tx, r.token)
 			if err != nil {
 				return err
 			}
-			owes, err := paused.OwesPhase(ctx, tx, standing.phase, standing.generation, c)
+			gets, err := paused.GetsBackstop(ctx, tx, standing.phase, standing.generation, c)
 			if err != nil {
 				return err
 			}
-			if owes {
+			if gets {
 				rec.Backstop = &PodWakeBackstop{Project: project, Issue: issue, Role: r.role, ArmedAt: at, DueAt: at.Add(paused.Backstop)}
 			}
 		}
@@ -632,16 +633,16 @@ func deleteIssueRelease(ctx context.Context, db execer, project, issue string) e
 
 // IdleRecords is the record's half of the idle view: through tx, the view's own transaction, it
 // gives each of claims, the claims of issue's pod while issue stands at at, what the workflow's
-// record holds of its role (pods.IdleClaim's RowEntry, RowCompleted and MergeForwardHeld), in a
-// fixed number of statements per issue and never one per claim. Its one implementation is
-// record.FillIdleClaims.
+// record holds of its role (pods.IdleClaim's RowEntry, RowCompleted, MergeForwardHeld and
+// MergedInMerging), in a fixed number of statements per issue and never one per claim. Its one
+// implementation is record.FillIdleClaims.
 //
-// The store reads none of it itself. The rules those three fields are written by are record's
-// (record.PhaseRow.Completed, record.MergeForwardHolds), as are the reads of the phases rows and
-// the pull request they are read from, and this package cannot import record: record's own tests
-// import this package. So the daemon hands the reader in (ReadIdleRecordsWith), as it hands
-// UnownedPods and CancelIssueRelease the workflow's rule for a status out of the workflow
-// (record.OutOfWorkflow).
+// The store reads none of it itself. The rules those four fields are written by are record's
+// (record.PhaseRow.Completed, record.MergeForwardHolds, record.MergedInMerging), as are the reads
+// of the phases rows and the pull request they are read from, and this package cannot import
+// record: record's own tests import this package. So the daemon hands the reader in
+// (ReadIdleRecordsWith), as it hands UnownedPods and CancelIssueRelease the workflow's rule for a
+// status out of the workflow (record.OutOfWorkflow).
 type IdleRecords func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error
 
 // ReadIdleRecordsWith hands the idle view the record's half of it (IdleRecords): from this call
@@ -649,7 +650,8 @@ type IdleRecords func(ctx context.Context, tx pgx.Tx, issue string, at phase.Pha
 // which is what the reminder hold asks of a claim that works the open phase (record.PhaseOwed,
 // workflow.IdleRelease). The daemon calls it where it wires the idle release (internal/daemon's
 // attachIdleRelease). Until it is called the view reads none of it, as on a store a test builds
-// by hand: every claim reads its role as having no phases row and no merge forward.
+// by hand: every claim reads its role as having no phases row, no merge forward and no merged
+// pull request.
 func (s *Store) ReadIdleRecordsWith(read IdleRecords) {
 	s.idleRecords.Store(&read)
 }

@@ -62,9 +62,9 @@ type projectPause struct {
 	project string
 	token   string
 	// backstop is the idle release's backstop (`backstop_minutes`), which the stop of an open
-	// phase's worker owed no launch arms while that worker owes its phase (decision 6,
-	// owesItsPhase); zero where the deployment releases no pod, and then the stop arms none, as a
-	// release then arms none.
+	// phase's worker owed no launch arms while that worker gets one (decision 6, getsBackstop);
+	// zero where the deployment releases no pod, and then the stop arms none, as a release then
+	// arms none.
 	backstop time.Duration
 	now      func() time.Time
 	log      *slog.Logger
@@ -135,11 +135,13 @@ func releaseBackstop(cfg config.Config) time.Duration {
 // (store.PodRecords.TakePodWake with pods.WakePause, which cancels the role's own backstop)
 // with its start row (workflow.PauseWakeRow) — or, owed none as the worker of the issue's open
 // phase serving its generation, its backstop. A worker that owes that phase nothing gets no
-// backstop, by the rule a release's backstop reads (owesItsPhase, dispatch://INFRA-2746 R1): any
-// later work of it comes as a daemon task, which wakes it. A start owed once the pause has ended,
-// with no pause open after it, is logged as a released held row (decision 23), and the outbox
-// runs it at once through the pacing; a later open pause holds it, and that pause's resume logs
-// it.
+// backstop, by the rule a release's backstop reads (getsBackstop, dispatch://INFRA-2746 R1), but
+// for the one such worker that rule keeps: a claim behind its entry that holds a task of that
+// entry the daemon has not delivered (holdsUndeliveredEntryTask). A stop the machine makes of a
+// claim that holds a task no turn has taken already owes it a launch (supervise's holdsTask),
+// which brings it back at the resume. A start owed once the pause has ended, with no pause open
+// after it, is logged as a released held row (decision 23), and the outbox runs it at once
+// through the pacing; a later open pause holds it, and that pause's resume logs it.
 //
 // A stop that commits after its pause has ended, with no later pause open, owes the role a launch
 // whatever the stop met (afterResume): the machine decided it while the resume's transaction was
@@ -252,11 +254,11 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 			return made, err
 		}
 		if !owed && issue != nil && p.backstop > 0 && c.Role == workflow.OpenPhaseRole(issue.Phase) && c.ServingGeneration == issue.Generation {
-			_, owes, err := owesItsPhase(ctx, p.records, tx, issue.Phase, issue.Generation, c)
+			_, gets, err := getsBackstop(ctx, p.records, tx, issue.Phase, issue.Generation, c)
 			if err != nil {
 				return made, err
 			}
-			if owes {
+			if gets {
 				rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role, ArmedAt: at, DueAt: at.Add(p.backstop)}
 			}
 		}

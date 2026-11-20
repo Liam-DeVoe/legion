@@ -2629,36 +2629,51 @@ func EntriesDiffer(entry, rowEntry int64) bool {
 // the facts the record holds of it: serving, the run the claim serves, and generation, the
 // issue's; entry, the phase entry the claim serves, and rowEntry, the one its role's phases row
 // stands on (PhaseRow.Entry); completed, whether that row records the role's completion
-// (PhaseRow.Completed); and mergeForwardHeld, whether a merge forward holds the role
+// (PhaseRow.Completed); mergeForwardHeld, whether a merge forward holds the role
 // (MergeForwardHolds, which the caller reads of the issue's pull request at the phase the issue
-// stands in). It answers false for a claim that serves no run or a run the issue has left, for
-// one behind or above its row's entry (EntriesDiffer), for one whose completion the row records,
-// and for one a merge forward holds, and true otherwise. Whether the claim's role works the
-// phase the issue stands in is its caller's to ask first.
+// stands in); and merged, whether the issue stands in merging with its pull request merged
+// (MergedInMerging). It answers false for a claim that serves no run or a run the issue has left,
+// for one behind or above its row's entry (EntriesDiffer), for one whose completion the row
+// records, for one a merge forward holds and for one whose merging its merged pull request has
+// finished, and true otherwise. Whether the claim's role works the phase the issue stands in is
+// its caller's to ask first.
 //
 // It is the one rule the daemon holds a phase worker to wherever it asks whether that worker owes
 // its phase (dispatch://INFRA-2746 R1): the owed answer (api's owedBy), which tells the claim's
 // session whether it owes its phase; the idle release's reminder hold (workflow's IdleRelease,
 // IdleHoldReminder), which keeps a pod for a reminder only of a claim that owes its phase; and
-// the backstop of a released or pause-stopped worker (internal/daemon's owesItsPhase, read by
+// the backstop of a released or pause-stopped worker (internal/daemon's getsBackstop, read by
 // armBackstops, projectPause.stopTx and the paused cancel of a release), which arms no wake for
-// a claim that owes nothing. The other two read the owed answer's rule because a claim that owes
-// nothing is reminded of nothing and waits on nothing a backstop stands in for: the silence sweep
-// does not nudge a role whose completion stands, so a hold on such a claim's reported wake would
-// never end, and a backstop would wake it every backstop_minutes to do nothing, since any later
-// work of it comes as a daemon task, which wakes the pod.
-func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mergeForwardHeld bool) bool {
-	return serving != 0 && serving == generation && !EntriesDiffer(entry, rowEntry) && !completed && !mergeForwardHeld
+// a claim that owes nothing but one. The other two read the owed answer's rule because a claim
+// that owes nothing is reminded of nothing and mostly waits on nothing a backstop stands in for:
+// the silence sweep does not nudge a role whose completion stands, so a hold on such a claim's
+// reported wake would never end, and a backstop would wake it every backstop_minutes to do
+// nothing where its later work comes as a daemon task or message, which wakes the pod. The one
+// claim the backstop keeps is behind its entry and holds a task of that entry the daemon has not
+// delivered (internal/daemon's holdsUndeliveredEntryTask): that delivery waits for the claim to
+// come back, and nothing else brings the pod back for it.
+func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mergeForwardHeld, merged bool) bool {
+	return serving != 0 && serving == generation && !EntriesDiffer(entry, rowEntry) && !completed && !mergeForwardHeld && !merged
+}
+
+// MergedInMerging is whether the issue stands in merging (at) with pr, its pull request, merged:
+// the fact that finishes merging, by the rule workflow.PhaseFinished applies, since the merger
+// merges and a merged root then stands in merging until the rest of its tree leaves, which can be
+// days. A merger in merging owes nothing once it holds (PhaseOwed), and owes the merge while the
+// pull request is not merged. A pull request the record does not hold (nil) is not merged.
+func MergedInMerging(pr *PullRequest, at phase.Phase) bool {
+	return at == phase.Merging && pr != nil && pr.State == PullRequestMerged
 }
 
 // FillIdleClaims gives each of claims, the claims of issue's pod as the idle view reads them
 // (pods.IdleView), what the record holds of its role while issue stands at at: the entry its
 // role's phases row stands on and whether that row records a completion (PhaseRowOf,
-// PhaseRow.Entry, PhaseRow.Completed), zero and false where the role has no row, and whether a
-// merge forward of the issue's pull request holds the role (MergeForwardHolds). Those are the
-// facts the idle release's reminder hold reads beside each claim (workflow's IdleRelease, through
+// PhaseRow.Entry, PhaseRow.Completed), zero and false where the role has no row, whether a
+// merge forward of the issue's pull request holds the role (MergeForwardHolds), and whether that
+// pull request is merged while issue stands in merging (MergedInMerging). Those are the facts the
+// idle release's reminder hold reads beside each claim (workflow's IdleRelease, through
 // PhaseOwed), and the ones a backstop's writer reads of the one claim it would arm a backstop for
-// (internal/daemon's owesItsPhase). It reads them through tx, the caller's own transaction, in two
+// (internal/daemon's getsBackstop). It reads them through tx, the caller's own transaction, in two
 // statements whatever the number of claims: the issue's phases rows and its pull request, the
 // reads the completion route's position takes (api's handoffPosition). The store's idle view
 // calls it through the reader the daemon hands it (store.IdleRecords), since that package cannot
@@ -2672,10 +2687,12 @@ func FillIdleClaims(ctx context.Context, store Store, tx pgx.Tx, issue string, a
 	if err != nil {
 		return err
 	}
+	merged := MergedInMerging(pr, at)
 	for i := range claims {
 		row := PhaseRowOf(rows, claims[i].Role)
 		claims[i].RowEntry, claims[i].RowCompleted = row.Entry, row.Completed()
 		claims[i].MergeForwardHeld = MergeForwardHolds(pr, at, claims[i].Role)
+		claims[i].MergedInMerging = merged
 	}
 	return nil
 }

@@ -6523,9 +6523,11 @@ The wakes are these:
 - the backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the release (60 minutes by default), for each phase worker of the pod whose phase is open.
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
-  Nor does a phase worker that owes its phase nothing: its completion of the phase's entry is recorded while the issue stays in the phase, a merge forward holds it, or it is behind that entry, by the rule of the daemon's answer of what a claim owes (`record.PhaseOwed`, read by `armBackstops`, `internal/daemon/wake.go`).
+  Nor does a phase worker that owes its phase nothing: its completion of the phase's entry is recorded while the issue stays in the phase, a merge forward holds it, its merged pull request finished merging, or it is behind that entry, by the rule of the daemon's answer of what a claim owes (`record.PhaseOwed`, read by `armBackstops`, `internal/daemon/wake.go`).
   Such a worker is OSSV-732's reviewer, whose approval stood while GitHub held the merge for a code-owner review; a backstop would wake it every `backstop_minutes` to do nothing.
-  Any later work of it comes as a task or message of the daemon's, which wakes the pod.
+  Its later work comes as a task or message of the daemon's, which wakes the pod: a worker behind its entry that the daemon has not yet given that entry's task is sent it by admission's owed-entry repair.
+  One worker that owes its phase nothing still gets the backstop: one behind its entry that holds a task of that entry the daemon has not delivered (`holdsUndeliveredEntryTask`, `internal/daemon/wake.go`).
+  A send can fail before any turn and then waits for the claim to come back, and admission's owed-entry repair passes over a claim already given the entry, so the backstop is the one wake that brings the pod back for that delivery.
   For an issue the daemon records as waiting on another issue (its admission slot given back for the wait), the backstop wakes the pod only `WaitSilenceBound`, 24 hours, after the release armed it (`pod_wake_backstops.armed_at`), in place of `backstop_minutes`.
   The normal delay applies again at the first wake tick after the issue takes a slot, so a backstop already past it then wakes the pod at once.
 
@@ -6774,7 +6776,7 @@ It writes the claim and the stop's record, and with them:
   The daemon also queues no outbox row keyed by another project's issue, since only that project's daemon runs such a row, against its own claims: every write of an outbox row by its key takes one rule (`claim.KeyOfProject`, `internal/claim/token.go`), so neither the stop of such a spawn nor its agent's ready queues a row of that issue or changes one;
 
 - for a role that is owed none and is the worker of its issue's open phase, the release's backstop, `runtime.kubernetes.idle_release.backstop_minutes` after the stop.
-  A worker that owes its phase nothing gets none, by the rule the idle release's backstop reads ([Idle release](#idle-release)), and neither does such a worker when a cancel of its pod's release, made while the project is paused, records it stopped by the pause.
+  A worker that owes its phase nothing gets none, by the rule the idle release's backstop reads, with that rule's one exception, a worker behind its entry that holds a task of that entry the daemon has not delivered ([Idle release](#idle-release)); a cancel of its pod's release, made while the project is paused, which records it stopped by the pause, reads the same rule.
 
 Every other stopped role stays stopped until its next wake, as the role of an idle-released pod does.
 
