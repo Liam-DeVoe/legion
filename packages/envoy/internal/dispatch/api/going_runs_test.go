@@ -2,15 +2,19 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/going/agent"
+	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -223,4 +227,139 @@ func TestGoingRunsSweepDeletesARunPastSevenDays(t *testing.T) {
 	if !stored(kept) {
 		t.Fatal("the maintenance pass deleted the 6-day run, want it kept")
 	}
+}
+
+// TestTheReaperEndsOnlyARunPastItsBudgetWithNoLease: the reaper stops a working run whose lease ran
+// out longer ago than what was left of its level's working time, so no agent took it up for all the
+// time it had left: its person reads it stopped with the time budget's reason, its lease is freed,
+// and its stream writes the end frame, which offers Continue. It leaves a working run an agent still
+// holds, though that run has spent its working time and started an hour ago; a working run whose
+// lease ran out with more of its working time left than has passed since; and a run that waits, is
+// queued or is done, though its lease ran out an hour ago.
+func TestTheReaperEndsOnlyARunPastItsBudgetWithNoLease(t *testing.T) {
+	rig := newGoingRunsRig(t)
+	budget := agent.Levels["standard"].Time
+	// record stores a standard run of alice's in state, started started ago, that has worked worked
+	// of its working time, under a lease that ends leaseEnds from now (that long ago where it is
+	// negative), and answers the run and its lease token.
+	record := func(t *testing.T, state string, started, worked, leaseEnds time.Duration) (run, token string) {
+		t.Helper()
+		run, token = uuid.NewString(), uuid.NewString()
+		if _, err := rig.database.Pool.Exec(context.Background(), `
+			insert into going_runs (id, author_login, words, conversation_id, level, mode, state, shape, created_at, finished_at,
+			  budget_used, lease_token, lease_owner, lease_ends_at)
+			values ($1::uuid, 'alice', 'tidy DEMO-12', $1::uuid, 'standard', 'ask', $2, $3, now() - make_interval(secs => $4),
+			  case when $2 = 'done' then now() end, jsonb_build_object('calls', 3, 'working_ms', $5::bigint, 'tokens', 0),
+			  $6::uuid, 'an agent of this test', now() + make_interval(secs => $7))
+		`, run, state, goingRunShape, started.Seconds(), worked.Milliseconds(), token, leaseEnds.Seconds()); err != nil {
+			t.Fatalf("record a %s run: %v", state, err)
+		}
+		return run, token
+	}
+	// read is the run as its person reads it, GET /api/v1/going/runs/{id}.
+	read := func(t *testing.T, run string) string {
+		t.Helper()
+		response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/going/runs/"+run, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET run %s answered %d %s", run, response.Code, response.Body.String())
+		}
+		return strings.TrimSpace(response.Body.String())
+	}
+	// lease is the run's lease token, empty where none holds it.
+	lease := func(t *testing.T, run string) string {
+		t.Helper()
+		var token string
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select coalesce(lease_token::text, '') from going_runs where id = $1::uuid
+		`, run).Scan(&token); err != nil {
+			t.Fatalf("read run %s's lease: %v", run, err)
+		}
+		return token
+	}
+	type leftRun struct{ state, run, token, before string }
+	// left records a run the reaper must leave, with what its person reads of it before the reaper.
+	left := func(t *testing.T, state string, started, worked, leaseEnds time.Duration) leftRun {
+		t.Helper()
+		run, token := record(t, state, started, worked, leaseEnds)
+		return leftRun{state: state, run: run, token: token, before: read(t, run)}
+	}
+	// kept checks that the reaper left run: its person reads it as before, the same lease holds it,
+	// and its stream holds no frame.
+	kept := func(t *testing.T, run leftRun) {
+		t.Helper()
+		if after := read(t, run.run); after != run.before {
+			t.Errorf("the %s run reads %s after the reaper, want it as before: %s", run.state, after, run.before)
+		}
+		if token := lease(t, run.run); token != run.token {
+			t.Errorf("the %s run's lease is %q after the reaper, want the lease %s it held", run.state, token, run.token)
+		}
+		var frames int
+		if err := rig.database.Pool.QueryRow(context.Background(), `
+			select count(*) from going_run_events where run_id = $1::uuid
+		`, run.run).Scan(&frames); err != nil || frames != 0 {
+			t.Errorf("the %s run holds %d frames (%v) after the reaper, want none", run.state, frames, err)
+		}
+	}
+
+	// Its lease ran out 2 minutes ago with 1 minute of its working time left.
+	overdue, _ := record(t, "working", 10*time.Minute, budget-time.Minute, -2*time.Minute)
+	// An agent holds it for another minute: that agent stops it at its bound itself.
+	held := left(t, "working", time.Hour, budget, time.Minute)
+	// Its lease ran out 30 seconds ago with all but a minute of its working time left.
+	inside := left(t, "working", 2*time.Minute, time.Minute, -30*time.Second)
+	var others []leftRun
+	for _, state := range []string{"waiting", "queued", "done"} {
+		others = append(others, left(t, state, time.Hour, budget, -time.Hour))
+	}
+
+	if err := reapGoingRuns(context.Background(), rig.database.Pool); err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+
+	t.Run("a working run with no live lease past its working budget is stopped TIME_BUDGET with an end frame that offers Continue", func(t *testing.T) {
+		var run goingRun
+		if err := json.Unmarshal([]byte(read(t, overdue)), &run); err != nil {
+			t.Fatal(err)
+		}
+		if run.State != agentwire.StateStopped || run.StopReason == nil || !strings.HasPrefix(*run.StopReason, agent.ReasonTimeBudget+":") || run.FinishedAt == nil {
+			t.Fatalf("the overdue run reads %s, stopped by %v, ended at %v; want it stopped with the reason %s, ended", run.State, run.StopReason, run.FinishedAt, agent.ReasonTimeBudget)
+		}
+		if token := lease(t, overdue); token != "" {
+			t.Errorf("the stopped run is held by the lease %s, want it freed", token)
+		}
+		stream := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/going/runs/"+overdue+"/events", nil, "alice")
+		if stream.Code != http.StatusOK {
+			t.Fatalf("the run's stream answered %d %s", stream.Code, stream.Body.String())
+		}
+		var frames []goingStreamFrame
+		for _, block := range strings.Split(strings.TrimSpace(stream.Body.String()), "\n\n") {
+			var frame goingStreamFrame
+			for _, line := range strings.Split(block, "\n") {
+				switch {
+				case strings.HasPrefix(line, "id: "):
+					frame.id = strings.TrimPrefix(line, "id: ")
+				case strings.HasPrefix(line, "event: "):
+					frame.name = strings.TrimPrefix(line, "event: ")
+				case strings.HasPrefix(line, "data: "):
+					frame.data = strings.TrimPrefix(line, "data: ")
+				}
+			}
+			frames = append(frames, frame)
+		}
+		var end agentwire.EndFrame
+		if len(frames) != 1 || frames[0].name != agentwire.FrameEnd || json.Unmarshal([]byte(frames[0].data), &end) != nil ||
+			end.State != agentwire.StateStopped || end.Reason != *run.StopReason || !slices.Equal(end.Offers, []string{agentwire.OfferContinue}) {
+			t.Errorf("the run's stream wrote %+v, want the one end frame of the stopped run with its reason, offering %s", frames, agentwire.OfferContinue)
+		}
+	})
+
+	t.Run("a working run whose lease is live is left", func(t *testing.T) { kept(t, held) })
+
+	t.Run("a working run with no lease inside its budget is left", func(t *testing.T) { kept(t, inside) })
+
+	t.Run("a waiting, queued or done run is left", func(t *testing.T) {
+		for _, run := range others {
+			kept(t, run)
+		}
+	})
 }
