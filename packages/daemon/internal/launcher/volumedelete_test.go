@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
 )
@@ -494,8 +495,9 @@ func TestAShardSwappedForARelativeLinkCrossingAnAbsoluteOneIsSkipped(t *testing.
 // (volumedir.go). The open answers at once instead, the fstat refuses what it opened, and the
 // root is skipped with a line while the rest of the volume is swept.
 //
-// The sweep runs in a goroutine under a bound of its own so that a trimmer which blocks again
-// fails here rather than hanging the package until the test binary's deadline.
+// The sweep runs in a goroutine, waited for until the test's deadline less its cleanup's reserve
+// (testdeadline.Answered), so that a trimmer which blocks again fails here, naming the pipe, rather
+// than in the test binary's panic at its deadline.
 func TestAFifoWhereACacheRootBelongsIsSkippedAndDoesNotBlockTheSweep(t *testing.T) {
 	f := newTrimFixture(t, 4)
 	piped := f.roots[3]
@@ -522,9 +524,11 @@ func TestAFifoWhereACacheRootBelongsIsSkippedAndDoesNotBlockTheSweep(t *testing.
 	go func() { swept <- tr.sweep(context.Background(), *trimSettings(), steady(90)(0)) }()
 
 	var out sweepOutcome
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case out = <-swept:
-	case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
+	case <-answered.Done():
 		t.Fatalf("the sweep did not return: an open of the named pipe at %s is waiting for a writer that never comes, and the launcher's Run waits on this goroutine at the container's stop", piped.Path)
 	}
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -403,6 +404,7 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 	clock := &heldClock{}
 	o.clock = clock
 	deadline := cfg.WorkerBootTimeout * time.Duration(cfg.WorkerBootRegistrationDeadlineIntervals)
+	blockedWithin := testdeadline.StartupBound(t)
 	type waited struct {
 		blocked bool
 		probe   error
@@ -415,7 +417,7 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 		// name. Then count every registration deadline armed so far, fire the registered claim's,
 		// wait for what it launches to reach the runtime, and let the row go.
 		var w waited
-		for until := time.Now().Add(time.Minute); !w.blocked && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
+		for until := time.Now().Add(blockedWithin); !w.blocked && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
 			var waiting int
 			w.probe = st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity where $1 = any(pg_blocking_pids(pid))`, holderPID).Scan(&waiting)
 			w.blocked = w.probe == nil && waiting > 0
@@ -433,7 +435,7 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 	d := startDaemon(t, cfg, o)
 	w := <-result
 	if !w.blocked {
-		t.Fatalf("no statement of the boot waited on the held row within a minute (the last probe's error: %v), so the test could not see whether a restored timer runs before the backfill", w.probe)
+		t.Fatalf("no statement of the boot waited on the held row before the test's deadline (the last probe's error: %v), so the test could not see whether a restored timer runs before the backfill", w.probe)
 	}
 	whileWaiting := w.fired
 	t.Logf("deadlines armed while the backfill waited: %d, of which fired: %d; the runtime was asked Suspend %d, Resume %d and Spawn %d times; %s is %s",

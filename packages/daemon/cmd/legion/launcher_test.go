@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
@@ -92,12 +93,14 @@ func TestTheLauncherCommandServesEveryRoleOfARolesDirectory(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case code := <-exited:
 		if code != 0 {
 			t.Fatalf("exit %d at the container's stop; stderr: %s", code, stderr.String())
 		}
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the launcher did not leave at the container's stop")
 	}
 }

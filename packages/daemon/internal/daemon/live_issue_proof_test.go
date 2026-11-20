@@ -28,6 +28,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -148,7 +149,7 @@ func (p *liveIssueProof) boot(tune func(*overrides)) {
 	if tune != nil {
 		tune(&o)
 	}
-	p.d = startDaemonWithin(p.t, p.cfg, o, p.log(), 60*time.Second)
+	p.d = startDaemonWithin(p.t, p.cfg, o, p.log(), testdeadline.StartupBound(p.t))
 }
 
 // token is the claim token of role on the proof's issue, as the daemon spells it.

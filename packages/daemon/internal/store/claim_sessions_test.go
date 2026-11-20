@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -743,8 +744,9 @@ func tuplesReadBy(t *testing.T, store *Store, call func(one *Store)) int64 {
 	before := read()
 	call(one)
 	flush()
-	// The flush lands as the connection goes idle, so the read waits for it a little.
-	deadline := time.Now().Add(10 * time.Second)
+	// The flush lands as the connection goes idle, so the read waits for it, as long as the test's
+	// deadline allows.
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		if after := read(); after != before {
 			return after - before

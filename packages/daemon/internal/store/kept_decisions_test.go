@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -313,7 +314,7 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 	case pid = <-backend:
 	case <-read:
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for waiting := false; !waiting; {
 		select {
 		case <-read:

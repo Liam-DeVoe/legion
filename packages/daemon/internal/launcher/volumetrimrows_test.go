@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -1774,7 +1775,7 @@ func TestASwitchOffWhoseBoundPanicsSendsNoOlderReportInItsPlace(t *testing.T) {
 	}
 	// The trimmer ends, or, where run took the held report for the last one, waits to try it: a
 	// try is offered so that such a copy sends it.
-	deadline := time.Now().Add(testwait.Bounded(t, 10*time.Second, time.Second))
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for ended := false; !ended && time.Now().Before(deadline); {
 		select {
 		case <-done:

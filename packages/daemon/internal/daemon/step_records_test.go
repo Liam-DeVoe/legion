@@ -29,6 +29,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -49,8 +50,6 @@ const (
 	// stepRecordsModel is the model an agent of the walk answers with until its test gives the
 	// agent another (stepClaimant.model), as Oh My Pi's message_end names it: provider and model.
 	stepRecordsModel = "stand-in/model"
-	// stepRecordsWait bounds each wait of the walk on the daemon, which a loaded machine slows.
-	stepRecordsWait = 2 * time.Minute
 )
 
 // stepRecordsTen is the walk's ten records, as a walk to done with one failed review leaves them:
@@ -133,12 +132,12 @@ func TestAPhaseNeverWaitsForDispatch(t *testing.T) {
 	want := stepRecordsSeven
 	// A row Dispatch refused while it was stopped waits out its backoff, at most
 	// record.RetryBackoffMost, before it runs again, and the sweep finds a lease that lapsed within
-	// one more lease.
-	within := record.RetryBackoffMost + outboxLease
+	// one more lease; the wait for the seven records is the test's deadline, so a loaded machine
+	// that runs those later still passes.
 	started := time.Now()
-	if !testwait.Holds(within, time.Second, func() bool { got, err := r.readSteps(); return err == nil && stepsHold(got, want) == nil }) {
+	if !testwait.Holds(testdeadline.StartupBound(t), time.Second, func() bool { got, err := r.readSteps(); return err == nil && stepsHold(got, want) == nil }) {
 		got, err := r.readSteps()
-		t.Fatalf("within %s of Dispatch's start the issue's steps read %+v (%v), and the assertion says: %v", within, got, err, stepsHold(got, want))
+		t.Fatalf("before the test's deadline, after Dispatch's start, the issue's steps read %+v (%v), and the assertion says: %v", got, err, stepsHold(got, want))
 	}
 	t.Logf("the seven records reached Dispatch %s after its start", time.Since(started).Round(time.Second))
 }
@@ -554,10 +553,12 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 	t.Cleanup(release)
 	c.model = model
 	c.answer()
+	bound, cancelBound := testdeadline.Answered(t, context.Background())
+	defer cancelBound()
 	select {
 	case <-held.reached:
-	case <-time.After(stepRecordsWait):
-		t.Fatalf("the feed of %s never came to the answer of %s within %s", c.token, model, stepRecordsWait)
+	case <-bound.Done():
+		t.Fatalf("the feed of %s never came to the answer of %s before the test's deadline", c.token, model)
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -587,7 +588,7 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 		answered <- answer{status: response.StatusCode, body: read, err: err}
 	}()
 	r.waited = false
-	deadline := time.After(stepRecordsWait)
+	deadline := bound.Done()
 	for {
 		select {
 		case token := <-r.waits:
@@ -602,7 +603,7 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 			}
 			return got.status, got.body
 		case <-deadline:
-			t.Fatalf("POST %s for %s neither began its wait nor answered within %s", path, c.token, stepRecordsWait)
+			t.Fatalf("POST %s for %s neither began its wait nor answered before the test's deadline", path, c.token)
 		}
 	}
 }

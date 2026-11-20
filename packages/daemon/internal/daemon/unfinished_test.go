@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -141,8 +142,10 @@ func (r *clusterRoutedRuntime) Spawn(ctx context.Context, spec runtime.SpawnSpec
 func TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRegisters(t *testing.T) {
 	cfg := testConfig(t)
 	token, _ := putUnfinished(t, cfg, "LEGION-3", claim.RolePlanner)
-	// One wait of the launcher bounds the boot: a boot that waits for the relaunch answers only
-	// after launch_failure_limit (3) of them.
+	// One wait of the launcher is what a boot that waits for its relaunch spends,
+	// launch_failure_limit (3) times, before it answers: each such attempt times out, and the count
+	// of those is what this test reads, so the waits for the boot and the relaunch take the test's
+	// deadline.
 	const launcherWait = 5 * time.Second
 	rt := &clusterRoutedRuntime{
 		Runtime: fake.NewRuntime(), base: "http://127.0.0.1:" + strconv.Itoa(cfg.Port), wait: launcherWait,
@@ -150,15 +153,17 @@ func TestABootAnswersHealthzBeforeItRelaunchesAnUnfinishedLaunchAndTheRelaunchRe
 	}
 	var record built
 
-	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), launcherWait)
+	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), testdeadline.StartupBound(t))
 
 	if failed := rt.timedOut.Load(); failed != 0 {
 		t.Fatalf("the daemon answered /healthz only after %d relaunch attempts timed out waiting for it", failed)
 	}
 	var spec runtime.SpawnSpec
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case spec = <-rt.started:
-	case <-time.After(2 * launcherWait):
+	case <-answered.Done():
 		t.Fatalf("the unfinished launch was never relaunched; the runtime saw %v", rt.Methods())
 	}
 	if spec.Claim != token || spec.Generation != 2 {
@@ -211,10 +216,12 @@ func TestABootWaitsForNoneOfItsUnfinishedLaunches(t *testing.T) {
 	t.Cleanup(letThrough)
 	var record built
 
-	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), 10*time.Second)
+	d := startDaemonWithin(t, cfg, fakeRuntime(rt, &record), quietLogger(), testdeadline.StartupBound(t))
 
 	waiting := map[claim.Token]runtime.SpawnSpec{}
-	deadline := time.After(10 * time.Second)
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
+	deadline := answered.Done()
 	for len(waiting) < len(tokens) {
 		select {
 		case spec := <-rt.entered:

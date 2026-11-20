@@ -86,6 +86,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -226,7 +227,7 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), testdeadline.StartupBound(t))
 	r.registerController()
 	return r
 }

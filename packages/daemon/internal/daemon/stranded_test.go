@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -378,18 +379,20 @@ func TestABootServesHealthzWhileTheStrandedReportStoreReadWaits(t *testing.T) {
 			_ = lock.Rollback(context.Background())
 		}
 		cancel()
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case err := <-done:
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-answered.Done():
 			t.Error("run did not return after the report lock released")
 		}
 	})
 
 	base := "http://127.0.0.1:" + strconv.Itoa(cfg.Port)
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !answersHealthz(base) {
 		select {
 		case err := <-done:

@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -51,17 +52,14 @@ const (
 	dequeueDelivered    = "outbox merge-queue removal delivered to the merger"
 )
 
-// dequeueWait bounds each wait of this test on the daemon's own work: an event through the
-// intake, a read of GitHub, a fact, and an outbox row's tries, the longest of whose waits here is
-// the four seconds before a row's fourth try (the outbox's backoff, record.RetryBackoff). It is
-// the bound a fault is reported at, far above that, so a slow machine is not a failure and a row
-// that never finishes fails its case in seconds rather than at the package's deadline.
-// dequeuePoll is how often a wait asks: each question is a read of the database or of the
-// daemon's whole log, so it is not asked a hundred times a second.
-const (
-	dequeueWait = 30 * time.Second
-	dequeuePoll = 50 * time.Millisecond
-)
+// Each wait of this test on the daemon's own work (an event through the intake, a read of GitHub,
+// a fact, and an outbox row's tries, the longest of whose waits here is the four seconds before a
+// row's fourth try: the outbox's backoff, record.RetryBackoff) takes the test's deadline
+// (testdeadline.StartupBound), so a slow machine is not a failure and a row that never finishes
+// fails its case naming the wait before the binary's own deadline. dequeuePoll is how often a wait
+// asks: each question is a read of the database or of the daemon's whole log, so it is not asked a
+// hundred times a second.
+const dequeuePoll = 50 * time.Millisecond
 
 // dequeueRetry is the wait between two failed reads of GitHub the daemon of this test makes
 // (overrides.mergeStateRetry): half a minute in production (mergeStateLadderWait), so five failed
@@ -613,7 +611,7 @@ func dequeueHead(number int) string {
 // daemon's log, which is where a row that never finished says why.
 func (r *dequeueRig) boot(t *testing.T) {
 	t.Helper()
-	startDaemonWithin(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(r.logs, nil)), dequeueWait)
+	startDaemonWithin(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(r.logs, nil)), testdeadline.StartupBound(t))
 	t.Cleanup(func() {
 		if t.Failed() {
 			log := r.logs.String()
@@ -630,11 +628,10 @@ func (r *dequeueRig) boot(t *testing.T) {
 	})
 }
 
-// await waits for condition within dequeueWait, or what is left of the test binary's own deadline
-// less a second, asking it every dequeuePoll.
+// await waits for condition as long as the test's deadline allows, asking it every dequeuePoll.
 func (r *dequeueRig) await(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, testwait.Bounded(t, dequeueWait, time.Second), dequeuePoll, what, condition)
+	testwait.WithinPolling(t, testdeadline.StartupBound(t), dequeuePoll, what, condition)
 }
 
 // publish publishes GitHub's `dequeued` of issue's pull request at head, as Envoy's listener

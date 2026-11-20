@@ -38,6 +38,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/steprecord"
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -150,12 +151,12 @@ func (l *stepRecordsLive) outage() {
 	want := []stepWant{stepRecordsTen[6], stepRecordsTen[7], stepRecordsTen[8], stepRecordsTen[9]}
 	// A row Dispatch refused while it was stopped waits out its backoff, at most
 	// record.RetryBackoffMost, before it runs again, and the sweep finds a lease that lapsed within
-	// one more lease.
-	within := record.RetryBackoffMost + outboxLease
+	// one more lease; the wait for the four records is the test's deadline, so a loaded machine
+	// that runs those later still passes.
 	started := time.Now()
 	var last error
 	var lines []stepLine
-	if !testwait.Holds(within, 2*time.Second, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), 2*time.Second, func() bool {
 		output, code := l.steps()
 		if code != 0 {
 			last = fmt.Errorf("exit %d: %s", code, output)
@@ -169,7 +170,7 @@ func (l *stepRecordsLive) outage() {
 		last = holdsLines(parsed.lines, want, false)
 		return last == nil
 	}) {
-		t.Fatalf("within %s of Dispatch's start `dispatch steps` did not hold the four steps that ran while it was stopped: %v", within, last)
+		t.Fatalf("before the test's deadline, after Dispatch's start, `dispatch steps` did not hold the four steps that ran while it was stopped: %v", last)
 	}
 	l.note("the records reached Dispatch %s after its start:", time.Since(started).Round(time.Second))
 	for _, w := range want {

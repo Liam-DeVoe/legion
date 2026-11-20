@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -83,7 +84,7 @@ func TestAnOldPluginsRetroCompletesWithNoRatingAcrossTheDeploy(t *testing.T) {
 	r.unratedRetroRefused(implementer)
 
 	plan := workflow.PlanID(r.key, r.d.state().Issues[r.key].Generation)
-	testwait.WithinPolling(t, stepRecordsWait, 50*time.Millisecond, "Dispatch's take of the plan "+plan+" of "+r.key, func() bool {
+	testwait.WithinPolling(t, testdeadline.StartupBound(t), 50*time.Millisecond, "Dispatch's take of the plan "+plan+" of "+r.key, func() bool {
 		return r.unfinishedRows(record.OutboxKindPlanRecord) == 0
 	})
 	old := api.PlanRatingContract - 1

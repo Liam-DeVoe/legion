@@ -57,6 +57,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -169,7 +170,7 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	o := fakeRuntime(r.rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonWithin(t, r.cfg, o, r.log(), testdeadline.StartupBound(t))
 	return r
 }
 

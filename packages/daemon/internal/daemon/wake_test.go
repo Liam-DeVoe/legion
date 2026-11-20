@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -264,7 +265,7 @@ func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *t
 	awaitResume(t, pool, id, "first_turn_at")
 	hook(held, supervise.StateFailed)
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for len(facts.applied()) < 2 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -277,7 +278,7 @@ func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *t
 // machine's goroutine, so the callback returns before the write lands.
 func awaitResume(t *testing.T, pool *store.Pool, id int64, column string) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), testwait.Poll, func() bool {
 		var stamped bool
 		if err := pool.QueryRow(context.Background(),
 			`select `+column+` is not null from pod_resumes where id = $1`, id).Scan(&stamped); err != nil {

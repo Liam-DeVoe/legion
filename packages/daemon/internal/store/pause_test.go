@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -511,9 +512,11 @@ func TestTheIssueLockSerializesTwoWritersOfOnePodsHold(t *testing.T) {
 		t.Fatalf("commit the first writer: %v", err)
 	}
 	var r result
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case r = <-done:
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+	case <-answered.Done():
 		t.Fatal("the second writer never finished after the first committed")
 	}
 	if r.err != nil || !r.ended {

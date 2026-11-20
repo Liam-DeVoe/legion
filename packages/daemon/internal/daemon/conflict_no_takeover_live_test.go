@@ -73,6 +73,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
@@ -222,7 +223,7 @@ func (r *conflictNoTakeoverLive) bootLogged() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
 	r.logged = newRecordingLog(r.log())
-	r.d = startDaemonWithin(r.t, r.cfg, o, slog.New(r.logged), 60*time.Second)
+	r.d = startDaemonWithin(r.t, r.cfg, o, slog.New(r.logged), testdeadline.StartupBound(r.t))
 }
 
 // silent holds that the daemon sends this role's connection nothing at all for within: the RPC

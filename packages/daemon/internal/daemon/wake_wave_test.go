@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -325,7 +326,7 @@ func startWaveDaemon(t *testing.T, cfg config.Config, clock *waveClock, rt *wave
 	if tune != nil {
 		tune(&o)
 	}
-	return startDaemonWithin(t, cfg, o, slog.New(slog.NewJSONHandler(logged, nil)), 30*time.Second)
+	return startDaemonWithin(t, cfg, o, slog.New(slog.NewJSONHandler(logged, nil)), testdeadline.StartupBound(t))
 }
 
 // waitingWakes is the wakes the daemon's state says the pacing holds, earliest first: the queue as

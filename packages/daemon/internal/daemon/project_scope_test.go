@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -130,19 +131,21 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case err := <-done:
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-answered.Done():
 			t.Error("daemon did not stop")
 		}
 	})
 	awaitHealthz(t, cfg, done)
 
 	var active []string
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !slices.Equal(active, []string{own}) {
 		if time.Now().After(deadline) {
 			t.Fatalf("admission is %v, want %s alone: another project's slots and waiting root are not this daemon's", active, own)
@@ -163,9 +166,11 @@ func TestAnotherProjectsIssuesAreNotThisDaemonsToAdmit(t *testing.T) {
 		response.Body.Close()
 	}
 
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case <-ownRun:
-	case <-time.After(60 * time.Second):
+	case <-answered.Done():
 		t.Fatalf("the outbox never reached Dispatch for %s after admitting it", own)
 	}
 

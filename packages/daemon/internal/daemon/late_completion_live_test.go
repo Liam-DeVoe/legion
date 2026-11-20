@@ -82,6 +82,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -286,7 +287,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 2*time.Minute)
+	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), testdeadline.StartupBound(t))
 	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s, issue %s; daemon at dispatch_url %s, each pane told it as DISPATCH_URL",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.key, r.cfg.DispatchURL)
 	return r

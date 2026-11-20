@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/memoryguard"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -1256,9 +1257,11 @@ func waitingKillReport(t *testing.T, microVM bool, report shimwire.LauncherMemor
 	}()
 	t.Cleanup(func() {
 		cancel()
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case <-served:
-		case <-time.After(30 * time.Second):
+		case <-answered.Done():
 			t.Errorf("the tester's manager did not return after its context ended; its log: %s", stderr.String())
 		}
 	})

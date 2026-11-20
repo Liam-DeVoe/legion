@@ -35,6 +35,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -508,7 +509,7 @@ func (r *pauseDaemonRig) boot() {
 	r.mu.Unlock()
 	r.reportListener()
 	logger := slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	r.d = startDaemonWithin(r.t, r.cfg, r.o, logger, 90*time.Second)
+	r.d = startDaemonWithin(r.t, r.cfg, r.o, logger, testdeadline.StartupBound(r.t))
 	testwait.Eventually(r.t, "run to hand the rig its supervisor", func() bool {
 		r.mu.Lock()
 		defer r.mu.Unlock()

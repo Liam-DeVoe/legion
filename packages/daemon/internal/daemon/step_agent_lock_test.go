@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -61,7 +62,7 @@ func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T)
 	}()
 	// Create holds the supervisor's lock from its start to its end, so once a backend of this
 	// database waits on an advisory lock, Create is inside it, waiting on the fact lock.
-	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), 10*time.Millisecond, func() bool {
 		var waiting int
 		err := pool.QueryRow(ctx, `select count(*) from pg_locks
 			where locktype = 'advisory' and not granted
@@ -76,10 +77,12 @@ func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T)
 		w.stepAgent(ctx, fact, planner)
 		close(read)
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-read:
-	case <-time.After(3 * time.Second):
-		t.Fatal("the read of a step's agent did not answer within 3s while Create waited on the fact lock inside the supervisor's lock")
+	case <-answered.Done():
+		t.Fatal("the read of a step's agent did not answer before the test's deadline while Create waited on the fact lock inside the supervisor's lock")
 	}
 
 	if err := fact.Rollback(ctx); err != nil {
@@ -90,7 +93,7 @@ func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T)
 		if err != nil {
 			t.Fatalf("Create once the fact lock was free: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("Create did not finish once the fact lock was free")
 	}
 	// The claim holds its session as a registration leaves it; this machine has not seen that

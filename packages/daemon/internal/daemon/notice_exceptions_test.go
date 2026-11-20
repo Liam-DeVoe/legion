@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -738,7 +739,7 @@ func TestARoleLaneExceptionOnNATSQueuesTheNoticeAgain(t *testing.T) {
 	if err := conn.Publish("notifications.envoy.exceptions."+topic, report.envelope(t)); err != nil {
 		t.Fatalf("publish the report: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for len(queuedNotices(t, pool)) == 0 && time.Now().Before(deadline) {
 		select {
 		case err := <-failed:
@@ -962,7 +963,7 @@ func TestAReadyArchitectsNoticesAreReleasedOffTheReadyRoute(t *testing.T) {
 		cancel()
 		<-stopped
 	}()
-	for deadline := time.Now().Add(5 * time.Second); !due(); time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); !due(); time.Sleep(20 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the release loop left the ready architect's notice waiting")
 		}

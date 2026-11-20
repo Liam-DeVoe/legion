@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -510,7 +511,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 
 	var got cancelled
 	var finished bool
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		select {
 		case got = <-done:

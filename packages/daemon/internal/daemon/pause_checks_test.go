@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -321,7 +322,7 @@ func TestResumeReleasesHeldWorkAtThePace(t *testing.T) {
 	r.parkRelaunch(worker(parked))
 
 	r.pauseProject()
-	testwait.WithinPolling(t, 3*time.Minute, 100*time.Millisecond, "the pause to stop all 101 roles", func() bool {
+	testwait.WithinPolling(t, testdeadline.StartupBound(t), 100*time.Millisecond, "the pause to stop all 101 roles", func() bool {
 		return r.count(`select count(*) from claims where project = $1 and state = 'suspended' and suspended_by = 'released'`, r.project) == roles
 	})
 	for n := 1; n <= woken; n++ {
