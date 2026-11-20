@@ -93,9 +93,9 @@ import (
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
-// (20261119003157) stands above every other version of this list but this branch's
-// 20261119114140 and 20261120055717, the sequences of the copy of Dispatch's issues, and it is the
-// last of them to
+// (20261119003157) stands above every other version of this list but two newer than it: this
+// branch's 20261119114140, and main's 20261120055717, the sequences of the copy of Dispatch's
+// issues. Neither of those rewrites outbox_kind_check, so this one is the last of them to
 // rewrite outbox_kind_check: it is now that constraint's last word, and it names every kind the
 // plan-record list names and its own two, phase_ended among them. The same migration deletes the
 // queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
