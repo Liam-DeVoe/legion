@@ -215,7 +215,10 @@ echo "live [$s] $rc [\${f[19]}]"
     expect(ran.stderr.toString()).toBe("");
     expect(out).toMatch(/^zombie Z \[\] 1$/m);
     expect(out).toMatch(/^threads Z \[[0-9]+\] 0$/m);
+    // A live read that failed or gave nothing matches no line: the row fails here by name, where a
+    // comparison of two captures that are both missing would pass.
     const live = /^live \[([0-9]+)\] 0 \[([0-9]+)\]$/m.exec(out);
+    expect(live).not.toBeNull();
     expect(live?.[1]).toBe(live?.[2]);
   },
   // Its waits are real processes' (a python start, a SIGKILL's delivery), which a loaded devbox

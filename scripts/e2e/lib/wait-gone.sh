@@ -270,8 +270,8 @@ _wait_gone_kill() {
 # _wait_gone_send SIGNAL TARGET... sends SIGNAL with wait_gone_signal to each TARGET that is a pid or
 # a process group, the one rule kill_gone and stop_gone share: a port or a lock is waited for, never
 # signalled, and an empty TARGET is skipped. It sends nothing when no TARGET is a process. It sets
-# wait_gone_sent to SIG<SIGNAL> when it sent one, and to `SIG<SIGNAL>, sent to no process (no target
-# was one)` when it sent none, the words wait_gone_name names the time since the call with.
+# wait_gone_signalled to the number of TARGETs it sent SIGNAL to, 0 when none was a process: the
+# fact stop_gone decides by, and that kill_gone words its naming from.
 _wait_gone_send() {
   local _wgs_signal=$1 _wgs_target
   shift
@@ -282,9 +282,8 @@ _wait_gone_send() {
       *) _wgs_processes+=("$_wgs_target") ;;
     esac
   done
-  wait_gone_sent="SIG$_wgs_signal, sent to no process (no target was one)"
-  [ "${#_wgs_processes[@]}" -gt 0 ] || return 0
-  wait_gone_sent=SIG$_wgs_signal
+  wait_gone_signalled=${#_wgs_processes[@]}
+  [ "$wait_gone_signalled" -gt 0 ] || return 0
   "$wait_gone_signal" "$_wgs_signal" "${_wgs_processes[@]}"
 }
 
@@ -296,16 +295,21 @@ _wait_gone_send() {
 # returns 1; 2 for a DEADLINE wait_gone refuses. A caller whose next step needs the targets gone
 # fails when it returns 1; a cleanup that goes on whatever it finds adds `|| true` and says why.
 kill_gone() {
-  local _kg_signal=$1 _kg_deadline=$2 _kg_deadline_us _kg_sent _kg_status _kg_what
+  local _kg_signal=$1 _kg_deadline=$2 _kg_deadline_us _kg_sent _kg_status _kg_signalled
   shift 2
   _wait_gone_deadline kill_gone "$_kg_deadline" _kg_deadline_us || return 2
   _kg_sent=${EPOCHREALTIME//[!0-9]/}
   _wait_gone_send "$_kg_signal" "$@"
-  _kg_what=$wait_gone_sent
+  _kg_signalled=$wait_gone_signalled
   wait_gone "$_kg_deadline" "$@" && return 0
   _kg_status=$?
   [ "$_kg_status" = 1 ] || return "$_kg_status"
-  wait_gone_name "$_kg_what" "$_kg_sent"
+  # The words for people alone, made here from the count: nothing decides by them.
+  if [ "$_kg_signalled" -gt 0 ]; then
+    wait_gone_name "SIG$_kg_signal" "$_kg_sent"
+  else
+    wait_gone_name "SIG$_kg_signal, sent to no process (no target was one)" "$_kg_sent"
+  fi
   return 1
 }
 
@@ -326,7 +330,7 @@ stop_gone() {
   _sg_term_end=$((${EPOCHREALTIME//[!0-9]/} + _sg_grace * 1000000))
   [ "$_sg_term_end" -le "$_sg_deadline_us" ] || _sg_term_end=$_sg_deadline_us
   _wait_gone_send TERM "$@"
-  if [ "$wait_gone_sent" != SIGTERM ]; then
+  if [ "$wait_gone_signalled" = 0 ]; then
     kill_gone KILL "$_sg_deadline" "$@"
     return
   fi

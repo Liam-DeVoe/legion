@@ -6224,8 +6224,7 @@ Sourced, never run; Stage 2 and Stage 3 source it first.
 . "$root/scripts/e2e/lib/box-login.sh"
 take_box_login_lock || { echo "FAIL setup: another box-login proof is running on this box (the holder is named above)" >&2; exit 1; }
 …
-stop_box_login_run "$work"   # in the teardown, once the run's services are stopped
-unlink_box_login_db "$profile_agent"
+stop_box_login_run "$work" "$profile_agent"   # in the teardown, once the run's services are stopped
 ```
 
 `take_box_login_lock` takes a non-blocking `flock` on one fixed file per operator uid, `/tmp/legion-e2e-box-login.<uid>.lock` (`box_login_lock_file`), whatever `XDG_RUNTIME_DIR` or `TMPDIR` says, so every box-login run of that operator meets the same lock.
@@ -6236,14 +6235,12 @@ A taken lock fails at once, naming the holder the file records:
 `another box-login proof holds <file>: pid <pid> (<command>); one box-login proof runs at a time`, or that the pid has exited and a process it started still holds the lock.
 Every pane of a box-login run shares the operator's login database; one run at a time keeps the load on that login bounded and each run's evidence its own.
 
-`stop_box_login_run DIR` is a box-login run's teardown of its processes: [`stop_marked_processes`](#libprocess-treesh) `DIR` with `box_login_stop_grace` (10), SIGTERM to each of the run's marked processes and up to that many seconds for them to go before any SIGKILL, then a wait until each is gone, so a pane in the middle of a token refresh can write the rotated token back before it goes.
-Only once every one is gone does it close the run's own lock descriptor (`take_box_login_lock` left it open), so a second box-login run is refused until the first run's last process has gone: a tmux pane holds no copy of the descriptor, so the lock alone cannot tell that the panes are gone.
+`stop_box_login_run DIR [AGENT_DIR]` is a box-login run's teardown of its processes: [`stop_marked_processes`](#libprocess-treesh) `DIR` with `box_login_stop_grace` (10), SIGTERM to each of the run's marked processes and up to that many seconds for them to go before any SIGKILL, then a wait until each is gone, so a pane in the middle of a token refresh can write the rotated token back before it goes.
+Only once every one is gone does it remove the profile's link to the operator's login (`unlink_box_login_db AGENT_DIR`), since a process that opened the database again after the link went would make a fresh database of its own in the profile, and close the run's own lock descriptor (`take_box_login_lock` left it open), so a second box-login run is refused until the first run's last process has gone: a tmux pane holds no copy of the descriptor, so the lock alone cannot tell that the panes are gone.
 It then waits up to 10 s for the lock itself to be free (`lock:FILE`, [`lib/wait-gone.sh`](#libwait-gonesh)), which a process that inherited the descriptor and carries no mark of the run would keep from the next run, and returns 1 naming what is still there.
-A sweep that fails, with a process of the run still there at its deadline or the run's processes not all read, gives up nothing: the run keeps its descriptor, so a second box-login run is refused naming the run's shell for as long as it lives, and `stop_box_login_run` prints one line naming each process it could not stop and returns the sweep's status:
-`stop_box_login_run: the run keeps its lock <file> until this shell exits, since it could not stop pid <pid> (<command>), …`.
-`unlink_box_login_db
-AGENT_DIR` removes `AGENT_DIR/agent.db` when it is a symlink, the link itself and never what it names;
-the stages call it once the run's processes are gone, since a process that opened the database again after the link went would make a fresh database of its own in the profile.
+A sweep that fails, with a process of the run still there at its deadline or the run's processes not all read, gives up nothing: the run keeps its descriptor, so a second box-login run is refused naming the run's shell for as long as it lives, and its login link, and `stop_box_login_run` prints one line naming what it keeps and each process it could not stop and returns the sweep's status:
+`stop_box_login_run: the run keeps its lock <file> until this shell exits, and its link <agent dir>/agent.db to the operator's login, since it could not stop pid <pid> (<command>), …`.
+`unlink_box_login_db AGENT_DIR` removes `AGENT_DIR/agent.db` when it is a symlink, the link itself and never what it names.
 
 ## lib/model-gateway-unserved.sh
 

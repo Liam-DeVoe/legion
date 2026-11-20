@@ -205,13 +205,13 @@ cleanup() {
   stop_pid "$bridge_pid"
   # Under box-login the panes share the operator's login database: each gets SIGTERM and up to
   # box_login_stop_grace seconds to finish a token refresh before anything is killed, and the
-  # profile's link to that database goes (the link alone) once they are gone, before transcripts
-  # are kept, so a kept workspace holds no live path to the login (lib/box-login.sh). The panes
-  # stay up through the production audit above, which reads their sessions on production Envoy.
-  # The other routes keep the SIGKILL below.
+  # profile's link to that database goes (the link alone) once they are all gone, before
+  # transcripts are kept, so a kept workspace holds no live path to the login; a run that could not
+  # stop one keeps the link and its lock, named (lib/box-login.sh). The panes stay up through the
+  # production audit above, which reads their sessions on production Envoy. The other routes keep
+  # the SIGKILL below.
   if [ "$model_route" = box-login ]; then
-    stop_box_login_run "$work"
-    unlink_box_login_db "$profile_agent"
+    stop_box_login_run "$work" "$profile_agent"
   fi
   TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
   # Waited for, so the next run's refuse_leftovers meets nothing of this one.
@@ -1462,10 +1462,10 @@ stop_pid "$daemon_keeper_pid" || fail "the daemon's keeper did not stop (named a
 stop_pid "$dispatch_keeper_pid" || fail "Dispatch's keeper did not stop (named above)"; dispatch_keeper_pid=
 stop_pid "$bridge_pid" || fail "the bridge did not stop (named above)"; bridge_pid=
 # Under box-login the panes get SIGTERM and a bounded grace before the kills below, as cleanup
-# gives them (lib/box-login.sh); the profile's link to the operator's database goes with them.
+# gives them (lib/box-login.sh); the profile's link to the operator's database goes once they are
+# all gone, and stays, named, while one is there.
 if [ "$model_route" = box-login ]; then
-  stop_box_login_run "$work" || fail "a process of the run is still there, the run's lock is still held, or the run's processes could not be read (named above)"
-  unlink_box_login_db "$profile_agent"
+  stop_box_login_run "$work" "$profile_agent" || fail "a process of the run is still there, the run's lock is still held, or the run's processes could not be read (named above)"
 fi
 TMUX_TMPDIR="$work/tmux" tmux -L "legion-$ptoken" kill-server >/dev/null 2>&1 || true
 docker rm -f -v "$pg_container" "$nats_container" >/dev/null 2>&1 || true

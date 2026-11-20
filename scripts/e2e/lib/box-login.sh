@@ -52,7 +52,8 @@ take_box_login_lock() {
 # box_login_stop_grace is how long, in seconds, a box-login run's teardown gives its processes after
 # SIGTERM before SIGKILL (stop_box_login_run).
 box_login_stop_grace=10
-# stop_box_login_run DIR is a box-login run's teardown of its processes, DIR its scratch directory:
+# stop_box_login_run DIR [AGENT_DIR] is a box-login run's teardown of its processes, DIR its scratch
+# directory and AGENT_DIR the profile's agent directory whose agent.db links to the operator's login:
 # stop_marked_processes DIR box_login_stop_grace (lib/process-tree.sh), SIGTERM to each process of
 # the run and up to box_login_stop_grace seconds for all of them to go, then SIGKILL to those still
 # there and a wait until each is gone. A pane's Oh My Pi in the middle of a token refresh gets the
@@ -67,29 +68,39 @@ box_login_stop_grace=10
 # the panes were gone: the order is what keeps the next run out. A second run that takes the lock in
 # the moment between the close and that read is read as a holder still there and named.
 #
+# Once every process of the run is gone, and only then, it removes the login link
+# (unlink_box_login_db AGENT_DIR), before it gives up the lock: a process of the run still there
+# could open the database again through the link, and one that opened it after the link went would
+# make a fresh database of its own in the profile.
+#
 # A sweep that fails, with a process of the run still there at its deadline or the run's processes
 # not all read, gives up nothing: the run keeps its descriptor, so a second box-login run is refused
-# naming this shell for as long as it lives, and it prints one line naming each process it could not
-# stop (stop_marked_left) and returns the sweep's status. A pane still there holds no copy of the
-# descriptor, so a close then would let a second run start beside it.
+# naming this shell for as long as it lives, and its login link, and it prints one line naming what
+# it keeps and each process it could not stop (stop_marked_left) and returns the sweep's status. A
+# pane still there holds no copy of the descriptor, so a close then would let a second run start
+# beside it.
 #
 # Returns stop_marked_processes's status when it is not 0 (2 when the run's processes could not be
 # read, 1 when one is still there, each named), else 1 when the lock is still held at its deadline
 # (named), else 0.
 stop_box_login_run() {
-  local status=0 closed pid command kept='' why=''
+  local status=0 closed pid command kept='' why='' keeps='' agent=${2:-}
   stop_marked_processes "$1" "$box_login_stop_grace" || status=$?
-  [ -n "${box_login_lock_fd:-}" ] || return "$status"
   if [ "$status" != 0 ]; then
+    [ -z "${box_login_lock_fd:-}" ] || keeps="its lock $box_login_lock_file until this shell exits"
+    [ -z "$agent" ] || [ ! -L "$agent/agent.db" ] || keeps+="${keeps:+, and }its link $agent/agent.db to the operator's login"
+    [ -n "$keeps" ] || return "$status"
     for pid in ${stop_marked_left[@]+"${stop_marked_left[@]}"}; do
       command=$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline") || command=
       kept+="${kept:+, }pid $pid (${command% })"
     done
     [ -z "$kept" ] || why="it could not stop $kept"
     [ "$status" != 2 ] || why+="${why:+, and }it could not read every process of the run (named above)"
-    echo "stop_box_login_run: the run keeps its lock $box_login_lock_file until this shell exits, since ${why:-a process of the run is still there (named above)}" >&2
+    echo "stop_box_login_run: the run keeps $keeps, since ${why:-a process of the run is still there (named above)}" >&2
     return "$status"
   fi
+  [ -z "$agent" ] || unlink_box_login_db "$agent"
+  [ -n "${box_login_lock_fd:-}" ] || return 0
   exec {box_login_lock_fd}>&-
   box_login_lock_fd=
   closed=${EPOCHREALTIME//[!0-9]/}
@@ -102,9 +113,9 @@ stop_box_login_run() {
 
 # unlink_box_login_db AGENT_DIR — removes AGENT_DIR/agent.db when it is a symlink (the link
 # lib/install-box-login-route.sh made to the operator's database), the link itself and never what
-# it names, so a kept work directory holds no live path to the operator's login. Call it once every
-# process of the run is gone: a process that opened the database again after the link went would
-# make a fresh one of its own in the profile. Never fails.
+# it names, so a kept work directory holds no live path to the operator's login. stop_box_login_run
+# calls it once every process of the run is gone: a process that opened the database again after the
+# link went would make a fresh one of its own in the profile. Never fails.
 unlink_box_login_db() {
   local link=${1:-}/agent.db
   [ -n "${1:-}" ] && [ -L "$link" ] || return 0

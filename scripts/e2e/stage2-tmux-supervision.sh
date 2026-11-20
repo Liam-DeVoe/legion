@@ -155,11 +155,11 @@ cleanup() {
   stop_pid "$deadline_keeper_pid" || true
   # Under box-login the panes share the operator's login database: each gets SIGTERM and up to
   # box_login_stop_grace seconds to finish a token refresh before anything is killed, and the
-  # profile's link to that database goes (the link alone) once they are gone, so a kept workspace
-  # holds no live path to the login (lib/box-login.sh). The other routes keep the SIGKILL below.
+  # profile's link to that database goes (the link alone) once they are all gone, so a kept
+  # workspace holds no live path to the login; a run that could not stop one keeps the link and its
+  # lock, named (lib/box-login.sh). The other routes keep the SIGKILL below.
   if [ "$model_route" = box-login ]; then
-    stop_box_login_run "$work" || true
-    unlink_box_login_db "$profile_agent"
+    stop_box_login_run "$work" "$profile_agent" || true
   fi
   for p in "$ptoken" "$deadline_ptoken"; do
     TMUX_TMPDIR=$work/tmux tmux -L "legion-$p" kill-server >/dev/null 2>&1 || true
