@@ -63,11 +63,16 @@ func newUpstream(t *testing.T) *upstream {
 	return up
 }
 
-// next is the connection the upstream accepted next, which is the one the proxy just dialed.
+// next is the connection the upstream accepted next, which is the one the proxy just dialed. It is
+// held open until the test ends, whether or not the caller keeps it, and a caller may still close
+// it earlier: an accepted connection a test lets go is closed by its finalizer once the collector
+// runs, an end of file the proxy reads as the database's own end of a connection it serves, and
+// records (servedUpstream).
 func (u *upstream) next(t *testing.T) net.Conn {
 	t.Helper()
 	select {
 	case conn := <-u.accepted:
+		t.Cleanup(func() { _ = conn.Close() })
 		return conn
 	case <-time.After(2 * time.Second):
 		t.Fatal("the proxy did not dial the upstream")

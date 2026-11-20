@@ -73,7 +73,7 @@ func TestAConnectionsDialTheDatabaseRefusedIsTheProxysFaultUntilOneReachesIt(t *
 	dialer.dialAt(up.listener.Addr().String())
 	client := dialProxy(t, socket)
 	writeAll(t, client, "ping")
-	if got := readString(t, kept(t, up.next(t)), 4); got != "ping" {
+	if got := readString(t, up.next(t), 4); got != "ping" {
 		t.Fatalf("the upstream read %q of the client's ping", got)
 	}
 	if err := proxy.Fault(); err != nil {
@@ -102,7 +102,7 @@ func TestAFaultIsOfTheLatestDialToStartNotTheLatestToEnd(t *testing.T) {
 	<-held.entered
 	served := dialProxy(t, socket)
 	writeAll(t, served, "ping")
-	if got := readString(t, kept(t, up.next(t)), 4); got != "ping" {
+	if got := readString(t, up.next(t), 4); got != "ping" {
 		t.Fatalf("the upstream read %q of the later client's ping", got)
 	}
 	close(held.release)
@@ -189,7 +189,7 @@ func TestAServedConnectionTheDatabaseEndsWithNoWordOrOverItsOwnStateIsTheProxysF
 			}
 			client = dialProxy(t, socket)
 			writeAll(t, client, "ping")
-			if got := readString(t, kept(t, up.next(t)), 4); got != "ping" {
+			if got := readString(t, up.next(t), 4); got != "ping" {
 				t.Fatalf("the upstream read %q of the next client's ping", got)
 			}
 			if err := proxy.Fault(); err != nil {
@@ -288,13 +288,4 @@ func awaitUntracked(t *testing.T, proxy *Proxy) {
 		}
 	}
 	t.Fatal("the proxy still served a connection ten seconds after its client closed it")
-}
-
-// kept is conn, held open until the test ends: an accepted connection the test lets go is closed by
-// its finalizer once the collector runs, an end of file the proxy reads as the database's own end of
-// a connection it serves, and records (servedUpstream).
-func kept(t *testing.T, conn net.Conn) net.Conn {
-	t.Helper()
-	t.Cleanup(func() { _ = conn.Close() })
-	return conn
 }
