@@ -133,10 +133,12 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 }
 
 // podHolds is what a project's pause did to one issue's pod as a sweep reads it
-// (store.Store.PausePodHoldsSince), or as an ask reads it when it is written
-// (store.Store.IssuePausePodHoldsSince): each hold that stands on the pod, and each that ended, or
-// whose pause let out a launch of the pod, since the oldest round of the sweep, or the ask's own
-// round, opened (decision 12 of dispatch://INFRA-3759).
+// (store.Store.PausePodHoldsSince): each hold that stands on the pod, and each that ended, or whose
+// pause let out a launch of the pod, since the oldest round of the sweep opened (decision 12 of
+// dispatch://INFRA-3759).
+//
+// The ask of a round reads the same of its own pod as the ask is written, since that round opened
+// (store.Store.IssuePausePodHoldsSince, askRound).
 type podHolds []store.PausePodHold
 
 // held is whether a hold stands on the pod now: a round over it waits, and no round opens over
