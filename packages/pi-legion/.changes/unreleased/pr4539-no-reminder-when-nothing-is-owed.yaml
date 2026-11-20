@@ -5,5 +5,8 @@ body: |-
   writes one warn line per claim per hour naming the cause. A reminder timer whose check decides
   not to remind clears the session's reminder wake and reports it at once, so the wake holds no pod.
   The turn-end activity report is bounded at 3 s, so `session_stop` returns within about 6 s when
-  the daemon does not answer. The reminder says what to do when the daemon refuses the completion
-  `HANDOFF_NOT_CURRENT_PHASE`, `HANDOFF_ALREADY_RECORDED`, `CHECK_NOT_OPEN` or `CHECK_LOOK_NOT_OPEN`.
+  the daemon does not answer. The reminder says what to do after each refusal of the completion:
+  after `HANDOFF_NOT_CURRENT_PHASE`, `CHECK_NOT_OPEN` or `CHECK_LOOK_NOT_OPEN` nothing more, and
+  after `HANDOFF_ALREADY_RECORDED`, which means the daemon took no completion under that key,
+  complete again naming a new version of the handoff, or tell the architect where the phase writes
+  no handoff.

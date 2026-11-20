@@ -112,16 +112,29 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
  * (`src/phase-reminder.ts`): an answer that the claim owes nothing, and a read that fails
  * (`UNREAD_CHECK`), send no reminder. So every sentence of it is true of a role that owes work.
  *
- * Both kinds of work are finished by the `legion` tool's `handoff_complete`, and the sentence on
- * a refusal covers both. A phase's completion is refused `HANDOFF_NOT_CURRENT_PHASE` when the
- * role no longer works that phase, and a completion or a check's report is refused
- * `HANDOFF_ALREADY_RECORDED` when the daemon already received it
- * (`packages/daemon/internal/api/handoff.go`). A report on a production check is refused
- * `CHECK_NOT_OPEN` once the check is closed (`checkReport`, `packages/daemon/internal/api/
- * handoff.go`), and `CHECK_LOOK_NOT_OPEN` once the look it names has ended (`checkReported`,
- * `packages/daemon/internal/workflow/check.go`). Each of these refusals records nothing, and the
- * daemon sends any next task itself, so the role does nothing more for that work
- * (dispatch://INFRA-2746).
+ * Both kinds of work are finished by the `legion` tool's `handoff_complete`, and the two sentences
+ * on a refusal cover both. A phase's completion is refused `HANDOFF_NOT_CURRENT_PHASE` when the
+ * role no longer works that phase (`packages/daemon/internal/api/handoff.go`). A report on a
+ * production check is refused `CHECK_NOT_OPEN` once the check is closed (`checkReport`,
+ * `packages/daemon/internal/api/handoff.go`), and `CHECK_LOOK_NOT_OPEN` once the look it names
+ * has ended (`checkReported`, `packages/daemon/internal/workflow/check.go`). Each of these three
+ * records nothing, and the daemon sends any next task itself, so the role does nothing more for
+ * that work.
+ *
+ * `HANDOFF_ALREADY_RECORDED` answers a completion or a report under a key the daemon has already
+ * processed (`if result.Duplicate`, `packages/daemon/internal/api/handoff.go`). The daemon keeps a
+ * fact the workflow refused marked as processed (`ApplyFact`,
+ * `packages/daemon/internal/intake/facts.go`), so a retry under the same key gets this answer
+ * while no completion is recorded and the work stays owed. The reminder comes only while the
+ * daemon's record holds the work owed, so in a reminded turn this answer always means that case,
+ * and doing nothing more would leave the work owed for ever. A completion's key holds the handoff
+ * record it names (`reported`, `eventID` in `answerCompletion`), and each
+ * `dispatch handoff-write` makes a record with a new id, so a new version of the handoff is a new
+ * key: the role reads its record with `read_record` and the refusal its first completion got,
+ * writes a new version of its handoff and completes naming it. A phase that writes no handoff
+ * (retro, the merger) has the commit in its key instead, and a check's report its look and
+ * verdict (`eventID` in `checkReport`), so that role tells its architect (dispatch://INFRA-2746
+ * R4).
  *
  * The opening names the work, and the last sentence is the needle the live proofs match
  * (`scripts/e2e/stage3-4b13b-acceptance.sh`, `scripts/e2e/stage4b-sandbox-tree.sh`,
@@ -136,10 +149,14 @@ export function owedReminder(work: string): string {
     "fields your role's instructions give. If you are waiting on something (CI, a review, a " +
     "person), reply with a line starting WAITING that names what you are waiting on: that buys a " +
     "quiet wait, and then this reminder comes again. If the daemon refuses your " +
-    "`handoff_complete` `HANDOFF_NOT_CURRENT_PHASE`, `HANDOFF_ALREADY_RECORDED`, " +
-    "`CHECK_NOT_OPEN` or `CHECK_LOOK_NOT_OPEN`, do nothing more for that work: the daemon " +
-    "sends you any next task itself. This reminder repeats at the end of every turn for as " +
-    "long as the daemon's record holds that work open."
+    "`handoff_complete` `HANDOFF_NOT_CURRENT_PHASE`, `CHECK_NOT_OPEN` or " +
+    "`CHECK_LOOK_NOT_OPEN`, do nothing more for that work: the daemon sends you any next task " +
+    "itself. If it answers `HANDOFF_ALREADY_RECORDED` while this reminder still comes, it keeps " +
+    "the refusal of an earlier completion under that key and took none: read your record with " +
+    "the `legion` tool's `read_record` and the refusal your first completion got, write a new " +
+    "version of your handoff and complete naming it, or, if your phase writes no handoff, tell " +
+    "your architect. This reminder repeats at the end of every turn for as long as the daemon's " +
+    "record holds that work open."
   );
 }
 
