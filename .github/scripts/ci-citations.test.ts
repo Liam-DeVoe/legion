@@ -55,6 +55,22 @@ function specifiers(read: string, importer: string): string[] {
   return names;
 }
 
+/**
+ * The tracked file a citation by a bare name means: the first one, in `git ls-files` order, that
+ * `packages/*\/<named>` matches, as git's own pathspec reads it (`*` crosses `/`). The list is
+ * read once, by one `git ls-files`, since one spawn per citation outgrew the test's time bound.
+ */
+function trackedUnderPackages(): (named: string) => string {
+  const files = Bun.spawnSync(["git", "ls-files", "-z", "packages"], { cwd: root })
+    .stdout.toString()
+    .split("\0")
+    .filter(Boolean);
+  return (named) =>
+    files.find(
+      (file) => file.endsWith(`/${named}`) && file.length > "packages/".length + named.length + 1
+    ) ?? "";
+}
+
 test("each line ci_job_reads.py cites in a file that imports the read holds that import", () => {
   const listed = Bun.spawnSync(
     [
@@ -75,19 +91,14 @@ test("each line ci_job_reads.py cites in a file that imports the read holds that
   expect(listed.stderr.toString()).toBe("");
   expect(listed.exitCode).toBe(0);
   const reads = JSON.parse(listed.stdout.toString()) as [string, string, string][];
+  const tracked = trackedUnderPackages();
   let checked = 0;
   const wrong: string[] = [];
   for (const [owner, read, why] of reads) {
     if (!/\.tsx?$/.test(read)) continue;
     for (const cited of why.matchAll(/([\w./@-]+\.tsx?):(\d+(?:[-,]\d+)*)/g)) {
       const named = cited[1] ?? "";
-      const file = existsSync(path.join(root, named))
-        ? named
-        : (Bun.spawnSync(["git", "ls-files", `packages/*/${named}`], { cwd: root })
-            .stdout.toString()
-            .split("\n")
-            .filter(Boolean)
-            .at(0) ?? "");
+      const file = existsSync(path.join(root, named)) ? named : tracked(named);
       if (file === "") continue;
       const names = specifiers(read, file);
       const imports = readFileSync(path.join(root, file), "utf8")
