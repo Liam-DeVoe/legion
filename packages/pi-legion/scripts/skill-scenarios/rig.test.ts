@@ -2133,20 +2133,24 @@ describe("ci_job_results", () => {
   }
 
   // Catches: rows written before the block exists (none, and no retry), a call that names another
-  // database, head, branch or block than the run's, and a statement that writes one verdict.
+  // database, head, branch, block or job than the run's (the job is rig-world.json's, which
+  // Dispatch's GitHub stand-in serves too), and a statement that writes one verdict.
   test("writes the job's pass and fail of k1 at #702's head once the block is indexed", () => {
     const { code, stderr, read } = written(["0", "2"]);
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
     expect(read("sleeps")).toBe("2\n");
-    expect(read("calls").split("\n").filter(Boolean)).toEqual([
-      `exec -i t-pg psql -U postgres -d run_0123456789abcdef -v ON_ERROR_STOP=1 -qAt -v issue=LWEVAL-9 -v artifact=11111111-2222-3333-4444-555555555555 -v head=${"7".repeat(40)} -v branch=legion/LWEVAL-9-702 -v session=ci-results:example/widgets/.github/workflows/ci-results.yaml`,
-      `exec -i t-pg psql -U postgres -d run_0123456789abcdef -v ON_ERROR_STOP=1 -qAt -v issue=LWEVAL-9 -v artifact=11111111-2222-3333-4444-555555555555 -v head=${"7".repeat(40)} -v branch=legion/LWEVAL-9-702 -v session=ci-results:example/widgets/.github/workflows/ci-results.yaml`,
-    ]);
+    const job = RIG_WORLD.ciJobs["ci-pass-and-fail"].name;
+    const call = `exec -i t-pg psql -U postgres -d run_0123456789abcdef -v ON_ERROR_STOP=1 -qAt -v issue=LWEVAL-9 -v artifact=11111111-2222-3333-4444-555555555555 -v head=${"7".repeat(40)} -v branch=legion/LWEVAL-9-702 -v job=${job} -v session=ci-results:example/widgets/.github/workflows/ci-results.yaml`;
+    expect(read("calls").split("\n").filter(Boolean)).toEqual([call, call]);
     const sql = read("sql");
     expect(sql).toContain("insert into ci_check_results");
     expect(sql).toContain("where b.artifact_id = :'artifact'::uuid and b.block_id = 'k1'");
-    expect(sql).toMatch(/\('pass', 'Attempt 1 of go-checks passed[^']*', interval '2 minutes'\)/);
-    expect(sql).toMatch(/\('fail', 'Attempt 2 of go-checks failed[^']*', interval '0 seconds'\)/);
+    expect(sql).toMatch(
+      /\('pass', 'Attempt 1 of ' \|\| :'job' \|\| ' passed[^']*', interval '2 minutes'\)/
+    );
+    expect(sql).toMatch(
+      /\('fail', 'Attempt 2 of ' \|\| :'job' \|\| ' failed[^']*', interval '0 seconds'\)/
+    );
   });
 
   // Catches: a world built with no CI result, which would read as the not_completed case alone.
