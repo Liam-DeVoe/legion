@@ -295,6 +295,30 @@ func TestRepositoryClauseWalksNoIssueWhereNoProjectIsPrivate(t *testing.T) {
 	}
 }
 
+// TestRepositoryClauseProbesEachRepositoryWithoutAHashedSubplan: over several repositories in one
+// statement, as the app-installation and Delivery reads ask (api's repositoriesHiddenQuery), the
+// clause plans no hashed subplan for alice, open while a project is private, nor for bob, a
+// restricted member. Over this small seed Postgres hashes access.HiddenPrivateProjectClause's
+// read of projects once per statement unless its `exists` ends in `offset 0`, so that fence fails
+// this test when removed. The two `exists` under the clause's CASE end in `offset 0` too, as every
+// one a clause adds there does (#3178 at 0f8b389c); no plan of this seed hashes them without it.
+func TestRepositoryClauseProbesEachRepositoryWithoutAHashedSubplan(t *testing.T) {
+	database := seedRepositoryIssues(t)
+	statement := `select asked.repo, ` + RepositoryClause("asked.repo", "$1") + ` from unnest($2::text[]) as asked(repo)`
+	for _, viewer := range []struct {
+		name string
+		who  model.Actor
+	}{
+		{"alice", model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"PUB"}, AnyPrivate: true}}},
+		{"bob", model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}}},
+	} {
+		plan := planStatement(t, database, recordedStatement{sql: statement, args: []any{VisibilityArg(viewer.who), clauseRepositories}})
+		for _, hashed := range hashedSubplans(t, plan) {
+			t.Errorf("RepositoryClause over %d repositories for %s plans %s, a hashed subplan:\n%s", len(clauseRepositories), viewer.name, hashed, plan)
+		}
+	}
+}
+
 // issueScanLoops explains RepositoryClause for who over repository and answers how many loops the
 // plan's nodes that scan issues ran in all; a plan with no such node ran none.
 func issueScanLoops(t *testing.T, database *store.Store, who model.Actor, repository string) int {

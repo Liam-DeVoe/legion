@@ -74,15 +74,18 @@ func RepositoryClause(repoExpr, viewerParam string) string {
 }
 
 // repositorySeen is whether an issue of a project the viewer sees resolves to the repository
-// repoExpr names.
+// repoExpr names. It sits under RepositoryClause's CASE, so it ends in `offset 0`, as every
+// `exists` a clause adds there does (#3178 at 0f8b389c).
 func repositorySeen(repoExpr, viewerParam string) string {
 	return `exists (select from (` + ProjectRepositoriesSQL(access.ProjectClause("project_key", viewerParam)) + `) owned
-		where owned.repo = lower((` + repoExpr + `)::text))`
+		where owned.repo = lower((` + repoExpr + `)::text)
+		offset 0)`
 }
 
 // repositoryHeld is whether a private project the viewer does not see owns the repository repoExpr
-// names: an issue of it resolves to the name.
+// names: an issue of it resolves to the name. It ends in `offset 0`, as repositorySeen does.
 func repositoryHeld(repoExpr, viewerParam string) string {
 	return `exists (select from (` + ProjectRepositoriesSQL(access.HiddenPrivateProjectClause("project_key", viewerParam)) + `) owned
-		where owned.repo = lower((` + repoExpr + `)::text))`
+		where owned.repo = lower((` + repoExpr + `)::text)
+		offset 0)`
 }

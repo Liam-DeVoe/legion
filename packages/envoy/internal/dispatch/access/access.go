@@ -146,10 +146,13 @@ func ProjectClause(projectExpr, viewerParam string) string {
 
 // HiddenPrivateProjectClause passes a row of the project keyExpr names when that project is
 // private and the viewer does not see it: the projects whose ownership of a repository hides it
-// from the viewer (refs.RepositoryClause). It probes the projects primary key once per row.
+// from the viewer (refs.RepositoryClause). It probes the projects primary key once per row: its
+// `exists` ends in `offset 0`, without which Postgres hashes every private project once per
+// statement in its place (refs.TestRepositoryClauseProbesEachRepositoryWithoutAHashedSubplan).
 func HiddenPrivateProjectClause(keyExpr, viewerParam string) string {
 	return clause("HiddenPrivateProjectClause", `(not `+ProjectClause(keyExpr, viewerParam)+` and exists (
-		select from projects hiding where hiding.key = (`+keyExpr+`) and hiding.visibility = 'private'))`)
+		select from projects hiding where hiding.key = (`+keyExpr+`) and hiding.visibility = 'private'
+		offset 0))`)
 }
 
 // OpenClause passes an open viewer: one that is not a restricted member and holds no list, which
