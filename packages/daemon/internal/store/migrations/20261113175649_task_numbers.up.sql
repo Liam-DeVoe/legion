@@ -32,37 +32,68 @@
 -- The fill numbers what the release before this one left as each claim's first task. A claim
 -- holding a pending row holds task 1: the row is number 1 and the claim's task_written is 1. A
 -- row neither acknowledged nor confirmed is a task that release queued and nobody took, so
--- nothing of it is taken. A row acknowledged (delivered_at set) and not confirmed is a prompt
--- the old process holds and has not started a turn for, which it may still start under this
--- release: it is filled as an accepted take awaiting its turn — confirmed_at from delivered_at,
+-- nothing of it is taken. A row acknowledged (delivered_at set) and not confirmed is a prompt a
+-- process of the claim acknowledged and started no turn for. Where that process is the one the
+-- claim records now, it holds the prompt and may still start its turn under this release: the
+-- claim records a locator, is ready, idle or working, and its last_ready, the moment its agent
+-- said it was ready, is no later than delivered_at. The release before this one writes last_ready
+-- once a launch, at the first ready of the process the launch started (supervise's ready, on the
+-- one row that leaves registered, which only a launch enters), and marks a prompt acknowledged
+-- only on a ready or idle claim (supervise's acked), so an acknowledgement by the process the
+-- claim records now comes after that process's ready, and one a process before it left — that
+-- release keeps the mark through a death, a retirement and a suspension — comes before it. Such a
+-- row is filled as an accepted take awaiting its turn — confirmed_at from delivered_at,
 -- taken_text the row's own text, turn_started false, task_taken 1 — so the turn the old process
 -- starts is that take's turn (supervise's Delivery.awaitsTurn), and a process let go before it
 -- starts one gives the take back (supervise's interrupted), so the relaunched worker takes the
--- task under its number: either way it runs once. Where the row is confirmed — the turn it was
--- sent for started — its worker took it, so task_taken is 1 as well and the row's turn_started
--- is true. A claim holding no pending row that served a task, a run (serving_generation <> 0) or
--- a phase entry (served_entry > 0), took and finished task 1 in the session it holds, so
--- task_written, task_taken and task_finished are 1 and task_finished_session is that session.
--- Every other claim was given nothing and stays at 0 throughout. The epochs and revisions start
--- empty, because no value in the bucket is the record's yet, so the first boot writes every
--- owed value once. origin starts empty, which names no source: the task was queued before the
--- record kept one. taken_text is the row's own text on an acknowledged row and empty on every
--- other, since no take of those was ever answered; a confirmed row's take is therefore one a
--- take sent again is refused in-turn, not answered (supervise's answeredFromRecord). take_told
--- names each of the claim's two records whose toldBy is the row's delivery id: that release
--- marked a record told at the confirmation of the prompt that carried it, under the delivery's
--- id, and gave the delivery a new id at every take-back, so a record naming the row's id was told
--- by the turn that confirmed the row, which is the take the row holds now, and by nothing else. A
--- row no turn confirmed is named by none.
+-- task under its number: either way it runs once. The take is that process's, of the claim's
+-- generation and session, which nothing but a let-go of that process moves, and the let-go gives
+-- the take back. On any other claim — one suspended, queued or launching, one whose relaunched
+-- process has not yet said it is ready, one failed or retired, one recording no locator, and one
+-- whose process said it was ready after the acknowledgement — no process that stands holds the
+-- prompt, so the row is left a task owed and not taken, and the next process takes it as it takes
+-- any task, with the working copy's adoption, the notes it is owed and the confirmation an
+-- accepted take makes (supervise's accept). Filled as a take there, it would be answered to that
+-- next process from the record, with the stored text and nothing applied (supervise's
+-- answeredFromRecord). A claim that records no ready at all is one whose process said it was
+-- ready before 20261029121000_claim_death_and_start_causes added the column and was not launched
+-- again since; nothing dates its acknowledgement, so its row is left owed too. Where the row is
+-- confirmed — the turn it was sent for started — its worker took it, so task_taken is 1 as well
+-- and the row's turn_started is true. A claim holding no pending row that served a task, a run
+-- (serving_generation <> 0) or a phase entry (served_entry > 0), took and finished task 1 in the
+-- session it holds, so task_written, task_taken and task_finished are 1 and task_finished_session
+-- is that session. Every other claim was given nothing and stays at 0 throughout. The epochs and
+-- revisions start empty, because no value in the bucket is the record's yet, so the first boot
+-- writes every owed value once. origin starts empty, which names no source: the task was queued
+-- before the record kept one. taken_text is the row's own text on a row filled as a take and
+-- empty on every other, since no take of those was ever answered; a confirmed row's take is
+-- therefore one a take sent again is refused in-turn, not answered (supervise's
+-- answeredFromRecord). take_told names each of the claim's two records whose toldBy is the row's
+-- delivery id: that release marked a record told at the confirmation of the prompt that carried
+-- it, under the delivery's id, and gave the delivery a new id at every take-back, so a record
+-- naming the row's id was told by the turn that confirmed the row, which is the take the row
+-- holds now, and by nothing else. A row no turn confirmed is named by none.
+--
+-- The take the fill makes confirms its claim's handshake as an accepted take does (supervise's
+-- EntryHandshake.confirmed): where the handshake names the row's entry and run and records no
+-- confirmation yet, handshake_confirmed_at takes the take's confirmed_at, so the state serves
+-- entryConfirmedAt beside entryQueuedAt, and a give-back of the take unconfirms the handshake
+-- again (EntryHandshake.unconfirmed, which asks that the two times be one). The handshake's
+-- columns are 20261114020537_claim_entry_handshake's, numbered after this file. Every database
+-- the release before this one migrated records that migration, so they stand when this file runs
+-- there. A database that takes the two in version order — a new one, or the roll-forward after a
+-- rollback past contract 146, whose block drops them — holds them only after this file, and
+-- holds no handshake to confirm either, since that migration adds them at defaults that name no
+-- entry. So the statement runs inside a block that asks first whether the column stands.
 --
 -- Once this migration has run, the daemon of the release before it cannot read the claims table
 -- at all: its own claim read names d.delivered_at, d.marked_by and d.prompted
 -- (packages/daemon/internal/store/claims.go, claimSelect), so every claim read fails and the
 -- supervisor loads nothing, and its delivery write names all three (putDelivery). Rolling the image
 -- back therefore needs the three columns back first. This directory keeps no down migrations —
--- migrations here are forward-only and no .down.sql file exists — so the way back is the twenty
--- statements below, run with the daemon stopped. docs/kubernetes.md carries the same block as the
--- step an operator runs, beside the phase entry's, and the two say the same thing.
+-- migrations here are forward-only and no .down.sql file exists — so the way back is the
+-- twenty-two statements below, run with the daemon stopped. docs/kubernetes.md carries the same
+-- block as the step an operator runs, beside the phase entry's, and the two say the same thing.
 --
 --   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
 --   begin;
@@ -71,6 +102,8 @@
 --   alter table pending_task_deliveries add column if not exists prompted boolean not null default false;
 --   update outbox set payload = payload - 'origin' where kind = 'supervise' and payload ? 'origin';
 --   update outbox set payload = payload - 'mergeState' - 'stateReadAt' where kind = 'merge_forward' and (payload ? 'mergeState' or payload ? 'stateReadAt');
+--   update claims set failure_cause = 'never_registered' where failure_cause = 'never_reconnected';
+--   update claims set pending_cause = 'never_registered' where pending_cause = 'never_reconnected';
 --   alter table claims drop column if exists task_written;
 --   alter table claims drop column if exists task_taken;
 --   alter table claims drop column if exists task_finished;
@@ -91,14 +124,15 @@
 --
 -- The run prints BEGIN, three ALTER TABLEs, UPDATE <n> for the supervise rows whose payload
 -- carried the key, UPDATE <m> for the merge-forward rows whose payload carried either of its two
--- keys, fourteen ALTER TABLEs, DELETE 1 and COMMIT. A rerun prints a NOTICE for each of the
--- seventeen columns it finds as it means to leave them, the same ALTER TABLEs, UPDATE 0 twice,
--- DELETE 0 and COMMIT, and changes nothing. The transaction, the ON_ERROR_STOP and the if-exists
--- clauses are what make the twenty one act that may be run twice, for the reason the phase
--- entry's block gives: run as bare statements in a psql without ON_ERROR_STOP, either half a
--- failure leaves is a broken store — the drops taken while the delete fails leave this release a
--- schema it reads by names that no longer stand, and the delete taken while a drop fails stops the
--- roll-forward at its first add column.
+-- keys, UPDATE <f> for the claims whose failure cause it rewrote, UPDATE <p> for those whose
+-- pending cause it rewrote, fourteen ALTER TABLEs, DELETE 1 and COMMIT. A rerun prints a NOTICE
+-- for each of the seventeen columns it finds as it means to leave them, the same ALTER TABLEs,
+-- UPDATE 0 four times, DELETE 0 and COMMIT, and changes nothing. The transaction, the
+-- ON_ERROR_STOP and the if-exists clauses are what make the twenty-two one act that may be run
+-- twice, for the reason the phase entry's block gives: run as bare statements in a psql without
+-- ON_ERROR_STOP, either half a failure leaves is a broken store — the drops taken while the delete
+-- fails leave this release a schema it reads by names that no longer stand, and the delete taken
+-- while a drop fails stops the roll-forward at its first add column.
 --
 -- The first three statements are the columns that daemon reads and writes, back at the defaults
 -- their own migrations gave them: no acknowledgement, no marking prompt and no prompt sent. That is
@@ -124,6 +158,22 @@
 -- its message is never delivered. Nothing that daemon reads is lost with them, since its ask and
 -- its hold name no read, and a row the roll-forward finds carrying neither says that GitHub's
 -- merge state and the time of its read are unknown (record.AnsweredMergeState).
+--
+-- The sixth and seventh write never_registered over never_reconnected in the claim's two cause
+-- columns, failure_cause and pending_cause (20261111212544_claim_failure_cause). never_reconnected
+-- is the cause this release adds (supervise's CauseNeverReconnected): it is the pending cause of
+-- the relaunch the daemon makes when a claim a daemon start restored ready, idle or working never
+-- hears from its shim again while its process lives, and the failure cause once those relaunches
+-- run the launch budget out (reconnectDeadline), so the restart that installs this release is
+-- what writes it. The release before it reads both columns unchecked and serves them verbatim, in
+-- a claim view's failure.cause and pendingCause, and its plugins read the state through a strict
+-- enum of the causes they were built with (legion-api.ts's LEGION_FAILURE_CAUSES), which names no
+-- such word: one claim left carrying it refuses the whole state body at every plugin that reads
+-- it, until that claim runs again. never_registered is the nearest cause that release knows, a
+-- process that never said hello before its deadline, and the word this release itself serves a
+-- plugin below its contract in the other's place (api's withoutNeverReconnected). The roll-forward
+-- reads that nearer word back for the one episode it names: the launch that runs the claim again
+-- clears a failure cause, and the agent that comes up a pending one.
 --
 -- The fourteen drops and the deleted version row are for the roll-forward that follows the rollback
 -- rather than for the older daemon, which reads none of the fourteen columns and writes none of them:
@@ -252,13 +302,40 @@ alter table pending_task_deliveries add column take_told text[] not null default
 -- start. This comes before any other fill, so it reads confirmed_at as that release left it.
 update pending_task_deliveries set turn_started = confirmed_at is not null;
 
--- An acknowledged row that no turn confirmed is a take accepted at its acknowledgement and
--- awaiting its turn, its text the prompt's; turn_started stays false.
-update pending_task_deliveries set confirmed_at = delivered_at, taken_text = task
-where delivered_at is not null and confirmed_at is null;
+-- An acknowledged row that no turn confirmed, acknowledged by the process its claim records now —
+-- the claim records a locator, is ready, idle or working, and its agent said it was ready
+-- (last_ready) no later than the acknowledgement — is a take accepted at its acknowledgement and
+-- awaiting its turn, its text the prompt's; turn_started stays false. Every other such row is one
+-- no standing process holds, and it stays a task owed and not taken. A claim that records no
+-- ready dates nothing, so its row stays owed too.
+update pending_task_deliveries d set confirmed_at = d.delivered_at, taken_text = d.task
+from claims c
+where c.token = d.claim_token
+  and c.locator is not null
+  and c.state in ('ready', 'idle', 'working')
+  and d.delivered_at is not null and d.confirmed_at is null
+  and d.delivered_at >= c.last_ready;
 
--- Every pending row is its claim's task 1, written; a confirmed one — an acknowledged one among
--- them now — is taken as well.
+-- The take made above confirms its claim's handshake where the handshake names the task's entry
+-- and run and records no confirmation yet, at the take's own moment, as an accepted take does.
+-- The takes made above are the confirmed rows whose turn has not started. The handshake's columns
+-- come with 20261114020537_claim_entry_handshake, numbered after this file, so the statement runs
+-- only where they stand (the header says why that is enough).
+do $$
+begin
+  if exists (select 1 from information_schema.columns where table_schema = current_schema()
+      and table_name = 'claims' and column_name = 'handshake_confirmed_at') then
+    update claims c set handshake_confirmed_at = d.confirmed_at
+    from pending_task_deliveries d
+    where d.claim_token = c.token
+      and d.confirmed_at is not null and not d.turn_started
+      and d.entry <> 0 and d.entry = c.handshake_entry and d.generation = c.handshake_generation
+      and c.handshake_confirmed_at is null;
+  end if;
+end $$;
+
+-- Every pending row is its claim's task 1, written; a confirmed one — one the standing process
+-- acknowledged among them now — is taken as well.
 update pending_task_deliveries set number = 1;
 update claims c set task_written = 1, task_taken = case when d.confirmed_at is null then 0 else 1 end
 from pending_task_deliveries d
