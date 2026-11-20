@@ -30,16 +30,18 @@ import {
   parseTsv,
   prefixMatches,
   type QueryRecord,
+  READ_CALLS,
+  READ_CALLS_PER_REPOSITORY,
+  REPOSITORY_JOBS,
   type ReaderSkill,
   resolveInstallers,
   SKILL_COPIES_COLUMNS,
   type SkillCopy,
   searchTerms,
   skillFields,
-  TREE_JOBS,
-  TREE_JOBS_PER_REPOSITORY,
   type TreeEntry,
   tsv,
+  writeOutputs,
 } from "./copies";
 
 // copies.ts on F6 (testdata/CAPTURE.md, "F6: GitHub's answers for the lister, and made-up
@@ -293,11 +295,15 @@ class World {
   refuseTreeBatches = false;
   /** The GraphQL tree batches answered, each with its subtrees. */
   readonly treeBatches: number[] = [];
-  /** Each tree answer waits this many microtask turns (no timer), so reads made at once overlap;
-   *  the most tree reads in flight at once. */
+  /** Each tree answer waits this many microtask turns (no timer), or its repository's in
+   *  `treeTurnsOf`, so reads made at once overlap; the most tree reads in flight at once, in all
+   *  and of one repository, and the most repositories with one in flight. */
   treeTurns = 0;
+  readonly treeTurnsOf = new Map<string, number>();
   maxTreeReads = 0;
-  private treeReads = 0;
+  maxTreeReadsOfOne = 0;
+  maxTreeRepositories = 0;
+  private readonly treeReadsOf = new Map<string, number>();
   /** Each search call: the owner its scope names, the clock when it started, searches in flight. */
   readonly searchLog: { owner: string; at: number; inFlight: number; ownerInFlight: number }[] = [];
   private readonly inFlight = new Map<string, number>();
@@ -484,10 +490,21 @@ class World {
     }
     const tree = /^repos\/([^/]+\/[^/]+)\/git\/trees\/([0-9a-f]+)(\?recursive=1)?$/.exec(endpoint);
     if (tree !== null) {
-      this.treeReads++;
-      this.maxTreeReads = Math.max(this.maxTreeReads, this.treeReads);
-      for (let turn = 0; turn < this.treeTurns; turn++) await Promise.resolve();
-      this.treeReads--;
+      const repository = tree[1] ?? "";
+      this.treeReadsOf.set(repository, (this.treeReadsOf.get(repository) ?? 0) + 1);
+      const reads = [...this.treeReadsOf.values()];
+      this.maxTreeReads = Math.max(
+        this.maxTreeReads,
+        reads.reduce((sum, count) => sum + count, 0)
+      );
+      this.maxTreeReadsOfOne = Math.max(this.maxTreeReadsOfOne, ...reads);
+      this.maxTreeRepositories = Math.max(
+        this.maxTreeRepositories,
+        reads.filter((count) => count > 0).length
+      );
+      const turns = this.treeTurnsOf.get(repository) ?? this.treeTurns;
+      for (let turn = 0; turn < turns; turn++) await Promise.resolve();
+      this.treeReadsOf.set(repository, (this.treeReadsOf.get(repository) ?? 1) - 1);
       const found = this.trees.get(`${tree[1]} ${tree[2]}${tree[3] ? " recursive" : ""}`);
       if (found === undefined) return fail("gh: Not Found (HTTP 404)");
       if (typeof found === "string") return fail(found);
@@ -1435,8 +1452,79 @@ describe("a truncated tree", () => {
     expect(batched.kept).toEqual(rest.kept);
     // Refused batches are halved, then each subtree is read over REST, under the per-repository cap.
     expect(rest.w.treeBatches).toEqual([]);
-    expect(rest.w.maxTreeReads).toBe(TREE_JOBS_PER_REPOSITORY);
-    expect(TREE_JOBS).toBeGreaterThan(TREE_JOBS_PER_REPOSITORY);
+    expect(rest.w.maxTreeReads).toBe(READ_CALLS_PER_REPOSITORY);
+    expect(READ_CALLS).toBeGreaterThan(READ_CALLS_PER_REPOSITORY);
+  });
+
+  test("6 repositories read at once beside its walk give the same output, byte for byte, as 1", async () => {
+    /** The truncated world, its walk over REST, beside 4 made-up repositories whose tree reads
+     *  are slow: with the first by name, 5 slow reads and the walk's 4 would be 9 in flight, so
+     *  the walk and they share the run's read slots. */
+    const busyWorld = () => {
+      const w = truncatedWorld();
+      w.refuseTreeBatches = true;
+      w.treeTurns = 5;
+      const small = [1, 2, 3, 4].map((n) => `cybermonklabs/small-${n}`);
+      w.listings.set("cybermonklabs", [
+        ...(fixtureJson("F6-repo-list.json") as unknown[]),
+        ...small.map((nameWithOwner) => ({
+          nameWithOwner,
+          isFork: false,
+          isArchived: false,
+          defaultBranchRef: { name: "main" },
+          parent: null,
+        })),
+      ]);
+      for (const repository of small) {
+        const files = [{ path: "README.md", text: `# ${repository}, a made-up repository\n` }];
+        w.addFiles(files);
+        w.addRepository(repository, treeOf(repository, files));
+        w.treeTurnsOf.set(repository, 200);
+      }
+      // The first repository by name answers last, so the repositories end out of name order.
+      w.treeTurnsOf.set("acme/old-skills", 400);
+      return w;
+    };
+    const read = async (repositoryJobs: number) => {
+      const w = busyWorld();
+      const errors: string[] = [];
+      const result = await listCopies(
+        parseConfig(CONFIG),
+        { at: AT, only: [], maxSearchCalls: Number.POSITIVE_INFINITY, repositoryJobs },
+        {
+          gh: w.gh,
+          sleep: w.sleep,
+          now: w.now,
+          out: () => {},
+          err: (line) => errors.push(line),
+          peakRssBytes: () => 0,
+        }
+      );
+      const out = mkdtempSync(path.join(tmpdir(), "copies-jobs-"));
+      scratch.push(out);
+      writeOutputs(out, result);
+      return {
+        w,
+        ended: errors.flatMap((line) => /^copies: tree \d+\/\d+ (\S+):/.exec(line)?.[1] ?? []),
+        files: Object.fromEntries(
+          readdirSync(out).map((file) => [file, readFileSync(path.join(out, file), "utf8")])
+        ),
+      };
+    };
+    const one = await read(1);
+    const six = await read(REPOSITORY_JOBS);
+    expect(REPOSITORY_JOBS).toBe(6);
+    expect(one.w.maxTreeRepositories).toBe(1);
+    expect(one.ended).toEqual([...one.ended].sort());
+    expect(one.ended).toHaveLength(8);
+    // At once: 6 repositories in flight, the walk and the slow trees filling every read slot, and
+    // the reads ending out of name order.
+    expect(six.w.maxTreeRepositories).toBe(REPOSITORY_JOBS);
+    expect(six.w.maxTreeReads).toBe(READ_CALLS);
+    expect(six.w.maxTreeReadsOfOne).toBe(READ_CALLS_PER_REPOSITORY);
+    expect(six.ended.at(-1)).toBe("acme/old-skills");
+    expect(six.files["repositories.tsv"]).toContain("cybermonklabs/small-4");
+    expect(six.files).toEqual(one.files);
   });
 });
 

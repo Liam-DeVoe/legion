@@ -41,7 +41,11 @@
  *    GitHub answers `truncated` is walked a level at a time, each level's subtrees in GraphQL
  *    batches of up to 50 (`readTree`), with REST where GitHub refuses a batch. A listing, commit or
  *    tree read that fails names its repository with gh's error. Forks and archived repositories
- *    stay, marked (a fork with its parent).
+ *    stay, marked (a fork with its parent). REPOSITORY_JOBS (6) repositories are read at once, and
+ *    every gh call reading one (commit, tree, subtrees, blobs) takes one of READ_CALLS (8) slots
+ *    across the run, at most READ_CALLS_PER_REPOSITORY (4) of them its repository's, so a large
+ *    repository's walk and the small repositories share them; the output is the same, byte for
+ *    byte, as one repository at a time.
  * 2. Skills. Each `SKILL.md` blob outside a configured `excludePaths` prefix of its repository: its
  *    frontmatter `name` (else its directory's name) and `description`, read from the blob. The
  *    frontmatter is read as YAML (Bun.YAML); one that is not valid YAML is read by `lenientFields`
@@ -190,12 +194,16 @@ function rethrowStop(error: unknown): void {
 const RATE_LIMITED = /rate limit|HTTP 429/i;
 const MAX_RATE_RETRIES = 5;
 const REST_JOBS = 4;
-/** The most tree reads in flight at once, across a run and per repository: a truncated tree's
- *  subtrees are read at once under these caps, so one large repository's walk does not hold every
- *  slot. Each read is a gh process of its own, about 110 MB resident in the pod whatever the tree
- *  (measured 2026-11-20), so the caps are what the run costs the pod beside its own memory. */
-export const TREE_JOBS = 8;
-export const TREE_JOBS_PER_REPOSITORY = 4;
+/** The repositories read at once, each its commit, tree and blobs, the slower of them sharing the
+ *  read slots below with the rest. */
+export const REPOSITORY_JOBS = 6;
+/** The most gh calls reading repositories (a commit, a tree or its subtrees, a blob or a batch of
+ *  blobs) in flight at once, across a run and per repository, so one large repository's walk does
+ *  not hold every slot. Each call is a gh process of its own, about 110 MB resident in the pod
+ *  whatever it reads (measured 2026-11-20), so the caps are what the run costs the pod beside its
+ *  own memory. */
+export const READ_CALLS = 8;
+export const READ_CALLS_PER_REPOSITORY = 4;
 /** The most subtrees one GraphQL tree read asks for. */
 const TREE_BATCH = 50;
 /** The most blobs, and bytes of blobs, one GraphQL read asks for. */
@@ -393,9 +401,9 @@ class ReadCache {
  *  memory limit checked before each call. */
 class Github {
   private readonly blobs = new Map<string, Promise<string>>();
-  private treeReads = 0;
-  private readonly treeReadsOf = new Map<string, number>();
-  private readonly treeReadQueue: { repository: string; start: () => void }[] = [];
+  private slotsTaken = 0;
+  private readonly slotsOf = new Map<string, number>();
+  private readonly slotQueue: { repository: string; start: () => void }[] = [];
   /** The largest peak resident memory read so far, in bytes. */
   peakBytes = 0;
   constructor(
@@ -420,38 +428,36 @@ class Github {
     return this.io.gh(args);
   }
 
-  private mayStartTreeRead(repository: string): boolean {
+  private mayStart(repository: string): boolean {
     return (
-      this.treeReads < TREE_JOBS &&
-      (this.treeReadsOf.get(repository) ?? 0) < TREE_JOBS_PER_REPOSITORY
+      this.slotsTaken < READ_CALLS &&
+      (this.slotsOf.get(repository) ?? 0) < READ_CALLS_PER_REPOSITORY
     );
   }
 
-  private countTreeRead(repository: string, by: number): void {
-    this.treeReads += by;
-    this.treeReadsOf.set(repository, (this.treeReadsOf.get(repository) ?? 0) + by);
+  private countSlot(repository: string, by: number): void {
+    this.slotsTaken += by;
+    this.slotsOf.set(repository, (this.slotsOf.get(repository) ?? 0) + by);
   }
 
-  /** `read`, a tree read of `repository`, run once fewer than TREE_JOBS tree reads are in flight
-   *  and fewer than TREE_JOBS_PER_REPOSITORY of that repository's; a read that ends starts the
-   *  first waiting read that may start, handing it its slots. */
-  async treeRead<T>(repository: string, read: () => Promise<T>): Promise<T> {
-    if (this.mayStartTreeRead(repository)) this.countTreeRead(repository, 1);
+  /** `read`, a gh call reading `repository`, run once fewer than READ_CALLS such calls are in
+   *  flight and fewer than READ_CALLS_PER_REPOSITORY of that repository's; a call that ends starts
+   *  the first waiting call that may start, handing it its slot. */
+  async inSlot<T>(repository: string, read: () => Promise<T>): Promise<T> {
+    if (this.mayStart(repository)) this.countSlot(repository, 1);
     else {
       const slot = Promise.withResolvers<void>();
-      this.treeReadQueue.push({ repository, start: slot.resolve });
+      this.slotQueue.push({ repository, start: slot.resolve });
       await slot.promise;
     }
     try {
       return await read();
     } finally {
-      this.countTreeRead(repository, -1);
-      const next = this.treeReadQueue.findIndex((waiting) =>
-        this.mayStartTreeRead(waiting.repository)
-      );
-      const [waiting] = next < 0 ? [] : this.treeReadQueue.splice(next, 1);
+      this.countSlot(repository, -1);
+      const next = this.slotQueue.findIndex((waiting) => this.mayStart(waiting.repository));
+      const [waiting] = next < 0 ? [] : this.slotQueue.splice(next, 1);
       if (waiting !== undefined) {
-        this.countTreeRead(waiting.repository, 1);
+        this.countSlot(waiting.repository, 1);
         waiting.start();
       }
     }
@@ -511,7 +517,9 @@ class Github {
 
   /** The text of the blob `sha` of `repository`, read alone and not cached. */
   private async readBlob(repository: string, sha: string): Promise<string> {
-    const blob = await this.api(`repos/${repository}/git/blobs/${sha}`, GitBlob);
+    const blob = await this.inSlot(repository, () =>
+      this.api(`repos/${repository}/git/blobs/${sha}`, GitBlob)
+    );
     if (blob.encoding !== "base64")
       throw new Error(`the blob is encoded ${blob.encoding}, not base64`);
     return Buffer.from(blob.content, "base64").toString("utf8");
@@ -551,7 +559,7 @@ class Github {
         )
         .join(" ");
       const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
-      const result = await this.call(graphqlArgs(repository, query));
+      const result = await this.inSlot(repository, () => this.call(graphqlArgs(repository, query)));
       const parsed = BlobBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
       if (!parsed.success) {
         const why = firstLine(result.stderr) || "an answer not of its shape";
@@ -754,10 +762,10 @@ export function keepsEntry(
  *  is asked for in one REST read (through gh's jq, TREE_JQ, one line per entry). A tree GitHub
  *  answers truncated is walked a level at a time: each level's subtrees are read in GraphQL
  *  batches of up to TREE_BATCH (`object(oid:)` fields, one level of entries each, routed as
- *  `graphqlArgs` says), batches at once under the tree-read slots. A batch GitHub refuses (a node
- *  limit, a timeout) is halved, and a subtree refused alone is read over REST, one level. The
- *  entries and their count are the same whichever way a subtree is read; only kept entries
- *  outlive a read. `reads` counts the gh calls. */
+ *  `graphqlArgs` says), batches at once under the read slots (`Github.inSlot`). A batch GitHub
+ *  refuses (a node limit, a timeout) is halved, and a subtree refused alone is read over REST, one
+ *  level. The entries and their count are the same whichever way a subtree is read; only kept
+ *  entries outlive a read. `reads` counts the gh calls. */
 export async function readTree(
   github: Github,
   repository: string,
@@ -772,7 +780,7 @@ export async function readTree(
     reads++;
     const endpoint = `repos/${repository}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
     const lines = (
-      await github.treeRead(repository, () => github.text(["api", endpoint, "--jq", TREE_JQ]))
+      await github.inSlot(repository, () => github.text(["api", endpoint, "--jq", TREE_JQ]))
     ).split("\n");
     const flag = lines[0];
     if (flag !== "true" && flag !== "false") throw new Error("the tree answer is not of its shape");
@@ -806,7 +814,7 @@ export async function readTree(
       )
       .join(" ");
     const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
-    const result = await github.treeRead(repository, () =>
+    const result = await github.inSlot(repository, () =>
       github.call(graphqlArgs(repository, query))
     );
     const parsed = TreeBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
@@ -872,9 +880,11 @@ async function readRepository(github: Github, repo: Repository, at: string): Pro
   }
   let treeSha: string;
   try {
-    const commits = await github.api(
-      `repos/${repo.repository}/commits?sha=${encodeURIComponent(repo.branch)}&until=${encodeURIComponent(at)}&per_page=1`,
-      Commits
+    const commits = await github.inSlot(repo.repository, () =>
+      github.api(
+        `repos/${repo.repository}/commits?sha=${encodeURIComponent(repo.branch)}&until=${encodeURIComponent(at)}&per_page=1`,
+        Commits
+      )
     );
     const first = commits[0];
     if (first === undefined) {
@@ -3460,6 +3470,9 @@ export interface CopiesOptions {
   readonly maxSearchCalls: number;
   /** `--cache-dir`: where finished reads are kept, and read back by a run started again. */
   readonly cacheDir?: string | undefined;
+  /** How many repositories are read at once (REPOSITORY_JOBS when absent); the output is the same
+   *  whatever it is. */
+  readonly repositoryJobs?: number | undefined;
 }
 
 /** Reads the repositories, skills, manifests and loaders of one run. */
@@ -3533,7 +3546,9 @@ export async function listCopies(
   // moment it is done. The cache key is the repository, its default branch and --at, which name
   // one commit, so a cached repository costs no GitHub read at all.
   let done = 0;
-  await mapLimit(repositories, REST_JOBS, async (repo) => {
+  // Repositories finish in any order; each result lands on its own repository, and every later
+  // step goes through them in name order, so the output does not depend on that order.
+  await mapLimit(repositories, options.repositoryJobs ?? REPOSITORY_JOBS, async (repo) => {
     const started = io.now();
     const key = `${repo.repository}\0${repo.branch}\0${options.at}`;
     const cached = cache.get("repository", key, CachedRepository);
