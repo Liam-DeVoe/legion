@@ -642,23 +642,43 @@ if [ -n "$conversation_session" ]; then
   fi
 fi
 [ -z "$issue_title" ] || [ "${#issue_title}" -lt 8 ] || printf '%s\n' "$issue_title" >>"$work/values"
-jq -Rn --arg key "$project" '{key: $key, values: ([inputs | select(length > 0) | {(.): true}] | add // {})}' \
-  "$work/values" >"$work/markers.json" || unknown 'jq could not write the markers'
+# write_markers: the markers file marker_in reads, from `values`, the project's key and the
+# reference prefix the server writes (`ref_prefix`, which may be unknown and empty).
+write_markers() {
+  jq -Rn --arg key "$project" --arg ref "$ref_prefix" \
+    '{key: $key, ref: $ref, values: ([inputs | select(length > 0) | {(.): true}] | add // {})}' \
+    "$work/values" >"$work/markers.json" || unknown 'jq could not write the markers'
+}
+write_markers
 
-# marker_in FILE prints the first marker of the project, including references embedded in JSON
-# text. A JSON stream is read in full; false and null are JSON too. A body jq cannot read as JSON
-# is read with grep for the same markers, the project's key among them as a JSON string. One jq a
+# marker_in FILE prints the first marker of the project in FILE. In a JSON body, a member name or
+# string value is a marker when it is the project's key, an issue key of the project as the whole
+# string, a reference the server writes to one: an issue key followed by `/` or `#` (a reference
+# key such as `KEY-1/spec`), `/issues/KEY-n` or `/projects/KEY` in a path, or the server's
+# reference prefix followed by the key, or when it is or holds a value the lookup found (a value
+# of at least 8 bytes that is no issue key may stand inside a longer string). An issue key inside
+# prose is no marker: the route index's own text names example keys of any project. A JSON stream
+# is read in full; false and null are JSON too. A body jq cannot read as JSON is read with grep
+# for the same references, the project's key as a JSON string and the found values. One jq a
 # body: the sweep reads thousands.
 marker_in() {
   jq -r -s --slurpfile m "$work/markers.json" '$m[0] as $m
-      | ("(^|[^A-Za-z0-9])(?<issue>" + $m.key + "-[1-9][0-9]*)([^A-Za-z0-9]|$)") as $issue
+      | ($m.key + "-[1-9][0-9]*") as $k
+      | ("^(?<issue>" + $k + ")([/#].*)?$") as $own
+      | ("/issues/(?<issue>" + $k + ")([^A-Za-z0-9]|$)") as $path
+      | ("/projects/" + $m.key + "([^A-Za-z0-9-]|$)") as $project
+      | ("^(?<issue>" + $k + ")([^A-Za-z0-9]|$)|^" + $m.key + "([/#]|$)") as $referenced
       | first(.[] | .. | ((objects | keys[]), strings) | . as $value
         | if . == $m.key then $m.key
-          elif test($issue) then capture($issue).issue
+          elif test($own) then capture($own).issue
+          elif test($path) then capture($path).issue
+          elif test($project) then $m.key
+          elif $m.ref != "" and (split($m.ref)[1:] | any(test($referenced))) then $m.ref + $m.key
           else $m.values | keys[] | select(. as $marker | $value == $marker
-            or (($marker | length) >= 8 and ($value | contains($marker)))) end) // empty' "$1" 2>/dev/null ||
-    { grep -E -o "(^|[^A-Za-z0-9])$project-[1-9][0-9]*([^A-Za-z0-9]|$)" "$1"
-      grep -F -x "$project" "$1"
+            or (($marker | length) >= 8 and ($marker | test("^" + $k + "$") | not)
+              and ($value | contains($marker)))) end) // empty' "$1" 2>/dev/null ||
+    { grep -E -o "/issues/$project-[1-9][0-9]*" "$1" | sed 's|^/issues/||'
+      grep -E -x "$project(-[1-9][0-9]*)?" "$1"
       ! grep -F -q "\"$project\"" "$1" || printf '%s\n' "$project"
       grep -F -o -f "$work/values" "$1"
     } 2>/dev/null | head -n 1
@@ -1233,8 +1253,7 @@ if [ -z "$live_result" ]; then
   done
 fi
 [ -z "$written" ] || printf '%s\n' "$written" >>"$work/values"
-jq -Rn --arg key "$project" '{key: $key, values: ([inputs | select(length > 0) | {(.): true}] | add // {})}' \
-  "$work/values" >"$work/markers.json" || unknown 'could not update the live event markers'
+write_markers
 # A refused upgrade is judged by the body the server wrote, without the probe's status prefix.
 refused_upgrade=''
 case $(head -n 1 "$work/live-restricted") in 'http '[0-9][0-9][0-9]' '*) refused_upgrade=1 ;; esac

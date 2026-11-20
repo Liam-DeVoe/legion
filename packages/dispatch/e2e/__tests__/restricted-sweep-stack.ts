@@ -54,10 +54,12 @@ export interface SweepRun {
 
 /** What each child prints, by the build it serves: `head` its sweeps of TGT and EMPTY and the
  *  server's route probes as `routeprobes` printed them, `base` the commit it built and its sweep
- *  of TGT. */
+ *  of TGT, and `keyed` (this checkout's build too) the key its target project is given and its
+ *  sweep of that project. */
 export interface StackRuns {
   readonly head: { readonly target: SweepRun; readonly empty: SweepRun; readonly probes: string };
   readonly base: { readonly base: string; readonly target: SweepRun };
+  readonly keyed: { readonly key: string; readonly target: SweepRun };
 }
 
 /** Whether `value` is a sweep's answer as `SweepRun` spells it. */
@@ -81,12 +83,17 @@ function isRuns<Which extends keyof StackRuns>(
 ): value is StackRuns[Which] {
   if (typeof value !== "object" || value === null) return false;
   if (!("target" in value) || !isSweepRun(value.target)) return false;
-  return which === "head"
-    ? "empty" in value &&
-        isSweepRun(value.empty) &&
-        "probes" in value &&
-        typeof value.probes === "string"
-    : "base" in value && typeof value.base === "string";
+  if (which === "head") {
+    return (
+      "empty" in value &&
+      isSweepRun(value.empty) &&
+      "probes" in value &&
+      typeof value.probes === "string"
+    );
+  }
+  return which === "base"
+    ? "base" in value && typeof value.base === "string"
+    : "key" in value && typeof value.key === "string";
 }
 
 /** `line`, the last line the child of `which` printed, read back as what that child prints, or
@@ -271,17 +278,21 @@ function stackVariable(env: Readonly<Record<string, string | undefined>>, name: 
  *  nothing. */
 async function seed(
   origin: string,
-  env: Readonly<Record<string, string | undefined>>
+  env: Readonly<Record<string, string | undefined>>,
+  target = "TGT"
 ): Promise<Credentials> {
   const database = stackVariable(env, "DATABASE_URL");
   const asCarol = { cookie: await signIn(origin, carol) };
   const agent = { bearer: sharedToken };
   const actor = { kind: "session", id: worker };
+  const first = `${target}-1`;
+  const repository = `acme/${target.toLowerCase()}-repo`;
+  const priority = `${target.toLowerCase()}-work`;
   await signIn(origin, bob);
   await sqlAt(database, [`update people set member_kind = 'restricted' where email = '${bob}'`]);
   const cookie = await signIn(origin, bob);
 
-  for (const key of ["OWN", "TGT", "EMPTY"]) {
+  for (const key of ["OWN", target, "EMPTY"]) {
     await send(origin, asCarol, "POST", "/api/v1/projects", 201, { key, name: `Project ${key}` });
   }
   await send(
@@ -292,14 +303,14 @@ async function seed(
     200
   );
   await fixture(stackVariable(env, "FAKE_GITHUB_PORT"), "/__fixture/repos", {
-    "acme/tgt-repo": {
+    [repository]: {
       contents: "read",
       installation_id: 71,
       pulls: {
         "1": {
           head_sha: "1111111111111111111111111111111111111111",
           state: "open",
-          title: "The change of TGT-1",
+          title: `The change of ${first}`,
         },
       },
     },
@@ -307,15 +318,15 @@ async function seed(
   await fixture(stackVariable(env, "FAKE_ENVOY_PORT"), "/__fixture/sessions", [
     {
       session_id: worker,
-      title: "Works on TGT",
-      projects: ["TGT"],
+      title: `Works on ${target}`,
+      projects: [target],
       capabilities: ["aside", "btw", "steer"],
     },
   ]);
 
   const spec = "# Spec\n\nThe first paragraph.\n";
   await send(origin, asCarol, "POST", "/api/v1/issues", 201, {
-    project: "TGT",
+    project: target,
     title: "Chart the target reef",
     spec,
   });
@@ -325,30 +336,32 @@ async function seed(
     spec,
   });
   await send(origin, asCarol, "POST", "/api/v1/issues", 201, {
-    project: "TGT",
+    project: target,
     title: "A child of the target reef",
-    parent: "TGT-1",
+    parent: first,
   });
-  await send(origin, asCarol, "POST", "/api/v1/issues/TGT-1/comments", 201, { body: "A remark." });
-  await send(origin, agent, "POST", "/api/v1/issues/TGT-1/comments", 201, {
+  await send(origin, asCarol, "POST", `/api/v1/issues/${first}/comments`, 201, {
+    body: "A remark.",
+  });
+  await send(origin, agent, "POST", `/api/v1/issues/${first}/comments`, 201, {
     body: "An agent remark.",
     actor,
   });
-  await send(origin, asCarol, "POST", "/api/v1/issues/TGT-1/asks", 201, {
+  await send(origin, asCarol, "POST", `/api/v1/issues/${first}/asks`, 201, {
     question: "Is this the right plan?",
   });
-  await send(origin, asCarol, "POST", "/api/v1/issues/TGT-1/messages", 201, {
+  await send(origin, asCarol, "POST", `/api/v1/issues/${first}/messages`, 201, {
     body: "A message from carol.",
   });
-  await send(origin, agent, "POST", "/api/v1/issues/TGT-1/handoffs/plan", 201, {
+  await send(origin, agent, "POST", `/api/v1/issues/${first}/handoffs/plan`, 201, {
     body: JSON.stringify({ next: "seeded" }),
     actor,
   });
-  await send(origin, asCarol, "POST", "/api/v1/issues/TGT-1/artifacts", 201, {
+  await send(origin, asCarol, "POST", `/api/v1/issues/${first}/artifacts`, 201, {
     name: "notes.md",
     content: "# Notes\n\nCarol's notes.\n",
   });
-  await send(origin, asCarol, "POST", "/api/v1/projects/TGT/artifacts", 201, {
+  await send(origin, asCarol, "POST", `/api/v1/projects/${target}/artifacts`, 201, {
     name: "Playbook.md",
     content: "# Playbook\n\nHow we work.\n",
   });
@@ -357,12 +370,12 @@ async function seed(
     name: "Guide.md",
     content: "# Guide\n\nHow bob works.\n",
   });
-  await send(origin, asCarol, "PATCH", "/api/v1/issues/TGT-1", 200, { repo: "acme/tgt-repo" });
+  await send(origin, asCarol, "PATCH", `/api/v1/issues/${first}`, 200, { repo: repository });
   await send(origin, asCarol, "POST", "/api/v1/priorities", 201, {
-    id: "tgt-work",
+    id: priority,
     title: "The target work",
   });
-  await send(origin, asCarol, "PATCH", "/api/v1/issues/TGT-1", 200, { advances: ["tgt-work"] });
+  await send(origin, asCarol, "PATCH", `/api/v1/issues/${first}`, 200, { advances: [priority] });
   await send(origin, asCarol, "POST", "/api/v1/broadcasts", 201, {
     body: "A broadcast to the worker.",
     delivery: "btw",
@@ -373,25 +386,25 @@ async function seed(
     delivery: "btw",
   });
   await send(origin, asCarol, "PUT", "/api/v1/settings/delivery", 200, {
-    deploy_repo: "acme/tgt-repo",
+    deploy_repo: repository,
     deploy_workflow_path: ".github/workflows/deploy.yml",
     production_job_names: ["release"],
     pr_checks_workflow_path: ".github/workflows/ci.yml",
     population_authors: ["octocat"],
   });
-  // A merged pull request of TGT's repository and a deploy run of it, which the delivery
+  // A merged pull request of the target's repository and a deploy run of it, which the delivery
   // reconcile writes from GitHub and this stack never reaches, written as it writes them.
   await sqlAt(database, [
     "insert into delivery_pull_requests (repo, number, title, url, author, created_at, merged_at, issue_key) " +
-      "values ('acme/tgt-repo', 7, 'The change of TGT-1', 'https://github.com/acme/tgt-repo/pull/7', " +
-      "'octocat', now() - interval '3 hours', now() - interval '1 hour', 'TGT-1')",
+      `values ('${repository}', 7, 'The change of ${first}', 'https://github.com/${repository}/pull/7', ` +
+      `'octocat', now() - interval '3 hours', now() - interval '1 hour', '${first}')`,
     "insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, created_at, " +
-      "completed_at, conclusion, url, head_branch, event) values ('acme/tgt-repo', 900, 'deploy', " +
+      `completed_at, conclusion, url, head_branch, event) values ('${repository}', 900, 'deploy', ` +
       "'1111111111111111111111111111111111111111', now() - interval '50 minutes', now() - interval '50 minutes', " +
       "now() - interval '50 minutes', now() - interval '45 minutes', 'success', " +
-      "'https://github.com/acme/tgt-repo/actions/runs/900', 'main', 'push')",
+      `'https://github.com/${repository}/actions/runs/900', 'main', 'push')`,
     "insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion) values " +
-      "('acme/tgt-repo', 900, 'release', now() - interval '50 minutes', now() - interval '46 minutes', 'success')",
+      `('${repository}', 900, 'release', now() - interval '50 minutes', now() - interval '46 minutes', 'success')`,
   ]);
   // A file of the worker's conversation, sent as the agent writes one, which no route lists.
   const form = new FormData();
@@ -512,10 +525,32 @@ function buildBase(commit: string, scratch: string): string {
   return binary;
 }
 
+/** The project key of the issue key the stack's own route index (GET /api/v1) gives as an example
+ *  in its text: the search route's description writes one issue key in the forms a person writes
+ *  it, upper and lower case among them, which tells it from other `NAME-8` tokens (`UTF-8`). A
+ *  deployment whose target project has that key reads it in the index, which names no row of it.
+ *  It throws where the index gives no such example. */
+async function routeIndexKey(origin: string): Promise<string> {
+  const response = await fetch(`${origin}/api/v1`, {
+    headers: { Authorization: `Bearer ${sharedToken}` },
+  });
+  const text = await response.text();
+  const key = [...text.matchAll(/\b([A-Z][A-Z0-9]{1,9})-([1-9][0-9]*)\b/g)]
+    .filter(([, name = "", number = ""]) => text.includes(`${name.toLowerCase()}-${number}`))
+    .map(([, name = ""]) => name)
+    .find((name) => !["OWN", "EMPTY"].includes(name));
+  if (response.status !== 200 || key === undefined) {
+    throw new Error(
+      `GET /api/v1 answered ${response.status} and gives no issue key as an example: ${text.slice(0, 300)}`
+    );
+  }
+  return key;
+}
+
 if (import.meta.main) {
   const which = Bun.argv[2];
-  if (which !== "head" && which !== "base") {
-    console.error("usage: bun e2e/__tests__/restricted-sweep-stack.ts <head | base>");
+  if (which !== "head" && which !== "base" && which !== "keyed") {
+    console.error("usage: bun e2e/__tests__/restricted-sweep-stack.ts <head | base | keyed>");
     process.exit(2);
   }
   const scratch = mkdtempSync(join(tmpdir(), "restricted-sweep-stack-"));
@@ -536,25 +571,30 @@ if (import.meta.main) {
     try {
       if (stack === undefined) throw new Error("the harness started no stack");
       const origin = `http://127.0.0.1:${stackVariable(stack.env, "DISPATCH_E2E_PORT")}`;
-      const credentials = await seed(origin, stack.env);
-      // `base` names the commit the `base` child built, and is undefined for `head` alone.
-      const runs: StackRuns[keyof StackRuns] =
-        base === undefined
-          ? {
-              target: await sweep(origin, "TGT", credentials),
-              empty: await sweep(origin, "EMPTY", credentials),
-              probes: run(
-                [
-                  "go",
-                  "-C",
-                  join(repositoryRoot, "packages/envoy"),
-                  "run",
-                  "./internal/dispatch/api/cmd/routeprobes",
-                ],
-                "the route probes"
-              ),
-            }
-          : { base, target: await sweep(origin, "TGT", credentials) };
+      let runs: StackRuns[keyof StackRuns];
+      if (which === "keyed") {
+        const key = await routeIndexKey(origin);
+        const credentials = await seed(origin, stack.env, key);
+        runs = { key, target: await sweep(origin, key, credentials) };
+      } else if (base === undefined) {
+        const credentials = await seed(origin, stack.env);
+        runs = {
+          target: await sweep(origin, "TGT", credentials),
+          empty: await sweep(origin, "EMPTY", credentials),
+          probes: run(
+            [
+              "go",
+              "-C",
+              join(repositoryRoot, "packages/envoy"),
+              "run",
+              "./internal/dispatch/api/cmd/routeprobes",
+            ],
+            "the route probes"
+          ),
+        };
+      } else {
+        runs = { base, target: await sweep(origin, "TGT", await seed(origin, stack.env)) };
+      }
       console.log(JSON.stringify(runs));
     } finally {
       await stopStacks(false);

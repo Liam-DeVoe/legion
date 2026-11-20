@@ -387,10 +387,12 @@ async function stack<Which extends keyof StackRuns>(which: Which): Promise<Stack
   return runs;
 }
 
-/** Both stacks, started together the first time a row asks. */
+/** The three stacks, started together the first time a row asks. */
 let started: Promise<StackRuns> | undefined;
 function stacks(): Promise<StackRuns> {
-  started ??= Promise.all([stack("head"), stack("base")]).then(([head, base]) => ({ base, head }));
+  started ??= Promise.all([stack("head"), stack("base"), stack("keyed")]).then(
+    ([head, base, keyed]) => ({ base, head, keyed })
+  );
   return started;
 }
 
@@ -520,7 +522,23 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
         /^ok {6}\/ws\/live: the member is sent \d+ events in 5 s, none of TGT; the full member is sent the comment \(control\)$/m
       );
     },
-    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild"] })
+    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
+  );
+
+  // The route index's text names an example issue key (the search route's description): a target
+  // keyed as that key's project reads the index, whose prose names no row of it, so the run passes.
+  test(
+    "for a target keyed as the route index's example issue key, the run passes",
+    async () => {
+      const { key, target } = (await stacks()).keyed;
+      expect(key).toMatch(/^[A-Z][A-Z0-9]{1,9}$/);
+      expect(target.stdout).toContain(`\nok      GET /api/v1: 200, no row of ${key} (`);
+      expect(target.stdout).toContain(
+        `\nPASS: no route and neither socket gave the member a row of ${key}\n`
+      );
+      expect(target.code, target.stdout).toBe(0);
+    },
+    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
   );
 
   test(
@@ -532,7 +550,7 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       );
       expect(empty.code).toBe(2);
     },
-    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild"] })
+    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
   );
 
   test(
@@ -570,7 +588,7 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
         /^FAIL {4}GET \/api\/github\/rest\/repos\/\{owner\}\/\{repo\}\/pulls\/\{number\}: the member is answered 200 for TGT's repository, where one the App is not installed on is answered /m
       );
     },
-    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild"] })
+    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
   );
 
   test(
@@ -586,6 +604,6 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
         expect([path, pairs]).toEqual([path, server.get(path) ?? {}]);
       }
     },
-    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild"] }, "short")
+    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] }, "short")
   );
 });

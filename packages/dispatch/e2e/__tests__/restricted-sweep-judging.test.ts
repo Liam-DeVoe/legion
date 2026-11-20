@@ -425,7 +425,11 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
   test(
     "a refusal other than 403 or 404 that names the project's object is a FAIL",
     async () => {
-      const refusal = { code: "ARTIFACT_LINKED", error: `artifact belongs to issue ${tgt.issue}` };
+      // As the server writes it (api/owner.go): the issue in prose, and the route it names.
+      const refusal = {
+        code: "ARTIFACT_LINKED",
+        error: `artifact belongs to issue ${tgt.issue}; use /api/v1/issues/${tgt.issue}/...`,
+      };
       const { code, stdout } = await sweep(
         [at(`/api/v1/artifacts/${tgt.projectDocument}/comments`, 400, refusal)],
         { rows: ["/api/v1/artifacts/{id}/comments"] }
@@ -449,6 +453,28 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
         `GET /api/v1/inbox: the member is answered 200 holding ${tgt.ask}, a row of TGT: [{"id":"${tgt.ask}","issue_key":"${tgt.issue}"}]`,
       ]);
       expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  // The route index's text names example issue keys of any project, in prose (the search route's
+  // description names one): an issue key inside prose is no row of the project. The list row
+  // above is its control, an issue key the server wrote as a whole value.
+  test(
+    "a route index whose prose names an issue key of the project is no FAIL",
+    async () => {
+      const index = {
+        routes: [
+          {
+            path: "/api/v1/search",
+            description:
+              "A q that is one issue key in any form a person writes it - TGT-1042, tgt-1042, TGT 1042.",
+          },
+        ],
+      };
+      const { stdout } = await sweep([at("/api/v1", 200, index)], { rows: ["/api/v1"] });
+      expect(failures(stdout)).toEqual([]);
+      expect(stdout).toContain("\nok      GET /api/v1: 200, no row of TGT (can fail)\n");
     },
     rowLimit("short")
   );
