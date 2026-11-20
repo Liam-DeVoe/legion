@@ -36,7 +36,7 @@ import (
 //     array SeriesValuesOf answers), and the stamp of the rows it folded (rowsStamp).
 //
 // A range exists for every length of FigureLengths and every end day from the day after the
-// eval's first row through figureLead days after today, for the project's own rows and for each
+// eval's first row through FigureLead days after today, for the project's own rows and for each
 // repository the eval holds rows of: a compare range ends on any day before the window's, and a
 // page held open keeps its compare range while its window rolls on.
 //
@@ -71,12 +71,13 @@ var FigureLengths = []int{7, 8, 14, 15, 28, 29, 84, 85}
 // days before its end.
 const figureSpan = 85
 
-// figureLead is how many days after today the last stored end day lies. Just after a midnight the
+// FigureLead is how many days after today the last stored end day lies, the day a project's
+// figures stand built through once its walk is done (FiguresThrough). Just after a midnight the
 // live view's window ends the new tomorrow, two days after the day before's today, and a read can
 // come before the pass of the new day has written the ranges ending then, so the pass of the day
 // before writes them already: their last day holds no row yet, and a fold divides by a range's
 // days, not by its rows.
-const figureLead = 2
+const FigureLead = 2
 
 // foldKeyOf is the fingerprint of what entry's definition folds its figures by (fold_key): the
 // eval's id and source, and each series' name, fold, listing and role, in name order. A register

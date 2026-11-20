@@ -300,7 +300,7 @@ func (s *Store) foldFiguresOfDays(ctx context.Context, build, project string, sp
 // walkFigures makes a batch of each project's figures walk under the pass's build: from the first
 // end day it has not built, or, where it is to begin (no record of the build's, which is how each
 // build makes its own walk, or one begun again), from the day after the project's first listed day
-// row, it folds up to r.batch end days through figureLead days after today (buildFigureEnds), and
+// row, it folds up to r.batch end days through FigureLead days after today (buildFigureEnds), and
 // records where it stands in the same transaction, so the figures and the walk that says how far
 // they are folded commit together. The batch that reaches the last end day records the project's
 // figures built through it (eval_figures_built), which the first whole walk of any build sets and
@@ -314,7 +314,7 @@ func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	last := r.today.AddDate(0, 0, figureLead)
+	last := r.today.AddDate(0, 0, FigureLead)
 	pending := false
 	for _, project := range r.projects {
 		key := walkKey{family: walkFigures, project: project}

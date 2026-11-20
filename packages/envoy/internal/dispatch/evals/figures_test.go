@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -412,9 +414,9 @@ func (r *refresherRig) expectBuilt(t *testing.T, what string, today time.Time) {
 	}
 	built := r.figuresBuilt(t)
 	for _, project := range projects {
-		if through, held := built[project]; !held || !through.Equal(today.AddDate(0, 0, figureLead)) {
+		if through, held := built[project]; !held || !through.Equal(today.AddDate(0, 0, FigureLead)) {
 			t.Errorf("%s: %s's figures stand built %t through %s, want through %s", what, project, held, through.Format(time.DateOnly),
-				today.AddDate(0, 0, figureLead).Format(time.DateOnly))
+				today.AddDate(0, 0, FigureLead).Format(time.DateOnly))
 		}
 	}
 }
@@ -529,7 +531,7 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 
 	// The daily tick: a pass of the next UTC day writes its rows, and the ranges of the end day it
 	// adds, two days after the new today, of every eval.
-	added := refresherToday.AddDate(0, 0, 1+figureLead).Format(time.DateOnly)
+	added := refresherToday.AddDate(0, 0, 1+FigureLead).Format(time.DateOnly)
 	r.now = r.now.Add(24 * time.Hour)
 	r.settle(t)
 	state = r.expectRewrites(t, "the daily tick", state, true, func(line string) bool {
@@ -627,7 +629,7 @@ func TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild(t *testing.T) {
 	r := newRefresherRig(t)
 	r.batch = 2
 	r.seedHistories(t)
-	last := refresherToday.AddDate(0, 0, figureLead)
+	last := refresherToday.AddDate(0, 0, FigureLead)
 	heldOff := 0
 	for passes := 1; passes <= 100; passes++ {
 		_, next := r.pass(t)
@@ -677,4 +679,42 @@ func TestTheMarkerHoldsTheReadOffUntilTheFirstWholeBuild(t *testing.T) {
 	r.pass(t)
 	r.expectBuilt(t, "a rollback once the new build's walk is done", refresherToday)
 	expectTruth(t, "after the roll and the rollback", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestTheDayRowsAreFoldedInDayOrderWhateverOrderTheReadAnswers: a read of the day rows answers
+// them in its plan's order, and a sum of floats depends on the order of its parts, so
+// SeriesValuesOf folds them in day order, as the stored figures are folded (newFigureGroup): three
+// days of a logged sum, 1e16 then 1 then 1, sum to 1e16 in day order (each 1 is half an ulp of
+// 1e16 and rounds to the even neighbour) and to 1e16+2 the other way round, and the read answers
+// the day order's bits whichever order its rows come in.
+func TestTheDayRowsAreFoldedInDayOrderWhateverOrderTheReadAnswers(t *testing.T) {
+	day := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	entry := Entry{Definition: Definition{EvalID: "EVAL/spend", ProjectKey: "EVAL", Source: SourceLogged},
+		Series: []Series{{EvalID: "EVAL/spend", Series: "dollars", SeriesComputation: SeriesComputation{Role: RoleHeadline, Listed: true, Agg: AggSum}}}}
+	rows := func(order ...int) []WindowRow {
+		values := []float64{1e16, 1, 1}
+		var held []WindowRow
+		for _, index := range order {
+			sum := values[index]
+			held = append(held, WindowRow{Range: RangeWindow, EvalID: entry.Definition.EvalID,
+				Part: measures.DayPart{Series: "dollars", Day: day.AddDate(0, 0, index), N: 1, Sum: &sum, Samples: []float64{sum}}})
+		}
+		return held
+	}
+	window := Range{From: day, To: day.AddDate(0, 0, 3)}
+	firsts := map[string]time.Time{"dollars": day}
+	inOrder := SeriesValuesOf(entry, rows(0, 1, 2), firsts, window, nil)
+	reversed := SeriesValuesOf(entry, rows(2, 1, 0), firsts, window, nil)
+	want, got := inOrder[0].Window["sum"], reversed[0].Window["sum"]
+	if want == nil || *want != 1e16 || got == nil || math.Float64bits(*got) != math.Float64bits(*want) {
+		t.Errorf("the sum of rows answered in day order is %s and of rows answered the other way round %s, want 1e16 for both", showSum(want), showSum(got))
+	}
+}
+
+// showSum is a figure as a check's message prints it.
+func showSum(value *float64) string {
+	if value == nil {
+		return "null"
+	}
+	return strconv.FormatFloat(*value, 'g', -1, 64)
 }

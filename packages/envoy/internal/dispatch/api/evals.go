@@ -791,55 +791,111 @@ func (s *server) evalItemsAndFreshness(ctx context.Context, registry *evals.Stor
 	return items, freshness, nil
 }
 
-// evalItemsOf states each of entries with its values: one read of the day rows of the page's
-// evals over the window and the compare range (evals.Store.DayWindow, the rows of repos where it
-// names any) and one read of each series' first day (evals.Store.FirstDays), side by side, each
-// of every project the entries are evals of. It answers the items, in entries' order, and the
-// oldest updated_at of the rows it folded.
+// evalItemsOf states each of entries with its values, and answers the items, in entries' order,
+// and the oldest updated_at of the rows it folded. A read of an offered range (evals.FiguresOffered:
+// a window and a compare range each of a length the Evals tab offers, of the projects' own rows or
+// one repository's) reads the stored figures (evals.Store.ReadStoredFigures, two statements) and
+// each series' first day (evals.Store.FirstDays) side by side, and states each eval from its stored
+// rows; an eval they cannot answer (a project whose figures are not built yet, or a stored row of
+// another fold key than the eval's) and every eval of any other read is stated from one read of
+// the day rows of the window and the compare range (evals.Store.DayWindow, the rows of repos where
+// it names any), side by side with the first days where nothing was read before. Both answer the
+// same bits (evals.StoredFigures.SeriesValues). Each read reads every project the entries it reads
+// are evals of at once.
 func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries []evals.Entry, repos []string, ranges evalRanges) ([]evalItem, *time.Time, error) {
+	values := make([][]evals.SeriesValues, len(entries))
+	var oldest *time.Time
+	earliest := func(at time.Time) {
+		if oldest == nil || at.Before(*oldest) {
+			oldest = &at
+		}
+	}
+	var firsts map[string]map[string]time.Time
+	unstated := make([]int, 0, len(entries))
+	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
+		repo := ""
+		if len(repos) == 1 {
+			repo = repos[0]
+		}
+		var stored evals.StoredFigures
+		if err := store.ReadSideBySide(ctx,
+			func(ctx context.Context) (err error) {
+				stored, err = registry.ReadStoredFigures(ctx, evalProjects(entries), entries, repo, ranges.window, ranges.compare)
+				return err
+			},
+			func(ctx context.Context) (err error) {
+				firsts, err = registry.FirstDays(ctx, entries)
+				return err
+			},
+		); err != nil {
+			return nil, nil, err
+		}
+		for index, entry := range entries {
+			series, at, ok := stored.SeriesValues(entry, firsts[entry.Definition.EvalID], ranges.window, ranges.compare)
+			if !ok {
+				unstated = append(unstated, index)
+				continue
+			}
+			values[index] = series
+			if at != nil {
+				earliest(*at)
+			}
+		}
+	} else {
+		for index := range entries {
+			unstated = append(unstated, index)
+		}
+	}
+	if len(unstated) > 0 {
+		rest := make([]evals.Entry, len(unstated))
+		for position, index := range unstated {
+			rest[position] = entries[index]
+		}
+		var rows []evals.WindowRow
+		reads := []func(context.Context) error{func(ctx context.Context) (err error) {
+			rows, err = registry.DayWindow(ctx, evalProjects(rest), rest, repos, ranges.window, ranges.compare)
+			return err
+		}}
+		if firsts == nil {
+			reads = append(reads, func(ctx context.Context) (err error) {
+				firsts, err = registry.FirstDays(ctx, entries)
+				return err
+			})
+		}
+		if err := store.ReadSideBySide(ctx, reads...); err != nil {
+			return nil, nil, err
+		}
+		byEval := map[string][]evals.WindowRow{}
+		for _, row := range rows {
+			byEval[row.EvalID] = append(byEval[row.EvalID], row)
+			earliest(row.UpdatedAt)
+		}
+		for _, index := range unstated {
+			id := entries[index].Definition.EvalID
+			values[index] = evals.SeriesValuesOf(entries[index], byEval[id], firsts[id], ranges.window, ranges.compare)
+		}
+	}
+	items := make([]evalItem, len(entries))
+	for index, entry := range entries {
+		items[index] = evalItem{
+			Definition: entry.Definition,
+			Owner:      evalOwnerOf(entry.Definition),
+			Series:     values[index],
+			Verdict:    evals.VerdictOf(entry, evals.WindowStatistics(values[index])),
+		}
+	}
+	return items, oldest, nil
+}
+
+// evalProjects is the projects entries are evals of, in the order they first appear.
+func evalProjects(entries []evals.Entry) []string {
 	var projects []string
 	for _, entry := range entries {
 		if !slices.Contains(projects, entry.Definition.ProjectKey) {
 			projects = append(projects, entry.Definition.ProjectKey)
 		}
 	}
-	var rows []evals.WindowRow
-	var firsts map[string]map[string]time.Time
-	if err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			rows, err = registry.DayWindow(ctx, projects, entries, repos, ranges.window, ranges.compare)
-			return err
-		},
-		func(ctx context.Context) (err error) {
-			firsts, err = registry.FirstDays(ctx, entries)
-			return err
-		},
-	); err != nil {
-		return nil, nil, err
-	}
-	byEval := map[string][]evals.WindowRow{}
-	var oldest *time.Time
-	if len(rows) > 0 {
-		first := rows[0].UpdatedAt
-		oldest = &first
-	}
-	for _, row := range rows {
-		byEval[row.EvalID] = append(byEval[row.EvalID], row)
-		if row.UpdatedAt.Before(*oldest) {
-			*oldest = row.UpdatedAt
-		}
-	}
-	items := make([]evalItem, len(entries))
-	for index, entry := range entries {
-		series := evals.SeriesValuesOf(entry, byEval[entry.Definition.EvalID], firsts[entry.Definition.EvalID], ranges.window, ranges.compare)
-		items[index] = evalItem{
-			Definition: entry.Definition,
-			Owner:      evalOwnerOf(entry.Definition),
-			Series:     series,
-			Verdict:    evals.VerdictOf(entry, evals.WindowStatistics(series)),
-		}
-	}
-	return items, oldest, nil
+	return projects
 }
 
 func evalOwnerOf(definition evals.Definition) evalOwner {
