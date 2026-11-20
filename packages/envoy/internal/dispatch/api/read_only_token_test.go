@@ -27,8 +27,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -128,14 +128,14 @@ type readOnlyWalkToken struct {
 // the rig's stub broker for caller's key: the read entry's token (the project scope none beside
 // the scope read), a token narrowed from each kind of trade the broker narrows, and among them the
 // machine login's narrowed token with a cut, as the golden file the broker's own test holds its
-// answers to (brokertokentest.NarrowedAnswers). And a person's, minted on the rig's own store: a
+// answers to (ciphertokentest.NarrowedAnswers). And a person's, minted on the rig's own store: a
 // read-only personal token of each set such a token may hold (readOnlyPersonalTokens). Each is
 // held to be a credential Dispatch reads as read-only, carrying the very cut its answer names,
 // and at least one to carry a cut, so a walk over them cannot pass for want of either.
 func readOnlyWalkTokens(t *testing.T, rig *brokerTokenRig, caller *brokerCaller) []readOnlyWalkToken {
 	t.Helper()
-	answers := map[string]brokertoken.Introspection{"the read entry's token": readOnlyToken(caller.jkt)}
-	for kind, answer := range brokertokentest.NarrowedAnswers(t, caller.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix()) {
+	answers := map[string]ciphertoken.Introspection{"the read entry's token": readOnlyToken(caller.jkt)}
+	for kind, answer := range ciphertokentest.NarrowedAnswers(t, caller.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix()) {
 		answers["the token narrowed from a "+kind] = answer
 	}
 	var tokens []readOnlyWalkToken

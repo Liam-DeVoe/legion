@@ -16,14 +16,14 @@ import {
   stubIssuer,
   thumbprintOf,
   writeSignIn,
-} from "@legion/broker-client/test/sign-ins";
+} from "@legion/cipher-client/test/sign-ins";
 import {
   FORM_AS_OF,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_SCOPE,
   SCOPE_READ,
   SUBJECT_TOKEN_TYPE_PERSON,
-} from "@legion/broker-client/wire";
+} from "@legion/cipher-client/wire";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { brokerCredential, brokerTokenFor, forgetBrokerSession } from "../broker-credential";
@@ -639,7 +639,7 @@ test("a session the host has left keeps no key and no renewing token", async () 
 
 test("a pool machine has a route: Dispatch and the listener are given its broker credential", () => {
   // This client federates at a workload identity pool as the Go client does
-  // (@legion/broker-client/pool-identity), so a pool machine with no bearer trades at the broker
+  // (@legion/cipher-client/pool-identity), so a pool machine with no bearer trades at the broker
   // like any other, rather than reading as a machine with nothing to present.
   const broker = stubBroker(600);
   const env = {

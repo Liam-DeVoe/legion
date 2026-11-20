@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -1033,10 +1033,10 @@ func newParityPair(t *testing.T, appKey string) *parityPair {
 		github: &parityGitHub{},
 		caller: newBrokerCaller(t),
 	}
-	narrowed := brokertokentest.NarrowedAnswers(t, pair.caller.jkt, parityTestSession, time.Now().Add(time.Hour).Unix())["machine-login"]
+	narrowed := ciphertokentest.NarrowedAnswers(t, pair.caller.jkt, parityTestSession, time.Now().Add(time.Hour).Unix())["machine-login"]
 	writing := narrowed
-	writing.ProjectScope, writing.Scope = brokertoken.ProjectScopePerson, ""
-	stack := func(who, token string, answer brokertoken.Introspection) *parityStack {
+	writing.ProjectScope, writing.Scope = ciphertoken.ProjectScopePerson, ""
+	stack := func(who, token string, answer ciphertoken.Introspection) *parityStack {
 		calls := &parityCalls{counts: map[string]int{}}
 		rig := newBrokerTokenRigOn(t, testServerOptions{
 			app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: appKey},

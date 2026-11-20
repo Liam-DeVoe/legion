@@ -7,8 +7,8 @@
 // new file over the old one, and the next request carries the new token.
 
 import { readFileSync } from "node:fs";
-import { type DpopKey, importDpopKey } from "@legion/broker-client/dpop";
-import { readErrorCode } from "@legion/broker-client/error-text";
+import { type DpopKey, importDpopKey } from "@legion/cipher-client/dpop";
+import { readErrorCode } from "@legion/cipher-client/error-text";
 import { holdSecret } from "@legion/contracts/held-secrets";
 import type { RequestCredential } from "./bearer";
 import { httpUrl } from "./envoy-config";

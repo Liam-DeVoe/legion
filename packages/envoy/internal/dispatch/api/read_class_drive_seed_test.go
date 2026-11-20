@@ -23,8 +23,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -131,12 +131,12 @@ func newDriveRig(t *testing.T) *driveWorld {
 // it must be.
 func (w *driveWorld) mintTokens(t *testing.T) {
 	t.Helper()
-	answer := brokertokentest.NarrowedAnswers(t, w.caller.jkt, driveSession, time.Now().Add(time.Hour).Unix())["machine-login"]
+	answer := ciphertokentest.NarrowedAnswers(t, w.caller.jkt, driveSession, time.Now().Add(time.Hour).Unix())["machine-login"]
 	if answer.Person != drivePerson || answer.AsOf != "" {
 		t.Fatalf("the golden machine-login answer names %q with the cut %q, want %s and no cut", answer.Person, answer.AsOf, drivePerson)
 	}
 	writer := answer
-	writer.ProjectScope, writer.Scope = brokertoken.ProjectScopePerson, ""
+	writer.ProjectScope, writer.Scope = ciphertoken.ProjectScopePerson, ""
 	w.readOnly, w.writer = "the-drive-read-only-token", "the-drive-writer-token"
 	w.rig.broker.Says(w.readOnly, answer)
 	w.rig.broker.Says(w.writer, writer)

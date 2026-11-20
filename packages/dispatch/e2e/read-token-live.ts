@@ -21,7 +21,7 @@
  *  - The same machine login's, traded asking for `read` with a cut.
  *
  *  The broker's introspection answer for each of the two machine login tokens must be the one
- *  packages/envoy/internal/brokertoken/testdata/narrowed-answers.json holds for that kind, and the
+ *  packages/envoy/internal/ciphertoken/testdata/narrowed-answers.json holds for that kind, and the
  *  cut token's GET /api/v1/whoami must name the cut.
  *
  *  Run it from packages/dispatch once two stacks are up on this machine:
@@ -58,13 +58,13 @@ import {
 } from "@legion/contracts";
 import { credentialDeadline } from "@legion/envoy-client/bearer";
 import { brokerCredential } from "@legion/envoy-client/broker-credential";
-// packages/dispatch does not depend on @legion/broker-client, so the client the `dispatch` command
+// packages/dispatch does not depend on @legion/cipher-client, so the client the `dispatch` command
 // trades with is read from its source.
-import { type DpopKey, importDpopKey, newDpopKey } from "../../broker-client/src/dpop";
-import type { ReadTrade } from "../../broker-client/src/environment";
-import type { TokenSource } from "../../broker-client/src/source";
-import { type BrokerToken, BrokerTokenClient } from "../../broker-client/src/token-client";
-import { SCOPE_READ } from "../../broker-client/src/wire";
+import { type DpopKey, importDpopKey, newDpopKey } from "../../cipher-client/src/dpop";
+import type { ReadTrade } from "../../cipher-client/src/environment";
+import type { TokenSource } from "../../cipher-client/src/source";
+import { type BrokerToken, BrokerTokenClient } from "../../cipher-client/src/token-client";
+import { SCOPE_READ } from "../../cipher-client/src/wire";
 import { baseUrl, createIssue, createProject, listComments } from "./api";
 import { harnessPorts } from "./harness-ports";
 
@@ -83,7 +83,7 @@ const machineSession = `read-token-live-${randomUUID()}`;
 const goldenCut = "2026-11-18T09:30:00.123456Z";
 /** The golden introspection answers of a token narrowed to reading, by kind of trade. */
 const goldenFile = fileURLToPath(
-  new URL("../../envoy/internal/brokertoken/testdata/narrowed-answers.json", import.meta.url)
+  new URL("../../envoy/internal/ciphertoken/testdata/narrowed-answers.json", import.meta.url)
 );
 /** The comment the tokens send, this run's own, so the count alice reads is of this run's. */
 const commentBody = `Written by read-token-live.ts, run ${randomUUID()}.`;
@@ -265,7 +265,7 @@ interface MachineLogin {
 }
 
 /**
- * Logs a machine in as `agent-secrets machine login` does (packages/envoy/internal/broker/helper,
+ * Logs a machine in as `agent-secrets machine login` does (packages/envoy/internal/cipher/helper,
  * `Broker.Login`): a key of its own; a credential-request object for a launcher credential, naming
  * the approver as its `login_hint`, signed with that key (`record.Sign`); the device authorization
  * with the key's thumbprint; and the token poll, with a DPoP proof of that key. In between,

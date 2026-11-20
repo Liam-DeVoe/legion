@@ -81,7 +81,7 @@ type Credential struct {
 	TokenID   string
 	TokenName string
 	// ReadOnly is a credential that may only read. Two credentials set it: a broker-issued token
-	// its verifier decided is read-only (brokertoken.Caller.ReadOnly), which the secrets broker
+	// its verifier decided is read-only (ciphertoken.Caller.ReadOnly), which the secrets broker
 	// minted from a read entry or narrowed to reading because its trade asked for read; and a
 	// read-only personal token, a row of agent_read_tokens, which a person made holding read
 	// alone or beside person (personalTokenActor in internal/dispatch/api). Dispatch answers it
@@ -92,7 +92,7 @@ type Credential struct {
 	// Scopes. False for every other credential: a cookie, the deployment's shared token, a
 	// service-account token, and a broker-issued or personal token that may write.
 	ReadOnly bool
-	// Cut is the past time a read-only credential reads at (brokertoken.Caller.Cut), in UTC, and
+	// Cut is the past time a read-only credential reads at (ciphertoken.Caller.Cut), in UTC, and
 	// the zero time for a credential that names no cut. Only a read-only credential carries one.
 	Cut time.Time
 }
