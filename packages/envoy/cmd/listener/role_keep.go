@@ -1731,8 +1731,9 @@ func keyedEventID(key string) string {
 // copy has, so the stream holds one dead letter for each copy however many walks and listeners
 // send it, and its event id is that key's (keyedEventID). issued_at is the walk's clock when it
 // judged the copy. Its text names the role, the copy's event id, the message (keptCopyNamed: a
-// Dispatch post by its reference and none of its body, any other message by its first line), why
-// Envoy dropped it, and when Envoy kept it and dropped it, in UTC.
+// Dispatch comment or message by its reference and none of its body, any other Dispatch message
+// by its event id alone, a message from any other source by its first line), why Envoy dropped
+// it, and when Envoy kept it and dropped it, in UTC.
 func keptRoleDeadLetter(role string, stored bus.StoredMessage, item contracts.Envelope, dropped time.Time, drop keptRoleDrop) (contracts.Envelope, string) {
 	key := "envoy.dead-letter." + role + "." + strconv.FormatUint(stored.Sequence, 10)
 	text := strings.Join([]string{
@@ -1756,19 +1757,25 @@ func keptRoleDeadLetter(role string, stored bus.StoredMessage, item contracts.En
 	}, key
 }
 
-// dispatchUnquoted is the sentence a dead letter gives in place of a Dispatch post's first line.
-const dispatchUnquoted = "Envoy does not quote a message from Dispatch, because its author can edit or delete it."
+// dispatchPostUnquoted is the sentence a dead letter gives after naming a Dispatch comment or
+// message by its id and its reference, in place of its first line.
+const dispatchPostUnquoted = "Envoy names a comment or a message from Dispatch by its ID and its reference and quotes none of it, because its author can edit or delete it."
+
+// dispatchUnquoted is the line a dead letter gives in place of the first line of any other
+// Dispatch message, which the letter names by its event id alone.
+const dispatchUnquoted = "Envoy does not quote a message from Dispatch, and names this one by its event ID alone."
 
 // keptCopyNamed is the line of item's dead letter that says which message item is. A message from
 // any source but dispatch is named by its first line: its summary cut by contracts.OneLineSummary,
 // the rule the publish route cuts every summary it stores by, so a copy the route kept is quoted
 // as it was stored, and a raw role publish's at the same 160 runes. A Dispatch frame's summary is
-// the head of a post's body (internal/dispatch/outbox payloadSummary), and the letter is written
-// as late as the end of the copy's hour, after the post's author may have edited or deleted the
-// post, so the line quotes none of it. It names the post by its id and its reference
-// (dispatchPostRef), which gives the post as it is now. For a Dispatch frame that names no post,
-// the line says only that Envoy does not quote it, and the letter names the message by its event
-// id alone.
+// the head of what the event carries (internal/dispatch/outbox payloadSummary), and the line
+// quotes none of it. A comment's or a message's frame carries the head of the post's body, and the
+// letter is written as late as the end of the copy's hour, after the post's author may have edited
+// or deleted the post, so the line names the post by its id and its reference (dispatchPostRef),
+// which gives the post as it is now, and says why (dispatchPostUnquoted). Every other Dispatch
+// frame - an ask's, an issue's, a delivery receipt, and a post's whose event names no reference -
+// is named by its event id alone, and the line says only that (dispatchUnquoted).
 func keptCopyNamed(item contracts.Envelope) string {
 	if item.Source != "dispatch" {
 		return "The first line of the message is: " + contracts.OneLineSummary(item.PayloadSummary)
@@ -1777,7 +1784,7 @@ func keptCopyNamed(item contracts.Envelope) string {
 	if ref == "" {
 		return dispatchUnquoted
 	}
-	return "The message is Dispatch " + kind + " " + postID + ": " + ref + ". " + dispatchUnquoted +
+	return "The message is Dispatch " + kind + " " + postID + ": " + ref + ". " + dispatchPostUnquoted +
 		" Read the reference to see the " + kind + " as it is now."
 }
 

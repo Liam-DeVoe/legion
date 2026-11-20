@@ -480,12 +480,15 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		if kindErr == nil {
 			projectionKind = kind
 		}
+		// What a reject's removal of an insert's text took from other anchors' marks
+		// (docs.TakenAnchorMarks), which the column keeps below for the comment's delete.
+		var taken docs.TakenAnchorMarks
 		if comment.Anchor != nil {
 			var markErr error
 			if action == "accept" {
 				markErr = s.deps.Docs.AcceptSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, comment.Suggestion.ReplaceWith, actor)
 			} else {
-				markErr = s.deps.Docs.RejectSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
+				taken, markErr = s.deps.Docs.RejectSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
 			}
 			if markErr != nil {
 				if !errors.Is(markErr, docs.ErrAnchorOrphaned) {
@@ -512,7 +515,23 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		}
 		comment.Resolved = true
 		comment.Suggestion.Accepted = &accepted
-		suggestion, err := encodeJSON(comment.Suggestion)
+		// The column is written back as the create wrote it (storedSuggestion), with the kind the
+		// create stored, which the delete of a rejected suggestion reads to tell an insert's quote,
+		// the comment's own words, from document text, and with the anchor marks a reject's removal
+		// took text from, which that delete reads to take the inserted words out of the quotes of
+		// the asks and comments on them (deleteComment). Nothing but the reject records those
+		// marks: once the words are out of the document, no fact of it tells which anchors lay on
+		// them.
+		storedKind, _, err := loadStoredSuggestion(r.Context(), tx, comment.ID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		written := storedSuggestion{Suggestion: *comment.Suggestion, Kind: storedKind}
+		if len(taken.Removed) > 0 || len(taken.Cut) > 0 {
+			written.Taken = &taken
+		}
+		suggestion, err := encodeJSON(written)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

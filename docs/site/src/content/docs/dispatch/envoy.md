@@ -201,10 +201,11 @@ again. If no session takes a message by then, the listener drops it and sends th
 session a dead letter, when the publish named that session, unless it drops the message more than
 an hour late. The dead letter is an Envoy message on the session's agent subject that names the
 role, the message's event id, its first line, why Envoy dropped it, and when Envoy kept it and
-dropped it. A message from Dispatch is a comment or a message that its author can edit or delete,
-so its dead letter quotes none of it and names it by its id and its `dispatch://` reference,
-where the message carries them. The listener also sends one when it drops a kept message inside
-its hour because the live holder does not take the message's delivery mode, and
+dropped it. A dead letter quotes nothing of a message from Dispatch. A comment or a message is
+named by its id and its `dispatch://` reference, where its event carries them, because its author
+can edit or delete it; any other message from Dispatch, such as an ask's, an issue's or a delivery
+receipt, is named by its event id alone. The listener also sends one when it drops a kept message
+inside its hour because the live holder does not take the message's delivery mode, and
 `envoy_role_dead_letters_total` counts both. A publish that repeats a dedupe key while its first
 copy is still kept stores nothing new, and is answered with that first copy.
 While a kept message has at least 20 minutes of its hour left and no live session holds the

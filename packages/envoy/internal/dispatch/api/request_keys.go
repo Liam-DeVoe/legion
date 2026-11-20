@@ -1118,7 +1118,7 @@ func replayStoredAnswer(w http.ResponseWriter, held heldRequestKey, ended bool) 
 	}
 	cause := fmt.Sprintf("it was larger than the %d bytes a key keeps", keyedAnswerKept)
 	if ended {
-		cause = "it holds a comment or a message deleted since, or a document version name a delete replaced"
+		cause = "it holds a comment or a message that was deleted, or a document version name a delete replaced"
 	}
 	if held.committed {
 		writeError(w, contracts.IdempotencyAnswerNotKept, *held.status, fmt.Sprintf(

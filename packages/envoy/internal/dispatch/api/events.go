@@ -430,11 +430,13 @@ var postBodyEventKinds = map[string]refs.ItemKind{
 // on a post nobody edited, and when they deleted it and who they are (deleted_at, deleted_by), as
 // model.DeletedPostMark reads every other read's copy of that mark. deletedBy is nil where the
 // row records no actor, which is the mark an event payload then carries as a null deleted_by.
-// quoteCleared is that the comment's stored anchor quote is empty: the delete of a comment with a
-// pending insert suggestion empties it (clearDeletedPostBody), since that quote is the text the
-// suggestion inserted, and no other write stores an empty quote - an anchor's quote is refused
-// empty (resolveAnchor) and every mark a refresh reads it from covers text. A message carries no
-// anchor, so it is false there.
+// quoteCleared is that the comment's stored anchor quote is empty. Only the delete of a comment
+// whose insert suggestion no accept made document text, pending or rejected, empties a quote: its
+// own (clearDeletedPostBody), since that quote is the text the suggestion inserted, and that of
+// every other ask and comment on a mark the insert's removal took out whole, or on a mark it cut
+// that the document no longer holds (docs.RewriteTakenAnchors). No other write stores an empty
+// quote - an anchor's quote is refused empty (resolveAnchor) and every mark a refresh reads it
+// from covers text. A message carries no anchor, so it is false there.
 type postMarks struct {
 	editedAt     *time.Time
 	deletedAt    *time.Time
@@ -545,9 +547,14 @@ func (s *server) attachPostMarks(ctx context.Context, events []model.Event) erro
 			delete(payload, "body")
 			delete(payload, "body_truncated")
 			delete(payload, "suggestion")
-			// The quote the delete emptied, the text an insert suggestion put in the document,
-			// which every event the comment wrote before its delete carries in its anchor. A
-			// replace's, a delete's and a plain comment's quote is document text and stays.
+			// The quote the row holds empty, which every event the comment wrote before its delete
+			// carries in its anchor as it stood then. A quote is document text and stays - an
+			// accepted insert's, a replace's, a delete's and a plain comment's - but for two: the
+			// text an insert suggestion put in the document and no accept made document text, which
+			// the comment's own delete emptied with the body, and a plain comment's quote that lay
+			// wholly on such an insert's words, pending or rejected, which that insert's delete
+			// emptied on the row (docs.RewriteTakenAnchors). A quote that delete cut back to its
+			// document text is not empty, and each event keeps it as the event froze it.
 			if anchor, ok := payload["anchor"].(map[string]any); ok && post.quoteCleared {
 				anchor["quote"] = ""
 			}
