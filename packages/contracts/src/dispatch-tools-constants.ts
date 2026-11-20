@@ -78,11 +78,13 @@ export const PATH_KEEPS_BYTES =
 /**
  * What `dispatch artifact` says of a name the owner already holds. The command refuses it before
  * it uploads anything, because an upload of that name writes the document's next version and
- * replaces its text. `force` is what asks for that version. The refusal is the command's: the
- * API writes the version for every other caller, the Dispatch page's own upload among them.
+ * replaces its text. `force` is what asks for that version. The refusal is the command's; the
+ * API's own guard is the document token, which every replacement names, the Dispatch page's own
+ * upload among them, and without which Dispatch refuses it 400 PRECONDITION_REQUIRED. So the
+ * rule names both, and a writer who follows it is not refused a second time for the token.
  */
 export const ARTIFACT_NAME_EXISTS_RULE =
-  "An upload under the name of a document the owner already holds is refused: it writes that document's next version, over the text it holds. Change a document with dispatch doc-edit. Send the upload again with force (--force) to write the next version.";
+  'An upload under the name of a document the owner already holds is refused: it writes that document\'s next version, over the text it holds. Change a document with dispatch doc-edit. To write the next version, send the upload again with force (--force) and the token of the version it replaces (--precondition-json \'{"document":"sha256:…"}\', the token dispatch doc-read prints).';
 
 /**
  * What `dispatch artifact` says of inline text the store would change. The command renders the

@@ -1,7 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
-import { api, type WriteBounds } from "../../api/client";
+import {
+  api,
+  isFollowerNotFound,
+  isSubscriberNotFound,
+  removedEvenIfGone,
+  type WriteBounds,
+} from "../../api/client";
 import { type ListOwner, ownerSubscribersQuery } from "../../api/queries";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
@@ -12,7 +18,7 @@ import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteR
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 
 const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds): Promise<void> =>
   api.removeAskFollower(askId, sessionId, bounds);
@@ -24,18 +30,20 @@ const EMPTY_SUBSCRIBERS: readonly Subscriber[] = [];
  *  ask on a project document routes through the document's. */
 type AskOwner = Pick<Ask, "artifact_id" | "issue_key">;
 
+/** The topic family an ask's owner routes through: the issue's or the document's, as a press of
+ *  the card's Unsubscribe carries it. */
+interface OwnerSubscription {
+  label: string;
+  noun: "issue" | "document";
+  owner: ListOwner;
+  remove: (sessionId: string, bounds: WriteBounds) => Promise<void>;
+}
+
 /** The subscribers list shared with the owner's header: the issue's Subscribed agents panel
  *  (`IssueHeader`) or the project document page. Same key, which all three take from
  *  `ownerSubscribersQuery` by the `owner` named here, so a removal from either surface refreshes
  *  both, and a `subscription.removed` on the live event feed refreshes this card too. */
-function ownerSubscription(owner: AskOwner):
-  | {
-      label: string;
-      noun: "issue" | "document";
-      owner: ListOwner;
-      remove: (sessionId: string, bounds: WriteBounds) => Promise<void>;
-    }
-  | undefined {
+function ownerSubscription(owner: AskOwner): OwnerSubscription | undefined {
   if (owner.issue_key !== null) {
     const key = owner.issue_key;
     return {
@@ -258,23 +266,40 @@ export function AskRecipients({
   const counted = !subscribersRead.isError;
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
   const [open, setOpen] = useState(false);
+  // Each is a `DELETE`: made again after one that landed, it finds the session off the ask
+  // already (`404 FOLLOWER_NOT_FOUND`, `404 SUBSCRIBER_NOT_FOUND`), which is the change done
+  // (`removedEvenIfGone`). Each press carries the ask, or the owner's subscription, it is of:
+  // `retry()` runs the newest render's `write` with the press's own values (`useKeyedWrite`),
+  // and a host may draw one card for one ask after another, so the Retry of a press the reader
+  // stopped, and what its landing reads again, are of that press's ask, not of the one the card
+  // shows.
   const unfollow = useKeyedWrite({
-    write: (sessionId: string, bounds) => removeFollower(askId, sessionId, bounds),
-    label: (sessionId) => `${text.sessionText(sessionId, undefined)} taken off this ask`,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ask-thread", askId] }),
+    method: "DELETE",
+    write: (press: { askId: string; sessionId: string }, bounds) =>
+      removedEvenIfGone(removeFollower(press.askId, press.sessionId, bounds), isFollowerNotFound),
+    label: (press) => `${text.sessionText(press.sessionId, undefined)} taken off this ask`,
+    onSuccess: (_result, press) =>
+      queryClient.invalidateQueries({ queryKey: ["ask-thread", press.askId] }),
   });
   const unsubscribe = useKeyedWrite({
-    write: (sessionId: string, bounds) => {
-      if (subscription === undefined) {
+    method: "DELETE",
+    write: async (
+      press: { sessionId: string; subscription: OwnerSubscription | undefined },
+      bounds
+    ) => {
+      if (press.subscription === undefined) {
         throw new Error("Ask recipients unsubscribe requires an owner.");
       }
-      return subscription.remove(sessionId, bounds);
+      await removedEvenIfGone(
+        press.subscription.remove(press.sessionId, bounds),
+        isSubscriberNotFound
+      );
     },
-    label: (sessionId) =>
-      `${text.sessionText(sessionId, subscribers.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${subscription?.label ?? "this ask"}`,
-    onSuccess: () =>
+    label: (press) =>
+      `${text.sessionText(press.sessionId, subscribers.find((row) => row.session_id === press.sessionId)?.title)} unsubscribed from ${press.subscription?.label ?? "this ask"}`,
+    onSuccess: (_result, press) =>
       queryClient.invalidateQueries({
-        queryKey: ownerSubscribersQuery(subscription?.owner).queryKey,
+        queryKey: ownerSubscribersQuery(press.subscription?.owner).queryKey,
       }),
   });
 
@@ -423,8 +448,8 @@ export function AskRecipients({
       {unfollow.isError ? (
         <div className="mt-2">
           <QueryError
-            message="Could not unfollow."
-            onRetry={() => unfollow.mutate(unfollow.variables)}
+            message={stoppedNote(unfollow, "the unfollow", "made") ?? "Could not unfollow."}
+            onRetry={unfollow.retry}
             retrying={unfollow.isPending}
           />
         </div>
@@ -432,8 +457,10 @@ export function AskRecipients({
       {unsubscribe.isError ? (
         <div className="mt-2">
           <QueryError
-            message="Could not unsubscribe."
-            onRetry={() => unsubscribe.mutate(unsubscribe.variables)}
+            message={
+              stoppedNote(unsubscribe, "the unsubscribe", "made") ?? "Could not unsubscribe."
+            }
+            onRetry={unsubscribe.retry}
             retrying={unsubscribe.isPending}
           />
         </div>
@@ -449,7 +476,7 @@ export function AskRecipients({
           )} They will be told.`}
           onCancel={() => setConfirming(undefined)}
           onConfirm={() => {
-            unfollow.mutate(confirming.sessionId);
+            unfollow.mutate({ askId, sessionId: confirming.sessionId });
             setConfirming(undefined);
           }}
         />
@@ -466,7 +493,7 @@ export function AskRecipients({
             .join(" ")}
           onCancel={() => setConfirming(undefined)}
           onConfirm={() => {
-            unsubscribe.mutate(confirming.sessionId);
+            unsubscribe.mutate({ sessionId: confirming.sessionId, subscription });
             setConfirming(undefined);
           }}
         />

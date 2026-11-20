@@ -150,6 +150,51 @@ const DOCUMENT_IS_MARKDOWN =
 
 const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name ends in .md or .markdown or has no extension, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
 
+/** The guard dispatch_doc_edit takes: exactly one of a document token and a set of block
+ *  tokens. An upload takes the document token alone and has a shape of its own
+ *  (uploadPreconditionArgument). */
+function preconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
+  return z
+    .object({
+      document: z
+        .string({ min: 1 })
+        .describe("Token for the exact canonical document returned by dispatch doc-read.")
+        .optional(),
+      blocks: z
+        .array(
+          z.object({
+            id: z.string({ min: 1 }).describe("Stable block id dispatch doc-read --blocks lists."),
+            token: z
+              .string({ min: 1 })
+              .describe("That block's full-state token, including inline marks."),
+          }),
+          { min: 1 }
+        )
+        .describe(
+          "Every content block this batch changes, each with the token dispatch doc-read --blocks lists."
+        )
+        .optional(),
+    })
+    .describe("Optional optimistic-concurrency guard; select exactly one of document or blocks.")
+    .optional();
+}
+
+/** The guard dispatch_artifact takes. An upload rewrites the whole document, so only the
+ *  document token says which text it replaces: the server refuses a blocks guard on an upload
+ *  (400 INVALID_PRECONDITION), and a writer is offered no shape it would refuse. */
+function uploadPreconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
+  return z
+    .object({
+      document: z
+        .string({ min: 1 })
+        .describe("Token for the exact canonical document returned by dispatch doc-read."),
+    })
+    .describe(
+      "The token of the version this upload replaces, which an upload over a document the owner already holds must name; a first upload under a name replaces nothing and names none."
+    )
+    .optional();
+}
+
 const artifactOwner = documentOwnerValidation(false);
 
 /** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
@@ -1361,33 +1406,7 @@ export const dispatchToolSpecs = [
         .describe(
           "Flat tagged edits; an operation takes only the keys below, a misspelled one is refused rather than ignored, and the server validates the fields its op requires."
         ),
-      precondition: z
-        .object({
-          document: z
-            .string({ min: 1 })
-            .describe("Token for the exact canonical document returned by dispatch doc-read.")
-            .optional(),
-          blocks: z
-            .array(
-              z.object({
-                id: z
-                  .string({ min: 1 })
-                  .describe("Stable block id dispatch doc-read --blocks lists."),
-                token: z
-                  .string({ min: 1 })
-                  .describe("That block's full-state token, including inline marks."),
-              }),
-              { min: 1 }
-            )
-            .describe(
-              "Every content block this batch changes, each with the token dispatch doc-read --blocks lists."
-            )
-            .optional(),
-        })
-        .describe(
-          "Optional optimistic-concurrency guard; select exactly one of document or blocks."
-        )
-        .optional(),
+      precondition: preconditionArgument(z),
       summary: z.string().describe("Optional named-version summary.").optional(),
     }),
     validation: documentEditValidation,
@@ -1735,8 +1754,9 @@ export const dispatchToolSpecs = [
       "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
       "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
       `${ARTIFACT_SOURCE_RULE} ` +
-      `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force, so a title typed twice never empties the document that holds it. ` +
+      `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force and a token, so a title typed twice never empties the document that holds it; that refusal names no token, since no token makes such a call one Dispatch takes. ` +
       "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
+      "An upload that replaces a document the owner already holds under that name says which version it replaces: precondition.document takes the document token dispatch doc-read prints as `Document token: sha256:…`, and an upload that names none is refused with 400 PRECONDITION_REQUIRED. A token behind the live document is refused with 409 PRECONDITION_FAILED. The refusal tells you to read the document again with dispatch doc-read, which prints the token the document carries now, and to upload again naming that token. A first upload under a name replaces no version, and a file that is not a document holds no token, so neither names one. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
@@ -1760,6 +1780,7 @@ export const dispatchToolSpecs = [
           "Write the next version of a document the owner already holds under this name; without it the upload of a name that exists is refused."
         )
         .optional(),
+      precondition: uploadPreconditionArgument(z),
       summary: z.string().describe("Optional version summary.").optional(),
     }),
     validation: {
