@@ -2235,8 +2235,8 @@ async function settle(): Promise<void> {
 // under `jest.useFakeTimers()` a `Bun.sleep` never resolves (measured on bun 1.4.4: a row
 // awaiting `Bun.sleep(5)` there timed out, where real timers resolve it in 14 ms), so from the
 // first warning on the loop would stop polling. No caller is in such a scope:
-// `jest.useFakeTimers()` is called only in `onTestClock`, the store-beat row and the context-frame
-// rows' `onFrameClock`, and none of them calls this.
+// `jest.useFakeTimers()` is called only in `onTestClock`, the store-beat row, the context-frame
+// rows' `onFrameClock` and the switch-follow row, and none of them calls this.
 async function until(condition: () => boolean, what: string): Promise<void> {
   const generation = rowGeneration;
   const start = performance.now();
@@ -20880,12 +20880,11 @@ console.log(JSON.stringify(args));
 
   test("a switch whose new token never comes fails inside a short pass, naming the trade", async () => {
     // ENVOY_HEARTBEAT_MS=10000 ENVOY_PASS_DEADLINE_MS=10000: the follow takes at most 8 s of the
-    // pass (`followBoundMs`), its trade 4 s of that, so the pass names what the trade came to
-    // rather than being abandoned at its deadline with no word of the cause (the review of
-    // 2fa6fbf7cf, m3: unbounded, the trade alone waited 20 s).
+    // pass (`followBoundMs`), its trade half of that, 4 s (`followNatsCredential`), so the pass
+    // names what the trade came to rather than being abandoned at its deadline with no word of
+    // the cause (the review of 2fa6fbf7cf, m3: unbounded, the trade alone waited 20 s).
     await withEnvoyTimings({ heartbeatMs: 10_000, passDeadlineMs: 10_000 }, async () => {
       brokerPod((trade) => (trade === 1 ? "grant" : "503"));
-      const started = Date.now();
       // Whether the follow traded for the new session at the broker. The pod's fetch is
       // `rowFetch()`: `globalThis.fetch` reads the file's recording wrapper, which calls whatever
       // a row installed, so a wrapper that called it would call itself forever.
@@ -20899,45 +20898,86 @@ console.log(JSON.stringify(args));
         }
         return await pod(input, init);
       };
-      const before = timedContext("ses_follow_from", started);
+      const before = timedContext("ses_follow_from", Date.now());
       const { default: envoyExtension } = await import("./envoy.ts?follow-bound");
       const fixture = createPi();
       envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, before.context);
-      const after = timedContext("ses_follow_to", started);
-      const switchedAt = Date.now() - started;
-      await fixture.handlers.get("session_switch")?.({}, after.context);
+      const after = timedContext("ses_follow_to", Date.now());
       const all = () => [...before.notifications, ...after.notifications];
       const named = () =>
         all().find(({ message }) => message.includes("could not take the new session's token"));
-      await until(() => named() !== undefined, "a notice naming the follow's trade");
+      // From the switch on, the test's clock: the pass's deadline, the follow's bound and its
+      // trade's share are all this process's timers, so on it they come at the times the code
+      // gives them, whatever the host's speed. The work between those times (the pass's restores,
+      // its dial, the trade's request and the report of how it ended, all in-process here) comes
+      // on real turns (`settle`), which move no clock, so the clock is held while it runs: until
+      // the follow has traded, and again at the trade's share until the notice is made. Every wait
+      // is bounded by a count of turns or of steps, and real timers come back however the switch
+      // ends, so a wait that never ends fails here rather than at the row's limit with the fake
+      // clock still on (`onTestClock` says why that matters). The bound on held turns is a hang
+      // guard: what can hang is work the pass never finishes. 10_000 turns of `settle`; the most
+      // a run held was 105 of them idle, and 58 over 20 runs at 16 busy loops (the 96 rung) on
+      // the two-CPU, 8 GiB pod of 2026-11-19 18:40Z.
+      const shareMs = 4_000;
+      const heldTurnsAtMost = 10_000;
+      let heldTurns = 0;
+      let switchedAt = 0;
+      let noticeMs: number | undefined;
+      let earlyNotice: string | undefined;
+      let settled = false;
+      let switching: Promise<unknown> | undefined;
+      const hold = async (done: () => boolean): Promise<void> => {
+        for (let turn = 0; turn < heldTurnsAtMost && !done(); turn += 1) {
+          await settle();
+          heldTurns = Math.max(heldTurns, turn + 1);
+        }
+      };
+      jest.useFakeTimers();
+      try {
+        switchedAt = Date.now();
+        switching = Promise.resolve(fixture.handlers.get("session_switch")?.({}, after.context));
+        void switching.finally(() => {
+          settled = true;
+        });
+        await hold(() => followTraded);
+        // The follow traded with the clock held, so nothing of the pass's own work before it moved
+        // the clock.
+        expect(followTraded).toBe(true);
+        expect(Date.now()).toBe(switchedAt);
+        // Not before the trade's share: one step short of it, the pass has said nothing.
+        jest.advanceTimersByTime(shareMs - 50);
+        await settle();
+        earlyNotice = named()?.message;
+        // At the share, held until the pass says what the trade came to.
+        jest.advanceTimersByTime(50);
+        await hold(() => named() !== undefined);
+        if (named() !== undefined) noticeMs = Date.now() - switchedAt;
+        // The pass goes on after the follow (its subscribes and its registration), inside its
+        // own deadline, which a pass that outlived it would say below.
+        for (let step = 0; step < 120 && !settled; step += 1) {
+          jest.advanceTimersByTime(100);
+          await settle();
+        }
+      } finally {
+        jest.useRealTimers();
+      }
+      // The notice is made as the trade's share ends, half the follow's 8 s bound of the pass's
+      // 10 s, with the test's clock standing at that share: a follow given no bound (m3) has 20 s
+      // for its trade and is abandoned with the pass at 10 s, saying nothing, and a follow whose
+      // bound grows into the 2 s the pass keeps after it (`FOLLOW_REST_MS`) gives its trade more
+      // than 4 s, so neither names the trade here.
+      expect(earlyNotice).toBeUndefined();
+      expect(noticeMs).toBe(shareMs);
       expect(named()?.message).toContain("HTTP 503");
-      const at = named()?.at ?? Number.POSITIVE_INFINITY;
-      // Not before the trade's 4 s share, which no timer ends early: counted from the switch,
-      // before the follow started its clock.
-      expect(at - switchedAt).toBeGreaterThanOrEqual(3_900);
-      // Inside the pass, read as an order rather than a time: the follow's own bound
-      // (`followBoundMs`, 8 s of the pass's 10 s) ends its trade before the queue's 10 s deadline
-      // ends the pass, so the pass says what the trade came to, which is the notice awaited above.
-      // Both are this process's own timers, but they do not start together: the queue's starts
-      // with the pass, and the follow's only after the pass's own work before it (its restores
-      // and its dial, `handle.connect`), and the pass must still finish after the follow. So the
-      // order holds while that work fits the 2 s the follow's bound leaves the pass
-      // (`FOLLOW_REST_MS`), a production budget no per-test limit can guard: a host that
-      // stretches it past that fails a correct run here, at the row's limit. A follow that
-      // ignores the pass's bound (the review of 2fa6fbf7cf, m3) outlives the pass, which the
-      // queue abandons with its settlement unsaid, so that notice never comes and the row's limit
-      // ends the row, naming it.
-      expect(followTraded).toBe(true);
+      expect(settled).toBe(true);
       expect(all().some(({ message }) => message.includes("did not settle within"))).toBe(false);
+      await switching;
       await fixture.handlers.get("session_shutdown")?.({}, after.context);
     });
-    // A hang guard, the row's discriminator for its defect: what can hang is the notice `until`
-    // waits for above, which a follow that ignores the pass's bound never gives, and neither does
-    // a pass whose work around the follow outgrows `FOLLOW_REST_MS` (above). 60_000. Worst
-    // measured cost: 10 456.65 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU,
-    // 8 GiB pod of 2026-11-19 18:40Z, so 60_000 is 5.7 times that. The row's rung is 96, where
-    // it is 20 of 20.
+    // A bound on work, not a hang guard: every wait above ends by its own count of turns or
+    // steps. 60_000. Worst measured cost: 13 513.21 ms over 20 runs at 16 busy loops (the 96 rung)
+    // on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, so 60_000 is 4.4 times that.
   }, 60_000);
 
   test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
