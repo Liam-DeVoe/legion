@@ -213,8 +213,10 @@ running turn did not take (the bridge's `waiting`), and `heldTakeNote` for each 
 claim of the issue the daemon holds behind this turn, from the `holds` of the claim's own
 `claims/task` (`createHoldsRead` in `@legion/pi-shared/holds-read`, the one both hosts use: started
 at a `PostToolUse` at most once a minute, bounded at 3 s, not waited for, and dropped at the turn's
-end). Each note goes once per number, or once per role and number. A subagent's call and
-`PostToolUseFailure` carry none.
+end and at `UserPromptSubmit`, so an answer kept from a turn that ended with no `Stop` is not
+noted in the next one). Each note goes once per number, or once per role and number. A subagent's
+call and `PostToolUseFailure` carry none. The bridge counts no take pending for a newer revision of
+the running task's own number, which it never takes.
 `tests/legion-phase-hook-claude.test.ts`'s "a real Claude Code turn reads the PostToolUse note" is
 the measurement that the real binary hands the model that context.
 

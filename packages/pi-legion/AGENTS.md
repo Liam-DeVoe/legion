@@ -795,10 +795,13 @@ defence against two timers reminding twice.
 A task the claim's take holds is the next turn, so no reminder goes before it (dispatch://INFRA-4130
 R6): while the take is pending (`TaskTake.pending`: an owed value not asked about, a take in
 flight, an accepted take whose turn has not started, or a take refused `in-turn` during the run
-going now) the settle returns no continuation and arms the timer instead, counting nothing, a
-timer that fires sends nothing and arms itself again, and a stall abort sends no restart message,
-which the watchdog records as not sent. A take refused by any other hold is not pending, so the
-reminding goes on. Two notes reach a running turn through the `tool_result` handler's
+going now; never a newer revision of the running task's own number, which nothing takes, since the
+run's end holds that number finished) the settle returns no continuation and arms the timer
+instead, counting nothing, a timer that fires sends nothing and arms itself again, and a stall
+abort keeps its restart message back (`TaskTake.deferUntilSettled`): it is sent once the take is
+refused or dropped while no run is going, and dropped when a run starts first, the take's own
+text among them, which the watchdog records. A take refused by any other hold is not pending, so
+the reminding goes on. Two notes reach a running turn through the `tool_result` handler's
 `additionalContext`, which Oh My Pi hands the model as a `developer` message in its next request,
 starting no turn and joining no queue: a phase worker's own task that waits for the run to end
 (`taskWaitingNote`, once per task number), and, for every claim session, each take of another claim
