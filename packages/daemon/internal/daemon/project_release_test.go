@@ -272,10 +272,10 @@ func (s *releaseRecord) claimReads() int {
 // pod's delete asks its authorize and records the issue it deleted, each other Sandbox's delete
 // records its name, and each release of the controller's claim records the claim and answers
 // releaseErr; with deleteErr set, each delete of either kind is refused with it, once an issue
-// pod's authorize said yes. The runtime's store lists the Sandboxes after storeListFails lists of
-// it that fail, each with storeListErr where it is set, and the API server lists the same
-// Sandboxes as its store after listFails lists of it that fail; storeLists and lists count the
-// lists asked of each.
+// pod's authorize said yes. Each read of an issue pod's workspace is refused, with readErr where
+// it is set. The runtime's store lists the Sandboxes after storeListFails lists of it that fail,
+// each with storeListErr where it is set, and the API server lists the same Sandboxes as its store
+// after listFails lists of it that fail; storeLists and lists count the lists asked of each.
 type releasePods struct {
 	sandboxes      []runtime.ProjectSandbox
 	storeListFails int
@@ -283,6 +283,7 @@ type releasePods struct {
 	releaseErr     error
 	deleteErr      error
 	storeListErr   error
+	readErr        error
 
 	mu         sync.Mutex
 	deleted    []string
@@ -328,7 +329,10 @@ func (p *releasePods) ProjectSandboxesFromAPI(context.Context) ([]runtime.Projec
 	return p.sandboxes, nil
 }
 
-func (*releasePods) ReadUnpushed(context.Context, string, claim.Role) (runtime.UnpushedWork, error) {
+func (p *releasePods) ReadUnpushed(context.Context, string, claim.Role) (runtime.UnpushedWork, error) {
+	if p.readErr != nil {
+		return runtime.UnpushedWork{}, p.readErr
+	}
 	return runtime.UnpushedWork{}, errors.New("the test's pods read no workspace")
 }
 
@@ -697,24 +701,29 @@ var releaseFarSideLong = releaseFarSideError + "\n" +
 // GET, the state's projectRelease). So each path by which an error's text enters the result keeps
 // it that way: the reason of an issue pod the release left because the runtime refused its delete
 // (leave), the reason of a repository cache whose delete the runtime refused (takeOthers), the
-// detail of a claim's line when the claims could not be read at the end (writeClaims), and the
+// refusal on an issue pod's line when its role's shim refused the read of its workspace (read),
+// the detail of a claim's line when the claims could not be read at the end (writeClaims), and the
 // release's failure when the project's Sandboxes could not be listed (fail). A text longer than
-// the store keeps leaves only its start in the result, and leave, takeOthers and fail log the
-// whole of it after their own line, in parts under projectReleaseErrorInFull, which join to the
-// text whose start the result keeps; writeClaims logs the failed read's error on its own line.
+// the store keeps leaves only its start in the result, and leave, takeOthers, read and fail log
+// the whole of it, in parts under projectReleaseErrorInFull, which join to the text whose start
+// the result keeps: leave, takeOthers and fail after their own line, and read at each read the
+// shim refused; writeClaims logs the failed read's error on its own line.
 func TestProjectReleaseKeepsAFarSidesErrorTextAsTheStoreKeepsIt(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// text runs the release with refused as the far side's error and configure applied to the
 		// releaser before it starts, and answers the text of its result that took the error's.
 		text func(t *testing.T, refused error, configure func(*projectReleaser)) string
-		// inFull is whether the path logs the whole of a text it cuts under
-		// projectReleaseErrorInFull (writeClaims logs its read's error on its own line), and
-		// sandbox the Sandbox each of those parts names, "" for none.
-		inFull  bool
-		sandbox string
+		// inFull is how many times the path logs the whole of a text it cuts under
+		// projectReleaseErrorInFull: once for leave, takeOthers and fail, once for each read a
+		// shim refused, which is the pod's first read and its last here, and none for writeClaims,
+		// which logs its read's error on its own line. names is what each of those parts names of
+		// its release, its Sandbox, its issue and its role, with nothing under a name it leaves out.
+		inFull int
+		names  map[string]any
 	}{
-		{name: "the reason of an issue pod whose delete the runtime refused", inFull: true, sandbox: "legion-legion-legion-208",
+		{name: "the reason of an issue pod whose delete the runtime refused", inFull: 1,
+			names: map[string]any{"release": float64(1), "sandbox": "legion-legion-legion-208"},
 			text: func(t *testing.T, refused error, configure func(*projectReleaser)) string {
 				sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 				token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
@@ -735,7 +744,8 @@ func TestProjectReleaseKeepsAFarSidesErrorTextAsTheStoreKeepsIt(t *testing.T) {
 				}
 				return line.Reason
 			}},
-		{name: "the reason of a repository cache whose delete the runtime refused", inFull: true, sandbox: releaseCache,
+		{name: "the reason of a repository cache whose delete the runtime refused", inFull: 1,
+			names: map[string]any{"release": float64(1), "sandbox": releaseCache},
 			text: func(t *testing.T, refused error, configure func(*projectReleaser)) string {
 				pods := controllerPods()
 				pods.deleteErr = refused
@@ -745,12 +755,35 @@ func TestProjectReleaseKeepsAFarSidesErrorTextAsTheStoreKeepsIt(t *testing.T) {
 				}
 				return line.Reason
 			}},
+		{name: "the refusal of an issue pod's workspace read", inFull: 2,
+			names: map[string]any{"issue": "LEGION-208", "role": string(claim.RoleImplementer)},
+			text: func(t *testing.T, refused error, configure func(*projectReleaser)) string {
+				sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+				token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+				// A ready claim with a process is a running role, which the release reads the pod
+				// through. The test has no outbox, so no role is asked, and the stop set holds no
+				// claim, so the pod is deleted after its last read with no stop to wait for.
+				if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208",
+					Issue: "LEGION-208", Role: claim.RoleImplementer, Session: "ses_implementer", State: supervise.StateReady,
+					Locator: workingPane(token)}, ""); err != nil {
+					t.Fatal(err)
+				}
+				records := &releaseRecord{claims: sup.deps.Store.(*outboxClaimStore), finished: make(chan json.RawMessage, 1)}
+				pods := &releasePods{sandboxes: []runtime.ProjectSandbox{{Name: "legion-legion-legion-208", Kind: runtime.ProjectSandboxIssue,
+					Issue: "LEGION-208", Tree: "LEGION-208", PodUID: "uid-208", ConfiguredImage: true}}, readErr: refused}
+				line := releaseLine(t, api.ProjectReleaseResponse{Result: runRelease(t, records, sup, pods, configure)}, "legion-legion-legion-208")
+				if line.Outcome != api.ReleaseDeletedReadRefused {
+					t.Errorf("the pod's line is %+v, want it deleted with its read refused", line)
+				}
+				return line.Refusal
+			}},
 		{name: "the detail of a claim's line when the claims could not be read at the end",
 			text: func(t *testing.T, refused error, configure func(*projectReleaser)) string {
 				release := releaseTheController(t, &releaseRecord{claimsFails: projectReleaseTries, claimsErr: refused}, controllerPods(), configure)
 				return releaseClaimLine(t, release, claim.ControllerToken("legion")).Detail
 			}},
-		{name: "the release's failure when the project's Sandboxes could not be listed", inFull: true,
+		{name: "the release's failure when the project's Sandboxes could not be listed", inFull: 1,
+			names: map[string]any{"release": float64(1)},
 			text: func(t *testing.T, refused error, configure func(*projectReleaser)) string {
 				pods := controllerPods()
 				pods.storeListFails, pods.storeListErr = projectReleaseTries, refused
@@ -779,31 +812,40 @@ func TestProjectReleaseKeepsAFarSidesErrorTextAsTheStoreKeepsIt(t *testing.T) {
 				if runes := utf8.RuneCountInString(text); runes != storetext.FarSideErrorRunes || !strings.HasSuffix(text, "…") {
 					t.Errorf("the text is %d runes ending %q, want its start, %d runes ending with …", runes, text[max(0, len(text)-16):], storetext.FarSideErrorRunes)
 				}
-				if !tc.inFull {
+				if tc.inFull == 0 {
 					return
 				}
-				var whole strings.Builder
 				parts := loggedMessages(t, logs.String(), projectReleaseErrorInFull)
-				for i, part := range parts {
-					sandbox, _ := part["sandbox"].(string)
-					if part["level"] != "INFO" || part["release"] != float64(1) || sandbox != tc.sandbox ||
-						part["part"] != float64(i+1) || part["parts"] != float64(len(parts)) {
-						t.Fatalf("logged part %v, want part %d of %d at INFO of release 1 naming Sandbox %q", part, i+1, len(parts), tc.sandbox)
+				if len(parts) == 0 || len(parts)%tc.inFull != 0 {
+					t.Fatalf("%d parts logged under %q, want the whole text logged %d times, in as many parts each time",
+						len(parts), projectReleaseErrorInFull, tc.inFull)
+				}
+				each := len(parts) / tc.inFull
+				for logged := range tc.inFull {
+					var whole strings.Builder
+					for i, part := range parts[logged*each : (logged+1)*each] {
+						named := true
+						for _, name := range []string{"release", "sandbox", "issue", "role"} {
+							named = named && part[name] == tc.names[name]
+						}
+						if part["level"] != "INFO" || !named || part["part"] != float64(i+1) || part["parts"] != float64(each) {
+							t.Fatalf("logged part %v, want part %d of %d at INFO naming %v", part, i+1, each, tc.names)
+						}
+						text, _ := part["error"].(string)
+						whole.WriteString(text)
 					}
-					text, _ := part["error"].(string)
-					whole.WriteString(text)
-				}
-				if !strings.HasSuffix(whole.String(), releaseFarSideLastWords) {
-					t.Fatalf("the %d parts logged under %q join to %d bytes ending %q, want the far side's whole text, ending %q",
-						len(parts), projectReleaseErrorInFull, whole.Len(), whole.String()[max(0, whole.Len()-96):], releaseFarSideLastWords)
-				}
-				for _, leaked := range []string{"secret", "token=y", "\x00"} {
-					if strings.Contains(whole.String(), leaked) {
-						t.Errorf("the parts logged under %q hold %q", projectReleaseErrorInFull, leaked)
+					if !strings.HasSuffix(whole.String(), releaseFarSideLastWords) {
+						t.Fatalf("the %d parts logged under %q join to %d bytes ending %q, want the far side's whole text, ending %q",
+							each, projectReleaseErrorInFull, whole.Len(), whole.String()[max(0, whole.Len()-96):], releaseFarSideLastWords)
 					}
-				}
-				if storetext.FarSideError(whole.String()) != text {
-					t.Errorf("the result's text is not the start of the text the log holds whole")
+					for _, leaked := range []string{"secret", "token=y", "\x00"} {
+						if strings.Contains(whole.String(), leaked) {
+							t.Errorf("the parts logged under %q hold %q", projectReleaseErrorInFull, leaked)
+						}
+					}
+					if storetext.FarSideError(whole.String()) != text {
+						t.Errorf("the result's text is not the start of the text the log holds whole")
+					}
 				}
 			})
 		})

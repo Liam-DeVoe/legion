@@ -86,8 +86,9 @@ const releaseNoMachine = "the daemon supervises no machine for it"
 const reasonSeparator = "; "
 
 // projectReleaseErrorInFull is the message of the lines that carry the whole error of a Sandbox
-// the release left or of the release's failure, in parts (takeOthers, leave, fail,
-// storetext.LogWhole), where the result and every other line about it keep only its start.
+// the release left, of a shim's refusal of an issue pod's workspace read, or of the release's
+// failure, in parts (takeOthers, leave, read, fail, storetext.LogWhole), where the result and
+// every other line about it keep only its start.
 const projectReleaseErrorInFull = "project release: an error in full; the result and the lines about it keep its start"
 
 // projectReleaseStore is what the project release reads and writes of the daemon's store: whether

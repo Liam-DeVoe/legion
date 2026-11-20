@@ -46,15 +46,21 @@ func (r *projectReleaser) readAll(ctx context.Context, run *releaseRun, pods []*
 // read reads issue's workspace through one running role's shim, the first by token. A pod where
 // no role process runs now is unread; a shim that refused, and a read that failed, are a refusal,
 // whose text is the error's as the store keeps a far side's error text (storetext.FarSideError):
-// a runtime's error names the request's URL, with its query.
+// a runtime's error names the request's URL, with its query. Where that cuts the text to its
+// start, the whole text goes to the log, in parts that name the issue and the role read
+// (storetext.LogWhole, projectReleaseErrorInFull), at each read the shim refuses; the parts name
+// no release, since a dry run's reads have none.
 func (r *projectReleaser) read(ctx context.Context, issue string) releaseRead {
 	running := runningClaims(r.issueViews(issue))
 	if len(running) == 0 {
 		return releaseRead{}
 	}
-	work, err := r.pods.ReadUnpushed(ctx, issue, running[0].Role)
+	role := running[0].Role
+	work, err := r.pods.ReadUnpushed(ctx, issue, role)
 	if err != nil {
-		return releaseRead{read: true, refusal: storetext.FarSideError(err.Error())}
+		refused := err.Error()
+		storetext.LogWhole(r.log, projectReleaseErrorInFull, refused, "issue", issue, "role", role)
+		return releaseRead{read: true, refusal: storetext.FarSideError(refused)}
 	}
 	return releaseRead{read: true, work: work}
 }
