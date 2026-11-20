@@ -1309,7 +1309,7 @@ jobs:
               - '.github/actions/install-claude-code/**'
               # tests/daemon-api-version.test.ts:15 and its neighbours.
               - 'packages/contracts/fixtures/daemon-api/**'
-              # tests/envoy-channel-stall.test.ts:5-19 imports three modules of envoy-client's
+              # tests/envoy-channel-stall.test.ts:12-26 imports three modules of envoy-client's
               # test directory, and tsc puts four of its files in this job's program.
               - 'packages/envoy-client/test/**'
               # tests/ import @legion/test-fixtures.
@@ -2411,7 +2411,7 @@ jobs:
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
-              # extensions/envoy.test.ts:57-65 imports test/envoy-stack, stall-proxy, stall-scenario
+              # extensions/envoy.test.ts:62-74 imports test/envoy-stack, stall-proxy, stall-scenario
               # and subscribe-answer; extensions/askgate/decision-record.test.ts:9 its fake-dispatch.
               - 'packages/envoy-client/test/**'
               - 'packages/envoy-client/bin/dispatch.ts'
@@ -2419,7 +2419,7 @@ jobs:
               - 'packages/contracts/src/**'
               # Its tests import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # extensions/envoy.test.ts:385.
+              # extensions/envoy.test.ts:388.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'skills/**'
               - 'packages/daemon/internal/prompts/**'
@@ -2470,7 +2470,7 @@ jobs:
               - 'packages/contracts/src/**'
               # Its tests import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # extensions/legion.test.ts:1450,4138 and src/capability-report.test.ts:904,910.
+              # extensions/legion.test.ts:1457,4147 and src/capability-report.test.ts:904,910.
               - 'packages/contracts/fixtures/daemon-api/**'
               - 'packages/contracts/fixtures/capability-redaction.json'
               - 'packages/contracts/fixtures/capability-redaction-plugin-report.json'
@@ -3396,9 +3396,9 @@ jobs:
               - *go_workspace
               - 'packages/envoy/scripts/e2e-local.sh'
               - 'packages/envoy/scripts/e2e-local.test.sh'
-              # e2e-local.sh:47,410-441 posts each fixture.
+              # e2e-local.sh:118,1257-1288 posts each fixture.
               - 'packages/envoy/scripts/fixtures/github/**'
-              # e2e-local.sh:445-450 renders with @legion/envoy-client/delivery.
+              # e2e-local.sh:1362-1366 renders with @legion/envoy-client/delivery.
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it: the tsc program of envoy-client holds all seven
               # of its modules, and at runtime, which is what this job's bun scripts do,
@@ -3406,12 +3406,12 @@ jobs:
               # pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
-              # e2e-local.sh:320 sources the run's guard and its one wait, and e2e-local.test.sh:32
+              # e2e-local.sh:319 sources the run's guard and its one wait, and e2e-local.test.sh:32
               # the test's; the Bun driver of e2e-local.sh's acks wait (:771) imports
               # @legion/test-fixtures/wait, which reads ./deadline beside it.
               - 'scripts/e2e/lib/proof-wait.sh'
               - 'packages/test-fixtures/src/**'
-              # e2e-local.sh:148-149 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
+              # e2e-local.sh:299-300 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
               - *listener_command
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
