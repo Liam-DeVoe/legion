@@ -260,6 +260,59 @@ func TestPodUpdateADaemonThatRestartsBeforeAnOwedToldMarkTellsTheRoundOnceMore(t
 	}
 }
 
+// A sweep that cannot read the pods a project's pause holds decides nothing (reconcilePodUpdates),
+// and the told marks it owes are no exception: it makes none, and a later sweep that reads the
+// holds makes each, dated when the round was told. The read fails here because the column it
+// reads is renamed in this test's own database for one sweep.
+func TestPodUpdateASweepThatCannotReadThePauseHoldsMakesNoToldMarkItOwes(t *testing.T) {
+	issue := "ACME-1"
+	rig, refusing, refused := refusedMarkRig(t, issue)
+	rig.clock.advance(podUpdateGrace + time.Minute)
+	told := rig.clock.Now()
+	rig.sweepRefusingTheMark(issue, refusing, refused)
+	if notices := rig.controllerNotices(); len(notices) != 1 {
+		t.Fatalf("the sweep past the bound told the controller %d times, want once: %+v", len(notices), notices)
+	}
+
+	// The store takes the mark again, and the machine has finished what it was posted, but this
+	// sweep cannot read the pause holds.
+	refusing.Store(false)
+	rig.sent(issue, claim.RoleArchitect)
+	rig.pauseHoldsRead(false)
+	rig.clock.advance(time.Minute)
+	rig.tick()
+	if got := rig.claimOf(issue, claim.RoleArchitect).UpdateToldAt; got != nil {
+		t.Fatalf("a sweep that could not read the pause holds marked the round told at %s, want no mark: such a sweep decides nothing", got)
+	}
+
+	rig.pauseHoldsRead(true)
+	testwait.Eventually(t, "a sweep that reads the pause holds to make the told mark it owed", func() bool {
+		rig.clock.advance(time.Minute)
+		rig.tick()
+		return rig.claimOf(issue, claim.RoleArchitect).UpdateToldAt != nil
+	})
+	if got := rig.claimOf(issue, claim.RoleArchitect).UpdateToldAt; !got.Equal(told) {
+		t.Errorf("the round was marked told at %s, want %s, when the sweep told it", got, told)
+	}
+	if notices := rig.controllerNotices(); len(notices) != 1 {
+		t.Fatalf("the controller has been told %d times of the round, want once: %+v", len(notices), notices)
+	}
+}
+
+// pauseHoldsRead makes the sweep's read of the pods a project's pause holds
+// (store.Store.PausePodHoldsSince) fail, readable false, or read again, readable true, by renaming
+// the column it reads in this rig's own database (isolatedOutboxPool).
+func (r *fleetRig) pauseHoldsRead(readable bool) {
+	r.t.Helper()
+	from, to := "held_at", "held_at_unread"
+	if readable {
+		from, to = to, from
+	}
+	if _, err := r.pool.Exec(r.ctx, "alter table project_pause_pod_holds rename column "+from+" to "+to); err != nil {
+		r.t.Fatalf("rename the pause holds' column %s to %s: %v", from, to, err)
+	}
+}
+
 // A late round's told mark carries the moment the walk told the round, not the top of its sweep.
 // Here the walk first writes the ask of an earlier issue's open round, which takes 20 seconds
 // (sweepHeldInAWrite), and only then reaches the late round and tells it, so the two moments are

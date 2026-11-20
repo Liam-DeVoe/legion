@@ -94,7 +94,6 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 		byIssue[c.Issue] = append(byIssue[c.Issue], c)
 	}
 	slices.Sort(issues)
-	s.markOwedTold(ctx, byIssue)
 	holds, err := s.podPauseHolds(ctx, claims, now)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -103,6 +102,7 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 		}
 		return
 	}
+	s.markOwedTold(ctx, byIssue)
 	sweep := s.beginPodUpdateSweep(byIssue)
 	var replacements []podReplacement
 	for _, issue := range issues {
@@ -1429,17 +1429,19 @@ func (s *supervision) oweToldMark(token claim.Token, owed toldMarkOwed) {
 	s.podUpdateToldOwed[token] = owed
 }
 
-// markOwedTold makes the told marks earlier sweeps owe, over the claims this sweep read, before
-// the walk weighs any round. An entry is dropped once the claims no longer need it: the claim
-// records the mark, the claim is in another round or in none, or the sweep groups no such claim
-// (it retired, or it is gone). A mark made here keeps its entry until the next sweep, whose claims
-// carry the mark and drop it, so one rule drops the entry of every made mark. The round is told
-// once either way: the claims this sweep read were read before the mark, but the notice reads
-// each machine's published view before it tells (tellLateRound's noticeGroup, tellUpdateStalled's
-// roundTold), and that view carries the mark from the moment it is made. A machine still deciding
-// something, and a store that refuses the write, leave the entry, and the mark is tried again at
-// the next sweep: the round was told, and the mark is the one thing of it left to make
-// (markUpdateTold).
+// markOwedTold makes the told marks earlier sweeps owe, over the claims this sweep read, after the
+// sweep has read the project's pause holds and before the walk weighs any round: a sweep that
+// cannot read the holds decides nothing (reconcilePodUpdates), and an owed mark then waits for the
+// next sweep, as it waits for a busy machine. An entry is dropped once the claims no longer need
+// it: the claim records the mark, the claim is in another round or in none, or the sweep groups no
+// such claim (it retired, or it is gone). A mark made here keeps its entry until the next sweep,
+// whose claims carry the mark and drop it, so one rule drops the entry of every made mark. The
+// round is told once either way: the claims this sweep read were read before the mark, but the
+// notice reads each machine's published view before it tells (tellLateRound's noticeGroup,
+// tellUpdateStalled's roundTold), and that view carries the mark from the moment it is made. A
+// machine still deciding something, and a store that refuses the write, leave the entry, and the
+// mark is tried again at the next sweep: the round was told, and the mark is the one thing of it
+// left to make (markUpdateTold).
 func (s *supervision) markOwedTold(ctx context.Context, byIssue map[string][]supervise.Claim) {
 	s.podUpdateToldMu.Lock()
 	defer s.podUpdateToldMu.Unlock()
