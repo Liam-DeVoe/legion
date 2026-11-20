@@ -2506,17 +2506,17 @@ package api
 // #4030, and nothing at 189. Read the base's own number and every open pull request again at the
 // next merge rather than from this line.)
 //
-// 190: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
+// 198: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
 // question to a stopped agent that the daemon's answer loop passed to the controller in the last
 // seven days (id, issue, role, session, asker, ref, reason, passedAt, and writes, each gh call
 // that writes which the loop ran for it), newest first and at most 100: the controller's
 // `agent-question` notice is a live wake only, so a controller that starts later reads what it
 // missed here. A body this contract writes carries it on every state, never
-// null, and a caller from a pod whose claims record a contract under 190 is served the state
+// null, and a caller from a pod whose claims record a contract under 198 is served the state
 // without the key (stateNarrowings, questionsForControllerContract), since the strict reader
-// before 190 refuses it. The bands compose with the pause's: a caller below 178 is served neither
-// the pause's keys nor this one, and a caller from 178 to 189 the pause's alone. The 190 reader
-// takes it as optional for that body alone, as it takes `wakesWaiting`; a daemon below 190 is not
+// before 198 refuses it. The bands compose with the pause's: a caller below 178 is served neither
+// the pause's keys nor this one, and a caller from 178 to 197 the pause's alone. The 198 reader
+// takes it as optional for that body alone, as it takes `wakesWaiting`; a daemon below 198 is not
 // what serves it a body without the key, since the boot gate and `legion probe-image` refuse that
 // mixed pair. (This branch
 // took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main
@@ -2525,14 +2525,15 @@ package api
 // while main stood at 123, then 149 while main stood at 144 and kept it while main stood at 146,
 // then 157 while main stood at 151, then 162 while main stood at 152, then 168 while main stood
 // at 160, then 170 while main stood at 160, then 171 while main stood at 168, then 183 while main
-// stood at 178, then 191 while main stood at 188, then 190 while main stood at 189. It takes 190
-// because a census of every open pull request at 2026-11-20T18:02Z, read with the
-// `declared_by_open_pull_requests` of main's .github/scripts/check-daemon-api-contract.sh, found
-// 189 declared by #3995, #4184, #4206, #4274, #4596, #4611 and #4634, 191 by this change's own
-// earlier head, #4049 and #4573, 192 by #4175, #4182 and #4193, 193 by #3659, #3712 and #4065, 194
-// by #3831 and #4030, 195 by #4590, 196 by #3993, #4173, #4273, #4392, #4432, #4493, #4495, #4580
-// and #4592, 197 by #4553 and #4578, and nothing at 190, so 190 is the lowest number above main's
-// that no open pull request declares. main held 189 at the forward merge that last read this
-// number, main's a99da530; read main's own number and every open pull request's again at the next
-// merge rather than from this line.)
-const DaemonAPIVersion = 190
+// stood at 178, then 191 while main stood at 188, then 190 while main stood at 189, then 198
+// while main stood at 189, 190 being declared by #4611 too. It takes 198 because a census of
+// every open pull request at 2026-11-20T19:29Z, read with the `declared_by_open_pull_requests` of
+// main's .github/scripts/check-daemon-api-contract.sh, found 189 declared by #2402, #3512, #3995,
+// #4184, #4206, #4209, #4274, #4533, #4631, #4634 and #4639, 190 by this change's own earlier
+// head and #4611, 191 by #4049 and #4573, 192 by #4175, #4180, #4182 and #4193, 193 by #3659 and
+// #3712, 194 by #3831 and #4030, 195 by #4590, 196 by #3993, #4173, #4273, #4392, #4432, #4493,
+// #4495, #4580, #4592 and #4596, 197 by #4065, #4553 and #4578, and nothing at 198, so 198 is the
+// lowest number above main's that no open pull request declares. main held 189 at the forward
+// merge that last read this number, main's a99da530; read main's own number and every open pull
+// request's again at the next merge rather than from this line.)
+const DaemonAPIVersion = 198
