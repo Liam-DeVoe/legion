@@ -1422,44 +1422,81 @@ test("a priority's own page writes its title and description and lists only its 
   }
 });
 
-// INFRA-2947 R7 (spec v76, its third point) and check 138e9e4d (Verification v57): at 1280 by
-// 800 the work under a priority takes the whole of its box. Title takes all the width the key,
-// the project and the status leave, so no space stands empty at the table's right: the last
+// INFRA-2947 R7 (spec v76, its third point; spec v85) and check 138e9e4d (Verification v62): at
+// 1280 by 800 the work under a priority takes the whole of its box. Title takes all the width the
+// key, the project and the status leave, so no space stands empty at the table's right: the last
 // column that draws anything ends at the box's right edge, less the room a filling column leaves
 // there for the box's borders and a scrollbar (`EDGE_ROOM`, 20 px,
-// `features/project/issues-table-layout.ts`). An issue title of 34 characters reads whole there:
-// no ellipsis, no clamp, nothing of it past its box.
-// SLOW(>=2s): the seed, one more issue, and one page read at the desktop's size.
-test("at 1280 by 800 a priority's work table leaves no empty room at its right and reads a 34-character title whole", async ({
+// `features/project/issues-table-layout.ts`). An issue title of 190 characters reads whole there
+// and on each fault tab: no ellipsis, no clamp, nothing of it past its box.
+// SLOW(>=2s): the seed, three more issues, and three tables read at the desktop's size.
+test("at 1280 by 800 a priority's work table leaves no empty room at its right, and it and each fault tab read a 190-character title whole", async ({
   browser,
 }) => {
   const seed = await seedPriorities();
-  const titles = ["Daemon rollout to every build host"] as const;
-  expect(titles.map((title) => title.length)).toEqual([34]);
-  const keys: string[] = [];
-  for (const title of titles) {
-    const issue = await createIssue({ project: "CORE", title });
-    await patchIssue(issue.key, { advances: [seed.ids[0]], status: "in_progress" });
-    keys.push(issue.key);
-  }
+  const title =
+    "Daemon rollout to every build host, every developer laptop and every review machine, with " +
+    "the smoke suite proving each took the build and the roll-back ready for any machine that " +
+    "refused it.";
+  expect(title).toHaveLength(190);
+  // One issue of that title under #1 in flight, one under no priority in flight, and one whose
+  // own row names #1 standing in the backlog: the work table, the first fault tab and the
+  // second.
+  const work = await createIssue({ project: "CORE", title });
+  const none = await createIssue({ project: "OPS", title });
+  const parked = await createIssue({ project: "WEB", title });
+  await Promise.all([
+    patchIssue(work.key, { advances: [seed.ids[0]], status: "in_progress" }),
+    patchIssue(none.key, { status: "in_progress" }),
+    patchIssue(parked.key, { advances: [seed.ids[0]], status: "backlog" }),
+  ]);
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.setViewportSize(DESKTOP);
+    const soft = expect.configure({ soft: true });
+    // Whether the title in `row` is drawn whole: nothing from the title up to its cell holds
+    // more than its box shows, which is what an ellipsis or a clamp needs.
+    const expectWhole = async (table: Locator, key: string, where: string) => {
+      const row = table.getByRole("row", { exact: true, name: `${key} ${title}` });
+      const text = (await cellUnder(table, row, "Title")).getByText(title, { exact: true });
+      await expect(text).toBeVisible();
+      await soft
+        .poll(
+          () =>
+            text.evaluate((element) => {
+              const cut: string[] = [];
+              const cell = element.closest("td");
+              for (let node: Element | null = element; node !== null; node = node.parentElement) {
+                if (node.scrollWidth > node.clientWidth || node.scrollHeight > node.clientHeight)
+                  cut.push(
+                    `${node.tagName.toLowerCase()} ${node.clientWidth}x${node.clientHeight}`
+                  );
+                if (node === cell) break;
+              }
+              return cut;
+            }),
+          { message: `${where}: the 190-character title reads whole` }
+        )
+        .toEqual([]);
+    };
+
+    // A priority's page.
     await page.goto(`/priorities/${seed.ids[0]}`);
-    const work = section(page, "Work advancing this priority");
-    await expectRowNames(work, [
+    const workTable = section(page, "Work advancing this priority");
+    await expectRowNames(workTable, [
       `${seed.rollout} Daemon rollout to the fleet`,
       `${seed.smoke} Daemon smoke suite`,
-      ...titles.map((title, at) => `${keys[at]} ${title}`),
+      `${work.key} ${title}`,
+      // The parked one advances #1 as well, so the work under #1 lists it.
+      `${parked.key} ${title}`,
     ]);
     await expect.poll(() => tablesOverflow(page)).toEqual({ "Priority issues table": 0 });
-    const soft = expect.configure({ soft: true });
 
     // The room between the right edge of the last column that draws anything - a header's words
     // or a cell's visible element - and the box's inner right edge.
     const emptyRoom = () =>
-      work.locator('[data-testid$="-table-scroll"]').evaluate((box) => {
+      workTable.locator('[data-testid$="-table-scroll"]').evaluate((box) => {
         // A cell or header draws something where an element in it is on screen and holds words,
         // or is a control or a picture, which hold none.
         const drawn = (element: Element) =>
@@ -1487,43 +1524,35 @@ test("at 1280 by 800 a priority's work table leaves no empty room at its right a
         return Math.round(inner - right);
       });
     await soft.poll(emptyRoom).toBeLessThanOrEqual(20);
+    await expectWhole(workTable, work.key, "a priority's page");
 
-    // Each title, drawn whole in its cell: nothing from the title up to its cell holds more than
-    // its box shows, which is what an ellipsis or a clamp needs.
-    for (const [at, text] of titles.entries()) {
-      const row = work.getByRole("row", { exact: true, name: `${keys[at]} ${text}` });
-      const title = (await cellUnder(work, row, "Title")).getByText(text, { exact: true });
-      await expect(title).toBeVisible();
-      await soft
-        .poll(
-          () =>
-            title.evaluate((element) => {
-              const cut: string[] = [];
-              const cell = element.closest("td");
-              for (let node: Element | null = element; node !== null; node = node.parentElement) {
-                if (node.scrollWidth > node.clientWidth || node.scrollHeight > node.clientHeight)
-                  cut.push(
-                    `${node.tagName.toLowerCase()} ${node.clientWidth}x${node.clientHeight}`
-                  );
-                if (node === cell) break;
-              }
-              return cut;
-            }),
-          { message: `the ${text.length}-character title reads whole` }
-        )
-        .toEqual([]);
-    }
+    // The two fault tabs.
+    await page.goto(PRIORITIES_PATH);
+    await chooseTab(page, "none");
+    await expectWhole(
+      page.getByRole("table", { exact: true, name: NO_PRIORITY_TABLE }),
+      none.key,
+      "the none tab"
+    );
+    await chooseTab(page, "parked");
+    await expectWhole(
+      page.getByRole("table", { exact: true, name: PARKED_TABLE }),
+      parked.key,
+      "the parked tab"
+    );
   } finally {
     await context.close();
   }
 });
 
-// INFRA-2947 R7 (spec v82) and check 138e9e4d (Verification v59), read at 1280 by 800 on data
-// shaped as production's: an owner of 43 characters, drawn whole; a description of one long
-// paragraph, which a closed row draws in at most two lines ending in '…' and an open row draws
-// whole; on every table of these pages the header line and each row's line reaching the right
-// border of the table's box; on each toolbar of these pages every control at one height; and no
-// margin entry for the visibility a priority is written with, which no control on the page sets.
+// INFRA-2947 R7 (spec v82, v85) and check 138e9e4d (Verification v62), read at 1280 by 800 on
+// data shaped as production's: an owner of 43 characters, drawn whole; a description of several
+// paragraphs whose first line is short and names an issue by its Dispatch reference, which a
+// closed row draws as its start, the paragraphs run together, in at most two lines ending in '…',
+// the reference read as the short name Dispatch's documents give it, and an open row draws whole;
+// on every table of these pages the header line and each row's line reaching the right border of
+// the table's box; on each toolbar of these pages every control at one height; and no margin
+// entry for the visibility a priority is written with, which no control on the page sets.
 // SLOW(>=2s): the seed, one more priority, and the three tabs and one priority's page read.
 test("at 1280 by 800 the priorities pages draw production's owners and descriptions, reach their boxes' right borders, keep each toolbar at one height, and list no visibility in the margin", async ({
   browser,
@@ -1531,13 +1560,16 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
   const seed = await seedPriorities();
   const owner = "The INFRA controller, for its human sponsor";
   expect(owner).toHaveLength(43);
-  const description =
+  const reference = `dispatch://${seed.rollout}`;
+  const firstLine = `Start with ${reference}.`;
+  const rest =
     "Every reader of this deployment reaches the same corpus in one command, on any developer " +
     "machine, and the pages both review layers read are the ones a person opens. The work under " +
     "it is the seeding, the sign-in, the pages and the checks that read them, and it is finished " +
     "when a reader who has never run the stack can start it, sign in and read the same " +
     "priorities page the visual review reads, from one command, with nothing to install by hand " +
     "and nothing to ask anybody for.";
+  const description = `${firstLine}\n\n${rest}`;
   const long = await createPriority({ description, owner, title: "Local testing is one command" });
   const context = await asUser(browser, "alice");
   try {
@@ -1638,9 +1670,11 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
     const ownerText = (await cellUnder(table, row, "Owner")).getByText(owner, { exact: true });
     await expect(ownerText).toBeVisible();
     soft(await cutBoxes(ownerText), "the 43-character owner is drawn whole").toEqual([]);
-    // The description, closed: at most two lines, ending in '…' where it runs on - a clamp of two
-    // lines whose text holds more than it shows, or a text cut and ended in '…'.
-    const summary = (await cellUnder(table, row, "Priority")).locator("p").first();
+    // The description, closed: its start, the paragraphs run together, in at most two lines
+    // ending in '…' where it runs on - a clamp of two lines whose text holds more than it shows,
+    // or a text cut and ended in '…' - with the reference read as its short name, the issue's key
+    // or its title, and never as its `dispatch://` address.
+    const summary = (await cellUnder(table, row, "Priority")).getByText(/^Start with/).first();
     await expect(summary).toBeVisible();
     const closed = await summary.evaluate((element) => {
       const style = getComputedStyle(element);
@@ -1648,18 +1682,30 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
         element.getBoundingClientRect().height / Number.parseFloat(style.lineHeight)
       );
       const clamped = style.webkitLineClamp === "2" && element.scrollHeight > element.clientHeight;
-      const ended = (element.textContent ?? "").trimEnd().endsWith("…");
-      return { atMostTwoLines: lines <= 2, endsInEllipsis: clamped || ended };
+      const text = (element.textContent ?? "").trim();
+      return { atMostTwoLines: lines <= 2, endsInEllipsis: clamped || text.endsWith("…"), text };
     });
-    soft(closed, "a closed row draws the description in at most two lines ending in '…'").toEqual({
-      atMostTwoLines: true,
-      endsInEllipsis: true,
-    });
-    // Open, the row draws the whole of it.
+    soft(
+      { atMostTwoLines: closed.atMostTwoLines, endsInEllipsis: closed.endsInEllipsis },
+      "a closed row draws the description in at most two lines ending in '…'"
+    ).toEqual({ atMostTwoLines: true, endsInEllipsis: true });
+    soft(
+      closed.text,
+      "a closed row runs the paragraphs together: the second follows the short first line"
+    ).toContain("Every reader of this deployment");
+    soft(
+      {
+        address: closed.text.includes("dispatch://"),
+        shortName:
+          closed.text.includes(seed.rollout) || closed.text.includes("Daemon rollout to the fleet"),
+      },
+      `a closed row reads the reference by its short name (${closed.text.slice(0, 80)})`
+    ).toEqual({ address: false, shortName: true });
+    // Open, the row draws the whole of it: both paragraphs.
     await row.getByRole("button", { name: new RegExp(`^Open #4 ${long.title}$`) }).click();
-    await soft(page.getByRole("textbox", { exact: true, name: "Description of #4" })).toContainText(
-      description
-    );
+    const opened = page.getByRole("textbox", { exact: true, name: "Description of #4" });
+    await soft(opened).toContainText("Start with");
+    await soft(opened).toContainText(rest);
     await expectTablesAndToolbars("the Priorities tab");
 
     // The two fault tabs.
@@ -1700,14 +1746,15 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
   }
 });
 
-// INFRA-2947 R7 (spec v83) and check 138e9e4d (Verification v60), read on a phone, 390 by 844:
-// the priorities tab keeps each priority's place and title in view together, as wide as the
-// table's box, with every header on one line, and the other columns scroll inside the box. So
-// each column's header label and its controls stand on one line; the cell of the grip, the place
-// and the disclosure is no wider than 80 px; and while the table stands scrolled to its start,
-// the Priority column ends at the box's inner right edge. And (spec v84, Verification v61) no two
-// controls of the header row have 44 px touch targets that overlap, and the `#` column offers its
-// sort and no other control.
+// INFRA-2947 R7 (spec v83 to v85) and check 138e9e4d (Verification v60 to v62), read on a phone,
+// 390 by 844: the priorities tab draws each priority as its place beside one cell, which holds
+// its title, the start of its description, its owner, its three counts under their column names
+// and its newest event, and no other column, so the table does not scroll sideways. So each
+// column's header label and its controls stand on one line; the cell of the grip, the place and
+// the disclosure is no wider than 80 px; each row's owner, counts and newest event are drawn
+// inside the box; and the table's scroll width is its client width. And (spec v84, Verification
+// v61) no two controls of the header row have 44 px touch targets that overlap, and the `#`
+// column offers its sort and no other control.
 // SLOW(>=2s): the seed and one page read at a phone's size.
 test("on a phone the priorities tab keeps each place and title together as wide as the box, under headers on one line", async ({
   browser,
@@ -1770,24 +1817,73 @@ test("on a phone the priorities tab keeps each place and title together as wide 
       `the grip, the place and the disclosure take no more than 80 px (${place} px)`
     ).toBeLessThanOrEqual(80);
 
-    // Scrolled to its start, the Priority column ends at the box's inner right edge.
-    const priorityGap = () =>
-      table.evaluate((element) => {
+    // Each row's owner, its three counts under their column names and its newest event, drawn
+    // inside the box as it stands at its start: each is in the row, and nothing the row draws
+    // lies past the box's inner edges.
+    const owners = ["alice", "bob", "alice"];
+    const rowsInBox = () =>
+      table.evaluate((element, owned) => {
         const box = element.closest('[data-testid$="-table-scroll"]');
         if (box === null) throw new Error("the priorities table stands in no scroll box");
         box.scrollLeft = 0;
-        const header = [...element.querySelectorAll("thead th")].find((cell) =>
-          (cell.textContent ?? "").trim().startsWith("Priority")
-        );
-        if (header === undefined) throw new Error("the table draws no Priority column");
-        const inner = box.getBoundingClientRect().left + box.clientLeft + box.clientWidth;
-        return Math.round(inner - header.getBoundingClientRect().right);
-      });
-    const gap = await settledValue("the Priority column's right edge", priorityGap);
+        const outer = box.getBoundingClientRect();
+        const left = outer.left + box.clientLeft;
+        const right = left + box.clientWidth;
+        const inside = (node: Element) => {
+          const rect = node.getBoundingClientRect();
+          return rect.left >= left - 0.5 && rect.right <= right + 0.5;
+        };
+        const shown = (node: Element) => {
+          const rect = node.getBoundingClientRect();
+          const style = getComputedStyle(node);
+          return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden";
+        };
+        return [...element.querySelectorAll("tbody tr[data-issue-row]")].map((row, at) => {
+          const leaves = [...row.querySelectorAll("*")].filter(
+            (node) =>
+              shown(node) && node.children.length === 0 && (node.textContent ?? "").trim() !== ""
+          );
+          const named = (words: string) =>
+            leaves.some((node) => (node.textContent ?? "").trim() === words && inside(node));
+          const times = [...row.querySelectorAll("time")].filter(shown);
+          return {
+            row: at + 1,
+            owner: named(owned[at] ?? ""),
+            counts: ["Active", "Triage, Todo", "Backlog, icebox"].every((name) =>
+              leaves.some(
+                (node) => (node.textContent ?? "").trim().startsWith(name) && inside(node)
+              )
+            ),
+            newestEvent: times.length > 0 && times.every(inside),
+            outside: leaves
+              .filter((node) => !inside(node))
+              .map((node) => (node.textContent ?? "").trim().slice(0, 20)),
+          };
+        });
+      }, owners);
+    const rows = await settledValue("each row's parts in the box", rowsInBox);
     soft(
-      Math.abs(gap),
-      `the Priority column ends at the box's inner right edge (${gap} px from it)`
-    ).toBeLessThanOrEqual(1);
+      rows,
+      "each row's owner, its three counts under their names and its newest event are drawn inside the box"
+    ).toEqual(
+      owners.map((_, at) => ({
+        counts: true,
+        newestEvent: true,
+        outside: [],
+        owner: true,
+        row: at + 1,
+      }))
+    );
+    // The table does not scroll sideways: its box's scroll width is its client width.
+    const sideways = () =>
+      table.evaluate((element) => {
+        const box = element.closest('[data-testid$="-table-scroll"]');
+        return box === null ? Number.POSITIVE_INFINITY : box.scrollWidth - box.clientWidth;
+      });
+    soft(
+      await settledValue("the box's scroll width", sideways),
+      "the table's scroll width is its client width"
+    ).toBe(0);
 
     // The header row's controls, each by its 44 px touch target: its box, grown about its centre
     // to 44 px where it is smaller. No two of them may overlap, and the `#` header holds one
