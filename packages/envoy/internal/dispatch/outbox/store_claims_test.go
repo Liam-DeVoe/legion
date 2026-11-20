@@ -76,6 +76,137 @@ func TestAClaimStatedAgainUnderItsEventLeavesTheRoleHeld(t *testing.T) {
 	}
 }
 
+// TestARetriedEventLeavesTheHolderANewerEventStated is the retry
+// TestAClaimStatedAgainUnderItsEventLeavesTheRoleHeld cannot see: one whose event's first record
+// wrote no row. Event 9 resolves s1; event 10 resolves s1 again, which the role holds already, so
+// its record appends nothing, and the log holds event 9's row alone; event 11 moves the role to
+// s2; and event 10 is retried with s1. The log holds no row of event 10 for the retry to find, so
+// only the order of the events tells it that a newer one stated the claim (graphstore's
+// claimArms): an older event never moves a claim a newer event stated, so the retry appends
+// nothing and the role keeps the holder event 11 resolved. The publisher reads that holder back
+// (claimedARole), so a reverted one would change how the next mention is recorded too.
+func TestARetriedEventLeavesTheHolderANewerEventStated(t *testing.T) {
+	const (
+		role    = "claim-older-role"
+		first   = "019a1c0a-5555-7000-8000-000000000001"
+		second  = "019a1c0a-5555-7000-8000-000000000002"
+		stated  = int64(9450009)
+		retried = int64(9450010)
+		newer   = int64(9450011)
+	)
+	ctx := context.Background()
+	database := storetest.Open(t)
+	deps := Deps{Store: database}
+	deps.lanes = newLanes(func() {})
+	at := time.Now()
+	record := func(event int64, holder string) {
+		t.Helper()
+		claims := graphWrite{claims: []graphstore.Claim{{
+			FromKind: graphstore.KindRole, FromID: role, Kind: graphstore.TupleHeldBy,
+			ToKind: graphstore.KindSession, ToID: holder, At: at, Who: graphWriter, SourceEvent: event,
+		}}}
+		if _, err := recordBatch(ctx, deps, []outcome{{id: event, state: released}}, uuid.New(), claims); err != nil {
+			t.Fatalf("record event %d: %v", event, err)
+		}
+	}
+	record(stated, first)
+	record(retried, first)
+	held := []claimTuple{{Kind: graphstore.TupleHeldBy, ToKind: graphstore.KindSession, ToID: first, Asserted: true}}
+	if history := claimTuples(t, database, role); !slices.Equal(history, held) {
+		t.Fatalf("the role's claim reads %+v after event %d resolved %s again, want %+v: a claim the role holds already appends no row",
+			history, retried, first, held)
+	}
+	if rows := tuplesUnder(t, database, retried); rows != 0 {
+		t.Fatalf("the log holds %d row(s) under event %d after it resolved the holder the role holds, want none: the log holds event %d's row alone",
+			rows, retried, stated)
+	}
+	record(newer, second)
+	record(retried, first)
+
+	if holder := currentHolder(t, database, role); holder != second {
+		t.Fatalf("the role is held by %q after the retry of event %d, want %s, the holder event %d stated: an older event never moves a claim a newer event stated",
+			holder, retried, second, newer)
+	}
+	if rows := tuplesUnder(t, database, retried); rows != 0 {
+		t.Fatalf("the log holds %d row(s) under event %d after its retry, want none: the retry appends no row", rows, retried)
+	}
+	want := []claimTuple{
+		{Kind: graphstore.TupleHeldBy, ToKind: graphstore.KindSession, ToID: first, Asserted: true},
+		{Kind: graphstore.TupleHeldBy, ToKind: graphstore.KindSession, ToID: first, Asserted: false},
+		{Kind: graphstore.TupleHeldBy, ToKind: graphstore.KindSession, ToID: second, Asserted: true},
+	}
+	if history := claimTuples(t, database, role); !slices.Equal(history, want) {
+		t.Fatalf("the role's claim reads %+v after the retry of event %d, want %+v: the retry appends no row", history, retried, want)
+	}
+}
+
+// TestARetriedEventLeavesARoleANewerEventUnclaimedUnheld is the same rule where the newer event
+// ended the relation rather than moved it. Event 9 resolves s1; event 10 resolves s1 again, which
+// the role holds already, so its record appends nothing; event 11 reads the role unclaimed, a
+// claim with no far end, which retracts s1; and event 10 is retried with s1. The role then holds
+// no far end, so there is no current far end whose event the retry could be held back by: the
+// newest row of each far end counts whether it asserts the far end or retracts it (graphstore's
+// claimArms), and event 11's retraction of s1 is newer than the retry. The retry appends nothing,
+// and the role stays unheld, as the newer event left it.
+func TestARetriedEventLeavesARoleANewerEventUnclaimedUnheld(t *testing.T) {
+	const (
+		role    = "claim-unclaimed-role"
+		first   = "019a1c0a-6666-7000-8000-000000000001"
+		stated  = int64(9460009)
+		retried = int64(9460010)
+		newer   = int64(9460011)
+	)
+	ctx := context.Background()
+	database := storetest.Open(t)
+	deps := Deps{Store: database}
+	deps.lanes = newLanes(func() {})
+	at := time.Now()
+	record := func(event int64, holder string) {
+		t.Helper()
+		toKind := ""
+		if holder != "" {
+			toKind = graphstore.KindSession
+		}
+		claims := graphWrite{claims: []graphstore.Claim{{
+			FromKind: graphstore.KindRole, FromID: role, Kind: graphstore.TupleHeldBy,
+			ToKind: toKind, ToID: holder, At: at, Who: graphWriter, SourceEvent: event,
+		}}}
+		if _, err := recordBatch(ctx, deps, []outcome{{id: event, state: released}}, uuid.New(), claims); err != nil {
+			t.Fatalf("record event %d: %v", event, err)
+		}
+	}
+	record(stated, first)
+	record(retried, first)
+	record(newer, "")
+	record(retried, first)
+
+	if holder := currentHolder(t, database, role); holder != "" {
+		t.Fatalf("the role is held by %q after the retry of event %d, want none, as event %d left it unclaimed: an older event never moves a claim a newer event stated",
+			holder, retried, newer)
+	}
+	if rows := tuplesUnder(t, database, retried); rows != 0 {
+		t.Fatalf("the log holds %d row(s) under event %d after its retry, want none: the retry appends no row", rows, retried)
+	}
+	want := []claimTuple{
+		{Kind: graphstore.TupleHeldBy, ToKind: graphstore.KindSession, ToID: first, Asserted: true},
+		{Kind: graphstore.TupleHeldBy, ToKind: graphstore.KindSession, ToID: first, Asserted: false},
+	}
+	if history := claimTuples(t, database, role); !slices.Equal(history, want) {
+		t.Fatalf("the role's claim reads %+v after the retry of event %d, want %+v: the retry appends no row", history, retried, want)
+	}
+}
+
+// tuplesUnder is how many rows of the log name event as their cause, whatever they are about.
+func tuplesUnder(t *testing.T, database *store.Store, event int64) int {
+	t.Helper()
+	var rows int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from graph_tuples where source_event = $1`, event).Scan(&rows); err != nil {
+		t.Fatalf("read the rows under event %d: %v", event, err)
+	}
+	return rows
+}
+
 // TestAFallbackCopyThePassPublishedIsADelivery holds the fallback pass's record to R14 and R15: a
 // copy of a comment the pass published to a session's own topic, once the mention's attempt past
 // its lease failed, is a delivery, so the record appends its delivered_to tuple from the comment to
