@@ -38,7 +38,7 @@ func TestPodUpdateAnAskStatesTheBoundAtTheMomentTheWalkWritesIt(t *testing.T) {
 
 	rig.clock.advance(time.Minute)
 	heldAt := rig.clock.Now()
-	holdLegionPod(t, rig.sup.store, openLegionPause(t, rig.pool, heldAt), held, heldAt)
+	rig.pauseHolds(held, heldAt)
 
 	rig.clock.advance(time.Minute)
 	top := rig.clock.Now()
@@ -77,14 +77,14 @@ func TestPodUpdateAnAskStatesNoEndLaterThanTheRoundsWhenAHoldEndsInTheWalk(t *te
 
 	rig.clock.advance(time.Minute)
 	heldAt := rig.clock.Now()
-	holdLegionPod(t, rig.sup.store, openLegionPause(t, rig.pool, heldAt), held, heldAt)
+	rig.pauseHolds(held, heldAt)
 
 	rig.clock.advance(time.Minute)
 	top := rig.clock.Now()
 	ended := top.Add(5 * time.Second)
 	if !rig.sweepWaitingInAWrite(asked, func() {
 		rig.clock.advance(5 * time.Second)
-		if done, err := rig.sup.store.EndPausePodHold(rig.ctx, "LEGION", held, store.PausePodHoldReady, ended); err != nil || !done {
+		if done, err := rig.sup.store.EndPausePodHold(rig.ctx, rig.s.cfg.Project, held, store.PausePodHoldReady, ended); err != nil || !done {
 			t.Errorf("end the pause's hold of %s's pod at %s = %t, %v; want it ended", held, ended.Format(time.RFC3339), done, err)
 		}
 		rig.clock.advance(15 * time.Second)
@@ -108,6 +108,14 @@ func TestPodUpdateAnAskStatesNoEndLaterThanTheRoundsWhenAHoldEndsInTheWalk(t *te
 	testwait.Eventually(t, "the round's pod to be replaced at the end its ask stated", func() bool {
 		return len(rig.replacementsOf(pod)) > 0
 	})
+}
+
+// pauseHolds opens a pause of the rig's own project at at, as an operator's pause does, and its
+// hold of issue's pod (openProjectPause, holdProjectPod): the pair a daemon reads its holds by.
+func (r *fleetRig) pauseHolds(issue string, at time.Time) {
+	r.t.Helper()
+	project := r.s.cfg.Project
+	holdProjectPod(r.t, r.sup.store, openProjectPause(r.t, r.pool, project, at), project, issue, at)
 }
 
 // askTexts is the text of every update ask the outbox holds for issue, oldest first.

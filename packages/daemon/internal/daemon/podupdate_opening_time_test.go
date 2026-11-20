@@ -9,9 +9,9 @@ package daemon
 //
 // The wait these tests hold the walk in is the one write every roll makes: the ask of a round a
 // sweep before opened, which the walk enqueues as it reaches that round's issue (askRound). The
-// limit rig is podupdate_limits_test.go's, whose outbox owns the project of its keys
-// (fleetOutboxProject), so that ask is a row the store writes, and a sweep that asks it once
-// queues it and asks it at no later sweep.
+// limit rig is podupdate_limits_test.go's, whose daemon runs the project of its keys
+// (fleetProject), so that ask is a row the store writes, and a sweep that asks it once queues it
+// and asks it at no later sweep.
 
 import (
 	"context"

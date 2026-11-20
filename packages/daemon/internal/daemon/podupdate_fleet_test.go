@@ -212,11 +212,12 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 	rig := &fleetRig{t: t, ctx: ctx, sup: sup, rt: rt, pool: pool, records: records, clock: clock,
 		grants: credential.New(nil), handoffs: &fleetHandoffs{handoffs: map[string]dispatch.Handoff{}},
 		tokens: tokens, workers: workers, pods: pods, noPod: map[string]bool{}, wire: wire}
+	project := fleetProject(t, issues)
 	rig.s = &supervision{
-		cfg: config.Config{Project: "LEGION", PodUpdateGrace: podUpdateGrace},
+		cfg: config.Config{Project: project, PodUpdateGrace: podUpdateGrace},
 		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
-		enqueue:     (&workflowRuntime{pool: pool, records: records, dispatchProject: fleetOutboxProject(t, issues), log: quietLogger()}).enqueueOutbox,
+		enqueue:     (&workflowRuntime{pool: pool, records: records, dispatchProject: project, log: quietLogger()}).enqueueOutbox,
 		refreshGate: supervise.NewRefreshGate(0),
 	}
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
@@ -229,12 +230,13 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 	return rig
 }
 
-// fleetOutboxProject is the project whose rows the rig's outbox writes: the project of the rig's
-// issue keys, by the rule production's outbox writes by (claim.KeyOfProject). So every ask, notice
-// and message the sweep makes for an issue of the rig is a row written to the store, as it is for
-// a daemon's own issue. A rig over the keys of two projects has no such project and fails; a rig
-// over no issue writes LEGION's.
-func fleetOutboxProject(t *testing.T, issues []fleetIssue) string {
+// fleetProject is the project the rig's daemon runs, by its Dispatch key: the project of the
+// rig's issue keys, by the rule production's outbox writes by (claim.KeyOfProject). Its outbox
+// writes that project's rows, so every ask, notice and message the sweep makes for an issue of the
+// rig is a row written to the store, as it is for a daemon's own issue, and its sweep reads that
+// project's pause holds (podPauseHolds), as a daemon reads its own project's. A rig over the keys
+// of two projects has no such project and fails; a rig over no issue runs LEGION.
+func fleetProject(t *testing.T, issues []fleetIssue) string {
 	t.Helper()
 	project := "LEGION"
 	for i, issue := range issues {
