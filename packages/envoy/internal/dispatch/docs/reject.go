@@ -84,13 +84,13 @@ func takenAnchorMarks(tree, next *pmdoc.Node, id string) TakenAnchorMarks {
 	var marks []pmdoc.MarkRef
 	seen := map[pmdoc.MarkRef]bool{}
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
-		if node.Type != "text" || !carriesMarkID(node, own) {
+		if node.Type != "text" || !pmdoc.NodeHasMarkID(node, own.Type, own.ID) {
 			return true
 		}
 		for _, mark := range node.Marks {
 			markID, _ := mark.Attrs["id"].(string)
 			ref := pmdoc.MarkRef{Type: mark.Type, ID: markID}
-			if markID == "" || !isAnchorMarkType(mark.Type) || ref == own || seen[ref] {
+			if markID == "" || anchorKinds[mark.Type] == "" || ref == own || seen[ref] {
 				continue
 			}
 			seen[ref] = true
@@ -108,22 +108,6 @@ func takenAnchorMarks(tree, next *pmdoc.Node, id string) TakenAnchorMarks {
 		}
 	}
 	return taken
-}
-
-// carriesMarkID reports whether node carries the mark ref names: one of its type whose id
-// attribute is its id.
-func carriesMarkID(node *pmdoc.Node, ref pmdoc.MarkRef) bool {
-	for _, mark := range node.Marks {
-		if mark.Type == ref.Type && mark.Attrs["id"] == ref.ID {
-			return true
-		}
-	}
-	return false
-}
-
-// isAnchorMarkType reports whether markType is a mark an ask or comment row anchors to.
-func isAnchorMarkType(markType string) bool {
-	return markType == string(MarkAsk) || markType == string(MarkComment) || markType == string(MarkSuggestion)
 }
 
 // markSet is marks as a set of mark identities.

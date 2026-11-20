@@ -107,32 +107,33 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// took them out of the document (commentAction, docs/reject.go rejectedInsert), so the delete
 	// rejects nothing again. The reject keeps the kind the create stored (commentAction), which
 	// alone decides, and a row with none falls back to its quote against its replace_with, as an
-	// orphaned one does.
+	// orphaned one does: markGone is that the suggestion's mark is out of the document, by a
+	// reject or by a browser edit.
 	//
 	// An insert's words can carry other anchors' marks too - an ask's or another comment's, open
 	// or closed, quoting words the insert added - and each such row's quote gives those words to
 	// every read of it. The removal of the words names those marks (docs.TakenAnchorMarks): the
 	// reject below answers them, and an earlier reject recorded them on the row
-	// (storedSuggestion.Taken). The delete has every row on them written without the words
-	// (docs.RewriteTakenAnchors), here, before the margin write below refreshes the document's
-	// anchors. A row rejected before the reject recorded them holds none, and nothing stored
-	// tells which anchors that reject's removal took text from, so the delete of such a row
-	// rewrites no other anchor.
+	// (storedSuggestion.Taken), which a pending suggestion's row holds none of. The delete has
+	// every row on them written without the words (docs.RewriteTakenAnchors), here, before the
+	// margin write below refreshes the document's anchors. A row rejected before the reject
+	// recorded them holds none, and nothing stored tells which anchors that reject's removal took
+	// text from, so the delete of such a row rewrites no other anchor.
 	//
 	// Everything up to Commit is the read phase (Docs.Join): this route and the document
 	// operations queue their writes on the ledger, in the order made, and Commit sends them as
 	// one batch.
 	quoteIsBody := false
 	if comment.Suggestion != nil && comment.Anchor != nil && (comment.Suggestion.Accepted == nil || !*comment.Suggestion.Accepted) {
-		storedKind, storedTaken, err := loadStoredSuggestion(r.Context(), tx, comment.ID)
+		storedKind, taken, err := loadStoredSuggestion(r.Context(), tx, comment.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
-		var taken docs.TakenAnchorMarks
-		if comment.Suggestion.Accepted == nil {
-			kind, rejectTaken, err := s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
-			orphaned := false
+		var kind string
+		markGone := comment.Suggestion.Accepted != nil
+		if !markGone {
+			kind, taken, err = s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
 			if err != nil {
 				if !errors.Is(err, docs.ErrAnchorOrphaned) {
 					s.writeHandlerError(w, err)
@@ -142,17 +143,11 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 					s.writeHandlerError(w, err)
 					return
 				}
-				orphaned = true
-			}
-			taken = rejectTaken
-			quoteIsBody = kind == "insert" || storedKind == "insert" ||
-				(orphaned && storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
-		} else {
-			quoteIsBody = storedKind == "insert" || (storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
-			if storedTaken != nil {
-				taken = *storedTaken
+				markGone = true
 			}
 		}
+		quoteIsBody = kind == "insert" || storedKind == "insert" ||
+			(markGone && storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
 		if err := s.deps.Docs.RewriteTakenAnchors(documentCtx, comment.Anchor.ArtifactID, taken, actor); err != nil {
 			s.writeHandlerError(w, err)
 			return

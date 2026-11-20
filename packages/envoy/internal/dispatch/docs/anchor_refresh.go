@@ -344,13 +344,6 @@ func (s *Service) RewriteTakenAnchors(ctx context.Context, artifactID string, ta
 		return errUnjoined
 	}
 	removed, cut := markSet(taken.Removed), markSet(taken.Cut)
-	markIDs := make([]string, 0, len(removed)+len(cut))
-	for _, mark := range taken.Removed {
-		markIDs = append(markIDs, mark.ID)
-	}
-	for _, mark := range taken.Cut {
-		markIDs = append(markIDs, mark.ID)
-	}
 	pending := pendingAnchorsOf(ctx, artifactID)
 	type takenRow struct {
 		mark anchoredMark
@@ -358,6 +351,19 @@ func (s *Service) RewriteTakenAnchors(ctx context.Context, artifactID string, ta
 	}
 	var rows []takenRow
 	for _, target := range anchorTargets {
+		// Only the ids of the marks this table's rows carry (anchorTable): a table none of them
+		// belongs to is not read.
+		var markIDs []string
+		for _, marks := range [][]AnchorMark{taken.Removed, taken.Cut} {
+			for _, mark := range marks {
+				if anchorTable(mark.Type) == target.table {
+					markIDs = append(markIDs, mark.ID)
+				}
+			}
+		}
+		if len(markIDs) == 0 {
+			continue
+		}
 		listed, err := tx.Query(ctx, takenAnchorRowsQuery(target), artifactID, markIDs)
 		if err != nil {
 			return fmt.Errorf("list %s anchors on taken marks: %w", target.table, err)

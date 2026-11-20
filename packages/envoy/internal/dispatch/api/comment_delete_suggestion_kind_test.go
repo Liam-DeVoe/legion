@@ -68,6 +68,34 @@ func retypeSuggestedWords(t *testing.T, documentService *docs.Service, artifactI
 	peer.barrier(t)
 }
 
+// retypeSuggestedWordsAndRefresh has a browser edit change "suggested" to "revised" under the
+// insert mark m-insert, and a server edit elsewhere refresh the document's anchors, and answers
+// the quote the anchor then stores: "zarquonrevised ", no longer the suggestion's replace_with.
+func retypeSuggestedWordsAndRefresh(t *testing.T, documentService *docs.Service, handler http.Handler, artifactID string) string {
+	t.Helper()
+	retypeSuggestedWords(t, documentService, artifactID, "m-insert", "suggested", "revised")
+	if response := editDocument(t, handler, artifactID, map[string]any{
+		"ops": []map[string]any{{"op": "replace", "find": "fox", "with": "dog"}},
+	}); response.Code != http.StatusOK {
+		t.Fatalf("the server edit that refreshes the anchors: status=%d body=%s", response.Code, response.Body.String())
+	}
+	return suggestedWordsStem + "revised "
+}
+
+// takeStoredKindOff takes the stored kind off the suggestion column of comment id, as a row made
+// before the create stored one holds none.
+func takeStoredKindOff(t *testing.T, database *store.Store, id string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		update comments set suggestion = suggestion - 'kind' where id = $1
+	`, id); err != nil {
+		t.Fatalf("take the stored kind off the row: %v", err)
+	}
+	if kind, stored := storedSuggestionKind(t, database, id); stored {
+		t.Fatalf("the row still stores the kind %q", kind)
+	}
+}
+
 // suggestionToDelete is a suggestion the rows below delete, as a fixture leaves it - an insert
 // whose mark a browser edit took out of the document (orphanedInsertSuggestion), or a suggestion
 // a reject decided (rejectedSuggestion): quote is its anchor's stored quote.
@@ -102,13 +130,7 @@ func orphanedInsertSuggestion(t *testing.T, retyped, legacy bool) suggestionToDe
 	}, "alice")
 	quote := typed
 	if retyped {
-		retypeSuggestedWords(t, documentService, issue.PrimaryArtifactID, "m-insert", "suggested", "revised")
-		if response := editDocument(t, handler, issue.PrimaryArtifactID, map[string]any{
-			"ops": []map[string]any{{"op": "replace", "find": "fox", "with": "dog"}},
-		}); response.Code != http.StatusOK {
-			t.Fatalf("the server edit that refreshes the anchors: status=%d body=%s", response.Code, response.Body.String())
-		}
-		quote = suggestedWordsStem + "revised "
+		quote = retypeSuggestedWordsAndRefresh(t, documentService, handler, issue.PrimaryArtifactID)
 	}
 	// The positive control: the anchor quotes the words on the standing mark, and a retyped
 	// quote is no longer the suggestion's replace_with.
@@ -118,14 +140,7 @@ func orphanedInsertSuggestion(t *testing.T, retyped, legacy bool) suggestionToDe
 			read.Anchor, read.Suggestion, quote)
 	}
 	if legacy {
-		if _, err := database.Pool.Exec(context.Background(), `
-			update comments set suggestion = suggestion - 'kind' where id = $1
-		`, comment.ID); err != nil {
-			t.Fatalf("take the stored kind off the row: %v", err)
-		}
-		if kind, stored := storedSuggestionKind(t, database, comment.ID); stored {
-			t.Fatalf("the row still stores the kind %q", kind)
-		}
+		takeStoredKindOff(t, database, comment.ID)
 	}
 	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, "The brown dog\n")
 	return suggestionToDelete{handler: handler, database: database, issueKey: issue.Key, comment: comment, quote: quote}
@@ -382,13 +397,7 @@ func rejectedSuggestion(t *testing.T, kind string, retyped, legacy bool) suggest
 	}
 	comment := createThreadComment(t, handler, issue.Key, input, "alice")
 	if retyped {
-		retypeSuggestedWords(t, documentService, issue.PrimaryArtifactID, "m-insert", "suggested", "revised")
-		if response := editDocument(t, handler, issue.PrimaryArtifactID, map[string]any{
-			"ops": []map[string]any{{"op": "replace", "find": "fox", "with": "dog"}},
-		}); response.Code != http.StatusOK {
-			t.Fatalf("the server edit that refreshes the anchors: status=%d body=%s", response.Code, response.Body.String())
-		}
-		quote = suggestedWordsStem + "revised "
+		quote = retypeSuggestedWordsAndRefresh(t, documentService, handler, issue.PrimaryArtifactID)
 	}
 
 	rejected := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/reject", map[string]any{}, "alice")
@@ -413,14 +422,7 @@ func rejectedSuggestion(t *testing.T, kind string, retyped, legacy bool) suggest
 			read.Anchor, read.Suggestion, quote)
 	}
 	if legacy {
-		if _, err := database.Pool.Exec(context.Background(), `
-			update comments set suggestion = suggestion - 'kind' where id = $1
-		`, comment.ID); err != nil {
-			t.Fatalf("take the stored kind off the row: %v", err)
-		}
-		if stored, held := storedSuggestionKind(t, database, comment.ID); held {
-			t.Fatalf("the row still stores the kind %q", stored)
-		}
+		takeStoredKindOff(t, database, comment.ID)
 	}
 	return suggestionToDelete{handler: handler, database: database, issueKey: issue.Key, comment: comment, quote: quote}
 }

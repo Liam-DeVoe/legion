@@ -515,23 +515,14 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		}
 		comment.Resolved = true
 		comment.Suggestion.Accepted = &accepted
-		// The column is written back as the create wrote it (storedSuggestion), with the kind the
-		// create stored, which the delete of a rejected suggestion reads to tell an insert's quote,
-		// the comment's own words, from document text, and with the anchor marks a reject's removal
-		// took text from, which that delete reads to take the inserted words out of the quotes of
-		// the asks and comments on them (deleteComment). Nothing but the reject records those
-		// marks: once the words are out of the document, no fact of it tells which anchors lay on
-		// them.
-		storedKind, _, err := loadStoredSuggestion(r.Context(), tx, comment.ID)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		written := storedSuggestion{Suggestion: *comment.Suggestion, Kind: storedKind}
-		if len(taken.Removed) > 0 || len(taken.Cut) > 0 {
-			written.Taken = &taken
-		}
-		suggestion, err := encodeJSON(written)
+		// The decision is merged into the column (jsonb ||), so every key the create stored and
+		// this write does not name stays: the kind, which the delete of a rejected suggestion reads
+		// to tell an insert's quote, the comment's own words, from document text (deleteComment).
+		// The write names the suggestion's own keys and the anchor marks a reject's removal took
+		// text from, which that delete reads to take the inserted words out of the quotes of the
+		// asks and comments on them. Nothing but the reject records those marks: once the words
+		// are out of the document, no fact of it tells which anchors lay on them.
+		suggestion, err := encodeJSON(storedSuggestion{Suggestion: *comment.Suggestion, Taken: taken})
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -543,11 +534,12 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		}
 		// The owner's lock this transaction holds keeps the suggestion as it was read above, so the
 		// guard finds it undecided; were it decided, the update's callback refuses as the read
-		// refused it, and Commit returns that refusal.
+		// refused it, and Commit returns that refusal. The read above found the column holding a
+		// suggestion, an object, so the merge has an object to merge into.
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
 			b.Queue("", `
 				update comments
-				set resolved = true, resolved_by = $2, resolved_at = $3, suggestion = $4
+				set resolved = true, resolved_by = $2, resolved_at = $3, suggestion = suggestion || $4::jsonb
 				where id = $1 and suggestion->>'accepted' is null
 			`, comment.ID, resolvedBy, resolvedAt, suggestion).Exec(func(tag pgconn.CommandTag) error {
 				if tag.RowsAffected() == 0 {
