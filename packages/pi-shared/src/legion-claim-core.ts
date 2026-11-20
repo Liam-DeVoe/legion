@@ -75,10 +75,12 @@ export interface LegionClaimHost {
 /** What the boot answers: the claim step it left to run after it, for a caller that waits on it
  * and for a test that reads when the name was taken. */
 export interface LegionClaimBoot {
-  /** Settles once that step has run — the role claimed, or the refusal logged and the session
-   * stopped — and at once for a boot that stopped before it ever reached the step. It never
-   * rejects: a claim the listener refuses is the host's `stop`, not this promise's failure, and a
-   * claim it answered 503 is claimed again until it lands or is refused. */
+  /** Settles once that step has run — the role claimed, the refusal logged and the session
+   * stopped, or the claim ended by the host's stop (`signal`) with nothing logged and no stop —
+   * and at once for a boot that stopped before it ever reached the step. It never rejects: a
+   * claim the listener refuses is the host's `stop`, not this promise's failure, and an answer a
+   * later claim cures (`whyClaimAgain`: the listener's 503, or the session's own refusal for want
+   * of a relay subject) is claimed again until it lands, is refused, or the host stops. */
   readonly claimed: Promise<void>;
 }
 
@@ -332,7 +334,7 @@ export function whyClaimAgain(error: unknown): string | undefined {
  * throws it from its own copy of envoy-client, behind the role-claim bridge, and pi-legion runs
  * this boot from another copy.
  */
-export function listenerAskedToClaimAgain(error: unknown): boolean {
+function listenerAskedToClaimAgain(error: unknown): boolean {
   if (!(error instanceof Error) || error.name !== "EnvoyApiError" || !("details" in error)) {
     return false;
   }

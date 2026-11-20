@@ -83,6 +83,9 @@ export function createControllerSession(deps: {
   readonly persistedTranscript: PersistedTranscript;
   readonly pi: PiApi;
   readonly exitProcess: (code: number) => never;
+  /** The first wait before a role claim is made again (`claimRoleAgain`); undefined keeps its own.
+   *  A test sets it short. */
+  readonly roleClaimRetryFirstDelayMs: () => number | undefined;
 }): ControllerSession {
   const { daemon, persistedTranscript, pi } = deps;
   // Aborted at this session's `session_shutdown` (`shutdown`): a role claim still being made again
@@ -422,6 +425,7 @@ export function createControllerSession(deps: {
                 logger.warn(`[legion] ${line}`);
                 showWaiting(line);
               },
+              firstDelayMs: deps.roleClaimRetryFirstDelayMs(),
               signal: shuttingDown.signal,
             }
           : {
@@ -432,6 +436,7 @@ export function createControllerSession(deps: {
                 ui.notify(notice, "info");
                 if (ui.setWidget !== undefined) showWaiting(line);
               },
+              firstDelayMs: deps.roleClaimRetryFirstDelayMs(),
               signal: shuttingDown.signal,
               maxAttempts: CONTROLLER_CLAIM_BUSY_ATTEMPTS,
             }

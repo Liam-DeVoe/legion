@@ -20762,6 +20762,63 @@ console.log(JSON.stringify(args));
     }
   });
 
+  // What a session was told of its inbound is its own, in one process as across processes: a
+  // process that told session A it receives nothing and moves to session B with `/new` tells B its
+  // own outage at B's own refusal, and its end once B's registration is accepted, while A's record
+  // still ends with the outage notice, for a process that binds A again to end.
+  test("a session the process moves to with /new during an outage is told its own outage and its end, and the session it left keeps its told record", async () => {
+    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    natsState.failConnects = 1;
+    try {
+      const fixture = createPi();
+      let sessionID = "ses_outage_left";
+      let entries = (): readonly unknown[] => fixture.entries;
+      const notifications: string[] = [];
+      const intervals: (() => void)[] = [];
+      const context = (): SessionContext => ({
+        cwd: "/tmp/envoy-omp-test",
+        sessionManager: {
+          ...topLevelSession,
+          getSessionId: () => sessionID,
+          getBranch: () => entries(),
+          getEntries: () => entries(),
+        },
+        setInterval: (callback) => intervals.push(callback),
+        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+      });
+      const unavailable = () =>
+        notifications.filter((m) => m.includes("inbound messages are unavailable"));
+      const restored = () =>
+        notifications.filter((m) => m.includes("inbound messages reach this session again"));
+      const written = (from: readonly unknown[], text: string) =>
+        from.filter((entry) => JSON.stringify(entry).includes(text));
+      const { default: envoyExtension } = await import("./envoy.ts?outage-per-session");
+      envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context());
+      expect(unavailable()).toHaveLength(1);
+      const left = fixture.entries.length;
+
+      // The new session's own dial fails too, so its first registration is refused.
+      natsState.failConnects = 1;
+      await fixture.handlers.get("session_before_switch")?.({ reason: "new" }, context());
+      sessionID = "ses_outage_next";
+      entries = () => fixture.entries.slice(left);
+      await fixture.handlers.get("session_switch")?.({ reason: "new" }, context());
+      await until(() => unavailable().length === 2, "the new session's own outage notice");
+      expect(restored()).toEqual([]);
+
+      // The background retry's pass dials, opens the relay and registers.
+      intervals.at(-1)?.();
+      await until(() => restored().length === 1, "the new session's restored notice");
+      const next = fixture.entries.slice(left);
+      expect(written(next, "Envoy inbound unavailable")).toHaveLength(1);
+      expect(written(next, "Envoy inbound restored")).toHaveLength(1);
+      expect(written(fixture.entries.slice(0, left), "Envoy inbound restored")).toEqual([]);
+    } finally {
+      natsState.failConnects = 0;
+    }
+  });
+
   test("a relay lost after the start names its failure in the refused registration, and the next heartbeat opens it again and says so once", async () => {
     // The relay subject opened at the start. Later its connection closes for good, as nats.js
     // closes one on an authorization error it does not ignore, and the hub refuses every dial

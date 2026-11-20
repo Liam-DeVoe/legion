@@ -870,14 +870,14 @@ export interface InboundUnavailable {
    *  `restored` when it was told of the outage, and the next outage tells the session again. */
   accepted(): void;
   /**
-   * The host bound a session and read its own record of what it was last told of its inbound:
-   * `told` says the record ends with the outage notice and no end after it. A told record is an
-   * outage an earlier process of the session told and ended before any registration of its was
-   * accepted; it is taken up, so the next accepted registration tells the session it receives
-   * again, and a refusal tells nothing new. A record that is not told drops a take-up an earlier
-   * session's record made, so its end is never told to a session that never heard of it. An
-   * outage this process told itself stays, whichever session the host binds: the next accepted
-   * registration ends it, in the session the host serves then.
+   * The host bound a session and read that session's own record of what it was last told of its
+   * inbound: `told` says the record ends with the outage notice and no end after it. From
+   * here the report is the bound session's. A told record is an outage an earlier process, or
+   * this one before it moved away, told the session and did not end; it is taken up, so a refusal
+   * tells nothing new and the next accepted registration tells the session it receives again. A
+   * record that is not told leaves the session untold: its next refusal tells it that it receives
+   * nothing, and the end of an outage another session was told is never told to it. The session
+   * the host left keeps its own record, which tells its end when a process binds it again.
    */
   recordRead(told: boolean): void;
 }
@@ -896,23 +896,22 @@ export function inboundUnavailable(
   tell: (why: string) => void,
   restored: () => void
 ): InboundUnavailable {
-  // An outage this process told, and one taken up from the record of the session bound now.
+  // Whether the session bound now was told an outage and not its end, by this process or, as its
+  // record read at the bind says (`recordRead`), by an earlier one.
   let told = false;
-  let takenUp = false;
   return {
     refused(error) {
-      if (told || takenUp) return;
+      if (told) return;
       told = true;
       tell(messageFor(error));
     },
     accepted() {
-      if (!told && !takenUp) return;
+      if (!told) return;
       told = false;
-      takenUp = false;
       restored();
     },
     recordRead(recordTold) {
-      takenUp = recordTold;
+      told = recordTold;
     },
   };
 }

@@ -15,6 +15,7 @@ import { expect, test } from "bun:test"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import type { SubscribeInput } from "@legion/envoy-client/transport"
 import { startChannelSession } from "../src/envoy-channel-server"
+import { readReplayState, replayStateFile } from "../src/replay-state"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
   connectionClosedError,
@@ -275,6 +276,16 @@ test("a connection closed for good between a /clear's deregistration and its reg
     )
     expect(notices(notifier, "Envoy inbound unavailable")[0]).toContain(
       "because its relay subject could not be opened: Authorization Violation",
+    )
+    // The new id's file was bound at the handoff, so the outage it was told is recorded there
+    // while no connection is live: a server Claude Code starts again on the new id meanwhile
+    // tells it the outage's end.
+    await waitFor(
+      async () =>
+        (await readReplayState(replayStateFile(directory, NEXT)).catch(() => undefined))
+          ?.inboundOutageTold === true,
+      "the new id's file recording its outage before the connection is back",
+      () => JSON.stringify({ moves, registered }),
     )
     // Several heartbeats pass with no connection, and none moves the credential on the closed one
     // or flushes or subscribes on it. An absence needs the time to pass: eight 25 ms heartbeats.

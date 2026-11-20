@@ -392,6 +392,33 @@ test("a claim refused because the session holds no relay subject is claimed agai
   );
 });
 
+// The boot's claim has no count of tries: a pane whose NATS is down for minutes keeps claiming
+// until NATS answers, where a bound would stop it mid-turn. Twelve refusals at waits from 1 ms
+// pass the first round's eleven tries and the typed controller's five.
+test("a claim refused for want of a relay subject twelve times is claimed again each time, never stops the session, and lands", async () => {
+  let refusals = 12;
+  const { host, steps, lines, firstTurn } = claimHost({
+    overrides: {
+      roleClaimRetryFirstDelayMs: 1,
+      claimRole: async (role) => {
+        steps.push(`claimRole ${role}`);
+        if (refusals === 0) return;
+        refusals -= 1;
+        throw new NoRelaySubjectError(NO_RELAY);
+      },
+    },
+  });
+  const booted = await bootLegionClaim(host);
+
+  firstTurn()?.();
+  await booted.claimed;
+
+  expect(steps).not.toContain("stop");
+  expect(steps.filter((step) => step === `claimRole ${claimToken}`)).toHaveLength(13);
+  expect(lines).toHaveLength(12);
+  expect(refusals).toBe(0);
+}, 30_000);
+
 test("control: a refusal whose cause is another error is no missing relay, and stops the session at once", async () => {
   const { host, steps, lines, firstTurn } = claimHost({
     overrides: {

@@ -132,6 +132,14 @@ export function setLegionCapabilitySendTimeoutForTests(ms: number | undefined): 
   capabilitySendTimeoutMs = ms ?? CAPABILITY_SEND_TIMEOUT_MS;
 }
 
+// The first wait before the controller's role claim is made again. Production never sets this, so
+// `claimRoleAgain` keeps its own 1 s; a test sets a short one, since a row that claims again six
+// times would otherwise wait 31 s.
+let controllerClaimRetryFirstDelayMs: number | undefined;
+export function setLegionControllerClaimRetryDelayForTests(ms: number | undefined): void {
+  controllerClaimRetryFirstDelayMs = ms;
+}
+
 async function persistedTranscript(
   context: CommandContext | SessionContext
 ): Promise<{ readonly sessionFile: string; readonly agentId: string }> {
@@ -401,6 +409,7 @@ export default function legionExtension(pi: PiApi): void {
     persistedTranscript,
     pi,
     exitProcess: (code) => exitProcess(code),
+    roleClaimRetryFirstDelayMs: () => controllerClaimRetryFirstDelayMs,
   });
 
   /**

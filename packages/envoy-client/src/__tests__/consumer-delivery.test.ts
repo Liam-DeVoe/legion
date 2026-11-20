@@ -1347,7 +1347,7 @@ describe("one registration", () => {
     expect(told).toEqual([]);
   });
 
-  test("control: an outage this process told is ended in the session bound after it, whatever that session's record says", async () => {
+  test("an outage this process told one session is that session's: the session bound after it is told its own outage and its end, and never the other's end", async () => {
     const told: string[] = [];
     const outage = inboundUnavailable(
       (why) => told.push(why),
@@ -1365,10 +1365,23 @@ describe("one registration", () => {
         answered: () => undefined,
       }).catch(() => undefined);
 
+    // Session A is told the outage. The host then binds session B, whose record says nothing:
+    // B's own refusal tells B, and the accepted registration ends B's outage.
+    await register();
+    outage.recordRead(false);
+    await register();
+    refuse = false;
+    await register();
+    expect(told).toEqual(["no_grant", "no_grant", "restored"]);
+    // Session A again, its outage taken up from its record; then C, before anything is accepted.
+    // C was told nothing, so the accepted registration tells it nothing.
+    told.length = 0;
+    refuse = true;
+    outage.recordRead(true);
     await register();
     outage.recordRead(false);
     refuse = false;
     await register();
-    expect(told).toEqual(["no_grant", "restored"]);
+    expect(told).toEqual([]);
   });
 });

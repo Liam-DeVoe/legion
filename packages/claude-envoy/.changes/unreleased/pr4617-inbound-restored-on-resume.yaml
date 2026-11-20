@@ -4,7 +4,11 @@ body: |-
   file records that it was told it receives nothing (`inboundOutageTold`), tells the session it
   receives again at its first accepted registration. What the session was told is recorded once the
   notice that told it is shown, in the state file of the id it was told under, so an end that could
-  not be shown is still told by a later server.
+  not be shown is still told by a later server. A `/clear` or `/new` binds the new id's file at
+  once, before its relay waits for a live connection: the new id is told its own outage and its
+  end, recorded in its own file, and never the end of the outage the id it left was told, and a
+  notice for the old id still waiting its turn when the move lands is not shown to the new
+  conversation.
 time: 2026-11-20T14:07:49Z
 custom:
     Issue: pr4617

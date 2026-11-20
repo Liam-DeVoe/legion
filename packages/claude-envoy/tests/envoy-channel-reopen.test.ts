@@ -7,13 +7,16 @@
 // `/clear` is the handoff file the server polls, which names this test's process, the server's
 // parent.
 import { expect, test } from "bun:test"
-import { rm } from "node:fs/promises"
-import { join } from "node:path"
 import { agentStreamControlSubject, legacyAgentSubject } from "@legion/contracts"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { nkeys } from "nats"
 import { modSocketPath } from "../hooks/mod-protocol"
-import { readReplayState, replayStateFile, writeReplayState } from "../src/replay-state"
+import {
+  type ReplayStateFile,
+  readReplayState,
+  replayStateFile,
+  writeReplayState,
+} from "../src/replay-state"
 import { sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import { waitFor } from "./channel-session-harness"
 import { startFakeMod } from "./fake-mod"
@@ -442,14 +445,14 @@ test(
 )
 
 /** Starts a server for `SESSION` over a state file that holds no frames and `told` (omitted when
- *  undefined), or over `file`'s content when given, with its dials refused until its mod is up,
- *  then lets it register. */
-async function restartedOver(told: boolean | undefined, file?: string) {
+ *  undefined), or over `recorded` when given, with its dials refused until its mod is up, then
+ *  lets it register. */
+async function restartedOver(told: boolean | undefined, recorded?: ReplayStateFile) {
   const run = await startServer({
     gateOpen: false,
     prepare: async (stateDirectory) => {
       const target = replayStateFile(stateDirectory, SESSION)
-      if (file !== undefined) return writeReplayState(target, await readReplayState(file))
+      if (recorded !== undefined) return writeReplayState(target, recorded)
       return writeReplayState(target, {
         ledger: [],
         ...(told === undefined ? {} : { inboundOutageTold: told }),
@@ -533,7 +536,7 @@ test(
     const run = await startServer()
     const { mod, notices } = await sessionMod(run)
     const file = replayStateFile(run.stateDirectory, SESSION)
-    const recorded = join(run.stateDirectory, "..", `recorded-${process.pid}.json`)
+    let recorded: ReplayStateFile | undefined
     try {
       await waitFor(
         async () => run.relaySubscriptions() === 1,
@@ -550,7 +553,7 @@ test(
         run.state,
         PROCESS_WAIT_MS,
       )
-      await writeReplayState(recorded, await readReplayState(file))
+      recorded = await readReplayState(file)
     } finally {
       await mod.stop()
       await run.stop()
@@ -570,7 +573,6 @@ test(
     } finally {
       await restarted.mod.stop()
       await restarted.run.stop()
-      await rm(recorded, { force: true })
     }
   },
   ROW_TIMEOUT_MS,

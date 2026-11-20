@@ -1077,11 +1077,12 @@ export default function envoyExtension(hostApi: PiApi): void {
     // restart or a session change cut short, are held again for the first settled heartbeat.
     ledger?.restore(replaySnapshot(entries));
     unwritten.requeueNotices(heldReplayNotices(entries));
-    // An outage an earlier process told the session, and ended before it could tell its end, is
-    // this process's: its first accepted registration tells the session it receives again, after
-    // the outage notice the restart held again above, if that one was not handed yet. A session
-    // whose record is not told drops a take-up an earlier session's record made, so it is never
-    // told the end of an outage it never heard of (`recordRead`).
+    // What the session was last told of its inbound is its own, read from its record at each bind
+    // (`recordRead`). An outage an earlier process told it, or this one before it moved away, and
+    // did not end, is taken up: its first accepted registration tells the session it receives
+    // again, after the outage notice the restart held again above, if that one was not handed
+    // yet. A session whose record is not told is told its own outage at its next refusal, and
+    // never the end of an outage another session was told, this process's included.
     inboundOutage.recordRead(inboundOutageTold(entries));
     // The pictures the transcript the session is now on already shows (a fork's, a handoff's, a
     // resume's, a restart's) are in the history every request sends, so they count as shown. The

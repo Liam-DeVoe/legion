@@ -5,7 +5,11 @@ body: |-
   after the growing wait a claim the listener answers 503 already takes (1 s, doubling to 30 s), and
   logs each wait; the pane runs its turns meanwhile. Before, the pane's claim boot stopped it and
   the controller exited, the daemon launched it again, and the whole start ran again and met the same
-  outage. A pane's claim makes no more claims once its session shuts down.
+  outage. A claim a person types (`/legion-claim-controller`, `/legion-controller-start`) tries 5
+  times on this refusal too, and then fails on screen; in a controller the daemon launched, the
+  process now stays up, where before it exited. Neither a pane's claim nor the controller's makes
+  more claims once its session shuts down, and the controller no longer logs a failed claim and
+  exits 1 for a claim its shutdown ended.
 time: 2026-11-20T14:07:49Z
 custom:
     Issue: pr4617

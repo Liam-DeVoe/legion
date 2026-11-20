@@ -103,6 +103,7 @@ import type {
   setLegionCapabilityBudgetsForTests as SetLegionCapabilityBudgetsForTests,
   setLegionCapabilityHostForTests as SetLegionCapabilityHostForTests,
   setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
+  setLegionControllerClaimRetryDelayForTests as SetLegionControllerClaimRetryDelayForTests,
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
 
@@ -307,6 +308,7 @@ let setLegionBootstrapExitForTests: typeof SetLegionBootstrapExitForTests;
 let setLegionCapabilityBudgetsForTests: typeof SetLegionCapabilityBudgetsForTests;
 let setLegionCapabilityHostForTests: typeof SetLegionCapabilityHostForTests;
 let setLegionCapabilitySendTimeoutForTests: typeof SetLegionCapabilitySendTimeoutForTests;
+let setLegionControllerClaimRetryDelayForTests: typeof SetLegionControllerClaimRetryDelayForTests;
 let setLegionStallProcessesForTests: typeof SetLegionStallProcessesForTests;
 
 beforeAll(async () => {
@@ -329,6 +331,8 @@ beforeAll(async () => {
   setLegionCapabilityBudgetsForTests = legionEntry.setLegionCapabilityBudgetsForTests;
   setLegionCapabilityHostForTests = legionEntry.setLegionCapabilityHostForTests;
   setLegionCapabilitySendTimeoutForTests = legionEntry.setLegionCapabilitySendTimeoutForTests;
+  setLegionControllerClaimRetryDelayForTests =
+    legionEntry.setLegionControllerClaimRetryDelayForTests;
   setLegionStallProcessesForTests = legionEntry.setLegionStallProcessesForTests;
   // The suite's baseline is "not a Legion pane": every key above except HOME starts unset, and
   // `beforeEach` deletes them again before each test and hands on the Envoy entry's file as
@@ -481,6 +485,8 @@ afterEach(async () => {
   setLegionCapabilityBudgetsForTests(undefined);
   // The same for the bound on one `claims/ready` the schedule sends: back to the real 10 s.
   setLegionCapabilitySendTimeoutForTests(undefined);
+  // And the controller's first wait before it claims again: back to `claimRoleAgain`'s own 1 s.
+  setLegionControllerClaimRetryDelayForTests(undefined);
   // And the stall watch's process half: back to the real `/proc` reader and `process.kill`, which
   // no test may be left pointing at.
   setLegionStallProcessesForTests(undefined);
@@ -5700,6 +5706,51 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.requests.map((request) => request.path)).not.toContain(
       "/legion/v1/claims/ready"
     );
+  });
+
+  // The daemon-launched controller's own claim has no count of tries: the daemon's registration
+  // deadline bounds it before its first ready. Six or more refused claims pass the typed claim's
+  // five (CONTROLLER_CLAIM_BUSY_ATTEMPTS), so a count on this claim would end it before NATS
+  // answers. The pass before the claim dials too, so eight refused dials refuse six claims or more.
+  test("a daemon-launched controller whose role claim is refused for want of a relay subject six times claims again each time, takes the role and reports ready", async () => {
+    let refusals = 8;
+    natsConnectGates.set("omp-ses_controller_six", async () => {
+      if (refusals > 0) {
+        refusals -= 1;
+        throw new Error("nats: connection refused");
+      }
+    });
+    setLegionControllerClaimRetryDelayForTests(1);
+    const controller = await launchedController({
+      sessionId: "ses_controller_six",
+      stateFixture: "state-controller-claim.json",
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    let warnings: LoggedWarning[];
+    try {
+      ({ warnings } = await loggedWarnings(async () => {
+        await controller.handlers.get("session_start")?.(
+          {},
+          controller.context("ses_controller_six")
+        );
+      }));
+    } finally {
+      natsConnectGates.delete("omp-ses_controller_six");
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    const waits = warnings.filter((warning) =>
+      warning.message.includes("holds no relay subject yet")
+    );
+    expect(waits.length).toBeGreaterThanOrEqual(6);
+    expect(refusals).toBe(0);
+    expect(controller.exits).toEqual([]);
+    expect(controller.holder()).toBe("ses_controller_six");
+    expect(controller.requests.map((request) => request.path)).toContain("/legion/v1/claims/ready");
   });
 
   // A session change in the daemon-launched controller never reaches its Envoy role claim: the
