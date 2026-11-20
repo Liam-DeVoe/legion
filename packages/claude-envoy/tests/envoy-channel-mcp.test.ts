@@ -371,6 +371,7 @@ test(
       args: [entry],
       cwd: stateDirectory,
       env: {
+        ...bunCacheOff,
         PATH: process.env["PATH"] ?? "",
         HOME: stateDirectory,
         ENVOY_NATS_URL: gate.url,
@@ -483,6 +484,7 @@ test("a broker token keeper's warning while the start registers leaves the tool 
     args: [entry],
     cwd: stateDirectory,
     env: {
+      ...bunCacheOff,
       PATH: process.env["PATH"] ?? "",
       HOME: stateDirectory,
       ENVOY_NATS_URL: broker.url,
