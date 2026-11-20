@@ -284,16 +284,18 @@ func fixtureOrder(name string) (string, int) {
 // fixtureEvent is a captured event as GET /api/v1/events/log answers it: of its envelope, the
 // columns of the event's row the rules read, and its payload; and of an ask's event the body the
 // fill reads of it, which the envelope does not hold and the test makes (askBodyOfPayload). Its
-// fields are event's, in the same order, so it converts to one.
+// fields are event's, in the same order, so it converts to one; the bytes the fill's read counts
+// of an event, which no rule reads, stay 0.
 type fixtureEvent struct {
-	ID        int64           `json:"id"`
-	Type      string          `json:"type"`
-	IssueKey  *string         `json:"issue_key"`
-	Project   string          `json:"project"`
-	Seq       int32           `json:"seq"`
-	CreatedAt time.Time       `json:"created_at"`
-	Payload   json.RawMessage `json:"payload"`
-	AskBody   *string         `json:"-"`
+	ID                         int64           `json:"id"`
+	Type                       string          `json:"type"`
+	IssueKey                   *string         `json:"issue_key"`
+	Project                    string          `json:"project"`
+	Seq                        int32           `json:"seq"`
+	CreatedAt                  time.Time       `json:"created_at"`
+	Payload                    json.RawMessage `json:"payload"`
+	AskBody                    *string         `json:"-"`
+	PayloadBytes, RowBodyBytes int64           `json:"-"`
 }
 
 func readFixtureEvent(t *testing.T, name string) fixtureEvent {

@@ -12,9 +12,11 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// rulesVersion is the version of the event rules versionRules holds, which the fill records in
-// its cursor row (search_text_versions_fill.rules) beside the cursor the rules wrote up to, so a
-// later build that reads more event types knows which events to read again.
+// rulesVersion is the version of the event rules versionRules holds, which the fill writes in the
+// cursor row it creates (search_text_versions_fill.rules). Each batch keeps there the lower of the
+// version stored and this one (advanceCursorQuery), so the column holds the lowest rules version
+// that wrote the rows up to the cursor, and a later build that reads more event types knows which
+// events to read again.
 const rulesVersion = 1
 
 // Where a version's body came from, the values of search_text_versions.body_from this build
@@ -373,21 +375,24 @@ func askVersion(e event, latest latestVersion) (version, bool, error) {
 type item struct{ kind, id string }
 
 // decided is what decideVersions made of a batch of events: the versions they start, in event id
-// order, each with its body whole where a source holds it, and Cut, how many of them hold a
-// post's body cut short because no source held it whole (bodyFromCut), the count the fill's
-// progress line reads.
+// order, each with its body whole where a source holds it; Cut, how many of them hold a post's
+// body cut short because no source held it whole (bodyFromCut), the count the fill's progress
+// line reads; and Bytes, the text the events decided count against the batch's bound, which
+// bounds the batch's statements (statementTimeout).
 type decided struct {
 	Versions []version
 	Cut      int
+	Bytes    int64
 }
 
 // decideVersions decides, in the caller's transaction tx, the versions events start: events in
-// ascending id order, as the fill reads the log. Each event goes through the rule of its type
-// (versionRules) with the item's latest version, which is the latest of the item decided earlier
-// in the same batch, else the item's latest row in the table (latestVersions), so two events of
-// one item in one batch each see the other's change: an issue's title and its primary document
-// version are carried forward from row to row, and an edit is compared with the text before it.
-// An event of a type no rule reads starts no version.
+// ascending id order, as the fill reads the log, of which it decides those that fit in maxBytes.
+// Each event goes through the rule of its type (versionRules) with the item's latest version,
+// which is the latest of the item decided earlier in the same batch, else the item's latest row
+// in the table (latestVersions), so two events of one item in one batch each see the other's
+// change: an issue's title and its primary document version are carried forward from row to
+// row, and an edit is compared with the text before it. An event of a type no rule reads starts
+// no version.
 //
 // What an event does not hold is read from the item's rows, in the same transaction:
 //
@@ -409,12 +414,25 @@ type decided struct {
 //     title, the issue's present title (bodyFromRow). An artifact.version of an issue whose
 //     latest version names no primary document is held to artifacts.is_primary the same way.
 //
+// Each event counts against maxBytes, in order, the bytes readEventsQuery counted of it
+// (event.PayloadBytes and event.RowBodyBytes) and, where it starts a version, the text that
+// version's vector reads besides (decider.size): an issue's row the markdown of the primary
+// document version it names, version 1 for an issue.created, the version carried forward for an
+// issue.updated or an issue.closed and the version named for an artifact.version, measured in one
+// statement before the rules decide (readSpecVersions); and a post whose event cut its body the
+// whole body the rules give it, in place of its row's body where that is longer. An event that
+// starts no version adds nothing to what the read counted. The first event after the first whose
+// count would take the total past maxBytes ends the events decided, and the next batch starts at
+// it; the first is decided whatever its count. Only an event decided is warned of, so the batch
+// that writes an event warns of it once, and Cut counts the versions decided alone.
+//
 // logger takes the warnings. The first event whose payload a rule cannot read
-// (errUnreadablePayload) ends the events decided: the versions of the events before it are
-// decided and answered, with how many events those are, its index, and the error naming it; with
-// every event read, that count is len(events). Any other error, a statement that failed, events
-// out of id order or an ask's event read with no body (askVersion), answers no version.
-func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events []event) (decided, int, error) {
+// (errUnreadablePayload) ends the events decided too, where the bound has not ended them before
+// it. It answers the versions decided with their bytes (decided.Bytes), how many events, from
+// the first, it decided, and the error naming an unreadable payload where one ended them; with
+// every event decided, that count is len(events). Any other error, a statement that failed,
+// events out of id order or an ask's event read with no body (askVersion), answers no version.
+func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events []event, maxBytes int64) (decided, int, error) {
 	// A first pass gives each rule no latest version, as versionOf does, and names the item of
 	// each version it starts, so the table's latest rows of all of them are read in one
 	// statement. That names every item the second pass reads the latest version of: with no
@@ -422,8 +440,24 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 	// rule's version names does not depend on the latest version, so the second pass starts
 	// versions only of the items named here. The first pass reads every field a rule can find
 	// missing, so it meets the first unreadable payload.
+	//
+	// It names, too, the primary document version each version it starts reads. With those of
+	// the latest rows read, these are every version a row of the batch can read the markdown of,
+	// so they are measured in one statement (readSpecVersions): an issue.created's or an
+	// artifact.version's version reads the same one whatever the latest version is, a version
+	// that carries one forward carries that of a version of the batch or of a row read, and a
+	// version of an issue with no version yet measures the one it reads of the issue's rows
+	// itself (seedIssue).
 	var items []item
 	named := map[item]bool{}
+	var specs []specVersion
+	measured := map[specVersion]bool{}
+	measure := func(v *version) {
+		if key, ok := v.spec(); ok && !measured[key] {
+			measured[key] = true
+			specs = append(specs, key)
+		}
+	}
 	read := len(events)
 	var unreadable error
 	for index, e := range events {
@@ -442,41 +476,45 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 			read, unreadable = index, eventError(e, err)
 			break
 		}
-		if key := (item{v.Kind, v.ID}); started && !named[key] {
+		if !started {
+			continue
+		}
+		if key := (item{v.Kind, v.ID}); !named[key] {
 			named[key] = true
 			items = append(items, key)
 		}
+		measure(&v)
 	}
 	events = events[:read]
 	stored, err := latestVersions(ctx, tx, items)
 	if err != nil {
 		return decided{}, 0, err
 	}
-	d := &decider{tx: tx, logger: logger, stored: stored, batch: map[item]*version{}}
-	for _, e := range events {
-		apply, ok := versionRules[e.Type]
-		if !ok {
-			continue
-		}
-		v, started, err := apply(e, d.latest)
-		if err != nil {
-			return decided{}, 0, eventError(e, err)
-		}
-		if !started {
-			continue
-		}
-		keep, err := d.complete(ctx, e, &v)
-		if err != nil {
-			return decided{}, 0, eventError(e, err)
-		}
-		if !keep {
-			continue
-		}
-		d.out.Versions = append(d.out.Versions, v)
-		d.batch[item{v.Kind, v.ID}] = &v
+	for _, v := range stored {
+		measure(v)
 	}
-	if err := d.warnFirstSpecVersions(ctx); err != nil {
+	texts, err := readSpecVersions(ctx, tx, specs)
+	if err != nil {
 		return decided{}, 0, err
+	}
+	d := &decider{tx: tx, logger: logger, stored: stored, batch: map[item]*version{}, specs: texts}
+	for index, e := range events {
+		v, starts, err := d.start(ctx, e)
+		if err != nil {
+			return decided{}, 0, eventError(e, err)
+		}
+		size, err := d.size(e, v, starts)
+		if err != nil {
+			return decided{}, 0, eventError(e, err)
+		}
+		if index > 0 && d.out.Bytes+size > maxBytes {
+			return d.out, index, nil
+		}
+		d.out.Bytes += size
+		d.flush()
+		if starts {
+			d.keep(e, v)
+		}
 	}
 	return d.out, read, unreadable
 }
@@ -487,17 +525,24 @@ func eventError(e event, err error) error {
 }
 
 // decider is one batch's decision as decideVersions makes it: the latest versions the table held
-// of the batch's items, the latest each item has taken in this batch, and the versions decided so
-// far.
+// of the batch's items, the latest each item has taken in this batch, the primary document
+// versions the batch's rows can name, measured, the versions decided so far, and the warnings of
+// the event being decided, which wait until it is known to be in the batch.
 type decider struct {
-	tx     pgx.Tx
-	logger *slog.Logger
-	stored map[item]*version
-	batch  map[item]*version
-	out    decided
-	// firstSpecs indexes the versions of out an issue.created started holding version 1 of the
-	// issue's primary document, which warnFirstSpecVersions reads the making time of.
-	firstSpecs []int
+	tx       pgx.Tx
+	logger   *slog.Logger
+	stored   map[item]*version
+	batch    map[item]*version
+	specs    map[specVersion]specText
+	out      decided
+	warnings []warning
+}
+
+// warning is a line the decider logs at WARN of an event once the event is in the batch
+// (decider.flush).
+type warning struct {
+	message string
+	args    []any
 }
 
 // latest is the latestVersion the batch's rules read: the item's latest version decided in this
@@ -507,6 +552,25 @@ func (d *decider) latest(kind, id string) *version {
 		return v
 	}
 	return d.stored[item{kind, id}]
+}
+
+// start runs e through the rule of its type with the batch's latest versions (latest), and
+// completes the version it starts from the item's rows (complete): the version, and whether e
+// starts one.
+func (d *decider) start(ctx context.Context, e event) (version, bool, error) {
+	apply, ok := versionRules[e.Type]
+	if !ok {
+		return version{}, false, nil
+	}
+	v, started, err := apply(e, d.latest)
+	if err != nil || !started {
+		return version{}, false, err
+	}
+	keep, err := d.complete(ctx, e, &v)
+	if err != nil || !keep {
+		return version{}, false, err
+	}
+	return v, true, nil
 }
 
 // complete gives the version v that e starts what the event does not hold, from the item's rows
@@ -519,9 +583,7 @@ func (d *decider) complete(ctx context.Context, e event, v *version) (bool, erro
 	case kindIssue:
 		switch {
 		case e.Type == "issue.created":
-			if v.SpecVersion != nil {
-				d.firstSpecs = append(d.firstSpecs, len(d.out.Versions))
-			}
+			return true, nil
 		case prior == nil:
 			return d.seedIssue(ctx, e, v)
 		case e.Type == "artifact.version" && prior.SpecArtifactID == nil:
@@ -543,6 +605,68 @@ func (d *decider) complete(ctx context.Context, e event, v *version) (bool, erro
 	return true, nil
 }
 
+// size is what e counts against the batch's bound (decideVersions): the bytes readEventsQuery
+// counted of it (event.PayloadBytes and event.RowBodyBytes) and, where e starts the version v,
+// the text v's vector reads that those do not hold: the markdown of the primary document version
+// an issue's row names, and the whole body of a post whose event cut it, in place of the row's
+// body where that is longer. A version that names a document version no statement measured is
+// a bug of the fill, answered with an error that says so rather than counted as nothing.
+func (d *decider) size(e event, v version, starts bool) (int64, error) {
+	size := e.PayloadBytes + e.RowBodyBytes
+	if !starts {
+		return size, nil
+	}
+	if v.BodyTruncated {
+		size += max(int64(len(v.Body))-e.RowBodyBytes, 0)
+	}
+	if key, ok := v.spec(); ok {
+		text, measured := d.specs[key]
+		if !measured {
+			return 0, fmt.Errorf("the issue's version names version %d of document %s, which the batch did not measure before its rules decided (readSpecVersions): a bug of the fill",
+				key.number, key.artifact)
+		}
+		size += text.bytes
+	}
+	return size, nil
+}
+
+// keep adds v, which e starts and which is in the batch, to the versions decided, as its item's
+// latest version for the events after e. A version that keeps its event's cut text counts in
+// Cut, with a warning naming the item and the event; an issue.created version whose primary
+// document's version 1 was not made at the event's created_at, by the create's own transaction,
+// or is not there at all, holds it all the same, with a warning naming the issue.
+func (d *decider) keep(e event, v version) {
+	switch {
+	case v.BodyFrom == bodyFromCut:
+		d.out.Cut++
+		d.logger.Warn("dispatch: the keyword fill found no source that holds the whole body its event cut, so the version keeps the event's text",
+			"kind", v.Kind, "id", v.ID, "event_id", e.ID, "event_type", e.Type)
+	case e.Type == "issue.created":
+		if key, ok := v.spec(); ok {
+			if made := d.specs[key].made; made == nil || !made.Equal(v.StartedAt) {
+				d.logger.Warn("dispatch: the keyword fill found that the issue's create did not write version 1 of its primary document, which the issue's first version holds all the same",
+					"issue", v.ID, "event_id", v.EventID, "artifact_id", key.artifact, "version_created_at", made, "event_created_at", v.StartedAt)
+			}
+		}
+	}
+	d.out.Versions = append(d.out.Versions, v)
+	d.batch[item{v.Kind, v.ID}] = &v
+}
+
+// warn holds a warning of the event being decided until flush logs it, once the event is known
+// to be in the batch: an event the bound leaves to the next batch is warned of by that batch.
+func (d *decider) warn(message string, args ...any) {
+	d.warnings = append(d.warnings, warning{message: message, args: args})
+}
+
+// flush logs the warnings held of the event just decided, which is in the batch.
+func (d *decider) flush() {
+	for _, w := range d.warnings {
+		d.logger.Warn(w.message, w.args...)
+	}
+	d.warnings = d.warnings[:0]
+}
+
 // seedIssue completes v, which e starts of an issue that has no version yet, from the issue's
 // rows (decideVersions), and answers whether it is still a version.
 func (d *decider) seedIssue(ctx context.Context, e event, v *version) (bool, error) {
@@ -551,7 +675,7 @@ func (d *decider) seedIssue(ctx context.Context, e event, v *version) (bool, err
 		return false, err
 	}
 	if !found {
-		d.logger.Warn("dispatch: the keyword fill met an issue event that names an issue the log never created and the database does not hold; it starts no version",
+		d.warn("dispatch: the keyword fill met an issue event that names an issue the log never created and the database does not hold; it starts no version",
 			"issue", v.ID, "event_id", e.ID, "event_type", e.Type)
 		return false, nil
 	}
@@ -566,35 +690,45 @@ func (d *decider) seedIssue(ctx context.Context, e event, v *version) (bool, err
 		}
 		if v.SpecArtifactID != nil && rows.primary != nil && *v.SpecArtifactID == *rows.primary {
 			v.SpecVersion = rows.specVersion
+			if key, ok := v.spec(); ok {
+				if _, measured := d.specs[key]; !measured {
+					d.specs[key] = specText{bytes: rows.specBytes}
+				}
+			}
 		}
 	}
-	d.logger.Warn("dispatch: the keyword fill found no earlier version of the issue in the log, so its version reads the issue's rows",
+	d.warn("dispatch: the keyword fill found no earlier version of the issue in the log, so its version reads the issue's rows",
 		"issue", v.ID, "event_id", e.ID, "event_type", e.Type, "body_from", v.BodyFrom)
 	return true, nil
 }
 
 // issueRows is what an issue's rows say of it at a time: its present title, its primary
-// document, and the latest version of that document made at or before the time.
+// document, the latest version of that document made at or before the time, and the bytes of
+// that version's markdown, which a row that names it reads into its vector.
 type issueRows struct {
 	title       string
 	primary     *string
 	specVersion *int32
+	specBytes   int64
 }
 
 // issueRowsQuery reads issueRows of issue $1 at time $2.
 const issueRowsQuery = `
-	select i.title, a.id::text,
-	       (select max(av.number) from public.artifact_versions av
-	         where av.artifact_id = a.id and av.created_at <= $2)
+	select i.title, a.id::text, s.number, coalesce(s.bytes, 0)
 	  from public.issues i
 	  left join public.artifacts a on a.issue_key = i.key and a.is_primary
+	  left join lateral (
+	        select av.number, octet_length(av.markdown) as bytes from public.artifact_versions av
+	         where av.artifact_id = a.id and av.created_at <= $2
+	         order by av.number desc
+	         limit 1) s on true
 	 where i.key = $1`
 
 // readIssueRows reads issueRows of issue key at time at; found is false when no issue has the
 // key.
 func readIssueRows(ctx context.Context, tx pgx.Tx, key string, at time.Time) (issueRows, bool, error) {
 	var rows issueRows
-	err := tx.QueryRow(ctx, issueRowsQuery, key, at).Scan(&rows.title, &rows.primary, &rows.specVersion)
+	err := tx.QueryRow(ctx, issueRowsQuery, key, at).Scan(&rows.title, &rows.primary, &rows.specVersion, &rows.specBytes)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return issueRows{}, false, nil
@@ -605,7 +739,8 @@ func readIssueRows(ctx context.Context, tx pgx.Tx, key string, at time.Time) (is
 }
 
 // wholeBody gives v, a version of a post whose event e cut its body, the whole body from the
-// first source that holds it (decideVersions), or keeps the event's text, warns and counts it.
+// first source that holds it (decideVersions), or keeps the event's text (bodyFromCut), which
+// keep counts and warns of once v is in the batch.
 func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
 	switch v.Kind {
 	case kindComment:
@@ -641,9 +776,6 @@ func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
 		}
 	}
 	v.BodyFrom = bodyFromCut
-	d.out.Cut++
-	d.logger.Warn("dispatch: the keyword fill found no source that holds the whole body its event cut, so the version keeps the event's text",
-		"kind", v.Kind, "id", v.ID, "event_id", e.ID, "event_type", e.Type)
 	return nil
 }
 
@@ -694,45 +826,72 @@ func firstRevisionBody(ctx context.Context, tx pgx.Tx, id string, createdAt time
 	return strings.Join(texts, "\n\n"), true, nil
 }
 
-// warnFirstSpecVersions warns, naming the issue, of each issue.created version whose primary
-// document's version 1 was not made at the event's created_at, by the create's own transaction,
-// or is not there at all: the version holds it all the same.
-func (d *decider) warnFirstSpecVersions(ctx context.Context) error {
-	if len(d.firstSpecs) == 0 {
-		return nil
+// specVersion names a version of an issue's primary document as the rules carry it: the
+// document's id as the version names it, and the version's number.
+type specVersion struct {
+	artifact string
+	number   int32
+}
+
+// spec is the primary document version v names, whose markdown the insert reads into v's vector
+// (insertVersionsQuery): ok is false for a version that names none, as every version of a kind
+// other than an issue.
+func (v *version) spec() (specVersion, bool) {
+	if v.SpecArtifactID == nil || v.SpecVersion == nil {
+		return specVersion{}, false
 	}
-	artifacts := make([]string, 0, len(d.firstSpecs))
-	for _, index := range d.firstSpecs {
-		artifacts = append(artifacts, *d.out.Versions[index].SpecArtifactID)
+	return specVersion{artifact: *v.SpecArtifactID, number: *v.SpecVersion}, true
+}
+
+// specText is what a batch measures of a version of a primary document (readSpecVersions): the
+// bytes of its markdown, 0 where no such version is or it holds none, and when it was made, nil
+// where no such version is.
+type specText struct {
+	bytes int64
+	made  *time.Time
+}
+
+// specVersionsQuery measures each primary document version ($1 its documents' ids and $2 its
+// numbers): the bytes of its markdown, read from the column's own length without reading the
+// markdown, and when it was made. A version that is not there is answered with nulls.
+const specVersionsQuery = `
+	select s.artifact_id, s.number, octet_length(v.markdown), v.created_at
+	  from unnest($1::text[], $2::integer[]) as s (artifact_id, number)
+	  left join public.artifact_versions v on v.artifact_id = s.artifact_id::uuid and v.number = s.number`
+
+// readSpecVersions measures specs in tx, in one statement (specVersionsQuery): each of them is in
+// the map.
+func readSpecVersions(ctx context.Context, tx pgx.Tx, specs []specVersion) (map[specVersion]specText, error) {
+	texts := make(map[specVersion]specText, len(specs))
+	if len(specs) == 0 {
+		return texts, nil
 	}
-	rows, err := d.tx.Query(ctx, `
-		select a.id, v.created_at
-		  from unnest($1::text[]) as a (id)
-		  left join public.artifact_versions v on v.artifact_id = a.id::uuid and v.number = 1`, artifacts)
+	artifacts := make([]string, len(specs))
+	numbers := make([]int32, len(specs))
+	for index, key := range specs {
+		artifacts[index], numbers[index] = key.artifact, key.number
+	}
+	rows, err := tx.Query(ctx, specVersionsQuery, artifacts, numbers)
 	if err != nil {
-		return fmt.Errorf("read version 1 of the issues' primary documents: %w", err)
+		return nil, fmt.Errorf("measure %d versions of the issues' primary documents: %w", len(specs), err)
 	}
-	made := make(map[string]*time.Time, len(artifacts))
+	defer rows.Close()
 	for rows.Next() {
-		var id string
-		var at *time.Time
-		if err := rows.Scan(&id, &at); err != nil {
-			rows.Close()
-			return fmt.Errorf("read version 1 of the issues' primary documents: %w", err)
+		var key specVersion
+		var bytes *int64
+		var text specText
+		if err := rows.Scan(&key.artifact, &key.number, &bytes, &text.made); err != nil {
+			return nil, fmt.Errorf("measure %d versions of the issues' primary documents: %w", len(specs), err)
 		}
-		made[id] = at
+		if bytes != nil {
+			text.bytes = *bytes
+		}
+		texts[key] = text
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read version 1 of the issues' primary documents: %w", err)
+		return nil, fmt.Errorf("measure %d versions of the issues' primary documents: %w", len(specs), err)
 	}
-	for _, index := range d.firstSpecs {
-		v := d.out.Versions[index]
-		if at := made[*v.SpecArtifactID]; at == nil || !at.Equal(v.StartedAt) {
-			d.logger.Warn("dispatch: the keyword fill found that the issue's create did not write version 1 of its primary document, which the issue's first version holds all the same",
-				"issue", v.ID, "event_id", v.EventID, "artifact_id", *v.SpecArtifactID, "version_created_at", at, "event_created_at", v.StartedAt)
-		}
-	}
-	return nil
+	return texts, nil
 }
 
 // latestVersionsQuery reads, for each item ($1 its kinds and $2 its ids), its latest row in the

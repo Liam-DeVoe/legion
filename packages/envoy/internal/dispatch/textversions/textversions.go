@@ -21,8 +21,8 @@ import (
 )
 
 // event is one event of the log as the rules read it: the columns of its row they need, its
-// payload as the event wrote it, and of an ask's event the ask's body, which the fill's read of
-// the log makes in SQL.
+// payload as the event wrote it, of an ask's event the ask's body, which the fill's read of the
+// log makes in SQL, and the bytes that read counted of it against the batch's bound.
 type event struct {
 	ID        int64
 	Type      string
@@ -36,6 +36,11 @@ type event struct {
 	// function the ask's own search column reads. It is nil for an event of any other type, and
 	// for an ask's event whose payload holds no question.
 	AskBody *string
+	// PayloadBytes and RowBodyBytes are what readEventsQuery counted of the event against the
+	// batch's bound: the bytes of its payload, for a type a rule reads, and the bytes of its
+	// present row's body, for a post whose event cut its body; 0 otherwise. decideVersions adds
+	// what the version the event starts reads besides.
+	PayloadBytes, RowBodyBytes int64
 }
 
 // version is one row of search_text_versions as the rules decide it, before the batch's insert

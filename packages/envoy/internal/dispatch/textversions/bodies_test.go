@@ -393,7 +393,7 @@ func decideAndWrite(t *testing.T, database *store.Store, logs *bytes.Buffer, bat
 		t.Fatalf("begin the batch: %v", err)
 	}
 	defer tx.Rollback(ctx)
-	got, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), batch)
+	got, _, err := decideVersions(ctx, tx, slog.New(slog.NewJSONHandler(logs, nil)), batch, batchBytes)
 	if err != nil {
 		t.Fatalf("decide the versions: %v", err)
 	}
