@@ -1859,7 +1859,7 @@ func storedRefusal(err error) error {
 var ErrStreamLacksSubject = errors.New("the notifications stream does not capture the subject")
 
 // jsStreamNotMatch is nats-server's code for a publish whose expected stream is not the stream
-// that captured it (JSStreamNotMatchErr). nats.go v1.53.1 names no constant for it.
+// that captured it (JSStreamNotMatchErr). nats.go v1.55.0 names no constant for it.
 const jsStreamNotMatch = 10060
 
 // lacksSubject names err, the failure of a stored send to subject, as the ErrStreamLacksSubject it
@@ -1935,7 +1935,7 @@ func (c *Client) refused(err error, msg *nats.Msg) error {
 		ErrTooLarge, envelope, headers, envelope+headers, maxPayload, maxPayload-int64(headers))
 }
 
-// headerBytes is how many bytes nats.go v1.53.1 writes header as, the size it counts against the
+// headerBytes is how many bytes nats.go v1.55.0 writes header as, the size it counts against the
 // server's max payload beside a message's data (Msg.headerBytes): the NATS/1.0 line, one
 // `key: value` line for each value, trimmed of the white space at its ends, and the blank line
 // that ends them, each line ending CRLF. A message without headers writes none.
