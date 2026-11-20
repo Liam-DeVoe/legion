@@ -1556,6 +1556,151 @@ test("IssuePage keeps a title the reader typed back to while its write was out o
   }
 });
 
+// The reader saves "a", and while its write is out opens the editor again and types a space after
+// it, as a reader does before the next word. The write then lands with "a". The space is the
+// reader's text, so the draft as typed is not the title the write landed with, the settle hands
+// nothing back, and the editor still holds "a " (decision 332). In what a landing does to text
+// typed while its write was out, this is the one place this change means to differ from
+// Dispatch's hook before it, which trims the draft as the write lands: there the editor holds "a",
+// the space is gone, and the reader's next word joins the title.
+test("IssuePage keeps a space typed after a saved title while its write is out as that write lands", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
+    );
+
+    title = await openTitleEditor();
+    expect(title.value).toBe("a");
+    await user.type(title, " ");
+    expect(title.value).toBe("a ");
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, title: "a" }));
+    });
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+
+    expect({ editor: title.value, writes: patchIssue.mock.calls }).toEqual({
+      editor: "a ",
+      writes: [["CORE-1", { title: "a" }, keyedAttempt]],
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The reader writes "a " in place of the title, a space after it, and ends the edit. Every end
+// trims, so the end sends "a" and leaves the draft "a", which the write then lands with: its
+// settle hands the draft back to the issue (decision 332), the heading follows the title another
+// reader sets next, and the end of a later edit sends nothing over it. Dispatch's hook before this
+// change does the same: [a]. An end that sent "a" but left the draft "a " as typed kept it the
+// reader's through the settle, which compares the draft as typed: the heading stayed on "a " under
+// the other reader's title, and the later end sent "a" over it.
+test("IssuePage gives the issue a title ended with a space after it as its write lands, so the heading follows another reader's title and a later end sends nothing", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a ");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    titleWrittenElsewhere(queryClient, "Y");
+    const heading = screen.getByRole("heading", { level: 1 }).textContent;
+
+    title = await openTitleEditor();
+    const editor = title.value;
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect({ heading, editor, writes: patchIssue.mock.calls }).toEqual({
+      heading: "Y",
+      editor: "Y",
+      writes: [["CORE-1", { title: "a" }, keyedAttempt]],
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The reader saves "a", then ends "b" while "a"'s write is out, so "b" waits queued behind it, and
+// opens the editor again to type a character onto "b" and take it back out. With a title queued no
+// keystroke hands the draft back, so the draft is "b", typed. "a" lands and "b" goes, and "b"
+// lands with the draft on it: the settle hands the draft back to the issue, as it does for any
+// draft a write landed with, whoever's it was (decision 332). So the editor follows the title
+// another reader sets next, and the end of the edit sends nothing. Dispatch's hook before this
+// change does the same: [a, b]. Handed back only as the reader's ended choice, the typed "b" stayed
+// in the editor over the other reader's title, and the end of the edit sent it a second time.
+test("IssuePage gives the issue a queued title typed on and back while the write ahead was out as that title lands, so the editor follows another reader's title and the end of the edit sends nothing", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const firstSave = Promise.withResolvers<Issue>();
+  patchIssue.mockImplementationOnce(() => firstSave.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    let title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
+    );
+
+    title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("b");
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    title = await openTitleEditor();
+    // A character typed and taken back out, so the draft goes from "b" to "bx" and back with no
+    // empty text between, which would ask for nothing by itself.
+    await user.type(title, "x{Backspace}");
+    expect(title.value).toBe("b");
+    await act(async () => {
+      firstSave.resolve(narrowIssue({ ...issue, title: "a" }));
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    titleWrittenElsewhere(queryClient, "C");
+    const editor = title.value;
+
+    // Blur has no user-event form; it is what the title editor saves on.
+    fireEvent.blur(title);
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    expect({ editor, writes: patchIssue.mock.calls }).toEqual({
+      editor: "C",
+      writes: [
+        ["CORE-1", { title: "a" }, keyedAttempt],
+        ["CORE-1", { title: "b" }, keyedAttempt],
+      ],
+    });
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
 // A title Dispatch refuses stays in the field, the reader's unsent choice, which Retry or the end
 // of the next edit sends. A status picked next is a write of its own, and nothing drains after a
 // refusal (decision 315), so the status write's landing does not send the refused title again.

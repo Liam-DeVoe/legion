@@ -1337,11 +1337,11 @@ async function endTitleEditByPress(user: UserEvent): Promise<void> {
 // the editor stays the page's focused element, which the browser focuses again as the reader comes
 // back. The reader has not left the editor, so it stays open with their draft, and the draft is
 // sent all the same, as today's page sends it as the window loses the focus (decision 295). The
-// title a switch sends is the draft trimmed, as every title is, and its write lands with the edit
-// still open: the draft then takes the trimmed title, and the editor keeps the reader's place -
-// their text, with the space they typed before their next word, and their caret. The reader's
-// return sends nothing more, and neither does the press that later ends the edit: the draft went
-// once.
+// title a switch sends is the draft trimmed, as every title is, and the draft takes that trimmed
+// title as it goes; its write lands with the edit still open, and through both the editor keeps
+// the reader's place - their text, with the space they typed before their next word, and their
+// caret. The reader's return sends nothing more, and neither does the press that later ends the
+// edit: the draft went once.
 test("a switch to another window sends the title's changed draft once and keeps the reader's text and caret as its write lands", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
@@ -1932,6 +1932,54 @@ test("a title typed back to the issue's title while a write of another is out st
     await user.keyboard("{Enter}");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: issue.title }, keyedAttempt);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+    restore();
+  }
+});
+
+// The reader saves "a", and while its write is out opens the edit again and types a space after
+// it, as a reader does before the next word. The write then lands with "a". The space is the
+// reader's text, so the draft as typed is not the title the write landed with, the settle hands
+// nothing back, and the open editor keeps "a " through a title another reader sets next (decision
+// 332). In what a landing does to text typed while its write was out, this is the one place this
+// change means to differ from Dispatch's hook before it, which trims the draft as the write lands:
+// the editor here still reads "a " then, as it keeps the reader's text while the draft is that
+// text trimmed, but the draft is the issue's, so the other reader's title replaces the reader's
+// text in the open editor.
+test("a space typed after a saved title while its write is out stays in the open editor as that write lands and another reader sets a title", async () => {
+  const user = userEvent.setup();
+  const restore = stubHeader(issue);
+  const landing = Promise.withResolvers<IssueDetails>();
+  const patchIssue = answerIssuePatches().mockImplementationOnce(() => landing.promise);
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
+
+  try {
+    const { heading } = await editTitle(user, "a");
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(patchIssue).toHaveBeenCalledWith("CORE-1", { title: "a" }, keyedAttempt);
+    await waitFor(() => expect(heading).toHaveFocus());
+
+    // The write is out. The reader opens the edit again and types a space after the title.
+    const { editor } = await openTitleEditor(user, "a");
+    await user.keyboard("{End} ");
+    expect(editor).toHaveValue("a ");
+
+    await act(async () => {
+      landing.resolve({ ...issue, title: "a" });
+      await landing.promise;
+    });
+    await titleLanded(queryClient, "a");
+    const landed = (editor as HTMLTextAreaElement).value;
+    titleWrittenElsewhere(queryClient, "Plan the review");
+    expect({ landed, renamed: (editor as HTMLTextAreaElement).value }).toEqual({
+      landed: "a ",
+      renamed: "a ",
+    });
+    expect(patchIssue).toHaveBeenCalledTimes(1);
   } finally {
     view.unmount();
     patchIssue.mockRestore();
