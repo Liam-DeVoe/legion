@@ -133,40 +133,45 @@ func TestAProxiedStoreThatRefusesTheChildsOpenAndAnswersBeforeTheAskIsTheStoresF
 }
 
 // The witness keeps looking once the store has answered it: a store that answers its first look,
-// then fails the child's own open and stays down past two of its looks, ties the child's exit to
-// the store, even when the store answers again by the launcher's ask after the exit. The control is
-// a store that answers throughout, which leaves the child's error exit its own.
+// then fails the child's own open and stays down until a later look has met it, ties the child's
+// exit to the store, even when the store answers again by the launcher's ask after the exit. Each
+// step waits for the witness's own looks to end (awaitLook), never for a clock, so a look that is
+// slow to end is waited for. The control is a store that answers throughout, which leaves the
+// child's error exit its own once the witness has looked at it twice.
 func TestAStoreWitnessKeepsWatchingAfterItsFirstAnswer(t *testing.T) {
+	lookEvery(t, 100*time.Millisecond)
 	store := testdb.NewFlapping(t, testdb.Database(t, "legion_launcher_late_witness_test"), false)
 	dial, witness := urlFileWitness(t, store)
 
-	// The store fails the child's own first open, and stays down past two witness intervals.
+	// The store fails the child's own first open, and stays down until a look has met it.
 	store.Down.Store(true)
 	conn, err := dial.connect(context.Background())
 	closeSessions(conn)
 	if !ompsessions.StoreFault(err) {
 		t.Fatalf("the child's open of the store that went down returned %v, want a store fault", err)
 	}
-	time.Sleep(2500 * time.Millisecond)
-	store.Down.Store(false)
+	awaitLook(t, witness, true)
 
-	// The child exits with an error once the store answers again; the launcher's ask finds it up.
-	if got := childExitFault(dial, nil, nil, witness.finish(time.Second), time.Second); !ompsessions.StoreFault(got) {
-		t.Fatalf("a child whose first open failed on a store that was down for 2.5 s after the witness's first answer was read as %v; want the store's fault", got)
+	// The child exits with an error while the store is down; the launcher's ask finds it up.
+	witnessed := witness.finish(time.Second)
+	store.Down.Store(false)
+	if got := childExitFault(dial, nil, nil, witnessed, time.Second); !ompsessions.StoreFault(got) {
+		t.Fatalf("a child whose first open failed on a store that went down after the witness's first answer, and that a later look met down, was read as %v; want the store's fault", got)
 	}
 }
 
 func TestAStoreWitnessWithNoStoreFaultReturnsNone(t *testing.T) {
+	lookEvery(t, 100*time.Millisecond)
 	store := testdb.NewFlapping(t, testdb.Database(t, "legion_launcher_healthy_witness_test"), false)
 	dial, witness := urlFileWitness(t, store)
-	time.Sleep(2500 * time.Millisecond)
+	awaitLook(t, witness, false)
 	if got := childExitFault(dial, nil, nil, witness.finish(time.Second), time.Second); got != nil {
 		t.Fatalf("a child that failed while its store answered was read as %v; want its own exit", got)
 	}
 }
 
-// urlFileWitness starts a witness over a URL file that names store, and gives it up to a second
-// to make its first look.
+// urlFileWitness starts a witness over a URL file that names store, and returns once its first look
+// has ended with the store answering it.
 func urlFileWitness(t *testing.T, store *testdb.Flapping) (sessionDial, *storeWitness) {
 	t.Helper()
 	urlFile := filepath.Join(t.TempDir(), "dsn")
@@ -181,11 +186,29 @@ func urlFileWitness(t *testing.T, store *testdb.Flapping) (sessionDial, *storeWi
 	if witness == nil {
 		t.Fatal("a URL-file store has no witness")
 	}
-	select {
-	case <-witness.done:
-	case <-time.After(time.Second):
-	}
+	awaitLook(t, witness, false)
 	return dial, witness
+}
+
+// awaitLook waits for the witness to end a look that began after awaitLook was called and met a
+// store fault when fault is set, or the store answering otherwise, and fails the test by name when
+// thirty seconds pass with none: a witness that stopped looking, or one that met the other.
+func awaitLook(t *testing.T, w *storeWitness, fault bool) {
+	t.Helper()
+	w.mu.Lock()
+	// A look under way when the test called may have begun before the store's change; the one
+	// after it began later.
+	after := w.looks + 1
+	w.mu.Unlock()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		w.mu.Lock()
+		looks, met := w.looks, w.latest != nil
+		w.mu.Unlock()
+		if looks > after && met == fault {
+			return
+		}
+	}
+	t.Fatalf("the store witness ended no look that met a store fault %t within 30s", fault)
 }
 
 // lookEvery has every store witness the test starts look every d.

@@ -23,11 +23,13 @@ var witnessInterval = time.Second
 // before it. A fault that a later look found over is not the exit's: the store answered in between,
 // so a child that fails after that fails on its own and is charged, however recently the store
 // failed. What no look sees is a store that fails between two looks, at the child's own open, and
-// answers again before the launcher's ask after the exit. Where the child's own report says that
-// open's connection failed before the server answered it, the report decides (childReport); where
-// the server answered it, with its own state (57P03, 53300), neither the report nor a look can say
-// so, and that exit reads as the child's own (docs/kubernetes.md). The cost is one connection to
-// the store each witnessInterval for as long as the child runs.
+// answers again before the launcher's ask after the exit. There the child's own report decides,
+// once the launcher's own connect to the same URL file meets no fault of the configuration's
+// (childReport, childExitFault): a connection that failed before the server answered it, or a
+// server's answer whose SQLSTATE is of its own state. The pinned Oh My Pi prints no SQLSTATE, so
+// with it a server's own answer (57P03, 53300) between two looks reads as the child's own exit
+// (docs/kubernetes.md). The cost is one connection to the store each witnessInterval for as long
+// as the child runs.
 type storeWitness struct {
 	store  sessionDial
 	stop   chan struct{}
@@ -36,6 +38,8 @@ type storeWitness struct {
 
 	mu     sync.Mutex
 	latest error
+	// looks is how many looks the witness has made to their end, for a test that waits for one.
+	looks int
 }
 
 // watchStore starts a witness of store: nil for a child that dials no store itself, or whose
@@ -77,6 +81,7 @@ func (w *storeWitness) run(ctx context.Context) {
 		}
 		w.mu.Lock()
 		w.latest = err
+		w.looks++
 		w.mu.Unlock()
 		next.Reset(witnessInterval)
 	}
