@@ -1026,8 +1026,9 @@ lapses, until one ordinary trade renews it (the token files, below).
 
 Under a read-only token, a write prints Dispatch's refusal (`READ_ONLY_TOKEN: …`) and exits 1.
 `dispatch whoami` says that the credential may only read, and names its cut where it has one.
-Under a cut, every other read prints `AS_OF_TOKEN_NOT_SERVED: …` and exits 1, because Dispatch
-serves no read at a past time yet.
+Under a cut, each of the seven read commands reads Dispatch as of the cut, and the cut replaces
+any `--as-of` the call gives (Reads at a past time, below). Any other read of a route that holds
+no past answer prints Dispatch's refusal (`AS_OF_TOKEN_NOT_SERVED: …`) and exits 1.
 
 ### The `dispatch` command
 
@@ -1084,6 +1085,40 @@ at most once a day.
 `bun bin/stand-in-gateway.ts --status 502 --body html` serves one non-Dispatch answer (`html`,
 `empty`, `text` or `json`, from `src/stand-in-gateway.ts`) on `--port` (ephemeral by default) and
 prints its URL, for proving what a command shows when a gateway, not Dispatch, answers.
+
+### Reads at a past time
+
+`read`, `doc-read`, `search`, `answers`, `open-asks`, `inbox` and `results` take `--as-of <time>`,
+an RFC 3339 time such as `2026-11-10T12:00:00Z`. The flag comes from the `as_of` field of each of
+the seven specs (`dispatch-tools.ts`), so `--as-of-file` and the help come with it. Each of the
+seven reads `GET /api/v1/whoami` before any other request, with or without `--as-of`
+(`readAtCut`, `dispatch-commands/as-of.ts`). A token whose answer names a cut reads at that cut,
+and its cut replaces any `--as-of` the call gives.
+
+At a cut the command sends `as_of` to each route it calls that answers it (`AsOfRead`, which
+`DispatchClient`'s `#url` adds as `as_of`). It calls no route that holds no history: the reference
+graph (`GET /api/v1/references`), an issue's references and coverage, whether a session runs
+(`GET /api/v1/agents`), and the Inbox's unread threads (`GET /api/v1/me/replies`) and credential
+requests. A block read (`--ref …#b-…`) reads its block from the document, the comment or the ask
+at the cut. `search` sends a search at a cut to `GET /api/v1/search/results`, because
+`everyBuildReadsSearch` sends there each member beyond the ones every build reads.
+
+At a cut the first line of the output is always `Left out at <cut>: …`. It names each part that
+the command did not read, and each field that an answer named in `Dispatch-As-Of-Absent`, in words
+(`absentFieldWords`), or it says `nothing`. A field with no words of its own is named by its JSON
+Pointer. Every age and window counts from the cut. `answers` lists what people wrote in the 72
+hours before the cut, and says so. `open-asks` counts each age from the cut. `inbox` counts its
+bands and ages from the cut, and leaves out its `Later` band, because no event records a snooze.
+`read` prints no present-tense route or claim line for a field that the answer left out.
+
+A Dispatch older than `as_of` ignores the parameter and answers the present. So the command uses
+nothing of an answer to a call that sent `as_of` with no `Dispatch-As-Of` header, and exits 1
+naming the route (`AsOfNotAnswered`). `results --at` with a cut is refused before any request,
+with exit 2: `--at` compares each check with one commit through GitHub now, and a read at a cut
+reads nothing from GitHub. Dispatch's refusals of a read at a cut print in words before
+Dispatch's own message, and keep their code and status: `AS_OF_NOT_SERVED`, `INVALID_AS_OF`,
+`AS_OF_TOKEN_NOT_SERVED`, and `AS_OF_SEARCH_NOT_FILLED` with the time that the keyword table
+reaches (`Dispatch-As-Of-Filled-Through`).
 
 ### The `dispatch` command's token files
 

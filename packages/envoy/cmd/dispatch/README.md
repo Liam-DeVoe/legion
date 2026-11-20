@@ -223,7 +223,9 @@ Dispatch serves a read-only token on the reads of its read class and on no other
 `readClasses` (`internal/dispatch/api/read_classes.go`) gives every GET row of the route table one class: a read, which writes nothing but the record of the token's use and caches Dispatch rebuilds from what it holds, or a GET that writes.
 `register` refuses to mount a table with a GET row that has no class.
 Every other route of the table, and `GET /ws/live`, answers a read-only token `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
-Every read but `GET /api/v1/whoami` answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`), naming the cut: this build answers no read at a past time, and it does not answer one with the present.
+A read-only token that carries a cut reads at that cut (Reads at a past time, below).
+A read that answers `as_of` answers it as of its cut, and `GET /api/v1/whoami` names the cut.
+Every other read, and `GET /ws/live`, answer it `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`) instead, naming the cut, rather than answer it with the present.
 Both refusals come before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the record of the token's use: a broker token's spent DPoP proof, which the token's verification records before the refusal, or a personal token's last use.
 `GET /api/v1/issues/{key}/results` is a read: a read-only token's read of it asks GitHub what a writer's read asks and answers the same, and it stores no pull request head, no branch commit and no event.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers a read-only broker token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
@@ -3421,7 +3423,8 @@ The keyword fill writes the rows from the event log while Dispatch serves (Backg
 `store.TextVersionsAt(ctx, cut)` answers `store.TextVersions`, the relation of the version of each item that held at the cut.
 A statement joins it as `from <SQL()> v` and matches, ranks and cuts snippets in itself, as the arms of the present search do over the items' own tables.
 `TextVersionsAt` refuses a cut that the fill has not reached with `*store.TextVersionsNotReachedError`, which names the reach (`internal/dispatch/store/README.md`).
-In this build the relation's `deleted_at` is null, and no route searches at a past time yet.
+The relation's `deleted_at` is the post's present `deleted_at`, so a search at a cut finds no post deleted after the cut.
+`GET /api/v1/search` and `GET /api/v1/search/results` search at a past time through the relation (Reads at a past time, below).
 
 Meaning search embeds with Cohere Embed v4 at the place `DISPATCH_EMBEDDER` names:
 AWS Bedrock (`bedrock`, the default, on the AWS SDK's own region and credentials) or Azure AI Foundry (`azure`, the `DISPATCH_AZURE_*` settings, with the deployment's API key or a keyless sign-in that exchanges a federated token with Microsoft Entra).
@@ -3851,6 +3854,185 @@ Three answers are given before any route runs and write none:
 the `403` a cookie request from another origin gets, the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
+
+## Reads at a past time
+
+A read route of kind *answers* takes `as_of`, a past time, and answers what existed at that time, the cut, from the records that Dispatch keeps.
+`as_of` is an RFC 3339 time with a date, a time and an offset, with or without a fraction of a second, such as `2026-11-10T12:00:00Z`.
+Dispatch rounds it down to the microsecond, the precision of PostgreSQL (`asof.ParseCut`).
+The description of each route in `GET /api/v1` and in the OpenAPI document says how the route answers `as_of` and a token that carries a cut.
+For a route of kind answers it also says what the route answers at a cut, and names each member that its answer can leave out (`asOfAtACut` and `asOfDescription`, `internal/dispatch/api/routes_table.go`).
+
+**Each GET row has one of three kinds** (`readEntry.AsOf`, `internal/dispatch/api/read_classes.go`).
+`register` refuses to mount a GET row whose entry leaves the kind unset, as it refuses a row with no read class.
+
+- *Answers* (`asOfAnswers`): the route answers `as_of` and the cut of a read-only token.
+  These are the routes that the list "The members an answer can leave out at a cut" names, below.
+  Each declares `as_of` on its query struct (`internal/dispatch/api/routes_shapes.go`), but `GET /api/v1/search`.
+  A client sends a search at a cut to `GET /api/v1/search/results`, as it sends there each member that `GET /api/v1/search` does not declare (`everyBuildReadsSearch`, `packages/contracts/src/dispatch-api-search.ts`).
+  `TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument` holds the committed OpenAPI document to these declarations.
+
+- *No history* (`asOfNoHistory`): each other GET row but whoami.
+  Such a route answers the present only, and refuses `as_of` with `400 AS_OF_NOT_SERVED` before its handler runs.
+  A read of this kind (`readWritesNothing`) refuses a read-only token that carries a cut with `403 AS_OF_TOKEN_NOT_SERVED`.
+  A GET that writes refuses each read-only token with `403 READ_ONLY_TOKEN`, a token that carries a cut too.
+  The reference graph (`GET /api/v1/references`, `GET /api/v1/issues/{key}/references`), an issue's coverage, the live sessions (`GET /api/v1/agents`), the credential requests, the read marks (`GET /api/v1/me/replies`) and the search coverage are of this kind, because no record keeps their past.
+
+- *Caller* (`asOfCaller`): `GET /api/v1/whoami` alone.
+  It describes the caller now, and refuses `as_of` with `400 AS_OF_NOT_SERVED`.
+  It answers a read-only token that carries a cut, and its `cut` member names that cut.
+
+A route that is not a GET row refuses `as_of` with `400 AS_OF_NOT_SERVED` too.
+A token that may read a route may send `as_of` to it, a read-only token with no cut included.
+
+**How a read at a cut runs.**
+`asOfGate` (`internal/dispatch/api/server.go`) is the one reader of `as_of`.
+It runs inside the read-only gate, and outside the row's scopes, the prefix layer, the stored-text check and the keyed layer.
+On a route of kind answers it reads the database's `now()` once, and refuses a cut later than that time.
+It resolves the caller before it puts the cut on the context, because a resolution can write the caller's own bookkeeping.
+The route then runs its present statements under the cut (`asof.WithCut`), and the store binds each statement to the cut (`store.Pool` and `asof.Bind`, `internal/dispatch/store/README.md`).
+So a read at a cut applies the filters, the joins, the order and the pages of the read at the present, and the `person` scope holds it in the same way.
+The store refuses each write at a cut, so a read at a cut writes nothing that a read of the present does not write.
+At a cut, `GET /api/v1/issues/{key}/results` also reads nothing from GitHub, and writes no pull request head, no branch commit and no event.
+
+**The headers of an answer at a cut.**
+Each answer (a `2xx` or a `304`) of a route of kind answers to a request at a cut carries `Dispatch-As-Of: <cut>` (`contracts.DispatchAsOfHeader`), the cut in UTC with six fractional digits.
+A refusal carries no such header.
+A build before this change ignores a query parameter that it does not know, and answers the present with no `Dispatch-As-Of`.
+So a client refuses an answer to a request with `as_of` that does not carry the header (`AsOfNotAnswered`, `packages/envoy-client/src/dispatch-http.ts`).
+An answer that leaves out members names each one once in `Dispatch-As-Of-Absent` (`contracts.DispatchAsOfAbsentHeader`), for example `/route_status,/open_asks/*/referenced_by_count`.
+The value is a comma-separated list of RFC 6901 JSON Pointers, in which `*` stands for each member of an array.
+The answer leaves such a member out of its object, and never writes it as `null`, because `null` already means "none" on these answers.
+A member whose payload key an older event does not have, because its column held nothing at that time, is not left out: the answer gives its default.
+
+**The members an answer can leave out at a cut**, by route.
+`asof.AbsentFields` (`internal/dispatch/asof/absent.go`) holds them, each with its reason, and a route names no other member (`asof.ValidAbsent`).
+`TestTheGuideNamesTheMembersEachAnswersRouteCanLeaveOut` holds this list to that table.
+An answer names a member only when it leaves that member out.
+
+- `GET /api/v1/issues/{key}`: `/route_status`, `/route_holder`, `/route_status_reason`, `/holder_state`, `/last_seen`, `/takeable_at`, `/design_gates`, `/referenced_by_count`, `/open_asks/*/referenced_by_count`, `/components/ids`, `/components/unknown`, `/open_asks/*/revision`, `/open_asks/*/options/*/id`, `/open_asks/*/answer/id`, `/open_asks/*/waiting_on_person`, `/open_asks/*/approval/documents`, `/artifacts/*/approval/documents`.
+
+- `GET /api/v1/issues`, whose answer without a page is an array and whose page holds the issues under `issues`: `/*/route_status`, `/*/route_holder`, `/*/route_status_reason`, `/*/components/ids`, `/*/components/unknown`, `/issues/*/route_status`, `/issues/*/route_holder`, `/issues/*/route_status_reason`, `/issues/*/components/ids`, `/issues/*/components/unknown`.
+
+- `GET /api/v1/issues/resolve`, `GET /api/v1/comments/{id}/history`, `GET /api/v1/messages/{id}/history`, `GET /api/v1/agents/{session_id}/answers` and `GET /api/v1/artifacts/{id}/versions/{number}` leave out no member.
+
+- `GET /api/v1/issues/{key}/events`, `GET /api/v1/artifacts/{id}/events` and `GET /api/v1/events/log`: `/*/payload/referenced_by_count`, `/*/payload/revision`, `/*/payload/options/*/id`, `/*/payload/answer/id`, `/*/payload/body`.
+
+- `GET /api/v1/issues/{key}/comments` and `GET /api/v1/artifacts/{id}/comments`: `/*/body`, `/*/reply_block/text`, `/*/reply_block/removed`, `/*/deliveries/*/state`, `/*/deliveries/*/reply_id`, `/*/deliveries/*/envelope_id`, `/*/deliveries/*/resolve_error`, `/*/deliveries/*/created_at`, `/*/deliveries/*/delivery`, `/*/deliveries/*/session_id`.
+
+- `GET /api/v1/comments/{id}`: `/comment/body`, `/comment/reply_block/text`, `/comment/reply_block/removed`, `/comment/deliveries/*/state`, `/comment/deliveries/*/reply_id`, `/comment/deliveries/*/envelope_id`, `/comment/deliveries/*/resolve_error`, `/comment/deliveries/*/created_at`, `/comment/deliveries/*/delivery`, `/comment/deliveries/*/session_id`, `/replies/*/body`, `/replies/*/reply_block/text`, `/replies/*/reply_block/removed`, `/replies/*/deliveries/*/state`, `/replies/*/deliveries/*/reply_id`, `/replies/*/deliveries/*/envelope_id`, `/replies/*/deliveries/*/resolve_error`, `/replies/*/deliveries/*/created_at`, `/replies/*/deliveries/*/delivery`, `/replies/*/deliveries/*/session_id`, `/comment/anchor_block`.
+
+- `GET /api/v1/issues/{key}/messages`: `/*/message/body`, `/*/message/reply_block/text`, `/*/message/reply_block/removed`, `/*/message/deliveries/*/state`, `/*/message/deliveries/*/reply_id`, `/*/message/deliveries/*/envelope_id`, `/*/message/deliveries/*/created_at`, `/*/message/deliveries/*/requested_by`, `/*/message/deliveries/*/delivery`, `/*/message/deliveries/*/session_id`, `/*/replies/*/body`, `/*/replies/*/reply_block/text`, `/*/replies/*/reply_block/removed`, `/*/replies/*/deliveries/*/state`, `/*/replies/*/deliveries/*/reply_id`, `/*/replies/*/deliveries/*/envelope_id`, `/*/replies/*/deliveries/*/created_at`, `/*/replies/*/deliveries/*/requested_by`, `/*/replies/*/deliveries/*/delivery`, `/*/replies/*/deliveries/*/session_id`.
+
+- `GET /api/v1/issues/{key}/messages/{id}` and `GET /api/v1/messages/{id}`: `/message/body`, `/message/reply_block/text`, `/message/reply_block/removed`, `/message/deliveries/*/state`, `/message/deliveries/*/reply_id`, `/message/deliveries/*/envelope_id`, `/message/deliveries/*/created_at`, `/message/deliveries/*/requested_by`, `/message/deliveries/*/delivery`, `/message/deliveries/*/session_id`, `/replies/*/body`, `/replies/*/reply_block/text`, `/replies/*/reply_block/removed`, `/replies/*/deliveries/*/state`, `/replies/*/deliveries/*/reply_id`, `/replies/*/deliveries/*/envelope_id`, `/replies/*/deliveries/*/created_at`, `/replies/*/deliveries/*/requested_by`, `/replies/*/deliveries/*/delivery`, `/replies/*/deliveries/*/session_id`.
+
+- `GET /api/v1/issues/{key}/asks`, whose `?thread=1` gives each ask its thread: `/*/referenced_by_count`, `/*/revision`, `/*/options/*/id`, `/*/answer/id`, `/*/waiting_on_person`, `/*/approval/documents`, `/*/thread/route_status`, `/*/thread/route_holder`, `/*/thread/route_status_reason`, `/*/thread/replies/*/body`, `/*/thread/replies/*/reply_block/text`, `/*/thread/replies/*/reply_block/removed`, `/*/thread/replies/*/deliveries/*/state`, `/*/thread/replies/*/deliveries/*/reply_id`, `/*/thread/replies/*/deliveries/*/envelope_id`, `/*/thread/replies/*/deliveries/*/resolve_error`, `/*/thread/replies/*/deliveries/*/created_at`, `/*/thread/replies/*/deliveries/*/delivery`, `/*/thread/replies/*/deliveries/*/session_id`.
+
+- `GET /api/v1/artifacts/{id}/asks`: `/*/referenced_by_count`, `/*/revision`, `/*/options/*/id`, `/*/answer/id`, `/*/waiting_on_person`, `/*/approval/documents`.
+
+- `GET /api/v1/asks/{id}`: `/ask/referenced_by_count`, `/ask/revision`, `/ask/options/*/id`, `/ask/answer/id`, `/ask/waiting_on_person`, `/ask/approval/documents`, `/route_status`, `/route_holder`, `/route_status_reason`, `/replies/*/body`, `/replies/*/reply_block/text`, `/replies/*/reply_block/removed`, `/replies/*/deliveries/*/state`, `/replies/*/deliveries/*/reply_id`, `/replies/*/deliveries/*/envelope_id`, `/replies/*/deliveries/*/resolve_error`, `/replies/*/deliveries/*/created_at`, `/replies/*/deliveries/*/delivery`, `/replies/*/deliveries/*/session_id`, `/ask/anchor_block`.
+
+- `GET /api/v1/asks/open`: `/asks/*/waiting_on_person`.
+
+- `GET /api/v1/inbox`: `/*/snoozed_until`, `/*/referenced_by_count`, `/*/revision`, `/*/options/*/id`, `/*/answer/id`, `/*/waiting_on_person`, `/*/approval/documents`, `/*/thread/route_status`, `/*/thread/route_holder`, `/*/thread/route_status_reason`, `/*/thread/replies/*/body`, `/*/thread/replies/*/reply_block/text`, `/*/thread/replies/*/reply_block/removed`, `/*/thread/replies/*/deliveries/*/state`, `/*/thread/replies/*/deliveries/*/reply_id`, `/*/thread/replies/*/deliveries/*/envelope_id`, `/*/thread/replies/*/deliveries/*/resolve_error`, `/*/thread/replies/*/deliveries/*/created_at`, `/*/thread/replies/*/deliveries/*/delivery`, `/*/thread/replies/*/deliveries/*/session_id`.
+
+- `GET /api/v1/issues/{key}/artifacts` and `GET /api/v1/projects/{key}/artifacts`: `/*/approval/documents`.
+
+- `GET /api/v1/issues/{key}/artifacts/{slug}`, `GET /api/v1/projects/{key}/artifacts/{slug}`, `GET /api/v1/agents/{session_id}/artifacts/{slug}` and `GET /api/v1/artifacts/{id}`: `/approval/documents`.
+
+- `GET /api/v1/artifacts/{id}/text`, whose `?blocks=true` gives the blocks as the block routes give them: `/token`, `/blocks/*/token`, `/blocks/*/embedding`, `/blocks/*/id`, `/blocks/*/table/rows/*/id`, `/blocks/*/table/rows/*/cells/*/id`, `/blocks/*/references`.
+
+- `GET /api/v1/issues/{key}/artifacts/{slug}/blocks` and `GET /api/v1/projects/{key}/artifacts/{slug}/blocks`: `/*/token`, `/*/embedding`, `/*/id`, `/*/table/rows/*/id`, `/*/table/rows/*/cells/*/id`, `/*/references`.
+
+- `GET /api/v1/issues/{key}/results`: `/checks/*/compared_with`, `/checks/*/compared_nothing`, `/checks/*/pass_stands`, `/checks/*/ci`, `/checks/*/results/*/commit_stands`, `/checks/*/results/*/currency`, `/checks/*/version`, `/checks/*/sha256`, `/checks/*/results/*/check_words_moved`.
+
+- `GET /api/v1/search` and `GET /api/v1/search/results`: `/query/broadened`, `/results/*/snippet_tree`, `/results/*/href`.
+
+The reasons, which `asof.AbsentFields` gives for each member:
+
+- The route roster and the Envoy listener keep no past state, so a route's status and holder and a claim holder's liveness are left out.
+
+- The reference graph keeps no history, so the counts of nodes that reference an item, the references of a block, and the link of an ask hit whose block is in a document that changed after the cut are left out.
+
+- The component model keeps no history, so the members of an explicit component attachment are left out.
+
+- No event records the field: the design gates, the snoozes, a block's token, embedding and place, the id of an untyped block of a version that `document_indexed_versions` does not hold, the ids of a table's rows and cells, a document version's token where Dispatch stored none (all before 2026-11-03), and the state of a delivery attempt that no receipt or reply event dates.
+
+- Part ids and revisions stand only for an ask that did not change after the cut.
+
+- The person an ask waits on comes from a project default from before the first event of that default.
+
+- A migration filled an approval request's documents with no event, for an ask whose newest event at the cut is older than 2026-11-04T16:42Z.
+
+- The body of a post that its author deleted after the cut, and a body that its event cut at 32,000 UTF-16 units and that an edit replaced after the cut, before `post_body_history` began.
+
+- The block that a reply names, where the item that holds the block changed after the cut.
+
+- A GitHub read now: what each check is compared with, whether a pass stands, the CI result, and where a result's commit stands.
+
+- Broadening and snippet trees read the present text, so a search at a cut does not broaden and draws no tree.
+
+**A read-only token that carries a cut** (`model.Credential.Cut`, the broker's `as_of`) reads at that cut.
+On a route of kind answers, Dispatch answers as of the token's cut, whatever `as_of` the request sends (none, an earlier one or a later one), and reads no `as_of`.
+It does not compare the token's cut with `now()`, because the broker refuses a cut later than the trade.
+`GET /api/v1/whoami` answers the token and names its cut.
+Each other read of the read class, and `GET /ws/live`, answer `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`) before the handler runs, with the message `this token reads Dispatch as of <cut>; <route> holds no past answer`.
+The live socket checks the cut before it gives `READ_ONLY_TOKEN`.
+A route outside the read class answers the token `403 READ_ONLY_TOKEN`, as it answers each read-only token.
+
+**The errors and their codes**, each generated from `packages/contracts`:
+
+- `400 INVALID_AS_OF` (`contracts.DispatchInvalidAsOf`): an `as_of` that is not an RFC 3339 time with a date, a time and an offset, a cut later than the database's `now()`, or an `as_of` that the request sends more than once.
+
+- `400 AS_OF_NOT_SERVED` (`contracts.DispatchAsOfNotServed`): an `as_of` sent to a route that does not answer it, with the message `as_of: <route> holds no history; it answers the present only`.
+  A route of kind answers gives the same code for a filter that the records at the cut cannot evaluate, and names that filter: `route_status` and `pinned` on `GET /api/v1/issues`, whatever their value, and `at` on `GET /api/v1/issues/{key}/results`.
+
+- `403 AS_OF_TOKEN_NOT_SERVED`: a read-only token that carries a cut, on a read that holds no past answer (above).
+
+- `409 AS_OF_SEARCH_NOT_FILLED` (`contracts.DispatchAsOfSearchNotFilled`): a search at a cut that the fill of the keyword table has not reached (below).
+
+**A search at a cut.**
+`GET /api/v1/search` and `GET /api/v1/search/results` run a past-time statement of their own at a cut (`search.go`).
+The keyword legs of issues, comments, messages and asks read the keyword table of past text through `store.TextVersionsAt` (Search, above), and rank and cut snippets from the text at the cut.
+The document leg reads each document's newest `artifact_versions` row at the cut and tests the `search` vector of that row.
+It reads a document whose newest version at the cut is its newest version now through `document_search`.
+The meaning legs use the window of an item only when the item did not change after the cut, and the window was embedded at or before the cut with the query's model.
+A post deleted after the cut gives no hit and no snippet.
+A search at a cut does not broaden a query that matches nothing, because the term statistics count only the present text.
+Before the fill of the keyword table reaches the cut, a search at that cut is `409 AS_OF_SEARCH_NOT_FILLED`, and it reads no row.
+Its message names the time that the fill reached, and so does the `Dispatch-As-Of-Filled-Through` header (`contracts.DispatchAsOfFilledThroughHeader`), where the fill reached a time.
+While the fill's cursor row records rules older than `store.TextVersionsRules` (2), the fill has reached no time: the fill first reads again the `message.edited`, `comment.deleted` and `message.deleted` events that the first rules passed.
+
+**Windows count from the cut.**
+At a cut, `GET /api/v1/agents/{session_id}/answers` takes `since` as 72 hours before the cut when the request sends none.
+It refuses a `since` more than 7 days before the cut with `400 INVALID_QUERY`, and answers no item for a `since` after the cut.
+So an agent host's own poll under a token that carries a cut gets an empty answer, and no refusal.
+At a cut, `GET /api/v1/asks/open` counts each `age_seconds` from the cut.
+
+**Two members already named `as_of`** keep their meaning: the database time at which the answer stands.
+`GET /api/v1/asks/open` answers `as_of`, and at a cut that member is the cut.
+`GET /api/v1/me/replies` answers `as_of`, the time of the snapshot that Mark all read passes back, and that route keeps no history and refuses the parameter `as_of`.
+Neither member tells a client that Dispatch read at a cut, because a build before this change sends them too.
+Only `Dispatch-As-Of` does.
+
+**The error of a cut.**
+Nothing records when a transaction committed.
+So the cut compares the time at which the transaction of each record began: `events.created_at`, and the `created_at` of each append-only table, each the `now()` of the transaction that wrote the row.
+Dispatch answers a cut at or before the database's `now()` whatever transactions are still open, so a write that began before the cut and committed after it reads as made at its start.
+A priority tuple's `at` is its handler's clock, a time later than the start of its transaction, so its error is the length of that transaction.
+Three measurements of production (INFRA-4620's plan, 2026-11-19) bound the error of a cut by the length of one write transaction.
+The longest write request in the access log from 2026-11-16 to 2026-11-19 took 46,578 ms (`POST /api/v1/issues/{key}/results`), and a request's time bounds its transaction's time.
+In the whole event log, the largest amount by which an event was older than an event with a lower id was 249 s (2026-10-26, `artifact.version`).
+Within one issue, the largest amount by which an event was older than an event with a lower `seq` was 8.9 s.
+
+**What a read at a cut costs.**
+`TestAsOfCostOnACorpusCopy` (`internal/dispatch/api/as_of_cost_test.go`) times the statements of the past-time reads against a copy of production's events, and skips unless `DISPATCH_ASOF_CORPUS_URL` names one.
+On a copy of 843,238 events in a gVisor pod, 13 of the figures stayed under 2 s.
+The listing of every issue at a cut took 3.9 s at 2026-11-10T00:00Z and 8.5 s at the copy's newest event, where the present listing took 1.6 s in the same pod.
+The listing names `issues` in about 11 places, and each reads the state of every issue through the shadow.
+A search for the commonest word took 5.8 s at 2026-11-10T00:00Z and 13.5 s at the newest event, and a search for a common word took 7.1 s at the newest event.
+Each match joins the state of its item at the cut, 0.5 to 0.8 ms for each match, and a filter of status, author, project or time needs those joins before the first page.
+Meaning search was not timed, because a copy of the events holds no embeddings, and the document leg was timed on empty text.
 
 ## Routes
 
@@ -4346,7 +4528,8 @@ Each item below names a path with its method and identity, then its purpose.
   `project` is the one project key that credential may write, null where it names none;
   `cut` is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut).
   `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none, with `read` after them for a read-only credential, and every caller is answered it.
-  A read-only token that carries a cut is answered here, and refused `403 AS_OF_TOKEN_NOT_SERVED` on every other read.
+  A read-only token that carries a cut is answered here.
+  A route that answers `as_of` answers such a token as of its cut, and every other read refuses it `403 AS_OF_TOKEN_NOT_SERVED` (Reads at a past time, above).
 
 - `/api/v1/dashboard/builds` (GET; cookie, trusted header, or bearer)
 

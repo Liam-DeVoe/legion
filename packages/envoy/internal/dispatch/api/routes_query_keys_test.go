@@ -58,6 +58,10 @@ var queryKeysReadThroughAHelper = []string{
 	`delivery.go: Has(name)`,
 	`server.go: query[field]`,
 	`server.go: query[field]`,
+	// asOfGate reads as_of on every row through the constant asOfParameter. The query struct of
+	// each route that answers as_of names it, and no other struct does, as
+	// TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument holds.
+	`server.go: query[asOfParameter]`,
 }
 
 func TestEveryQueryKeyAHandlerReadsIsNamedByItsParameters(t *testing.T) {

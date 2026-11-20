@@ -1,0 +1,33 @@
+kind: Added
+body: |-
+  Dispatch's read routes answer as of a past time. A route that answers `as_of`, an RFC 3339 time,
+  answers what existed at that time, the cut, from the events and the append-only tables that
+  Dispatch keeps. These routes are an issue and the issue listing, the comments, messages, asks,
+  documents, document versions and blocks, and check results, the three event logs, an agent's
+  answers, the open asks, the inbox, a post's history, and search. Each answer at a cut carries
+  `Dispatch-As-Of`, the cut, and `Dispatch-As-Of-Absent`, which names each member that the records
+  at the cut cannot give and that the answer leaves out. Every other route refuses `as_of` with
+  `400 AS_OF_NOT_SERVED`. An `as_of` that Dispatch cannot read, one later than the server's time
+  and a second one are `400 INVALID_AS_OF`. `GET /api/v1` and the OpenAPI document say, for each
+  route, how it answers `as_of`.
+
+  A search at a past time reads the text that each item had at that time, from the keyword table
+  of past text. It is `409 AS_OF_SEARCH_NOT_FILLED` until the fill of that table reaches the cut.
+
+  A read-only token that carries a cut now reads each route that answers `as_of` as of its cut,
+  whatever `as_of` the request sends. Every other read, and `GET /ws/live`, refuse it with
+  `403 AS_OF_TOKEN_NOT_SERVED`. This replaces the sentence of #4557's entry "Dispatch puts every GET
+  route of its route table in a read class" that says Dispatch answers such a token with that code
+  on every read except `GET /api/v1/whoami`.
+
+  Dispatch dates a write by the start of its transaction, so a write that began before the cut and
+  committed after it reads as made at its start. On production the longest write request took 47 s.
+  A read at a cut costs more than the same read of the present: on a copy of production's events,
+  the listing of every issue at a cut took 3.9 s to 8.5 s.
+
+  Eleven migrations add indexes on `events` for the reads at a cut. Each is one
+  `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, which no ordinary read or write of `events` waits on.
+  Dispatch applies them at boot before it serves, and each build reads all of `events` two times.
+time: 2026-11-20T19:00:01Z
+custom:
+  Issue: pr4639

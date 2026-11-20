@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -595,10 +596,11 @@ type routeRow struct {
 // about what the server serves. Every mutating row carries a Scope, and a GET row carries none
 // (project_scope.go); OAuthScopes is empty on every row any authenticated caller may reach; Read
 // is the GET row's entry of readClasses, and the zero entry, which classes nothing, on every other
-// row, so no row but a GET row is ever a read. Only the read-only gate reads Read
-// (refuseReadOnlyToken), never the route index or the OpenAPI document. The row's own five
-// columns are read through it by promotion. What the route takes and answers is routeShapes',
-// which only the OpenAPI emitter reads, so no row carries it.
+// row, so no row but a GET row is ever a read. Only the read-only gate and the as_of gate read
+// Read (refuseReadOnlyToken, asOfGate), never the route index or the OpenAPI document: routes()
+// writes what Read says of as_of into a GET row's description (asOfDescription) as it builds the
+// row. The row's own five columns are read through it by promotion. What the route takes and
+// answers is routeShapes', which only the OpenAPI emitter reads, so no row carries it.
 type apiRoute struct {
 	routeRow
 	Scope       writeScope
@@ -630,12 +632,12 @@ func searchDescription(declares string) string {
 }
 
 // searchDeclaresFour is the paragraph of GET /api/v1/search: five of the nine members this
-// handler reads are declared elsewhere, and a client sends them elsewhere.
-const searchDeclaresFour = "This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed."
+// handler reads, and as_of, are declared elsewhere, and a client sends them elsewhere.
+const searchDeclaresFour = "This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine and as_of: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. A client sends a search at a past time (as_of) there too. This route still reads all nine and as_of, so a page served by an earlier release that sends one of the five here is still answered narrowed."
 
 // searchDeclaresNine is the paragraph of GET /api/v1/search/results, the route that declares
 // every member the handler reads.
-const searchDeclaresNine = "This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed."
+const searchDeclaresNine = "This route declares all nine members and as_of, and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. A client sends a search at a past time (as_of) here too. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed."
 
 // goingCatalogueDescription is the description GET /api/v1/going/catalogue serves. Both counts
 // in it are read from what this build holds - the specs contracts carries, and the tools the
@@ -645,6 +647,166 @@ const searchDeclaresNine = "This route declares all nine members and answers exa
 func goingCatalogueDescription() string {
 	return fmt.Sprintf("The catalogue of operations an agent may propose on Dispatch's graph: %d of the %d tool specs agents operate Dispatch with, every one that writes but dispatch_review, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. It leaves dispatch_review out on purpose: a review records an approval or a changes request in a person's name, and the loop that proposes operations must never propose one. The catalogue is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
 		len(goingToolRoutes), len(contracts.DispatchTools))
+}
+
+// asOfDescription is the paragraph that routes() adds to the description of each GET row, from
+// the row's read class (readClasses): how the row answers as_of and a read-only token that
+// carries a cut. It is written once here for every row of a kind, so the route index, the OpenAPI
+// document and each client generated from it say the same of each such row. The members that the
+// answer of a row can leave out at a cut are read from asof.AbsentFields, the table that the
+// answer is held to (asof.ValidAbsent), so the description cannot name another list. What a row
+// of kind answers answers at a cut is the row's own sentence (asOfAtACut).
+func asOfDescription(name string, entry readEntry) string {
+	switch entry.AsOf {
+	case asOfAnswers:
+		return " " + strings.Join([]string{asOfAtACut[name], asOfAnswersDescription, asOfAbsentDescription(name), asOfCutErrorDescription}, " ")
+	case asOfCaller:
+		return " " + asOfCallerDescription
+	case asOfNoHistory:
+		if entry.Writes == readWritesState {
+			return " " + asOfNoHistoryWriteDescription
+		}
+		return " " + asOfNoHistoryDescription
+	}
+	return ""
+}
+
+// asOfAnswersDescription is what every row of kind answers says of as_of and of a read-only token
+// that carries a cut (asOfGate, serveAtCut).
+const asOfAnswersDescription = "as_of is an RFC 3339 time with an offset, which Dispatch rounds down to the microsecond: the cut. " +
+	"A malformed as_of, a cut later than the database's present time, and a second as_of are 400 " + contracts.DispatchInvalidAsOf + ". " +
+	"A read-only token that carries a cut reads at its own cut, and Dispatch then reads no as_of of the request. " +
+	"An answer at a cut names the cut in the " + contracts.DispatchAsOfHeader + " header, in UTC with six fractional digits."
+
+// asOfCutErrorDescription is the error of every cut, measured on production by INFRA-4620's plan
+// ("What the plan measured"): a row at a cut reads each record by the time its transaction began
+// (events.created_at is the transaction's now()), and nothing records when a transaction committed.
+const asOfCutErrorDescription = "Dispatch dates each write by the start of its transaction, and records no time at which a write committed. " +
+	"So a write that began before the cut and committed after it reads as made at its start. " +
+	"On production the longest write request took 47 s, and the event log held an event 249 s older than an event with a lower id."
+
+// asOfAbsentDescription names the members that the answer of the route named name can leave out
+// at a cut, in the order of asof.AbsentFields.
+func asOfAbsentDescription(name string) string {
+	fields := asof.AbsentFields[name]
+	if len(fields) == 0 {
+		return "At a cut the answer leaves out no member."
+	}
+	pointers := make([]string, len(fields))
+	for index, field := range fields {
+		pointers[index] = field.Pointer
+	}
+	return "At a cut the answer can leave out these members, because the records at the cut do not give them: " +
+		strings.Join(pointers, ", ") + ". The answer names each member that it leaves out in the " + contracts.DispatchAsOfAbsentHeader +
+		" header, as RFC 6901 JSON Pointers in which * stands for each member of an array. It never writes such a member as null."
+}
+
+// asOfCallerDescription is what GET /api/v1/whoami (asOfCaller) says of as_of and of a read-only
+// token that carries a cut (asOfGate, refuseReadOnlyToken).
+const asOfCallerDescription = "This route describes the caller now and keeps no history. " +
+	"It refuses as_of with 400 " + contracts.DispatchAsOfNotServed + ". " +
+	"It answers a read-only token that carries a cut, and its cut member names that cut. " +
+	"A route that answers as_of answers such a token as of its cut. " +
+	"Every other read of the read class, and GET /ws/live, refuse it with 403 " + contracts.DispatchAsOfTokenNotServed + "."
+
+// asOfNoHistoryDescription is what a read (readWritesNothing) that holds no history
+// (asOfNoHistory) says of as_of and of a read-only token that carries a cut (asOfGate,
+// refuseReadOnlyToken).
+const asOfNoHistoryDescription = "This route keeps no history and answers the present only. " +
+	"It refuses as_of with 400 " + contracts.DispatchAsOfNotServed + ", and a read-only token that carries a cut with 403 " +
+	contracts.DispatchAsOfTokenNotServed + "."
+
+// asOfNoHistoryWriteDescription is what a GET that writes (readWritesState), which holds no
+// history (asOfNoHistory), says of as_of and of a read-only token (asOfGate, refuseReadOnlyToken).
+const asOfNoHistoryWriteDescription = "This route keeps no history and answers the present only. " +
+	"It refuses as_of with 400 " + contracts.DispatchAsOfNotServed + ". " +
+	"As a GET that writes, it refuses every read-only token with 403 " + contracts.DispatchReadOnlyToken + ", a token that carries a cut too."
+
+// asOfSearchAtACut is what both search rows answer at a cut (search.go, the past-time legs).
+const asOfSearchAtACut = "At a cut the search reads the text that each item had at the cut: the keyword legs read the keyword table of past text, " +
+	"and the document leg reads each document's newest version at the cut. " +
+	"The meaning legs use the window of an item only when the item did not change after the cut, and the window was embedded by then with the query's model. " +
+	"A post deleted after the cut gives no hit and no snippet. " +
+	"A search at a cut does not broaden a query that matches nothing. " +
+	"Until the fill of the keyword table reaches the cut, a search at the cut is 409 " + contracts.DispatchAsOfSearchNotFilled + ". " +
+	"Its " + contracts.DispatchAsOfFilledThroughHeader + " header names the time that the fill reached, where the fill reached a time."
+
+// asOfEventLogAtACut is what the three event logs answer at a cut beside their own sentence.
+const asOfEventLogAtACut = "A post deleted after the cut answers its own events with no body, as it does now. " +
+	"A preview of it that another post's event holds keeps its text."
+
+// asOfDeletedCommentAtACut and asOfDeletedMessageAtACut are what a thread read answers at a cut
+// for a post deleted after the cut (INFRA-4620's decision 14).
+const (
+	asOfDeletedCommentAtACut = "A comment deleted after the cut reads as deleted, with no body, as it reads now."
+	asOfDeletedMessageAtACut = "A message deleted after the cut reads as deleted, with no body, as it reads now."
+)
+
+// asOfDocumentAtACut is what a read of one document answers at a cut.
+const asOfDocumentAtACut = "At a cut the route reads the document as it stood at the cut: its name, its versions made by then and its approval at the cut. " +
+	"A document made after the cut, or removed after it, is 404 ARTIFACT_NOT_FOUND: a removal keeps no row of the document."
+
+// asOfCommentListAtACut is what both comment lists answer at a cut (answerCommentList,
+// writePastListAnswer).
+const asOfCommentListAtACut = "At a cut the route lists the comments that existed then, each with its body, its edited_at and its resolution at the cut. " +
+	"The answer goes out under an ETag over the cut and its own bytes. " + asOfDeletedCommentAtACut
+
+// asOfAtACut is what each row of kind answers (asOfAnswers) answers at a past time, the cut, keyed
+// "<method> <pattern>" as readClasses is: one entry for each such row and none for another
+// (TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument). routes() puts it in the row's
+// description before the sentences that every such row shares (asOfDescription). It stands beside
+// the table for the reason readClasses does: routeRow is a positional literal.
+var asOfAtACut = map[string]string{
+	"GET /api/v1/issues/{key}": "At a cut the route reads the issue from its newest state event at or before the cut, with the asks, the documents and the children that existed then. " +
+		"progress.tasks counts the task items of the primary document's newest version at the cut. An issue made after the cut is 404.",
+	"GET /api/v1/issues": "At a cut the route lists the issues that existed then, each as it stood, under the same filters, order and pages as now. " +
+		"With as_of, route_status and pinned are 400 " + contracts.DispatchAsOfNotServed + " whatever their value, because the route roster and a person's pins keep no history.",
+	"GET /api/v1/issues/resolve": "At a cut the route resolves owner/repo#n by the external links that the issues held at the cut.",
+	"GET /api/v1/issues/{key}/events": "At a cut the route pages only the events written at or before the cut, under an ETag over the cut and the answer's own bytes. " +
+		asOfEventLogAtACut,
+	"GET /api/v1/artifacts/{id}/events": "At a cut the route pages only the events written at or before the cut. " + asOfEventLogAtACut,
+	"GET /api/v1/events/log": "At a cut the route pages only the events written at or before the cut, and a page ends at the largest id among them. " +
+		asOfEventLogAtACut,
+	"GET /api/v1/issues/{key}/comments":   asOfCommentListAtACut,
+	"GET /api/v1/artifacts/{id}/comments": asOfCommentListAtACut,
+	"GET /api/v1/comments/{id}":           "At a cut the route reads the comment and its thread as they stood at the cut. " + asOfDeletedCommentAtACut,
+	"GET /api/v1/comments/{id}/history": "At a cut the route answers only the entries that the comment's edits and deletes at or before the cut wrote, newest first, paged by ?before= as now. " +
+		"deleted_at and deleted_by are the comment's present values, so a comment deleted after the cut answers as a deleted comment answers now.",
+	"GET /api/v1/messages/{id}/history": "At a cut the route answers only the entries that the message's edits and deletes at or before the cut wrote, newest first, paged by ?before= as now. " +
+		"deleted_at and deleted_by are the message's present values, so a message deleted after the cut answers as a deleted message answers now.",
+	"GET /api/v1/issues/{key}/messages": "At a cut the route lists the message threads that existed then, each message with the text that it had at the cut. " +
+		asOfDeletedMessageAtACut,
+	"GET /api/v1/issues/{key}/messages/{id}": "At a cut the route reads the message and its replies as they stood at the cut, each with the text that it had then. " +
+		asOfDeletedMessageAtACut,
+	"GET /api/v1/messages/{id}": "At a cut the route reads the conversation as it stood at the cut, each message with the text that it had then. " +
+		asOfDeletedMessageAtACut,
+	"GET /api/v1/issues/{key}/asks": "At a cut the route lists the asks that existed then, each at its newest state event at or before the cut, with its newest reply at the cut. " +
+		"?thread=1 gives each thread as it stood at the cut.",
+	"GET /api/v1/artifacts/{id}/asks": "At a cut the route lists the document's asks that existed then, each at its newest state event at or before the cut.",
+	"GET /api/v1/asks/{id}":           "At a cut the route reads the ask at its newest state event at or before the cut, with the replies, the edits, the answers and the followers that it had then.",
+	"GET /api/v1/asks/open":           "At a cut the route lists the asks that were open at the cut. The answer's as_of is the cut, and each age_seconds counts from the cut.",
+	"GET /api/v1/inbox": "At a cut the route lists the asks open at the cut, on an issue open then or on a project document, that waited on the person at the cut by the same three steps. " +
+		"Snoozes keep no history, so the answer leaves out snoozed_until. " +
+		"An ask whose person is a project default that the records at the cut do not give matches no ?assignee=.",
+	"GET /api/v1/agents/{session_id}/answers": "At a cut the window counts from the cut: since defaults to 72 hours before the cut, a since more than 7 days before the cut is 400 INVALID_QUERY, and a since after the cut answers no items. " +
+		"Each item has its words at the cut.",
+	"GET /api/v1/issues/{key}/artifacts": "At a cut the route lists the documents and files that the issue held then, each with its name, its versions and its approval at the cut. " +
+		"A document removed after the cut is not listed: a removal keeps no row of the document.",
+	"GET /api/v1/projects/{key}/artifacts": "At a cut the route lists the documents that the project held then, each with its name, its versions and its approval at the cut. " +
+		"A document removed after the cut is not listed: a removal keeps no row of the document.",
+	"GET /api/v1/issues/{key}/artifacts/{slug}":          asOfDocumentAtACut,
+	"GET /api/v1/projects/{key}/artifacts/{slug}":        asOfDocumentAtACut,
+	"GET /api/v1/agents/{session_id}/artifacts/{slug}":   asOfDocumentAtACut,
+	"GET /api/v1/artifacts/{id}":                         asOfDocumentAtACut,
+	"GET /api/v1/artifacts/{id}/text":                    "At a cut the route answers the markdown and the document token of the document's newest version at the cut, and with ?blocks=true the blocks of that version.",
+	"GET /api/v1/artifacts/{id}/versions/{number}":       "At a cut a version made after the cut is 404, as JSON and as a download.",
+	"GET /api/v1/issues/{key}/artifacts/{slug}/blocks":   "At a cut the route answers the blocks of the document's newest version at the cut.",
+	"GET /api/v1/projects/{key}/artifacts/{slug}/blocks": "At a cut the route answers the blocks of the document's newest version at the cut.",
+	"GET /api/v1/issues/{key}/results": "At a cut the route reads the checks of the Verification document's newest version at the cut, with the results and the retractions recorded by then. " +
+		"It reads nothing from GitHub and writes nothing. So it leaves out the GitHub currency of each check and result, and the result that CI derives (ci-run:…). " +
+		"With as_of, ?at= is 400 " + contracts.DispatchAsOfNotServed + ".",
+	"GET /api/v1/search":         asOfSearchAtACut,
+	"GET /api/v1/search/results": asOfSearchAtACut,
 }
 
 // routes lists every native-workspace route. Add a row here, never a mux.HandleFunc line. A
@@ -700,7 +862,7 @@ func (s *server) routes() []apiRoute {
 		{http.MethodPatch, "/api/v1/me/agent-tokens/{id}", authAny, "Set the scopes of one of the caller's personal agent tokens {scopes}: the whole set it is to hold, with the mint's refusals, answering the updated token. No token changes to or from read only: a set holding read, and any set for a read-only token, is 400 TOKEN_SCOPES_INPUT, since a person makes a new token for that. A token of another person's, or none, is 404 NOT_FOUND.", s.updateAgentTokenScopes},
 		{http.MethodDelete, "/api/v1/me/agent-tokens/{id}", authAny, "Revoke a personal agent token, read-only or not; a revoked token answers 401 TOKEN_REVOKED.", s.revokeAgentToken},
 		{http.MethodGet, "/api/v1/users", authAny, "Everyone who has signed in, by lowercase email: the assignee picker's options.", s.listUsers},
-		{http.MethodGet, "/api/v1/whoami", authAny, "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes, cut} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles; a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A read-only token that carries a cut is answered here, and refused 403 AS_OF_TOKEN_NOT_SERVED on every other read. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none.", s.whoami},
+		{http.MethodGet, "/api/v1/whoami", authAny, "Who the server takes the caller for: {kind: user, login, scopes} (login is the person's lowercase email) or {kind: agent, owner, service, session, project, scopes, cut} (owner is a personal token's owner or a broker-issued token's person by lowercase email, null for the shared token and for a broker-issued token that names a service; service is a verified service-account token's Kubernetes subject, or the fleet a broker-issued token naming no person belongs to, null for every other credential; session is the session the caller's credential proved, null for a credential that proves none, which every one but an access token the secrets broker issued is; project is the one project key that credential lets the caller write, null where it names none; cut is the past time a read-only credential reads at, an RFC 3339 time in UTC, null for a credential with no cut). scopes is the OAuth scopes the credential holds, an empty array for one that holds none: person acts as the person on every route the dashboard reaches, and approve settles what a person settles; a read-only credential, which may call only the GET routes Dispatch classes as reads, is answered read after them. A write records its actor with proven: true only where this credential proved that actor, the person at a browser or the session above, and never for a session a request names under a credential that proves none.", s.whoami},
 		{http.MethodGet, "/api/v1/dashboard/builds", authAny, "Which dashboard builds are served: {serving, live}, serving the entry chunk (/assets/index-*.js) of the build this process serves (empty when none), live the distinct entry chunks of the builds every live server process serves, sorted. A tab offers its reload notice only when live holds exactly one entry and it is not the tab's own.", s.getDashboardBuilds},
 		{http.MethodGet, "/api/v1/priorities", authAny, fmt.Sprintf("Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest %d rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads.", priorityFaultRows), s.listPriorities},
 		{http.MethodPost, "/api/v1/priorities", authAny, fmt.Sprintf("Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over %d characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over %d characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none.", contracts.IssueTitleMax, priorityIDMax), s.createPriority},
@@ -895,6 +1057,7 @@ func (s *server) routes() []apiRoute {
 		var read readEntry
 		if row.Method == http.MethodGet {
 			read = readClasses[name]
+			row.Description += asOfDescription(name, read)
 		}
 		routes[index] = apiRoute{row, writeClasses[name], routeScopes[name], read}
 	}

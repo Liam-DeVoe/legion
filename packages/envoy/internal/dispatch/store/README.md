@@ -42,6 +42,55 @@ The decoders that make this true are the listener's (`cmd/listener/delivery.go`)
 
 `../../../cmd/dispatch/README.md` has the rule for each surface ("Two builds at once") and for migrations with their examples ("Database migrations"), the naming and the identifiers a set is refused for, and what the census is held to.
 
+**A read at a past time binds each statement to the cut.**
+Package `internal/dispatch/asof` reads Dispatch as it stood at a past time, the cut.
+A route that answers `as_of` runs its present statements under a context that carries the cut (`asof.WithCut`).
+Under such a context `Pool` binds each statement before it sends it (`asof.Bind`): a statement of `Query`, `QueryRow`, `Exec` or `SendBatch`, and each statement of a transaction that `Begin` or `BeginTx` opens and of its savepoints.
+`Bind` puts the shadow of each shadowed table that the statement names in front of the statement, as a `WITH <table> AS NOT MATERIALIZED (…)` member of the same name.
+PostgreSQL resolves the table's name to that member before the table, so the statement reads the table as it stood at the cut.
+So a read at a cut runs the filters, the joins, the order and the pages of the read at the present.
+A shadow answers the columns of its table at the cut from `events` and from the append-only tables (`asof.ShadowedTables`, `TestEveryShadowAnswersEveryColumnOfItsTable`).
+The cut is a `timestamptz` literal in each shadow, written from the parsed time and never from the text of a request.
+Each base table in a shadow is named with the schema `public`, so no shadow reads another shadow.
+`Bind` refuses a statement that is not a read, and a string that holds more than one statement, so the pool sends nothing and returns the refusal (`*asof.RefusedError`).
+A batch that begins its own transaction (`pgx.Batch.BeginTx`) queues a `begin`, which `Bind` refuses.
+Under a cut the pool refuses each way to send SQL that it cannot bind (`RefusedAtCutError`).
+`Acquire`, `AcquireFunc`, `CopyFrom` and a transaction's `CopyFrom` and `Prepare` return that error, a transaction's `Conn` and `LargeObjects` panic with it, and `AcquireAllIdle` takes no connection.
+Under a context with no cut, the pool sends each statement as the caller wrote it.
+A table that a read at a cut reads with no shadow is in `asof.MachineryTables`, the state of Dispatch's own machinery read as it is now, or in `asof.CutReadTables`, read under a predicate of its own that holds the read to the cut, each with its reason.
+
+**Eleven indexes on `events` serve the reads at a cut.**
+`events` is larger than the 1 GiB that a migration may touch (`pgmigrate.CensusTableLimit`), so each index is a migration of its own, marked `-- pgmigrate:non-transactional`.
+Each holds one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, which the census exempts from its size limit, and a `.census.sql` of `select 0`.
+The build takes `SHARE UPDATE EXCLUSIVE` on `events`, which no ordinary read or write of `events` waits on.
+Each header names the size of the index on a copy of production's event log and the read that it serves.
+The predicate of each partial index is its shadow's list of types, word for word, because the planner uses a partial index only when the read's condition implies its predicate.
+`asof.TestTheAskStateIndexNamesTheTypesTheAsksShadowReads` and `asof.TestEachEventIndexNamesTheTypesItsShadowReads` compare the two lists, and `asof.TestTheShadowsUseTheirIndexes` reads the plans.
+A build that fails leaves an invalid index, which the planner does not use, and the next boot drops it and builds it again.
+Reads at a cut stay correct until then, and slower.
+
+- `20261120004315_events_issue_state`, `(issue_key, seq desc) include (created_at)` over `asof.IssueStateTypes`: the newest state of each issue at the cut (the `issues` shadow).
+
+- `20261120004316_events_ask_state`, `((payload->>'id'), id desc) include (created_at)` over `asof.AskStateTypes`: the newest state of each ask at the cut (the `asks` shadow).
+
+- `20261120004317_events_created_at`, `(created_at, id)`: the largest id of the events at the cut, at which a page of `GET /api/v1/events/log` at the cut ends (`asof.NewestEventIDStatement`).
+
+- `20261120140001_events_issue_claim`, `(issue_key, seq desc) include (created_at)` over `asof.IssueClaimTypes`: the claim of an issue at the cut (the `issues` shadow).
+
+- `20261120140002_events_issue_activity`, `(issue_key, created_at) include (seq)` over each type but `asof.IssueStateTypes`: the `updated_at` and the `last_seq` of an issue at the cut (the `issues` shadow).
+
+- `20261120140003_events_comment_state`, `((payload->>'id'), id desc) include (created_at)` over `asof.CommentStateTypes`: the events of a comment at or before the cut and its first edit or delete after it (the `comments` shadow), and the creating event of an ask's reply (the `asks` and `ask_followers` shadows).
+
+- `20261120140004_events_message_state`, the same key over the message types: the `edited_at` and the body of a message at the cut (the `messages` shadow).
+
+- `20261120140005_events_repo_project`, `(created_at)` over `settings.repo_project.updated`: the mapping of each repository to a project at the cut (the `repo_projects` shadow).
+
+- `20261120140006_events_ask_follower`, `((payload->>'ask_id'), id) include (created_at)` over `asof.AskFollowerTypes`: the follows and unfollows of an ask at the cut (the `ask_followers` shadow).
+
+- `20261120140007_events_artifact_renamed`, `((payload->'artifact'->>'id'), id)` over `artifact.renamed`: the name of a document at the cut, the `previous_name` of its first rename after the cut (the `artifacts` shadow).
+
+- `20261120140008_events_project_setting`, `(project_key, seq desc) include (created_at)` over the project setting types: the default assignee and the gated steps of a project at the cut (the `projects` shadow).
+
 **The keyword table holds each past version of the searchable text.**
 Migration `20261120021308_search_text_versions` creates two tables, with no foreign key.
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask, with the vector of that text.
@@ -56,10 +105,15 @@ A version holds at the cut when it started at or before the cut, and no later ve
 So an item has at most one version at a time, and none before its first version started.
 The SQL writes the cut as a literal in UTC to the microsecond, from the time value and never from the text of a request.
 It names each table with the schema `public`, so a common table expression of the statement that joins it cannot replace them.
-Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`, which is null in this build.
+Its columns, in this order, are a contract (`TestTheKeywordRelationAnswersTheContractColumns`): `kind`, `id`, `issue_key`, `project_key`, `event_id`, `event_seq`, `started_at`, `body`, `spec_artifact_id`, `spec_version`, `search` and `deleted_at`.
+`deleted_at` is the post's present `deleted_at` on each version of a comment or a message, read from `public.comments` or `public.messages`, and null for an issue or an ask.
+So a search at a cut hides a post deleted after the cut as soon as its delete commits, before the fill reads the delete.
 `Store.TextVersionsAt(ctx, cut)` answers the relation only for a cut at or before the reach.
 For a later cut it answers `*TextVersionsNotReachedError`, whose `Error()` names the reach and the cut.
 With no cursor row, the error has `Reached` false and says that the fill has reached no time yet.
+The same is true while the cursor row records rules older than `TextVersionsRules` (2).
+The first rules passed the edit of an issue message and the delete of a comment or a message, and the fill reads those events again before the row records the rules that read them.
+Call `TextVersionsAt` and `TextVersionsReach` with a context that carries no cut (`asof.WithoutCut`): they read the fill's own row and `pg_stat_activity` now.
 
 The reach is the latest time T such that every event whose `created_at` is at or before T has its rows.
 This includes an event that a transaction still open will commit.
