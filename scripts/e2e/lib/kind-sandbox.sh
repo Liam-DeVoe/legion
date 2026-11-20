@@ -11,10 +11,12 @@
 # namespace and kind's standard storage class. kind_k runs kubectl against that file and context
 # alone, so the caller's kubeconfig and its current context are never read. kind picks the API
 # server's host port as one free when it looks, and on a busy host another socket can take it
-# before docker binds it, so a create kind fails on a host port bind is made again, the cluster
-# deleted by its name first, up to kind_sandbox_create_tries tries, each retry named by a note; a
-# create that fails for any other reason fails the run, naming kind's last line
-# (lib/kind-sandbox.test.ts).
+# before docker binds it. Docker refuses that bind in one of two forms: `failed to bind host port
+# … address already in use` where another process holds the port, and `Bind for <address> failed:
+# port is already allocated` where another container does (both seen from controller-sweep-kind.sh
+# on 2026-11-20). A create kind fails on either is made again, the cluster deleted by its name
+# first, up to kind_sandbox_create_tries tries, each retry named by a note; a create that fails for
+# any other reason fails the run, naming kind's last line (lib/kind-sandbox.test.ts).
 # kind_sandbox_install_agent_sandbox WORK applies Agent Sandbox's release manifest at the version
 # internal/runtime/sandbox speaks, pinned by sha256, and waits for its controller.
 # kind_sandbox_install_gvisor WORK installs gVisor's dated release, pinned by sha512, into the
@@ -53,7 +55,7 @@ kind_sandbox_create() {
     if "$kind_bin" create cluster --name "$kind_cluster" --kubeconfig "$kind_kubeconfig" --wait 180s 2>&1 | tee "$log"; then
       break
     fi
-    bind=$(grep -m 1 -E 'failed to bind host port .*address already in use' "$log") ||
+    bind=$(grep -m 1 -E 'failed to bind host port .*address already in use|Bind for [^ ]+ failed: port is already allocated' "$log") ||
       fail "kind could not create cluster $kind_cluster: $(grep -v '^[[:space:]]*$' "$log" | tail -n 1)"
     [ "$try" -lt "$kind_sandbox_create_tries" ] ||
       fail "kind could not create cluster $kind_cluster in $try tries, each failing on a host port bind; the last: $bind"

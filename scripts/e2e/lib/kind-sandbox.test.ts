@@ -17,6 +17,10 @@ echo "$*" >>"$KIND_CALLS"
 case "$1" in
 create)
   n=$(grep -c '^create' "$KIND_CALLS")
+  if [ "$n" -le "\${KIND_ALLOCATED_FAILURES:-0}" ]; then
+    echo "docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint legion-test-control-plane (2c682f77): Bind for 127.0.0.1:3565$n failed: port is already allocated" >&2
+    exit 1
+  fi
   if [ "$n" -le "\${KIND_BIND_FAILURES:-0}" ]; then
     echo "docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint legion-test-control-plane (1676b995): failed to bind host port 127.0.0.1:4624$n/tcp: address already in use" >&2
     echo 'ERROR: failed to create cluster: command "docker run --name legion-test-control-plane" failed with error: exit status 125' >&2
@@ -126,6 +130,20 @@ describe("kind_sandbox_create", () => {
       "FAIL kind could not create cluster legion-test in 3 tries, each failing on a host port bind; the last: docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint legion-test-control-plane (1676b995): failed to bind host port 127.0.0.1:46243/tcp: address already in use"
     );
     expect(created.output).not.toContain("created\n");
+  });
+
+  test("a create docker refuses because another container holds the port is made again too", () => {
+    const created = create({ KIND_ALLOCATED_FAILURES: "1" });
+    expect(created.status).toBe(0);
+    expect(created.kind).toEqual([
+      created.createCall,
+      created.deleteCall,
+      created.createCall,
+      "version",
+    ]);
+    expect(created.output).toContain(
+      "   kind create cluster try 1 of 3 failed on a host port another socket took (docker: Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint legion-test-control-plane (2c682f77): Bind for 127.0.0.1:35651 failed: port is already allocated); deleting cluster legion-test and trying again"
+    );
   });
 
   test("a create that fails for any other reason is not made again, and the run fails naming kind's last line", () => {
