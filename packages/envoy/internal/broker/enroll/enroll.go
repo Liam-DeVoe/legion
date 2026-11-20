@@ -96,6 +96,10 @@ var (
 	// that refusal's own text and the exchange's do, and names no holder: whoever holds the name
 	// is not this caller's to learn.
 	ErrSessionHeld = errors.New("another identity holds this session name")
+	// ErrKeyBindsReadToken refuses a launcher credential minted or moved onto a key a live read
+	// token is bound to (keyBindsReadToken): a key that signs launcher proofs is bound to no
+	// read token, and a read token's key signs no launcher proof. Nothing is written.
+	ErrKeyBindsReadToken = errors.New("a live read token is bound to this key, and a key that signs launcher proofs binds no read token")
 )
 
 type Credential struct {
@@ -279,10 +283,8 @@ type Service struct {
 	testSchemaReadHook func()
 }
 
-// execer is satisfied by both *pgxpool.Pool (via Store.Pool) and pgx.Tx, so mintLauncherCredential
-// can run either standalone or joined to a caller's own transaction —
-// machine.Service.ApplyDecision's own approval commit, so a crash between minting and recording
-// its decision rolls back both together instead of leaving an orphaned, unrecoverable credential.
+// execer is satisfied by both *pgxpool.Pool (via Store.Pool) and pgx.Tx, so Replay can run either
+// standalone or joined to a caller's own transaction.
 type execer interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
@@ -293,17 +295,48 @@ type execer interface {
 // re-verification checks against recordID's approved credential-request record. recordID may be
 // "" only for a credential with no backing record at all (test fixtures unrelated to the
 // machine-login flow); AuthenticateLauncher refuses such a credential outright.
-func (s *Service) mintLauncherCredential(ctx context.Context, exec execer, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time) (uuid.UUID, error) {
+//
+// It runs on db, which is the caller's own transaction — machine.Service.ApplyDecision's own
+// approval commit, so a crash between minting and recording its decision rolls back both together
+// instead of leaving an orphaned, unrecoverable credential — or, for a test fixture, the pool. It
+// refuses a key a live read token is bound to first (keyBindsReadToken).
+func (s *Service) mintLauncherCredential(ctx context.Context, db oauthstore.RowQuerier, operator, service *string, host, thumbprint string, jwk json.RawMessage, recordID string, expires time.Time) (uuid.UUID, error) {
 	if operator != nil {
 		operator = new(record.CanonicalLogin(*operator))
 	}
+	if err := keyBindsReadToken(ctx, db, thumbprint); err != nil {
+		return uuid.Nil, err
+	}
 	id := uuid.New()
-	_, err := exec.Exec(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, expires_at) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+	_, err := db.Exec(ctx, `insert into launcher_credentials (id, operator, service, host, key_thumbprint, public_jwk, record_id, expires_at) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		id, operator, service, host, thumbprint, []byte(jwk), nullable(recordID), expires)
 	if err != nil {
 		return uuid.Nil, err
 	}
 	return id, nil
+}
+
+// keyBindsReadToken refuses, on db, a launcher credential minted or moved onto thumbprint while a
+// live read token is bound to it (oauthstore.KeyHoldsReadToken, which takes the key's advisory
+// lock first, the lock oauthstore.Store.CreateAccessTokenSession takes before it stores a read
+// token, so of the two writers binding one key in transactions at once only one commits). It is
+// the check in both statements that write launcher_credentials.key_thumbprint, so every path that
+// reaches them is refused: a device login's approval, the token login route, a Google machine's
+// trade and a person's.
+//
+// The refusal is ErrKeyBindsReadToken, naming the key. Each caller answers it with the refusal it
+// already gives a key another live credential holds: machine.ErrKeyHoldsLiveCredential (409
+// KEY_HOLDS_LIVE_CREDENTIAL) for an approval and a token login, and oauth.ErrMachineKeyTaken
+// (invalid_grant) for a trade.
+func keyBindsReadToken(ctx context.Context, db oauthstore.RowQuerier, thumbprint string) error {
+	held, err := oauthstore.KeyHoldsReadToken(ctx, db, thumbprint)
+	if err != nil {
+		return err
+	}
+	if held {
+		return fmt.Errorf("%w: the key %s", ErrKeyBindsReadToken, thumbprint)
+	}
+	return nil
 }
 
 // MintLauncherCredentialTx mints a person's launcher credential, operating operator's machine,
@@ -386,7 +419,8 @@ func (s *Service) IssueTokenLogin(ctx context.Context, login TokenLogin) (uuid.U
 // boxes, holds a credential of its own and no login moves another's. Its host and its pod are
 // login's. Each login writes a launcher_credential.token_login audit row naming the subject, the
 // pod the token is bound to, the key, and both expiries. A key another live credential holds is
-// a unique violation (store.IsUniqueViolation), and nothing is written.
+// a unique violation (store.IsUniqueViolation), and a key a live read token is bound to is
+// ErrKeyBindsReadToken (keyBindsReadToken); either way nothing is written.
 func (s *Service) IssueTokenLoginTx(ctx context.Context, tx pgx.Tx, login TokenLogin) (uuid.UUID, error) {
 	var operator *string
 	if login.Operator != "" {
@@ -401,6 +435,9 @@ func (s *Service) IssueTokenLoginTx(ctx context.Context, tx pgx.Tx, login TokenL
 	// waits for the drop and then reads the schema the drop left; and it does not conflict with
 	// itself, so two logins never wait for each other.
 	if _, err := tx.Exec(ctx, `lock table launcher_credentials in row exclusive mode`); err != nil {
+		return uuid.Nil, err
+	}
+	if err := keyBindsReadToken(ctx, tx, login.Thumbprint); err != nil {
 		return uuid.Nil, err
 	}
 	// Postgres resolves one conflict target against one index, so which index the schema has

@@ -7655,8 +7655,8 @@ An issued token carries these claims and no others:
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named`, `person` or `none`, which says what `projects` means.
-  Only a read entry's token carries `none`, and that token writes no project.
+- `project_scope` — `named`, `person` or `none`, which says what `projects` means, or, for a token whose trade asked for the scope `read`, the narrowed word of one of them: `read-named`, `read-person` or `read-none`, whose `projects` mean what the word without `read-` means.
+  Only a read entry's token carries `none`, and that token writes no project; a token carrying a narrowed word writes nothing at all.
 
 - `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see.
   A token whose trade named none, and a token that names a service and no person, a read entry's `none` token among them, carry none.
@@ -7665,8 +7665,11 @@ An issued token carries these claims and no others:
   No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
   Every other token carries none.
 
-- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token, which holds no other scope.
+- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and for a token whose trade asked for `read`, and `read person` for such a token that carries `read-person` and names a person.
   Every other token carries none.
+
+- `as_of` — the cut a token whose trade asked for `read` reads at, the trade's `as_of` form parameter, in UTC to the microsecond.
+  Every other token, and such a token whose trade named no cut, carries none.
 
 - `credential_id` — the launcher credential the exchange minted for a machine presenting its Google identity token, which that machine enrols its session under.
   That credential names the machine's fleet and no person, whatever the fleet's entry says, so the sessions it enrols read the secrets that service owns and no person's.
@@ -7679,7 +7682,12 @@ The token it mints holds the scope `read` and the project scope `none`, names th
 That token reads the whole answer of `GET /api/v1/projects/{key}/architecture` for every project that has an architecture source: each source, each component, and every issue of the project, closed and iceboxed ones included.
 No setting holds a read entry to some projects.
 The broker refuses to start on an account that both settings list, because one account mints one kind of token.
-The entry decides the scope, and the exchange request never does: the broker refuses a request that names the scope `read` with `invalid_scope`, under every entry.
+The entry decides the scope of a trade that asks for none.
+A trade under any entry, and every other trade, may ask for `read` (`scope=read`, alone or beside `machine`): its token keeps the session, person, service, machine and projects the same trade would have carried, carries the narrowed word of its project scope and holds `read`, with `person` beside it for a `read-person` token that names a person, and nothing that writes.
+Such a trade may also name a cut (`as_of`, an RFC 3339 time with at most six fractional digits, no later than the trade); a cut on a trade that does not ask for `read`, a later one, and one in any other form are refused `invalid_request`.
+A token that holds `read` is never the subject of a trade, and it is never bound to a key a live launcher credential is bound to: a trade whose proof key holds one binds its token to a key made for the token's holder, which it proves in a second DPoP proof in the `DPoP-Holder` header, and a person's sign-in always does.
+A read trade makes, moves and extends no launcher credential: a person's read trade names the credential the sign-in already holds, so once that credential lapses (with the identity token the sign-in's last ordinary trade presented) read trades are refused `invalid_grant` until one ordinary trade of the sign-in, which `agent-secrets` makes, renews it, and the read tokens it named end with it.
+A driver that renews a copy's read token keeps the sign-in trading ordinarily as well.
 A workflow run's token needs an entry for its repository, its workflow path and its ref (`Set.Workflow`).
 A machine's Google identity token needs an entry for the account its `email` claim names (`BROKER_VM_SERVICES`, `Set.Google`), which gives the service, may pin the Compute Engine project and instance names the machine may carry (`BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES`), and may give a person and a project as a pod's entry does (`BROKER_VM_EXCHANGE_ACCOUNTS`);
 an entry that gives neither mints a token that names its service and no person at all.

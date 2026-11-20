@@ -120,7 +120,8 @@ func (s *Service) verifyKubernetes(claims enroll.AccountClaims) (ServiceAccount,
 //
 // Refusals: record.ErrRequestInvalid (a request object that does not verify, names no single
 // launcher_credential detail, or repeats a jti), ErrAccountNotListed (it names another service),
-// and ErrKeyHoldsLiveCredential (a key another live credential holds).
+// and ErrKeyHoldsLiveCredential (a key another live credential holds, or a key a live read token
+// is bound to, enroll.ErrKeyBindsReadToken).
 func (s *Service) TokenLogin(ctx context.Context, account ServiceAccount, compactRequest string) (TokenCredential, error) {
 	now := time.Now()
 	obj, err := s.verifyLauncherRequest(ctx, compactRequest, now, func(obj record.RequestObject) error {
@@ -145,7 +146,7 @@ func (s *Service) TokenLogin(ctx context.Context, account ServiceAccount, compac
 		Subject: account.Subject, Service: account.Service, Host: account.Host, PodUID: account.PodUID, TokenExpires: account.Expiry,
 		Thumbprint: obj.Thumbprint, JWK: jwk, Expires: expires,
 	})
-	if store.IsUniqueViolation(err) {
+	if store.IsUniqueViolation(err) || errors.Is(err, enroll.ErrKeyBindsReadToken) {
 		return TokenCredential{}, ErrKeyHoldsLiveCredential
 	}
 	if err != nil {

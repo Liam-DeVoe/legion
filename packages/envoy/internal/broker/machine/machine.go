@@ -48,7 +48,9 @@ var (
 	ErrLoginExpired = errors.New("this machine login expired before its approver acted on it")
 	// ErrKeyHoldsLiveCredential is ApplyDecision's refusal to approve a pending login whose key
 	// already holds a live launcher credential under another record: a machine signed two logins
-	// with one key and the first was approved. The record stays pending.
+	// with one key and the first was approved. It is also the refusal of a key a live read token
+	// is bound to (enroll.ErrKeyBindsReadToken), which signs no launcher proof. The record stays
+	// pending.
 	ErrKeyHoldsLiveCredential = errors.New("this machine login's key already holds a live launcher credential")
 	// ErrNotLive is Refreshed's and Live's refusal for a launcher credential that is revoked or
 	// past its expiry: a refresh never revives a login that has ended. It is an
@@ -205,8 +207,8 @@ func (s *Service) verifyPersonLogin(ctx context.Context, compact string, now tim
 // credential — bound to the request object's own key (thumbprint and embedded JWK), with the lifetime
 // its record names (LoginDevice) counted from the decision — in the same transaction that records the
 // decision, so a crash between the two never orphans a credential no decision names. A key that
-// already holds a live credential under another record is ErrKeyHoldsLiveCredential, and the
-// record stays pending.
+// already holds a live credential under another record, or that a live read token is bound to
+// (enroll.ErrKeyBindsReadToken), is ErrKeyHoldsLiveCredential, and the record stays pending.
 func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bool, login, code string) (state, credentialID string, err error) {
 	tx, err := s.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -289,7 +291,7 @@ func (s *Service) ApplyDecision(ctx context.Context, recordID string, approve bo
 		}
 		id, err := s.Enroll.MintLauncherCredentialTx(ctx, tx, login, detail.Identifier, obj.Thumbprint, jwk, recordID,
 			time.Now().Add(time.Duration(*body.LifetimeSeconds)*time.Second))
-		if store.IsUniqueViolation(err) {
+		if store.IsUniqueViolation(err) || errors.Is(err, enroll.ErrKeyBindsReadToken) {
 			return "", "", ErrKeyHoldsLiveCredential
 		}
 		if err != nil {

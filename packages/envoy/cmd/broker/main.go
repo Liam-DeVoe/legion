@@ -1431,7 +1431,8 @@ func discoverVerifiers(ctx context.Context, cfg config.Config, keysFor keysFunc)
 // together. Both trades that mint one come through here — a machine's own, which carries its
 // fleet's service and no person, and a person's sign-in on such a machine, which carries that
 // person as its operator — so there is one way a credential is minted and not two. A key
-// another live credential holds is oauth.ErrMachineKeyTaken, which the exchange answers
+// another live credential holds, and a key a live read token is bound to
+// (enroll.ErrKeyBindsReadToken), is oauth.ErrMachineKeyTaken, which the exchange answers
 // invalid_grant.
 func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
 	return func(ctx context.Context, cred oauth.MachineCredential) (string, error) {
@@ -1449,7 +1450,7 @@ func machineCredentials(enr *enroll.Service) oauth.MachineCredentials {
 			JWK:          cred.JWK,
 			Expires:      cred.Expires,
 		})
-		if store.IsUniqueViolation(err) {
+		if store.IsUniqueViolation(err) || errors.Is(err, enroll.ErrKeyBindsReadToken) {
 			return "", fmt.Errorf("%w: %v", oauth.ErrMachineKeyTaken, err)
 		}
 		if err != nil {
