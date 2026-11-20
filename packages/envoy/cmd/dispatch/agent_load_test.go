@@ -9,11 +9,15 @@ package main
 // soak's script (agent_soak_test.go) answering it.
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -84,9 +88,11 @@ type loadRig struct {
 	specs    []loadSpecOf
 }
 
-// loadSpecOf is the spec of one run: its issue and its document.
+// loadSpecOf is the spec of one run: its issue and its document, and how many edits runs have
+// made of it, the n-th of which replaces markerN with marker(N+1).
 type loadSpecOf struct {
 	issue, document string
+	edits           int
 }
 
 // startLoad starts the server of c26 beside an Envoy listener that lists loadRosterSessions
@@ -165,10 +171,10 @@ func (r *loadRig) seed(t *testing.T) {
 }
 
 // loadMarkdown is prose of at least length bytes, in paragraphs of about a kilobyte, with the word
-// sentinel in its first, which each run's edit replaces.
+// marker0 in its first, which the first run's edit replaces.
 func loadMarkdown(length int) string {
 	var markdown strings.Builder
-	markdown.WriteString("The sentinel of this spec.\n\n")
+	markdown.WriteString("The marker0 of this spec.\n\n")
 	for paragraph := 0; markdown.Len() < length; paragraph++ {
 		fmt.Fprintf(&markdown, "Paragraph %d: %s\n\n", paragraph, strings.Repeat("a run at its limits reads this spec whole. ", 23))
 	}
@@ -255,8 +261,11 @@ func (r *loadRig) waitSettled(t *testing.T, artifactID string) {
 // script scripts the run whose words are words as a Deep run at its limits on spec: ten reads -
 // the project's issue listing, a search, the roster, the events of the issue of comments and its
 // own spec of 1 MiB, twice over - each reply carrying loadReplyText of prose in a stream padded to
-// loadPadding, then a plan that edits its spec, then its answer.
-func (r *loadRig) script(words string, spec loadSpecOf) {
+// loadPadding, then a plan that edits its spec, the spec's next marker for its last, then its
+// answer.
+func (r *loadRig) script(words string, spec *loadSpecOf) {
+	from, to := fmt.Sprintf("marker%d", spec.edits), fmt.Sprintf("marker%d", spec.edits+1)
+	spec.edits++
 	reads := []agenttest.Reply{
 		readCall("dispatch_issues", map[string]any{"project": r.project}),
 		readCall("dispatch_search", map[string]any{"query": "load comment"}),
@@ -273,7 +282,7 @@ func (r *loadRig) script(words string, spec loadSpecOf) {
 		case n == 2*len(reads)+1:
 			reply = toolCall("propose_plan", map[string]any{"summary": "Edit the spec.", "changes": []map[string]any{{
 				"tool": "dispatch_doc_edit", "arguments": map[string]any{"issue": spec.issue, "artifact": "spec",
-					"ops": []map[string]any{{"op": "replace", "find": "sentinel", "with": "marker"}}},
+					"ops": []map[string]any{{"op": "replace", "find": from, "with": to}}},
 			}}})
 		default:
 			return answer("Read everything and edited the spec.")
@@ -297,9 +306,9 @@ type loadPeaks struct {
 func (r *loadRig) work(t *testing.T, label string, specs []loadSpecOf) loadPeaks {
 	t.Helper()
 	starts := make([]agentRun, len(specs))
-	for index, spec := range specs {
+	for index := range specs {
 		words := fmt.Sprintf("%s, run %d", label, index)
-		r.script(words, spec)
+		r.script(words, &specs[index])
 		starts[index] = agentRun{login: fmt.Sprintf("load%d", index), words: words, level: "deep"}
 	}
 	ids := r.server.begin(t, starts...)
@@ -358,16 +367,72 @@ func (r *loadRig) heapOutsideRooms(t *testing.T) int64 {
 	return live - set.inuse(t, loadRooms, nil)
 }
 
-// heapOutsideRoomsAtRest is the least of three reads of heapOutsideRooms 200 ms apart, so a
-// request in flight at one of them is not counted.
-func (r *loadRig) heapOutsideRoomsAtRest(t *testing.T) int64 {
+// loadRest is the server at rest between rounds of runs: its live heap outside the rooms, the heap
+// profile of the collection that found it, the bytes of its three caches as /metrics shows them,
+// and what the database owed the server when the rooms had closed.
+type loadRest struct {
+	outside int64
+	set     c28Set
+	caches  map[string]int64
+	owed    owedBeforeStart
+}
+
+// rest reads the server at rest. It waits for the rooms to close and then for the database to owe
+// the server nothing - no settlement, no block index, no re-index (memoryHarness.readOwed), the
+// work a server does on its own after the runs' writes, which reads whole documents outside the
+// rooms - and fails the test where it still owes something after 5 minutes. Of three collections
+// 200 ms apart it then keeps the one that found the least live outside the rooms, so a request in
+// flight at one of them is not counted.
+func (r *loadRig) rest(t *testing.T) loadRest {
 	t.Helper()
-	least := r.heapOutsideRooms(t)
-	for range 2 {
-		time.Sleep(200 * time.Millisecond)
-		least = min(least, r.heapOutsideRooms(t))
+	waitForResidentRooms(t, r.profiler, 0)
+	owing := &memoryHarness{t: t, database: r.server.database}
+	first := owing.readOwed(t)
+	deadline := time.Now().Add(5 * time.Minute)
+	for owed := first; owed != (owedBeforeStart{}); owed = owing.readOwed(t) {
+		if time.Now().After(deadline) {
+			t.Fatalf("5 minutes after the runs the database still owes the server %+v, so its heap at rest cannot be read", owed)
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	return least
+	var rest loadRest
+	for read := range 3 {
+		if read > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		set := takeC28Set(t, r.profiler)
+		figures := r.server.scrape(t)
+		outside := figures[`envoy_dispatch_process_heap_live_bytes{process="server"}`] - set.inuse(t, loadRooms, nil)
+		if read == 0 || outside < rest.outside {
+			rest = loadRest{outside: outside, set: set, caches: map[string]int64{}}
+			for _, cache := range []string{"read", "display_tree", "list_answer"} {
+				rest.caches[cache] = figures[`envoy_dispatch_cache_bytes{cache="`+cache+`"}`]
+			}
+		}
+	}
+	rest.owed = first
+	return rest
+}
+
+// grewMost is the five functions whose flat heap outside the rooms grew most from before to after,
+// as c28 traces a growth (pprof's -top -diff_base).
+func grewMost(t *testing.T, before, after c28Set) []functionGrowth {
+	t.Helper()
+	flat := func(set c28Set) map[string]int64 {
+		samples, index := set.kept(t, nil, loadRooms)
+		byFunction := map[string]int64{}
+		for _, sample := range samples {
+			byFunction[allocatingFunction(sample)] += sample.Value[index]
+		}
+		return byFunction
+	}
+	was, now := flat(before), flat(after)
+	growths := make([]functionGrowth, 0, len(now))
+	for function, bytes := range now {
+		growths = append(growths, functionGrowth{function: function, bytes: bytes - was[function]})
+	}
+	slices.SortFunc(growths, func(a, b functionGrowth) int { return cmp.Compare(b.bytes, a.bytes) })
+	return growths[:min(5, len(growths))]
 }
 
 // TestTheServerHeapUnderEightDeepRuns: the server's memory for the agent's calls, and the agent's
@@ -376,11 +441,12 @@ func (r *loadRig) heapOutsideRoomsAtRest(t *testing.T) int64 {
 // and why), and its read cache is full. One Deep run at its limits measures one run's peak - the
 // most the agent's total Go memory rises while it works - which sets the slots: the claim gate,
 // 70% of the agent's GOMEMLIMIT, less the agent's base, divided by that peak, 8 at the most; the
-// agent's slots (agentSlots) hold that value. Then 8 Deep runs at once each read the issue
+// agent's slots (agentSlots) hold that value. 8 Deep runs at once then fill every cache the runs
+// fill, and the server is read at rest (loadRest). Then 8 Deep runs at once each read the issue
 // listing, search, the roster, an issue's events and a spec of 1 MiB, twice, and edit their spec:
-// the server's live heap outside the document rooms stays under 1 GiB above its level before them
-// and, once the rooms have closed, comes back to within 5% of it, and the agent's total Go memory
-// stays under its GOMEMLIMIT.
+// the server's live heap outside the document rooms stays under 1 GiB above its level at rest
+// before them and, at rest once they have ended, comes back to within 5% of it, and the agent's
+// total Go memory stays under its GOMEMLIMIT.
 func TestTheServerHeapUnderEightDeepRuns(t *testing.T) {
 	rig := startLoad(t)
 
@@ -398,19 +464,20 @@ func TestTheServerHeapUnderEightDeepRuns(t *testing.T) {
 		t.Errorf("one run's measured peak of %d MiB sets %d slots, and the agent works %d (agentSlots): set agentSlots to %d, citing this measurement", peak>>20, slots, agentSlots, slots)
 	}
 
-	waitForResidentRooms(t, rig.profiler, 0)
-	before := rig.heapOutsideRoomsAtRest(t)
+	rig.work(t, "eight Deep runs that fill the caches", rig.specs)
+	before := rig.rest(t)
 	eight := rig.work(t, "eight Deep runs", rig.specs)
-	waitForResidentRooms(t, rig.profiler, 0)
-	after := rig.heapOutsideRoomsAtRest(t)
-	t.Logf("the server's live heap outside the rooms: %d MiB before the 8 runs, %d MiB at most while they worked (%+d MiB), %d MiB once the rooms closed; the agent's total Go memory at most %d MiB with its %d slots full, its GOMEMLIMIT %d MiB",
-		before>>20, eight.serverOutside>>20, (eight.serverOutside-before)>>20, after>>20, eight.agentTotal>>20, slots, rig.limits.AgentLimit>>20)
-	if rise := eight.serverOutside - before; rise >= loadServerRise {
+	after := rig.rest(t)
+	t.Logf("the server's live heap outside the rooms: %d MiB at rest before the 8 runs, %d MiB at most while they worked (%+d MiB), %d MiB at rest after them; the agent's total Go memory at most %d MiB with its %d slots full, its GOMEMLIMIT %d MiB",
+		before.outside>>20, eight.serverOutside>>20, (eight.serverOutside-before.outside)>>20, after.outside>>20, eight.agentTotal>>20, slots, rig.limits.AgentLimit>>20)
+	t.Logf("once the rooms had closed the database owed the server %+v before the 8 runs and %+v after them; the caches held %v bytes before and %v bytes after; the functions whose flat heap outside the rooms grew most: %v",
+		before.owed, after.owed, before.caches, after.caches, grewMost(t, before.set, after.set))
+	if rise := eight.serverOutside - before.outside; rise >= loadServerRise {
 		t.Errorf("under 8 Deep runs the server's live heap outside the rooms rose %d MiB above its level before them, want under %d MiB", rise>>20, loadServerRise>>20)
 	}
-	if settled := float64(after-before) / float64(before); settled > loadSettleShare {
-		t.Errorf("once the rooms closed the server's live heap outside them is %d MiB, %.1f%% above its %d MiB before the runs, want within %.0f%%",
-			after>>20, 100*settled, before>>20, 100*loadSettleShare)
+	if settled := float64(after.outside-before.outside) / float64(before.outside); settled > loadSettleShare {
+		t.Errorf("at rest after the 8 runs the server's live heap outside the rooms is %d MiB, %.1f%% above its %d MiB before them, want within %.0f%%",
+			after.outside>>20, 100*settled, before.outside>>20, 100*loadSettleShare)
 	}
 	if eight.agentTotal >= rig.limits.AgentLimit {
 		t.Errorf("with its slots full the agent's total Go memory reached %d MiB, want under its GOMEMLIMIT of %d MiB", eight.agentTotal>>20, rig.limits.AgentLimit>>20)
@@ -441,11 +508,73 @@ func (s agentServer) readTimes(t *testing.T, path string, count int) []time.Dura
 	return times
 }
 
-// p99 is the 99th percentile of times.
-func p99(times []time.Duration) time.Duration {
+// databaseTimes is how long each of count round trips of `select 1` from the test to the server's
+// database took, one after another: the part of a read the server's process does not run.
+func (s agentServer) databaseTimes(t *testing.T, count int) []time.Duration {
+	t.Helper()
+	times := make([]time.Duration, 0, count)
+	for range count {
+		started := time.Now()
+		var one int
+		if err := s.database.Pool.QueryRow(t.Context(), `select 1`).Scan(&one); err != nil {
+			t.Fatal(err)
+		}
+		times = append(times, time.Since(started))
+	}
+	return times
+}
+
+// percentile is the share q of times at or under it, q from 0 to 1.
+func percentile(times []time.Duration, q float64) time.Duration {
 	sorted := slices.Clone(times)
 	slices.Sort(sorted)
-	return sorted[(len(sorted)*99+99)/100-1]
+	return sorted[max(0, int(math.Ceil(q*float64(len(sorted))))-1)]
+}
+
+// spread writes the p50, the p90 and the p99 of times, for the test's log.
+func spread(times []time.Duration) string {
+	return fmt.Sprintf("p50 %v, p90 %v, p99 %v", percentile(times, 0.5), percentile(times, 0.9), percentile(times, 0.99))
+}
+
+// threadNices is how many threads process pid runs at each nice value, each read from its
+// /proc/<pid>/task/<tid>/stat, whose fields after the command's closing parenthesis start at the
+// state, the third, so the nice value, the nineteenth, is the seventeenth of them.
+func threadNices(t *testing.T, pid int) map[int]int {
+	t.Helper()
+	tasks, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
+	if err != nil {
+		t.Fatalf("list the agent's threads: %v", err)
+	}
+	nices := map[int]int{}
+	for _, task := range tasks {
+		stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%s/stat", pid, task.Name()))
+		if err != nil {
+			continue
+		}
+		text := string(stat)
+		fields := strings.Fields(text[strings.LastIndexByte(text, ')')+1:])
+		nice, err := strconv.Atoi(fields[16])
+		if err != nil {
+			t.Fatalf("read the nice value of the agent's thread %s from %q: %v", task.Name(), text, err)
+		}
+		nices[nice]++
+	}
+	return nices
+}
+
+// processVariable is the value of name in process pid's environment, "" where it holds none.
+func processVariable(t *testing.T, pid int, name string) string {
+	t.Helper()
+	environ, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
+	if err != nil {
+		t.Fatalf("read process %d's environment: %v", pid, err)
+	}
+	for entry := range strings.SplitSeq(string(environ), "\x00") {
+		if value, found := strings.CutPrefix(entry, name+"="); found {
+			return value
+		}
+	}
+	return ""
 }
 
 // TestTheAgentLeavesTheServerItsCPU: the agent cannot take the server's CPU (check c29). The
@@ -453,18 +582,23 @@ func p99(times []time.Duration) time.Duration {
 // hook: a live heap of nine tenths of its GOMEMLIMIT, and allocation without pause on each CPU its
 // runtime schedules on). Meanwhile the p99 of one fixed read of the server, an issue, stays under
 // twice its p99 with the agent idle, and /livez, asked every 100 ms, answers each time in under
-// 1 s. The agent runs on at most 4 CPUs (GOMAXPROCS) at the lower priority of nice 10.
+// 1 s. Every thread of the agent runs at the lower priority of nice 10, idle and at the load; the
+// test logs the CPUs it runs on, the agent's GOMAXPROCS, and the spread of the read and of a
+// round trip to the database, idle and at the load, which says what a slower p99 is made of.
 func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	fake, model := newSoakModel(t)
 	env := modelEnv(t, fake)
 	env["DISPATCH_TEST_AGENT_GOMEMLIMIT"] = strconv.Itoa(cpuAgentLimit)
 	server := startAgentServer(t, env)
 	server.waitForAgentRenewal(t)
+	pid := server.agentStarted(t, 1, 30*time.Second)
 	server.createProject(t, "CPU", "CPU")
 	key, _ := server.createIssueIn(t, "CPU", "The issue the fixed read reads", "Context.\n")
 	read := "/api/v1/issues/" + key
 	server.readTimes(t, read, 100)
-	idle := p99(server.readTimes(t, read, cpuReads))
+	idleReads := server.readTimes(t, read, cpuReads)
+	idleDatabase := server.databaseTimes(t, cpuReads)
+	idleThreads := threadNices(t, pid)
 
 	const words = "work at the soft limit"
 	model.set(words, func(n int) agenttest.Reply {
@@ -506,17 +640,27 @@ func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 			livez = append(livez, took)
 		}
 	})
-	busy := p99(server.readTimes(t, read, cpuReads))
+	busyReads := server.readTimes(t, read, cpuReads)
+	busyDatabase := server.databaseTimes(t, cpuReads)
 	close(asking)
 	asked.Wait()
-	figures := server.scrape(t)
+	busyThreads := threadNices(t, pid)
 	server.send(t, http.MethodPost, "/api/v1/going/runs/"+run+"/stop", "", asUser(dispatchTestLogin))
 	server.ended(t, run, time.Minute)
 
+	idle, busy := percentile(idleReads, 0.99), percentile(busyReads, 0.99)
 	slowest := slices.Max(append(livez, 0))
-	t.Logf("the fixed read's p99: %v with the agent idle, %v with the agent at its soft limit (%.2f times); /livez answered %d times, the slowest in %v; the agent's live heap %d MiB and total Go memory %d MiB of its GOMEMLIMIT of %d MiB, as its last renew carried them",
-		idle, busy, float64(busy)/float64(idle), len(livez), slowest,
-		figures[`envoy_dispatch_process_heap_live_bytes{process="agent"}`]>>20, figures[`envoy_dispatch_process_memory_total_bytes{process="agent"}`]>>20, cpuAgentLimit>>20)
+	t.Logf("the test runs on %d CPUs (GOMAXPROCS %d) and the agent with GOMAXPROCS=%s; the agent's threads by nice value, idle %v and at its soft limit %v",
+		runtime.NumCPU(), runtime.GOMAXPROCS(0), processVariable(t, pid, "GOMAXPROCS"), idleThreads, busyThreads)
+	t.Logf("the fixed read with the agent idle: %s; at its soft limit: %s (the p99 %.2f times); a round trip to the database idle: %s; at the soft limit: %s; /livez answered %d times, the slowest in %v",
+		spread(idleReads), spread(busyReads), float64(busy)/float64(idle), spread(idleDatabase), spread(busyDatabase), len(livez), slowest)
+	for _, threads := range []map[int]int{idleThreads, busyThreads} {
+		for nice, count := range threads {
+			if nice != agentNice {
+				t.Errorf("%d of the agent's threads run at nice %d, want every one at %d (threads by nice value %v)", count, nice, agentNice, threads)
+			}
+		}
+	}
 	if busy >= 2*idle {
 		t.Errorf("with the agent at its soft limit the fixed read's p99 is %v, want under twice its %v with the agent idle", busy, idle)
 	}
