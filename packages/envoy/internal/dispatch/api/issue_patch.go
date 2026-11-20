@@ -107,6 +107,66 @@ type issueWriteCall struct {
 	// the write's own transaction, after the write's own events, so the write and its comment
 	// commit together or not at all. A write that changes nothing leaves no comment.
 	comment *issueComment
+	// step is what the write of one step of a status change carries beside the PATCH's fields
+	// (status_change.go), or nil for a PATCH.
+	step *issueWriteCallStep
+}
+
+// issueWriteCallStep is what the write of one step of a status change (POST
+// /api/v1/issues/{key}/status-change) carries beside the PATCH's fields. Each step is a write of
+// its own, and it decides its write from what it reads under its own owner lock, not from the
+// plan that the call read before its first step.
+type issueWriteCallStep struct {
+	// named is the issue that the status change names. A step that holds its owner lock reads
+	// back the ids of every event the step appended on it (issueWriteResult.namedEvents).
+	named string
+	// fence is the call's fence on named, or nil for a call that sent no expected_sequence.
+	fence *issueWriteFence
+	// leaves reports, from the issue as the step reads it under its owner lock, that the step
+	// leaves the issue as it stands: the step writes no row, no event and no comment, and rolls
+	// its transaction back. It is nil for a step that always writes: the named issue's own.
+	leaves func(before model.Issue) bool
+	// words is the body of the step's comment (issueWriteCall.comment), from the issue as the
+	// step reads it under its owner lock. It is nil for a step that leaves no comment.
+	words func(before model.Issue) string
+	// sweepsLater is that the caller runs the ask sweep of the step's close itself, after the
+	// call's last step (issueWriteResult.closed), so that no fence of the call reads the events of
+	// the sweep. Only the named issue's own step sets it.
+	sweepsLater bool
+}
+
+// issueWriteFence is the fence of a status change that sent expected_sequence: the sequence it
+// sent, and the ids of the events on the named issue that the call counts as its own. Each step
+// locks the named issue beside its own issue, and refuses 409 ISSUE_CHANGED when an event on the
+// named issue after that sequence is not one of the call's own.
+type issueWriteFence struct {
+	sequence int64
+	own      map[int64]bool
+}
+
+// refuseForeignEvents is the fence of one step, which holds the named issue's owner lock: 409
+// ISSUE_CHANGED when an event on named after the fenced sequence is not one of the call's own.
+func (fence *issueWriteFence) refuseForeignEvents(ctx context.Context, tx pgx.Tx, named string) error {
+	rows, err := tx.Query(ctx, `select id from events where issue_key = $1 and seq > $2 order by id`, named, fence.sequence)
+	if err != nil {
+		return err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if !fence.own[id] {
+			return errIssueChanged()
+		}
+	}
+	return nil
+}
+
+// errIssueChanged is the 409 ISSUE_CHANGED of a write whose expected_sequence is no longer the
+// issue's last event.
+func errIssueChanged() error {
+	return errorf(http.StatusConflict, "ISSUE_CHANGED", "issue changed since the hand-over read")
 }
 
 // issueWriteResult is what writeIssue wrote.
@@ -118,11 +178,23 @@ type issueWriteResult struct {
 	// previousLastSeq is the issue's last_seq as the write read it under the issue's owner
 	// lock, before the write appended any event.
 	previousLastSeq int
-	// wrote is false for a write that found nothing to change and wrote nothing.
+	// wrote is false for a write that found nothing to change and wrote nothing, and for a step
+	// of a status change that left its issue as it stands (issueWriteCallStep.leaves).
 	wrote bool
 	// appended is each event the write appended, with its owner and its id, in the order the
 	// write queued them.
 	appended []*model.Event
+	// namedEvents is, for a step of a status change that holds the owner lock of the issue the
+	// call names, the ids of the events on that issue after its last_seq as the step read it
+	// under that lock: every event the step appended there, those that document work appends
+	// through the ledger's event sink included. They are what the fence of a later step of the
+	// call counts as its own. It is empty for every other write.
+	namedEvents []int64
+	// closed is that the write closed the issue, and withdrawn is the asks that the close
+	// withdrew: what the close's ask sweep takes (sweepClosedIssueAsks). writeIssue runs that
+	// sweep itself, except for a step whose caller sweeps later (issueWriteCallStep.sweepsLater).
+	closed    bool
+	withdrawn []model.Ask
 }
 
 // writeIssue is the PATCH's write core. It parses the call's fields, takes the owner locks of
@@ -281,6 +353,12 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			named = append(named, *input.Rank.Before)
 		}
 	}
+	// A fenced step of a status change locks the issue the call names beside its own, in the same
+	// one lock order, and decides the fence first, before every other answer of the step.
+	step := call.step
+	if step != nil && step.fence != nil {
+		named = append(named, step.named)
+	}
 	lock := lockPatchOwners
 	if input.Status != nil || parentProvided {
 		lock = lockPatchOwnersAndParent
@@ -288,12 +366,43 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if err := lock(ctx, tx, key, named...); err != nil {
 		return issueWriteResult{}, err
 	}
+	if step != nil && step.fence != nil {
+		if err := step.fence.refuseForeignEvents(ctx, tx, step.named); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	before, err := s.loadIssue(ctx, tx, key)
 	if err != nil {
 		return issueWriteResult{}, err
 	}
 	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
-		return issueWriteResult{}, errorf(http.StatusConflict, "ISSUE_CHANGED", "issue changed since the hand-over read")
+		return issueWriteResult{}, errIssueChanged()
+	}
+	// A step of a status change decides here, from the issue as it reads it under its own lock,
+	// whether it writes at all. A step that leaves the issue as it stands rolls back.
+	if step != nil && step.leaves != nil && step.leaves(before) {
+		return issueWriteResult{issue: before, previousLastSeq: before.LastSeq}, nil
+	}
+	// A step that holds the owner lock of the issue the call names reads back, in its write
+	// phase, every event it appends there after the last_seq it reads here: the named issue's own
+	// step, a fenced step, and the step of a direct child, whose parent lockPatchOwnersAndParent
+	// locked. The read is a plain one, before the first write.
+	namedLastSeq, holdsNamed := 0, false
+	if step != nil {
+		switch {
+		case step.named == key:
+			namedLastSeq, holdsNamed = before.LastSeq, true
+		case step.fence != nil || (before.Parent != nil && *before.Parent == step.named):
+			if err := tx.QueryRow(ctx, `select last_seq from issues where key = $1`, step.named).Scan(&namedLastSeq); err != nil {
+				return issueWriteResult{}, err
+			}
+			holdsNamed = true
+		}
+		if step.words != nil && call.comment != nil {
+			worded := *call.comment
+			worded.body = step.words(before)
+			call.comment = &worded
+		}
 	}
 	if parentProvided && parent != nil {
 		if err := validateIssueParent(ctx, tx, key, before.Project, *parent); err != nil {
@@ -713,6 +822,22 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 		}
 		appended = append(appended, commented)
 	}
+	// A step that holds the named issue's lock reads back the ids of the events on it after the
+	// last_seq it read under that lock. The ids exist only once the write phase's batch has run,
+	// so the statement derives them in its own SQL, after the step's last event insert. They hold
+	// what document work appended there through the ledger's event sink too, which appended does
+	// not.
+	var namedEvents []int64
+	if holdsNamed {
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			b.Queue("read back the events of the named issue", `
+				select coalesce(array_agg(id order by id), '{}') from events where issue_key = $1 and seq > $2
+			`, step.named, namedLastSeq).QueryRow(func(row pgx.Row) error { return row.Scan(&namedEvents) })
+			return nil
+		}); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	if closing {
 		// The close's last statement before its commit stamps closed_at again, at the moment it
 		// runs (clock_timestamp()), over the start of the transaction (now()) the update above
@@ -748,15 +873,18 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	if call.comment != nil {
 		s.storeDisplayTrees(ctx, key, call.comment.body)
 	}
-	if closing {
+	if closing && (step == nil || !step.sweepsLater) {
 		// The commit's notification closes the issue's rooms on every process; the sweep catches
 		// the ask blocks written since the close forked each document (sweepClosedIssueAsks).
-		// It runs after the publish so every event reaches subscribers in commit order. Every
-		// caller has it run here; a caller that must run it after a later write of its own would
-		// take the withdrawn asks in issueWriteResult and run it itself.
+		// It runs after the publish so every event reaches subscribers in commit order. A step of
+		// a status change that sweeps later leaves it to its caller, which runs it after the
+		// call's last step with the asks this answers.
 		s.sweepClosedIssueAsks(call.outliving, key, withdrawn, actor)
 	}
-	return issueWriteResult{issue: after, advice: advice, previousLastSeq: before.LastSeq, wrote: true, appended: appended}, nil
+	return issueWriteResult{
+		issue: after, advice: advice, previousLastSeq: before.LastSeq, wrote: true, appended: appended,
+		namedEvents: namedEvents, closed: closing, withdrawn: withdrawn,
+	}, nil
 }
 
 // appendedIssueLastSeq is the issue's last_seq once the write phase has run: the sequence of the

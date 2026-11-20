@@ -409,22 +409,28 @@ func requireRuleRefusals(t *testing.T, rig ruleRig, breaches []ruleBreach) {
 // the refusal that names holders, in their order, and no other issue.
 func requireRuleRefusal(t *testing.T, request string, response *httptest.ResponseRecorder, holders []ruleHolder) {
 	t.Helper()
+	want := ruleRefusalBody(holders)
+	var got any
+	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil || response.Code != http.StatusConflict || !reflect.DeepEqual(got, want) {
+		wanted, _ := json.Marshal(want)
+		t.Errorf("%s: status=%d body=%s\nwant 409 %s", request, response.Code, strings.TrimSpace(response.Body.String()), wanted)
+	}
+}
+
+// ruleRefusalBody is the whole 409 PARENT_STATUS_CONFLICT body that names holders, in their order,
+// as JSON decodes it.
+func ruleRefusalBody(holders []ruleHolder) map[string]any {
 	sentences := make([]string, 0, len(holders))
 	issues := make([]any, 0, len(holders))
 	for _, holder := range holders {
 		sentences = append(sentences, holder.sentence+".")
 		issues = append(issues, map[string]any{"key": holder.key, "title": holder.title, "status": holder.status, "relation": holder.relation})
 	}
-	want := map[string]any{
+	return map[string]any{
 		"code": "PARENT_STATUS_CONFLICT",
 		"error": "this change would leave a parent's status out of line with its children's. " + strings.Join(sentences, " ") +
 			" A parent is done only when each child is done, and while a child is in work, its parent is in work.",
 		"issues": issues,
-	}
-	var got any
-	if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil || response.Code != http.StatusConflict || !reflect.DeepEqual(got, want) {
-		wanted, _ := json.Marshal(want)
-		t.Errorf("%s: status=%d body=%s\nwant 409 %s", request, response.Code, strings.TrimSpace(response.Body.String()), wanted)
 	}
 }
 
@@ -621,7 +627,8 @@ func awaitNoSettlementOwed(t *testing.T, database *store.Store) {
 }
 
 // TestTheParentStatusRuleWaitsForItsSetting: with DISPATCH_PARENT_STATUS_RULE off, each write
-// that the rule's tests above see refused is taken, on the PATCH and on the create.
+// that the rule's tests above see refused is taken, on the PATCH, on the create and on the
+// status-change route, whose call with no option writes the status alone and moves no child.
 func TestTheParentStatusRuleWaitsForItsSetting(t *testing.T) {
 	rig := newRuleRig(t, false)
 	for _, breaches := range [][]ruleBreach{parentDoneBreaches, childInWorkBreaches, reparentAndCreateBreaches} {
@@ -638,8 +645,20 @@ func TestTheParentStatusRuleWaitsForItsSetting(t *testing.T) {
 			})
 		}
 	}
-	// The status-change route's half goes here: with the setting off, its call that breaks the
-	// rule with no option is taken too.
+	t.Run("the status-change route: a parent to done over a child in todo with no option", func(t *testing.T) {
+		parent := rig.file(t, "Parent closed through the route", "in_progress", "")
+		child := rig.file(t, "Child left in todo", "todo", parent)
+		write := statusChangeOf(parent, map[string]any{"status": "done"})
+		if response := rig.send(t, write); response.Code != http.StatusOK {
+			t.Fatalf("%s with the rule off: status=%d body=%s, want 200", write, response.Code, response.Body.String())
+		}
+		if status, _ := rig.issue(t, parent); status != "done" {
+			t.Errorf("the call left %s %s, want done", parent, status)
+		}
+		if status, parentOf := rig.issue(t, child); status != "todo" || parentOf == nil || *parentOf != parent {
+			t.Errorf("the call left %s %s under %v, want todo under %s", child, status, parentOf, parent)
+		}
+	})
 }
 
 // TestAStepAndItsCommentCommitTogether: a write of an issue that carries a comment (writeIssue's

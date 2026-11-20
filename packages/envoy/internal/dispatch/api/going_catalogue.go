@@ -88,11 +88,21 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Method: http.MethodPost, Pattern: "/api/v1/issues", Path: map[string]string{},
 		Relations: []string{"child_of", "blocked_by", "affects", "mentions"},
 	}},
-	"dispatch_issue_update": {{
-		Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
-		Path:      map[string]string{"key": "issue"},
-		Relations: []string{"child_of", "blocked_by", "affects"},
-	}},
+	"dispatch_issue_update": {
+		{
+			Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
+			Path:      map[string]string{"key": "issue"},
+			Relations: []string{"child_of", "blocked_by", "affects"},
+		},
+		// The status change with an option is the tool's write too. The tool's arguments name no
+		// option of the route yet (packages/contracts/src/dispatch-tools.ts), so no guard picks
+		// this row, and the PATCH row above, which is tried first, takes every call.
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path:      map[string]string{"key": "issue"},
+			Relations: []string{"child_of"},
+		},
+	},
 	"dispatch_claim": {
 		{
 			Method: http.MethodDelete, Pattern: "/api/v1/issues/{key}/claim",

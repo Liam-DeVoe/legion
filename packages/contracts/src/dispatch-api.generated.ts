@@ -1808,6 +1808,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/status-change": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Write the status of an issue, and with an option what happens to the issues under it or above it, so that each parent's status stays in line with its children's: a parent is done only when each child is done, and while a child is in work its parent is in work. The body is {status, include_children?, unlink_children?, include_parent?, dry_run?, expected_sequence?, actor?}, and expected_sequence and actor are read as PATCH /api/v1/issues/{key} reads them. include_children writes the status on each open issue under the issue, at any depth, that is not in the status's group (not started, in work or done). unlink_children removes each open child from the issue, so that each one becomes a root. include_parent moves each ancestor that is not in work to in_progress. Each issue that an option changes gets a comment from Dispatch that names the call. The call writes one issue at a time, each in a transaction of its own, in an order where each write keeps the rule, and it checks its whole plan before the first write. The answer is 200 {issue, changed}: issue is the issue as the PATCH answers it, and changed has one entry {key, status, parent, previous_last_seq, issue} for each issue whose status or parent the call changed, the issue itself included, in the order of the writes. status and parent are what the call left, previous_last_seq is the issue's last_seq as its own write read it under its lock, and issue is that issue as its write answered it. With dry_run the call writes nothing and answers the same shape: each entry has the status and the parent that the call would leave and the issue's last_seq now, and no issue. 409 ISSUE_CHANGED: expected_sequence is not the issue's last event. This is decided first, also for a dry run, and again at each write, where an event on the issue that the call did not write stops the call. 409 PARENT_STATUS_CONFLICT {code, error, issues: [{key, title, status, relation}], changed}, relation parent or child: the call breaks the rule, with DISPATCH_PARENT_STATUS_RULE on, and for a dry run whatever the setting. 403 BROWSER_SIGN_IN_REQUIRED: include_children with done from a request that presents a token. 400 INVALID_STATUS: the status is not in the lifecycle. 400 STATUS_CHANGE_INPUT: no status, or include_children with unlink_children. 409 PARENT_CONTENDED: the issues of the call moved at each attempt to lock them, and nothing was applied. 409 ISSUE_CLOSED: done on an issue that is closed. 404 NOT_FOUND: no such issue. Each refusal carries changed: the entries of the writes that committed before it, [] when none did. */
+    post: operations["postApiV1IssuesByKeyStatusChange"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/steps": {
     parameters: {
       query?: never;
@@ -5918,6 +5935,12 @@ export interface components {
       kind: string;
       to_id: string;
     };
+    ParentStatusConflictIssue: {
+      key: string;
+      relation: string;
+      status: string;
+      title: string;
+    };
     PassCounts: {
       graphql_points: number;
       graphql_queries: number;
@@ -6490,6 +6513,37 @@ export interface components {
     StateResponse: {
       /** @enum {string} */
       state: "denied" | "cancelled" | "revoked";
+    };
+    StatusChangeAnswer: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      issue: components["schemas"]["Issue"];
+    };
+    StatusChangeConflict: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      code: string;
+      error: string;
+      issues: components["schemas"]["ParentStatusConflictIssue"][] | null;
+    };
+    StatusChangeEntry: {
+      issue?: components["schemas"]["Issue"];
+      key: string;
+      parent: null | string;
+      previous_last_seq: number;
+      status: string;
+    };
+    StatusChangeInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      dry_run?: boolean;
+      expected_sequence?: null | number;
+      include_children?: boolean;
+      include_parent?: boolean;
+      status: string;
+      unlink_children?: boolean;
+    };
+    StatusChangeRefusal: {
+      changed: components["schemas"]["StatusChangeEntry"][] | null;
+      code: string;
+      error: string;
     };
     StepRatingInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -11483,6 +11537,64 @@ export interface operations {
       };
     };
   };
+  postApiV1IssuesByKeyStatusChange: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["StatusChangeInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusChangeAnswer"];
+        };
+      };
+      /** @description Forbidden */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["StatusChangeRefusal"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json":
+            | components["schemas"]["StatusChangeConflict"]
+            | components["schemas"]["StatusChangeRefusal"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeySteps: {
     parameters: {
       query?: {
@@ -15108,6 +15220,7 @@ export type OpenAskItemOwner = components["schemas"]["OpenAskItemOwner"];
 export type OpenAskOwner = components["schemas"]["OpenAskOwner"];
 export type OpenAsksResponse = components["schemas"]["OpenAsksResponse"];
 export type OutgoingReference = components["schemas"]["OutgoingReference"];
+export type ParentStatusConflictIssue = components["schemas"]["ParentStatusConflictIssue"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
@@ -15182,6 +15295,11 @@ export type SessionAnswersResponse = components["schemas"]["SessionAnswersRespon
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StandingReview = components["schemas"]["StandingReview"];
 export type StateResponse = components["schemas"]["StateResponse"];
+export type StatusChangeAnswer = components["schemas"]["StatusChangeAnswer"];
+export type StatusChangeConflict = components["schemas"]["StatusChangeConflict"];
+export type StatusChangeEntry = components["schemas"]["StatusChangeEntry"];
+export type StatusChangeInput = components["schemas"]["StatusChangeInput"];
+export type StatusChangeRefusal = components["schemas"]["StatusChangeRefusal"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];
 export type StepRecordInput = components["schemas"]["StepRecordInput"];
