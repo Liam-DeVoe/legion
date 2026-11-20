@@ -493,10 +493,18 @@ func controlDefaultClient(ctx context.Context) *http.Client {
 			}
 			return c.write(plantTSDir+"control-namespace.ts", "import * as oidc from \"openid-client\";\n\n/** Control (25)'s planted openid-client function, destructured outside callLibrary. */\nconst { randomState } = oidc;\nexport const controlState = randomState();\n/** Control (25)'s planted dynamic import outside callLibrary: the control exercises the census's\n *  view of module loading, which no static import can stand in for. */\nexport const controlDynamic = async () => (await import(\"openid-client\")).randomNonce();\n")
 		}},
-	{id: "27", what: "a planted HTTP client that prints an answer's words with no record of the request it sent: its body held as the box, and the error of a value it decodes the body into", stage: 2,
+	{id: "27", what: "ten planted reads of an answer outside redact's readers: a raw body printed, a decode into an interface value, a generic decode helper, a type that reads itself from text, a Decode method value, a function literal in a package-level composite literal, one answer's text held with another answer's record, a decoder's error printed, a raw read under a limit, and a GitHub classifier's raw bytes read through a type that embeds the response", stage: 2,
 		each: [][]string{
-			{"answer census", plantDir + "control_answer.go:23", "controlAnswer", "no request record"},
-			{"answer census", plantDir + "control_answer.go:25", "controlAnswer", "no request record"},
+			{"answer census", plantDir + "control_answer.go:17", "controlRaw", "outside"},
+			{"answer census", plantDir + "control_answer.go:24", "controlAny", "outside"},
+			{"answer census", plantDir + "control_answer.go:36", "controlGeneric", "outside"},
+			{"answer census", plantDir + "control_answer.go:47", "controlUnmarshalText", "outside"},
+			{"answer census", plantDir + "control_answer.go:53", "controlMethodValue", "outside"},
+			{"answer census", plantDir + "control_answer.go:60", "controlReaders", "outside"},
+			{"answer census", plantDir + "control_answer.go:65", "controlOtherRecord", "another answer"},
+			{"answer census", plantDir + "control_answer.go:71", "controlDecoderError", "outside"},
+			{"answer census", plantDir + "control_answer.go:79", "controlLimited", "outside"},
+			{"answer census", plantDir + "control_answer.go:87", "controlClassify", "outside"},
 		},
 		plant: func(c *controlRun) error {
 			return c.write(plantDir+"control_answer.go", `package brokerclient
@@ -510,20 +518,83 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// controlAnswer is control (27)'s planted HTTP client, which prints an answer's words with no
-// record of the request it sent: held as the box, and decoded into a value that holds it.
-func controlAnswer(client *http.Client, url string) error {
-	resp, err := client.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+// Control (27)'s planted reads of an answer's body outside redact's readers, one for each shape
+// the round-4 review planted past the old census, a raw read, and a GitHub classifier's raw path.
+
+// controlRaw prints an answer's raw body.
+func controlRaw(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("the server answered %s", body)
+}
+
+// controlAny decodes an answer into an interface value.
+func controlAny(resp *http.Response) (any, error) {
+	var v any
+	err := json.NewDecoder(resp.Body).Decode(&v)
+	return v, err
+}
+
+// controlDecodeAs is a generic decode helper; controlGeneric hands it an answer's body.
+func controlDecodeAs[T any](r io.Reader) (T, error) {
+	var v T
+	err := json.NewDecoder(r).Decode(&v)
+	return v, err
+}
+
+func controlGeneric(resp *http.Response) (tokenAnswer, error) {
+	return controlDecodeAs[tokenAnswer](resp.Body)
+}
+
+// controlText is a type that reads itself from text, which controlUnmarshalText fills from an
+// answer's body.
+type controlText struct{ said string }
+
+func (t *controlText) UnmarshalText(b []byte) error { t.said = string(b); return nil }
+
+func controlUnmarshalText(resp *http.Response) (controlText, error) {
+	var t controlText
+	err := json.NewDecoder(resp.Body).Decode(&t)
+	return t, err
+}
+
+// controlMethodValue decodes an answer through a Decode method value.
+func controlMethodValue(resp *http.Response) (tokenAnswer, error) {
+	decode := json.NewDecoder(resp.Body).Decode
 	var answer tokenAnswer
-	if json.Unmarshal(body, &answer) != nil || answer.Error.IsEmpty() {
-		return fmt.Errorf("the server answered %s", redact.NewRemoteText(string(body)))
+	return answer, decode(&answer)
+}
+
+// controlReaders is a package-level composite literal whose function literal reads an answer.
+var controlReaders = []func(*http.Response) ([]byte, error){
+	func(r *http.Response) ([]byte, error) { return io.ReadAll(r.Body) },
+}
+
+// controlOtherRecord holds one answer's status with the record of another answer.
+func controlOtherRecord(first, second *http.Response) string {
+	return redact.NewRemoteText(first.Status).WithoutTokens(redact.Carried(second)...).String()
+}
+
+// controlDecoderError prints the decoder's error, which quotes the answer's value.
+func controlDecoderError(resp *http.Response) error {
+	var answer tokenAnswer
+	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
+		return fmt.Errorf("the answer did not decode: %w", err)
 	}
-	return fmt.Errorf("the server refused: %s", answer.Error)
+	return nil
+}
+
+// controlLimited reads an answer's raw body under a limit.
+func controlLimited(resp *http.Response) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+}
+
+// controlGitHubAnswer is GitHub's answer as a classifier took it before redact.Answer: the raw
+// bytes read through a type that embeds the response.
+type controlGitHubAnswer struct{ *http.Response }
+
+func controlClassify(answer controlGitHubAnswer) (int, []byte) {
+	raw, _ := io.ReadAll(answer.Body)
+	return answer.StatusCode, raw
 }
 `)
 		}},

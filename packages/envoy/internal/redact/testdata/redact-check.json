@@ -1863,6 +1863,24 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.page-references/named"
+      },
+      {
+        "row": "helper-decode-echo",
+        "base": "2a4911c83e03e3bb1b8f895c960fa30b1fc1126a",
+        "files": [
+          "packages/envoy/internal/broker/helper/decode_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "helper.decode-echo/renew"
+      },
+      {
+        "row": "agentsecrets-decode-echo",
+        "base": "2a4911c83e03e3bb1b8f895c960fa30b1fc1126a",
+        "files": [
+          "packages/envoy/cmd/agent-secrets/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets.decode-echo"
       }
     ],
     "boundary_fields": {
@@ -3915,6 +3933,20 @@
       }
     },
     {
+      "id": "helper-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/broker/helper",
+      "test": "TestAnAcceptedAnswerThatDoesNotDecodePrintsNoProofItEchoes",
+      "production": "(*github.com/sjawhar/envoy/internal/broker/helper.Broker).do: an accepted answer decodes through redact.Answer.Decode, whose error quotes no value"
+    },
+    {
+      "id": "agentsecrets-decode-echo",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestARenewalAnswerThatDoesNotDecodePrintsNoPodTokenItEchoes",
+      "production": "agent-secrets client.RenewEnrollment: the renewal's answer decodes through redact.Answer.Decode, whose error quotes no value"
+    },
+    {
       "id": "oidc-discovery-references",
       "requirement": "r1-fail-closed",
       "package": "./internal/oidc",
@@ -5483,6 +5515,16 @@
       "site": "redact.Remote and readRemoteText: a :// that no scheme comes before (x;://host, 9://host, ://host)",
       "source": "#4368 round 4, the step-1 gap",
       "guard": "fixture-ts"
+    },
+    {
+      "site": "helper (*Broker).do: a 200 that does not decode printed the decoder's error, which quoted the Proof JWT an answer echoed",
+      "source": "the review of #4368 round 4, finding 1",
+      "guard": "helper-decode-echo"
+    },
+    {
+      "site": "agent-secrets RenewEnrollment: a 200 that does not decode printed the decoder's error, which quoted the pod token an answer echoed",
+      "source": "the review of #4368 round 4, finding 1",
+      "guard": "agentsecrets-decode-echo"
     }
   ]
 }
