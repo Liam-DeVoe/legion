@@ -550,7 +550,6 @@ var indexPasses = map[string]string{
 	// The one writer of an ask's answer state, queued (asks.Settled.Queue): the answer on the
 	// ask's node, then its row, from the transition its caller names; and each site that appends
 	// what a transition held under the event it appended after it (graphstore.QueueCaused).
-	"asks/settle.go#Queue":                             "the transition its caller names",
 	"api/ask_transitions.go#closeAskTx":                "the transition the answer, resolve or decline request makes and the event it appended",
 	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx": "the asks an issue's close withdraws and the events it appended",
 	"api/issue_ask_lifecycle.go#recordRestoredAsksTx":  "the asks an issue's reopen restores and the events it appended",
