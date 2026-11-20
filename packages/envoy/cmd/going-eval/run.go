@@ -42,6 +42,7 @@ type runOptions struct {
 	answersOut      string
 	workDir         string
 	keepDatabases   bool
+	source          string
 }
 
 // runCommand is `going-eval run`: the eval itself (runEval), with its flags.
@@ -58,6 +59,7 @@ func runCommand(ctx context.Context, args []string, stdout, stderr io.Writer) in
 	flags.StringVar(&options.answersOut, "answers-out", "", "a file to write every try to, one JSON object a line, its answer included")
 	flags.StringVar(&options.workDir, "work-dir", "", "the directory of the servers' logs and files (default: a new one under $TMPDIR, removed at the end)")
 	flags.BoolVar(&options.keepDatabases, "keep-databases", false, "keep each try's database, and the seed's, when the run ends, naming each, to read what a try left")
+	flags.StringVar(&options.source, "source", "", "the source the server and the eval were built from, such as a commit and the hash of its uncommitted diff, which the report's header names")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -555,6 +557,9 @@ func meets(ok bool) string {
 func writeReport(w io.Writer, in reportInput) bool {
 	var missed []string
 	fmt.Fprintf(w, "# going-eval run, %s to %s\n\n", in.started.UTC().Format(time.RFC3339), in.ended.UTC().Format(time.RFC3339))
+	if in.options.source != "" {
+		fmt.Fprintf(w, "Source: %s.\n", in.options.source)
+	}
 	fmt.Fprintf(w, "Chat model: the deployment %s, through a limiter of %d tokens a minute. Judge: the deployment %s, on the same Azure sign-in.\n",
 		in.chat.Deployment, tokenLimit, in.options.judgeDeployment)
 	fmt.Fprintf(w, "Tasks: %d of the %d committed, %d tries each, one task at a time (%d tries of it at once). The person is %s.\n\n",

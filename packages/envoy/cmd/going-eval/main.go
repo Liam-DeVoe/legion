@@ -3,7 +3,7 @@
 //
 //	go run ./cmd/going-eval seed --database-url <url> [--envoy-fixture-out <file>]
 //	go run ./cmd/going-eval run [--database-url <url>] [--server-bin <file>] [--tasks <ids or kinds>] [--tries <n>]
-//	    [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>] [--keep-databases]
+//	    [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>] [--keep-databases] [--source <text>]
 //	go run ./cmd/going-eval calibrate [--judge-deployment <name>]
 //
 // seed, which the browser harness runs to serve a Dispatch on the eval's seed with the real
@@ -68,7 +68,7 @@ func main() {
 
 // usage is what the command prints for no subcommand or one it does not know.
 const usage = "usage: going-eval seed --database-url <url> [--envoy-fixture-out <file>]\n" +
-	"       going-eval run [--database-url <url>] [--server-bin <file>] [--tasks <ids or kinds>] [--tries <n>] [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>] [--keep-databases]\n" +
+	"       going-eval run [--database-url <url>] [--server-bin <file>] [--tasks <ids or kinds>] [--tries <n>] [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>] [--keep-databases] [--source <text>]\n" +
 	"       going-eval calibrate [--judge-deployment <name>]"
 
 // run answers the exit status of the subcommand args name: 0 done, 1 refused or failed, 2 a usage

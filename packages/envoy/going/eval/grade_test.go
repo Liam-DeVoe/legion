@@ -188,3 +188,40 @@ func TestAnAnswerLinksAnItemByItsDashboardPath(t *testing.T) {
 		t.Errorf("the answer links %v of items it never names; want both missing", others)
 	}
 }
+
+// TestASuggestionOnASpecIsGradedOnItsDocument: on the seeded store, a suggestion the person made
+// on DEMO-3's spec, stored as the server stores it (a comment of DEMO-3 whose anchor names the
+// spec), that puts the back-link before the title, passes document-01 ("suggest an edit of the
+// spec so the back-link comes first"), which allows a suggestion on DEMO-3/spec and no other change.
+func TestASuggestionOnASpecIsGradedOnItsDocument(t *testing.T) {
+	ctx := context.Background()
+	database, seed, tasks, before := seededStore(t)
+	task := taskByID(t, tasks, "document-01")
+
+	var spec string
+	if err := database.Pool.QueryRow(ctx, `select id::text from artifacts where issue_key = 'DEMO-3' and slug = 'spec'`).Scan(&spec); err != nil {
+		t.Fatal(err)
+	}
+	author, err := json.Marshal(map[string]any{"kind": "user", "id": evalPerson})
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor, err := json.Marshal(map[string]any{"quote": "Back-links in issue specs", "artifact_id": spec, "version": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into comments (issue_key, author, body, anchor, suggestion)
+		values ('DEMO-3', $1, 'The back-link comes first, before the title.', $2,
+		  jsonb_build_object('replace_with', $3::text, 'accepted', null))`,
+		author, anchor, "Part of DEMO-3. Parent: none.\n\n# Back-links in issue specs"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := ReadStore(ctx, database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if verdict := GradeEnd(seed, task, before, after, evalPerson); !verdict.Pass() {
+		t.Errorf("document-01 with a suggestion on DEMO-3's spec that puts the back-link first graded %+v; want a pass", verdict)
+	}
+}

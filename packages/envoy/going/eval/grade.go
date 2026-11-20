@@ -193,10 +193,13 @@ func (s *Store) readIssues(ctx context.Context, q Querier) error {
 	return nil
 }
 
-// readComments reads every comment, with its anchor's quote and its suggestion.
+// readComments reads every comment, with its anchor's quote and its suggestion. A comment's
+// document is its artifact_id or, where that is empty, its anchor's: the server stores a comment
+// on an issue's document, such as a suggestion on its spec, as a comment of the issue whose
+// anchor names the document.
 func (s *Store) readComments(ctx context.Context, q Querier) error {
 	rows, err := q.Query(ctx, `
-		select id::text, coalesce(issue_key, ''), coalesce(artifact_id::text, ''), coalesce(ask_id::text, ''),
+		select id::text, coalesce(issue_key, ''), coalesce(artifact_id::text, anchor->>'artifact_id', ''), coalesce(ask_id::text, ''),
 		  author, body, coalesce(anchor->>'quote', ''), suggestion, resolved
 		from comments
 	`)
