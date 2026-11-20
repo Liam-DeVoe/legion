@@ -87,23 +87,30 @@ func hiddenStateWithout(answer map[string]any) map[string]any {
 // lacked them. With the file, the answer equals that answer less each check's pass_stands and ci
 // and each result's currency; with the file removed, the whole answer is back.
 func TestTheHiddenStateAnswerIsTheAnswerLessTheComputedState(t *testing.T) {
-	github := newCIEachHeadGitHub()
-	handler, database, served := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
-		func(string, string) (int, string) { return http.StatusOK, "diverged" }, github.serve)
+	rig := newCIJobRig(t)
 	hide := filepath.Join(t.TempDir(), "hidden")
-	served.deps.HideStateFile = hide
-	issue := issueInRepository(t, handler, "RESHS", "acme/widgets", "The state the server computes, hidden")
-	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", hiddenStateVerification)
-	writeHead(t, database, "acme/widgets", 70, ciEachHeadH1, "open", issue.Key)
-	github.set("acme/widgets", ciEachHeadH1, completedRun(81, "go-checks", "success"))
-	eachHeadResult(t, handler, issue.Key, "k1", "tester", "pass", ciEachHeadH1)
-	fail := eachHeadResult(t, handler, issue.Key, "k1", "tester", "fail", ciEachHeadH1)
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/results/"+fail+"/retract",
-		map[string]any{"reason": "Recorded against the wrong build."}, "alice"); response.Code != http.StatusCreated && response.Code != http.StatusOK {
-		t.Fatalf("retract %s: status=%d body=%s", fail, response.Code, response.Body.String())
-	}
+	rig.served.deps.HideStateFile = hide
+	writeHead(t, rig.database, ciJobRepository, 70, ciJobHead, "open", rig.issue)
+	rig.github.listings.set(ciJobHead, completedRun(81, ciJobName, "success"))
+	jobRecorded(t, "the CI job's result", rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
 
-	shown := hiddenStateRead(t, handler, issue.Key)
+	handler, issue := rig.handler, rig.issue
+	shown := hiddenStateRead(t, handler, issue)
+	recordedCurrency := 0
+	for _, item := range shown["checks"].([]any) {
+		check := item.(map[string]any)
+		if check["block_id"] != "c1" {
+			continue
+		}
+		for _, item := range check["recorded_results"].([]any) {
+			if _, ok := item.(map[string]any)["currency"]; ok {
+				recordedCurrency++
+			}
+		}
+	}
+	if recordedCurrency != 1 {
+		t.Fatalf("the recorded result's currency count = %d, want 1", recordedCurrency)
+	}
 	members := hiddenStateMembers(shown)
 	for _, member := range []string{"check.pass_stands", "check.ci", "result.currency", "result.commit_stands", "result.check_words_moved", "result.retracted"} {
 		if members[member] == 0 {
@@ -114,14 +121,14 @@ func TestTheHiddenStateAnswerIsTheAnswerLessTheComputedState(t *testing.T) {
 	if err := os.WriteFile(hide, nil, 0o600); err != nil {
 		t.Fatalf("create the hide-state file: %v", err)
 	}
-	hidden := hiddenStateRead(t, handler, issue.Key)
-	if second := hiddenStateRead(t, handler, issue.Key); !reflect.DeepEqual(hidden, second) {
+	hidden := hiddenStateRead(t, handler, issue)
+	if second := hiddenStateRead(t, handler, issue); !reflect.DeepEqual(hidden, second) {
 		t.Fatalf("two reads with the file differ, so neither is the answer the switch gives:\n%v\n%v", hidden, second)
 	}
 	if err := os.Remove(hide); err != nil {
 		t.Fatalf("remove the hide-state file: %v", err)
 	}
-	again := hiddenStateRead(t, handler, issue.Key)
+	again := hiddenStateRead(t, handler, issue)
 	if !reflect.DeepEqual(again, shown) {
 		got, _ := json.Marshal(again)
 		wanted, _ := json.Marshal(shown)
