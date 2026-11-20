@@ -1753,7 +1753,8 @@ describe.skipIf(withoutPython || withoutLibpq)(
 // world a run's name and world.json carry. The scorer's half of the scenario is score.test.ts's,
 // and the stand-in's sequencing is gh-standin.test.ts's.
 
-/** The twelve worlds, as rig.sh's header lists them and its red_world knows them. */
+/** The twelve worlds `a` to `l`, as rig.sh's header lists them and its red_world knows them; the
+ * reviewer's variants of eight of them are RED_VARIANTS. */
 const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"] as const;
 type RedWorld = (typeof RED_WORLDS)[number];
 /** Each world's red check, the job that carries it, and what the head settles at once the re-run
@@ -1779,6 +1780,15 @@ const RED_WORLD: Record<
   k: { check: "test (notify)", job: "test (notify)", after: "green" },
   l: { check: "test (notify)", job: "test (notify)", after: "green" },
 };
+/** The reviewer's variants (rig.sh's red_world, `m` to `t`), each by the world it varies: that
+ * world's red and every answer of it, with the reviewer booted in `reviewing` in place of the
+ * tester, as `i` and `j` are `a` and `b`'s. */
+const RED_VARIANTS = { m: "c", n: "d", o: "e", p: "f", q: "g", r: "h", s: "k", t: "l" } as const;
+type RedVariant = keyof typeof RED_VARIANTS;
+const RED_VARIANT_WORLDS = Object.keys(RED_VARIANTS) as RedVariant[];
+/** The world a variant varies, and any other world itself. */
+const baseOf = (world: RedWorld | RedVariant): RedWorld =>
+  world in RED_VARIANTS ? RED_VARIANTS[world as RedVariant] : (world as RedWorld);
 
 const RED_KEY = "LWEVAL-9";
 const RED_REPO = "example/widgets";
@@ -3472,9 +3482,10 @@ describe("red_fixture", () => {
 
   // red_world is the one place a world's facts are written: red_fixture copies them into
   // world.json, run_red_at_the_head runs the world by them and score.ts's redAtTheHead scores it
-  // by them. Catches: a fact that moves in one world, which every reader would then take, and a
-  // world outside the twelve that prints facts at all.
-  test("red_world prints each world's facts, and nothing for a world outside the twelve", () => {
+  // by them. Catches: a fact that moves in one world, which every reader would then take, a
+  // reviewer's variant whose facts are not those of the world it varies with the reviewer's role,
+  // phase and handoff, and a world outside the twenty that prints facts at all.
+  test("red_world prints each world's facts, and nothing for a world outside the twenty", () => {
     const tester = { role: "tester", phase: "testing", handoff: "test" };
     const reviewer = { role: "reviewer", phase: "reviewing", handoff: "review" };
     const reruns = { rerun: true, turns: 2 };
@@ -3558,13 +3569,21 @@ describe("red_fixture", () => {
         report: true,
       },
     };
+    // `m` to `t`: each the facts of the world it varies, the reviewer in its tester's place.
+    const every: Record<string, object> = {
+      ...facts,
+      ...Object.fromEntries(
+        RED_VARIANT_WORLDS.map((variant) => [variant, { ...facts[baseOf(variant)], ...reviewer }])
+      ),
+    };
+    const worlds = [...RED_WORLDS, ...RED_VARIANT_WORLDS];
     expect(
-      RED_WORLDS.map((world) =>
+      worlds.map((world) =>
         JSON.parse(
           bash(`${fn("red_world_table")}\n${fn("red_world")}\nred_world "$1"`, [world]).stdout
         )
       )
-    ).toEqual(RED_WORLDS.map((world) => facts[world]));
+    ).toEqual(worlds.map((world) => every[world]));
     expect(bash(`${fn("red_world_table")}\n${fn("red_world")}\nred_world "$1"`, ["z"])).toEqual({
       code: 4,
       stdout: "",
@@ -3937,6 +3956,78 @@ describe("the reads of the repository and the pull request", () => {
       githubAnswer("review-404"),
       githubAnswer("review-404"),
     ]);
+  });
+
+  /** A PUT of `endpoint` under the pull request's review `id`, its body an --input file. */
+  async function putReview(run: string, id: number, endpoint: string, body: object) {
+    const file = path.join(run, `put-${Date.now()}-${Math.random()}.json`);
+    writeFileSync(file, JSON.stringify(body));
+    return gh(run, [
+      "api",
+      "--method",
+      "PUT",
+      `repos/${RED_REPO}/pulls/${RED_PR}/reviews/${id}${endpoint}`,
+      "--input",
+      file,
+    ]);
+  }
+
+  // INFRA-1303: trial-i-head-4 of the tester's batch at 585b19a3 updated the body of the review it
+  // had sent (`gh api --method PUT …/reviews/6002 --input upd.json`); the rig refused it as
+  // unmodeled, and the reviewer sent a second review. Catches: the update refused, answered with
+  // the review as it was or with a field other than the body changed, and a list or a read by id
+  // that answers the old body after it.
+  test("an update of a sent review's body answers the review with that body, and every read reads it", async () => {
+    const run = builtWorld("i");
+    const sent = JSON.parse((await postReview(run, { event: "APPROVE", body: "Approve." })).stdout);
+    const updated = await putReview(run, sent.id, "", { body: "Approve, with the footer." });
+    const byId = await gh(run, ["api", `repos/${RED_REPO}/pulls/${RED_PR}/reviews/${sent.id}`]);
+    expect({
+      // gh's line and exit first: a refusal is named there, with nothing on stdout.
+      updated: [updated.stderr, updated.exit, JSON.parse(updated.stdout || "null")],
+      list: await reviewsOf(run),
+      byId: JSON.parse(byId.stdout),
+    }).toEqual({
+      updated: ["", 0, { ...sent, body: "Approve, with the footer." }],
+      list: [{ ...sent, body: "Approve, with the footer." }],
+      byId: { ...sent, body: "Approve, with the footer." },
+    });
+  });
+
+  // INFRA-1303: the same run then dismissed that review (`PUT …/reviews/6002/dismissals`, with a
+  // message and the event DISMISS), which the rig refused as unmodeled too. Catches: the dismissal
+  // refused, answered with the review in its old state or with another field changed, a list that
+  // reads the review undismissed after it, and a COMMENTED review dismissed where GitHub answers
+  // its 422.
+  test("a dismissal of a sent approval answers it DISMISSED and the list reads it; a comment-only review answers GitHub's 422", async () => {
+    const run = builtWorld("i");
+    const approved = JSON.parse(
+      (await postReview(run, { event: "APPROVE", body: "Approve." })).stdout
+    );
+    const commented = JSON.parse(
+      (await postReview(run, { event: "COMMENT", body: "A note." })).stdout
+    );
+    const dismissal = {
+      message: "Resubmitting with the required Legion footer.",
+      event: "DISMISS",
+    };
+    const dismissed = await putReview(run, approved.id, "/dismissals", dismissal);
+    const refused = await putReview(run, commented.id, "/dismissals", dismissal);
+    expect({
+      dismissed: [dismissed.stderr, dismissed.exit, JSON.parse(dismissed.stdout || "null")],
+      list: (await reviewsOf(run)).map((review: { id: number; state: string }) => [
+        review.id,
+        review.state,
+      ]),
+      refused: [refused.stdout, refused.stderr, refused.exit],
+    }).toEqual({
+      dismissed: ["", 0, { ...approved, state: "DISMISSED" }],
+      list: [
+        [approved.id, "DISMISSED"],
+        [commented.id, "COMMENTED"],
+      ],
+      refused: githubAnswer("review-dismiss-422"),
+    });
   });
 
   /** The inline comments of the pull request, or of one review, as `path line body` rows. */
@@ -4709,7 +4800,7 @@ worker_fixture() {
 }
 write_facts() {
   jq --argjson facts "$(red_world "$1")" --arg world "$1" \\
-    '. + $facts + {check:(${JSON.stringify(Object.fromEntries(RED_WORLDS.map((world) => [world, RED_WORLD[world].check])))})[$world]}' \\
+    '. + $facts + {check:(${JSON.stringify(Object.fromEntries([...RED_WORLDS, ...RED_VARIANT_WORLDS].map((world) => [world, RED_WORLD[baseOf(world)].check])))})[$world]}' \\
     "$R/world.json" >"$R/world.red.json"
   mv "$R/world.red.json" "$R/world.json"
 }
@@ -4766,7 +4857,7 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
   /** One run of `world`, and what it took: the world it wrote down, the role each worker it
    * started was given, the turns it ran and what woke each, whether the rig reported the check
    * and whether it settled the re-run between them. */
-  function redRun(world: RedWorld) {
+  function redRun(world: RedWorld | RedVariant) {
     const run = freshDir(`red-run-${world}`);
     mkdirSync(path.join(run, "logs"));
     const result = bash(redRunScript("/rig"), [run, world]);
@@ -4801,20 +4892,28 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
       new RegExp(`^${turn} ${wake} \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z exit=0$`)
     );
 
+  /** The role that holds the phase in `world`: the reviewer in `i`, `j` and the variants. */
+  const roleOf = (world: RedWorld | RedVariant) =>
+    world === "i" || world === "j" || world in RED_VARIANTS ? "reviewer" : "tester";
+  /** Every world, the twelve and the reviewer's variants of eight of them. */
+  const allWorlds = [...RED_WORLDS, ...RED_VARIANT_WORLDS];
+
   // Catches: a run that boots the tester in a reviewer's world, one that boots both roles, a
   // world.json the scorer reads as another world than the one the run ran, a daemon stand-in told
-  // no world, a world that takes a turn it owes no wake for, a world `l` whose second turn is a
-  // re-run's settlement rather than the rig's own report of the check, and a settlement the rig
-  // gives before the turn that pressed the re-run has ended, or in a world that re-runs nothing.
+  // no world, a world that takes a turn it owes no wake for, a world `l` or `t` whose second turn
+  // is a re-run's settlement rather than the rig's own report of the check, a settlement the rig
+  // gives before the turn that pressed the re-run has ended, or in a world that re-runs nothing,
+  // and a reviewer's variant that takes other turns than the world it varies.
   test("boots one worker, takes each world's turns, and settles a re-run only after its turn", () => {
-    expect(RED_WORLDS.map(redRun)).toEqual(
-      RED_WORLDS.map((world) => {
-        const role = world === "i" || world === "j" ? "reviewer" : "tester";
-        // `d`, `e` and `f` expect no re-run and take one turn; `l` takes its second on the rig's
-        // report of the check and its third on the settlement of the re-run; every other world
-        // takes its second on the settlement of the re-run it pressed (the stand-in for
-        // rerun_pressed answers that it did).
-        const one = world === "d" || world === "e" || world === "f";
+    expect(allWorlds.map(redRun)).toEqual(
+      allWorlds.map((world) => {
+        const role = roleOf(world);
+        // `d`, `e` and `f` and their variants expect no re-run and take one turn; `l` and `t` take
+        // their second on the rig's report of the check and their third on the settlement of the
+        // re-run; every other world takes its second on the settlement of the re-run it pressed
+        // (the stand-in for rerun_pressed answers that it did).
+        const base = baseOf(world);
+        const one = base === "d" || base === "e" || base === "f";
         return {
           world,
           daemons: [role],
@@ -4822,51 +4921,169 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
           panes: [role],
           turns: one
             ? [turnLine(1, "assignment")]
-            : world === "l"
+            : base === "l"
               ? [turnLine(1, "assignment"), turnLine(2, "report"), turnLine(3, "settlement")]
               : [turnLine(1, "assignment"), turnLine(2, "settlement")],
           outs: one
             ? ["out-1.txt"]
-            : world === "l"
+            : base === "l"
               ? ["out-1.txt", "out-2.txt", "out-3.txt"]
               : ["out-1.txt", "out-2.txt"],
-          reported: world === "l",
+          reported: base === "l",
           settled: !one,
         };
       })
     );
   });
 
+  /** Every prompt a run of `world` gives its agent, one after another. */
+  function redPrompts(world: RedWorld | RedVariant) {
+    const run = freshDir(`red-prompts-${world}`);
+    mkdirSync(path.join(run, "logs"));
+    const launch = `launch() { cat "$R/prompt.txt" >>"$R/prompts"; printf 'exit=0\\n' >"$R/out.txt"; }`;
+    const result = bash(redRunScript("/rig", [launch]), [run, world]);
+    if (result.code !== 0) throw new Error(`run_red_at_the_head ${world}: ${result.stderr}`);
+    return readFileSync(path.join(run, "prompts"), "utf8");
+  }
+
   // The text each turn of a world gives its agent, which no fact of the world may change. Catches:
   // an assignment of another role's phase, a told line in a world whose counted set reports its
   // red, and a resume task of another phase.
   test("each world's prompts are the architect's assignment and the resume task, word for word", () => {
-    const prompts = RED_WORLDS.map((world) => {
-      const run = freshDir(`red-prompts-${world}`);
-      mkdirSync(path.join(run, "logs"));
-      const launch = `launch() { cat "$R/prompt.txt" >>"$R/prompts"; printf 'exit=0\\n' >"$R/out.txt"; }`;
-      const result = bash(redRunScript("/rig", [launch]), [run, world]);
-      if (result.code !== 0) throw new Error(`run_red_at_the_head ${world}: ${result.stderr}`);
-      return readFileSync(path.join(run, "prompts"), "utf8");
-    });
+    const prompts = allWorlds.map(redPrompts);
     const pr = `PR #${RED_PR} (https://github.com/${RED_REPO}/pull/${RED_PR}, repository ${RED_REPO}) is at ${RED_HEAD}.`;
     const handoff = `Handoff: implement version 4 (dispatch handoff-read --issue ${RED_KEY} --phase implement --version 4).`;
     expect(prompts).toEqual(
-      RED_WORLDS.map((world) => {
-        const reviewer = world === "i" || world === "j";
-        const told = world === "l" ? " The daemon reports test (notify) red at that head." : "";
+      allWorlds.map((world) => {
+        const reviewer = roleOf(world) === "reviewer";
+        const base = baseOf(world);
+        const told = base === "l" ? " The daemon reports test (notify) red at that head." : "";
         const assignment = reviewer
           ? `Architect → reviewer, ${RED_KEY}. The tester has finished: ${pr}${told} ${handoff} Tester's verdict: pass. Review it and finish your phase.\n`
           : `Architect → tester, ${RED_KEY}. The implementer has finished: ${pr}${told} ${handoff} Test it and finish your phase.\n`;
         const resume = `Continue greet(): a greeting helper for the widgets CLI. Issue: ${RED_KEY}. Phase: ${reviewer ? "reviewing" : "testing"}. Resume the existing phase work.\n`;
-        return world === "d" || world === "e" || world === "f"
+        return base === "d" || base === "e" || base === "f"
           ? assignment
-          : world === "l"
+          : base === "l"
             ? assignment + resume + resume
             : assignment + resume;
       })
     );
   });
+
+  /** score.ts's output over one staged run of each world.json of `runs`, by the run's name: a run
+   * whose agent got its one model turn and did nothing more, no gh call, no record, no completion,
+   * so the row shows which rule the scorer read the world by. */
+  function scoredRuns(runs: Record<string, string>): string {
+    const runsDir = path.join(freshDir("red-scored"), "runs");
+    for (const [name, world] of Object.entries(runs)) {
+      const dir = path.join(runsDir, name);
+      mkdirSync(path.join(dir, "sessions"), { recursive: true });
+      const files: Record<string, string> = {
+        "dispatch.json": JSON.stringify({
+          postgres: "pg-1",
+          database: `run_${name.replaceAll("-", "_")}`,
+          port: 20000,
+          url: "http://127.0.0.1:20000",
+        }),
+        "out.txt": "exit=0\n",
+        "world.json": world,
+        "calls.jsonl": "",
+        "handoffs.json": "[]",
+        "daemon.log": "",
+        "turns.txt": "1 assignment 2026-09-30T17:30:00Z exit=0\n",
+        // The rig's report of the check, which a world whose counted set reports the red late
+        // (`report`) is scored against.
+        ...(JSON.parse(world).report ? { "reported-at": "2026-09-30T17:29:00Z\n" } : {}),
+      };
+      for (const [file, text] of Object.entries(files)) writeFileSync(path.join(dir, file), text);
+      writeFileSync(
+        path.join(dir, "sessions", "2026-09-30T17-29-00-000Z_01a0f2cc.jsonl"),
+        [
+          { type: "session", id: "01a0f2cc", cwd: path.join(dir, "cwd") },
+          { type: "message", message: { role: "user", content: [{ type: "text", text: "Go." }] } },
+          {
+            type: "message",
+            message: { role: "assistant", content: [{ type: "text", text: "Done." }] },
+          },
+        ]
+          .map((entry) => `${JSON.stringify(entry)}\n`)
+          .join("")
+      );
+    }
+    const scored = Bun.spawnSync(["bun", path.join(import.meta.dir, "score.ts"), "runs", runsDir], {
+      env: childEnv,
+    });
+    if (scored.exitCode !== 0) throw new Error(`score.ts: ${scored.stderr.toString()}`);
+    return scored.stdout.toString();
+  }
+
+  // The reviewer's variants (`m` to `t`, rig.sh's red_world): no archived run is of one, so each
+  // is proven by its own row, built and scored. Catches: a variant built on another world than the
+  // one it varies (another red, another workflow, another answer of any route), one that boots the
+  // tester, takes other turns than that world, and one the scorer cannot read or scores by the
+  // tester's rule. The one difference its build may carry beside its role is the pull request
+  // body's line for the issue's check: a reviewer whose round goes on reads k1 as `after_merge`,
+  // not yet run, as `i` does beside `a` (world_check_when). Each builds two worlds and runs
+  // run_red_at_the_head twice and the scorer once, under the file's minute.
+  for (const variant of RED_VARIANT_WORLDS) {
+    const base = baseOf(variant);
+    test(`world ${variant} is world ${base} with the reviewer booted in reviewing: its red, its answers, the reviewer's rule`, () => {
+      const built = redFixture(variant);
+      const of = redFixture(base);
+      const read = (run: string, file: string) => readFileSync(path.join(run, file), "utf8");
+      const head = JSON.parse(read(of, "world.json")).head;
+      /** The pull request body's line for the issue's check, JSON-escaped as fixtures.json holds it. */
+      const checkLine = (run: string) =>
+        JSON.stringify(
+          bash(`${fn("checks_lines")}\nR=$1\nchecks_lines "$2"`, [run, head]).stdout.trimEnd()
+        ).slice(1, -1);
+      expect(JSON.parse(read(built, "world.json"))).toEqual({
+        ...JSON.parse(read(of, "world.json")),
+        world: variant,
+        role: "reviewer",
+        phase: "reviewing",
+        handoff: "review",
+      });
+      expect(read(built, "fixtures.json")).toBe(
+        read(of, "fixtures.json").replaceAll(checkLine(of), checkLine(built))
+      );
+      // The run boots the reviewer where the world it varies boots the tester, and takes the same
+      // turns on the same wakes: each run's own directory and clock read out.
+      const ran = (world: RedWorld | RedVariant) => {
+        const run = redRun(world);
+        return {
+          ...run,
+          worlds: run.worlds.map((file) => path.basename(file ?? "")),
+          turns: run.turns.map((line) => line.replace(/ \S+Z /, " ")),
+        };
+      };
+      expect(ran(variant)).toEqual({
+        ...ran(base),
+        world: variant,
+        daemons: ["reviewer"],
+        panes: ["reviewer"],
+      });
+      // The scorer reads the built world by the reviewer's rule, where it reads the world it
+      // varies by the tester's: a reviewer's run that read no CI never met the red and is left
+      // out of its key's counts, and a tester's is counted.
+      const out = scoredRuns({
+        [`trial-${variant}-s1-1`]: read(built, "world.json"),
+        [`trial-${base}-s1-1`]: read(of, "world.json"),
+      });
+      expect(out).toMatch(
+        new RegExp(
+          `^trial-${variant}-s1-1\\tpass=false\\tref=false\\tworld=${variant} record=none wrote=\\w+ before=\\w+ pressed=\\w+ waited=\\w+ outcome=false told=\\w+ declined=false reported=\\w+ readCI=false `,
+          "m"
+        )
+      );
+      expect(out).toContain(
+        `trial-${base}-s1-1\tpass=false\tref=false\tworld=${base} rule=tester ciReads=0 pressed=true outcome=false readCI=false `
+      );
+      expect(out).toContain(`red-at-the-head:${variant}\ts1\t0/0\t0/0\t0\t0\n`);
+      expect(out).toContain(`red-at-the-head:${base}\ts1\t0/1\t0/1\t0\t0\n`);
+    });
+  }
 
   // Catches: a run whose fixtures.json the gh stand-in refuses, which would boot its worker and
   // answer each of the role's `gh` calls with the refusal, a head that never turns scored as the
@@ -5023,9 +5240,9 @@ run_red_at_the_head() {
 
   // Catches: a run of a world red_fixture has no red for, which would fail inside the run with
   // its services up, and a run named `trial--s1-1` when the variable is unset.
-  test("cmd_run refuses a world that is not one of the twelve, naming them, and makes no run", () => {
+  test("cmd_run refuses a world that is not one of the twenty, naming them, and makes no run", () => {
     const work = freshDir("red-run-refused");
-    const named = "not a, b, c, d, e, f, g, h, i, j, k or l";
+    const named = "not a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s or t";
     const unknown = run(work, "z", "1");
     expect(unknown.code).toBe(1);
     expect(unknown.stderr).toBe(`skill-scenarios: SKILL_SCENARIOS_RED_WORLD is 'z', ${named}\n`);
@@ -5083,13 +5300,13 @@ warm_daemon_panes() { printf 'warm_daemon_panes\\n' >>"$work/calls"; }`;
   }
 
   // Catches: a batch that starts its services and only then finds it has no world, and a gate
-  // that refuses the twelve worlds too.
+  // that refuses the twenty worlds too.
   test("cmd_batch refuses such a world before it locks or starts a service", () => {
     const refused = batch("world-a");
     expect(refused.code).toBe(1);
     expect(refused.stderr).toBe(
       "skill-scenarios: a red-at-the-head batch needs SKILL_SCENARIOS_RED_WORLD set to " +
-        "a, b, c, d, e, f, g, h, i, j, k or l (got 'world-a')\n"
+        "a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s or t (got 'world-a')\n"
     );
     expect(refused.calls).toEqual([]);
     const ran = batch("l");

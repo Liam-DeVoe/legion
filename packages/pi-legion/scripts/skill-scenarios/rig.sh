@@ -100,11 +100,11 @@
 #   spec-rewrite    The same, on an issue whose spec is the source's old spec, with a prompt that
 #                   asks for the change the newest message names. Scored by specRow.
 #   red-at-the-head A phase worker of tester-proof's world, booted the same way, whose head carries
-#                   a red check: the role that holds the phase writes the failure down in a handoff
-#                   record of its own phase (`dispatch handoff-write`) before the `gh run rerun`
-#                   call, which re-runs the failed jobs once
-#                   (skills/legion-worker/references/red-at-the-head.md).
-#                   SKILL_SCENARIOS_RED_WORLD names the world, one of twelve, each the same change
+#                   a red check. The reviewer, which holds the re-run, writes the failure down in a
+#                   handoff record of its own phase (`dispatch handoff-write`) before the
+#                   `gh run rerun` call, which re-runs the failed jobs once; the tester reads no CI
+#                   and leaves the red alone (skills/legion-worker/references/red-at-the-head.md).
+#                   SKILL_SCENARIOS_RED_WORLD names the world, one of twenty, each the same change
 #                   (greet.ts and greet.test.ts, so the repository root is the one package it
 #                   touches) under a different red: `a` a failing test of a package it does not
 #                   touch, green on the re-run; `b` that test, red again on the re-run; `c` a job
@@ -118,16 +118,19 @@
 #                   settled by the re-run as the lane is; `k` `a` with a second failing run of that
 #                   same check name at the commit, a by-hand `workflow_dispatch` run's, which the
 #                   counted set does not hold; `l` `a` with a counted set that has not reported the
-#                   check when the role first reads it. The world is in the run's name,
+#                   check when the role first reads it; and `m` to `t`, `c`, `d`, `e`, `f`, `g`,
+#                   `h`, `k` and `l` in that order with the reviewer in place of the tester, each
+#                   the same red with the same answers. The world is in the run's name,
 #                   trial-<world>-<label>-<n> (run_prefix), so each world's batch keeps its own
 #                   runs. Each world's facts, among them its role, its phase and its turns, are
 #                   written once (red_world), and red_fixture writes them and the world to
 #                   <run>/world.json, where the run and the score read them. A world that expects
 #                   a re-run takes two turns: the architect's assignment, then, once the re-run has
 #                   reached calls.jsonl, --continue on the settlement the re-run's own route
-#                   published; `d`, `e` and `f` expect no re-run and take one turn, and `l` takes
-#                   its second turn on the rig's own report of the check (red_report) rather than
-#                   on a re-run. Scored by redAtTheHead, which reads <run>/world.json.
+#                   published; `d`, `e` and `f` and their variants expect no re-run and take one
+#                   turn, and `l` and `t` take their second turn on the rig's own report of the
+#                   check (red_report) rather than on a re-run. Scored by redAtTheHead, which reads
+#                   <run>/world.json.
 #
 # A scenario measures its rule only if a label whose skills lack the rule scores lower than one
 # whose skills state it. So every comparison carries an ablate label: a checkout of the head with
@@ -2437,14 +2440,15 @@ $checks
     # The reviews a role sends, with their inline comments, are kept by the stand-in, through the
     # routes that carry `review`, the template of each ($review: the head, the login of the rig,
     # which is no member or collaborator of the repository and so has the association NONE, the
-    # pull request, and the lines of each file the diff adds, the lines a comment can be on), and
-    # read back through those that carry `reviews` (the header of gh-standin.ts). A comment a role
-    # posts on a line is not kept: GitHub opens a review of its own for a line comment posted
+    # pull request, and the lines of each file the diff adds, the lines a comment can be on),
+    # read back through those that carry `reviews`, and changed, a body updated or a review
+    # dismissed, through those that carry `review_edit` (the header of gh-standin.ts). A comment a
+    # role posts on a line is not kept: GitHub opens a review of its own for a line comment posted
     # alone, so from then on the reviews and their comments are a state the rig cannot state too.
-    # A read of them answers what was kept until the role has posted one, and from then on is
-    # unmodeled. The one comment a role posts on the conversation of the pull request is kept
-    # (INFRA-1303, D9: e-head-3 of the batch of record at 9c3bd9df read back the comment it had
-    # posted), under $comment, its keys in the order GitHub answers them (measured on
+    # A read or a change of them answers what was kept until the role has posted one, and from
+    # then on is unmodeled. The one comment a role posts on the conversation of the pull request
+    # is kept (INFRA-1303, D9: e-head-3 of the batch of record at 9c3bd9df read back the comment it
+    # had posted), under $comment, its keys in the order GitHub answers them (measured on
     # cybermonklabs/legion, github-answers/README.txt): the stand-in fills its body and its two
     # times, and answers its read back, its edit and the list of the comments of the pull request
     # from what it kept (`issue_comment`, the header of gh-standin.ts). Its user is the reviewer of
@@ -2584,6 +2588,41 @@ $checks
       ({match:api("pulls/" + $n + "/reviews/(?<id>\\d+)/comments"), reviews:"review_comments"}
        + until_posted($line_comment)),
       ({match:api("pulls/" + $n + "/comments"), reviews:"comments"} + until_posted($line_comment)),
+      # The edit of a review the role sent and its dismissal (INFRA-1303: trial-i-head-4 of the
+      # batch of the tester at 585b19a3 updated the body of its review with a PUT of reviews/6002
+      # and dismissed it with a PUT of reviews/6002/dismissals, and the rig refused both as
+      # unmodeled). Each answers as changedReview of review-keep.ts states it, from the kept review
+      # the `id` names, and the reads above answer the change from then on. Where each field comes
+      # from:
+      #   - the answer is the review object, 200 (the REST docs of GitHub, "Update a review for a
+      #     pull request" and "Dismiss a review for a pull request"), its keys and their order
+      #     those of a review GitHub answers (measured on 2026-11-20 through the read-only
+      #     measure-gh.sh of fold13, a GET of an APPROVED, a CHANGES_REQUESTED and a COMMENTED
+      #     review of cybermonklabs/legion#4606), less is_copilot_code_review and
+      #     copilot_code_review_effort, which the kept review has never carried ($review, the
+      #     answer of the POST above);
+      #   - the `body` of an update is the `body` the call sends, required (the docs);
+      #   - the `state` of a dismissal is DISMISSED (the example answer of the docs), with the
+      #     `message` the call sends required and `event` DISMISS or none (the docs). A COMMENTED
+      #     review answers 422 "Can not dismiss a commented pull request review" (the ruling of
+      #     the architect, 2026-11-20 17:55Z; the docs list the 422),
+      #     github-answers/review-dismiss-422;
+      #   - every other field is that of the kept review: the example answer of each in the docs
+      #     carries the id, user, html_url, submitted_at and commit_id the review was submitted
+      #     with;
+      #   - the login of the rig may dismiss an APPROVED or a CHANGES_REQUESTED review: people with
+      #     write access can (the docs, "Dismissing a pull request review"), and the one limit on
+      #     who can is an option of a protection that requires reviews ("About protected
+      #     branches"), which the protection of this base does not (required_set_fixture: its
+      #     required checks alone).
+      # A change whose answer from GitHub is not measured is refused as unmodeled: of a review the
+      # role did not send, of a pending or a dismissed review, to an empty body, or a dismissal
+      # with no message or another event. Like the reads, the two answer what was kept until the
+      # role posts a line comment of its own.
+      ({match:rest("PUT"; "pulls/" + $n + "/reviews/(?<id>\\d+)"; json_only), review_edit:"update"}
+       + until_posted($line_comment)),
+      ({match:rest("PUT"; "pulls/" + $n + "/reviews/(?<id>\\d+)/dismissals"; json_only),
+        review_edit:"dismiss"} + until_posted($line_comment)),
       $others.rest[],
       # The check runs of the head read their query (check_runs_program): this world holds one
       # check run of each name, so every filter answers both.
@@ -2789,14 +2828,18 @@ run_tester_proof() {
 # red_world WORLD prints the facts of WORLD as one JSON object, the one place each world's facts are
 # written: red_fixture adds them to <run>/world.json, where run_red_at_the_head and score.ts's
 # redAtTheHead read them, and worker_world reads the two it seeds the run's issue by. WORLD outside
-# the twelve prints nothing and fails, which is how cmd_run, cmd_batch and red_fixture refuse it:
+# the twenty prints nothing and fails, which is how cmd_run, cmd_batch and red_fixture refuse it:
 # the table below is the shell's one list of the worlds. The facts:
 #   after         what the head settles at once the re-run is pressed, green or red
-#   role          the role that holds the phase: the reviewer in `i` and `j`, the tester in the rest
+#   role          the role that holds the phase: the reviewer in `i`, `j` and `m` to `t`, the
+#                 tester in `a` to `h`, `k` and `l`. The tester reads no CI and presses nothing:
+#                 its worlds keep their red for it to leave alone (score.ts's redAtTheHead), and
+#                 `m` to `t` are `c`, `d`, `e`, `f`, `g`, `h`, `k` and `l` with the reviewer, each
+#                 world's facts but its role its base's, as `i` and `j` are `a` and `b`'s
 #   phase         that role's phase, as the daemon's task names it (testing or reviewing)
 #   handoff       the phase of the handoff record that role writes, test or review (phase.Handoff,
 #                 packages/daemon/internal/phase/phase.go)
-#   rerun         whether the role writes the red down and re-runs it once. `d`, `e` and `f` re-run
+#   rerun         whether the reviewer writes the red down and re-runs it once. `d`, `e` and `f` re-run
 #                 nothing: in `d` the failing test is of the package the change touches, in `e` a
 #                 run of that head whose `run_attempt` is 2 has already spent the head's one
 #                 re-run, and in `f` the title check judges the pull request rather than its code.
@@ -2848,7 +2891,15 @@ red_world_table() {
       i: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:true,  spent:false, by_hand:false, over_lane:false, log_gone:false},
       j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:true,  spent:false, by_hand:false, over_lane:false, log_gone:false},
       k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:false, spent:false, by_hand:true,  over_lane:false, log_gone:false},
-      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false}
+      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
+      m: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
+      n: {after:"red",   role:"reviewer", rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
+      o: {after:"red",   role:"reviewer", rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false, aggregate:false, spent:true,  by_hand:false, over_lane:false, log_gone:false},
+      p: {after:"red",   role:"reviewer", rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
+      q: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:true, log_gone:false},
+      r: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:true},
+      s: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:false, spent:false, by_hand:true,  over_lane:false, log_gone:false},
+      t: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false}
     }'
 }
 red_world() {
@@ -2858,7 +2909,7 @@ red_world() {
            turns:(if .rerun then 2 else 1 end)}'
 }
 
-# red_worlds prints red_world's worlds as a refusal names them, `a, b, … k or l`, from its table,
+# red_worlds prints red_world's worlds as a refusal names them, `a, b, … s or t`, from its table,
 # so a world added there is named in every refusal with nothing else to edit.
 red_worlds() {
   jq -nr "$(red_world_table)"' | keys_unsorted | (.[:-1] | join(", ")) + " or " + .[-1]'
@@ -2889,14 +2940,15 @@ red_workflows() {
   local world=${1:-} title=${2:-} facts=null lane=null
   if [ -n "$world" ]; then
     facts=$(red_world "$world") || fail "red_workflows: '$world' is no world of red-at-the-head"
+    # Each reviewer variant (`m` to `t`) has its base world's lane.
     case $world in
-    c) lane='{"check":"build (linux-x64)","job":"build (linux-x64)","test_name":"",
+    c | m) lane='{"check":"build (linux-x64)","job":"build (linux-x64)","test_name":"",
               "step":{"name":"Set up Bun","uses":"oven-sh/setup-bun@v2","with":{"bun-version":"1.4.4"}}}' ;;
-    d) lane='{"check":"test (widgets)","job":"test (widgets)","test_name":"greet.test.ts > trims the name",
+    d | n) lane='{"check":"test (widgets)","job":"test (widgets)","test_name":"greet.test.ts > trims the name",
               "duration":"1.00ms","step":{"run":"bun test ."}}' ;;
-    f) lane='{"check":"title","job":"title","test_name":"","run_name":"title",
+    f | p) lane='{"check":"title","job":"title","test_name":"","run_name":"title",
               "message":"The title \"$TITLE\" has no scope: the pattern is <type>(<scope>): <subject>."}' ;;
-    g) lane='{"check":"ci","job":"test (notify)","test_name":"notify > retries a refused send",
+    g | q) lane='{"check":"ci","job":"test (notify)","test_name":"notify > retries a refused send",
               "duration":"3.00ms","step":{"run":"bun test packages/notify"}}' ;;
     *) lane='{"check":"test (notify)","job":"test (notify)","test_name":"notify > retries a refused send",
               "duration":"3.00ms","step":{"run":"bun test packages/notify"}}' ;;
@@ -3032,7 +3084,7 @@ workflow_defs() {
 # of all the jobs of a run, of another job of the head or of another run of the head makes a state
 # this world does not hold, and is not modeled. A read of the runs of another commit or branch
 # answers no run.
-# The twelve worlds, each the same change under a different red:
+# The twenty worlds, each the same change under a different red:
 #   a  a failing test of packages/notify, a package the change does not touch; green on the re-run
 #   b  that test, red again on the re-run
 #   c  a job that failed at a tool download with HTTP 504, a step that reads no file the change
@@ -3060,6 +3112,9 @@ workflow_defs() {
 #   l  a, with a counted set that does not report the red when the role first reads it, although
 #      the commit endpoint already holds its failing run: the role waits for the pull request's
 #      checks event, and the rig reports the check between the two turns (red_report)
+#   m to t  c, d, e, f, g, h, k and l, in that order, with the reviewer in place of the tester:
+#      each the same red, answered as its base world answers it (red_workflows, red_model), so the
+#      merge state of each reads as its base's does
 # red_fixture runs the parts below in order: red_model prints the model of the world's red,
 # run_routes the routes of the head's runs, jobs and check runs from it, the jq here rewrites the
 # reads of the head worker_fixture marked, and required_set_fixture puts the reads of the base's

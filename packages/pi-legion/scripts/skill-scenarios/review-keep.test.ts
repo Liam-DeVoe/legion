@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import {
+  changedReview,
   ghReview,
   type Kept,
   keptRead,
   latestReviews,
   type ReviewCall,
+  type ReviewEdit,
   sentReview,
   threads,
 } from "./review-keep";
@@ -60,6 +62,22 @@ const read = (
     { id: call.id, fields: call.fields, commented: call.commented ?? false },
     { stdout }
   );
+/** A change through a route of `edit` to the review `id` names, sent as the call's `-f`/`-F`
+ * fields, or as the text of its `--input` file. */
+const change = (
+  kept: Kept,
+  edit: ReviewEdit,
+  id: string,
+  fields: Record<string, unknown>,
+  input?: unknown
+) =>
+  changedReview(edit, kept, {
+    id,
+    input: input === undefined ? undefined : JSON.stringify(input),
+    fields,
+  });
+/** The review of `kept` at `index`, which the row sent. */
+const nth = (kept: Kept, index: number) => kept.reviews[index] as Kept["reviews"][number];
 
 // Catches: a review sent with no event kept as anything but GitHub's pending review (no
 // submission time), an event recorded under another state, and a body changed on its way in.
@@ -188,6 +206,81 @@ test("a pull request read carries the reviews in gh's fields, and refuses what t
   });
   // An answer that is no pull request object is the route's own, unchanged.
   expect(read(NONE, "pr", {}, "text")).toEqual({ stdout: "text" });
+});
+
+// INFRA-1303 (trial-i-head-4 of the batch at 585b19a3 updated its review's body and dismissed it,
+// and met two refusals). Catches: an update that changes any field but the body, or takes the
+// body from anything but the `body` the call sends, by its fields or its --input; and an update
+// answered where GitHub's answer is not measured (a review the role did not send, a pending one,
+// an empty or missing body, an input that is no JSON object), which the stand-in must refuse.
+test("an update sets the body of a review the role sent, and every other field stays", () => {
+  const kept = send(NONE, api({}, { event: "APPROVE", body: "Looks right." })) as Kept;
+  expect([
+    change(kept, "update", "7001", {}, { body: "Looks right; the re-run is green." }),
+    change(kept, "update", "7001", { body: "By its field." }),
+  ]).toEqual([
+    { review: { ...nth(kept, 0), body: "Looks right; the re-run is green." } },
+    { review: { ...nth(kept, 0), body: "By its field." } },
+  ]);
+  const pending = send(NONE, api({ body: "draft" })) as Kept;
+  expect([
+    change(kept, "update", "7002", { body: "x" }),
+    change(kept, "update", "7001", { body: "" }),
+    change(kept, "update", "7001", {}),
+    change(kept, "update", "7001", {}, ["not", "an", "object"]),
+    change(pending, "update", "7001", { body: "x" }),
+  ]).toEqual(Array(5).fill(null));
+});
+
+// Catches: a dismissal that leaves the state as it was or changes another field, a COMMENTED
+// review dismissed where GitHub answers its 422, and a dismissal answered where GitHub's answer is
+// not measured (a review the role did not send, no message or an empty one, an event other than
+// DISMISS, a review already dismissed, a pending one).
+test("a dismissal sets an approval or a changes request DISMISSED, and a comment-only review is GitHub's 422", () => {
+  const approved = send(NONE, api({ event: "APPROVE", body: "Looks right." })) as Kept;
+  const changes = send(approved, api({ event: "REQUEST_CHANGES", body: "Red." })) as Kept;
+  const commented = send(changes, api({ event: "COMMENT", body: "See." })) as Kept;
+  expect([
+    change(commented, "dismiss", "7001", {}, { message: "Superseded.", event: "DISMISS" }),
+    change(commented, "dismiss", "7002", { message: "Superseded." }),
+    change(commented, "dismiss", "7003", { message: "Superseded." }),
+  ]).toEqual([
+    { review: { ...nth(commented, 0), state: "DISMISSED" } },
+    { review: { ...nth(commented, 1), state: "DISMISSED" } },
+    { github: "review-dismiss-422" },
+  ]);
+  const dismissed: Kept = { ...approved, reviews: [{ ...nth(approved, 0), state: "DISMISSED" }] };
+  const pending = send(NONE, api({ body: "draft" })) as Kept;
+  expect([
+    change(commented, "dismiss", "7004", { message: "x" }),
+    change(commented, "dismiss", "7001", {}),
+    change(commented, "dismiss", "7001", { message: "" }),
+    change(commented, "dismiss", "7001", { message: "x", event: "APPROVE" }),
+    change(dismissed, "dismiss", "7001", { message: "x" }),
+    change(pending, "dismiss", "7001", { message: "x" }),
+  ]).toEqual(Array(6).fill(null));
+});
+
+// Catches: `gh pr view --json` answered with what the rig cannot state once a review is changed:
+// gh's mark of an edited review (`includesCreatedEdit`) after an update, and the latest review
+// after a dismissal; and a read of the pull request's other fields refused for it.
+test("a pull request read refuses the reviews gh would print edited, and the latest once one is dismissed", () => {
+  const approved = send(NONE, prReview(["--approve"], "Looks right.")) as Kept;
+  const updated: Kept = {
+    ...approved,
+    reviews: [{ ...nth(approved, 0), body: "Green." }],
+    edited: [7001],
+  };
+  const dismissed: Kept = { ...approved, reviews: [{ ...nth(approved, 0), state: "DISMISSED" }] };
+  expect([
+    read(updated, "pr", { fields: ["reviews"] }),
+    read(updated, "pr", { fields: ["latestReviews"] }),
+    read(dismissed, "pr", { fields: ["latestReviews"] }),
+  ]).toEqual([null, null, null]);
+  expect(read(dismissed, "pr", { fields: ["reviews"] })).toMatchObject({
+    stdout: { reviews: [{ state: "DISMISSED", body: "Looks right." }] },
+  });
+  expect(read(updated, "pr", { fields: ["number"] })).toMatchObject({ stdout: { number: 1000 } });
 });
 
 // Catches: threads that lose a kept comment, carry REST's login, or end their page on a cursor

@@ -61,6 +61,15 @@ graphql-variable-null     gh api graphql -f query='query($n:Int!){repository(own
 graphql-variable-coerce   the same query with -f n=1003 (a String for Int!)
 graphql-literal-type      gh api graphql -f query='query{repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:"1003"){number}}}'
 graphql-variable-unused   gh api graphql -F n=1003 -f query='query($n:Int!,$u:String){repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:$n){number}}}'
+Stated rather than measured (INFRA-1303, 2026-11-20): a write the measuring token, read-only,
+cannot make. The file pair holds what gh 2.98.0 prints for it, in the shape of the measured
+errors above (the message, the documentation URL of the endpoint, the status as a string; gh's
+`gh: <message> (HTTP <status>)`):
+review-dismiss-422   gh api -X PUT repos/<owner>/<repo>/pulls/<n>/reviews/<id of a COMMENTED review>/dismissals -f message=x
+  the 422 status: GitHub's REST docs, "Dismiss a review for a pull request" (status codes);
+  the message: the architect's ruling of 2026-11-20 17:55Z (INFRA-1303), "a review in the
+  COMMENTED state cannot be dismissed: it answers 422 'Can not dismiss a commented pull request
+  review'"; the documentation URL: that docs section's anchor, as review-404 names its own.
 
 What GitHub answered to the reads below, measured the same way on 2026-11-18, which the rig's
 answers follow (no file: each is stated here and in the comment of the code that follows it):

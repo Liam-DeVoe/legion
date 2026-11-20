@@ -550,6 +550,80 @@ test("the reviews a role sends are kept across calls, read back by every read, a
   // (measured alone in a Legion pod on 2026-11-19: 2.6 s and 4.8 s).
 }, 30_000);
 
+/** Routes that change a review the role sent: its body, and its dismissal. */
+const REVIEW_EDITS = [
+  {
+    match: "^gh api PUT \\S+/reviews/(?<id>\\d+)(?:\\s|$)",
+    review_edit: "update",
+    ...UNTIL_LINE_COMMENT,
+  },
+  {
+    match: "^gh api PUT \\S+/reviews/(?<id>\\d+)/dismissals(?:\\s|$)",
+    review_edit: "dismiss",
+    ...UNTIL_LINE_COMMENT,
+  },
+];
+
+// INFRA-1303: trial-i-head-4 of the tester's batch at 585b19a3 updated the body of the review it
+// had sent and dismissed it, and the stand-in refused both as unmodeled. The rules of the change
+// are review-keep.test.ts's, called directly. Catches: a change answered but kept nowhere (each
+// call is a process of its own, so what it keeps lives in fixtures.json), a read that answers the
+// review as it was before the change, GitHub's 422 for a COMMENTED review answered in anything but
+// its files, and a change the model refuses answered rather than refused as unmodeled.
+test("a review's body update and its dismissal answer as GitHub does, and the next reads read them", async () => {
+  const { gh, run, calls } = world([...REVIEW_ROUTES, ...REVIEW_EDITS]);
+  const approved = JSON.parse(
+    (await gh("api", "-X", "POST", REVIEWS, "-f", "event=APPROVE", "-f", "body=Looks right."))
+      .stdout
+  );
+  const body = inputFile(run, { body: "Looks right; the re-run is green." });
+  const updated = JSON.parse(
+    (await gh("api", "--method", "PUT", `${REVIEWS}/7001`, "--input", body)).stdout
+  );
+  const listed = JSON.parse((await gh("api", REVIEWS)).stdout);
+  const dismissed = JSON.parse(
+    (
+      await gh(
+        "api",
+        "-X",
+        "PUT",
+        `${REVIEWS}/7001/dismissals`,
+        "-f",
+        "message=Superseded.",
+        "-f",
+        "event=DISMISS"
+      )
+    ).stdout
+  );
+  const one = JSON.parse((await gh("api", `${REVIEWS}/7001`)).stdout);
+  await gh("api", "-X", "POST", REVIEWS, "-f", "event=COMMENT", "-f", "body=See the line.");
+  const commented = await gh("api", "-X", "PUT", `${REVIEWS}/7002/dismissals`, "-f", "message=x");
+  const unknown = await gh("api", "-X", "PUT", `${REVIEWS}/7009`, "-f", "body=x");
+  const measured = (part: string) =>
+    readFileSync(
+      path.join(import.meta.dir, "github-answers", `review-dismiss-422.${part}`),
+      "utf8"
+    );
+
+  expect(updated).toEqual({ ...approved, body: "Looks right; the re-run is green." });
+  expect(listed).toEqual([updated]);
+  expect(dismissed).toEqual({ ...updated, state: "DISMISSED" });
+  expect(one).toEqual(dismissed);
+  expect([commented.stdout, commented.stderr, commented.exit]).toEqual([
+    measured("stdout"),
+    measured("stderr"),
+    1,
+  ]);
+  expect([unknown.stderr.startsWith("rig: request not modeled: gh "), unknown.exit]).toEqual([
+    true,
+    1,
+  ]);
+  expect(calls().flatMap((call) => ("unmodeled" in call ? [call.request] : []))).toEqual([
+    `gh api PUT ${REVIEWS}/7009 --raw-field body=x`,
+  ]);
+  // Nine stand-in processes one after another, bounded as the row above is.
+}, 30_000);
+
 test("the re-run and the failed-log read are each recorded with the route that answered them", async () => {
   const log = "--- FAIL: TestSettlesTheHead (0.12s)";
   const { gh, calls } = world([

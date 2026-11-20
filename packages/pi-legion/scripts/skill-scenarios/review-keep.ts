@@ -28,6 +28,21 @@
 // commit other than the template's, flags gh refuses, an inline comment on a path or line the
 // template's `added_lines` does not hold, or on the left side) is kept nowhere and refused as
 // unmodeled.
+// A route that carries `review_edit` changes a kept review, the one whose id the match's `id`
+// took, and answers it as GitHub answers it, the review object with the change made (GitHub's
+// REST docs, "Update a review for a pull request" and "Dismiss a review for a pull request": each
+// answers 200 with the review; the docs' example of each answers the review's every other field
+// as the others do): `update` sets its body to the `body` the call sends (required, the docs),
+// and `dismiss`, with the `message` the call sends (required) and an `event` that is DISMISS or
+// none (the docs), sets its state to DISMISSED (the docs' example). A COMMENTED review cannot be
+// dismissed: GitHub answers 422, "Can not dismiss a commented pull request review" (the
+// architect's ruling of 2026-11-20 17:55Z; the docs list the 422), in the shape of its measured
+// errors (github-answers/review-dismiss-422). What GitHub answers for a review the role did not
+// send, a pending or dismissed one, an empty body, or a dismissal with no message or another
+// event is not measured, so each is refused as unmodeled. gh prints a review whose body was
+// edited with `includesCreatedEdit` (GraphQL's mark of an edited comment), which is not
+// measured, and which review is the latest once one is dismissed is not either: a `pr` read that
+// asks `reviews` after an update, or `latestReviews` after either, is refused as unmodeled.
 // The review threads of a GraphQL world (`{"$keep": "threads"}`, gh-graphql.ts) are the kept
 // inline comments, each a thread of its own, unresolved, with that comment as its last, in the
 // order sent, on one page whose end cursor is an opaque one of the rig's: threads() builds them
@@ -76,10 +91,15 @@ export type KeptComment = z.infer<typeof KeptComment>;
 /** How a route reads what the role sent (the header). */
 export const ReviewMode = z.enum(["list", "one", "pr", "comments", "review_comments"]);
 export type ReviewMode = z.infer<typeof ReviewMode>;
-/** What the run has kept: the reviews the role sent and their inline comments, in the order sent. */
+/** How a route changes a review the role sent (the header): its body, or its dismissal. */
+export const ReviewEdit = z.enum(["update", "dismiss"]);
+export type ReviewEdit = z.infer<typeof ReviewEdit>;
+/** What the run has kept: the reviews the role sent and their inline comments, in the order sent,
+ * and the ids of the reviews whose body it updated since (`edited`, none where absent). */
 export interface Kept {
   reviews: KeptReview[];
   comments: KeptComment[];
+  edited?: number[];
 }
 
 /** The inline comments a review sends, each as GitHub records a review comment, under the next
@@ -159,6 +179,24 @@ export interface ReviewCall {
   fields: Record<string, unknown>;
 }
 
+/** What a `gh api` call hands GitHub as its JSON body: its `--input` file's JSON object, else its
+ * `-f`/`-F` fields; `null` for an input that is no JSON object. */
+function apiBody(
+  input: string | undefined,
+  fields: Record<string, unknown>
+): Record<string, unknown> | null {
+  if (input === undefined) return fields;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch {
+    return null;
+  }
+  return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    ? { ...parsed }
+    : null;
+}
+
 /** The review a call sends, as GitHub records it under `template`, with its inline comments, at
  * `sentAt` (GitHub's stamp, to the second); `null` where the rig cannot state GitHub's answer to
  * it (the header). A `gh pr review` takes its event from its one flag and its body from `-b` or
@@ -169,7 +207,7 @@ export function sentReview(
   kept: Kept,
   sentAt: string
 ): { review: KeptReview; comments: KeptComment[] } | null {
-  let sent: Record<string, unknown> = call.fields;
+  let sent: Record<string, unknown>;
   if (call.prReview) {
     const events = (
       [
@@ -180,15 +218,10 @@ export function sentReview(
     ).filter(([long]) => call.events.includes(long));
     if (events.length !== 1) return null;
     sent = { event: events[0]?.[1], body: call.body };
-  } else if (call.input !== undefined) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(call.input);
-    } catch {
-      return null;
-    }
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
-    sent = { ...parsed };
+  } else {
+    const body = apiBody(call.input, call.fields);
+    if (body === null) return null;
+    sent = body;
   }
   const { event, body: text = "", commit_id: commit, comments = [] } = sent;
   const states: Record<string, string> = {
@@ -225,6 +258,31 @@ export function sentReview(
   };
 }
 
+/** The change a call makes, through a route of `edit`, to the review the match's `id` names (the
+ * header): that review as GitHub answers the change, every field but the one changed as kept;
+ * GitHub's answer where it refuses the change (`github`, the name of its files under
+ * github-answers/); or `null` where the rig cannot state GitHub's answer. The call hands GitHub
+ * what a `gh api` call hands it for a review: its `--input` JSON object, else its fields. */
+export function changedReview(
+  edit: ReviewEdit,
+  kept: Kept,
+  call: { id: string | undefined; input: string | undefined; fields: Record<string, unknown> }
+): { review: KeptReview } | { github: string } | null {
+  const one = kept.reviews.find((review) => String(review.id) === call.id);
+  const sent = apiBody(call.input, call.fields);
+  if (one === undefined || sent === null || one.state === "PENDING" || one.state === "DISMISSED")
+    return null;
+  if (edit === "update") {
+    const { body } = sent;
+    return typeof body === "string" && body !== "" ? { review: { ...one, body } } : null;
+  }
+  const { message, event = "DISMISS" } = sent;
+  if (typeof message !== "string" || message === "" || event !== "DISMISS") return null;
+  return one.state === "COMMENTED"
+    ? { github: "review-dismiss-422" }
+    : { review: { ...one, state: "DISMISSED" } };
+}
+
 /** The login GraphQL gives the account REST names `login`: a bot's bare name, without the [bot]
  * REST adds to an App's account (rig.sh's worker_fixture names where that is recorded). */
 export const graphqlLogin = (login: string) => login.replace(/\[bot\]$/, "");
@@ -246,10 +304,10 @@ export function ghReview(review: KeptReview) {
 }
 
 /** `latestReviews` as gh prints it: the latest review of each author, and the rig's reviewer is
- * the one author; undefined, which the rig cannot state, once a pending or comment-only review is
- * kept (the header). */
+ * the one author; undefined, which the rig cannot state, once a pending, comment-only or
+ * dismissed review is kept (the header). */
 export function latestReviews(reviews: KeptReview[]) {
-  return reviews.some((review) => review.state === "PENDING" || review.state === "COMMENTED")
+  return reviews.some((review) => ["PENDING", "COMMENTED", "DISMISSED"].includes(review.state))
     ? undefined
     : reviews.slice(-1).map((review) => ({ ...ghReview(review), id: "", commit: { oid: "" } }));
 }
@@ -258,8 +316,9 @@ export function latestReviews(reviews: KeptReview[]) {
  * the match's `id` names, the inline comments, or those of the review the `id` names, each with
  * GitHub's measured 404 for a review id no review the role sent has; or, for `pr`, the route's
  * own `answer` with the reviews beside its pull request, `null` where the call's `--json` fields
- * ask what the rig cannot state (`latestReviews` it cannot name, or `comments` after the role
- * posted one). Undefined for a route that reads nothing the role sent. */
+ * ask what the rig cannot state (`reviews` or `latestReviews` once a review's body was updated,
+ * `latestReviews` it cannot name, or `comments` after the role posted one). Undefined for a
+ * route that reads nothing the role sent. */
 export function keptRead<A extends { stdout?: unknown }>(
   mode: ReviewMode | undefined,
   kept: Kept,
@@ -269,10 +328,12 @@ export function keptRead<A extends { stdout?: unknown }>(
   if (mode === "list") return { stdout: kept.reviews };
   if (mode === "comments") return { stdout: kept.comments };
   if (mode === "pr") {
-    const latest = latestReviews(kept.reviews);
+    const edited = (kept.edited ?? []).length > 0;
+    const latest = edited ? undefined : latestReviews(kept.reviews);
     if (
       call.fields !== undefined &&
-      ((call.fields.includes("latestReviews") && !latest) ||
+      ((call.fields.includes("reviews") && edited) ||
+        (call.fields.includes("latestReviews") && !latest) ||
         (call.fields.includes("comments") && call.commented))
     )
       return null;

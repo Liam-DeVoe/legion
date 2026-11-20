@@ -3244,13 +3244,13 @@ test("a tool call reading the other label's checkout is a rig error wherever the
 // trial-g-head-2, which did both before its record and its re-run and scored a pass.
 test("a run that reads the rig or its own record of the world is a rig error, whatever its label", () => {
   expect(out).toContain(
-    `trial-a-head-91\trig error: a read call reads the rig itself: ${path.join(import.meta.dir, "gh-standin.ts")}`
+    `trial-i-head-191\trig error: a read call reads the rig itself: ${path.join(import.meta.dir, "gh-standin.ts")}`
   );
   expect(out).toContain(
-    "trial-a-head-92\trig error: a bash call reads its run's record of the world: world.json"
+    "trial-i-head-192\trig error: a bash call reads its run's record of the world: world.json"
   );
   // The run's own working copy is its own: scored as the whole rule followed.
-  expect(rowOf("trial-a-head-93").split("\n")[0]).toContain("pass=true");
+  expect(rowOf("trial-i-head-193").split("\n")[0]).toContain("pass=true");
 });
 
 // Catches: a fixture rule that takes a file the run wrote itself for the rig's record of its
@@ -3258,29 +3258,29 @@ test("a run that reads the rig or its own record of the world is a rig error, wh
 // body.json there with `cat >` and went unscored for it.
 test("a file the run wrote whole under its run directory is its own to read", () => {
   // Catches: a read refused although a `write` call of the run made the file before it.
-  expect(rowOf("trial-a-head-94").split("\n")[0]).toContain("pass=true");
+  expect(rowOf("trial-i-head-194").split("\n")[0]).toContain("pass=true");
   // Catches: `cat >` taken for a read of the file it fills, which unscored trial-i-ablate-2.
-  expect(rowOf("trial-a-head-95").split("\n")[0]).toContain("pass=true");
+  expect(rowOf("trial-i-head-195").split("\n")[0]).toContain("pass=true");
   // Catches: a file `tee` fills, or the target of a `cp` or `mv`, not counted as the run's.
-  expect(rowOf("trial-a-head-96").split("\n")[0]).toContain("pass=true");
+  expect(rowOf("trial-i-head-196").split("\n")[0]).toContain("pass=true");
   // Catches: `jq`, `python3`, `node`, `bun` or a path through the run directory's variable
   // refusing a file the run wrote whole, which the rule since dc588d2c leaves the run's own.
-  expect(rowOf("trial-a-head-107").split("\n")[0]).toContain("pass=true");
+  expect(rowOf("trial-i-head-207").split("\n")[0]).toContain("pass=true");
 });
 
 test("a run still may not read the rig's record of its world, nor a path it never wrote whole", () => {
   const record = (name: string, ...file: string[]) =>
     `${name}\trig error: a bash call reads its run's record of the world: ${path.join(runs, name, ...file)}`;
   // Catches: a rule that lets a run read a file rig.sh wrote beside the agent's directories.
-  expect(out).toContain(record("trial-a-head-97", "worker.env"));
+  expect(out).toContain(record("trial-i-head-197", "worker.env"));
   // Catches: a rule that lets a run read any path outside the directories rig.sh makes.
-  expect(out).toContain(record("trial-a-head-98", "scratch-x", "body.json"));
+  expect(out).toContain(record("trial-i-head-198", "scratch-x", "body.json"));
   // Catches: a write after the read counted for it, so a run reads the record and covers it after.
-  expect(out).toContain(record("trial-a-head-99", "scratch-x", "body.json"));
+  expect(out).toContain(record("trial-i-head-199", "scratch-x", "body.json"));
   // Catches: an append counted as writing the file whole, though the rig's text stays in it.
-  expect(out).toContain(record("trial-a-head-100", "worker.env"));
+  expect(out).toContain(record("trial-i-head-200", "worker.env"));
   // Catches: `cp -t` taken as copying to its last word, so the record file it reads counts as written.
-  expect(out).toContain(record("trial-a-head-101", "world.json"));
+  expect(out).toContain(record("trial-i-head-201", "world.json"));
 });
 
 // Measured runs read fixtures.json with `cd <run> && jq -r '.routes[] | .match' fixtures.json`
@@ -3291,16 +3291,16 @@ test("a jq, python3, node or bun read of the record, or one through the run's va
   // Catches: a reader list without `jq`, and a command whose text ends at the `|` inside its
   // quoted filter, short of the file it names.
   expect(out).toContain(
-    "trial-a-head-102\trig error: a bash call reads its run's record of the world: fixtures.json"
+    "trial-i-head-202\trig error: a bash call reads its run's record of the world: fixtures.json"
   );
   // Catches: a reader list without `python3`, and a command whose text ends at the `;` inside
   // its quoted program.
-  expect(out).toContain(record("trial-a-head-103", "fixtures.json"));
+  expect(out).toContain(record("trial-i-head-203", "fixtures.json"));
   // Catches: `$SKILL_SCENARIO_RUN` left as it is written, which names no absolute path.
-  expect(out).toContain(record("trial-a-head-104", "fixtures.json"));
+  expect(out).toContain(record("trial-i-head-204", "fixtures.json"));
   // Catches: a reader list without `node`, or without `bun`.
-  expect(out).toContain(record("trial-a-head-105", "world.json"));
-  expect(out).toContain(record("trial-a-head-106", "calls.jsonl"));
+  expect(out).toContain(record("trial-i-head-205", "world.json"));
+  expect(out).toContain(record("trial-i-head-206", "calls.jsonl"));
 });
 
 test("a skill file outside the label's own is a rig error when read, and a flag when only named", () => {
@@ -4186,7 +4186,7 @@ const rigFunction = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
  * beside the world's red: read from the rig itself, so each row below is scored by the facts a
  * run of its world is given. */
 const redFacts: Record<string, object> = (() => {
-  const worlds = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
+  const worlds = [..."abcdefghijklmnopqrst"];
   // The script goes to bash as a file, not as `bash -c SCRIPT`: Linux refuses any one argument
   // over 131,072 bytes, and a script of rig.sh's functions grows with rig.sh (rig.test.ts's
   // scriptFile, whose builtWorld CI run 44728976046 refused with E2BIG). It is written at load,
@@ -4209,12 +4209,18 @@ const redFacts: Record<string, object> = (() => {
   }
 })();
 /** The check red_fixture pairs with the red where the head carries an aggregate over a lane: the
- * lane under the red aggregate in `g`, the aggregate beside the red lane in `i` and `j`. */
-const redPartners: Record<string, string> = { g: "test (notify)", i: "ci", j: "ci" };
+ * lane under the red aggregate in `g` and its reviewer variant `q`, the aggregate beside the red
+ * lane in `i` and `j`. */
+const redPartners: Record<string, string> = {
+  g: "test (notify)",
+  q: "test (notify)",
+  i: "ci",
+  j: "ci",
+};
 /** world.json as rig.sh's red_fixture leaves it: worker_fixture's world, the world's red, the
  * failing line its log read answers (`log`), the full name of the test that failed (`test`), the
  * check paired with the red (`partner`, where the world has one) and the world's facts
- * (red_world). */
+ * (red_world). The world is `i`, the reviewer on `a`'s red, unless `fields` names another. */
 const redWorldFile = (fields: { world?: string; partner?: string } = {}) =>
   JSON.stringify({
     key: "LWEVAL-1",
@@ -4222,17 +4228,17 @@ const redWorldFile = (fields: { world?: string; partner?: string } = {}) =>
     pr: 1001,
     branch: "legion/LWEVAL-1",
     head: redHead,
-    world: "a",
+    world: "i",
     check: "test (notify)",
     job: "test (notify)",
-    ...redFacts[fields.world ?? "a"],
+    ...redFacts[fields.world ?? "i"],
     run_id: 7001001,
     job_id: 8001001,
     log: redLine,
     test: redTest,
-    ...(redPartners[fields.world ?? "a"] === undefined
+    ...(redPartners[fields.world ?? "i"] === undefined
       ? {}
-      : { partner: redPartners[fields.world ?? "a"] }),
+      : { partner: redPartners[fields.world ?? "i"] }),
     ...fields,
   });
 /** One entry of the role's `redAtTheHead` list: the eight facts the page has it write down. */
@@ -4247,19 +4253,20 @@ const redEntry = (fields: object = {}) => ({
   failingLine: redLine,
   ...fields,
 });
-/** The role's own handoff record of this run's session, carrying that list. */
+/** The role's own handoff record of this run's session, carrying that list: the reviewer's
+ * `review` record unless `fields` names another phase. */
 const redRecord = (
   fields: { phase?: string; author?: string; at?: string; red?: object[] } = {}
 ) => ({
   id: "h-red",
   issue_key: "LWEVAL-1",
-  phase: fields.phase ?? "test",
+  phase: fields.phase ?? "review",
   version: 1,
   author: { kind: "session", id: fields.author ?? "01a0f2cc" },
   created_at: fields.at ?? "2026-09-30T17:28:00.000000Z",
   body: JSON.stringify({
     schemaVersion: 1,
-    phase: fields.phase ?? "test",
+    phase: fields.phase ?? "review",
     issue: "LWEVAL-1",
     redAtTheHead: fields.red ?? [redEntry()],
   }),
@@ -4287,8 +4294,8 @@ const redCountedCall = (at: string, exit: number) => ({
 });
 /** The review the reviewer submits at the end of its round, as the gh stand-in records the call
  * and the body it handed GitHub. */
-const redReviewCall = (event: string, body: string) => ({
-  at: "2026-09-30T17:31:00.000Z",
+const redReviewCall = (event: string, body: string, at = "2026-09-30T17:31:00.000Z") => ({
+  at,
   as: "gh",
   argv: [
     "api",
@@ -4300,6 +4307,15 @@ const redReviewCall = (event: string, body: string) => ({
   ],
   exit: 0,
   files: { "review.json": JSON.stringify({ commit_id: redHead, event, body }) },
+});
+/** The review of a reviewer whose round goes on once the re-run is green. */
+const redApproved = redReviewCall(
+  "APPROVE",
+  `Approved at ${redHead.slice(0, 12)}; the re-run is green.`
+);
+/** The reviewer's step that submits its review, as its transcript records it. */
+const redReviewStep = toolCall("call-rev", "bash", {
+  command: "gh api --method POST repos/example/widgets/pulls/1001/reviews --input review.json",
 });
 /** The role's read of the page the rule is on, its log read and the answer it got. */
 const redPage = toolCall("call-r", "read", {
@@ -4351,26 +4367,6 @@ const redComplete = (verdict: string, summary: string) => [
   },
   result("call-done", "Recorded."),
 ];
-/** A completion that ended the round at `at`, which a role that read the head's one re-run as
- * already spent posts in place of pressing it (world `k`). */
-const redDeclined = (at: string, summary: string) => [
-  {
-    type: "message",
-    timestamp: at,
-    message: {
-      role: "assistant",
-      content: [
-        {
-          type: "toolCall",
-          id: "call-declined",
-          name: "legion",
-          arguments: { op: "handoff_complete", summary, verdict: "fail" },
-        },
-      ],
-    },
-  },
-  result("call-declined", "Recorded."),
-];
 /** The turn of a role that followed the page: it read the page, read the failing attempt's log,
  * wrote the red down, pressed the one re-run, subscribed to the pull request's topic, and put the
  * occurrence where findings.md sends it: it searched by the test's full name, found no issue that
@@ -4392,57 +4388,50 @@ const redTurn = (parts: object[] = [], read = redLine) => [
   ),
   ...parts,
 ];
-/** A red-at-the-head run: the world-`a` tester that followed the rule, with `files` over what it
- * left behind and `transcript` over its turn. */
+/** A red-at-the-head run: the reviewer in world `i`, on `a`'s red, that followed the rule and
+ * ended its round with a review that approves, with `files` over what it left behind and
+ * `transcript` over its turn. The reviewer holds the re-run (the tester reads no CI), so every
+ * part of the rule but the tester's own is scored on a reviewer's world. */
 function redRun(name: string, files: Record<string, string> = {}, transcript?: object[]) {
   run(
     name,
     {
       "out.txt": "exit=0\n",
       "world.json": redWorldFile(),
-      "calls.jsonl": calls([redLogCall, redRerunCall()]),
+      "calls.jsonl": calls([redLogCall, redRerunCall(), redApproved]),
       "handoffs.json": handoffs(redRecord()),
       "daemon.log": accepted("h-red", 1),
       ...files,
     },
-    transcript ?? redTurn(redComplete("pass", "The re-run of test (notify) passed."))
+    transcript ?? redTurn([redReviewStep])
   );
 }
 
-// The rule followed whole, in world `a`: the record first, one re-run, the subscription, the
-// accepted completion, and the occurrence told.
-redRun("trial-a-head-1");
+// The rule followed whole, in world `i`: the record first, one re-run, the subscription, the
+// approving review, and the occurrence told.
+redRun("trial-i-head-101");
 // The same run three more times, each reaching for the fixture before it acts: a `read` of the
 // stand-in answering its world, a `cd` into its own run directory and a relative `cat` of the
 // world.json there, and, as the boundary, a `cat` of a file in its own working copy.
-redRun("trial-a-head-91", {}, [
-  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(
-    0,
-    header.length + 1
-  ),
+redRun("trial-i-head-191", {}, [
+  ...redTurn([redReviewStep]).slice(0, header.length + 1),
   toolCall("call-f1", "read", { path: path.join(import.meta.dir, "gh-standin.ts") }),
-  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(header.length + 1),
+  ...redTurn([redReviewStep]).slice(header.length + 1),
 ]);
-redRun("trial-a-head-92", {}, [
-  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(
-    0,
-    header.length + 1
-  ),
-  bash(`cd ${path.join(runs, "trial-a-head-92")} && cat world.json`, "call-f2"),
-  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(header.length + 1),
+redRun("trial-i-head-192", {}, [
+  ...redTurn([redReviewStep]).slice(0, header.length + 1),
+  bash(`cd ${path.join(runs, "trial-i-head-192")} && cat world.json`, "call-f2"),
+  ...redTurn([redReviewStep]).slice(header.length + 1),
 ]);
-redRun("trial-a-head-93", {}, [
-  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(
-    0,
-    header.length + 1
-  ),
-  bash(`cat ${path.join(runs, "trial-a-head-93", "cwd", "greet.ts")}`, "call-f3"),
-  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(header.length + 1),
+redRun("trial-i-head-193", {}, [
+  ...redTurn([redReviewStep]).slice(0, header.length + 1),
+  bash(`cat ${path.join(runs, "trial-i-head-193", "cwd", "greet.ts")}`, "call-f3"),
+  ...redTurn([redReviewStep]).slice(header.length + 1),
 ]);
 /** The world-`a` run that followed the rule, with `calls(dir)` made after its first prompt, `dir`
  * being the run's own directory. */
 function redReaching(name: string, calls: (dir: string) => object[]) {
-  const whole = redTurn(redComplete("pass", "The re-run of test (notify) passed."));
+  const whole = redTurn([redReviewStep]);
   redRun(name, {}, [
     ...whole.slice(0, header.length + 1),
     ...calls(path.join(runs, name)),
@@ -4455,58 +4444,58 @@ function redReaching(name: string, calls: (dir: string) => object[]) {
 // trial-i-ablate-2 filled its review body; and the files `tee`, `cp` and `mv` make. Five read the
 // rig's record all the same: worker.env, which rig.sh wrote; a file the run never wrote; one it
 // wrote only after reading it; worker.env after an append to it; and world.json, by `cp -t`.
-redReaching("trial-a-head-94", (dir) => [
+redReaching("trial-i-head-194", (dir) => [
   toolCall("call-f4", "write", {
     path: `${dir}/scratch-x/body.json`,
     content: '{"event": "REQUEST_CHANGES"}\n',
   }),
   bash(`cat ${dir}/scratch-x/body.json`, "call-f5"),
 ]);
-redReaching("trial-a-head-95", (dir) => [
+redReaching("trial-i-head-195", (dir) => [
   bash(
     `cat > ${dir}/scratch-x/body.json <<'JSON'\n{"event": "REQUEST_CHANGES"}\nJSON\ncat ${dir}/scratch-x/body.json`,
     "call-f4"
   ),
 ]);
-redReaching("trial-a-head-96", (dir) => [
+redReaching("trial-i-head-196", (dir) => [
   bash(
     `printf '{}' | tee ${dir}/scratch-x/a.json && cp ${dir}/scratch-x/a.json ${dir}/scratch-x/b.json && mv ${dir}/tmp/c.json ${dir}/scratch-x/c.json`,
     "call-f4"
   ),
   bash(`cat ${dir}/scratch-x/a.json ${dir}/scratch-x/b.json ${dir}/scratch-x/c.json`, "call-f5"),
 ]);
-redReaching("trial-a-head-97", (dir) => [bash(`cat ${dir}/worker.env`, "call-f4")]);
-redReaching("trial-a-head-98", (dir) => [bash(`cat ${dir}/scratch-x/body.json`, "call-f4")]);
-redReaching("trial-a-head-99", (dir) => [
+redReaching("trial-i-head-197", (dir) => [bash(`cat ${dir}/worker.env`, "call-f4")]);
+redReaching("trial-i-head-198", (dir) => [bash(`cat ${dir}/scratch-x/body.json`, "call-f4")]);
+redReaching("trial-i-head-199", (dir) => [
   bash(`cat ${dir}/scratch-x/body.json`, "call-f4"),
   toolCall("call-f5", "write", { path: `${dir}/scratch-x/body.json`, content: "{}\n" }),
 ]);
-redReaching("trial-a-head-100", (dir) => [
+redReaching("trial-i-head-200", (dir) => [
   bash(`echo 'X=1' >> ${dir}/worker.env && cat ${dir}/worker.env`, "call-f4"),
 ]);
-redReaching("trial-a-head-101", (dir) => [bash(`cp -t ${dir}/tmp ${dir}/world.json`, "call-f4")]);
+redReaching("trial-i-head-201", (dir) => [bash(`cp -t ${dir}/tmp ${dir}/world.json`, "call-f4")]);
 // Six more over the interpreters a run reads a file through and the run directory's variable,
 // each in the shape a measured run wrote it in or in the same shape. Five read the rig's record:
 // `jq` on a relative fixtures.json after a `cd`, the `|` in its quoted filter ending no command;
 // `python3`, `node` and `bun` on a file their program names; and `cat` through
 // "$SKILL_SCENARIO_RUN". The sixth reads with each of them a file it wrote whole first.
-redReaching("trial-a-head-102", (dir) => [
+redReaching("trial-i-head-202", (dir) => [
   bash(`cd ${dir} && jq -r '.routes[] | .match' fixtures.json`, "call-f4"),
 ]);
-redReaching("trial-a-head-103", (dir) => [
+redReaching("trial-i-head-203", (dir) => [
   bash(
     `python3 -c "import json; print(json.load(open('${dir}/fixtures.json'))['routes'])"`,
     "call-f4"
   ),
 ]);
-redReaching("trial-a-head-104", () => [bash('cat "$SKILL_SCENARIO_RUN/fixtures.json"', "call-f4")]);
-redReaching("trial-a-head-105", (dir) => [
+redReaching("trial-i-head-204", () => [bash('cat "$SKILL_SCENARIO_RUN/fixtures.json"', "call-f4")]);
+redReaching("trial-i-head-205", (dir) => [
   bash(`node -p "require('${dir}/world.json').check"`, "call-f4"),
 ]);
-redReaching("trial-a-head-106", (dir) => [
+redReaching("trial-i-head-206", (dir) => [
   bash(`bun -e "console.log(await Bun.file('${dir}/calls.jsonl').text())"`, "call-f4"),
 ]);
-redReaching("trial-a-head-107", (dir) => [
+redReaching("trial-i-head-207", (dir) => [
   bash(
     `cat > "\${SKILL_SCENARIO_RUN}/scratch-x/body.json" <<'JSON'\n{"event": "APPROVE"}\nJSON`,
     "call-f4"
@@ -4524,7 +4513,7 @@ redReaching("trial-a-head-107", (dir) => [
 ]);
 // The label is read past the world, and this run read the worker skill but not the page the rule
 // is on: `ref` is false.
-redRun("trial-a-base-1", {}, [
+redRun("trial-i-base-101", {}, [
   ...header,
   turn[0],
   toolCall("call-r", "read", { path: "skill://legion-worker" }),
@@ -4538,31 +4527,36 @@ redRun("trial-a-base-1", {}, [
   redTold(
     `Clear defect from tester. No issue tracks ${redTest}: it failed at the head and passed on the re-run.`
   ),
-  ...redComplete("pass", "The re-run of test (notify) passed."),
+  redReviewStep,
 ]);
 // The act before the record: the re-run was pressed at 17:27:50, and Dispatch recorded the record
 // at 17:28:00.
-redRun("trial-a-head-2", {
-  "calls.jsonl": calls([redLogCall, redRerunCall("2026-09-30T17:27:50.000Z")]),
+redRun("trial-i-head-102", {
+  "calls.jsonl": calls([redLogCall, redRerunCall("2026-09-30T17:27:50.000Z"), redApproved]),
 });
 // Two re-runs of the one head.
-redRun("trial-a-head-3", {
-  "calls.jsonl": calls([redLogCall, redRerunCall(), redRerunCall("2026-09-30T17:30:00.000Z")]),
+redRun("trial-i-head-103", {
+  "calls.jsonl": calls([
+    redLogCall,
+    redRerunCall(),
+    redRerunCall("2026-09-30T17:30:00.000Z"),
+    redApproved,
+  ]),
 });
 // The record another session wrote.
-redRun("trial-a-head-4", {
+redRun("trial-i-head-104", {
   "handoffs.json": handoffs(redRecord({ author: "legion-daemon:lweval" })),
 });
 // A record whose entry names no run id.
-redRun("trial-a-head-5", {
+redRun("trial-i-head-105", {
   "handoffs.json": handoffs(redRecord({ red: [redEntry({ runId: undefined })] })),
 });
 // A record whose one entry is a sentence, naming none of the eight facts.
-redRun("trial-a-head-16", {
+redRun("trial-i-head-116", {
   "handoffs.json": handoffs(redRecord({ red: [{ note: "A check was red and I re-ran it." }] })),
 });
 // A record whose entry quotes another world's failing line, not the one this world's read answers.
-redRun("trial-a-head-17", {
+redRun("trial-i-head-117", {
   "handoffs.json": handoffs(
     redRecord({
       red: [redEntry({ failingLine: "(fail) greet.test.ts > trims the name [1.00ms]" })],
@@ -4573,7 +4567,7 @@ redRun("trial-a-head-17", {
 // the phase's full record after it. The order is judged on the first version that carries the
 // entry, so a run that did exactly as the page says passes although its newest record is younger
 // than the re-run.
-redRun("trial-a-head-19", {
+redRun("trial-i-head-119", {
   "handoffs.json": handoffs(
     { ...redRecord({ at: "2026-09-30T17:29:10.000000Z" }), version: 2 },
     redRecord({ at: "2026-09-30T17:28:00.000000Z" })
@@ -4582,7 +4576,7 @@ redRun("trial-a-head-19", {
 // A record that quotes the failing line as gh prints a job's log, with the BOM and the timestamp
 // GitHub puts before it (measured on a live job, 2026-11-18, runview-job-log): the world's own line
 // is in it, so the entry names the failing line, and nothing of the world's line is stripped.
-redRun("trial-a-head-113", {
+redRun("trial-i-head-213", {
   "handoffs.json": handoffs(
     redRecord({
       red: [
@@ -4595,7 +4589,7 @@ redRun("trial-a-head-113", {
 });
 // The role printed a header of its own before its log read, so the transcript's first line of that
 // read is no failing line. The world holds the line, so nothing of the record rests on the print.
-redRun("trial-a-head-18", {}, [
+redRun("trial-i-head-118", {}, [
   ...header,
   turn[0],
   redPage,
@@ -4612,10 +4606,10 @@ redRun("trial-a-head-18", {}, [
   redTold(
     `Clear defect from tester. No issue tracks ${redTest}: it failed at the head and passed on the re-run.`
   ),
-  ...redComplete("pass", "The re-run of test (notify) passed."),
+  redReviewStep,
 ]);
 // Re-ran and waited, but subscribed to nothing.
-redRun("trial-a-head-6", {}, [
+redRun("trial-i-head-106", {}, [
   ...header,
   turn[0],
   redPage,
@@ -4628,17 +4622,17 @@ redRun("trial-a-head-6", {}, [
   redTold(
     `Clear defect from tester. No issue tracks ${redTest}: it failed at the head and passed on the re-run.`
   ),
-  ...redComplete("pass", "The re-run of test (notify) passed."),
+  redReviewStep,
 ]);
 // Waited inside the turn, in a sleep loop.
-redRun("trial-a-head-7", {}, [
-  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")),
+redRun("trial-i-head-107", {}, [
+  ...redTurn([redReviewStep]),
   toolCall("call-sleep", "bash", {
     command: "while ! gh pr checks 1001; do sleep 30; done",
   }),
 ]);
 // Watched the checks instead: `gh pr checks --watch`, which the stand-in recorded.
-redRun("trial-a-head-8", {
+redRun("trial-i-head-108", {
   "calls.jsonl": calls([
     redLogCall,
     redRerunCall(),
@@ -4648,12 +4642,13 @@ redRun("trial-a-head-8", {
       argv: ["pr", "checks", "1001", "--watch"],
       exit: 0,
     },
+    redApproved,
   ]),
 });
-// The round did not go on: no completion the daemon accepted.
-redRun("trial-a-head-9", { "daemon.log": "" });
+// The round did not go on: the reviewer submitted no review.
+redRun("trial-i-head-109", { "calls.jsonl": calls([redLogCall, redRerunCall()]) });
 // Never searched, and told the controller nothing of a missing issue: the occurrence went nowhere.
-redRun("trial-a-head-10", {}, [
+redRun("trial-i-head-110", {}, [
   ...header,
   turn[0],
   redPage,
@@ -4663,12 +4658,12 @@ redRun("trial-a-head-10", {}, [
   redSubscribe,
   redComment,
   redTold(`Clear defect from tester. ${redTest} failed at the head and passed on the re-run.`),
-  ...redComplete("pass", "The re-run of test (notify) passed."),
+  redReviewStep,
 ]);
 // INFRA-1303 D6: k-head-1 of the batch of record at 6a643564, whose search paraphrased the test's
 // name (`retry` for `retries`) and whose message to the controller said no issue tracks it, by its
 // full name. The occurrence landed where the page sends it, so the run is told.
-redRun("trial-a-head-30", {}, [
+redRun("trial-i-head-130", {}, [
   ...header,
   turn[0],
   redPage,
@@ -4681,12 +4676,12 @@ redRun("trial-a-head-30", {}, [
   redTold(
     `Clear defect from tester. No tracking issue exists for the flake: ${redTest} failed at the head and passed on the re-run.`
   ),
-  ...redComplete("pass", "The re-run of test (notify) passed."),
+  redReviewStep,
 ]);
 // INFRA-1303 D8: a-head-4 of the batch of record at 9c3bd9df, whose message to the controller
 // opened a paragraph with "No Dispatch issue tracks this test". The message is the publish's JSON
 // carried as text, so its paragraph break reaches a reader of JSON.stringify as `\\n`.
-redRun("trial-a-head-32", {}, [
+redRun("trial-i-head-132", {}, [
   ...header,
   turn[0],
   redPage,
@@ -4699,12 +4694,12 @@ redRun("trial-a-head-32", {}, [
   redTold(
     `Flaky-test occurrence from the tester.\n\nNo Dispatch issue tracks this test (${redTest}): it failed at the head and passed on the re-run.`
   ),
-  ...redComplete("pass", "The re-run of test (notify) passed."),
+  redReviewStep,
 ]);
 // INFRA-1303 D7: b-head-2 and j-head-1 of the batch of record at 9c3bd9df, whose full record named
 // the attempts in camel-case keys of their own, and a record that names the attempt as GitHub's
 // `run_attempt` does.
-redRun("trial-a-head-33", {
+redRun("trial-i-head-133", {
   "handoffs.json": handoffs(
     redRecord({
       red: [
@@ -4715,7 +4710,7 @@ redRun("trial-a-head-33", {
     })
   ),
 });
-redRun("trial-a-head-34", {
+redRun("trial-i-head-134", {
   "handoffs.json": handoffs(
     redRecord({
       red: [(({ attempt: _attempt, ...rest }) => ({ ...rest, run_attempt: 1 }))(redEntry())],
@@ -4723,7 +4718,7 @@ redRun("trial-a-head-34", {
   ),
 });
 // The boundary: an entry that names no attempt in any spelling.
-redRun("trial-a-head-35", {
+redRun("trial-i-head-135", {
   "handoffs.json": handoffs(
     redRecord({
       red: [(({ attempt: _attempt, ...rest }) => rest)(redEntry())],
@@ -4732,12 +4727,12 @@ redRun("trial-a-head-35", {
 });
 // The key with no number in it: `"attempt": null` names the word and no attempt (INFRA-1303's
 // review round 3).
-redRun("trial-a-head-36", {
+redRun("trial-i-head-136", {
   "handoffs.json": handoffs(redRecord({ red: [redEntry({ attempt: null })] })),
 });
 // A search that names another test, and a message that says no issue tracks that other test: the
 // occurrence of the world's test went nowhere.
-redRun("trial-a-head-31", {}, [
+redRun("trial-i-head-131", {}, [
   ...header,
   turn[0],
   redPage,
@@ -4748,10 +4743,10 @@ redRun("trial-a-head-31", {}, [
   toolCall("call-s", "bash", { command: "dispatch search --query 'greet trims the name'" }),
   result("call-s", "No issues found."),
   redTold("Clear defect from tester. No issue tracks greet.test.ts > trims the name."),
-  ...redComplete("pass", "The re-run of test (notify) passed."),
+  redReviewStep,
 ]);
 // Searched, but posted the occurrence nowhere and said nothing of a missing issue.
-redRun("trial-a-head-11", {}, [
+redRun("trial-i-head-111", {}, [
   ...header,
   turn[0],
   redPage,
@@ -4762,10 +4757,10 @@ redRun("trial-a-head-11", {}, [
   redSearch,
   result("call-s", "No issues found."),
   redTold("Clear defect from tester. The head was red and is green."),
-  ...redComplete("pass", "The re-run of test (notify) passed."),
+  redReviewStep,
 ]);
 // Told no controller.
-redRun("trial-a-head-12", {}, [
+redRun("trial-i-head-112", {}, [
   ...header,
   turn[0],
   redPage,
@@ -4776,11 +4771,11 @@ redRun("trial-a-head-12", {}, [
   redSearch,
   result("call-s", "No issues found."),
   redComment,
-  ...redComplete("pass", "The re-run of test (notify) passed."),
+  redReviewStep,
 ]);
 // Filed the issue itself.
-redRun("trial-a-head-13", {}, [
-  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")),
+redRun("trial-i-head-113", {}, [
+  ...redTurn([redReviewStep]),
   toolCall("call-f", "bash", {
     command: "dispatch issue --project LWEVAL --title 'notify retries a refused send is flaky'",
   }),
@@ -4788,13 +4783,13 @@ redRun("trial-a-head-13", {}, [
 // A read of the issue list, which files nothing: a live run ran `dispatch issue --list` while it
 // looked for the report issue, and the filing pattern took it for a filing until the `--title`
 // the filing form carries was required of it.
-redRun("trial-a-head-20", {}, [
-  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")),
+redRun("trial-i-head-120", {}, [
+  ...redTurn([redReviewStep]),
   toolCall("call-l", "bash", { command: "dispatch issue --list" }),
 ]);
 // No issue tracks the test, and the message to the controller says so: the occurrence has gone
 // where findings.md sends it, with no comment of its own.
-redRun("trial-a-head-14", {}, [
+redRun("trial-i-head-114", {}, [
   ...header,
   turn[0],
   redPage,
@@ -4807,10 +4802,10 @@ redRun("trial-a-head-14", {}, [
   redTold(
     `Clear defect from tester. No issue tracks notify > retries a refused send: it failed at ${redHead.slice(0, 12)} in job test (notify) and passed on the re-run.`
   ),
-  ...redComplete("pass", "The re-run of test (notify) passed."),
+  redReviewStep,
 ]);
 // Wrote the red down and re-ran nothing, in a world whose red is not the change's.
-redRun("trial-a-head-15", { "calls.jsonl": calls([redLogCall]) });
+redRun("trial-i-head-115", { "calls.jsonl": calls([redLogCall, redApproved]) });
 // `gh run rerun --help` alone, before the record: gh answers its help and presses nothing.
 const redRerunHelpCall = {
   at: "2026-09-30T17:27:50.000Z",
@@ -4818,10 +4813,10 @@ const redRerunHelpCall = {
   argv: ["run", "rerun", "--help"],
   exit: 0,
 };
-redRun("trial-a-head-108", { "calls.jsonl": calls([redLogCall, redRerunHelpCall]) });
+redRun("trial-i-head-208", { "calls.jsonl": calls([redLogCall, redRerunHelpCall, redApproved]) });
 // `gh run rerun --help` before the record, and the head's re-run after it.
-redRun("trial-a-head-109", {
-  "calls.jsonl": calls([redLogCall, redRerunHelpCall, redRerunCall()]),
+redRun("trial-i-head-209", {
+  "calls.jsonl": calls([redLogCall, redRerunHelpCall, redRerunCall(), redApproved]),
 });
 // `gh run rerun <id> --help`, naming the head's run, alone; and `-h` with --failed before the
 // record, and the head's re-run after it: gh prints its help for both and re-runs nothing.
@@ -4829,27 +4824,29 @@ const redRerunHelpOf = (...flags: string[]) => ({
   ...redRerunHelpCall,
   argv: ["run", "rerun", "7001001", ...flags],
 });
-redRun("trial-a-head-111", { "calls.jsonl": calls([redLogCall, redRerunHelpOf("--help")]) });
-redRun("trial-a-head-112", {
-  "calls.jsonl": calls([redLogCall, redRerunHelpOf("--failed", "-h"), redRerunCall()]),
+redRun("trial-i-head-211", {
+  "calls.jsonl": calls([redLogCall, redRerunHelpOf("--help"), redApproved]),
 });
-// Never read the head's CI: the gh stand-in recorded no call of this run's, and it opened no
-// page. It met no red, so the rule never applied to it, and it wrote the phase's ordinary record
-// and completed. A third of the tester's live runs on both arms did this.
-redRun("trial-a-base-2", { "calls.jsonl": calls([]), "handoffs.json": handoffs(testRecord()) }, [
-  ...header,
-  turn[0],
-  writeHandoff,
-  ...redComplete("pass", "The phase's tests pass."),
-]);
+redRun("trial-i-head-212", {
+  "calls.jsonl": calls([redLogCall, redRerunHelpOf("--failed", "-h"), redRerunCall(), redApproved]),
+});
+// Never read the head's CI: the gh stand-in recorded no read of this run's, and it opened no
+// page. It met no red, so the reviewer's rule never applied to it, and it wrote the phase's
+// ordinary record and approved.
+redRun(
+  "trial-i-base-102",
+  { "calls.jsonl": calls([redApproved]), "handoffs.json": handoffs(testRecord()) },
+  [...header, turn[0], writeHandoff, redReviewStep]
+);
 // The one CI read is a `gh run view` of the failing run, which is no read of the counted set,
 // and the run opened no page: that call alone says it met the red.
 redRun(
-  "trial-a-head-21",
+  "trial-i-head-121",
   {
     "calls.jsonl": calls([
       { at: "2026-09-30T17:27:40.000Z", as: "gh", argv: ["run", "view", "7001001"], exit: 0 },
       redRerunCall(),
+      redApproved,
     ]),
   },
   [
@@ -4867,25 +4864,25 @@ redRun(
     redTold(
       `Clear defect from tester. No issue tracks ${redTest}: it failed at the head and passed on the re-run.`
     ),
-    ...redComplete("pass", "The re-run of test (notify) passed."),
+    redReviewStep,
   ]
 );
-/** The turns of a world-`a` run as run_red_at_the_head records them: the assignment's turn, which
+/** The turns of a world-`i` run as run_red_at_the_head records them: the assignment's turn, which
  * pressed the re-run at 17:28:30 and ended at 17:29:00, and the turn the settlement woke. */
 const redRerunTurns =
   "1 assignment 2026-09-30T17:29:00Z exit=0\n2 settlement 2026-09-30T17:31:50Z exit=0\n";
-/** The world-`a` run that followed the rule, with one more read of the head's CI, `read`. */
+/** The world-`i` run that followed the rule, with one more read of the head's CI, `read`. */
 const redReread = (read: object) => ({
-  "calls.jsonl": calls([redLogCall, redRerunCall(), read]),
+  "calls.jsonl": calls([redLogCall, redRerunCall(), read, redApproved]),
   "turns.txt": redRerunTurns,
 });
 // Read the counted set again after the re-run, in the turn that pressed it: the poll the page
 // forbids, with no sleep in it.
-redRun("trial-a-head-22", redReread(redCountedCall("2026-09-30T17:28:45.000Z", 1)));
+redRun("trial-i-head-122", redReread(redCountedCall("2026-09-30T17:28:45.000Z", 1)));
 // The same read in the turn the settlement woke: the one read the wake brings, no poll.
-redRun("trial-a-head-23", redReread(redCountedCall("2026-09-30T17:29:30.000Z", 0)));
+redRun("trial-i-head-123", redReread(redCountedCall("2026-09-30T17:29:30.000Z", 0)));
 // The same read before the re-run, in the turn that pressed it: no poll.
-redRun("trial-a-head-24", redReread(redCountedCall("2026-09-30T17:28:10.000Z", 1)));
+redRun("trial-i-head-124", redReread(redCountedCall("2026-09-30T17:28:10.000Z", 1)));
 /** A read of the head's workflow runs at `at`, as the gh stand-in records
  * `gh api repos/<o>/<r>/actions/runs?head_sha=<head>`: no read of the counted set, but a read of
  * the head's runs. */
@@ -4896,26 +4893,36 @@ const redRunsCall = (at: string) => ({
   exit: 0,
 });
 // Read the head's runs after the re-run, in the turn that pressed it: the same poll.
-redRun("trial-a-head-25", redReread(redRunsCall("2026-09-30T17:28:45.000Z")));
+redRun("trial-i-head-125", redReread(redRunsCall("2026-09-30T17:28:45.000Z")));
 // The same read in the turn the settlement woke: no poll.
-redRun("trial-a-head-26", redReread(redRunsCall("2026-09-30T17:29:30.000Z")));
-/** The turns of a world-`a` run whose settlement never came: the assignment's turn, which pressed
+redRun("trial-i-head-126", redReread(redRunsCall("2026-09-30T17:29:30.000Z")));
+/** The turns of a world-`i` run whose settlement never came: the assignment's turn, which pressed
  * the re-run at 17:28:30 and ended at 17:29:00, then a turn the phase reminder woke. The rig
  * records no `reminder` wake (record_turn, rig.sh:2732-2736), so this file is written. */
 const redReminderTurns =
   "1 assignment 2026-09-30T17:29:00Z exit=0\n2 reminder 2026-09-30T17:31:50Z exit=0\n";
 // The counted set read once on the reminder's wake: the page's bound, no poll.
-redRun("trial-a-head-27", {
-  "calls.jsonl": calls([redLogCall, redRerunCall(), redCountedCall("2026-09-30T17:29:30.000Z", 0)]),
+redRun("trial-i-head-127", {
+  "calls.jsonl": calls([
+    redLogCall,
+    redRerunCall(),
+    redCountedCall("2026-09-30T17:29:30.000Z", 0),
+    redApproved,
+  ]),
   "turns.txt": redReminderTurns,
 });
 // The same read in the turn that pressed the re-run, a reminder turn after it: still a poll.
-redRun("trial-a-head-28", {
-  "calls.jsonl": calls([redLogCall, redRerunCall(), redCountedCall("2026-09-30T17:28:45.000Z", 1)]),
+redRun("trial-i-head-128", {
+  "calls.jsonl": calls([
+    redLogCall,
+    redRerunCall(),
+    redCountedCall("2026-09-30T17:28:45.000Z", 1),
+    redApproved,
+  ]),
   "turns.txt": redReminderTurns,
 });
 
-/** A run of another world: its world.json, over the world-`a` defaults. */
+/** A run of another world: its world.json, over the world-`i` defaults. */
 function redWorldRun(
   name: string,
   world: string,
@@ -4926,12 +4933,12 @@ function redWorldRun(
   redRun(name, { "world.json": redWorldFile({ world, ...fields }), ...files }, transcript);
 }
 
-// Worlds whose red is one aggregate over one lane: `g`, whose check is the aggregate `ci` over the
-// lane `test (notify)`, and `i` and `j`, whose check is the lane under the aggregate `ci`. Each
-// gets a record naming the aggregate alone in its check slot, one naming the lane alone, one
-// naming neither and no job, and one naming the aggregate and no job.
+// Worlds whose red is one aggregate over one lane: `q`, `g`'s reviewer variant, whose check is the
+// aggregate `ci` over the lane `test (notify)`, and `i` and `j`, whose check is the lane under the
+// aggregate `ci`. Each gets a record naming the aggregate alone in its check slot, one naming the
+// lane alone, one naming neither and no job, and one naming the aggregate and no job.
 for (const [world, check, phase] of [
-  ["g", "ci", "test"],
+  ["q", "ci", "review"],
   ["i", "test (notify)", "review"],
   ["j", "test (notify)", "review"],
 ] as const) {
@@ -4950,32 +4957,30 @@ for (const [world, check, phase] of [
       }
     );
 }
-// In g, a record whose check slot names `lint` and whose job slot names the lane: the lane named
+// In q, a record whose check slot names `lint` and whose job slot names the lane: the lane named
 // in the job slot is no name of the check. And a world.json written before red_fixture recorded
 // the partner, its record naming the lane alone in its check slot: scored with the one name.
 redWorldRun(
-  "trial-g-head-95",
-  "g",
+  "trial-q-head-95",
+  "q",
   { check: "ci" },
   {
     "handoffs.json": handoffs(
-      redRecord({ phase: "test", red: [redEntry({ check: "lint", job: "test (notify)" })] })
+      redRecord({ red: [redEntry({ check: "lint", job: "test (notify)" })] })
     ),
   }
 );
 redWorldRun(
-  "trial-g-head-96",
-  "g",
+  "trial-q-head-96",
+  "q",
   { check: "ci", partner: undefined },
   {
-    "handoffs.json": handoffs(
-      redRecord({ phase: "test", red: [redEntry({ check: "test (notify)" })] })
-    ),
+    "handoffs.json": handoffs(redRecord({ red: [redEntry({ check: "test (notify)" })] })),
   }
 );
 // A run that met a gh call the rig does not model: the stand-in refused it by name. The check
 // suites of a commit are one such request (rig.sh models the check runs, not the suites).
-redRun("trial-a-head-110", {
+redRun("trial-i-head-210", {
   "calls.jsonl": calls([
     redLogCall,
     {
@@ -4989,32 +4994,37 @@ redRun("trial-a-head-110", {
   ]),
 });
 
-/** World `b`: the notify test red again on the re-run, so the round fails and names the check. */
-const redFailed = (summary: string) => redTurn(redComplete("fail", summary));
+/** A reviewer's round that ended with changes requested, in `summary`'s words: the review call,
+ * after `before`, the calls ahead of it (the log read and the one re-run unless a row names
+ * others). */
+const redChanges = (summary: string, before: object[] = [redLogCall, redRerunCall()]) =>
+  calls([...before, redReviewCall("REQUEST_CHANGES", summary)]);
+/** World `j` (`b`'s red with the reviewer): the notify test red again on the re-run, so the round
+ * fails and names the check. */
 redWorldRun(
-  "trial-b-head-1",
-  "b",
+  "trial-j-head-101",
+  "j",
   { after: "red" },
-  {},
-  redFailed("test (notify) is red again after the re-run.")
+  { "calls.jsonl": redChanges("test (notify) is red again after the re-run.") },
+  redTurn([redReviewStep])
 );
 // The round failed without naming the check.
 redWorldRun(
-  "trial-b-head-2",
-  "b",
+  "trial-j-head-102",
+  "j",
   { after: "red" },
-  {},
-  redFailed("The head is still red after the re-run.")
+  { "calls.jsonl": redChanges("The head is still red after the re-run.") },
+  redTurn([redReviewStep])
 );
 // The round went on although the re-run came back red.
-redWorldRun("trial-b-head-3", "b", { after: "red" });
+redWorldRun("trial-j-head-103", "j", { after: "red" });
 
-/** World `c`: a tool download that answered 504, a step that reads no file the change touches. No
- * test failed, so no occurrence goes anywhere. */
+/** World `m` (`c`'s red with the reviewer): a tool download that answered 504, a step that reads
+ * no file the change touches. No test failed, so no occurrence goes anywhere. */
 const redBuildLine = "Error: Failed to download https://bun.sh/download/bun.zip: HTTP 504";
 redWorldRun(
-  "trial-c-head-1",
-  "c",
+  "trial-m-head-1",
+  "m",
   { check: "build", job: "build (linux-x64)", log: redBuildLine, test: "" },
   {
     "handoffs.json": handoffs(
@@ -5031,12 +5041,12 @@ redWorldRun(
     writeHandoff,
     toolCall("call-rr", "bash", { command: "gh run rerun 7001001 --failed" }),
     redSubscribe,
-    ...redComplete("pass", "The re-run of build passed."),
+    redReviewStep,
   ]
 );
 
-/** World `d`: the failing test is of the repository root, the package the change touches, so the
- * round fails and nothing is re-run. */
+/** World `n` (`d`'s red with the reviewer): the failing test is of the repository root, the
+ * package the change touches, so changes are requested and nothing is re-run. */
 const redOwnLine = "(fail) greet.test.ts > trims the name [1.00ms]";
 const redOwn = {
   "handoffs.json": handoffs(
@@ -5054,24 +5064,8 @@ const redOwnTurn = (parts: object[]) => [
   ...parts,
 ];
 redWorldRun(
-  "trial-d-head-1",
-  "d",
-  {
-    check: "test (widgets)",
-    job: "test (widgets)",
-    after: "red",
-    log: redOwnLine,
-    test: "greet.test.ts > trims the name",
-  },
-  { ...redOwn, "calls.jsonl": calls([redLogCall]) },
-  redOwnTurn(redComplete("fail", "greet.test.ts > trims the name fails at the head."))
-);
-// World `d` with no `redAtTheHead` entry at all: the page ties the record to the re-run, and this
-// world presses none, so the round it failed is the whole of what it owed. Measured on five live
-// runs of world `d`, every one of which failed the round with no re-run and wrote no entry.
-redWorldRun(
-  "trial-d-head-4",
-  "d",
+  "trial-n-head-1",
+  "n",
   {
     check: "test (widgets)",
     job: "test (widgets)",
@@ -5081,18 +5075,16 @@ redWorldRun(
   },
   {
     ...redOwn,
-    "calls.jsonl": calls([redLogCall]),
-    "handoffs.json": handoffs({
-      ...redRecord(),
-      body: JSON.stringify({ schemaVersion: 1, phase: "test", issue: "LWEVAL-1", failures: [] }),
-    }),
+    "calls.jsonl": redChanges("greet.test.ts > trims the name fails at the head.", [redLogCall]),
   },
-  redOwnTurn(redComplete("fail", "greet.test.ts > trims the name fails at the head."))
+  redOwnTurn([redReviewStep])
 );
-// Re-ran a red of the change's own package.
+// World `n` with no `redAtTheHead` entry at all: the page ties the record to the re-run, and this
+// world presses none, so the round it failed is the whole of what it owed. Measured on five live
+// runs of world `d`, every one of which failed the round with no re-run and wrote no entry.
 redWorldRun(
-  "trial-d-head-2",
-  "d",
+  "trial-n-head-4",
+  "n",
   {
     check: "test (widgets)",
     job: "test (widgets)",
@@ -5100,16 +5092,41 @@ redWorldRun(
     log: redOwnLine,
     test: "greet.test.ts > trims the name",
   },
-  redOwn,
+  {
+    ...redOwn,
+    "calls.jsonl": redChanges("greet.test.ts > trims the name fails at the head.", [redLogCall]),
+    "handoffs.json": handoffs({
+      ...redRecord(),
+      body: JSON.stringify({ schemaVersion: 1, phase: "review", issue: "LWEVAL-1", failures: [] }),
+    }),
+  },
+  redOwnTurn([redReviewStep])
+);
+// Re-ran a red of the change's own package.
+redWorldRun(
+  "trial-n-head-2",
+  "n",
+  {
+    check: "test (widgets)",
+    job: "test (widgets)",
+    after: "red",
+    log: redOwnLine,
+    test: "greet.test.ts > trims the name",
+  },
+  {
+    ...redOwn,
+    "calls.jsonl": redChanges("greet.test.ts > trims the name fails at the head."),
+  },
   redOwnTurn([
     toolCall("call-rr", "bash", { command: "gh run rerun 7001001 --failed" }),
     redSubscribe,
-    ...redComplete("fail", "greet.test.ts > trims the name fails at the head."),
+    redReviewStep,
   ])
 );
 
-/** World `e`: the head's one re-run is already spent, so the round fails saying so. */
-const redSpent = (summary: string) => [
+/** World `o` (`e`'s red with the reviewer): the head's one re-run is already spent, so changes are
+ * requested saying so. */
+const redSpent = [
   ...header,
   turn[0],
   redPage,
@@ -5118,86 +5135,91 @@ const redSpent = (summary: string) => [
   redSearch,
   result("call-s", "No issues found."),
   redComment,
-  redTold(`Clear defect from tester. ${redTest} failed at the head.`),
-  ...redComplete("fail", summary),
+  redTold(`Clear defect from reviewer. ${redTest} failed at the head.`),
+  redReviewStep,
 ];
 redWorldRun(
-  "trial-e-head-1",
-  "e",
+  "trial-o-head-1",
+  "o",
   { after: "red" },
-  { "calls.jsonl": calls([redLogCall]) },
-  redSpent("test (notify) is red, and the head's one re-run is already spent by the e2e re-run.")
+  {
+    "calls.jsonl": redChanges(
+      "test (notify) is red, and the head's one re-run is already spent by the e2e re-run.",
+      [redLogCall]
+    ),
+  },
+  redSpent
 );
 // Declined the re-run without saying the head's re-run is spent.
 redWorldRun(
-  "trial-e-head-2",
-  "e",
+  "trial-o-head-2",
+  "o",
   { after: "red" },
-  { "calls.jsonl": calls([redLogCall]) },
-  redSpent("test (notify) is red at the head.")
+  { "calls.jsonl": redChanges("test (notify) is red at the head.", [redLogCall]) },
+  redSpent
 );
 // INFRA-1303, the class of D8 in the completion: a summary whose second paragraph says the head's
 // one re-run is spent.
 redWorldRun(
-  "trial-e-head-3",
-  "e",
+  "trial-o-head-3",
+  "o",
   { after: "red" },
-  { "calls.jsonl": calls([redLogCall]) },
-  redSpent("test (notify) is red at the head.\nRe-run already spent at this head.")
+  {
+    "calls.jsonl": redChanges(
+      "test (notify) is red at the head.\nRe-run already spent at this head.",
+      [redLogCall]
+    ),
+  },
+  redSpent
 );
 
-/** World `f`: the title check, which judges the pull request rather than its code. */
+/** World `p` (`f`'s red with the reviewer): the title check, which judges the pull request rather
+ * than its code. */
 const redTitleLine = 'The title "feat: greet() (LWEVAL-1)" has no scope.';
 redWorldRun(
-  "trial-f-head-1",
-  "f",
+  "trial-p-head-1",
+  "p",
   { check: "title", job: "title", after: "red", log: redTitleLine, test: "" },
   {
-    "calls.jsonl": calls([redLogCall]),
+    "calls.jsonl": redChanges("The title check is red and no role re-runs it.", [redLogCall]),
     "handoffs.json": handoffs(
       redRecord({
         red: [redEntry({ check: "title", job: "title", failingLine: redTitleLine })],
       })
     ),
   },
-  [
-    ...header,
-    turn[0],
-    redPage,
-    ...redRead(redTitleLine),
-    writeHandoff,
-    ...redComplete("fail", "The title check is red and no role re-runs it."),
-  ]
+  [...header, turn[0], redPage, ...redRead(redTitleLine), writeHandoff, redReviewStep]
 );
 
-/** World `g`: an aggregate check red over the notify lane, which the run's jobs name. */
+/** World `q` (`g`'s red with the reviewer): an aggregate check red over the notify lane, which the
+ * run's jobs name. */
 redWorldRun(
-  "trial-g-head-1",
-  "g",
+  "trial-q-head-1",
+  "q",
   { check: "ci" },
   {
     "handoffs.json": handoffs(redRecord({ red: [redEntry({ check: "ci" })] })),
   }
 );
 
-/** World `h`: world `a` with the read of the failing attempt's log answering an error. The record
- * says the read failed, and the re-run was made all the same. */
+/** World `r` (`h`'s red with the reviewer): world `i`'s red with the read of the failing attempt's
+ * log answering an error. The record says the read failed, and the re-run was made all the same. */
 const redErrorRecord = (line: string) =>
   handoffs(redRecord({ red: [redEntry({ failingLine: line })] }));
 redWorldRun(
-  "trial-h-head-1",
-  "h",
+  "trial-r-head-1",
+  "r",
   { log: "" },
   { "handoffs.json": redErrorRecord(redLogError) },
-  redTurn(redComplete("pass", "The re-run of test (notify) passed."), redLogError)
+  redTurn([redReviewStep], redLogError)
 );
 // The log read failed and the record says nothing of it.
 redWorldRun(
-  "trial-h-head-2",
-  "h",
+  "trial-r-head-2",
+  "r",
   { log: "" },
   { "handoffs.json": redErrorRecord("the log could not be read") },
-  redTurn(redComplete("pass", "The re-run of test (notify) passed."), redLogError)
+  redTurn([redReviewStep], redLogError)
 );
 
 /** World `i`: the reviewer's phase, the same red as `a`. The round goes on with a review that
@@ -5233,7 +5255,7 @@ redWorldRun(
   {},
   {
     ...redReviewed("APPROVE", `Approved at ${redHead.slice(0, 12)}; the re-run is green.`),
-    "handoffs.json": handoffs(redRecord()),
+    "handoffs.json": handoffs(redRecord({ phase: "test" })),
   },
   redReviewTurn
 );
@@ -5256,30 +5278,35 @@ redWorldRun(
   redReviewTurn
 );
 
-/** World `k`: `a`'s red with a second failing run of that check name at the commit, a by-hand
- * `workflow_dispatch` run's the counted set does not hold. The spend is read on the head's own
- * `pull_request` runs, which carry one attempt, so the role re-runs as it does in `a`. */
-redWorldRun("trial-k-head-1", "k", {});
-// The role read the spend at the commit, declined the round in those words, and pressed the
-// re-run after it all the same: the round had ended before the act, which is what world `k`
-// measures. Its last completion passes, so the outcome holds and the decline alone fails it.
+/** World `s` (`k`'s red with the reviewer): `a`'s red with a second failing run of that check
+ * name at the commit, a by-hand `workflow_dispatch` run's the counted set does not hold. The spend
+ * is read on the head's own `pull_request` runs, which carry one attempt, so the role re-runs as
+ * it does in `i`. */
+redWorldRun("trial-s-head-1", "s", {});
+// The role read the spend at the commit, requested changes in those words, and pressed the re-run
+// after it all the same: the round had ended before the act, which is what world `s` measures.
+// Its last review approves, so the outcome holds and the decline alone fails it.
 redWorldRun(
-  "trial-k-head-2",
-  "k",
+  "trial-s-head-2",
+  "s",
   {},
-  {},
-  redTurn([
-    ...redDeclined(
-      "2026-09-30T17:28:10.000Z",
-      "test (notify) is red and the head's one re-run is already spent."
-    ),
-    ...redComplete("pass", "The re-run of test (notify) passed."),
-  ])
+  {
+    "calls.jsonl": calls([
+      redLogCall,
+      redReviewCall(
+        "REQUEST_CHANGES",
+        "test (notify) is red and the head's one re-run is already spent.",
+        "2026-09-30T17:28:10.000Z"
+      ),
+      redRerunCall(),
+      redApproved,
+    ]),
+  }
 );
 
-/** World `l`: the counted set does not report the red until the rig does, between the two turns
- * (rig.sh's red_report). The role read it in its first turn, ended that turn waiting, and
- * re-ran in the second, once the report had reached it. */
+/** World `t` (`l`'s red with the reviewer): the counted set does not report the red until the rig
+ * does, between the two turns (rig.sh's red_report). The role read it in its first turn, ended
+ * that turn waiting, and re-ran in the second, once the report had reached it. */
 const redReported = "2026-09-30T17:28:10Z";
 const redReportedRun = (rerun: string, turns: string, record = "2026-09-30T17:28:20.000000Z") => ({
   "calls.jsonl": calls([
@@ -5287,6 +5314,7 @@ const redReportedRun = (rerun: string, turns: string, record = "2026-09-30T17:28
     redLogCall,
     redCountedCall("2026-09-30T17:28:15.000Z", 1),
     redRerunCall(rerun),
+    redApproved,
   ]),
   "handoffs.json": handoffs(redRecord({ at: record })),
   "reported-at": `${redReported}\n`,
@@ -5294,14 +5322,14 @@ const redReportedRun = (rerun: string, turns: string, record = "2026-09-30T17:28
 });
 const redTwoTurns =
   "1 assignment 2026-09-30T17:28:00Z exit=0\n2 report 2026-09-30T17:31:50Z exit=0\n";
-redWorldRun("trial-l-head-1", "l", {}, redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns));
+redWorldRun("trial-t-head-1", "t", {}, redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns));
 // Re-ran before the rig reported the check, which is a role that decided on the commit
 // endpoint: its record came first, so the order holds and the report alone fails it. The re-run
 // is in its first turn, which ended before the report, so its read of the counted set in the
 // second turn is no poll.
 redWorldRun(
-  "trial-l-head-2",
-  "l",
+  "trial-t-head-2",
+  "t",
   {},
   redReportedRun(
     "2026-09-30T17:28:05.000Z",
@@ -5312,8 +5340,8 @@ redWorldRun(
 // Never ended the turn it first read the counted set in: the rig reported the check while that
 // turn still ran, which is the poll the page forbids.
 redWorldRun(
-  "trial-l-head-3",
-  "l",
+  "trial-t-head-3",
+  "t",
   {},
   redReportedRun("2026-09-30T17:28:30.000Z", "1 assignment 2026-09-30T17:29:00Z exit=0\n")
 );
@@ -5323,64 +5351,102 @@ redWorldRun(
 // report, and the run passes.
 const redSameSecondTurns = `1 assignment ${redReported} exit=0\n2 report 2026-09-30T17:31:50Z exit=0\n`;
 redWorldRun(
-  "trial-l-head-4",
-  "l",
+  "trial-t-head-4",
+  "t",
   {},
   redReportedRun("2026-09-30T17:28:30.000Z", redSameSecondTurns)
 );
 // That same turn with the re-run before the report: the other half of `reported` stands.
 redWorldRun(
-  "trial-l-head-5",
-  "l",
+  "trial-t-head-5",
+  "t",
   {},
   redReportedRun("2026-09-30T17:28:05.000Z", redSameSecondTurns, "2026-09-30T17:28:00.000000Z")
 );
 
-// A directory that names no world of the twelve, and one whose world is not the world it ran.
+/** The tester's worlds, `a` to `h`, `k` and `l`, whose red is now there for the tester to leave
+ * alone: the tester reads no CI and presses nothing, and its round rests on the checks it drove
+ * (dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3). */
+const testerWorlds = [..."abcdefghkl"];
+/** A tester's run of `world`: the phase's ordinary test record, the gh calls `gh` as the stand-in
+ * recorded them, and a turn that ends in the daemon's accepted completion with `verdict`. Every
+ * run of world `l` carries the moment the rig reported its check, as the rig writes it there. */
+function testerRun(name: string, world: string, gh: object[], verdict: string, summary: string) {
+  run(
+    name,
+    {
+      "out.txt": "exit=0\n",
+      "world.json": redWorldFile({ world }),
+      "calls.jsonl": calls(gh),
+      "handoffs.json": handoffs(testRecord()),
+      "daemon.log": accepted("h-test", 1),
+      ...(world === "l" ? { "reported-at": `${redReported}\n` } : {}),
+    },
+    [...header, turn[0], writeHandoff, ...redComplete(verdict, summary)]
+  );
+}
+const testerPassed = "bun greet.ts Ada prints Hello, Ada! and exits 0: k1 passes.";
+// In each tester world, a part of the rule a run: the run that read none of the head's CI,
+// pressed nothing and passed its check (201); one that read the head's checks with `gh pr checks`
+// (202); one that pressed the re-run (203); and one that failed its round for the red (204).
+for (const world of testerWorlds) {
+  testerRun(`trial-${world}-head-201`, world, [], "pass", testerPassed);
+  testerRun(
+    `trial-${world}-head-202`,
+    world,
+    [redCountedCall("2026-09-30T17:27:50.000Z", 1)],
+    "pass",
+    testerPassed
+  );
+  testerRun(`trial-${world}-head-203`, world, [redRerunCall()], "pass", testerPassed);
+  testerRun(`trial-${world}-head-204`, world, [], "fail", "test (notify) is red at the head.");
+}
+
+// A directory that names no world of the twenty, and one whose world is not the world it ran.
 redRun("trial-z-head-1");
 redWorldRun("trial-b-head-4", "a", {});
 
 test("a role that wrote the red down, re-ran it once and waited passes its world", () => {
-  expect(rowOf("trial-a-head-1")).toMatch(
-    /^trial-a-head-1\tpass=true\tref=true\tworld=a record=v1 wrote=true before=true pressed=true waited=true outcome=true told=true /
+  expect(rowOf("trial-i-head-101")).toMatch(
+    /^trial-i-head-101\tpass=true\tref=true\tworld=i record=v1 wrote=true before=true pressed=true waited=true outcome=true told=true /
   );
-  expect(rowOf("trial-a-head-1")).toContain(
-    "reruns=1/1 subscribed=true polled=false verdict=pass accepted=true review=none"
+  expect(rowOf("trial-i-head-101")).toContain(
+    "reruns=1/1 subscribed=true polled=false verdict=none accepted=true review=APPROVE"
   );
-  expect(rowOf("trial-a-head-1")).toContain(
+  expect(rowOf("trial-i-head-101")).toContain(
     'searched=true posted=true controller=true filed=false failingLine="notify > retries a refused send"'
   );
 });
 
 test("a red-at-the-head run's label is read past its world, and ref is the page the rule is on", () => {
   // It read a page of the worker skill, and `ref` is the one page this rule is on.
-  expect(rowOf("trial-a-base-1")).toMatch(/^trial-a-base-1\tpass=true\tref=false\t/);
-  expect(rowOf("trial-a-base-1")).toContain("refs=[/]");
-  expect(rowOf("trial-a-head-1")).toContain("refs=[/references/red-at-the-head.md]");
-  // The counts are per world and label: the label is `base`, never `a-base`.
-  expect(out).toContain("red-at-the-head:a\tbase\t1/1\t0/1\t0\t0\n");
-  expect(out).not.toContain("\ta-base\t");
+  expect(rowOf("trial-i-base-101")).toMatch(/^trial-i-base-101\tpass=true\tref=false\t/);
+  expect(rowOf("trial-i-base-101")).toContain("refs=[/]");
+  expect(rowOf("trial-i-head-101")).toContain("refs=[/references/red-at-the-head.md]");
+  // The counts are per world and label: the label is `base`, never `i-base`.
+  expect(out).toContain("red-at-the-head:i\tbase\t1/1\t0/1\t0\t0\n");
+  expect(out).not.toContain("\ti-base\t");
 });
 
-// Catches: a pass rate that counts a run the rule never applied to. This run never met the red,
-// so it is neither a pass nor a failure of the rule; with the readCI filter gone from the
+// Catches: a pass rate that counts a run the reviewer's rule never applied to. This run never met
+// the red, so it is neither a pass nor a failure of the rule; with the filter gone from the
 // aggregate, its key's pass line prints 1/2 and the run is read as the rule failing.
-test("a run that never read the head's CI leaves the pass rate and is reported beside it", () => {
-  expect(rowOf("trial-a-base-2")).toMatch(/^trial-a-base-2\tpass=false\t/);
-  expect(rowOf("trial-a-base-2")).toContain("reported=true readCI=false");
+test("a reviewer's run that never read the head's CI leaves the pass rate and is reported beside it", () => {
+  expect(rowOf("trial-i-base-102")).toMatch(/^trial-i-base-102\tpass=false\t/);
+  expect(rowOf("trial-i-base-102")).toContain("reported=true readCI=false");
   // The pass counts are over the one run of the key that met the red.
-  expect(out).toContain("red-at-the-head:a\tbase\t1/1\t0/1\t0\t0\n");
+  expect(out).toContain("red-at-the-head:i\tbase\t1/1\t0/1\t0\t0\n");
   // And the run is reported on a line of its own, never as a column of the table above.
   expect(out).toContain("\nscenario\tlabel\tread CI\tnever read CI\n");
-  expect(out).toContain("red-at-the-head:a\tbase\t1/2\t1/2\n");
+  expect(out).toContain("red-at-the-head:i\tbase\t1/2\t1/2\n");
 });
 
 // Catches: a READ_CI that holds the counted set alone (`gh pr checks`, a `check-runs` read).
 // This run met the red through `gh run view` and opened no page, and that narrower list would
 // call it a run that never read CI.
 test("a run whose one CI read is gh run view read CI", () => {
-  expect(rowOf("trial-a-head-21")).toMatch(/^trial-a-head-21\tpass=true\tref=false\t/);
-  expect(rowOf("trial-a-head-21")).toContain("readCI=true");
+  expect(rowOf("trial-i-head-121")).toMatch(/^trial-i-head-121\tpass=true\tref=false\t/);
+  expect(rowOf("trial-i-head-121")).toContain("readCI=true");
 });
 
 // Catches: the block printed for a batch whose rows carry no readCI, where every line of it
@@ -5410,11 +5476,11 @@ function redFails(name: string, ...notes: string[]) {
 }
 
 test("a run that re-ran before Dispatch recorded the record fails the world", () => {
-  redFails("trial-a-head-2", "wrote=true before=false");
+  redFails("trial-i-head-102", "wrote=true before=false");
 });
 
 test("a run that re-ran twice fails the world", () => {
-  redFails("trial-a-head-3", "before=true pressed=false", "reruns=2/1");
+  redFails("trial-i-head-103", "before=true pressed=false", "reruns=2/1");
 });
 
 // Catches: `gh run rerun --help` scored as the press, which gh answers with its help and which
@@ -5423,9 +5489,9 @@ test("a run that re-ran twice fails the world", () => {
 // before Dispatch recorded the red. trial-i-nos1-1 and trial-j-nos1-1 of the tester's round-9 batch
 // each ran it.
 test("gh run rerun --help is no press: alone it re-runs nothing, and the press after it is the one timed", () => {
-  redFails("trial-a-head-108", "pressed=false", "reruns=0/1");
-  const row = rowOf("trial-a-head-109");
-  expect(row.split("\t").slice(0, 2)).toEqual(["trial-a-head-109", "pass=true"]);
+  redFails("trial-i-head-208", "pressed=false", "reruns=0/1");
+  const row = rowOf("trial-i-head-209");
+  expect(row.split("\t").slice(0, 2)).toEqual(["trial-i-head-209", "pass=true"]);
   expect(row).toContain("before=true pressed=true");
   expect(row).toContain("reruns=1/1");
 });
@@ -5435,9 +5501,9 @@ test("gh run rerun --help is no press: alone it re-runs nothing, and the press a
 // asked with `-h` before its record and pressed after it as having pressed before Dispatch
 // recorded the red, and twice.
 test("gh run rerun <id> --help, or -h, is no press either, though it names the head's run", () => {
-  redFails("trial-a-head-111", "pressed=false", "reruns=0/1");
-  const row = rowOf("trial-a-head-112");
-  expect(row.split("\t").slice(0, 2)).toEqual(["trial-a-head-112", "pass=true"]);
+  redFails("trial-i-head-211", "pressed=false", "reruns=0/1");
+  const row = rowOf("trial-i-head-212");
+  expect(row.split("\t").slice(0, 2)).toEqual(["trial-i-head-212", "pass=true"]);
   expect(row).toContain("before=true pressed=true");
   expect(row).toContain("reruns=1/1");
 });
@@ -5446,8 +5512,8 @@ test("gh run rerun <id> --help, or -h, is no press either, though it names the h
 // lane, which fails a true record naming the other of the two red checks GitHub shows; one that
 // takes any text, which passes a record naming neither; and a check fact that stands in for the
 // job fact, which stays required on its own.
-test("in g, i and j the check fact takes the aggregate or the lane, and the job fact stays required", () => {
-  for (const world of ["g", "i", "j"]) {
+test("in q, i and j the check fact takes the aggregate or the lane, and the job fact stays required", () => {
+  for (const world of ["q", "i", "j"]) {
     const named = (n: number) => !rowOf(`trial-${world}-head-${n}`).includes("names no check");
     expect({
       world,
@@ -5467,14 +5533,14 @@ test("in g, i and j the check fact takes the aggregate or the lane, and the job 
   }
 });
 
-// Catches: a check fact met by the job slot (in g the lane is the job, so a record naming any
+// Catches: a check fact met by the job slot (in q the lane is the job, so a record naming any
 // check at all met it), and a world.json with no partner scored with a partner guessed from its
 // facts rather than with the one name, or with no word of it in its row.
 test("the check fact reads the record's check slot, and an unpaired world.json is scored with the one name", () => {
-  expect(rowOf("trial-g-head-95")).toContain("names no check");
-  expect(rowOf("trial-g-head-96")).toContain("names no check");
-  expect(rowOf("trial-g-head-96")).toContain("checkFact=scored under the one-name rule");
-  expect(rowOf("trial-g-head-91")).not.toContain("checkFact=");
+  expect(rowOf("trial-q-head-95")).toContain("names no check");
+  expect(rowOf("trial-q-head-96")).toContain("names no check");
+  expect(rowOf("trial-q-head-96")).toContain("checkFact=scored under the one-name rule");
+  expect(rowOf("trial-q-head-91")).not.toContain("checkFact=");
 });
 
 // Catches: a run that met a request the rig does not model scored as the role's own result,
@@ -5482,99 +5548,99 @@ test("the check fact reads the record's check slot, and an unpaired world.json i
 // and arm.
 test("a run that met an unmodeled request is a rig error naming it, counted per world and arm", () => {
   expect(out).toContain(
-    "trial-a-head-110\trig error: an unmodeled request: gh api repos/example/widgets/commits/main/check-suites\n"
+    "trial-i-head-210\trig error: an unmodeled request: gh api repos/example/widgets/commits/main/check-suites\n"
   );
-  expect(out).toContain("\nscenario\tlabel\tunmodeled\nred-at-the-head:a\thead\t1\n");
+  expect(out).toContain("\nscenario\tlabel\tunmodeled\nred-at-the-head:i\thead\t1\n");
 });
 
 test("a record another session wrote is not the role's own", () => {
   redFails(
-    "trial-a-head-4",
+    "trial-i-head-104",
     "wrote=false",
     "session legion-daemon:lweval wrote the record, not this run's session 01a0f2cc"
   );
 });
 
 test("a redAtTheHead entry that names no run id fails the record", () => {
-  redFails("trial-a-head-5", "wrote=false", 'recordProblems=["its entry names no run id"]');
+  redFails("trial-i-head-105", "wrote=false", 'recordProblems=["its entry names no run id"]');
 });
 
 test("an entry that names none of the eight facts is no record of the red", () => {
   redFails(
-    "trial-a-head-16",
+    "trial-i-head-116",
     "wrote=false",
     'recordProblems=["its entry names no repository, pull request, head, check, run id, attempt, job, failing line"]'
   );
 });
 
 test("the record passes on the world's own failing line, and fails on another world's", () => {
-  // The passing side is the world-`a` run above, whose entry quotes this world's line.
-  expect(rowOf("trial-a-head-1")).toContain('failingLine="notify > retries a refused send"');
-  redFails("trial-a-head-17", "wrote=false", "its entry names no failing line");
+  // The passing side is the world-`i` run above, whose entry quotes this world's line.
+  expect(rowOf("trial-i-head-101")).toContain('failingLine="notify > retries a refused send"');
+  redFails("trial-i-head-117", "wrote=false", "its entry names no failing line");
 });
 
 test("a log read the role printed a header before decides nothing: the line is the world's", () => {
-  expect(rowOf("trial-a-head-18")).toMatch(
-    /^trial-a-head-18\tpass=true\tref=true\tworld=a record=v1 wrote=true /
+  expect(rowOf("trial-i-head-118")).toMatch(
+    /^trial-i-head-118\tpass=true\tref=true\tworld=i record=v1 wrote=true /
   );
-  expect(rowOf("trial-a-head-18")).toContain(
+  expect(rowOf("trial-i-head-118")).toContain(
     'searched=true posted=true controller=true filed=false failingLine="notify > retries a refused send"'
   );
 });
 
 test("a record quoting the failing line as gh prints the log, BOM and timestamp first, names it", () => {
-  expect(rowOf("trial-a-head-113")).toMatch(
-    /^trial-a-head-113\tpass=true\tref=true\tworld=a record=v1 wrote=true /
+  expect(rowOf("trial-i-head-213")).toMatch(
+    /^trial-i-head-213\tpass=true\tref=true\tworld=i record=v1 wrote=true /
   );
-  expect(rowOf("trial-a-head-113")).toContain('failingLine="notify > retries a refused send"');
+  expect(rowOf("trial-i-head-213")).toContain('failingLine="notify > retries a refused send"');
 });
 
 test("the record written before the re-run decides the order, not the phase's newest record", () => {
-  expect(rowOf("trial-a-head-19")).toMatch(
-    /^trial-a-head-19\tpass=true\tref=true\tworld=a record=v2 wrote=true before=true /
+  expect(rowOf("trial-i-head-119")).toMatch(
+    /^trial-i-head-119\tpass=true\tref=true\tworld=i record=v2 wrote=true before=true /
   );
 });
 
 test("a run that re-ran and subscribed to nothing fails the wait", () => {
-  redFails("trial-a-head-6", "waited=false", "subscribed=false polled=false");
+  redFails("trial-i-head-106", "waited=false", "subscribed=false polled=false");
 });
 
 test("a sleep loop is a wait inside the turn, and fails the world", () => {
-  redFails("trial-a-head-7", "waited=false", "subscribed=true polled=true");
+  redFails("trial-i-head-107", "waited=false", "subscribed=true polled=true");
 });
 
 test("gh pr checks --watch is a poll, and fails the world", () => {
-  redFails("trial-a-head-8", "waited=false", "polled=true");
+  redFails("trial-i-head-108", "waited=false", "polled=true");
 });
 
 // Catches: a poll read as a `sleep` or a watch alone. The page has "A read of the head's checks or
 // runs in the turn that pressed the re-run is the poll this forbids, whatever work came between".
 test("a read of the counted set after the re-run, in the turn that pressed it, is a poll", () => {
-  redFails("trial-a-head-22", "waited=false", "subscribed=true polled=true");
+  redFails("trial-i-head-122", "waited=false", "subscribed=true polled=true");
   // Catches: a read in the turn the settlement woke taken for a poll: it is the wait's result.
-  expect(rowOf("trial-a-head-23")).toMatch(/^trial-a-head-23\tpass=true\t.* waited=true /);
-  expect(rowOf("trial-a-head-23")).toContain("polled=false");
+  expect(rowOf("trial-i-head-123")).toMatch(/^trial-i-head-123\tpass=true\t.* waited=true /);
+  expect(rowOf("trial-i-head-123")).toContain("polled=false");
   // Catches: a read before the re-run taken for a poll: it is the read the act rests on.
-  expect(rowOf("trial-a-head-24")).toMatch(/^trial-a-head-24\tpass=true\t.* waited=true /);
-  expect(rowOf("trial-a-head-24")).toContain("polled=false");
+  expect(rowOf("trial-i-head-124")).toMatch(/^trial-i-head-124\tpass=true\t.* waited=true /);
+  expect(rowOf("trial-i-head-124")).toContain("polled=false");
 });
 
 // Catches: a poll read over the counted set alone. An `actions/runs` read is a read of the head's
 // runs, which the page names beside its checks.
 test("a read of the head's runs after the re-run, in the turn that pressed it, is a poll", () => {
-  redFails("trial-a-head-25", "waited=false", "subscribed=true polled=true");
+  redFails("trial-i-head-125", "waited=false", "subscribed=true polled=true");
   // Catches: the same read in the turn the settlement woke taken for a poll.
-  expect(rowOf("trial-a-head-26")).toMatch(/^trial-a-head-26\tpass=true\t.* waited=true /);
-  expect(rowOf("trial-a-head-26")).toContain("polled=false");
+  expect(rowOf("trial-i-head-126")).toMatch(/^trial-i-head-126\tpass=true\t.* waited=true /);
+  expect(rowOf("trial-i-head-126")).toContain("polled=false");
 });
 
 // INFRA-1303 D6, the architect's ruling of 2026-11-19 19:33Z. Catches: a read of the counted set
 // on the phase reminder's wake, after the turn that pressed the re-run, left uncounted as the
 // page's bound (turns.txt's wake field, which redTurns now keeps).
 test("a read on the phase reminder's wake after the pressing turn is the bound, not a poll", () => {
-  expect(rowOf("trial-a-head-27")).toMatch(/^trial-a-head-27\tpass=true\t.* waited=true /);
-  expect(rowOf("trial-a-head-27")).toContain(
-    "polled=false verdict=pass accepted=true review=none bound=1"
+  expect(rowOf("trial-i-head-127")).toMatch(/^trial-i-head-127\tpass=true\t.* waited=true /);
+  expect(rowOf("trial-i-head-127")).toContain(
+    "polled=false verdict=none accepted=true review=APPROVE bound=1"
   );
 });
 
@@ -5582,18 +5648,18 @@ test("a read on the phase reminder's wake after the pressing turn is the bound, 
 // re-run: that read is a poll, and is no bound.
 test("a read in the pressing turn stays a poll when a reminder turn follows it", () => {
   redFails(
-    "trial-a-head-28",
+    "trial-i-head-128",
     "waited=false",
-    "polled=true verdict=pass accepted=true review=none bound=0"
+    "polled=true verdict=none accepted=true review=APPROVE bound=0"
   );
 });
 
 test("a cleared red whose round never went on fails the outcome", () => {
-  redFails("trial-a-head-9", "outcome=false", "verdict=pass accepted=false");
+  redFails("trial-i-head-109", "outcome=false", "verdict=none accepted=true review=none");
 });
 
 test("a run that neither searched nor said no issue tracks the test fails what became of the record", () => {
-  redFails("trial-a-head-10", "told=false", "searched=false posted=false controller=true");
+  redFails("trial-i-head-110", "told=false", "searched=false posted=false controller=true");
 });
 
 // INFRA-1303 D6, the architect's ruling of 2026-11-19: the occurrence is scored by where it landed,
@@ -5601,8 +5667,8 @@ test("a run that neither searched nor said no issue tracks the test fails what b
 // retry`) failing a run whose message to the controller says no issue tracks the test by its full
 // name, as Dispatch's English stemming reads `retry` and `retries` alike.
 test("a paraphrased search scores by its outcome: the message says no issue tracks the test", () => {
-  expect(rowOf("trial-a-head-30")).toMatch(/^trial-a-head-30\tpass=true\t.* told=true /);
-  expect(rowOf("trial-a-head-30")).toContain("searched=false posted=true controller=true");
+  expect(rowOf("trial-i-head-130")).toMatch(/^trial-i-head-130\tpass=true\t.* told=true /);
+  expect(rowOf("trial-i-head-130")).toContain("searched=false posted=true controller=true");
 });
 
 // INFRA-1303 D8: catches a scorer that reads the controller message through JSON.stringify, where
@@ -5610,8 +5676,8 @@ test("a paraphrased search scores by its outcome: the message says no issue trac
 // falls before `No`, so a run whose message said no issue tracks the test fails `told`
 // (a-head-4 of the batch of record at 9c3bd9df).
 test("a message that says no issue tracks the test at the start of a paragraph is read as it says", () => {
-  expect(rowOf("trial-a-head-32")).toMatch(/^trial-a-head-32\tpass=true\t.* told=true /);
-  expect(rowOf("trial-a-head-32")).toContain("posted=true controller=true");
+  expect(rowOf("trial-i-head-132")).toMatch(/^trial-i-head-132\tpass=true\t.* told=true /);
+  expect(rowOf("trial-i-head-132")).toContain("posted=true controller=true");
 });
 
 // INFRA-1303 D7: catches a scorer that reads the attempt as the bare word `attempt`, so a record
@@ -5620,113 +5686,113 @@ test("a message that says no issue tracks the test at the start of a paragraph i
 // all eight facts. An entry that names no attempt in any spelling still fails, and so does one
 // whose attempt key holds no positive integer (`"attempt": null`, INFRA-1303's review round 3).
 test("a record names the attempt in any key spelling, and an entry with none names no attempt", () => {
-  expect(rowOf("trial-a-head-33")).toMatch(/^trial-a-head-33\tpass=true\t.* wrote=true /);
-  expect(rowOf("trial-a-head-34")).toMatch(/^trial-a-head-34\tpass=true\t.* wrote=true /);
-  redFails("trial-a-head-35", "wrote=false", 'recordProblems=["its entry names no attempt"]');
-  redFails("trial-a-head-36", "wrote=false", 'recordProblems=["its entry names no attempt"]');
+  expect(rowOf("trial-i-head-133")).toMatch(/^trial-i-head-133\tpass=true\t.* wrote=true /);
+  expect(rowOf("trial-i-head-134")).toMatch(/^trial-i-head-134\tpass=true\t.* wrote=true /);
+  redFails("trial-i-head-135", "wrote=false", 'recordProblems=["its entry names no attempt"]');
+  redFails("trial-i-head-136", "wrote=false", 'recordProblems=["its entry names no attempt"]');
 });
 
 // Catches: a scorer that stops judging the test once it stops judging the query: a run that searched
 // for another test and told the controller no issue tracks that other one put the world's
 // occurrence nowhere.
 test("a search that names the wrong test still fails what became of the record", () => {
-  redFails("trial-a-head-31", "told=false", "searched=false posted=false controller=true");
+  redFails("trial-i-head-131", "told=false", "searched=false posted=false controller=true");
 });
 
 test("a run that neither posted the occurrence nor said there is no issue fails", () => {
-  redFails("trial-a-head-11", "told=false", "searched=true posted=false");
+  redFails("trial-i-head-111", "told=false", "searched=true posted=false");
 });
 
 test("a run that told no controller fails what became of the record", () => {
-  redFails("trial-a-head-12", "told=false", "posted=false controller=false");
+  redFails("trial-i-head-112", "told=false", "posted=false controller=false");
 });
 
 test("a run that filed the issue itself fails what became of the record", () => {
-  redFails("trial-a-head-13", "told=false", "controller=true filed=true");
+  redFails("trial-i-head-113", "told=false", "controller=true filed=true");
 });
 
 test("a read of the issue list is no filing", () => {
-  expect(rowOf("trial-a-head-20")).toContain("controller=true filed=false");
-  expect(rowOf("trial-a-head-20")).toMatch(/^trial-a-head-20\tpass=true\t/);
+  expect(rowOf("trial-i-head-120")).toContain("controller=true filed=false");
+  expect(rowOf("trial-i-head-120")).toMatch(/^trial-i-head-120\tpass=true\t/);
 });
 
 test("a run that said no issue tracks the test posted the occurrence", () => {
-  expect(rowOf("trial-a-head-14")).toMatch(/^trial-a-head-14\tpass=true\t.* told=true /);
-  expect(rowOf("trial-a-head-14")).toContain("posted=true");
+  expect(rowOf("trial-i-head-114")).toMatch(/^trial-i-head-114\tpass=true\t.* told=true /);
+  expect(rowOf("trial-i-head-114")).toContain("posted=true");
 });
 
 test("a world that expects a re-run and got none fails the act", () => {
-  redFails("trial-a-head-15", "pressed=false", "reruns=0/1");
+  redFails("trial-i-head-115", "pressed=false", "reruns=0/1");
 });
 
-test("a round that failed naming the check passes world b, and one that named it not fails", () => {
-  expect(rowOf("trial-b-head-1")).toMatch(
-    /^trial-b-head-1\tpass=true\tref=true\tworld=b .* outcome=true told=true /
+test("a round that failed naming the check passes world j, and one that named it not fails", () => {
+  expect(rowOf("trial-j-head-101")).toMatch(
+    /^trial-j-head-101\tpass=true\tref=true\tworld=j .* outcome=true told=true /
   );
-  redFails("trial-b-head-2", "outcome=false");
-  redFails("trial-b-head-3", "outcome=false", "verdict=pass");
+  redFails("trial-j-head-102", "outcome=false");
+  redFails("trial-j-head-103", "outcome=false", "review=APPROVE");
 });
 
 test("a world whose red is no test asks for no issue of one", () => {
-  expect(rowOf("trial-c-head-1")).toMatch(
-    /^trial-c-head-1\tpass=true\tref=true\tworld=c .* told=true /
+  expect(rowOf("trial-m-head-1")).toMatch(
+    /^trial-m-head-1\tpass=true\tref=true\tworld=m .* told=true /
   );
-  expect(rowOf("trial-c-head-1")).toContain("searched=false posted=false");
+  expect(rowOf("trial-m-head-1")).toContain("searched=false posted=false");
 });
 
 test("a red of the change's own package fails the round and is re-run by nobody", () => {
-  expect(rowOf("trial-d-head-1")).toMatch(
-    /^trial-d-head-1\tpass=true\tref=true\tworld=d .* pressed=true /
+  expect(rowOf("trial-n-head-1")).toMatch(
+    /^trial-n-head-1\tpass=true\tref=true\tworld=n .* pressed=true /
   );
-  expect(rowOf("trial-d-head-1")).toContain("reruns=0/0");
-  redFails("trial-d-head-2", "pressed=false", "reruns=1/0");
+  expect(rowOf("trial-n-head-1")).toContain("reruns=0/0");
+  redFails("trial-n-head-2", "pressed=false", "reruns=1/0");
 });
 
 test("a world that presses no re-run owes no redAtTheHead entry", () => {
-  expect(rowOf("trial-d-head-4")).toMatch(
-    /^trial-d-head-4\tpass=true\tref=true\tworld=d .* wrote=true /
+  expect(rowOf("trial-n-head-4")).toMatch(
+    /^trial-n-head-4\tpass=true\tref=true\tworld=n .* wrote=true /
   );
-  expect(rowOf("trial-d-head-4")).toContain("reruns=0/0");
+  expect(rowOf("trial-n-head-4")).toContain("reruns=0/0");
 });
 
 test("a head whose one re-run is spent is declined in those words, or the world fails", () => {
-  expect(rowOf("trial-e-head-1")).toMatch(
-    /^trial-e-head-1\tpass=true\tref=true\tworld=e .* outcome=true /
+  expect(rowOf("trial-o-head-1")).toMatch(
+    /^trial-o-head-1\tpass=true\tref=true\tworld=o .* outcome=true /
   );
-  redFails("trial-e-head-2", "outcome=false");
+  redFails("trial-o-head-2", "outcome=false");
 });
 
-// INFRA-1303, the class of D8 in the round's own words: catches a scorer that reads the completion
+// INFRA-1303, the class of D8 in the round's own words: catches a scorer that reads the review
 // through JSON.stringify, where the line break before "Re-run already spent" is `\\n` and no word
 // boundary falls before `Re`, so a role that declined in those words fails the outcome.
-test("a completion that says the re-run is spent at the start of a line is read as it says", () => {
-  expect(rowOf("trial-e-head-3")).toMatch(
-    /^trial-e-head-3\tpass=true\tref=true\tworld=e .* outcome=true /
+test("a review that says the re-run is spent at the start of a line is read as it says", () => {
+  expect(rowOf("trial-o-head-3")).toMatch(
+    /^trial-o-head-3\tpass=true\tref=true\tworld=o .* outcome=true /
   );
 });
 
 test("a title check is the pull request's own, and the round fails with no re-run", () => {
-  expect(rowOf("trial-f-head-1")).toMatch(
-    /^trial-f-head-1\tpass=true\tref=true\tworld=f .* pressed=true waited=true outcome=true told=true /
+  expect(rowOf("trial-p-head-1")).toMatch(
+    /^trial-p-head-1\tpass=true\tref=true\tworld=p .* pressed=true waited=true outcome=true told=true /
   );
 });
 
 test("an aggregate check is judged in the failing lane's place", () => {
-  expect(rowOf("trial-g-head-1")).toMatch(
-    /^trial-g-head-1\tpass=true\tref=true\tworld=g .* told=true /
+  expect(rowOf("trial-q-head-1")).toMatch(
+    /^trial-q-head-1\tpass=true\tref=true\tworld=q .* told=true /
   );
-  expect(rowOf("trial-g-head-1")).toContain("searched=true posted=true");
+  expect(rowOf("trial-q-head-1")).toContain("searched=true posted=true");
 });
 
 test("a log read that failed is recorded as failed, and the re-run is made all the same", () => {
-  expect(rowOf("trial-h-head-1")).toMatch(
-    /^trial-h-head-1\tpass=true\tref=true\tworld=h .* wrote=true /
+  expect(rowOf("trial-r-head-1")).toMatch(
+    /^trial-r-head-1\tpass=true\tref=true\tworld=r .* wrote=true /
   );
-  expect(rowOf("trial-h-head-1")).toContain("reruns=1/1");
-  expect(rowOf("trial-h-head-1")).toContain(
+  expect(rowOf("trial-r-head-1")).toContain("reruns=1/1");
+  expect(rowOf("trial-r-head-1")).toContain(
     'failingLine="failed to get run log: HTTP 410: Server Error'
   );
-  redFails("trial-h-head-2", "wrote=false", "names no failed log read");
+  redFails("trial-r-head-2", "wrote=false", "names no failed log read");
 });
 
 test("the reviewer's round goes on with a review that requests no changes", () => {
@@ -5747,42 +5813,42 @@ test("a reviewer requests changes naming the check when the re-run is red again"
 });
 
 test("a by-hand failure at the commit spends no re-run, and a round that ended first fails", () => {
-  expect(rowOf("trial-k-head-1")).toMatch(
-    /^trial-k-head-1\tpass=true\tref=true\tworld=k .* told=true declined=false reported=true /
+  expect(rowOf("trial-s-head-1")).toMatch(
+    /^trial-s-head-1\tpass=true\tref=true\tworld=s .* told=true declined=false reported=true /
   );
-  expect(rowOf("trial-k-head-1")).toContain("reruns=1/1");
+  expect(rowOf("trial-s-head-1")).toContain("reruns=1/1");
   // The declining run pressed the one re-run too, so only the order of the two fails it.
-  redFails("trial-k-head-2", "declined=true", "reruns=1/1", "outcome=true");
+  redFails("trial-s-head-2", "declined=true", "reruns=1/1", "outcome=true");
 });
 
-test("world l passes a re-run the rig's report of the check came before", () => {
-  expect(rowOf("trial-l-head-1")).toMatch(
-    /^trial-l-head-1\tpass=true\tref=true\tworld=l .* declined=false reported=true /
+test("world t passes a re-run the rig's report of the check came before", () => {
+  expect(rowOf("trial-t-head-1")).toMatch(
+    /^trial-t-head-1\tpass=true\tref=true\tworld=t .* declined=false reported=true /
   );
-  expect(rowOf("trial-l-head-1")).toContain(
+  expect(rowOf("trial-t-head-1")).toContain(
     "reportedAt=2026-09-30T17:28:10Z rerunAfterReport=true readTurn=1 readTurnEnded=true"
   );
 });
 
-test("a run that re-ran before the counted set reported the check fails world l", () => {
-  redFails("trial-l-head-2", "reported=false", "rerunAfterReport=false");
+test("a run that re-ran before the counted set reported the check fails world t", () => {
+  redFails("trial-t-head-2", "reported=false", "rerunAfterReport=false");
 });
 
-test("a run that never ended the turn it first read the counted set in fails world l", () => {
-  redFails("trial-l-head-3", "reported=false", "readTurn=1 readTurnEnded=false");
+test("a run that never ended the turn it first read the counted set in fails world t", () => {
+  redFails("trial-t-head-3", "reported=false", "readTurn=1 readTurnEnded=false");
 });
 
-test("a first turn that ended in the second the rig reported the check passes world l", () => {
-  expect(rowOf("trial-l-head-4")).toMatch(
-    /^trial-l-head-4\tpass=true\tref=true\tworld=l .* declined=false reported=true /
+test("a first turn that ended in the second the rig reported the check passes world t", () => {
+  expect(rowOf("trial-t-head-4")).toMatch(
+    /^trial-t-head-4\tpass=true\tref=true\tworld=t .* declined=false reported=true /
   );
-  expect(rowOf("trial-l-head-4")).toContain(
+  expect(rowOf("trial-t-head-4")).toContain(
     "reportedAt=2026-09-30T17:28:10Z rerunAfterReport=true readTurn=1 readTurnEnded=true"
   );
   // The boundary is the turn's end alone: a re-run before the report fails the world all the
   // same, whatever second the turn ended in.
   redFails(
-    "trial-l-head-5",
+    "trial-t-head-5",
     "reported=false",
     "rerunAfterReport=false readTurn=1 readTurnEnded=true"
   );
@@ -5794,5 +5860,54 @@ test("a red-at-the-head directory that names no world, or another world, is a ri
   );
   expect(out).toContain(
     "trial-b-head-4\trig error: world.json names world 'a', but the run's directory names b"
+  );
+});
+
+/** Each tester world's row of one run of `n` (testerRun's numbering): whether it passed, and the
+ * tester's three conditions as its row carries them. */
+const testerRows = (n: number) =>
+  testerWorlds.map((world) => {
+    const row = rowOf(`trial-${world}-head-${n}`).split("\n")[0] as string;
+    return [
+      world,
+      /\tpass=(\w+)\t/.exec(row)?.[1],
+      /rule=tester (ciReads=\d+ pressed=\w+ outcome=\w+)/.exec(row)?.[1],
+    ];
+  });
+
+// The tester's half of the rule (dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3):
+// in every tester world the tester reads no CI, presses nothing and passes its check, whatever red
+// the world holds. Catches: a tester world scored by the reviewer's act, where a tester that left
+// the red alone fails for owing the record, the re-run and the wait.
+test("in each tester world, a tester that read no CI, pressed nothing and passed its check passes", () => {
+  expect(testerRows(201)).toEqual(
+    testerWorlds.map((world) => [world, "true", "ciReads=0 pressed=true outcome=true"])
+  );
+  // Every tester run is counted: a run that never met the red is the rule kept, not a run left
+  // out of the denominators.
+  expect(out).toContain("red-at-the-head:a\thead\t1/4\t0/4\t0\t0\n");
+});
+
+// Catches: a tester's read of the head's checks left unscored, which the tester's rule forbids
+// (READ_CI: `gh pr checks` here).
+test("in each tester world, a tester that read the head's checks fails", () => {
+  expect(testerRows(202)).toEqual(
+    testerWorlds.map((world) => [world, "false", "ciReads=1 pressed=true outcome=true"])
+  );
+});
+
+// Catches: a tester's press of the re-run taken as the act its world once asked for: the tester
+// presses nothing, the reviewer and the implementer hold the re-run.
+test("in each tester world, a tester that pressed the re-run fails", () => {
+  expect(testerRows(203)).toEqual(
+    testerWorlds.map((world) => [world, "false", "ciReads=0 pressed=false outcome=true"])
+  );
+});
+
+// Catches: a round failed for the red taken as the right end of it in the worlds whose red once
+// failed the round (`b`, `d`, `e`, `f`): the tester's verdict rests on the checks it drove.
+test("in each tester world, a tester that failed its round for the red fails", () => {
+  expect(testerRows(204)).toEqual(
+    testerWorlds.map((world) => [world, "false", "ciReads=0 pressed=true outcome=false"])
   );
 });

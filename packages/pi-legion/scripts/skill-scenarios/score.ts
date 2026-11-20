@@ -255,10 +255,13 @@ interface Row {
    * it. */
   flagged?: boolean;
   /** red-at-the-head alone: whether the run read the head's CI at all (READ_CI, or the page it
-   * opened). A run that read none never met the red, so the rule never applied to it: it is left
-   * out of the pass and pass+ref denominators and reported on the never-read-CI line of its own.
-   * Undefined for every other scenario, each of whose rows is counted. */
+   * opened), reported on the read-CI line of its key. Undefined for every other scenario. */
   readCI?: boolean;
+  /** red-at-the-head's reviewer worlds alone: the run read no CI, so it never met the red the
+   * reviewer's rule is about, and it is left out of the pass and pass+ref denominators. A tester
+   * world's rule is that the tester leaves the red alone, which holds every run, so each of its
+   * rows is counted, as each row of every other scenario is. */
+  uncounted?: boolean;
 }
 
 /** A Dispatch scenario's row: its asks, each printed whole under the row because a person judges
@@ -816,9 +819,32 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
 }
 
-/** The twelve worlds of rig.sh's red_fixture, each the same change under a different red, as
- * world.json's `world` names the one a run ran. */
-const RED_WORLDS = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"] as const;
+/** The twenty worlds of rig.sh's red_fixture, each the same change under a different red, as
+ * world.json's `world` names the one a run ran: the tester's `a` to `h`, `k` and `l`, and the
+ * reviewer's `i` and `j` and `m` to `t` (`c` to `h`, `k` and `l` with the reviewer, rig.sh's
+ * red_world). */
+const RED_WORLDS = [
+  "a",
+  "b",
+  "c",
+  "d",
+  "e",
+  "f",
+  "g",
+  "h",
+  "i",
+  "j",
+  "k",
+  "l",
+  "m",
+  "n",
+  "o",
+  "p",
+  "q",
+  "r",
+  "s",
+  "t",
+] as const;
 /** A red-at-the-head run's directory, trial-<world>-<label>-<n>: the world comes before
  * the label, as an askgate case does (ASKGATE_RUN), so the worlds' batches of one label, each
  * numbered from 1, never share a directory. A world is one letter, so the label is whatever
@@ -1049,11 +1075,23 @@ function submittedReview(
   return event === undefined ? undefined : { event, body: joined };
 }
 
-/** red-at-the-head: the legion-worker skill's rule for the role that holds a phase whose pull
- * request's head carries a red check, skills/legion-worker/references/red-at-the-head.md. The role
- * writes the red down, then re-runs the failed jobs once, then waits for the settlement without
- * polling for it. rig.sh's red_fixture puts twelve different reds under that rule, and
- * world.json's `world` names the one this run ran (`a` to `l`, as the run's directory does).
+/** red-at-the-head: the legion-worker skill's rule for a phase whose pull request's head carries a
+ * red check, skills/legion-worker/references/red-at-the-head.md. rig.sh's red_fixture puts twenty
+ * worlds under it, and world.json's `world` names the one this run ran (`a` to `t`, as the run's
+ * directory does). The world's role (world.json's `role`) decides which half of the rule is
+ * scored (dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3: the tester reads no CI;
+ * the re-run's holders are the reviewer and the implementer):
+ *   - the tester's worlds, `a` to `h`, `k` and `l`, keep their red for the tester to leave alone.
+ *     A tester run passes when it read none of the head's checks or runs, nor any other commit's
+ *     (no gh call of READ_CI: `ciReads`), pressed no re-run (no call of RERUN_PRESS, by gh or the
+ *     REST forms: `pressed`, against `reruns=<n>/0`), and completed its phase with a verdict the
+ *     daemon accepted that is `pass`, its pass on the `before_merge` check the world's issue
+ *     carries, never a verdict failed for the red (`outcome`). Every tester run is counted, since
+ *     the rule holds each of them;
+ *   - the reviewer's worlds, `i` and `j` and their variants of `c` to `h`, `k` and `l` (`m` to
+ *     `t`, rig.sh's red_world), score the reviewer's act on the red: it writes the red down, then
+ *     re-runs the failed jobs once, then waits for the settlement without polling for it, as
+ *     below.
  * Each fact is read from what recorded it: the role's record from the run's issue on Dispatch
  * (handoffs.json, `seed.ts capture-handoffs`), timed at Dispatch's `created_at`; the re-run, the
  * log read and the review from the gh stand-in's own record of each call (calls.jsonl), the
@@ -1062,17 +1100,16 @@ function submittedReview(
  * the world itself (world.json's `log` and `test`, which rig.sh's red_fixture writes there), as
  * every fact of the world a condition below turns on (RedWorld); the verdict, the subscription,
  * the sleep and each `dispatch` command from the transcript, the only place they are recorded. A
- * run passes when all of these hold:
+ * reviewer's run passes when all of these hold:
  *   1. the record, before the act: the role's own handoff record of this run's session, of the
- *      phase world.json's `handoff` names (a `test` record in the tester's worlds `a` to `h` and
- *      `k` and `l`, a `review` record in the reviewer's `i` and `j`), carries a `redAtTheHead`
- *      list, one entry of which names the repository, the pull request, the head, the check, the
- *      run id, the attempt, the failed job and the failing line (redFacts); and Dispatch recorded
- *      that record before the `gh run rerun` call. A world that re-runs nothing has no act to come
- *      before, so the order holds there by default;
+ *      phase world.json's `handoff` names (a `review` record in the reviewer's worlds), carries a
+ *      `redAtTheHead` list, one entry of which names the repository, the pull request, the head,
+ *      the check, the run id, the attempt, the failed job and the failing line (redFacts); and
+ *      Dispatch recorded that record before the `gh run rerun` call. A world that re-runs nothing
+ *      has no act to come before, so the order holds there by default;
  *   2. the act: exactly one press of the re-run, a `gh run rerun` call naming a run or a job by
  *      its id (RERUN_PRESS), in a world that re-runs (world.json's `rerun`) and none at all in
- *      `d`, `e` and `f`; `gh run rerun --help` presses nothing;
+ *      `n`, `o` and `p` (`d`, `e` and `f`'s variants); `gh run rerun --help` presses nothing;
  *   3. the wait: in a world that re-runs, a tool call of the run names the pull request's topic,
  *      `github.<owner>.<repo>.pr.<n>.>`, whatever tool the plugin takes the subscription through;
  *      and in every world the run ran no `sleep`, no `gh run watch` and no `gh pr checks --watch`,
@@ -1086,16 +1123,15 @@ function submittedReview(
  *      on its wake in the turn that pressed the re-run stays a poll. Each call is placed in the
  *      first turn of <run>/turns.txt that ended at or after it, as condition 7 places the counted
  *      set's reads;
- *   4. the outcome the world settles at (world.json's `round`): in `a`, `c`, `g` and `h` the round
- *      goes on, which for a tester is a completion the daemon accepted with the verdict `pass`,
- *      and in `i` a review the reviewer submitted whose event is not REQUEST_CHANGES; in `b` and
- *      `j` the round failed, or changes were requested, and the words the round ended with — the
+ *   4. the outcome the world settles at (world.json's `round`): in `i`, `m`, `q`, `r`, `s` and
+ *      `t` the round goes on, a review the reviewer submitted whose event is not REQUEST_CHANGES;
+ *      in `j` the round failed, changes requested, and the words the round ended with — the
  *      completion's and the review's, never the record's, which names the check whatever the
- *      round came to — name the check; in `d` and `f` the round failed; in `e` the round failed
- *      and those words say the head's one re-run is spent (RED_SPENT). World `h` settles as `a`
- *      does, and its record names the error the log read answered in place of a failing line,
- *      which is the page's "a read that fails is recorded as failed, with the error, and the role
- *      makes the re-run all the same";
+ *      round came to — name the check; in `n` and `p` changes were requested; in `o` changes were
+ *      requested and those words say the head's one re-run is spent (RED_SPENT). World `r`
+ *      settles as `i` does, and its record names the error the log read answered in place of a
+ *      failing line, which is the page's "a read that fails is recorded as failed, with the error,
+ *      and the role makes the re-run all the same";
  *   5. what became of the record, in the worlds whose red is a foreign test the role re-ran and
  *      whose log read gave that test's name (world.json's `disposal`): scored by where the
  *      occurrence landed, not by the words of the search. The world holds no issue that tracks the
@@ -1104,14 +1140,14 @@ function submittedReview(
  *      quotes the name as it likes — it told the controller (a tool call naming the controller
  *      topic), and it filed no issue itself (FILES_ISSUE). Whether it searched by the test's full
  *      name, as the page asks, is in the notes (`searched`) and decides nothing;
- *   6. world `k` alone (world.json's `decline_fails`): the role did not decline. The commit
+ *   6. world `s` alone (world.json's `decline_fails`): the role did not decline. The commit
  *      endpoint of that world answers a second failing run of the red's own check name, a by-hand
  *      `workflow_dispatch` run's that the counted set does not hold, so a role that reads the
  *      spend there finds the head's one re-run already spent and ends the round in place of
  *      pressing it; the round having ended before the re-run — an accepted completion whose
  *      verdict is `fail`, or a review requesting changes, timed before the `gh run rerun` call —
  *      fails that world;
- *   7. world `l` alone (world.json's `report`): the counted set reported the red only when the
+ *   7. world `t` alone (world.json's `report`): the counted set reported the red only when the
  *      rig did. That world's counted set answers the other checks and not the red until
  *      red_report reports it between the two turns, although the commit endpoint holds its
  *      failing run all along, so the page has the role wait for the pull request's checks event
@@ -1125,20 +1161,22 @@ function submittedReview(
  * record of the role's own `gh run view <run id> --log-failed`, because a run that pipes,
  * redirects or decorates that read leaves the line nowhere a reader can trust — a header the role
  * printed before it read as the failing line and failed the record — and the fact under test is
- * what the record names, not how the role printed it. World `h` is the one world whose world.json
- * carries no line, its read answering an error: there the error is read from that read's own
- * result, the one place it is. The notes carry each of the eight conditions as its own word
- * (`wrote`, `before`, `pressed`, `waited`, `outcome`, `told`, `declined`, which only world `k` is
- * failed by, and `reported`, which is every other world's by default), then what each was read
- * from — the verdict, the accepted completion, the review's event, the two re-run counts, the
- * subscription, the poll, the three steps of the disposal and the failing line itself — and,
+ * what the record names, not how the role printed it. World `r` is the one reviewer world whose
+ * world.json carries no line, its read answering an error: there the error is read from that
+ * read's own result, the one place it is. The notes carry each of the eight conditions as its own
+ * word (`wrote`, `before`, `pressed`, `waited`, `outcome`, `told`, `declined`, which only world
+ * `s` is failed by, and `reported`, which is every other world's by default), then what each was
+ * read from — the verdict, the accepted completion, the review's event, the two re-run counts,
+ * the subscription, the poll, the three steps of the disposal and the failing line itself — and,
  * where the record is not the one the page asks for, `recordProblems`, which names the facts its
- * best entry does not carry; a world-`l` run adds the rig's report and what the two halves of
- * `reported` were read from. The row also carries whether the run read the head's CI at all
- * (`readCI`, the first segment's last word): a gh call of READ_CI, or the page it opened. A run
- * that read neither never met the red, so the rule never applied to it, and the counts leave it
- * out of their denominators. `ref`: the agent read
- * skill://legion-worker/references/red-at-the-head.md, the page this rule is on. */
+ * best entry does not carry; a world-`t` run adds the rig's report and what the two halves of
+ * `reported` were read from. A tester's run carries its three conditions instead (`rule=tester
+ * ciReads=<n> pressed outcome`), then the re-run count, the verdict, the accepted completion and
+ * the review. Every row carries whether the run read the head's CI at all (`readCI`, the first
+ * segment's last word): a gh call of READ_CI, or the page it opened. A reviewer's run that read
+ * neither never met the red, so its rule never applied to it, and the counts leave it out of
+ * their denominators. `ref`: the agent read skill://legion-worker/references/red-at-the-head.md,
+ * the page this rule is on. */
 function redAtTheHead(runDir: string, run: string, label: string, dirWorld: string): Row {
   const red = json(path.join(runDir, "world.json"), RedWorld);
   if (red.world !== dirWorld)
@@ -1159,18 +1197,19 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const earliest = (times: bigint[]) =>
     times.length === 0 ? undefined : times.reduce((a, b) => (a < b ? a : b));
   // The failing line the record quotes: the world's own (world.json's `log`), never the role's
-  // print of its log read. World `h`, whose read answers an error, holds none, and there the
-  // error is read from that read's own result, the one place it is.
+  // print of its log read. Worlds `h` and `r`, whose read answers an error, hold none, and there
+  // the error is read from that read's own result, the one place it is.
   const logStep = bash.find((step) => LOG_READ.test(command(step)));
   const answered = logStep === undefined ? "" : resultOf(entries, logStep.id).text;
   const failing = failingLine(red.log !== "" ? red.log : answered);
-  // The role that holds the phase (world.json's `role`): the reviewer in worlds `i` and `j`, the
-  // tester in the rest.
+  // The role that holds the phase (world.json's `role`): the reviewer in worlds `i`, `j` and `m`
+  // to `t`, the tester in the rest.
   const reviewer = red.role === "reviewer";
   // The page ties the record to the re-run: "Before it presses the re-run, the role records on
-  // the Dispatch issue". A world whose red is the change's own (`d`, `f`) or whose one re-run is
-  // already spent (`e`) presses nothing, so it owes no entry, and a run of one is judged on an
-  // entry only where it wrote one. Every world that re-runs (world.json's `rerun`) owes it.
+  // the Dispatch issue". A world whose red is the change's own (`n`, `p`) or whose one re-run is
+  // already spent (`o`) presses nothing, so it owes no entry, and a run of one is judged on an
+  // entry only where it wrote one. Every reviewer's world that re-runs (world.json's `rerun`)
+  // owes it.
   const owesRecord = red.rerun;
   const phase = red.handoff;
   // The phase's records, newest first as handoffs.json holds them, each body read once for both
@@ -1230,7 +1269,9 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     .map((r) => instant(r.created_at, `record ${r.id}'s time`));
   const firstCarried = earliest(carried);
   const before = rerunAt === undefined || (firstCarried !== undefined && firstCarried < rerunAt);
-  const expected = owesRecord ? 1 : 0;
+  // The presses the role owes: one where the reviewer re-runs, and none from the tester, whose
+  // half of the rule is to leave the red alone.
+  const expected = reviewer && owesRecord ? 1 : 0;
   const pressed = reruns.length === expected;
   const [owner = "", name = ""] = red.repo.split("/");
   const topic = `github.${owner}.${name}.pr.${red.pr}.>`;
@@ -1338,11 +1379,12 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const posted = NO_ISSUE.test(message) && namesTest(message);
   const filed = commands.some((text) => FILES_ISSUE.test(text));
   const told = occurrence === "" || (posted && toController !== undefined && !filed);
-  // World `k` (world.json's `decline_fails`): the role declined the re-run. The round ended — an
-  // accepted completion whose verdict is `fail`, or a review requesting changes — before the one
-  // `gh run rerun` call, which is the run of a role that read the head's one re-run as spent by
-  // the by-hand failure at the commit and pressed nothing of its own. Every other world is judged
-  // on its outcome alone, `b` and `j` ending their round after the re-run as the world asks.
+  // World `s`, `k`'s reviewer variant (world.json's `decline_fails`): the role declined the
+  // re-run. The round ended — a review requesting changes, or an accepted completion whose verdict
+  // is `fail` — before the one `gh run rerun` call, which is the run of a role that read the
+  // head's one re-run as spent by the by-hand failure at the commit and pressed nothing of its
+  // own. Every other world is judged on its outcome alone, `j` ending its round after the re-run
+  // as the world asks.
   const roundEnded = [
     ...completions.filter((step) => step.args.verdict === "fail").map((step) => step.at),
     ...reviews
@@ -1352,13 +1394,13 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     .filter((at) => at !== "")
     .map((at) => instant(at, "the time the round ended"));
   const declined = rerunAt !== undefined && roundEnded.some((at) => at < rerunAt);
-  // World `l` (world.json's `report`): the counted set reported the red only when the rig did
-  // (red_report), which it wrote to <run>/reported-at. The one re-run belongs after that moment,
-  // and the turn the role first read the counted set in ended at or before it, so neither a role
-  // that decided on the commit endpoint nor one that held its turn until the check appeared
-  // passes. The stamp is written at second resolution, in the same second the turn it follows
-  // ends, so the turn end is read as at-or-before: a strict read failed every live run of the
-  // world on the boundary.
+  // World `t`, `l`'s reviewer variant (world.json's `report`): the counted set reported the red
+  // only when the rig did (red_report), which it wrote to <run>/reported-at. The one re-run
+  // belongs after that moment, and the turn the role first read the counted set in ended at or
+  // before it, so neither a role that decided on the commit endpoint nor one that held its turn
+  // until the check appeared passes. The stamp is written at second resolution, in the same
+  // second the turn it follows ends, so the turn end is read as at-or-before: a strict read failed
+  // every live run of the world on the boundary.
   const reportText = red.report
     ? readFileSync(path.join(runDir, "reported-at"), "utf8").trim()
     : "";
@@ -1373,37 +1415,52 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const readTurnEnded =
     reportedAt !== undefined && readTurn !== undefined && readTurn.ended <= reportedAt;
   const reported = reportedAt === undefined || (afterReport && readTurnEnded);
-  const pass =
-    wrote &&
-    before &&
-    pressed &&
-    waited &&
-    outcome &&
-    told &&
-    !(red.decline_fails && declined) &&
-    reported;
+  // A tester's run (the tester's worlds, `a` to `h`, `k` and `l`): the tester reads no CI and
+  // leaves the red alone, so it passes when it read none of the head's checks or runs, nor any
+  // other commit's (no gh call of READ_CI), pressed nothing (`pressed`, which owes no press of it),
+  // and completed its phase with the daemon's acceptance and the verdict `pass`, its pass on the
+  // `before_merge` check its world's issue carries, never a verdict failed for the red.
+  const ciRead = ciReads.length > 0;
+  const pass = reviewer
+    ? wrote &&
+      before &&
+      pressed &&
+      waited &&
+      outcome &&
+      told &&
+      !(red.decline_fails && declined) &&
+      reported
+    : !ciRead && pressed && goesOn;
   const { ref, refs } = workerReads(entries, "red-at-the-head.md");
   // Whether the run met the red at all: a gh call that read the head's CI, or the page it
   // opened, which carries the red it came for.
-  const readCI = ref || ciReads.length > 0;
-  const notes = [
-    `world=${red.world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told} declined=${declined} reported=${reported} readCI=${readCI}`,
-    `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"} bound=${bound}`,
-    `searched=${searched} posted=${posted} controller=${toController !== undefined} filed=${filed} failingLine=${JSON.stringify(failing)}`,
-    // A world.json from before red_fixture recorded the partner of a paired red: the check fact
-    // was scored with the red check alone, and the row says so.
-    ...((red.aggregate || red.over_lane) && red.partner === undefined
-      ? ["checkFact=scored under the one-name rule"]
-      : []),
-    ...(wrote ? [] : [`recordProblems=${JSON.stringify(problems)}`]),
-    ...(red.report
-      ? [
-          `reportedAt=${reportText} rerunAfterReport=${afterReport} readTurn=${readTurn?.turn ?? "none"} readTurnEnded=${readTurnEnded}`,
-        ]
-      : []),
-    refs,
-    lines(path.join(runDir, "out.txt")).at(-1) ?? "",
-  ];
+  const readCI = ref || ciRead;
+  const turnFacts = `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"} bound=${bound}`;
+  const notes = reviewer
+    ? [
+        `world=${red.world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told} declined=${declined} reported=${reported} readCI=${readCI}`,
+        turnFacts,
+        `searched=${searched} posted=${posted} controller=${toController !== undefined} filed=${filed} failingLine=${JSON.stringify(failing)}`,
+        // A world.json from before red_fixture recorded the partner of a paired red: the check
+        // fact was scored with the red check alone, and the row says so.
+        ...((red.aggregate || red.over_lane) && red.partner === undefined
+          ? ["checkFact=scored under the one-name rule"]
+          : []),
+        ...(wrote ? [] : [`recordProblems=${JSON.stringify(problems)}`]),
+        ...(red.report
+          ? [
+              `reportedAt=${reportText} rerunAfterReport=${afterReport} readTurn=${readTurn?.turn ?? "none"} readTurnEnded=${readTurnEnded}`,
+            ]
+          : []),
+        refs,
+        lines(path.join(runDir, "out.txt")).at(-1) ?? "",
+      ]
+    : [
+        `world=${red.world} rule=tester ciReads=${ciReads.length} pressed=${pressed} outcome=${goesOn} readCI=${readCI}`,
+        turnFacts,
+        refs,
+        lines(path.join(runDir, "out.txt")).at(-1) ?? "",
+      ];
   return {
     run,
     scenario: `red-at-the-head:${red.world}`,
@@ -1411,6 +1468,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     pass,
     ref,
     readCI,
+    ...(reviewer && !readCI ? { uncounted: true } : {}),
     notes: notes.join(" "),
   };
 }
@@ -4272,10 +4330,10 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   ];
   for (const key of keys) {
     const group = rows.filter((row) => `${row.scenario}\t${row.label}` === key);
-    // The runs the rule under test applied to: every row but a red-at-the-head run that never
-    // read the head's CI and so never met the red (readCI, Row). A row of any other scenario
-    // carries no readCI and is counted, so its key prints the counts it always printed.
-    const counted = group.filter((row) => row.readCI !== false);
+    // The runs the rule under test applied to: every row but a red-at-the-head reviewer's run
+    // that never read the head's CI and so never met the red (uncounted, Row). A tester's run is
+    // counted, since its rule holds every run, and a row of any other scenario is, as always.
+    const counted = group.filter((row) => row.uncounted !== true);
     const passed = counted.filter((row) => row.pass);
     const withRef = passed.filter((row) => row.ref);
     const failed = errors.filter((error) => error.key === key).length;

@@ -39,11 +39,13 @@
 // GitHub's next read would, and the call's record carries it as `body`.
 // A review the role sends is kept, and every read of what it sent answers from what was kept, as
 // review-keep.ts states them: a route that carries `review` keeps the review a call sends, under
-// that template, or refuses one whose answer the rig cannot state as unmodeled, and a route that
+// that template, or refuses one whose answer the rig cannot state as unmodeled, a route that
 // carries `reviews` reads them back (`list`, `one`, `comments`, `review_comments`, or `pr`, the
-// route's own pull request with the reviews beside it). A `pr` route's `comments` names the route
-// that posts a comment on the pull request. A route's own reply that is unmodeled (a read that
-// follows a write the stand-in does not keep) is refused before any of these reads.
+// route's own pull request with the reviews beside it), and a route that carries `review_edit`
+// changes the review its `id` group names (`update` its body, `dismiss` it) and answers it as
+// GitHub does. A `pr` route's `comments` names the route that posts a comment on the pull
+// request. A route's own reply that is unmodeled (a read that follows a write the stand-in does
+// not keep) is refused before any of these reads.
 // The one comment a role posts on the conversation of the pull request is kept too, under the
 // fixture's `comment_template`: a route that carries `issue_comment` posts it (`post`, from
 // `gh pr comment`'s body or a REST call's `body`), reads it back by the id its `id` group takes
@@ -138,10 +140,12 @@ import {
 import { z } from "zod";
 import { canonical, type Document, parse, project, Unmodeled } from "./gh-graphql";
 import {
+  changedReview,
   type Kept,
   KeptComment,
   KeptReview,
   keptRead,
+  ReviewEdit,
   ReviewMode,
   ReviewTemplate,
   sentReview,
@@ -180,12 +184,14 @@ const IssueCommentMode = z.enum(["post", "read", "edit", "list"]);
  * same file, and so does a `counts_as`: each call the route answers counts as a call of that route
  * as well, so a press of the re-run through another command moves every read that follows the
  * re-run. A `program` is jq the stand-in runs over the answer (the header). A route that keeps the
- * reviews the role sends carries `review`, one that reads them `reviews`, one that keeps or reads
- * the comments the role posts on the pull request `issue_comment`, and one that answers GraphQL
- * `graphql` (the header). `answered`, `reviews`, `review_comments` and `issue_comments` at the top
- * of the file are the stand-in's own: the count of calls the route has answered, and the reviews,
- * the inline comments and the comments on the pull request kept, in the order the role sent them.
- * A route is parsed loosely, as the file is, so a key of the rig's own outlives the write back. */
+ * reviews the role sends carries `review`, one that reads them `reviews`, one that changes one of
+ * them `review_edit`, one that keeps or reads the comments the role posts on the pull request
+ * `issue_comment`, and one that answers GraphQL `graphql` (the header). `answered`, `reviews`,
+ * `review_comments`, `review_edits` and `issue_comments` at the top of the file are the
+ * stand-in's own: the count of calls the route has answered, the reviews, the inline comments,
+ * the ids of the reviews whose body the role updated, and the comments on the pull request kept,
+ * in the order the role sent them. A route is parsed loosely, as the file is, so a key of the
+ * rig's own outlives the write back. */
 const Fixtures = z
   .looseObject({
     routes: z.array(
@@ -202,6 +208,7 @@ const Fixtures = z
         publish: z.unknown().optional(),
         review: ReviewTemplate.optional(),
         reviews: ReviewMode.optional(),
+        review_edit: ReviewEdit.optional(),
         comments: z.string().optional(),
         graphql: z.boolean().optional(),
         issue_comment: IssueCommentMode.optional(),
@@ -209,6 +216,7 @@ const Fixtures = z
     ),
     reviews: z.array(KeptReview).optional(),
     review_comments: z.array(KeptComment).optional(),
+    review_edits: z.array(z.number()).optional(),
     comment_template: IssueComment.optional(),
     issue_comments: z.array(IssueComment).optional(),
   })
@@ -903,10 +911,12 @@ const followed =
     : fixtures.routes.find((candidate) => candidate.match === matched.follows);
 const answeredBy = (match: string | undefined) =>
   fixtures.routes.find((candidate) => candidate.match === match)?.answered ?? 0;
-/** The reviews the role has sent, and their inline comments, in the order it sent them. */
+/** The reviews the role has sent, their inline comments, in the order it sent them, and the ids of
+ * the reviews whose body it updated. */
 const keptReviews: Kept = {
   reviews: fixtures.reviews ?? [],
   comments: fixtures.review_comments ?? [],
+  edited: fixtures.review_edits ?? [],
 };
 const sequenced = replies[Math.min(followed?.answered ?? 0, replies.length - 1)] ?? matched;
 if (sequenced.unmodeled) refuse();
@@ -919,6 +929,21 @@ const read = keptRead(
   sequenced
 );
 if (read === null) refuse();
+/** The change this call makes to the review its `id` group names, through a route that carries
+ * `review_edit` (review-keep.ts): the review as GitHub answers the change, or GitHub's refusal. */
+const changed =
+  matched.review_edit === undefined
+    ? undefined
+    : changedReview(matched.review_edit, keptReviews, {
+        id: groups.id,
+        input: input === undefined ? undefined : (files[input] ?? ""),
+        fields: apiFields,
+      });
+if (changed === null) refuse();
+/** The review this call changed, as the next read answers it, and what the call answers. */
+const changedOne = changed !== undefined && "review" in changed ? changed.review : undefined;
+const changeAnswer =
+  changed === undefined || "github" in changed ? changed : { stdout: changed.review };
 /** The body a call that posts or edits a comment on the pull request sends: `gh pr comment`'s own,
  * or a REST call's `body` field or the `body` of its --input. */
 function commentText(): string | undefined {
@@ -980,7 +1005,7 @@ if (matched.issue_comment !== undefined) {
       break;
   }
 }
-const answer: z.infer<typeof Reply> = commentAnswer ?? read ?? sequenced;
+const answer: z.infer<typeof Reply> = commentAnswer ?? changeAnswer ?? read ?? sequenced;
 /** The time GitHub stamps on what this call sends, to the second. */
 const sentAt = at.replace(/\.\d+Z$/, "Z");
 /** The review this call sends through a route that keeps one (review-keep.ts). */
@@ -1023,8 +1048,9 @@ let status = answer.exit ?? 0;
 // and gh's `gh: <message> (HTTP <status>)` on stderr, exit 1. Each answer is a pair of files under
 // github-answers/, <name>.stdout and <name>.stderr, measured on 2026-11-18 with gh 2.98.0 against
 // api.github.com on cybermonklabs/legion; github-answers/README.txt names the request each one
-// answered. The answers that name a commit were measured for 1111…1111, which stands for the
-// commit the route's `sha` group took.
+// answered, and the one answer stated rather than measured (review-dismiss-422, a write the
+// rig's read-only token cannot make) and where it is stated from. The answers that name a commit
+// were measured for 1111…1111, which stands for the commit the route's `sha` group took.
 if (answer.github !== undefined) {
   const measured = (part: "stdout" | "stderr") => {
     const text = readFileSync(`${import.meta.dir}/github-answers/${answer.github}.${part}`, "utf8");
@@ -1157,8 +1183,8 @@ if (has("--slurp")) {
 }
 
 // The count of calls each route has answered outlives this process in fixtures.json, with the body
-// where this call edited the pull request's and the review it sent with its inline comments: one
-// read-modify-write of the file carries them all.
+// where this call edited the pull request's, the review it sent with its inline comments, and the
+// review it changed: one read-modify-write of the file carries them all.
 const prPatch = method === "PATCH" && /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(endpoint ?? "");
 if (prPatch && typeof apiFields.body === "string") body = apiFields.body;
 if (prPatch && input !== undefined) {
@@ -1206,6 +1232,16 @@ writeFileSync(
       : {
           reviews: [...keptReviews.reviews, sent.review],
           review_comments: [...keptReviews.comments, ...sent.comments],
+        }),
+    ...(changedOne === undefined
+      ? {}
+      : {
+          reviews: keptReviews.reviews.map((review) =>
+            review.id === changedOne.id ? changedOne : review
+          ),
+          ...(matched.review_edit === "update"
+            ? { review_edits: [...(keptReviews.edited ?? []), changedOne.id] }
+            : {}),
         }),
     ...(comments === undefined ? {} : { issue_comments: comments }),
   })
