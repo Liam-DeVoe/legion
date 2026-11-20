@@ -39,7 +39,11 @@
 -- filters the reply's kind, message, out of the rows that range holds, and answers its rows under
 -- `message_block`. Its `distinct on` keys the two columns its predicate leaves free, the far end's
 -- id and the reply's, which that index holds by time and not by the reply, so the arm sorts the
--- replies it read of the one far end: four replies to a block are a quicksort of 25 kB.
+-- replies it read of the one far end: four replies to a block are a quicksort of 25 kB. The arm
+-- renders its kind as the constant `replies_to`, outside the `distinct on`: a read of any other
+-- kind then compares two constants against this arm and PostgreSQL drops the arm from its plan,
+-- where a kind the arm read out of the tuple would be a column of the `distinct on` subquery that
+-- the read's kind is never pushed into, and the arm would probe graph_tuples for every such read.
 --
 -- Measured on this pod's PostgreSQL 18.6 over 640,000 tuples across 11 far-end kinds, 20,000 of
 -- them replies to a block, on an earlier set of read indexes that also held graph_tuples_inbound
@@ -230,12 +234,11 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
             offset 0)
         end
   union all
-  select edge.from_kind, edge.from_id, edge.kind, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
+  select edge.from_kind, edge.from_id, 'replies_to'::text, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
   from (
     select distinct on (tuple.to_id, tuple.from_id)
            tuple.from_kind,
            tuple.from_id,
-           tuple.kind,
            'message_block'::text as to_kind,
            tuple.to_id,
            tuple.at as created_at,

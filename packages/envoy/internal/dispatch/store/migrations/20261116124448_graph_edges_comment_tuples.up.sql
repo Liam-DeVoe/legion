@@ -37,7 +37,10 @@
 -- replies_to), the reply's kind, comment, a filter of that range, which a read into a block that
 -- also holds a message's replies therefore walks past as well, and each arm sorts what it keeps by
 -- the reply, which that index does not hold it by. A read keyed on the near end binds
--- graph_tuples_current's, whose partial predicate the arm's literal kind proves. The tuple arm
+-- graph_tuples_current's, whose partial predicate the arm's literal kind proves. Each arm, the
+-- message block form's among them, renders its kind as the constant `replies_to` outside its
+-- `distinct on`, so a read of any other kind compares two constants against it and PostgreSQL
+-- drops it from the plan (20261116114517). The tuple arm
 -- renders a comment's `replies_to` to a comment or an ask and its `answers` to a comment under
 -- their own kinds, which are the tuple's columns, and leaves out the `replies_to` whose far end is
 -- a block (its `projects` case names `comment` and `ask` far ends alone).
@@ -248,12 +251,11 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
             offset 0)
         end
   union all
-  select edge.from_kind, edge.from_id, edge.kind, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
+  select edge.from_kind, edge.from_id, 'replies_to'::text, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
   from (
     select distinct on (tuple.to_id, tuple.from_id)
            tuple.from_kind,
            tuple.from_id,
-           tuple.kind,
            'message_block'::text as to_kind,
            tuple.to_id,
            tuple.at as created_at,
@@ -270,12 +272,11 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
       where projected.node_kind = edge.from_kind and projected.node_address = edge.from_id
       offset 0)
   union all
-  select edge.from_kind, edge.from_id, edge.kind, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
+  select edge.from_kind, edge.from_id, 'replies_to'::text, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
   from (
     select distinct on (tuple.to_id, tuple.from_id)
            tuple.from_kind,
            tuple.from_id,
-           tuple.kind,
            'comment_block'::text as to_kind,
            tuple.to_id,
            tuple.at as created_at,
@@ -294,12 +295,11 @@ create or replace view graph_edges (from_kind, from_id, kind, to_kind, to_id, cr
         and projected.tuples_stored
       offset 0)
   union all
-  select edge.from_kind, edge.from_id, edge.kind, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
+  select edge.from_kind, edge.from_id, 'replies_to'::text, edge.to_kind, edge.to_id, edge.created_at, edge.source_seq
   from (
     select distinct on (tuple.to_id, tuple.from_id)
            tuple.from_kind,
            tuple.from_id,
-           tuple.kind,
            'ask_block'::text as to_kind,
            tuple.to_id,
            tuple.at as created_at,

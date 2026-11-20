@@ -721,15 +721,17 @@ var graphViewArms = []graphViewArm{
 	{table: "comments", fromKind: "comment", kind: "replies_to", toKind: "ask_block"},
 	{table: "messages", fromKind: "message", kind: "replies_to", toKind: "message_block"},
 	// The store's arm of a message's reply to a message's block (migration 20261116114517),
-	// which renders that one relation under its address form: every select item of it is a
-	// column of its sub-select, so it reads as the tuple arm does, and the count reads it as the
-	// message_block arm's tupleSQL.
-	{table: "graph_tuples"},
+	// which renders that one relation under its address form: its kind is the literal
+	// replies_to, so a read of any other kind drops it from its plan, and every other select item
+	// is a column of its sub-select, so it reads as the tuple arm does, and the count reads it as
+	// the message_block arm's tupleSQL.
+	{table: "graph_tuples", kind: "replies_to"},
 	// The store's arms of a comment's reply to a comment's block and to an ask's part (migration
-	// 20261116124448), each rendering that one relation under its address form, which read as the
-	// arm over a message's block does, and the count reads each as its block kind's tupleSQL.
-	{table: "graph_tuples"},
-	{table: "graph_tuples"},
+	// 20261116124448), each rendering that one relation under its address form and its kind as
+	// the literal replies_to, which read as the arm over a message's block does, and the count
+	// reads each as its block kind's tupleSQL.
+	{table: "graph_tuples", kind: "replies_to"},
+	{table: "graph_tuples", kind: "replies_to"},
 	// The store's arm of every item's blocks (migration 20261116140008), rendering a comment's, a
 	// message's and an ask's blocks' part_of and links under the item's block address form, chosen
 	// by the address's prefix: every select item is a column of its sub-select, so it reads as the
