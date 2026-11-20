@@ -6,7 +6,7 @@
  * The mod is a fake here: the events it sends and the answers its `$` calls give are the two
  * things this exercises, and the real one is driven over a socket by `./mod-link.test.ts`.
  */
-import { expect, test } from "bun:test"
+import { expect, jest, test } from "bun:test"
 import {
   AGENT_STREAM_PROTOCOL,
   type AgentStreamFrame,
@@ -14,9 +14,10 @@ import {
   agentStreamControlSubject,
   agentStreamFramesSubject,
 } from "@legion/contracts"
+import { turnsUntil } from "@legion/test-fixtures/fake-clock"
 import type { ModCallArguments, ModCallName, ModCallResults, ModEvent } from "../hooks/mod-protocol"
 import { type AgentStreamRunner, startAgentStream } from "../src/agent-stream-runner"
-import { sessionAdmission } from "../src/envoy-channel-server"
+import { sessionAdmission } from "../src/channel-connection"
 import type { ModLink } from "../src/mod-link"
 import { FakeNats } from "./channel-session-harness"
 
@@ -132,7 +133,7 @@ interface Running {
   readonly frames: (session: string) => AgentStreamFrame[]
 }
 
-function running(admitted?: (session: string) => Promise<void>): Running {
+function running(admitted?: (session: string) => Promise<void>, sessionId = SESSION): Running {
   const nats = new FakeNats()
   const mod = fakeLink()
   const warnings: string[] = []
@@ -142,7 +143,7 @@ function running(admitted?: (session: string) => Promise<void>): Running {
     followsSessionId: true,
     link: mod.link,
     observe: (event) => void observed.push(event),
-    sessionId: SESSION,
+    sessionId,
     warn: (text) => void warnings.push(text),
     ...(admitted === undefined ? {} : { admitted }),
   })
@@ -296,12 +297,83 @@ test("a clear moves the control subject, and the new id replays nothing from bef
   live.runner.stop()
 })
 
+// The link reports a `/clear` once, to the listeners it has then, and the live view starts only
+// once the session has: a `/clear` the mod reported before then reaches the view from the server's
+// own adoption of it (`ChannelSessionOptions.adopted`), and from no replay of the link's id, which
+// can be older than the id the view started on.
+test("an adoption of a /clear moves a live view still on the id it left, and the new id replays nothing from before it", async () => {
+  const live = running()
+  await live.control(SESSION, watchRequest)
+  live.mod.push(prompt("row-1", "before the clear"))
+  await settle()
+
+  live.runner.sessionAdopted(SESSION, CLEARED)
+  await settle()
+  expect(live.nats.unsubscribed).toContain(agentStreamControlSubject(SESSION))
+  expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(CLEARED)])
+
+  await live.control(CLEARED, watchRequest)
+  await live.control(CLEARED, replayRequest, "_INBOX.adopted")
+  const replay = live.answered("_INBOX.adopted")
+  expect(replay?.session_id).toBe(CLEARED)
+  expect(
+    (replay?.frames ?? []).filter(
+      (frame) => frame.kind === "message" || frame.kind === "tool-result",
+    ),
+  ).toEqual([])
+  live.runner.stop()
+})
+
+test("an adoption moves no live view the mod already moved on, and adopting the id it is on changes nothing", async () => {
+  const live = running()
+  // The mod reports two `/clear`s; the server adopts the first only afterwards.
+  live.mod.moveSession(CLEARED)
+  live.mod.moveSession("ses_cleared_again")
+  await settle()
+  live.runner.sessionAdopted(SESSION, CLEARED)
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([
+    agentStreamControlSubject("ses_cleared_again"),
+  ])
+  const subscribes = live.nats.subscribes
+  live.runner.sessionAdopted(CLEARED, "ses_cleared_again")
+  await settle()
+  expect(live.nats.subscribes).toBe(subscribes)
+  live.runner.stop()
+})
+
+test("a live view started on the id the server adopted stays on it, whatever id the link last reported", async () => {
+  // The link last reported `SESSION`; the server had adopted `CLEARED` when the view started.
+  const live = running(undefined, CLEARED)
+  await settle()
+  expect(live.mod.link.sessionId()).toBe(SESSION)
+  expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(CLEARED)])
+  live.runner.stop()
+})
+
 // Under a broker token the connection is admitted as one session at a time, and the server refuses
 // and closes a subscribe to a subject the session it is admitted as may not take. These run the
 // channel server's own `sessionAdmission`, which `admit`s each id when its move lands.
+// The live view starts once the mod's link binds, which can be after a `/clear` whose move has not
+// landed: the session's id is then one the connection is not admitted as yet, and its first
+// control subject waits for the admission as every later one does.
+test("a live view started for an id the connection is not admitted as yet takes its control subject once it is", async () => {
+  const admission = sessionAdmission("ses_before_the_clear")
+  const live = running(admission.admitted)
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([])
+  expect(live.nats.calls.filter((call) => call.startsWith("nats.subscribe"))).toEqual([])
+  admission.admit(SESSION)
+  await settle()
+  expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(SESSION)])
+  live.runner.stop()
+})
+
 test("a clear takes the new id's control subject only once the connection is admitted as it", async () => {
   const admission = sessionAdmission(SESSION)
   const live = running(admission.admitted)
+  // The first subject goes through the gate too, which answers an id already admitted at once.
+  await settle()
   expect([...live.nats.subscriptions.keys()]).toEqual([agentStreamControlSubject(SESSION)])
 
   live.mod.moveSession(CLEARED)
@@ -365,6 +437,43 @@ test("an admission that lands for an id the session has left takes nothing", asy
   live.runner.stop()
 })
 
+// A connection that closes for good while a `/clear`'s move is still to land is replaced by one
+// that presents the token of the id the move was for, or of the id before it, so the connection
+// the server swaps in may still not take the new id's subjects: the server refuses a subscribe it
+// may not take and closes the subscription, and a live view that took it at once was refused and
+// took it again every second until the move landed.
+test("on a connection swapped in while a clear's move is pending, the new id's control subject waits for the admission", async () => {
+  const admission = sessionAdmission(SESSION)
+  const live = running(admission.admitted)
+  live.mod.moveSession(CLEARED)
+  await settle()
+  // The connection closes for good, and the server swaps in a new one.
+  await live.nats.closeForGood()
+  const swapped = new FakeNats()
+  live.runner.useConnection(swapped)
+  await settle()
+  expect([...swapped.subscriptions.keys()]).toEqual([])
+
+  admission.admit(CLEARED)
+  await settle()
+  expect([...swapped.subscriptions.keys()]).toEqual([agentStreamControlSubject(CLEARED)])
+  // The subject is taken once, on the new connection alone.
+  expect(swapped.calls.filter((call) => call.startsWith("nats.subscribe"))).toHaveLength(1)
+  expect([...live.nats.subscriptions.keys()]).toEqual([])
+  live.runner.stop()
+})
+
+test("on a connection swapped in for an admitted id, the control subject is taken at once", async () => {
+  const admission = sessionAdmission(SESSION)
+  const live = running(admission.admitted)
+  await live.nats.closeForGood()
+  const swapped = new FakeNats()
+  live.runner.useConnection(swapped)
+  await settle()
+  expect([...swapped.subscriptions.keys()]).toEqual([agentStreamControlSubject(SESSION)])
+  live.runner.stop()
+})
+
 test("a stopped runner answers nothing more", async () => {
   const live = running()
   await live.control(SESSION, watchRequest)
@@ -397,4 +506,60 @@ test("a row that arrives twice is read once", async () => {
   await settle()
   expect(live.observed.filter((event) => event.kind === "append")).toHaveLength(2)
   live.runner.stop()
+})
+
+// A control subscription can end while the connection stays up (the server refused it): the
+// view takes the subject again a second later (`../src/control-subscription`), and takes nothing
+// for an id it moved off, or once it stopped, while that retake waits.
+test("a control subscription that ends on a live connection is taken again a second later, and not after a clear or a stop", async () => {
+  const live = running()
+  const subject = agentStreamControlSubject(SESSION)
+  const cleared = agentStreamControlSubject(CLEARED)
+  const takes = (taken: string): number =>
+    live.nats.calls.filter((call) => call === `nats.subscribe ${taken}`).length
+  const refusal = Object.assign(new Error("Permissions Violation for Subscription"), {
+    name: "NatsError",
+    code: "PERMISSIONS_VIOLATION",
+  })
+  await settle()
+  expect(takes(subject)).toBe(1)
+
+  // The retake is a timer of the view's own (`RESUBSCRIBE_MS`, a second), so from here the row
+  // runs on Bun's fake clock and moves it itself.
+  jest.useFakeTimers()
+  try {
+    // Ended on a live connection: taken again at the second, and not a millisecond before.
+    live.nats.failSubscription(subject, refusal)
+    await settle()
+    jest.advanceTimersByTime(999)
+    await settle()
+    expect(takes(subject)).toBe(1)
+    jest.advanceTimersByTime(1)
+    await turnsUntil("the control subject taken again", () => takes(subject) === 2)
+    expect(live.nats.liveSubscriptions(subject)).toBe(1)
+
+    // Ended again, and a `/clear` lands while the retake waits: the old id is not taken again.
+    live.nats.failSubscription(subject, refusal)
+    await settle()
+    jest.advanceTimersByTime(100)
+    live.mod.moveSession(CLEARED)
+    await settle()
+    expect(takes(cleared)).toBe(1)
+    jest.advanceTimersByTime(1_400)
+    await settle()
+    expect(takes(subject)).toBe(2)
+    expect(takes(cleared)).toBe(1)
+
+    // Ended again, and the view stops while the retake waits: nothing is taken again.
+    live.nats.failSubscription(cleared, refusal)
+    await settle()
+    jest.advanceTimersByTime(100)
+    live.runner.stop()
+    jest.advanceTimersByTime(1_400)
+    await settle()
+    expect(takes(cleared)).toBe(1)
+    expect(live.nats.liveSubscriptions(cleared)).toBe(0)
+  } finally {
+    jest.useRealTimers()
+  }
 })

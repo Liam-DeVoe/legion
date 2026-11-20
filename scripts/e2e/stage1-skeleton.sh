@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Stage 1's gate for the Go coordinator: it boots against a real Postgres, answers /healthz,
 # /readyz and GET /legion/v1/state, registers itself, survives a restart against the same store
-# with its first boot time intact, and refuses an unreachable Postgres by the host it could not
-# reach and never by the password. Every step is fatal — no `|| true` outside the cleanup a trap
-# must never fail on — and the run leaves no container, no daemon, and nothing in the real state
-# home.
+# with its first boot time intact, refuses a wrong Postgres password at once by the host and never
+# by the password, and opens its store behind a proxy that resets its first two connections, by
+# trying again 1 s and then 2 s later. Every step is fatal — no `|| true` outside the cleanup a
+# trap must never fail on — and the run leaves no container, no daemon, no proxy, and nothing in
+# the real state home.
 #
-# Everything it takes is this run's own: its work directory, its container name, its project key
-# and its port. Two runs on one box (a CI job and a devbox session, or two sessions) do not
+# Everything it takes is this run's own: its work directory, its container name, its project keys
+# and its ports. Two runs on one box (a CI job and a devbox session, or two sessions) do not
 # collide, and neither reports the other as a leftover.
 #
 # The daemon supervises its agents under tmux, so it refuses to start without what a launch
@@ -21,16 +22,24 @@
 # and dropped by the cleanup. The DSN must name a loopback host, which lib/loopback-dsn.py asks
 # libpq for, so the run needs psql and python3 with libpq beside tmux. The daemon is handed that
 # database in LEGION_POSTGRES_DSN, in its own environment alone: legion.yaml names no
-# postgres_dsn, and no variable of this shell holds the URI. Its guard is proof_guard's below, and
-# every wait goes through lib/proof-wait.sh's wait_for (which lib/rig.sh sources), which gives up
-# 30 s before it.
+# postgres_dsn, and no variable of this shell holds the URI. The daemon behind step 2's proxy is
+# handed the same database in libpq's own variables, so no variable, argument list or file holds
+# the password there either. Its guard is proof_guard's below, and every wait goes through
+# lib/proof-wait.sh's wait_for (which lib/rig.sh sources), which gives up 30 s before it.
 set -euo pipefail
 
 pid=
-# lib/rig.sh's start_process (through start_daemon below) and keep_port set these: the daemon's
-# pid, copied to pid on each start, and its port keeper's.
+# lib/rig.sh's start_process (through start_daemon and step 2's start below) and keep_port set
+# these: each daemon's pid, copied to pid on each start, and its port keeper's.
 daemon_pid=
 daemon_keeper_pid=
+retry_daemon_pid=
+retry_keeper_pid=
+# Step 2's: the port its keeper holds (keep_port), and the proxy it puts in front of Postgres, with
+# the port that proxy serves on (await_port_file).
+retry_port=
+proxy_pid=
+proxy_port=
 ok=
 container=legion-e2e-pg-$$
 # The server the run makes its database on, and that database, once made: cleanup drops it.
@@ -42,11 +51,15 @@ evidence=$work
 timeout_hook=
 mkdir -p "$work/logs"
 # cleanup never returns non-zero: a trap that fails under set -e would mask the real status. The
-# work directory survives a failure — its state documents, refusal log and daemon log are the
-# evidence, and the daemon log is printed — and goes when the run passed.
+# work directory survives a failure — its state documents, refusal log and the logs of the
+# daemons, the proxy and the keepers are the evidence, and each log that holds anything is
+# printed — and goes when the run passed.
 cleanup() {
+  local log
   if [ -n "${pid:-}" ]; then kill -TERM "$pid" 2>/dev/null || true; fi
+  if [ -n "${proxy_pid:-}" ]; then kill -TERM "$proxy_pid" 2>/dev/null || true; fi
   if [ -n "${daemon_keeper_pid:-}" ]; then kill -TERM "$daemon_keeper_pid" 2>/dev/null || true; fi
+  if [ -n "${retry_keeper_pid:-}" ]; then kill -TERM "$retry_keeper_pid" 2>/dev/null || true; fi
   if [ -n "${database:-}" ]; then
     server_psql -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand"
@@ -55,10 +68,11 @@ cleanup() {
   if [ -n "${ok:-}" ]; then
     rm -rf "$work"
   else
-    if [ -s "$work/logs/daemon.log" ]; then
-      echo "--- the daemon's log ($work/logs/daemon.log)"
-      cat "$work/logs/daemon.log" || true
-    fi
+    for log in "$work"/logs/*.log; do
+      [ -s "$log" ] || continue
+      echo "--- $log"
+      cat "$log" || true
+    done
     echo "the run's workspace is $work"
   fi
   return 0
@@ -92,6 +106,25 @@ stop_daemon() {
     exit 1
   }
   pid=
+}
+# helper_exited NAME PID is whether step 2's helper NAME (PID) has exited, for stop_helper's
+# wait_for.
+helper_exited() {
+  kill -0 "$2" 2>/dev/null || return 0
+  echo "the $1 ($2) is still running"
+  return 1
+}
+# stop_helper NAME PID_VAR stops one of step 2's helpers, the proxy or the daemon's keeper, each of
+# which exits 0 on SIGTERM. It signals the pid PID_VAR holds and waits for the exit through
+# wait_for, so a helper that ignores the signal fails the run by name at the guard's deadline;
+# then it reads the exit status, which set -e judges, and clears PID_VAR, so cleanup signals
+# nothing.
+stop_helper() {
+  local name=$1 pid_var=$2
+  kill -TERM "${!pid_var}"
+  wait_for "the $name (${!pid_var}) to exit on SIGTERM" helper_exited "$name" "${!pid_var}"
+  wait "${!pid_var}"
+  printf -v "$pid_var" '%s' ''
 }
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -277,6 +310,26 @@ start_daemon() {
   pid=$daemon_pid
 }
 
+# The server's host, port and user, as libpq reads them from the DSN, for the two steps that reach
+# that server another way: step 1 writes a DSN of the server's address with a wrong password, and
+# step 2's proxy forwards to its host and port. exec_run_database's --libpq-env form hands each to
+# python3 in the variable libpq reads it from, and python3 prints those three and nothing else, so
+# the password stays in that process's environment. A DSN that names no port connects to 5432, as
+# libpq does, so no step reads $pgport, which CI never sets (its service is localhost:5432,
+# ci-job-daemon-go.yaml). The host comes back twice: bare, for the proxy's
+# socket.create_connection, and in the address, host:port, that step 1's DSN writes and its grep
+# reads, ::1 in brackets, since the daemon's refusal names the host as net.JoinHostPort writes it
+# (internal/store's target). The user comes back percent-encoded, as a DSN spells it.
+pg=$(exec_run_database LEGION_E2E_PG_DSN "$pg_server" postgres \
+  "the run creates and drops a database there" --libpq-env -- python3 -c '
+import os, sys, urllib.parse as p
+host, port, user = os.environ["PGHOST"], os.environ.get("PGPORT") or "5432", os.environ.get("PGUSER")
+if not user:
+    sys.exit("LEGION_E2E_PG_DSN must name a user: step 1 writes a DSN of it with a wrong password")
+address = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+print(host, port, address, p.quote(user, safe=""), sep="\n")')
+{ read -r pg_host; read -r pg_port; read -r pg_address; read -r pg_user; } <<<"$pg"
+
 # The operator bearer, as the 0600 file operator_token_file names, and the OMP the daemon resolves
 # at boot (LEGION_OMP_PATH): a stub that answers the plugin gate's load probe (`omp models
 # --extension <probe> --json`) as a pane that loads pi-legion beside pi-envoy does — pi-legion
@@ -352,22 +405,25 @@ github_apps:
       -----END PRIVATE KEY-----
 EOF
 
-# 1. refuses without Postgres, naming the host and never the password. The bad DSN carries its
-#    own credentials so both halves of that assertion mean something wherever this runs. It is the
-#    file's own postgres_dsn, which outranks LEGION_POSTGRES_DSN, and this start is given none. Its
-#    password is random bytes of this run, so no file holds it and the assertion below reads a
-#    value only this refusal could have printed.
+# 1. refuses a wrong password at once, naming the host and never the password. Both paths' servers
+#    check passwords, so the answer is 28P01, which the start never tries again: only a connection
+#    error is (step 2). The bad DSN carries its own credentials so both halves of that assertion
+#    mean something wherever this runs. It is the file's own postgres_dsn, which outranks
+#    LEGION_POSTGRES_DSN, and this start is given none. Its password is random bytes of this run,
+#    so no file holds it and the assertion below reads a value only this refusal could have
+#    printed.
 bad_password=$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')
+bad_login="$pg_user:$bad_password"
 {
   cat "$work/legion.yaml"
-  printf 'postgres_dsn: postgres://legion:%s@127.0.0.1:5499/legion\n' "$bad_password"
+  printf 'postgres_dsn: postgres://%s@%s/%s\n' "$bad_login" "$pg_address" "$run_db"
 } >"$work/bad.yaml"
 if "${pane_home[@]}" "$work/legion" start --config "$work/bad.yaml" 2>"$work/refusal.log"; then
   echo "expected refusal"
   exit 1
 fi
-grep -q '127.0.0.1:5499' "$work/refusal.log" || {
-  echo "the refusal does not name the host it could not reach"
+grep -qF "$pg_address" "$work/refusal.log" || {
+  echo "the refusal does not name the host that refused the password"
   exit 1
 }
 # `! grep …` would be read as a negation set -e ignores (shellcheck SC2251): the assertion could
@@ -377,7 +433,100 @@ grep -q -- "$bad_password" "$work/refusal.log" && {
   exit 1
 }
 
-# 2. starts, answers, restarts against the same store
+# 2. opens its store through a connection error at the start's first database connection, by
+#    trying again 1 s and then 2 s later (c-boot-db-retry case 2). A daemon of its own (its
+#    project key, legion.yaml, state directory and port, so step 3's count of boots for $project
+#    stays 1) reaches the run's database through a proxy on 127.0.0.1 that resets its first two
+#    connections (SO_LINGER 0) and forwards every one after them. Its LEGION_POSTGRES_DSN names
+#    the proxy's address and sslmode=disable, and nothing else: under pgx's default, prefer, one
+#    attempt can open a TLS connection and then a plain one, which would spend both resets on the
+#    first attempt. The user, the password and the run's database reach it in libpq's own
+#    variables (with_proxied_store below). The proxy writes its port through a rename, as
+#    lib/held-port.py does, logs what it does with each connection, and exits 0 on SIGTERM.
+keep_port retry_keeper retry_port
+python3 - "$pg_host" "$pg_port" "$work/proxy.port" <<'EOF' >>"$work/logs/proxy.log" 2>&1 &
+import itertools, os, signal, socket, struct, sys, threading
+
+host, port, port_file = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+
+
+def relay(source, sink):
+    try:
+        while data := source.recv(65536):
+            sink.sendall(data)
+    except OSError:
+        pass
+    try:
+        sink.shutdown(socket.SHUT_WR)
+    except OSError:
+        pass
+
+
+def forward(client):
+    with client, socket.create_connection((host, port)) as server:
+        back = threading.Thread(target=relay, args=(server, client), daemon=True)
+        back.start()
+        relay(client, server)
+        back.join()
+
+
+listener = socket.create_server(("127.0.0.1", 0))
+with open(f"{port_file}.tmp", "w", encoding="ascii") as written:
+    written.write(f"{listener.getsockname()[1]}\n")
+os.replace(f"{port_file}.tmp", port_file)
+for n in itertools.count(1):
+    client, _ = listener.accept()
+    if n <= 2:
+        client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        client.close()
+        print(f"connection {n}: reset", flush=True)
+        continue
+    print(f"connection {n}: forwarded to {host}:{port}", flush=True)
+    threading.Thread(target=forward, args=(client,), daemon=True).start()
+EOF
+proxy_pid=$!
+await_port_file proxy "$work/proxy.port" proxy_port
+mkdir -p "$work/retry-state"
+sed -f /dev/stdin "$work/legion.yaml" >"$work/retry.yaml" <<EOF
+s#^project: .*#project: ${project}R#
+s#^port: .*#port: $retry_port#
+s#^state_dir: .*#state_dir: $work/retry-state#
+EOF
+# with_proxied_store COMMAND... runs COMMAND, the daemon behind the proxy, in place of the subshell
+# that calls it, as with_store does, with the run's own database in libpq's own variables
+# (exec_run_database's --libpq-env: PGUSER, PGPASSWORD, PGDATABASE and the rest) and
+# LEGION_POSTGRES_DSN naming the proxy's address alone. pgx reads each keyword a DSN leaves out
+# from libpq's variable for it (pgconn's parseEnvSettings), and the DSN's host, port and sslmode
+# outrank those variables, so the daemon dials the proxy as the server's user, into the run's
+# database, and the password is in no variable of this shell, no argument list and no file.
+with_proxied_store() {
+  export LEGION_POSTGRES_DSN="postgres://127.0.0.1:$proxy_port/?sslmode=disable"
+  exec_run_database LEGION_E2E_PG_DSN "$pg_server" "$run_db" \
+    "the run creates and drops a database there" --libpq-env -- "$@"
+}
+start_process retry_daemon with_proxied_store python3 "$root/scripts/e2e/lib/held-port.py" exec \
+  --from "$work/retry_keeper.sock" --fd-env LEGION_LISTEN_FD -- \
+  "${pane_home[@]}" "$work/legion" start --config "$work/retry.yaml"
+pid=$retry_daemon_pid
+# The two helpers read the daemon's port from $port; the assignment before each call names this
+# daemon's for that call alone.
+port=$retry_port wait_healthz " behind the proxy"
+port=$retry_port readyz_200 " behind the proxy"
+# legion start logs JSON lines (slog's JSON handler), and bootprobe.Run logs each wait as one of
+# them; fromjson? and objects pass over a line that is no JSON object.
+waits=$(jq -Rnr '[inputs | fromjson? | objects
+  | select(.msg == "boot probe failed transiently; waiting to run it again" and .probe == "Postgres store")
+  | "\(.attempt) \(.retryIn)"] | join(", ")' "$work/logs/retry_daemon.log")
+[ "$waits" = "1/10 1s, 2/10 2s" ] ||
+  fail "the daemon behind the proxy logged the waits to open its store as '$waits', want '1/10 1s, 2/10 2s', one after each reset"
+kill -TERM "$pid"
+stop_daemon SIGTERM
+stop_helper proxy proxy_pid
+# The daemon's keeper is the step's own too, and exits 0 on SIGTERM (lib/held-port.py keep).
+stop_helper "daemon's keeper" retry_keeper_pid
+
+# 3. starts, answers, restarts against the same store
 start_daemon
 wait_healthz
 # The daemon says it is ready, beside the /healthz above and the state read below (INFRA-3169).

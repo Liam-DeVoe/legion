@@ -19,10 +19,10 @@ natsd and calloutd with no shared wait in it, keeps `BUILD_GUARD_MS` (300000 ms)
 process run `docs/testing.md` lets a hook guard itself. The second command runs the files whose
 rows take far longer than the rest: `nats-stall.test.ts`, `nats-auth.test.ts`, the three
 `*.live.test.ts` suites, `dispatch-askgate.test.ts`, `dispatch-who-waits.test.ts`,
-`askgate-record.test.ts`, `broker-credential-signins.test.ts`, `dispatch-write-outcomes.test.ts`
-and `nats-credential.test.ts`; the first runs every other file. The guards are 30000 and
-120000 ms, each at least twice the slowest row or hook its command ran under 8 busy loops on
-2 CPUs; `package.json`'s `"//"` note gives each reading, and the hook's.
+`askgate-record.test.ts`, `broker-credential-signins.test.ts`, `dispatch-write-outcomes.test.ts`,
+`nats-credential.test.ts` and `nats-handshake.test.ts`; the first runs every other file. The
+guards are 30000 and 120000 ms, each at least twice the slowest row or hook its command ran under
+8 busy loops on 2 CPUs; `package.json`'s `"//"` note gives each reading, and the hook's.
 
 Bun reads the guard from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
 preload that calls `jest.setTimeout` governs the first test file of a run only, and
@@ -171,14 +171,19 @@ listener's warning returns, so a reword reaches both languages from one place.
 `natsConnectionOptions({ servers, name, credential })` (`@legion/envoy-client/nats-connection`) is
 the nats.js `connect` options every session plugin dials with: the credential `natsAuthOptions`
 builds from the resolved `NatsCredential` (`src/nats-auth.ts`, which the package does not export, so
-a plugin dials only with these options), reconnecting forever 2 s apart, and a ping every 10 s
-(`NATS_PING_INTERVAL_MS`) with the connection dropped on the tick that finds two pings unanswered
-(`NATS_MAX_PINGS_OUT`). So a
+a plugin dials only with these options), a dial timeout of 10 s (`NATS_DIAL_TIMEOUT_MS`),
+reconnecting forever 2 s apart, and a ping every 10 s (`NATS_PING_INTERVAL_MS`) with the connection
+dropped on the tick that finds two pings unanswered (`NATS_MAX_PINGS_OUT`). So a
 path that freezes without closing is left within 30 s and redialed at once, and a session is back
-within 52.1 s when that redial also hangs on the 20 s dial timeout (`NATS_DIAL_TIMEOUT_MS`), the 2 s
-wait and its 0.1 s jitter (`NATS_RECONNECT_JITTER_MS`), both set here rather than left to nats.js's
-defaults; nats.js's default 120 s interval left a frozen path for up to 6 minutes. A failed connect
-is logged as
+within 42.1 s when that redial also hangs for its 10 s timeout, the 2 s wait and its 0.1 s jitter
+(`NATS_RECONNECT_JITTER_MS`), the jitter set here rather than left to nats.js's default; nats.js's
+default 120 s interval left a frozen path for up to 6 minutes. A plugin opens its connection with
+`connectNats(connect, options, plan, hooks)`: one bound around the whole `connect()` (the name
+lookup, every address and every server, which nats.js times one at a time), and a failed dial
+dialed again 250 ms later, doubling to 4 s, inside a budget (`NATS_DIAL_PLAN`, `natsDialBudget`),
+unless no redial can cure the failure. A server that closes a dial during its handshake, as
+nats-server does to a CONNECT that comes more than 2 s after its INFO, fails it at once
+(`patches/nats@2.29.3.patch`). A failed connect is logged as
 `natsDialFailure(named, error, presenting)`: `could not connect to NATS at <servers> presenting
 <credential>: <reason>`, built once for every caller (pi-envoy, the channel server, the e2e bridge,
 `nats-stream` and `dispatch-user-turns`). The servers are named by the setting that holds them
@@ -240,7 +245,7 @@ the trade all of it but the connection's share, 8 s or half the bound.
 The module imports nats.js's types alone, since every bundle that reads `envoySettings` imports it.
 
 nats.js 2.29.3, the last 2.x release, leaves a redial's socket open when it gives up on that dial
-at its 20 s timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes
+at its dial timeout (a TCP connect that hangs, or a server that never sends `INFO`): it closes
 only a transport that finished connecting, so the socket keeps the process alive and a channel
 server never exits on SIGTERM. Its stale-connection close (two unanswered pings) flushes the
 transport before it destroys the socket, and behind data a dead path never acknowledged that flush

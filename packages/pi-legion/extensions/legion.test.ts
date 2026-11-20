@@ -151,6 +151,8 @@ const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<Nats
   const name = options.name ?? "";
   await natsConnectGates.get(name)?.();
   const endings: (() => void)[] = [];
+  // Settles when the connection is dropped, as nats.js's `closed()` settles when it closes.
+  const shut = Promise.withResolvers<void>();
   const connection = {
     name,
     subjects: [] as string[],
@@ -158,6 +160,7 @@ const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<Nats
     closed: false,
     drop: () => {
       connection.closed = true;
+      shut.resolve();
       for (const end of endings.splice(0)) end();
     },
   };
@@ -167,6 +170,7 @@ const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<Nats
     close: async () => undefined,
     drain: async () => undefined,
     isClosed: () => connection.closed,
+    closed: () => shut.promise,
     flush: async () => undefined,
     publish: () => undefined,
     subscribe: (subject: string) => {
@@ -6882,10 +6886,23 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       jest.useFakeTimers();
       natsConnectGates.set("omp-ses_controller_first", async () => undefined);
       failingConnect.reject(new Error("nats: connection refused"));
-      for (let turn = 0; turn < 50; turn++) await Promise.resolve();
-      jest.advanceTimersByTime(60_000);
+      // The failed redial schedules the next one on the long interval. The clock moves until the
+      // relay subject is subscribed again, not a fixed number of turns or timers: how many turns
+      // the failure takes to reach `retryRelay`, and which other timers are set first, is the
+      // code's business. Each turn yields to the event loop too (bun's fake clock does not own
+      // `setImmediate`), so a step that waits on a macrotask still runs.
+      let reopenedYet = false;
+      void reopened.promise.then(() => {
+        reopenedYet = true;
+      });
+      // turnsUntil takes a turn of the event loop after each move; a relay that never comes back
+      // fails at the row's deadline, by name.
+      await turnsUntil("the relay subject subscribed again", () => reopenedYet, {
+        each: () => {
+          if (jest.getTimerCount() > 0) jest.advanceTimersByTime(60_000);
+        },
+      });
       jest.useRealTimers();
-      await reopened.promise;
       const settled = Promise.withResolvers<void>();
       setImmediate(settled.resolve);
       await settled.promise;

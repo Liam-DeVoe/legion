@@ -64,7 +64,7 @@ Each item below names a script, then what it proves.
 
   `legion start` boots against a local Postgres, serves `/healthz` and `GET /legion/v1/state`, answers `GET /readyz` 200 once it serves, read after `/healthz` at the first boot and again after the restart, since the readiness latch is one-way and the booting process's own, so a daemon that answers `/healthz` while it never latches is what each of the two reads catches;
   answers `legion state` with the 21-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
-  `pool-capacity` present, since tmux runs no probe pod), registers itself in the Go daemon's own legions registry, survives a restart against the same store with its first boot time intact, and refuses an unreachable Postgres by the host it could not reach and never by the password
+  `pool-capacity` present, since tmux runs no probe pod), registers itself in the Go daemon's own legions registry, survives a restart against the same store with its first boot time intact, refuses a wrong Postgres password at once by the host and never by the password, and, as a second daemon behind a proxy that resets its first two connections to that Postgres, opens its store by trying again 1 s and then 2 s later, and serves
 
 - `stage2-tmux-supervision.sh`
 
@@ -576,24 +576,28 @@ Each item below names an input and its default, then what it means.
   Either way the daemon's store is a database the run makes there and drops on the way out, and the daemon is handed it in `LEGION_POSTGRES_DSN`, in its own environment alone: `legion.yaml` names no `postgres_dsn`.
   A set DSN must name a loopback host: [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_run_database` reads it with libpq before the database is made, and its `exec_run_database` hands the daemon, and `legion stop`, the run's database as a URI, so no variable of the script, no argument list and no file holds the password.
   The psql that makes and drops that database connects to the server's `postgres` database, the one `createdb` and `dropdb` connect to, and takes the connection in libpq's own variables (`PGPASSWORD` among them), which `exec_run_database --libpq-env` sets, so no argument list holds a password there either.
+  The run reads the server's host, port and user once, as libpq reads them, through that same form, for the two steps that reach the server another way: the first step writes a DSN of that address and user with a wrong password of random bytes, and the second step's proxy forwards to that host and port;
+  the server must check passwords, as CI's service and the container do, because the first step's wrong password must be refused.
+  The daemon behind the proxy is handed the run's database in libpq's own variables too, with `LEGION_POSTGRES_DSN` naming only the proxy's address and `sslmode=disable`, which pgx reads beside them, so the password is in no variable, argument list or file there either.
 
 Everything the run takes is its own, so two runs on one box
 — a CI job and a devbox session, or two sessions — neither collide nor report each other as a leftover:
 
-- a `mktemp -d` work directory (`/tmp/legion-e2e.XXXXXXXX`)
-  — the built binary, the two `legion.yaml`s, the operator token file and the OMP stub, the daemon's `home` with the plugin manifest, the two state documents, the refusal log.
+- a `mktemp -d` work directory (`$TMPDIR/legion-e2e.XXXXXXXX`, under `/tmp` where `TMPDIR` is unset)
+  — the built binary, the three `legion.yaml`s (the daemon's, the wrong password's and the proxied daemon's), the operator token file and the OMP stub, the daemons' `home` with the plugin manifest, the two state documents, the refusal log, and in `logs/` each daemon's, keeper's and the proxy's log.
   Removed when the run passes; **kept when it fails**, and its path printed, because those documents are the evidence.
 
 - `XDG_STATE_HOME=<work>/xdg` — so the legions registry the run writes is its own, never the box's `~/.local/state/legion/legions.json`.
 
-- a per-run project key (`E2E<pid><epoch>`)
-  — boots are counted per project, so a fresh key is what makes `boots == 1` true on a store that has served other runs.
+- a per-run project key (`E2E<pid><epoch>`), and `E2E<pid><epoch>R` for the daemon behind the proxy
+  — boots are counted per project, so a fresh key is what makes `boots == 1` true on a store that has served other runs, and the proxied daemon's boot is not counted in it.
 
 - a daemon port the kernel chose, held for the whole run by a keeper ([`lib/rig.sh`](#librigsh)'s `keep_port`, [`lib/held-port.py`](#libheld-portpy)):
   `legion.yaml` names it, and each start serves on a copy of the keeper's socket (`LEGION_LISTEN_FD`, `held-port.py exec --from`, which each start runs after `exec_run_database` rather than through `start_kept`, so the DSN reaches the helper first), so the restart serves the same port and nothing else can take it in between;
+  the proxied daemon has a port and a keeper of its own, and the proxy a port the kernel chose;
   and on the devbox path the container `legion-e2e-pg-<pid>`.
 
-After each healthy start the run checks that the socket the daemon serves on is held by the daemon's and the keeper's processes alone (`held_only_by`:
+After each of the main daemon's two healthy starts, the first and the restart, the run checks that the socket the daemon serves on is held by the daemon's and the keeper's processes alone (`held_only_by`:
 the socket's inode from the `LISTEN` row of `/proc/net/tcp`, its holders from `/proc/*/fd`):
 a copy that leaked into the daemon's tmux server, a pane or a `legion` CLI call would keep the port listening after the daemon stops.
 
@@ -604,15 +608,15 @@ It is read at the first boot and again after the restart, never at one of them a
 the latch is one-way and the booting process's own, so every start begins unlatched, and `/healthz` is answered whether or not the latch was set — a daemon that answers `/healthz` while it never latches is the state this read catches, at either boot.
 
 After any exit — pass, failure, or an interrupt
-— the `EXIT` trap removes the container and signals the daemon and the keeper;
-`docker ps -a --filter name=legion-e2e-pg` comes back empty and nothing is left holding the run's port.
-A failed run prints the daemon's log (`<work>/logs/daemon.log`).
+— the `EXIT` trap removes the container and signals the daemon, the proxy and the keepers;
+`docker ps -a --filter name=legion-e2e-pg` comes back empty and nothing is left holding the run's ports.
+A failed run prints each log of `<work>/logs` that holds anything: the two daemons' (`daemon.log`, `retry_daemon.log`), the proxy's and the keepers'.
 
 ### How it fails
 
 Every step is fatal and names its reason:
-a keeper that never held a port, the refusal that does not name its host, a first tmux that is a script or mise itself while `mise which tmux` names no tmux (`real_bin_path` refuses), a daemon that exits before it answers `/healthz` (the run stops at once and names the daemon's exit status), a `/healthz` that never answers (each poll times out after 2 s:
-the kept port queues a request no daemon accepts), a `/readyz` that answers anything but 200 at either boot (the failure names the status it got and the body with it, which says whether the daemon called itself starting or stopping), a socket held by any process but the daemon and its keeper, a state document that is not boot 1 with cap 4 and no issues, a registry without exactly one entry for this run, a `firstBootAt` that moved across the restart, a daemon that ignored a stop (SIGKILLed on the way out) or exited non-zero on one.
+a keeper that never held a port, a wrong password the daemon does not refuse, a refusal that does not name its host or that prints the password, a proxy that exits or holds no port, a first tmux that is a script or mise itself while `mise which tmux` names no tmux (`real_bin_path` refuses), a daemon that exits before it answers `/healthz` (the run stops at once and names the daemon's exit status; a daemon behind the proxy that exits at the first reset, as one that opens its store once does, stops it there), a `/healthz` that never answers (each poll times out after 2 s:
+the kept port queues a request no daemon accepts), a `/readyz` that answers anything but 200 at either boot or behind the proxy (the failure names the status it got and the body with it, which says whether the daemon called itself starting or stopping), a daemon behind the proxy whose log does not hold exactly its two waits to open the store, attempt `1/10` with `retryIn` `1s` and `2/10` with `2s`, a socket held by any process but the daemon and its keeper, a state document that is not boot 1 with cap 4 and no issues, a registry without exactly one entry for this run, a `firstBootAt` that moved across the restart, a daemon that ignored a stop (SIGKILLed on the way out) or exited non-zero on one.
 `stop_daemon` reads and judges the exit status, because `daemon.Run` returns 0 on a cancelled context — a non-zero status there is a defect, not a stop.
 
 Two notes on what the script had to learn about its own surface:
@@ -5700,7 +5704,7 @@ The tenth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it thro
   For a DSN the helper refuses, COMMAND never runs: the refusal line goes to stderr and the shell ends with status 1.
   A caller runs it as the last command of a subshell of its own: in the background (`… &`, or lib/rig.sh's `start_process`), where COMMAND keeps the subshell's pid, so `$!` or `<NAME>_pid` names COMMAND itself, or in `( … )` for a command it waits for.
   Called in the script's own shell it replaces nothing, says so on stderr and returns 2.
-  [`verification-results.sh`](#verification-resultssh) and [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) hand Dispatch and their drivers the URI, [`stage1-skeleton.sh`](#stage1-skeletonsh) hands the daemon the URI in `LEGION_POSTGRES_DSN`, whose settings check reads a DSN that leaks there by its `postgres://`, and runs the psql that makes and drops that database with `--libpq-env` on the server's `postgres` database, `clean-session-stop-tmux.sh` hands its daemon the string there, and `envoy-session-states.sh` runs its psql with `--libpq-env`
+  [`verification-results.sh`](#verification-resultssh) and [`dispatch-claimant-delivery.sh`](#dispatch-claimant-deliverysh) hand Dispatch and their drivers the URI, [`stage1-skeleton.sh`](#stage1-skeletonsh) hands the daemon the URI in `LEGION_POSTGRES_DSN`, whose settings check reads a DSN that leaks there by its `postgres://`, and runs the psql that makes and drops that database, its read of the server's host, port and user, and the daemon behind its proxy with `--libpq-env`, `clean-session-stop-tmux.sh` hands its daemon the string there, and `envoy-session-states.sh` runs its psql with `--libpq-env`
 
 - `empty_public_schema URL`
 
