@@ -100,8 +100,8 @@ describe("gate-search", () => {
     expect(outcome.faults).toEqual([]);
     expect(outcome.generated).toBeGreaterThan(0);
     const gate = outcome.lines.find((line) => line.startsWith(`${MERGE_GATE}:`));
-    expect(gate).toContain("GATE reviewer");
-    expect(gate).toContain("states line, other head, roles, ci, not known, refusal, no wait\n");
+    expect(gate).toContain("KEEP");
+    expect(gate).toContain("Owned by the guide pull request.");
   });
 
   test("a role prompt without the two-role rule fails", () => {
