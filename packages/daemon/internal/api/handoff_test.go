@@ -2001,10 +2001,16 @@ func TestHandoffCompleteCarriesTheRunOfTheTaskBeingWorked(t *testing.T) {
 			}
 			if tc.relaunch {
 				// The claim's own launch counter moves — a crash relaunch, a resume — while the
-				// run it is serving does not. A suspension is held for the agent's turn, so the turn
-				// ends first.
+				// run it is serving does not. A suspension is held for the agent's turn and then for
+				// the report that finishes a current worker's task, so the turn ends and is reported
+				// first, as its worker reports it (the second turn of this process, naming the task).
+				number := machine.Claim().Pending.Number
 				if err := machine.Handle(context.Background(), supervise.StreamTurnEnd{Claim: tester.token}); err != nil {
 					t.Fatalf("end the turn: %v", err)
+				}
+				if err := machine.Handle(context.Background(), supervise.RequestTurnOutcome{Claim: tester.token,
+					Generation: machine.Claim().Generation, Sequence: 2, Task: number}); err != nil {
+					t.Fatalf("report the turn of task %d: %v", number, err)
 				}
 				if err := machine.Handle(context.Background(), supervise.RequestSuspend{Claim: tester.token, By: supervise.SuspendedByOperator}); err != nil {
 					t.Fatalf("suspend: %v", err)

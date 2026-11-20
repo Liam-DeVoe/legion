@@ -166,18 +166,38 @@ func goneShim(t *testing.T) *os.File {
 	return stdout
 }
 
-// The bridge's own lines pass the URL rule. A turn's outcome that cannot be reported is logged
-// with the error of the post, which quotes the daemon's URL as the pane names it
-// (LEGION_DAEMON_URL), user name and query included: the line keeps the URL's host and path, and
-// neither the user name nor the query reaches the pane.
+// The bridge's own lines pass the URL rule. A turn's outcome whose post fails in its transport is
+// logged with the error of the post, which quotes the daemon's URL as the pane names it
+// (LEGION_DAEMON_URL), user name and query included, before the report is sent again: the line
+// keeps the URL's host and path, and neither the user name nor the query reaches the pane.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer stdout.Close()
-	// A port nothing listens on, so the report's post fails at its dial.
-	const daemon = "127.0.0.1:1"
+	// Something in the daemon's place that answers no HTTP, so the report's post fails in its
+	// transport with an error naming the URL. A refused dial would not do: the bridge names it in
+	// words of its own ("the connection was refused") and quotes no error.
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer conn.Close()
+				_, _ = conn.Read(make([]byte, 4096))
+				_, _ = conn.Write([]byte("an answer that is no HTTP\r\n\r\n"))
+			}()
+		}
+	}()
+	daemon := listener.Addr().String()
 	bootToken := filepath.Join(t.TempDir(), "boot-token")
 	if err := os.WriteFile(bootToken, []byte("boot-token\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -189,7 +209,7 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 		"LEGION_DAEMON_URL=http://legion-reader@"+daemon+"/daemon?token=planted-query-token-3",
 		"LEGION_BOOT_TOKEN_FILE="+bootToken, "LEGION_GENERATION=4")
 	p.await("the failed report logged", func() bool {
-		return strings.Contains(p.logged(), "could not report the outcome of turn 1")
+		return strings.Contains(p.logged(), "got no answer from the daemon (the transport failed: ")
 	})
 	p.hangUp()
 	logged := p.logged()
