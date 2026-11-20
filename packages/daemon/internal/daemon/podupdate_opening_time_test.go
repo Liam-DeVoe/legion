@@ -9,10 +9,13 @@ package daemon
 //
 // The wait these tests hold the walk in is the one write every roll makes: the ask of a round a
 // sweep before opened, which the walk enqueues as it reaches that round's issue (askRound). The
-// limit rig is podupdate_limits_test.go's.
+// limit rig is podupdate_limits_test.go's, whose outbox owns the project of its keys
+// (fleetOutboxProject), so that ask is a row the store writes, and a sweep that asks it once
+// queues it and asks it at no later sweep.
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"testing"
@@ -55,20 +58,38 @@ func (r *fleetRig) sweepHeldInAWrite(slow string, hold time.Duration) {
 
 // sweepHoldingAWrite is sweepHeldInAWrite for a sweep that may make no write for slow, such as a
 // tick of a roll whose last opening was asked at a tick before it: its first write for slow, if
-// it makes one, takes hold and the return value says that it did.
+// it makes one, takes hold and the return value says that it did. A hold is a write only where
+// the outbox wrote the rows it was given: the outbox answers false, having written nothing, for
+// a key of another project than its own (workflowRuntime.enqueueOutbox), and a walk held in such
+// a call is held in no store write at all. So a first call for slow that wrote nothing, or failed,
+// fails the test by name rather than counting as the hold.
 func (r *fleetRig) sweepHoldingAWrite(slow string, hold time.Duration) bool {
 	r.t.Helper()
 	enqueue := r.s.enqueue
 	defer func() { r.s.enqueue = enqueue }()
-	held := false
+	tried, held := false, false
+	var wroteNothing error
 	r.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
-		if issue == slow && !held {
-			held = true
-			r.clock.advance(hold)
+		if issue != slow || tried {
+			return enqueue(ctx, issue, payloads...)
 		}
-		return enqueue(ctx, issue, payloads...)
+		tried = true
+		r.clock.advance(hold)
+		written, err := enqueue(ctx, issue, payloads...)
+		switch {
+		case err != nil:
+			wroteNothing = err
+		case !written:
+			wroteNothing = errors.New("the outbox answered that it wrote no row")
+		default:
+			held = true
+		}
+		return written, err
 	}
 	r.tick()
+	if wroteNothing != nil {
+		r.t.Fatalf("the sweep's held write for %s wrote nothing (%v), so the walk was held in no store write", slow, wroteNothing)
+	}
 	return held
 }
 
@@ -381,4 +402,45 @@ func TestPodUpdateRoundsPerMinuteOpensNoLaterKeyAfterAOneSecondWriteInTheTickAft
 		WaitingOnRoundsPerMinute: []string{late},
 	})
 	rig.awaitRounds("the sweep after it", early, slow)
+}
+
+// The write these tests hold the walk in is a row the store writes: the ask of slow's open round,
+// queued once, so the next sweep asks slow nothing again. A rig whose outbox wrote no row for its
+// keys would hold the walk in a call that writes nothing, and ask again at every sweep.
+func TestPodUpdateRoundsPerMinuteTheHeldWriteQueuesTheAskOnce(t *testing.T) {
+	slow, other := "ACME-1", "ACME-2"
+	rig := newLimitRig(t, slow, other)
+	rig.openSlowRound(slow, other)
+	rig.clock.advance(time.Minute)
+	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
+	rig.sweepHeldInAWrite(slow, 10*time.Second)
+	asks := 0
+	for _, row := range rig.rows(record.OutboxKindUpdateAsk) {
+		if row.Issue == slow {
+			asks++
+		}
+	}
+	if asks != 1 {
+		t.Errorf("the held write left %d asks of %s in the outbox, want 1", asks, slow)
+	}
+	rig.clock.advance(time.Minute)
+	if again := rig.enqueuesAtATick(slow); again != 0 {
+		t.Errorf("the next sweep called the outbox %d times for %s, want none: its ask is queued", again, slow)
+	}
+}
+
+// enqueuesAtATick is how many times one plain sweep calls the outbox for issue.
+func (r *fleetRig) enqueuesAtATick(issue string) int {
+	r.t.Helper()
+	enqueue := r.s.enqueue
+	defer func() { r.s.enqueue = enqueue }()
+	calls := 0
+	r.s.enqueue = func(ctx context.Context, i string, payloads ...record.OutboxPayload) (bool, error) {
+		if i == issue {
+			calls++
+		}
+		return enqueue(ctx, i, payloads...)
+	}
+	r.tick()
+	return calls
 }

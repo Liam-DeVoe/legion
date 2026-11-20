@@ -215,7 +215,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		cfg: config.Config{Project: "LEGION", PodUpdateGrace: podUpdateGrace},
 		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
-		enqueue:     (&workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION", log: quietLogger()}).enqueueOutbox,
+		enqueue:     (&workflowRuntime{pool: pool, records: records, dispatchProject: fleetOutboxProject(t, issues), log: quietLogger()}).enqueueOutbox,
 		refreshGate: supervise.NewRefreshGate(0),
 	}
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
@@ -226,6 +226,26 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		Dispatch: rig.handoffs,
 	}).Handler
 	return rig
+}
+
+// fleetOutboxProject is the project whose rows the rig's outbox writes: the project of the rig's
+// issue keys, by the rule production's outbox writes by (claim.KeyOfProject). So every ask, notice
+// and message the sweep makes for an issue of the rig is a row written to the store, as it is for
+// a daemon's own issue. A rig over the keys of two projects has no such project and fails; a rig
+// over no issue writes LEGION's.
+func fleetOutboxProject(t *testing.T, issues []fleetIssue) string {
+	t.Helper()
+	project := "LEGION"
+	for i, issue := range issues {
+		of, _, _ := strings.Cut(issue.key, "-")
+		switch {
+		case i == 0:
+			project = of
+		case !claim.KeyOfProject(project, issue.key):
+			t.Fatalf("the fleet rig's issues %s and %s are of two projects, and its outbox writes the rows of one", issues[0].key, issue.key)
+		}
+	}
+	return project
 }
 
 // drifts scripts the runtime to answer reasons for every claim of issue, which is what one
