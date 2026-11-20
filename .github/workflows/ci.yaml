@@ -4680,7 +4680,7 @@ jobs:
               # entry, and its way backs of the step records and of the plan ratings, to the block
               # each migration's header carries.
               - 'packages/daemon/internal/store/migrations/*.up.sql'
-              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:475)
+              # The seven copies of shipped texts that readExtract (waiting_line_texts_test.go:473)
               # reads to hold them to the texts themselves: the waiting line's four, the two way
               # backs' (way_back_doc_test.go:129) and the troubleshooting page's refusal table's
               # (troubleshooting_refusals_doc_test.go:41), each committed beside the package whose
@@ -4694,10 +4694,9 @@ jobs:
               - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
               - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
               # The shipped texts the waiting line's four copies are held to, and the ban over
-              # them, every one read by waiting_line_texts_test.go:485; troubleshooting.md is also
+              # them, every one read by waiting_line_texts_test.go:483; troubleshooting.md is also
               # the page the refusal table's copy is held to. The way back's guide is
               # docs/kubernetes.md, below.
-              - 'AGENTS.md'
               - 'docs/site/src/content/docs/legion/concepts.md'
               - 'docs/site/src/content/docs/legion/running-legion.md'
               - 'docs/site/src/content/docs/legion/troubleshooting.md'
@@ -4706,21 +4705,18 @@ jobs:
               - 'packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml'
               - 'packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml'
               - 'packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml'
-              - 'skills/legion-architect/references/acceptance.md'
               - 'skills/legion-controller/references/admission.md'
               - 'skills/legion-controller/references/wakes.md'
-              # The third page production_check_rule_test.go:30 holds to the production check's
-              # rule, beside AGENTS.md and concepts.md above.
+              # The second page production_check_rule_test.go:30 holds to the production check's
+              # rule, beside concepts.md above.
               - 'scripts/e2e/README.md'
               # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
               # and packages/daemon/internal/daemon hold their committed extracts to
               # (internal/textcheck/claims_doc_test.go:43,50, reclaim_doc_test.go:51,281 and
               # way_back_doc_test.go:181).
               - 'docs/kubernetes.md'
-              # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
+              # The skill file packages/daemon/internal/textcheck/design_approved_wake_test.go
               # holds the architect's prompt to (:32-38).
-              - 'skills/legion-architect/SKILL.md'
-              - 'skills/legion-architect/references/design-gate.md'
               - 'skills/legion-architect/references/wake-routing.md'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the guard step
               # compiles with the rest of that package.
