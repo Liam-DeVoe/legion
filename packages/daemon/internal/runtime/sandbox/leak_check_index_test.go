@@ -741,6 +741,29 @@ func TestABundleAskCutByTheStartsOwnDeadlineIsNoStoreFault(t *testing.T) {
 	}
 }
 
+// A launch whose start the bundle store's fault stopped reaches the supervisor as a store fault
+// (runtime.ErrSessionStore), and its launcher is sent no Stop: the start frame was never sent, so
+// no generation can be running, and a Stop to a launcher that does not answer would hold the
+// launch for the boot timeout and the grace.
+func TestALaunchStoppedByTheBundleStoreSendsNoStop(t *testing.T) {
+	seam := &bundleSeam{err: errors.New("take the workspace bundle of " + testTree + ": connection refused")}
+	g := newRig(t, nil, withOptions(func(o *Options) {
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = seam.take, seam.restored
+	}))
+	spec := workerSpec(t)
+	g.launcher(spec.Claim)
+	_, err := g.r.Spawn(g.ctx, spec)
+	if !errors.Is(err, runtime.ErrSessionStore) || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("the launch answered %v, want the bundle store's fault as runtime.ErrSessionStore", err)
+	}
+	frames := g.sent(spec.Claim)
+	for _, sent := range []string{shimwire.TypeLauncherStart, shimwire.TypeLauncherStop} {
+		if countOf(frames, sent) != 0 {
+			t.Fatalf("the launcher was sent %v, want no %s for a start that was never sent", frameTypes(frames), sent)
+		}
+	}
+}
+
 // A push the poll began for a launcher connection that has since been replaced goes to the token's
 // current connection, as each slice's request does, and holds the token's one push turn while it
 // runs: a start on the replacement waits for it, finds the index installed, and sends its start
