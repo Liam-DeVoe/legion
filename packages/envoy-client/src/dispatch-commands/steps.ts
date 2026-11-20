@@ -1,19 +1,19 @@
 import type { StepRecord } from "@legion/contracts";
 import type { CommandContext, DispatchToolResult } from "./context";
 
-/** A field the record does not hold prints `-`, so every line keeps its columns. */
-function orDash(value: string | null): string {
-  return value === null || value === "" ? "-" : value;
+/** A field the record does not hold, empty or absent, prints `-`, so lines keep their columns. */
+function orDash(value: string | null | undefined): string {
+  return value === undefined || value === null || value === "" ? "-" : value;
 }
 
 /** One run of a step: where it stands in its task, who ran it on which model, and how it ended.
  *  A run that has not ended holds no end and no result, and prints `running` for both. */
 function stepLine(record: StepRecord): string {
   return [
-    record.task,
+    orDash(record.task),
     record.step,
     record.kind,
-    record.role,
+    orDash(record.role),
     orDash(record.type),
     "attempt",
     record.attempt,

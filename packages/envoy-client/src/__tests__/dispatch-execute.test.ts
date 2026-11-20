@@ -2427,6 +2427,65 @@ describe("executeDispatchTool", () => {
     expect(result.details).toMatchObject({ count: 1 });
   });
 
+  // A project's list holds every open ask on its issues and documents, whoever authored them, as
+  // the help says, so its header names the project and no author, with asks and with none.
+  test("dispatch_open_asks with a project says the asks are the project's, whoever authored them", async () => {
+    const ask = {
+      id: "ask-3",
+      ref: "/projects/CORE/documents/runbook?ask=ask-3",
+      question: "Which region?",
+      kind: "question",
+      urgency: "med",
+      created_at: "2026-09-12T22:00:00Z",
+      age_seconds: 7_200,
+      priority: null,
+      owner: { document: { project: "CORE", slug: "runbook", name: "Runbook" } },
+      human_replied: false,
+      last_reply: null,
+      waiting_on: "human",
+      waiting_on_person: "dana@example.com",
+    };
+    const texts: string[] = [];
+    for (const asks of [[ask], []]) {
+      const fetchImpl = async (): Promise<Response> =>
+        response({
+          session_id: "",
+          as_of: "2026-09-13T00:00:00Z",
+          opened_since: false,
+          count: asks.length,
+          waiting_on_human: asks.length,
+          waiting_on_agent: 0,
+          asks,
+        });
+      const result = await executeDispatchTool({
+        tool: "dispatch_open_asks",
+        args: { project: "CORE" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      texts.push(result.text);
+    }
+
+    expect(texts).toEqual([
+      [
+        "1 unanswered ask on the CORE project's active issues and documents, whoever authored them.",
+        "",
+        "Waiting on human (1):",
+        "- 2h · CORE / Runbook · asked of dana@example.com · Which region? · http://dispatch.test/projects/CORE/documents/runbook?ask=ask-3",
+        "",
+        "Waiting on agent (0):",
+      ].join("\n"),
+      [
+        "There are no unanswered asks in the CORE project.",
+        "Scope: active open asks on the CORE project's open issues and documents, whoever authored them.",
+      ].join("\n"),
+    ]);
+  });
+
   test("dispatch_open_asks rejects a missing host session before it reads Dispatch", async () => {
     const fetchImpl = (() => {
       throw new Error("network must not be called");
@@ -3028,7 +3087,9 @@ describe("executeDispatchTool", () => {
     // A route that reaches nobody is what the owner audit reads, so the row says so; the
     // labels come before the asks, and the progress after the claim, each part only when the
     // server counted it.
-    expect(result.text).toContain("ACME-1 [todo] P1 First · labels bug · 2 open asks · claimed by ");
+    expect(result.text).toContain(
+      "ACME-1 [todo] P1 First · labels bug · 2 open asks · claimed by "
+    );
     expect(result.text).toContain(
       " · tasks 3/7 · children 2/5 · route role:sre (nobody holds it right now)"
     );

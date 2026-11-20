@@ -1986,7 +1986,7 @@ export const dispatchToolSpecs = [
       "Read an issue or document summary, targeted ask, or targeted comment reply chain, or the conversation " +
       "a message belongs to. Do not use it for document contents; use dispatch doc-read instead. Supply ref, issue, " +
       "issue plus artifact (one of its documents), project plus artifact, or project alone, which lists the project's documents on no issue and nothing more; or message alone, which reads a human's direct message to this session and every " +
-      "reply to it (they belong to no issue). A document summary names its issue, reference, versions and approval. " +
+      "reply to it (they belong to no issue). A document summary names its issue, reference, versions and, once its approval has been asked for, its approval. " +
       "An issue read lists every document, picture and file the issue holds under `Documents:`, each by slug, filename and kind. " +
       "An anchored comment or ask also says where its quote sits, as `Position:`: the block's path from the top, " +
       "and in a table the row (0 is the header), the cells before the anchored one, and the column's header; " +
@@ -2479,7 +2479,8 @@ export const dispatchToolSpecs = [
     description:
       "List what the Inbox of the person you act for shows, read with your own credential. " +
       "Each heading carries its count, then its rows: Needs you (their open asks waiting on a " +
-      "person and not inside a snooze, plus the credential requests they may decide), Waiting on " +
+      "person and not inside a snooze; its count also counts the credential requests they may " +
+      "decide, which are listed under Credential requests and not here), Waiting on " +
       "agents, Later (the asks they snoozed), Unread threads (the threads they wrote in that " +
       "somebody else has written in since, and the messages they sent an agent session that it " +
       "answered) and Credential requests. An ask's line names its " +
