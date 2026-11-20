@@ -106,11 +106,12 @@ func answersGH(lookupEnv func(string) (string, bool), resolved map[string]string
 
 // answersLeakCheck is where the shared public leak check comes from that the answer loop's gh tool
 // runs before every call (ghtool.Host.LeakCheck), which a daemon with `answers` reads at boot
-// beside its gh (answersGH). Under tmux it is the machine's own check, resolved in the daemon's
-// environment as a pane's is (ghtool.MachineLeakCheck), and resolved again for each answer
-// (ghTools.hostFor). Under kubernetes it is the tag the daemon installs the check at once its
-// GitHub App can read it (installAnswersLeakCheck): its environment's LEGION_LEAK_CHECK_TAG, the
-// pin the worker image sets for every container it runs, a pod's launcher's and the daemon's
+// beside its gh (answersGH); answersTools states the one rule each runtime keeps. Under tmux it is
+// the machine's own check, resolved in the daemon's environment as a pane's is
+// (ghtool.MachineLeakCheck): boot refuses a machine that carries none, and the guard resolves the
+// check again at each call. Under kubernetes it is the tag the daemon installs the check at once
+// its GitHub App can read it (installAnswersLeakCheck): its environment's LEGION_LEAK_CHECK_TAG,
+// the pin the worker image sets for every container it runs, a pod's launcher's and the daemon's
 // alike, since a Kubernetes daemon's environment holds none of the three places a check is
 // resolved from. Boot is refused, naming the check and where it looked, when neither gives one.
 func answersLeakCheck(runtimeName string, lookupEnv func(string) (string, bool)) (check, tag string, err error) {

@@ -55,7 +55,9 @@ func (a *Answer) toolPath() string {
 // runs it, between the directory the call was routed to and the gh about to be started
 // (cmd/legion's runGh), and its error — a *leakguard.Refusal, about the text the call carries, or
 // a *leakguard.SetupFailure, a check that could not be made to run — refuses the call with the
-// guard's own message: a check that did not run has cleared nothing.
+// guard's own message: a check that did not run has cleared nothing. check is the check it runs,
+// the host's installed one (Host.LeakCheck), and "" for a host that names none, which leaves the
+// guard to resolve one in the daemon's environment.
 //
 // The whole argv is what it reads, the footer added and all, rather than the options a parser
 // calls text: the shared check's own gh-guard reads full argv, and a private name is refusable
@@ -76,8 +78,8 @@ func (a *Answer) toolPath() string {
 // is a child of this guard, run with the real gh and never through the wrapper
 // (Answer.guardEnv), so no call of the model's can be it; and the exact `gh api rate_limit`, which
 // the model can make, is guarded whole here, since nothing of the tool skips the guard for it.
-func (a *Answer) leakGuard(ctx context.Context, argv []string, target ghroute.Target, configDir string) error {
-	_, err := leakguard.New(leakguard.Options{Check: a.host.LeakCheck, Env: a.guardEnv(configDir)}).GhCall(ctx, leakguard.GhRequest{
+func (a *Answer) leakGuard(ctx context.Context, check string, argv []string, target ghroute.Target, configDir string) error {
+	_, err := leakguard.New(leakguard.Options{Check: check, Env: a.guardEnv(configDir)}).GhCall(ctx, leakguard.GhRequest{
 		Args:  argv,
 		Stdin: nil,
 		Repo:  targetRepo(target),

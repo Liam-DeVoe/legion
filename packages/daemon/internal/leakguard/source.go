@@ -46,7 +46,8 @@ type Source struct {
 	// Token mints the read-only token the read is made with. Its error's text is what happened,
 	// in the words a cause sentence takes after RefusalPrefix (Cause): the daemon, which mints
 	// through its GitHub App and tells a mint GitHub refused from a narrowing it refused, writes
-	// that sentence, so this package imports nothing of the App's.
+	// that sentence, so this package imports nothing of the App's. The refusal wraps the error
+	// (Get), so the daemon reads the App's own failure from it with errors.Is and errors.As.
 	Token func(context.Context) (string, error)
 	// API is GitHub's REST root; empty is https://api.github.com.
 	API string
@@ -83,8 +84,11 @@ type Served struct {
 	Frames []shimwire.LauncherLeakCheck
 }
 
-// Get answers the check at tag, read once for every caller (Source). Every error is one cause
-// sentence (Cause).
+// Get answers the check at tag, read once for every caller (Source). Every error's text is one
+// cause sentence (Cause), and every error wraps what is underneath it where there is something:
+// ErrTagShape for a tag Get refuses, the mint's own error (Token), the transport's, the caller's
+// context's end, and the tarball's own failure. So a caller tells a refusal a later ask cannot
+// pass from one it can with errors.Is and errors.As, never from the sentence.
 //
 // A tag not of the published shape (shimwire.ValidLeakCheckTag) is refused before any token is
 // minted or any request made, since a tag becomes a path of a GitHub API endpoint. Otherwise Get
@@ -93,15 +97,35 @@ type Served struct {
 // and the read goes on for every other caller waiting on it.
 func (s *Source) Get(ctx context.Context, tag string) (Served, error) {
 	if !shimwire.ValidLeakCheckTag(tag) {
-		return Served{}, errors.New(Cause(fmt.Sprintf("the pod asked for the tag %q, which is not of the published shape leak-check-v<n>", tag), nil))
+		return Served{}, refused(Cause(fmt.Sprintf("the pod asked for the tag %q, which is not of the published shape leak-check-v<n>", tag), nil), ErrTagShape)
 	}
 	r := s.reading(ctx, tag)
 	select {
 	case <-r.done:
 		return r.served, r.err
 	case <-ctx.Done():
-		return Served{}, errors.New(Cause(fmt.Sprintf("the start stopped waiting for the daemon's read of %s at %s", CheckSlug, tag), ctx.Err()))
+		return Served{}, refused(Cause(fmt.Sprintf("the start stopped waiting for the daemon's read of %s at %s", CheckSlug, tag), ctx.Err()), ctx.Err())
 	}
+}
+
+// ErrTagShape is what Get's refusal of a tag not of the published shape leak-check-v<n> wraps: no
+// read at that tag is ever made, however often it is asked for.
+var ErrTagShape = errors.New("the tag is not of the published shape leak-check-v<n>")
+
+// readRefusal is a refusal of Get: sentence, its one cause sentence (Cause), is its whole text,
+// and under is the error underneath it, nil where there is none.
+type readRefusal struct {
+	sentence string
+	under    error
+}
+
+func (r *readRefusal) Error() string { return r.sentence }
+
+func (r *readRefusal) Unwrap() error { return r.under }
+
+// refused is the refusal whose text is sentence and which wraps under.
+func refused(sentence string, under error) error {
+	return &readRefusal{sentence: sentence, under: under}
 }
 
 // reading is the read at tag: the one kept or running, or a new one, started on a context
@@ -146,7 +170,7 @@ func (s *Source) fill(ctx context.Context, tag string, r *tagRead) {
 func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Served, error) {
 	token, err := s.Token(ctx)
 	if err != nil {
-		return Served{}, errors.New(Cause(err.Error(), nil))
+		return Served{}, refused(Cause(err.Error(), nil), err)
 	}
 	// GitHub answers the tarball route with a redirect to its download host
 	// (https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-tar), which
@@ -154,7 +178,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	target := githubrest.RepositoryAPI(s.API, CheckRepository) + "/tarball/" + tag
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", CheckSlug, tag), err))
+		return Served{}, refused(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", CheckSlug, tag), err), err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/vnd.github+json")
@@ -177,18 +201,18 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		if strings.TrimSpace(string(body)) != "" {
 			what += ": " + firstLine(string(body))
 		}
-		return Served{}, errors.New(Cause(what, nil))
+		return Served{}, refused(Cause(what, nil), nil)
 	}
 	body, err := PackTarball(response.Body)
 	if err != nil {
 		if ctx.Err() != nil {
 			return Served{}, readFailure(ctx, tag, bound, err)
 		}
-		return Served{}, errors.New(Cause(fmt.Sprintf("the tarball of %s at %s %s", CheckSlug, tag, err), nil))
+		return Served{}, refused(Cause(fmt.Sprintf("the tarball of %s at %s %s", CheckSlug, tag, err), nil), err)
 	}
 	frames, err := shimwire.SplitLeakCheck(tag, body)
 	if err != nil {
-		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not slice the check it read at %s", tag), err))
+		return Served{}, refused(Cause(fmt.Sprintf("the daemon could not slice the check it read at %s", tag), err), err)
 	}
 	return Served{Tag: tag, Body: body, Frames: frames}, nil
 }
@@ -197,7 +221,7 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 // read's bound ended it, and the transport's error otherwise.
 func readFailure(ctx context.Context, tag string, bound time.Duration, err error) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return errors.New(Cause(fmt.Sprintf("the daemon's read of %s at %s did not finish within %s", CheckSlug, tag, bound), nil))
+		return refused(Cause(fmt.Sprintf("the daemon's read of %s at %s did not finish within %s", CheckSlug, tag, bound), nil), err)
 	}
-	return errors.New(Cause(fmt.Sprintf("the daemon could not read %s at %s", CheckSlug, tag), err))
+	return refused(Cause(fmt.Sprintf("the daemon could not read %s at %s", CheckSlug, tag), err), err)
 }

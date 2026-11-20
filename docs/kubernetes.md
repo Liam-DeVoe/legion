@@ -1556,6 +1556,7 @@ a send stored for a session Envoy still knows or a `404`, a role message kept fo
 A listener too old for these routes answers `404`, which the daemon logs once per boot and tries again every minute.
 The daemon writes these routes with its Envoy bearer (`envoy_token_file`, sent as `Authorization: Bearer`), which names no session.
 The listener refuses every registry write that presents a secrets-broker access token with `403`, since such a token always names a session, and a session that could write an entry or `answering: true` could have another session's messages answered by a daemon instead of stored for it.
+That refusal closes the broker token's way in and no other: every launch also carries the daemon's Envoy bearer (`ENVOY_TOKEN_FILE`), which names no session, so a session that presents it writes these routes as the daemon does.
 
 Each entry carries `finished`, whether its issue has left the workflow
 — closed or done, parked, or its tree retired or lingering past its close — so no next holder of that role is coming.
@@ -1650,10 +1651,14 @@ when the agent it answers is stopped too, the listener hands that answer to its 
   A fault decided before any model call, or a first call that returned nothing, appends nothing.
 
 - **Passing on.**
-  The controller gets one `agent-question` notice per question on its controller topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text, writes}}`, the text cut at 2,000 characters), and, because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 183), which the controller reads at its start.
+  The daemon sends the controller one `agent-question` notice per question on its controller topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text, writes}}`, the text cut at 2,000 characters).
+  Because that topic is a live wake only, `legion state` lists every question passed on in the last seven days, newest first and at most 100, as `questionsForController` (daemon API contract 183).
   Both name each `gh` write the question's calls ran, as the reply does, so the controller never decides on a question without knowing what the agent already did:
   `writes` is a list of `{seq, command, repository, exit}`, `command` being the command's words (for `gh api` its method and endpoint, `api PUT repos/acme/widgets/pulls/7/merge`), `repository` `""` where the call named none, and `exit` `null` where gh answered no status.
   The notice leaves `writes` out when there is none, and `questionsForController` carries `[]`.
+  A person's decision on an ask a stopped agent opened is passed on once, as one `agent-decision` notice (`{kind, role, agent_decision: {id, issue, session, asker, ref, text}}`, the text cut as a question's is):
+  to the architect that owns the agent's issue while it holds its role and its tree neither lingers nor has closed, and otherwise to the controller on its controller topic.
+  A decision the parked-decision relay of the ask's own tree carries itself gets no such notice.
 
 - **Posting**, in the agent's name and once:
   a Dispatch message through its delivery's reply route, a mention through the comment's reply route, an ask thread as a comment carrying the reply's marker (the thread is read for it before a post is made again), an Envoy message by a direct message to its sender in reply to it.
@@ -1746,13 +1751,18 @@ So the tool runs only what is safe there, and decides before anything runs:
   — run in the daemon's environment rather than the call's, with the real gh and the routed owner's `GH_CONFIG_DIR` in front of it and no token of the daemon's own, so that read is the agent's App and never the `legion gh` wrapper, which would call a guard of its own.
 
 - **The check the guard runs.**
-  The daemon hands the guard its check rather than leaving it to resolve one, since a Kubernetes daemon's environment holds none of the three places a check is resolved from (`ghtool.Host.LeakCheck`).
-  Under `runtime: kubernetes` it is a copy the daemon installs and runs itself, which boot refuses to start without ([Worker image](#worker-image)):
+  Each runtime has one rule for the check the guard runs (`ghtool.Host.LeakCheck`).
+  Under `runtime: kubernetes` the daemon hands the guard a copy it installs and runs itself, since its environment holds none of the three places a check is resolved from, and boot refuses to start without the tag it installs ([Worker image](#worker-image)):
   it reads the check at its own environment's `LEGION_LEAK_CHECK_TAG` through the reader every pod's launcher is pushed the check from, so one read of a tag serves both, installs it under `<state_dir>/leak-check/` with the launcher's own installer (`leakguard.InstallServed`: the unpack into a staging directory, the tag recorded, one `--help` run, the rename over what the directory held), and logs `answers: installed the shared public leak check the gh tool's leak guard runs` with the tag and the path.
-  A read or an install that fails refuses the boot with the cause sentence a pod's start is refused with, `the shared public leak check could not be installed: …`.
+  A cause no wait changes refuses the boot with the cause sentence a pod's start is refused with, `the shared public leak check could not be installed: …`:
+  a tag not of the published shape, a daemon with no GitHub App, GitHub refusing the reading permissions the read's token asks for, and a served check whose `--help` run fails.
+  Any other failure boots the daemon all the same and leaves the install to the background: the read's transport failing, its time bound passing, any HTTP answer to the tarball read, and a token mint that failed some other way.
+  The daemon tries the install again 5 seconds later, doubling the wait up to 30 seconds, until it lands or the daemon stops, and logs each failed try as `answers: the shared public leak check is not installed, so the gh tool refuses every call until it is; installing it again` with the tag, the wait (`retryIn`) and the cause.
+  Until the install lands, every `gh` call is refused before gh starts with the setup error naming the pin and the last try's cause, `LEAK CHECK SETUP ERROR: the gh call: the shared public leak check at <tag>, the pin LEGION_LEAK_CHECK_TAG names, is not installed yet, …`, recorded and logged as the guard's own refusals are.
+  The first call after the install lands runs under the installed check.
   Every boot installs again over what the last one left, so a re-pin, which moves the image's pin and with it the daemon's environment, is the next boot's install of the new tag, logged as `answers: the install of <new tag> replaced the install of <old tag> at <dir>`.
-  Under `runtime: tmux` it is the machine's own check, resolved again for each answer in the daemon's environment as it is for each launch of a pane, since an operator's machine installs, moves and republishes it while the daemon runs.
-  An answer that finds none logs `answers: no shared public leak check on this machine, …`, and every call of that answer is refused with the setup error naming the missing check.
+  Under `runtime: tmux` the daemon hands the guard no check, and the guard resolves the machine's own in the daemon's environment at each call, as the daemon resolves a pane's at each launch, since an operator's machine installs, moves and republishes the check while the daemon runs.
+  A call made while the machine carries none is refused with the setup error naming the missing check.
 
 ### The conversation stores
 

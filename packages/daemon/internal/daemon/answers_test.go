@@ -885,7 +885,7 @@ func TestAGhWriteBeforeAFaultIsInTheConversationTheReplyAndTheControllersRecords
 	}
 	zero := 0
 	if len(questions) != 1 || questions[0].Reason != "model_calls" ||
-		!reflect.DeepEqual(questions[0].Writes, []api.QuestionWrite{{Seq: 1, Command: "pr merge", Repository: "acme/widgets", Exit: &zero}}) {
+		!reflect.DeepEqual(questions[0].Writes, []record.AgentQuestionWrite{{Seq: 1, Command: "pr merge", Repository: "acme/widgets", Exit: &zero}}) {
 		t.Errorf("questions for the controller = %+v; want the model_calls question naming the merge alone", questions)
 	}
 }

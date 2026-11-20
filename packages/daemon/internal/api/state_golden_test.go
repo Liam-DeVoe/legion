@@ -954,7 +954,7 @@ func populatedState(t *testing.T) State {
 				ID: "9e2b7c41d05a3f68e1c4a7b0d9f2e536", Issue: "LEGION-208", Role: claim.RoleImplementer, Session: "ses_implementer_208",
 				Asker: "session:ses_architect_208 (LEGION-208 architect)", Ref: "envoy:evt-5521", Reason: "model_calls",
 				PassedAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
-				Writes: []QuestionWrite{
+				Writes: []record.AgentQuestionWrite{
 					{Seq: 1, Command: "pr merge", Repository: "acme/widgets", Exit: new(int)},
 					{Seq: 3, Command: "api POST repos/acme/widgets/issues/208/comments", Repository: "acme/widgets"},
 				},

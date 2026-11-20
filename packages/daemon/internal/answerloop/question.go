@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghtool"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -274,7 +275,7 @@ func (l *Loop) faultText(ctx context.Context, question string, reason Reason) (s
 // faultReply is the daemon's reply, as the agent, for reason, naming each of writes (ranWrites):
 // an asker told only that the agent could not answer would not know that it already approved,
 // merged or commented.
-func (l *Loop) faultReply(reason Reason, writes []ghtool.Write) string {
+func (l *Loop) faultReply(reason Reason, writes []record.AgentQuestionWrite) string {
 	return l.faultSentence(reason) + ranWrites(writes) + " I passed your question to the Legion controller."
 }
 
@@ -311,8 +312,9 @@ func (l *Loop) faultSentence(reason Reason) string {
 }
 
 // ranWrites is the sentence of the daemon's reply naming each of writes by its command, its
-// repository and gh's exit, "" for none.
-func ranWrites(writes []ghtool.Write) string {
+// repository and gh's exit, "" for none. It is the one rendering of a list of gh writes as text:
+// the controller's notice and `legion state` carry the same writes as data.
+func ranWrites(writes []record.AgentQuestionWrite) string {
 	if len(writes) == 0 {
 		return ""
 	}

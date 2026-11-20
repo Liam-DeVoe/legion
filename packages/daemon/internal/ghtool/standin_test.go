@@ -81,7 +81,7 @@ func standIn() int {
 	}
 	args := os.Args[1:]
 	if n := len(args); n > 0 && args[n-1] == "--help" {
-		record(dir, invocation{Help: true, Argv: args})
+		recordInvocation(dir, invocation{Help: true, Argv: args})
 		text, err := standInHelp(b.HelpDir, args[:n-1])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -96,7 +96,7 @@ func standIn() int {
 		inv.Empty[name] = isEmptyDir(os.Getenv(name))
 	}
 	inv.Empty["cwd"] = isEmptyDir(cwd)
-	record(dir, inv)
+	recordInvocation(dir, inv)
 	// The guard's own visibility read is answered with the visibility and nothing else: the
 	// run's stdout, sleep and exit are a call's, and this read is no call of the tool's.
 	if inv.guardRead() {
@@ -125,7 +125,8 @@ func isEmptyDir(dir string) bool {
 	return err == nil && len(entries) == 0
 }
 
-func record(dir string, inv invocation) {
+// recordInvocation appends inv to the stand-in's invocations.jsonl in dir.
+func recordInvocation(dir string, inv invocation) {
 	line, _ := json.Marshal(inv)
 	file, err := os.OpenFile(filepath.Join(dir, "invocations.jsonl"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {

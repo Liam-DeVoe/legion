@@ -159,17 +159,18 @@ const (
 // dispatch:// reference, or `envoy:<event id>`), why it was passed on (`not_answered`,
 // `needs_work`, a bound or fault the answer met, `over_limit`, `unknown_format`, `no_provider`,
 // `no_price`, `unmetered`, `no_conversation`, `post_refused`), when, and every gh call that writes
-// which the loop ran for it (Writes, never null).
+// which the loop ran for it (Writes, never null), each as the controller's agent-question notice
+// carries it (record.AgentQuestionWrite, ghtool.Writes).
 type QuestionForController struct {
-	ID       string          `json:"id"`
-	Issue    string          `json:"issue"`
-	Role     claim.Role      `json:"role"`
-	Session  string          `json:"session"`
-	Asker    string          `json:"asker"`
-	Ref      string          `json:"ref"`
-	Reason   string          `json:"reason"`
-	PassedAt time.Time       `json:"passedAt"`
-	Writes   []QuestionWrite `json:"writes"`
+	ID       string                      `json:"id"`
+	Issue    string                      `json:"issue"`
+	Role     claim.Role                  `json:"role"`
+	Session  string                      `json:"session"`
+	Asker    string                      `json:"asker"`
+	Ref      string                      `json:"ref"`
+	Reason   string                      `json:"reason"`
+	PassedAt time.Time                   `json:"passedAt"`
+	Writes   []record.AgentQuestionWrite `json:"writes"`
 }
 
 // MarshalJSON writes a question's Writes as [] when it holds none, never null.
@@ -177,21 +178,9 @@ func (q QuestionForController) MarshalJSON() ([]byte, error) {
 	type wire QuestionForController
 	out := wire(q)
 	if out.Writes == nil {
-		out.Writes = []QuestionWrite{}
+		out.Writes = []record.AgentQuestionWrite{}
 	}
 	return json.Marshal(out)
-}
-
-// QuestionWrite is one gh call that writes which the answer loop ran for a question before it
-// passed it on (ghtool.Writes), a read never one: its seq among the question's calls, its command
-// words (`pr merge`; for gh api its method and endpoint), the repository its arguments name (""
-// for none), and gh's exit status, null where gh answered none, since it could not start or the
-// daemon stopped while it ran.
-type QuestionWrite struct {
-	Seq        int    `json:"seq"`
-	Command    string `json:"command"`
-	Repository string `json:"repository"`
-	Exit       *int   `json:"exit"`
 }
 
 // ClaimsToRefreshField is the name ClaimsToRefresh carries on the wire, read from here by the

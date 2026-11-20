@@ -173,9 +173,12 @@ func parseReply(value json.RawMessage, mayAskNothing bool) (form, error) {
 }
 
 // placeholderSentence is the sentence a reply whose text is a placeholder is asked for again with
-// (errPlaceholder). It is stored and matched on read: finish writes it into the agent's
-// conversation after the refused reply (conversation.Turn.AskedAgain), and a later answer leaves
-// that exchange out of what the agent has in front of it by matching it (askedAgain).
+// (errPlaceholder). It is stored and matched on read: agentloop sends it after the refused reply
+// and records it on that reply's step, exchange carries it into the append
+// (conversation.Turn.AskedAgain), and the appender writes it into the agent's conversation as a
+// user message after the refused reply. A later answer's placeholder rule, matching it
+// (askedAgain), leaves that message and the refused reply before it out of the words it reads
+// (inFront.holds); the model is still sent the whole conversation.
 const placeholderSentence = "your reply's text is a placeholder: answer the question from your conversation"
 
 // errPlaceholder is the refusal of a reply whose text is a placeholder, asked for again with

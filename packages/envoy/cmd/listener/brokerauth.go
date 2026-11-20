@@ -352,12 +352,19 @@ func sessionNotBound(r *http.Request, logger *logging.Logger, session string) st
 // <session_id>) and a project's answering record (PUT /v1/legion/projects/<legion_project>) -
 // decide which messages the listener hands to a Legion daemon (handOffToLegion): a session that
 // wrote answering: true for a project and an entry naming another session S would have a send
-// to a gone S answered by that daemon instead of stored for S. They are the daemon's alone, and it
-// writes them under a bearer, the shared token or a service account's OIDC token
+// to a gone S answered by that daemon instead of stored for S. The daemon writes them under a
+// bearer, the shared token or a service account's OIDC token
 // (packages/daemon/internal/registrywrite sends envoy_token_file's token as Authorization:
 // Bearer), neither of which names a session. A broker token always names one
 // (brokertoken.Caller.Session), so every broker token is refused here, the token of the very
-// session an entry names included: a session writes no entry of its own either.
+// session an entry names included.
+//
+// That closes the broker token's way in, and no other. Every launch also carries the daemon's
+// Envoy bearer, envoy_token_file's token, as its ENVOY_TOKEN launch secret
+// (packages/daemon/internal/daemon/launchsecrets.go, launchSecrets), which each runtime hands the
+// agent as a file behind ENVOY_TOKEN_FILE (packages/daemon/internal/runtime/paneenv.go). That
+// bearer names no session, so a session that presents it passes this check and writes the
+// registry as the daemon does.
 func registryWriteBySession(r *http.Request, logger *logging.Logger) string {
 	caller, ok := brokerCaller(r)
 	if !ok {

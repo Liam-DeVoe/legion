@@ -80,11 +80,12 @@ type Recorder interface {
 //
 // The last two are the leak guard's, which every call passes before gh is handed anything
 // (Answer.leakGuard). LeakCheck is the shared public leak check the guard runs, its Check seam,
-// which the daemon fills: under kubernetes the copy it installed at boot (InstallLeakCheck), and
-// under tmux the machine's own check, resolved again for each answer as a pane's is for each
-// launch (MachineLeakCheck). "" leaves the guard to resolve one in Environ at every call, in the
-// three places the check itself names (leakguard's Resolve), none of which a Kubernetes daemon's
-// environment holds: every call is then refused with the setup failure naming the missing check.
+// read at each call: a Kubernetes daemon's copy, installed at its pin (LeakCheck, which refuses
+// the call until the install lands). nil, a tmux daemon's, leaves the guard to resolve the
+// machine's check in Environ at every call, in the three places the check itself names
+// (leakguard's Resolve), and to refuse the call with the setup failure naming the missing check
+// where it finds none. The daemon states which of the two its runtime takes (internal/daemon's
+// answersTools).
 // Environ is the daemon's own environment (os.Environ() form), of which the guard's own children —
 // the check, and the gh read of a repository's visibility — start from the names guardKeeps
 // allows; nil is this process's own, read at each call. It is the daemon's and not the call's: a
@@ -95,7 +96,7 @@ type Host struct {
 	Git        string
 	Legion     string
 	StateDir   string
-	LeakCheck  string
+	LeakCheck  *LeakCheck
 	Environ    []string
 	Credential runtime.GitHubCredential
 	Calls      Recorder
@@ -231,7 +232,9 @@ const noRepository = "not a git repository"
 // allow list, whose refusal says how the tool is called: Usage), it submits a review the agent's
 // recorded round cannot decide (reviewOf: the record names no head, the review names no pull
 // request by repository and number, or names another commit_id), or it posts a comment or review
-// in a form the agent's footer cannot be added to; a review is refused after reading its pull
+// in a form the agent's footer cannot be added to; it is refused with gh never started too while
+// the host's check is not installed yet (LeakCheck.Check), with that setup failure, logged and
+// recorded as the guard's own refusals are; a review is refused after reading its pull
 // request's head, with the review itself never run, when that head is not the one the agent's
 // recorded round read (Answer.headRefusal); a call is refused after reading gh's help, with the
 // command itself never run, when the gh directory it needs cannot be read for certain, or the
@@ -280,6 +283,12 @@ func Run(ctx context.Context, call Call) Result {
 	if why != "" {
 		return a.refuse(ctx, call.Seq, argv, started, why)
 	}
+	check := ""
+	if a.host.LeakCheck != nil {
+		if check, err = a.host.LeakCheck.Check(); err != nil {
+			return a.guardRefusal(ctx, call.Seq, run, started, "", err)
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, call.Bounds.GHCall)
 	defer cancel()
 	if review {
@@ -294,10 +303,8 @@ func Run(ctx context.Context, call Call) Result {
 	if why := canonicalRefusal(words, target.Command, a.usage); why != "" {
 		return a.refuse(ctx, call.Seq, run, started, why)
 	}
-	if err := a.leakGuard(ctx, run, target, dir); err != nil {
-		a.host.Log.Warn("answers: gh call refused by the leak guard", "question", a.question, "seq", call.Seq,
-			"issue", a.agent.Issue, "role", a.agent.Role, "repository", targetRepo(target), "why", err.Error())
-		return a.refuse(ctx, call.Seq, run, started, err.Error())
+	if err := a.leakGuard(ctx, check, run, target, dir); err != nil {
+		return a.guardRefusal(ctx, call.Seq, run, started, targetRepo(target), err)
 	}
 	if err := a.host.Calls.StartAnswerToolCall(ctx, a.record(call.Seq, run, owner, started)); err != nil {
 		result := Result{Output: fmt.Sprintf("refused: the call could not be recorded, so it did not run: %v", err), Exit: -1}
@@ -371,6 +378,15 @@ func (a *Answer) refuse(ctx context.Context, seq int, argv []string, started tim
 	}
 	a.log(seq, argv, "", result)
 	return result
+}
+
+// guardRefusal refuses a call over err, the leak guard's refusal or setup failure, logging the
+// one line of its own a guard's refusal gets before the call's: the issue, the role, the
+// repository the call was routed to ("" for one refused before routing) and the reason.
+func (a *Answer) guardRefusal(ctx context.Context, seq int, run []string, started time.Time, repository string, err error) Result {
+	a.host.Log.Warn("answers: gh call refused by the leak guard", "question", a.question, "seq", seq,
+		"issue", a.agent.Issue, "role", a.agent.Role, "repository", repository, "why", err.Error())
+	return a.refuse(ctx, seq, run, started, err.Error())
 }
 
 // record is the row a call starts with.

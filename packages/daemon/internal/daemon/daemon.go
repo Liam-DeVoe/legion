@@ -372,7 +372,8 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	// is left out and read again, and one whose default-branch read GitHub's rate limit refuses is
 	// served on the default branch the daemon holds or waited out (nameMapping), never a refused
 	// boot. The boot budget bounds none of them, as it does not bound the plugin gate or the image
-	// probe: the work after them has a budget of its own.
+	// probe: the work after them has a budget of its own. The answer loop's shared public leak
+	// check, whose read is GitHub's too, is waited out in the background (installAnswersLeakCheck).
 	// The workflow reads the machines' clock (overrides.clock, the wall clock in production), so a
 	// test clock moves the engine's deadlines and the idle, wake and stuck passes with the
 	// machines (dispatch://INFRA-3759).
@@ -598,8 +599,12 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.attach(s)
 		// The answer loop's gh tool runs the shared public leak check, which a Kubernetes daemon
 		// installs here, its read of the check bounded by the reader and its install by the
-		// installer, neither by the boot budget the waits above may have spent.
-		if err := workflow.attachAnswers(ctx, cfg, plan, s, st); err != nil {
+		// installer, neither by the boot budget the waits above may have spent. A failure no wait
+		// changes refuses the boot; any other leaves the install to go on in the background, every
+		// gh call refused until it lands (installAnswersLeakCheck), and stopAnswers ends it as the
+		// daemon stops.
+		stopAnswers, err := workflow.attachAnswers(ctx, cfg, plan, s, st)
+		if err != nil {
 			s.stop()
 			listener.Close()
 			workflow.stop()
@@ -610,6 +615,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			}
 			return err
 		}
+		defer stopAnswers()
 		if o.supervising != nil {
 			o.supervising(s.supervisor, func(ctx context.Context, source, eventID string, fact intake.Fact) (intake.Result, error) {
 				return intake.ApplyFact(ctx, workflow.pool, source, eventID, fact, workflow.handlers...)

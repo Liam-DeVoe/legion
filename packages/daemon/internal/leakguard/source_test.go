@@ -186,7 +186,8 @@ func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 }
 
 // A tag not of the published shape is refused before anything is minted or asked of GitHub: it
-// would otherwise become a path of a GitHub API endpoint.
+// would otherwise become a path of a GitHub API endpoint. The refusal wraps ErrTagShape, which is
+// how a caller tells it from a read a later ask may pass.
 func TestABadTagIsRefusedBeforeAnyMintOrRequest(t *testing.T) {
 	fake := serveCheck(t, func(w http.ResponseWriter, r *http.Request, _ string) { githubtest.Unexpected(t, w, r) })
 	var mints atomic.Int32
@@ -194,8 +195,8 @@ func TestABadTagIsRefusedBeforeAnyMintOrRequest(t *testing.T) {
 	for _, tag := range []string{"", "v15", "leak-check-v0", "leak-check-v015", "leak-check-v15/../../../user", "leak-check-v15\n", "LEAK-CHECK-V15"} {
 		_, err := source.Get(bound(t), tag)
 		want := RefusalPrefix + fmt.Sprintf("the pod asked for the tag %q, which is not of the published shape leak-check-v<n>", tag)
-		if err == nil || err.Error() != want {
-			t.Errorf("the tag %q = %v, want %q", tag, err, want)
+		if err == nil || err.Error() != want || !errors.Is(err, ErrTagShape) {
+			t.Errorf("the tag %q = %v, want %q wrapping ErrTagShape", tag, err, want)
 		}
 	}
 	if minted := mints.Load(); minted != 0 || fake.total() != 0 {
@@ -343,20 +344,21 @@ func TestATarballWithoutTheCheckIsRefusedAndNotKept(t *testing.T) {
 	}
 }
 
-// A mint that fails is refused with the sentence the token function wrote, asks GitHub nothing,
-// and is not kept.
+// A mint that fails is refused with the sentence the token function wrote, wrapping the token
+// function's own error, asks GitHub nothing, and is not kept.
 func TestAFailedMintIsRefusedWithItsSentenceAndNotKept(t *testing.T) {
 	fake := serveCheck(t, answerCheck(t))
 	var mints atomic.Int32
 	const sentence = "the daemon could not mint its read-only token for theorem-labs/agent-infra: the App has no installation on theorem-labs"
+	mintFailure := errors.New(sentence)
 	source := &Source{API: fake.url, Token: func(context.Context) (string, error) {
 		if mints.Add(1) == 1 {
-			return "", errors.New(sentence)
+			return "", mintFailure
 		}
 		return sourceToken, nil
 	}}
-	if _, err := source.Get(bound(t), theTag); err == nil || err.Error() != RefusalPrefix+sentence {
-		t.Fatalf("a failed mint = %v, want %q", err, RefusalPrefix+sentence)
+	if _, err := source.Get(bound(t), theTag); err == nil || err.Error() != RefusalPrefix+sentence || !errors.Is(err, mintFailure) || errors.Is(err, ErrTagShape) {
+		t.Fatalf("a failed mint = %v, want %q wrapping the mint's own error", err, RefusalPrefix+sentence)
 	}
 	if fake.total() != 0 {
 		t.Fatalf("a failed mint made %d reads, want none", fake.total())

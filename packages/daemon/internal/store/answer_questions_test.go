@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
@@ -134,5 +137,46 @@ func TestAQuestionsGHCallsReadBackInOrder(t *testing.T) {
 	}
 	if len(calls) != 2 || calls[0].Seq != 1 || calls[0].Result == nil || *calls[0].Result != "open" || calls[1].Seq != 2 || calls[1].Result != nil {
 		t.Fatalf("calls = %+v, want seq 1 finished then seq 2 of unknown outcome", calls)
+	}
+}
+
+// The read a gh write is taken from (AnswerToolCallArgsTx) holds each call's question, seq,
+// arguments, owner and exit, by question and in seq order, and never its result, which a call's
+// output fills to gh_output_chars: what `legion state` lists of a question is its writes, not the
+// output the model read. A question with no recorded call has none.
+func TestTheWritesReadOfTheGHCallsHoldsNoResult(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	for _, call := range []AnswerToolCall{
+		{Question: "q1", Seq: 2, Args: []string{"pr", "view", "7"}, App: "review", Owner: "acme", StartedAt: at(2)},
+		{Question: "q1", Seq: 1, Args: []string{"pr", "merge", "7"}, App: "review", Owner: "acme", StartedAt: at(1)},
+		{Question: "q2", Seq: 1, Args: []string{"pr", "comment", "7"}, App: "implement", StartedAt: at(3)},
+	} {
+		if err := s.StartAnswerToolCall(ctx, call); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exit := 0
+	if err := s.FinishAnswerToolCall(ctx, "q1", 1, "Merged pull request acme/widgets#7, the whole of gh's output", &exit, at(4)); err != nil {
+		t.Fatal(err)
+	}
+	var calls map[string][]AnswerToolCall
+	if err := pgx.BeginFunc(ctx, s.Pool(), func(tx pgx.Tx) error {
+		var err error
+		calls, err = AnswerToolCallArgsTx(ctx, tx, []string{"q1", "q2", "q3"})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	zero := 0
+	want := map[string][]AnswerToolCall{
+		"q1": {
+			{Question: "q1", Seq: 1, Args: []string{"pr", "merge", "7"}, Owner: "acme", Exit: &zero},
+			{Question: "q1", Seq: 2, Args: []string{"pr", "view", "7"}, Owner: "acme"},
+		},
+		"q2": {{Question: "q2", Seq: 1, Args: []string{"pr", "comment", "7"}}},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("the writes' read of the calls = %+v, want %+v: each call's question, seq, arguments, owner and exit, and no result", calls, want)
 	}
 }

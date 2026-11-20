@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -555,31 +556,25 @@ var reads = map[string]bool{
 	"label list": true, "cache list": true,
 }
 
-// Write is a recorded call of an answer that writes (Writes): its seq among the question's calls;
-// its command words as gh reads them (`pr merge`), for gh api its method and endpoint (`api PUT
-// repos/acme/widgets/pulls/7/merge`); the repository its arguments name, "<owner>/<name>", or ""
-// where they name none; and gh's exit status, nil where gh answered none, since it could not
-// start or the daemon stopped while it ran.
-type Write struct {
-	Seq        int
-	Command    string
-	Repository string
-	Exit       *int
-}
-
 // Writes are the calls of calls, as answer_tool_calls records them, that write and that the tool
 // let gh run, in their order: every one but a read (reads, and a gh api GET, HEAD or GraphQL
 // query), a call asking for help, and one the tool refused, which it records with no owner
 // (Answer.refuse) and gh never started. A call the daemon stopped during is one, since gh may have
-// made its write.
-func Writes(calls []store.AnswerToolCall) []Write {
-	var written []Write
+// made its write. Each is the one type every record of a gh write carries, the reply the loop
+// posts, the controller's notice and the questions `legion state` lists alike
+// (record.AgentQuestionWrite): its seq among the question's calls; its command words as gh reads
+// them (`pr merge`), for gh api its method and endpoint (`api PUT
+// repos/acme/widgets/pulls/7/merge`); the repository its arguments name, "<owner>/<name>", or ""
+// where they name none; and gh's exit status, nil where gh answered none. Writes reads a call's
+// seq, arguments, owner and exit, and nothing else of it.
+func Writes(calls []store.AnswerToolCall) []record.AgentQuestionWrite {
+	var written []record.AgentQuestionWrite
 	for _, call := range calls {
 		if call.Owner == "" {
 			continue
 		}
 		if command, repository, ok := writeCommand(call.Args); ok {
-			written = append(written, Write{Seq: call.Seq, Command: command, Repository: repository, Exit: call.Exit})
+			written = append(written, record.AgentQuestionWrite{Seq: call.Seq, Command: command, Repository: repository, Exit: call.Exit})
 		}
 	}
 	return written

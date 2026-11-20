@@ -164,20 +164,31 @@ func (s *Store) AnswerToolCalls(ctx context.Context, question string) ([]AnswerT
 	return calls, nil
 }
 
-// AnswerToolCallsTx is every recorded gh call of each of questions, read through tx, by question
-// and in seq order; a question with no recorded call has none.
-func AnswerToolCallsTx(ctx context.Context, tx pgx.Tx, questions []string) (map[string][]AnswerToolCall, error) {
-	rows, err := tx.Query(ctx, `select `+toolCallColumns+` from answer_tool_calls where question = any($1) order by question, seq`, questions)
+// AnswerToolCallArgsTx is every recorded gh call of each of questions, read through tx, by question
+// and in seq order, holding what a gh write is read from (ghtool.Writes) and nothing else: its
+// question, seq, arguments, owner and exit. Its result, the output the model read, which runs to
+// gh_output_chars, is not read, and neither is the rest of its row. A question with no recorded
+// call has none.
+func AnswerToolCallArgsTx(ctx context.Context, tx pgx.Tx, questions []string) (map[string][]AnswerToolCall, error) {
+	rows, err := tx.Query(ctx, `select question, seq, args, owner, exit from answer_tool_calls where question = any($1) order by question, seq`, questions)
 	if err != nil {
 		return nil, fmt.Errorf("read the gh calls of %d questions: %w", len(questions), err)
 	}
-	calls, err := scanToolCalls(rows)
-	if err != nil {
-		return nil, fmt.Errorf("read the gh calls of %d questions: %w", len(questions), err)
-	}
+	defer rows.Close()
 	byQuestion := make(map[string][]AnswerToolCall)
-	for _, call := range calls {
+	for rows.Next() {
+		var call AnswerToolCall
+		var args []byte
+		if err := rows.Scan(&call.Question, &call.Seq, &args, &call.Owner, &call.Exit); err != nil {
+			return nil, fmt.Errorf("read the gh calls of %d questions: %w", len(questions), err)
+		}
+		if err := json.Unmarshal(args, &call.Args); err != nil {
+			return nil, fmt.Errorf("gh call %s.%d: decode its arguments: %w", call.Question, call.Seq, err)
+		}
 		byQuestion[call.Question] = append(byQuestion[call.Question], call)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the gh calls of %d questions: %w", len(questions), err)
 	}
 	return byQuestion, nil
 }
@@ -238,18 +249,25 @@ func utcDay(at time.Time) time.Time {
 // the mark is what passes a question once, and when.
 const QuestionPassedSource = "agent-question"
 
-// PassedQuestion is a question the daemon passed to the controller, and when it did.
+// PassedQuestion is a question the daemon passed to the controller, holding what `legion state`
+// lists of it: its id, the agent's issue, role and session, its hand-off as received (who asked
+// and where), why it was passed on, and when.
 type PassedQuestion struct {
-	AnswerQuestion
-	PassedAt time.Time
+	ID         string
+	Issue      string
+	Role       claim.Role
+	Session    string
+	Handoff    json.RawMessage
+	PassReason string
+	PassedAt   time.Time
 }
 
 // PassedQuestionsTx is the project's questions passed to the controller at since or later, newest
 // first and at most limit of them, read through tx: each question with a QuestionPassedSource mark,
-// at the mark's time.
+// at the mark's time. It reads the columns PassedQuestion holds and no other: never the reply.
 func (s *Store) PassedQuestionsTx(ctx context.Context, tx pgx.Tx, project string, since time.Time, limit int) ([]PassedQuestion, error) {
 	// No column of processed_events shares a name with one of answer_questions.
-	rows, err := tx.Query(ctx, `select `+questionColumns+`, processed_at
+	rows, err := tx.Query(ctx, `select id, issue, role, session, handoff, pass_reason, processed_at
 		from answer_questions join processed_events on source = $1 and event_id = id
 		where project = $2 and processed_at >= $3
 		order by processed_at desc, id desc limit $4`, QuestionPassedSource, project, since, limit)
@@ -260,9 +278,12 @@ func (s *Store) PassedQuestionsTx(ctx context.Context, tx pgx.Tx, project string
 	var passed []PassedQuestion
 	for rows.Next() {
 		var p PassedQuestion
-		if p.AnswerQuestion, err = scanQuestion(rows, &p.PassedAt); err != nil {
+		var role string
+		var handoff []byte
+		if err := rows.Scan(&p.ID, &p.Issue, &role, &p.Session, &handoff, &p.PassReason, &p.PassedAt); err != nil {
 			return nil, fmt.Errorf("read the questions %s passed to the controller: %w", project, err)
 		}
+		p.Role, p.Handoff = claim.Role(role), handoff
 		passed = append(passed, p)
 	}
 	if err := rows.Err(); err != nil {

@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
@@ -140,6 +141,7 @@ type fixture struct {
 	t      *testing.T
 	stand  string // the stand-in gh's directory
 	check  string // the stand-in shared public leak check's directory
+	path   string // the stand-in check itself, the installed check every call runs
 	record string // the file that check records every run it was handed in
 	host   Host
 	tokens *fakeTokens
@@ -231,16 +233,18 @@ func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 	f := &fixture{t: t, stand: standInGH(t, b), check: t.TempDir(), tokens: &fakeTokens{}, calls: newFakeRecorder(), logs: &bytes.Buffer{}}
 	root := t.TempDir()
 	f.record = filepath.Join(root, "leak-check-record")
+	f.path = leakguardtest.Write(t, f.check, recordsIn(f.record, checkPasses))
 	f.host = Host{
 		GH: filepath.Join(f.stand, "gh"), Git: filepath.Join(root, "gitbin", "git"), Legion: filepath.Join(root, "legion"),
 		StateDir: filepath.Join(root, "state"), Calls: f.calls, Log: slog.New(slog.NewJSONHandler(f.logs, nil)), Now: time.Now,
 		Credential: appauth.GitHubCredential(f.tokens, servedRepositories, ghrepo.Renames{}, nil, nil, slog.New(slog.DiscardHandler)),
-		// The guard's own two seams, as the daemon fills them: the check a stand-in of this
-		// test's, since the real one is a script no clone of this repository holds, recording in
-		// the fixture's record file, and the environment this process's own with a state home of
-		// this fixture's added, where the guard keeps the public answers it read (leakguard's
-		// visibility cache), so no answer another run kept stands in for this one's read.
-		LeakCheck: leakguardtest.Write(t, f.check, recordsIn(f.record, checkPasses)),
+		// The guard's own two seams, as the daemon fills them: the check an installed one, as a
+		// Kubernetes daemon's is once its install lands, a stand-in of this test's, since the real
+		// one is a script no clone of this repository holds, recording in the fixture's record
+		// file; and the environment this process's own with a state home of this fixture's added,
+		// where the guard keeps the public answers it read (leakguard's visibility cache), so no
+		// answer another run kept stands in for this one's read.
+		LeakCheck: installedAt(f.path),
 		Environ:   append(os.Environ(), "XDG_STATE_HOME="+filepath.Join(root, "daemon-state")),
 	}
 	answer, err := Open(context.Background(), f.host, agent, question)
@@ -1731,7 +1735,7 @@ func TestACheckThatCannotBeRunRefusesTheCall(t *testing.T) {
 		},
 		{
 			name:  "no check is there to run",
-			setUp: func(f *fixture) { f.answer.host.LeakCheck = filepath.Join(f.check, "moved-away.sh") },
+			setUp: func(f *fixture) { f.answer.host.LeakCheck = installedAt(filepath.Join(f.check, "moved-away.sh")) },
 			want:  "LEAK CHECK SETUP ERROR: the gh call: the shared public leak check could not be found",
 		},
 	} {
@@ -1873,7 +1877,7 @@ func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
 			t.Fatalf("the call's footer: %s", why)
 		}
 		guard := leakguard.New(leakguard.Options{
-			Check: f.answer.host.LeakCheck, Env: f.answer.host.Environ,
+			Check: f.path, Env: f.answer.host.Environ,
 			Visibility: func(context.Context, string) (leakguard.Visibility, error) { return leakguard.Public, nil },
 		})
 		_, err := guard.GhCall(context.Background(), leakguard.GhRequest{Args: run, Repo: "acme/widgets"})
@@ -1890,7 +1894,7 @@ func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
 func TestTheGuardIsGivenOnlyTheAllowedNamesOfTheDaemonsEnvironment(t *testing.T) {
 	f := newFixture(t, implementer, behaviour{Stdout: "gh's answer\n"})
 	allowed := map[string]string{
-		leakguard.CheckVar: f.answer.host.LeakCheck, "HOME": t.TempDir(), "TMPDIR": t.TempDir(),
+		leakguard.CheckVar: f.path, "HOME": t.TempDir(), "TMPDIR": t.TempDir(),
 		"TERM": "dumb", "TZ": "UTC", "LANG": "C", "LC_ALL": "C", "LC_MESSAGES": "C",
 		"HTTPS_PROXY": "http://proxy.invented:3128", "https_proxy": "http://proxy.invented:3128",
 		"NO_PROXY": "*", "no_proxy": "*",
@@ -1974,7 +1978,7 @@ func TestWritesNamesEveryCallThatWritesAndNoRead(t *testing.T) {
 		{Question: "q-1", Seq: 18, Args: []string{"pr", "merge", "8", "-R", "acme/widgets"}, App: "implement"},
 		ran(19, exit(1), "pr", "edit", "7", "--add-label", "ready"),
 	}
-	want := []Write{
+	want := []record.AgentQuestionWrite{
 		{Seq: 2, Command: "pr merge", Repository: "acme/widgets", Exit: exit(0)},
 		{Seq: 3, Command: "pr review", Repository: "acme/widgets", Exit: exit(0)},
 		{Seq: 4, Command: "issue comment", Repository: "acme/widgets", Exit: exit(1)},
@@ -1988,7 +1992,7 @@ func TestWritesNamesEveryCallThatWritesAndNoRead(t *testing.T) {
 	}
 	got := Writes(calls)
 	if !reflect.DeepEqual(got, want) {
-		describe := func(writes []Write) string {
+		describe := func(writes []record.AgentQuestionWrite) string {
 			var lines []string
 			for _, w := range writes {
 				exit := "none"
