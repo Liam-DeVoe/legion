@@ -27,11 +27,16 @@ const envoyPackage = fileURLToPath(new URL("../../envoy", import.meta.url));
 const adminUrl = "postgres://postgres:dispatch@127.0.0.1:55432/postgres?sslmode=disable";
 const localDatabase = "dispatch_local";
 
-/** Every foreground step this command runs. Ctrl-C or a SIGTERM interrupts it from the first step
- *  on, so a stop during the web build, the server build or the seed stops what has started rather
- *  than leaving it listening: the harness stops its own processes when its signal fires. */
+/** Every foreground step this command runs. Ctrl-C, a SIGTERM, a closing terminal's SIGHUP or its
+ *  quit key's SIGQUIT interrupts it from the first step on, so a stop during the web build, the
+ *  server build or the seed stops what has started rather than leaving it listening: the harness
+ *  stops its own processes when its signal fires. Each of its children is started detached, in a
+ *  session of its own (`Supervisor.start`), so none of these signals reaches them, and a signal
+ *  this command did not listen for would end it by its default action and leave them running.
+ *  The listeners stay until the command exits, so a repeat while it stops finds one, and
+ *  `interrupt` does nothing more once a stop is under way. */
 const supervisor = new Supervisor();
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const) {
   process.on(signal, () => supervisor.interrupt());
 }
 const untilInterrupted = <T>(step: Promise<T>) => supervisor.untilInterrupted(step);
