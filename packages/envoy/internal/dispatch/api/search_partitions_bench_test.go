@@ -393,6 +393,90 @@ func TestMeaningSearchOnBenchCorpus(t *testing.T) {
 	}
 }
 
+// TestExplainMeaningSearchOnBenchCorpus logs the plan, with its timings and buffers, of the
+// meaning statement a full member's search runs on DISPATCH_BENCH_DATABASE_URL, for the queries
+// DISPATCH_BENCH_EXPLAIN names (0 and 39 when unset: the largest project's and the smallest's),
+// each explained once to warm and then again: EXPLAIN (ANALYZE, BUFFERS) of searchQueryMeaning in
+// a transaction holding the meaning scan's own settings (searchMeaningScan), with the viewer of an
+// open full member of a deployment holding no private project, which reads every partition. The
+// two builds' plans side by side are what says where a difference in their times goes.
+func TestExplainMeaningSearchOnBenchCorpus(t *testing.T) {
+	databaseURL := os.Getenv("DISPATCH_BENCH_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DISPATCH_BENCH_DATABASE_URL must name a bench corpus copy")
+	}
+	which := []int{0, 39}
+	if listed := os.Getenv("DISPATCH_BENCH_EXPLAIN"); listed != "" {
+		which = nil
+		for _, field := range strings.Split(listed, ",") {
+			n, err := strconv.Atoi(strings.TrimSpace(field))
+			if err != nil {
+				t.Fatalf("DISPATCH_BENCH_EXPLAIN = %q", listed)
+			}
+			which = append(which, n)
+		}
+	}
+	ctx := context.Background()
+	database, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(database.Pool.Close)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	queries := benchQueries(t, database)
+	var projects []string
+	rows, err := database.Pool.Query(ctx, `select key from projects order by key`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			t.Fatal(err)
+		}
+		projects = append(projects, key)
+	}
+	rows.Close()
+	alice := model.Actor{Kind: "user", ID: "alice", Viewer: &model.Viewer{Person: "alice", Open: true, Sees: projects}}
+	for _, i := range which {
+		arguments := searchMeaningQueryArguments(
+			searchParameters{text: benchQueryText(i), limit: 20, who: alice}, queries[i], (&fakeEmbedder{}).Identity())
+		for round := range 2 {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, setting := range searchMeaningScan {
+				if _, err := tx.Exec(ctx, setting); err != nil {
+					t.Fatalf("%s: %v", setting, err)
+				}
+			}
+			plan, err := tx.Query(ctx, "explain (analyze, buffers) "+searchQueryMeaning, arguments...)
+			if err != nil {
+				t.Fatalf("explain query %d: %v", i, err)
+			}
+			var lines []string
+			for plan.Next() {
+				var line string
+				if err := plan.Scan(&line); err != nil {
+					t.Fatal(err)
+				}
+				lines = append(lines, line)
+			}
+			plan.Close()
+			if err := plan.Err(); err != nil {
+				t.Fatalf("explain query %d: %v", i, err)
+			}
+			_ = tx.Rollback(ctx)
+			if round == 1 {
+				t.Logf("bench explain: query %d, %d plan lines:\n%s", i, len(lines), strings.Join(lines, "\n"))
+			}
+		}
+	}
+}
+
 // benchQueryText is query i's text: words no row holds, so the keyword legs match nothing and the
 // page is the meaning leg's alone.
 func benchQueryText(i int) string {
