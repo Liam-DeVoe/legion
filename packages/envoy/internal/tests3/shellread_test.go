@@ -12,8 +12,9 @@ import (
 )
 
 // The shell reader of the waits program (TestEveryWaitAndCheckOfTheScriptHasACase, waits_test.go).
-// It parses one-collection.sh, and the run: text of each store step, as POSIX shell with
-// mvdan.cc/sh's parser, and answers what the parse holds in the form the program's rules read:
+// It parses one-collection.sh, and the shell each store step runs (its run: text, or the script
+// that text names), as POSIX shell with mvdan.cc/sh's parser, and answers what the parse holds in
+// the form the program's rules read:
 //
 //   - every simple command the file runs, wherever the shell runs it: at the top, in a function,
 //     in a condition, a loop, a case or a block, inside a command substitution at any depth
@@ -166,7 +167,7 @@ func parseShell(text string) (*syntax.File, error) {
 	return syntax.NewParser(syntax.Variant(syntax.LangPOSIX)).Parse(strings.NewReader(text), "")
 }
 
-// readShell reads text, one-collection.sh or a step's run: text.
+// readShell reads text, one-collection.sh or the shell a store step runs.
 func readShell(text string) *shellRead {
 	read := &shellRead{functions: map[string]*syntax.FuncDecl{}, calls: map[string][]string{}}
 	file, err := parseShell(text)

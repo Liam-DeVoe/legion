@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -14,12 +16,15 @@ import (
 
 // The rules of TestEveryWaitAndCheckOfTheScriptHasACase (waits_test.go) for the steps of
 // storeSteps, in the shard job of .github/workflows/dispatch-browser.yaml, which start the
-// browser suite's file store, wait for it and check it. stepFindings reads each step's run: text
-// through the shell reader of shellread_test.go, and fails on what these say:
+// browser suite's file store, wait for it and check it. stepFindings reads the shell each step
+// runs, through the shell reader of shellread_test.go: its run: text, or the script that text
+// names (the wait step runs .github/scripts/dispatch-browser-wait-for-store.sh), and fails on what
+// these say:
 //
 //   - The steps run their own function s3 and the commands of stepCommands alone, so a request
 //     or a wait by any other command (`wget`, `weed shell`, `tail`, `.`) is named, and no
-//     function runs itself again.
+//     function runs itself again. set runs only as `set -eu`, so no step turns off the exit on a
+//     failed command or sets its arguments.
 //   - They ask the store things only through the wait step's s3, whose one kind of curl is
 //     `curl -q -g --proto =http -sf --max-time "$seconds" "$@"`: -q, first, reads no .curlrc,
 //     which could make curl try again; -g makes a URL's [..] and {..} text, not a list of
@@ -46,12 +51,14 @@ import (
 //     statement sets deadline and holds arithmetic, and only s3 sets seconds, to its first
 //     argument.
 
-// workflow is the workflow whose shard job starts the browser suite's file store, read from this
-// package's directory; waitStep is that job's step that waits for the store, and storeSteps every
-// step of it that starts the store, waits for it or checks it.
+// repository is this repository's root, read from this package's directory; workflow is the
+// workflow whose shard job starts the browser suite's file store; waitStep is that job's step
+// that waits for the store, and storeSteps every step of it that starts the store, waits for it
+// or checks it.
 const (
-	workflow = "../../../../.github/workflows/dispatch-browser.yaml"
-	waitStep = "Wait for the S3-compatible server"
+	repository = "../../../../"
+	workflow   = repository + ".github/workflows/dispatch-browser.yaml"
+	waitStep   = "Wait for the S3-compatible server"
 )
 
 var storeSteps = []string{"Start an S3-compatible server for uploaded files", waitStep, "Check that no write grew the file store"}
@@ -60,15 +67,34 @@ var storeSteps = []string{"Start an S3-compatible server for uploaded files", wa
 // ends by itself, or under a bound a rule of stepFindings reads. curl runs only in s3, as
 // `curl -q -g --proto =http -sf --max-time "$seconds" "$@"`; one-collection.sh's own waits are
 // held by the script's rules; nohup only starts weed server in the background, in the step that
-// starts the store; sleep runs only as a wait's sleep 1. Any other command is named, so a request
-// or a wait by any other command (wget, nc, tail, weed shell, .) fails the program.
+// starts the store; sleep runs only as a wait's sleep 1, and set only as `set -eu`. Any other
+// command is named, so a request or a wait by any other command (wget, nc, tail, weed shell, .)
+// fails the program.
 var stepCommands = map[string]bool{
 	"[": true, "cat": true, "curl": true, "date": true, "echo": true, "exit": true, "mkdir": true,
-	"nohup": true, "one-collection.sh": true, "return": true, "shift": true, "sleep": true,
+	"nohup": true, "one-collection.sh": true, "return": true, "set": true, "shift": true, "sleep": true,
 }
 
-// storeStepRuns answers the run: text of each step of storeSteps, read from workflow's shard job.
-func storeStepRuns(t *testing.T) map[string]string {
+// scriptStep matches a step's run: text that is the path of a script of this repository and
+// nothing else, which the step runs in its place.
+var scriptStep = regexp.MustCompile(`^\.github/scripts/[A-Za-z0-9._-]+\.sh$`)
+
+// A storeStep is the shell one step of storeSteps runs, and the file it is read from: the step's
+// run: text, from the workflow, or the script that text names.
+type storeStep struct{ file, text string }
+
+// planted answers the step with old replaced by replacement in its text, once (replaceOnce).
+func (s storeStep) planted(t *testing.T, old, replacement string) storeStep {
+	t.Helper()
+	s.text = replaceOnce(t, s.file, s.text, old, replacement)
+	return s
+}
+
+// storeStepRuns answers the shell each step of storeSteps runs, read from workflow's shard job:
+// its run: text, or, where that text is the path of a script of this repository and nothing else,
+// that script. A run: text that names a script with anything around it is read as it stands, so
+// the script's name is a command the rules name.
+func storeStepRuns(t *testing.T) map[string]storeStep {
 	t.Helper()
 	raw, err := os.ReadFile(workflow)
 	if err != nil {
@@ -85,15 +111,23 @@ func storeStepRuns(t *testing.T) map[string]string {
 	if err := yaml.Unmarshal(raw, &parsed); err != nil {
 		t.Fatalf("parse %s: %v", workflow, err)
 	}
-	runs := map[string]string{}
+	runs := map[string]storeStep{}
 	for _, step := range parsed.Jobs["shard"].Steps {
 		if slices.Contains(storeSteps, step.Name) {
-			runs[step.Name] = step.Run
+			runs[step.Name] = storeStep{path.Base(workflow), step.Run}
 		}
 	}
 	for _, name := range storeSteps {
-		if runs[name] == "" {
+		run := runs[name].text
+		if run == "" {
 			t.Fatalf("%s: the shard job has no step %q that runs a script", workflow, name)
+		}
+		if script := strings.TrimSpace(run); scriptStep.MatchString(script) {
+			text, err := os.ReadFile(repository + script)
+			if err != nil {
+				t.Fatalf("%s: step %q runs %s: %v", workflow, name, script, err)
+			}
+			runs[name] = storeStep{path.Base(script), string(text)}
 		}
 	}
 	return runs
@@ -206,19 +240,19 @@ func endsOnTimeout(decl *syntax.FuncDecl) bool {
 	return found
 }
 
-// stepFindings answers what the run: text (run) of the shard job's step name breaks of the rules
-// above for the workflow's store steps.
-func stepFindings(name, run string) []string {
+// stepFindings answers what the shell of the shard job's step name (step: its run: text, or the
+// script that text names) breaks of the rules above for the workflow's store steps.
+func stepFindings(name string, step storeStep) []string {
 	var findings []string
-	lines := strings.Split(run, "\n")
+	lines := strings.Split(step.text, "\n")
 	finding := func(line int, what string) {
 		shown := ""
 		if line >= 1 && line <= len(lines) {
 			shown = strings.TrimSpace(lines[line-1])
 		}
-		findings = append(findings, fmt.Sprintf("dispatch-browser.yaml, step %q, line %d: %s: %s", name, line, what, shown))
+		findings = append(findings, fmt.Sprintf("%s, step %q, line %d: %s: %s", step.file, name, line, what, shown))
 	}
-	read := readShell(run)
+	read := readShell(step.text)
 	for _, refused := range read.refused {
 		finding(refused.line, refused.what)
 	}
@@ -271,10 +305,12 @@ func stepFindings(name, run string) []string {
 			finding(c.line, "a sleep outside a wait with a deadline")
 		case command == "sleep" && (len(c.args) != 1 || !c.args[0].is("1")):
 			finding(c.line, "a sleep in a wait other than its sleep 1, which holds the wait past its deadline")
+		case command == "set" && (len(c.args) != 1 || !c.args[0].is("-eu")):
+			finding(c.line, "a set other than `set -eu`, which may turn off the exit on a failed command or set the arguments")
 		}
 	}
 	if name == waitStep && !endsOnTimeout(read.functions["s3"]) {
-		findings = append(findings, fmt.Sprintf("dispatch-browser.yaml, step %q: s3 does not end the step by name, with exit 1, on curl's timeout (exit 28)", name))
+		findings = append(findings, fmt.Sprintf("%s, step %q: s3 does not end the step by name, with exit 1, on curl's timeout (exit 28)", step.file, name))
 	}
 	return findings
 }

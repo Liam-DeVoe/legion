@@ -54,9 +54,10 @@ var goBounds = []goBound{
 // Every wait and every check of one-collection.sh, and every deadline of seaweedfs.go, has a case
 // that fails when it is cut, every command of the workflow steps around the browser suite's file
 // store ends by itself or under a bound these rules read, and this is the program that says so,
-// by reading the three files. It reads the script, and the run: text of each store step, through
-// the shell reader of shellread_test.go, which parses them as POSIX shell and answers every
-// command the shell runs, wherever it runs it, with its words as the shell resolves them. What
+// by reading those files. It reads the script, and the shell each store step runs (its run: text,
+// or the script that text names), through the shell reader of shellread_test.go, which parses
+// them as POSIX shell and answers every command the shell runs, wherever it runs it, with its
+// words as the shell resolves them. What
 // the reader cannot read fails the program by name: a file that does not parse, a kind of shell
 // other than those the files use, a command whose name is not plain text (a variable, a
 // substitution, a file-name pattern), and a trap whose command is not plain text. A word whose
@@ -113,7 +114,8 @@ var goBounds = []goBound{
 //   - In seaweedfs.go, every function that sets a deadline is in goBounds, whose case exists, and
 //     every function that sends a request (Exec, Do) sets one.
 //   - The steps of storeSteps, in the shard job of .github/workflows/dispatch-browser.yaml, which
-//     start the browser suite's file store, wait for it and check it, are held to the rules that
+//     start the browser suite's file store, wait for it and check it, and the script the wait step
+//     runs (.github/scripts/dispatch-browser-wait-for-store.sh), are held to the rules that
 //     storesteps_test.go's head says and stepFindings reads. No case in this package starts those
 //     steps, so these rules are their check.
 //
@@ -161,16 +163,16 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 		}
 		wait := func(old, replacement string) func() []string {
 			return func() []string {
-				return stepFindings(waitStep, replaceOnce(t, "the wait step", steps[waitStep], old, replacement))
+				return stepFindings(waitStep, steps[waitStep].planted(t, old, replacement))
 			}
 		}
-		// inWait plants code in the wait step, before the line that names the bucket.
+		// inWait plants code in the wait step's script, before the line that names the bucket.
 		inWait := func(code string) func() []string {
 			return wait("store=http://", code+"store=http://")
 		}
 		start := func(old, replacement string) func() []string {
 			return func() []string {
-				return stepFindings(storeSteps[0], replaceOnce(t, "the start step", steps[storeSteps[0]], old, replacement))
+				return stepFindings(storeSteps[0], steps[storeSteps[0]].planted(t, old, replacement))
 			}
 		}
 		const (
@@ -320,8 +322,8 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"an s3 call given \"$@\" after --", wait(`-X PUT -o /dev/null -- "$store"`, `-X PUT -o /dev/null -- "$@"`), "after --, which the shell splits"},
 			{"s3's curl that reads URL patterns", wait(curlLine, `curl -q --proto =http -sf --max-time "$seconds" "$@"`), stepCurl},
 			{"s3's curl that reads a .curlrc that tries again", func() []string {
-				curlrc := replaceOnce(t, "the wait step", steps[waitStep], "store=http://", "echo \"retry = 100000\" > \"$HOME/.curlrc\"\nstore=http://")
-				return stepFindings(waitStep, replaceOnce(t, "the wait step", curlrc, curlLine, `curl -g --proto =http -sf --max-time "$seconds" "$@"`))
+				return stepFindings(waitStep, steps[waitStep].planted(t, "store=http://", "echo \"retry = 100000\" > \"$HOME/.curlrc\"\nstore=http://").
+					planted(t, curlLine, `curl -g --proto =http -sf --max-time "$seconds" "$@"`))
 			}, stepCurl},
 			// A URL of a scheme curl does not hold to --max-time: file:///dev/zero is read for ever.
 			{"s3's curl that reads a URL of any scheme", wait(curlLine, `curl -q -g -sf --max-time "$seconds" "$@"`), stepCurl},
@@ -344,6 +346,9 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"an s3 call whose --data-binary the shell splits", inWait("d='ready -m0'\ns3 10 \"the root\" --data-binary $d -o /dev/null -- \"$store\"\n"), s3Curl + "--data-binary $d, a value the shell splits"},
 			{"an s3 call whose -X a variable gives", inWait("m='PUT -m0'\ns3 10 \"the root\" -X $m -o /dev/null -- \"$store\"\n"), s3Curl + "-X $m, a method whose value"},
 			{"an s3 call whose -X a quoted variable gives", inWait("m=PUT\ns3 10 \"the root\" -X \"$m\" -o /dev/null -- \"$store\"\n"), s3Curl + "-X \"$m\", a method whose value"},
+			// The steps' set runs only as set -eu.
+			{"a set in the wait step that turns off the exit on a failure", wait("set -eu\n", "set +e\n"), "a set other than `set -eu`"},
+			{"a set in the wait step that sets its arguments", wait("set -eu\n", "set -eu\nset -- x\n"), "a set other than `set -eu`"},
 			// A command the rules read, or the deadline a wait reads, that the file makes its own.
 			{"a date of the wait step's own", wait("s3() {", "date() {\n  echo 0\n}\ns3() {"), ruled},
 			{"a date of the script's own", script("\nwithin() {\n", "\ndate() {\n  echo 0\n}\n\nwithin() {\n"), ruled},
