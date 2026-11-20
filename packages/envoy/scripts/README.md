@@ -300,7 +300,7 @@ so the stand-in GitHub is served over TLS on port 443 of a loopback address
 reaches it as `api.github.test`. It is the one driver that hands the stand-in an
 installation map (`dev-airlock-stands --installation-permissions`). It enrols one pod
 session of the service that owns the secrets, as the Legion daemon enrols a worker pod.
-`p1` reads the broker's `cipherd: profiles applied` line, runs `broker profiles check`
+`p1` reads the broker's `broker: profiles applied` line, runs `broker profiles check`
 on the stack's file, and adds a `github-app` secret no profile names to the store,
 which is refused `PROFILE_REFUSED` naming `github-app-no-profile`. `p2` reads the token
 request the stand-in recorded, the broker's left-out lines and the values answer's

@@ -710,13 +710,19 @@ fi
 METRICS_URL="http://${LOGGED_ADDR}/metrics"
 # The proxy's port, which the broker binds with the API's and logs between the two lines above,
 # so by now its line is there; the front is pointed at it, and rereads its backends file when it
-# changes. A broker that logged none never bound the proxy its profiles need.
-if ! await_logged_addr 'airlock proxy listening'; then
-  echo "dev-broker: broker never logged its proxy's address within 15s" >&2
-  exit 1
+# changes. The broker binds it only when a profile of its profiles file has a proxy block, which
+# none under DEV_BROKER_GCP_* has (the profiles file's header), so the line is waited for only
+# then; a broker that logged none for such a file never bound the proxy its profiles need.
+PROXY_BANNER="none  (no profile of the profiles file has a proxy block, so the broker binds no proxy port)"
+if jq -e 'any(.profiles[]; .proxy != null)' "$PROFILES_FILE" >/dev/null; then
+  if ! await_logged_addr 'airlock proxy listening'; then
+    echo "dev-broker: broker never logged its proxy's address within 15s" >&2
+    exit 1
+  fi
+  PROXY_ADDR="$LOGGED_ADDR"
+  printf '%s\n' "$PROXY_ADDR" >"$PROXY_BACKENDS"
+  PROXY_BANNER="$PROXY_URL  (BROKER_AIRLOCK_PROXY_URL, a front over the broker's own proxy port $PROXY_ADDR)"
 fi
-PROXY_ADDR="$LOGGED_ADDR"
-printf '%s\n' "$PROXY_ADDR" >"$PROXY_BACKENDS"
 
 ready=false
 for _ in $(seq 1 30); do
@@ -818,7 +824,7 @@ dev-broker: ready.
   github answers:      $GITHUB_ANSWER_URL  (POST {"mode": "ordinary"|"refuse"|"refuse-repository"|"refuse-permissions"|"widen"|"fail-once", "repository": "<name>"}: what each token request is answered from then on; the repository is refuse-repository's own, and fail-once answers the next one 503, which the broker retries, and the rest as ordinary)
   github holds:        $GITHUB_HOLDS  (what the App's installations hold, DEV_BROKER_GITHUB_PERMISSIONS; every commit status is for $GITHUB_COMMIT_SHA)
   profiles file:       $PROFILES_FILE  (BROKER_PROFILES_FILE: the profile each github-app secret is served as, and the two proxied ones)
-  proxy:               $PROXY_URL  (BROKER_AIRLOCK_PROXY_URL, a front over the broker's own proxy port $PROXY_ADDR)
+  proxy:               $PROXY_BANNER
   stand-in files:      $STANDS_DIR  (this run's GitHub App key and the stands' certificate authority; the whole report in $STANDS_JSON, its log in $STANDS_LOG)
 
   One agent-tier secret (DEMO_READ_TOKEN, granted without asking) and two human-tier secrets

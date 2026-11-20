@@ -591,8 +591,9 @@ value, `google-login` or `azure-login` source), or a tag rule its own tags over 
 such as `admin-tier` for an agent-tier profile of an `admin` source. A source a profile of another
 name uses is served only through its profiles, and a `github-app` secret no profile names is
 refused by its own name (`github-app-no-profile`), so every GitHub App token the broker mints is a
-profile's. A session whose operator withheld a source asks for each profile of it as for a
-human-tier secret.
+profile's.
+A withhold covers every profile of the withheld name's source, and the source's own name, in both directions: once a session's operator has withheld a source or any profile of it, the session asks for each of them as for a human-tier secret, and every grant it got one of them on without asking ends with the revoked one.
+So a revoke of a read profile's grant withholds its write sibling too.
 
 The policy's **version** is the SHA-256 of every served secret's name, owner, tier, source, max
 grant, `requesters` list, `scopes` list and `admin` mark, and of the fingerprint of each profile it
@@ -1187,8 +1188,9 @@ What the airlock does not stop is as much of the design as what it does:
   beside `BROKER_PROFILES_FILE`: a Service range can be public address space, as GKE's
   default `34.118.224.0/20` is, so no private-address rule covers its ClusterIPs. In a cluster
   (`KUBERNETES_SERVICE_HOST` set to a non-empty value; empty or unset is outside a cluster), a
-  broker with a profiles file refuses to start without that setting, or when no range in it holds
-  that address. A command that needs such a call sets its own `NO_PROXY` entry for that name.
+  broker whose profiles file gives any profile a proxy block refuses to start without that
+  setting, or when no range in it holds that address. A command that needs such a call sets its
+  own `NO_PROXY` entry for that name.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
   owner rotates it.

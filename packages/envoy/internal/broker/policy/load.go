@@ -32,7 +32,7 @@ const RefusedMessage = "agent secret policy refused"
 // profile also writes RefusedMessage, named "profile:" and its name. A reader of a pod's log then
 // tells a boot that refused no profile from one that read no file, or never started. The operate
 // guide documents its text, and the production check reads it.
-const ProfilesAppliedMessage = "cipherd: profiles applied"
+const ProfilesAppliedMessage = "broker: profiles applied"
 
 // ServableMessage is the line Current writes, at INFO, when a secret the live policy refused is
 // refused no longer: name, reason (the reason it had) and owner as its refusal last held them,

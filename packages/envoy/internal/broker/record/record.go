@@ -21,6 +21,7 @@ import (
 
 	"github.com/go-jose/go-jose/v4"
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
 )
 
@@ -176,28 +177,20 @@ func Locations(account string, repositories []string) []string {
 }
 
 // MaxTargetLocations is the most entries one detail's locations hold: one for each repository of
-// its target, as many as a GitHub profile's token names (secrets.MaxNarrowedRepositories).
-const MaxTargetLocations = 100
+// its target, as many as a GitHub profile's token names.
+const MaxTargetLocations = secrets.MaxNarrowedRepositories
 
 // gitHubLocationPrefix opens every entry of a target's locations.
 const gitHubLocationPrefix = "https://github.com/"
 
-var (
-	// locationAccount is the account a location names: a GitHub login (policy.ParseGitHubLogin's
-	// rule, at most 39 characters) in lowercase, the form GitHub compares logins in and the form
-	// the profiles file holds them in.
-	locationAccount = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,38}$`)
-	// locationRepository is the repository a location names: a name GitHub can hold (the
-	// profiles file's own rule for one), ASCII letters, digits, '.', '-' and '_', at most 100;
-	// the names . and .. are refused beside it.
-	locationRepository = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
-)
-
 // parseLocation reads one entry of a target's locations, https://github.com/<account> or
 // https://github.com/<account>/<repository>: the account, the repository or "" for the account
-// form, and false for every other string. A name a location cannot hold is refused here rather
-// than left to the profile it is compared with, since the approval page prints the record's
-// target and a rune such as a bidi override would change what a person reads.
+// form, and false for every other string. The account is a GitHub login (secrets.ValidLogin) in
+// lowercase alone, the form GitHub compares logins in and the form the profiles file holds them
+// in, and the repository a name GitHub can hold (secrets.ValidRepositoryName). A name a location
+// cannot hold is refused here rather than left to the profile it is compared with, since the
+// approval page prints the record's target and a rune such as a bidi override would change what
+// a person reads.
 func parseLocation(location string) (account, repository string, ok bool) {
 	rest, found := strings.CutPrefix(location, gitHubLocationPrefix)
 	if !found {
@@ -205,11 +198,11 @@ func parseLocation(location string) (account, repository string, ok bool) {
 	}
 	account, repository, named := strings.Cut(rest, "/")
 	switch {
-	case !locationAccount.MatchString(account):
+	case !secrets.ValidLogin(account) || strings.ToLower(account) != account:
 		return "", "", false
 	case !named:
 		return account, "", true
-	case !locationRepository.MatchString(repository) || repository == "." || repository == "..":
+	case !secrets.ValidRepositoryName(repository):
 		return "", "", false
 	}
 	return account, repository, true

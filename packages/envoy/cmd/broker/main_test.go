@@ -1099,11 +1099,11 @@ func writeTempFile(t *testing.T, name string, content []byte) string {
 	return path
 }
 
-// airlockEnv is what a broker with an airlock is started with besides its rules file: the proxy
-// the release names, the certificate authority it hands over and the key behind it, without
-// which config.Load refuses a broker that reads rules it could not proxy, and an address of its
-// own for the proxy port, since a fixed one would be a port two rows of this package could not
-// both hold.
+// airlockEnv is what a broker with an airlock is started with besides its profiles file: the proxy
+// the release names, the certificate authority it hands over and the key behind it, without which
+// the boot refuses a broker whose profiles hold a proxy block it could not proxy
+// (config.Config.RequireAirlock), and an address of its own for the proxy port, since a fixed one
+// would be a port two rows of this package could not both hold.
 func airlockEnv(t *testing.T) []string {
 	t.Helper()
 	certFile, keyFile := airlockCAFiles(t)

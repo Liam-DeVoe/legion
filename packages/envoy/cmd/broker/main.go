@@ -227,6 +227,15 @@ func main() {
 	profiles, err := readProfiles(cfg.ProfilesFile, serviceNames(cfg))
 	fatal(err)
 	proxyRules := profiles.ProxyRules()
+	// The airlock runs only for a profile with a proxy block, so its settings are required only
+	// then, and refused the same way: a deployment whose profiles hold none, such as one that
+	// serves GitHub Apps through profiles alone, needs no proxy, no certificate authority and no
+	// cluster ranges, and binds no proxy port.
+	proxied := make([]string, len(proxyRules.Secrets))
+	for i, rule := range proxyRules.Secrets {
+		proxied[i] = rule.Name
+	}
+	fatal(cfg.RequireAirlock(proxied))
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
 	// the key beside the certificate, which the proxy port signs each bound host's certificate
 	// with, and the certificate itself, which every release of a name a proxy block holds back
@@ -237,7 +246,7 @@ func main() {
 	// before the database is migrated, before the socket is bound and before anything reaches
 	// for AWS. nil for a deployment with no airlock, which binds no proxy port.
 	var airlockCA *airlockproxy.Authority
-	if cfg.ProfilesFile != "" {
+	if len(proxied) > 0 {
 		if airlockCA, err = airlockproxy.NewAuthority(cfg.AirlockCACertFile, cfg.AirlockCAKeyFile); err != nil {
 			// Named by the two variables an operator sets, since what the refusal under this
 			// is about is the files they name.
@@ -418,9 +427,9 @@ func main() {
 		},
 		Listen: listenTCP(cfg.ListenAddr),
 		// The proxy port, bound by the same boot and only for a deployment that has an
-		// airlock: without a profiles file no name is ever held back, so there is nothing for a
-		// proxy to carry and no port to bind.
-		ListenAirlock: airlockListen(cfg),
+		// airlock: without a proxy block among its profiles no name is ever held back, so there
+		// is nothing for a proxy to carry and no port to bind.
+		ListenAirlock: airlockListen(cfg, proxyRules),
 		// The metrics port, bound by the same boot after the other two, on every deployment.
 		ListenMetrics: listenTCP(cfg.MetricsListenAddr),
 		ListenWait:    rereadListenWait,
@@ -1073,11 +1082,12 @@ func readProfiles(path string, services []string) (policy.Profiles, error) {
 }
 
 // airlockListen is brokerBoot.ListenAirlock in production: the bind on
-// BROKER_AIRLOCK_LISTEN_ADDR, and nil for a deployment that names no profiles file. Nil rather
-// than a bind of the default address, because a broker with no airlock holds back no name, so a
-// proxy port there would be a port that authenticates nobody and carries nothing.
-func airlockListen(cfg config.Config) func() (net.Listener, error) {
-	if cfg.ProfilesFile == "" {
+// BROKER_AIRLOCK_LISTEN_ADDR, and nil for a deployment whose profiles hold no proxy block, rules
+// being their proxy blocks (policy.Profiles.ProxyRules). Nil rather than a bind of the default
+// address, because a broker with no airlock holds back no name, so a proxy port there would be a
+// port that authenticates nobody and carries nothing.
+func airlockListen(cfg config.Config, rules airlock.Rules) func() (net.Listener, error) {
+	if len(rules.Secrets) == 0 {
 		return nil
 	}
 	return listenTCP(cfg.AirlockListenAddr)

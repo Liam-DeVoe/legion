@@ -57,7 +57,7 @@ const NarrowingRefusedMessage = "broker: narrowing refused"
 // not hold, as permission:level>. The token was released without it, and the release's answer
 // names it too (Release.GitHubLeftOut). The App's owner grants it on that account, or the
 // profiles file stops asking for it.
-const ProfilePermissionLeftOutMessage = "cipherd: a profile's permission was left out, since the installation does not hold it"
+const ProfilePermissionLeftOutMessage = "broker: a profile's permission was left out, since the installation does not hold it"
 
 // PendingLeftOutMessage is logged, at WARN, once for each pending record PendingForApprover
 // leaves out of an approver's list because its signed record does not verify for this broker:
@@ -731,18 +731,18 @@ func neededADecision(requested []requestedSecret) func(string) bool {
 // approval keeps its grant while the secret stays the approver's, or becomes shared, whose
 // approver is anyone, or once the policy gives this requester the secret without asking; and a
 // secret handed to a person stops every grant of it that person must approve and did not. A name
-// withheld from the session that its request got automatically, a profile of a withheld source
-// among them (policy.Set.Withholds), is judged as an approval by decidedBy too: the withhold ended
-// every grant that got the name without asking (withhold), so a live one was approved after it,
-// by someone the withheld name let approve it (currentPolicyAdmits), and an automatic grant,
-// which no one decided, never passes. A grant whose frozen source is not the one the policy now
-// serves the name from (the broker moved between stores, or, on AWS, the secret was replaced by
-// another of the same name, which gets a new ARN; a Secret Manager source is the resource name,
-// which a recreated secret keeps) is not live either: the frozen source no longer names the
-// secret the policy decides about, so the session asks again. A name whose requesters tag no
-// longer lists this requester is not live either, and ends the grant for good
-// (errRequesterNotListed): that list is who may ask for the secret at all, so a grant made before
-// it dropped them must not go on releasing while they are off it.
+// withheld from the session that its request got automatically, every name served from the
+// source of a withheld name among them (policy.Set.Withholds), is judged as an approval by
+// decidedBy too: the withhold ended every grant that got such a name without asking (withhold),
+// so a live one was approved after it, by someone the withheld name let approve it
+// (currentPolicyAdmits), and an automatic grant, which no one decided, never passes. A grant whose
+// frozen source is not the one the policy now serves the name from (the broker moved between
+// stores, or, on AWS, the secret was replaced by another of the same name, which gets a new ARN; a
+// Secret Manager source is the resource name, which a recreated secret keeps) is not live either:
+// the frozen source no longer names the secret the policy decides about, so the session asks
+// again. A name whose requesters tag no longer lists this requester is not live either, and ends
+// the grant for good (errRequesterNotListed): that list is who may ask for the secret at all, so a
+// grant made before it dropped them must not go on releasing while they are off it.
 // A grant the model judge decided — record.JudgeLogin reads a judge actor off its decidedBy — is
 // held to the rules instead of to that login, and to the admin tag over both: the secret must not
 // be an administrator's now, and the rules in force must still give the name a judge of at least
@@ -838,7 +838,7 @@ var errRequesterNotListed = errors.New("requester not listed")
 var errJudgedAdminSecret = errors.New("judged administrator's secret")
 
 // JudgePolicy answers what the live policy says about name for the enrollment that asked,
-// whether that name is withheld from its session, by its own name or its source's
+// whether that name is withheld from its session, by any withheld name of the same source
 // (policy.Set.Withholds), and whether the secret is an administrator's: the one question the
 // broker's model judge asks the machine before it decides a pending request (judge.Requests,
 // whose other two methods are the writes a verdict makes — ApplyJudgeDecision and LogJudged, in

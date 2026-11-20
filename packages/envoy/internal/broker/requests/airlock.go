@@ -539,8 +539,9 @@ type AirlockGrantName struct {
 // refuses with ErrGrantNotLive when no row holds that placeholder, when its grant is revoked or
 // expired, or when its enrollment is revoked or its lease lapsed; it drops, from a grant whose
 // request nobody decided, every name the enrollment's operator withheld, read as
-// policy.Set.Withholds reads them, so a profile whose source they withheld is dropped too, and
-// refuses with ErrAirlockNoNames when that leaves none, which the proxy answers 407.
+// policy.Set.Withholds reads them, so every other name served from a withheld name's source is
+// dropped too, and refuses with ErrAirlockNoNames when that leaves none, which the proxy answers
+// 407.
 //
 // A grant someone decided keeps its withheld names, as Values releases them: stillAllowed judges a
 // withheld name by the login that decided the request, so only an automatic grant, which no one

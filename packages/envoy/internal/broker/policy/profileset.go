@@ -46,14 +46,16 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 	byName := map[string]Refusal{}
 	held := make(map[string]bool, len(p.list))
 	var profilesOf map[string][]string
+	var profileSources map[string]string
 	for i := range p.list {
 		profile := &p.list[i]
 		held[profile.Name] = true
 		if profile.Source != profile.Name {
 			if profilesOf == nil {
-				profilesOf = map[string][]string{}
+				profilesOf, profileSources = map[string][]string{}, map[string]string{}
 			}
 			profilesOf[profile.Source] = append(profilesOf[profile.Source], profile.Name)
+			profileSources[profile.Name] = profile.Source
 		}
 	}
 	for i := range p.list {
@@ -91,7 +93,7 @@ func (p Profiles) apply(set *Set, prefix string) *Set {
 		byName[name] = refusal
 	}
 	next := setOf(served, refused, set.Pending, versions)
-	next.ProfilesOf, next.profileRefused = profilesOf, byName
+	next.ProfilesOf, next.profileRefused, next.profileSources = profilesOf, byName, profileSources
 	return next
 }
 
@@ -274,4 +276,82 @@ func looser(profile *Profile, source Secret) string {
 // of none.
 func kindOf(secretType string) string {
 	return cmp.Or(secretType, "stored-value")
+}
+
+// Withholds reports whether r's withheld names withhold name: whether name's source is the source
+// of any of them, since every name of one source is served from that one credential, so a
+// session's operator who withholds one of them withholds each, in both directions: a source's own
+// name withholds each profile of it, and a profile withholds its source's own name and each other
+// profile of it, a read profile its write sibling. A name that is no profile is its own source
+// (source), so a stored secret no profile uses withholds itself alone. It is the one reading of
+// Requester.Withheld: Evaluate decides by it, and so does every check of the request machine that
+// asks whether a name is withheld from a session, the withhold's own ending of the grants it
+// covers among them (requests' withhold).
+func (s *Set) Withholds(r Requester, name string) bool {
+	if len(r.Withheld) == 0 {
+		return false
+	}
+	source := s.source(name)
+	for _, withheld := range r.Withheld {
+		if s.source(withheld) == source {
+			return true
+		}
+	}
+	return false
+}
+
+// source is the name of what name is served from: the source of the profile s serves or refuses by
+// that name, as the profiles file names it, and name itself for every other name — a stored secret
+// served by its own name, a source asked for by its own name, a profile that holds its source's
+// name, or a name s has never heard of.
+func (s *Set) source(name string) string {
+	if profile := s.Secrets[name].Profile; profile != nil {
+		return profile.Source
+	}
+	if source, ok := s.profileSources[name]; ok {
+		return source
+	}
+	return name
+}
+
+// notServed is Evaluate's error for a name the set does not serve for a reason the profiles file
+// gives. errors.Is matches its kind, ErrServedOnlyAsProfiles or ErrProfileRefused, and
+// ErrUnknownSecret too: the name is one no secret the policy serves carries, so a caller that
+// answers every such name alike - a release's re-check of a live grant, an approval's - answers
+// these alike, and one that tells them apart (the request route) asks for the kind first.
+type notServed struct {
+	kind error
+	text string
+}
+
+func (e *notServed) Error() string   { return e.text }
+func (e *notServed) Unwrap() []error { return []error{e.kind, ErrUnknownSecret} }
+
+// unservedError is Evaluate's error for name, which s does not serve: the refusal the profiles file
+// gives it, with its reason and detail; the profiles of name that s serves, to ask for in its
+// place, or, where s refuses each of them, that each is refused, naming them, so a caller is never
+// sent to a name it would be refused again for; or ErrUnknownSecret.
+func (s *Set) unservedError(name string) error {
+	if refusal, refused := s.profileRefused[name]; refused {
+		why := refusal.Reason
+		if refusal.Detail != "" {
+			why += " (" + refusal.Detail + ")"
+		}
+		return &notServed{kind: ErrProfileRefused, text: name + " " + ErrProfileRefused.Error() + ": " + why}
+	}
+	profiles := s.ProfilesOf[name]
+	if len(profiles) == 0 {
+		return ErrUnknownSecret
+	}
+	var served []string
+	for _, profile := range profiles {
+		if _, ok := s.Secrets[profile]; ok {
+			served = append(served, profile)
+		}
+	}
+	text := name + " " + ErrServedOnlyAsProfiles.Error() + ": ask for " + strings.Join(served, " or ")
+	if len(served) == 0 {
+		text = name + " " + ErrServedOnlyAsProfiles.Error() + ", and each of them is refused: " + strings.Join(profiles, ", ")
+	}
+	return &notServed{kind: ErrServedOnlyAsProfiles, text: text}
 }

@@ -1415,11 +1415,17 @@ func TestAGrantFrozenOnAnotherSourceIsNotLive(t *testing.T) {
 	}
 }
 
+// leftOutLine is ProfilePermissionLeftOutMessage's text, written out rather than read from the
+// constant: it is a text the operate page documents and scripts/github-profile-check.sh reads,
+// so a change to the constant has to fail here, and it begins "broker:" as every other line of
+// the broker does.
+const leftOutLine = "broker: a profile's permission was left out, since the installation does not hold it"
+
 // TestTheReleaseNamesEachPermissionTheCutLeftOut: a github-app profile's release mints with the
 // profile's own scope — its accounts, its permissions and its value form, as the served profile
 // holds them — and names, for each account, every entry of the profile's permissions the cut to
 // what the installation holds left out (Release.GitHubLeftOut), and writes one WARN line for each
-// entry (ProfilePermissionLeftOutMessage) with the profile's name, the account and the entry.
+// entry (leftOutLine) with the profile's name, the account and the entry.
 func TestTheReleaseNamesEachPermissionTheCutLeftOut(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
@@ -1451,16 +1457,16 @@ func TestTheReleaseNamesEachPermissionTheCutLeftOut(t *testing.T) {
 	}
 	var lines []string
 	for _, line := range strings.Split(logged.String(), "\n") {
-		if strings.Contains(line, ProfilePermissionLeftOutMessage) {
+		if strings.Contains(line, "permission was left out") {
 			lines = append(lines, line)
 		}
 	}
 	if len(lines) != 2 {
-		t.Fatalf("logged %d %q lines, want one for each entry: %s", len(lines), ProfilePermissionLeftOutMessage, logged.String())
+		t.Fatalf("logged %d %q lines, want one for each entry: %s", len(lines), leftOutLine, logged.String())
 	}
 	for i, entry := range []string{"contents:write", "members"} {
-		if line := lines[i]; !strings.Contains(line, "WARN "+ProfilePermissionLeftOutMessage) || !strings.Contains(line, "name=APP_KEY") || !strings.Contains(line, "account=ada") || !strings.Contains(line, "permission="+entry) {
-			t.Fatalf("line %d = %q; want a WARN naming APP_KEY, ada and %s", i, line, entry)
+		if line := lines[i]; !strings.Contains(line, "WARN "+leftOutLine) || !strings.Contains(line, "name=APP_KEY") || !strings.Contains(line, "account=ada") || !strings.Contains(line, "permission="+entry) {
+			t.Fatalf("line %d = %q; want a WARN %q naming APP_KEY, ada and %s", i, line, leftOutLine, entry)
 		}
 	}
 }

@@ -7,11 +7,13 @@ body: |-
   and a `proxy` block (the fields of an airlock rules entry; `hosts` required). At every policy
   load each profile is checked against its source and served by its name; one that does not fit
   its source, or is looser than it, is refused alone (`profile:NAME` in the refused line, with
-  `detail=`), and the first load writes one `cipherd: profiles applied` line with the counts. A
+  `detail=`), and the first load writes one `broker: profiles applied` line with the counts. A
   source that profiles of other names use is served only through them, and a github-app secret
-  no profile names is refused. A session's operator who withholds a source withholds each
-  profile of it: the grants the session got without asking end, and an approval a person gives
-  after the withhold stands, through the airlock's proxy too. A GitHub profile's token asks
+  no profile names is refused. A session's operator who withholds a name withholds every name
+  of the same source, profiles of it and the source itself (withholding a read profile withholds
+  its write sibling): the grants the session got without asking end, and an approval a person
+  gives after the withhold stands, through the airlock's proxy too, even when a later revoke of
+  another name of that source comes. A GitHub profile's token asks
   GitHub for the profile's permissions cut to what each installation holds, and each account's
   token names that account's repositories alone; the values answer names what the cut left out
   (`github_left_out`), and a cut that leaves no permission, or only `metadata` for a profile that
@@ -32,9 +34,12 @@ body: |-
   profile with a `proxy` block is minted by the proxy for the grant's target, and a
   `value: token` profile is released as one placeholder, which the proxy swaps for the token in
   a header the block names or inside a git Basic credential (`x-access-token:<placeholder>`). A
-  reread of a source, or of any profile of it, makes the proxy read every profile of that source
-  again. New refusals: `TARGET_REFUSED` (400 on `POST /v1/requests` and
-  `POST /v1/grants/{id}/values`, 403 at the proxy), `SERVED_ONLY_AS_PROFILES`, `PROFILE_REFUSED`,
+  reread that finds a new value of a minted source, or a reread of a stored value, makes the
+  proxy read every profile of that source again. The airlock's settings
+  (`BROKER_AIRLOCK_PROXY_URL`, `BROKER_AIRLOCK_CA_CERT_FILE`, `BROKER_AIRLOCK_CA_KEY_FILE`) are
+  required only when a profile has a `proxy` block. New refusals: `TARGET_REFUSED` (400 on
+  `POST /v1/requests` and `POST /v1/grants/{id}/values`, 403 at the proxy),
+  `SERVED_ONLY_AS_PROFILES`, `PROFILE_REFUSED`,
   `PROFILE_MINT_REFUSED` (403 at the proxy), `GITHUB_APP_FIELD_REMOVED`, and `INVALID_RELEASE`
   (400), which a values body the route cannot read now answers. `envoy-broker profiles check
   <file> [--against <old file>]` validates a file and prints every field a change adds and

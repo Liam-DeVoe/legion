@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -65,12 +64,12 @@ type GitHubBlock struct {
 	Value string `json:"value"`
 }
 
-// The two forms a GitHub profile's value takes (GitHubBlock.Value): today's JSON of one entry per
-// account, with its installation_id, token and expires_at, which is the default, or the bare token
-// of the one account in effect.
+// The two forms a GitHub profile's value takes (GitHubBlock.Value), secrets' own: today's JSON of
+// one entry per account, with its installation_id, token and expires_at, which is the default, or
+// the bare token of the one account in effect.
 const (
-	ValueInstallations = "installations"
-	ValueToken         = "token"
+	ValueInstallations = secrets.ValueInstallations
+	ValueToken         = secrets.ValueToken
 )
 
 // GoogleBlock is a google-service-account profile's scope: the scopes its token carries, each the
@@ -111,26 +110,6 @@ type profileEntry struct {
 // one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
 // at the boot and in `profiles check`, where its author reads why.
 const maxGuidanceRunes = 2000
-
-// permissionName is what a GitHub App permission's name is: lowercase letters and underscores
-// (contents, pull_requests, organization_administration).
-var permissionName = regexp.MustCompile(`^[a-z_]+$`)
-
-// permissionLevels are the levels GitHub gives a permission.
-var permissionLevels = []string{"read", "write", "admin"}
-
-// writeOnlyPermissions are the permissions GitHub grants at write alone, the one level its REST
-// description (components.schemas.app-permissions) gives them, so a profile that asks for them at
-// read would be refused by GitHub at every mint.
-var writeOnlyPermissions = []string{"profile", "workflows"}
-
-// metadataPermission is the permission every GitHub profile names, at read and no other level.
-// GitHub grants metadata: read with every installation token, whatever the request named, and
-// the minter refuses a token holding a permission its request did not name (secrets' heldBy), so
-// a profile that left it out could never mint. Every endpoint GitHub lists under it ("Permissions
-// required for GitHub Apps") needs read, so a profile asking for it at write or admin would claim
-// a grant no token of it carries.
-const metadataPermission = "metadata"
 
 // ParseProfiles reads a profiles file and refuses one the broker would not serve. It decodes the
 // file strictly (airlock.Decode: a field the broker does not know, and anything after the file's
@@ -357,7 +336,7 @@ func (e profileEntry) checkRequesters(refuse func(field, why string) error) erro
 // its case; repositories, when present, at least one and at most secrets.MaxNarrowedRepositories,
 // each account/name of an account the block names; and permissions, at least one, each a
 // permission's name at a level GitHub gives it, and metadata at read among them
-// (metadataPermission).
+// (secrets.MetadataPermission).
 func (b *GitHubBlock) check(refuse func(field, why string) error) error {
 	if b == nil {
 		return nil
@@ -387,19 +366,19 @@ func (b *GitHubBlock) check(refuse func(field, why string) error) error {
 		level := b.Permissions[permission]
 		field := "github.permissions." + permission
 		switch {
-		case !permissionName.MatchString(permission):
+		case !secrets.ValidPermissionName(permission):
 			return refuse("github.permissions", fmt.Sprintf("names %q, which is no GitHub App permission's name: lowercase letters and underscores", permission))
-		case !slices.Contains(permissionLevels, level):
+		case secrets.LevelRank(level) == 0:
 			return refuse(field, fmt.Sprintf("is %q, not a level GitHub gives: read, write or admin", level))
-		case slices.Contains(writeOnlyPermissions, permission) && level != "write":
+		case secrets.WriteOnlyPermission(permission) && level != "write":
 			return refuse(field, fmt.Sprintf("is %q, but GitHub grants %s at write alone", level, permission))
 		}
 	}
-	switch level, named := b.Permissions[metadataPermission]; {
+	switch level, named := b.Permissions[secrets.MetadataPermission]; {
 	case !named:
 		return refuse("github.permissions", `names no metadata: GitHub grants "metadata": "read" with every installation token, and the broker refuses a token holding a permission its profile does not name, so a profile that leaves it out never mints; add "metadata": "read"`)
 	case level != "read":
-		return refuse("github.permissions."+metadataPermission, fmt.Sprintf("is %q, but metadata is read alone: every endpoint it covers needs read, and GitHub grants it at read with every installation token", level))
+		return refuse("github.permissions."+secrets.MetadataPermission, fmt.Sprintf("is %q, but metadata is read alone: every endpoint it covers needs read, and GitHub grants it at read with every installation token", level))
 	}
 	if b.Value != "" && b.Value != ValueInstallations && b.Value != ValueToken {
 		return refuse("github.value", fmt.Sprintf("%q is neither %s nor %s", b.Value, ValueInstallations, ValueToken))
@@ -432,7 +411,7 @@ func checkRepositories(repositories, accounts []string, refuse func(field, why s
 		if !slices.Contains(accounts, login) {
 			return refuse(field, fmt.Sprintf("%q is a repository of %s, which github.accounts does not name", repository, login))
 		}
-		if !gitHubRepositoryName.MatchString(name) || name == "." || name == ".." {
+		if !secrets.ValidRepositoryName(name) {
 			return refuse(field, fmt.Sprintf("%q names a repository GitHub cannot hold: a name is ASCII letters, digits, '.', '-' and '_', and neither . nor ..", repository))
 		}
 	}

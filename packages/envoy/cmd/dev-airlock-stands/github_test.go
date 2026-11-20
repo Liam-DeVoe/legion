@@ -1,10 +1,9 @@
 // packages/envoy/cmd/dev-airlock-stands/github_test.go
 //
-// The GitHub stand as this command serves it, beyond the four routes of the stand-in package's
-// own: what each installation of the App holds, which --installation-permissions sets, and the
-// three routes that answer by what a token holds, reached at the github-tls stand over TLS as a
-// command behind the proxy reaches them. Each row runs the real compiled binary, as the local
-// stack's check scripts do.
+// The GitHub stand as this command serves it: --installation-permissions, what each installation
+// of the App holds, and the wiring of the stand-in package's one GitHub (airlocktest.GitHubStand,
+// whose own tests hold its routes) at the plain github stand and the github-tls stand. Each row
+// runs the real compiled binary, as the local stack's check scripts do.
 package main
 
 import (
@@ -22,6 +21,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/broker/airlock/airlocktest"
 )
 
 // TestTheInstallationPermissionsFlagSetsWhatAnInstallationHolds: --installation-permissions
@@ -98,21 +99,17 @@ func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 	}
 }
 
-// TestTheGitHubStandsRoutesAnswerByWhatATokenHolds: the three routes a GitHub profile's reach is
-// read at answer by the permissions the token holds, as GitHub does: a deploy-key list needs
-// administration, an organization's installations need organization_administration, and a
-// commit status needs statuses at write, with 422 for a commit the repository does not hold. A
-// token of another account, or of other repositories, finds nothing there; a credential the
-// stand never minted, and one the minter gave back, are refused as GitHub refuses bad
-// credentials. The routes are read at the github-tls stand, over TLS under the stands' own
-// authority, which is where a command behind the proxy reaches them, and the tokens are minted
-// at the plain github stand, where the broker's minter mints them: one stand-in serves both.
-func TestTheGitHubStandsRoutesAnswerByWhatATokenHolds(t *testing.T) {
-	out := startStands(t, "--dir", t.TempDir(), "--github-owner", "acme-org=7", "--github-owner", "ada=8",
-		"--installation-permissions", "acme-org=metadata:read,administration:read,organization_administration:read,statuses:write")
+// TestTheGitHubStandsServeOneStandInOverPlainAndTLS: a token minted at the plain github stand,
+// where the broker's minter mints, is spent at the github-tls stand, over TLS under the stands' own
+// authority, where a command behind the proxy spends it: one stand-in serves both. What the token
+// holds there is what --installation-permissions let the installation hold, and the commit the
+// report names is the one a status is written for.
+func TestTheGitHubStandsServeOneStandInOverPlainAndTLS(t *testing.T) {
+	out := startStands(t, "--dir", t.TempDir(), "--github-owner", "acme-org=7",
+		"--installation-permissions", "acme-org=metadata:read,statuses:write")
 	plain := out.Stands[standGitHub].URL
-	if len(out.GitHubCommitSHA) != 40 {
-		t.Fatalf("the report names the commit %q; want the 40 hex digits of the one commit the stand holds", out.GitHubCommitSHA)
+	if out.GitHubCommitSHA != airlocktest.GitHubCommitSHA {
+		t.Fatalf("the report names the commit %q; want the one the stand holds, %s", out.GitHubCommitSHA, airlocktest.GitHubCommitSHA)
 	}
 	mint := func(asked string) string {
 		t.Helper()
@@ -128,15 +125,9 @@ func TestTheGitHubStandsRoutesAnswerByWhatATokenHolds(t *testing.T) {
 		}
 		return answer.Token
 	}
-	administrator := mint(`{"repositories":["proofs"],"permissions":{"administration":"read"}}`)
-	reader := mint(`{"repositories":["proofs"],"permissions":{"metadata":"read"}}`)
-	organization := mint(`{"permissions":{"organization_administration":"read"}}`)
+	// statuses at write is past the stand's own map, so this mint is the flag's.
 	statusWriter := mint(`{"repositories":["proofs"],"permissions":{"statuses":"write"}}`)
-	statusReader := mint(`{"repositories":["proofs"],"permissions":{"statuses":"read"}}`)
-	givenBack := mint(`{"repositories":["proofs"],"permissions":{"administration":"read"}}`)
-	if status, body := callGitHub(t, http.DefaultClient, plain, http.MethodDelete, "/installation/token", givenBack); status != http.StatusNoContent {
-		t.Fatalf("the revoke answered %d %s; want 204", status, body)
-	}
+	reader := mint(`{"repositories":["proofs"],"permissions":{"metadata":"read"}}`)
 
 	tlsStand := out.Stands[standGitHubTLS]
 	if !strings.HasPrefix(tlsStand.URL, "https://") || tlsStand.CertFile == "" {
@@ -148,30 +139,16 @@ func TestTheGitHubStandsRoutesAnswerByWhatATokenHolds(t *testing.T) {
 		name, token, method, path string
 		want                      int
 	}{
-		{"a deploy-key list, to a token holding administration", administrator, http.MethodGet, "/repos/acme-org/proofs/keys", http.StatusOK},
-		{"a deploy-key list, to a token without it", reader, http.MethodGet, "/repos/acme-org/proofs/keys", http.StatusForbidden},
-		{"a deploy-key list of a repository outside the token", administrator, http.MethodGet, "/repos/acme-org/widgets/keys", http.StatusNotFound},
-		{"a deploy-key list of another account's repository", administrator, http.MethodGet, "/repos/ada/proofs/keys", http.StatusNotFound},
-		{"an organization's installations, to a token holding organization_administration", organization, http.MethodGet, "/orgs/acme-org/installations", http.StatusOK},
-		{"an organization's installations, to a token without it", administrator, http.MethodGet, "/orgs/acme-org/installations", http.StatusForbidden},
-		{"another organization's installations", organization, http.MethodGet, "/orgs/ada/installations", http.StatusNotFound},
-		{"a commit status, to a token holding statuses at write", statusWriter, http.MethodPost, commit, http.StatusCreated},
-		{"a commit status for a commit the repository does not hold", statusWriter, http.MethodPost, "/repos/acme-org/proofs/statuses/" + strings.Repeat("0", 40), http.StatusUnprocessableEntity},
-		{"a commit status, to a token holding statuses at read", statusReader, http.MethodPost, commit, http.StatusForbidden},
-		{"a credential the stand never minted", "ghs_minted_by_nobody", http.MethodGet, "/repos/acme-org/proofs/keys", http.StatusUnauthorized},
-		{"a token the minter gave back", givenBack, http.MethodGet, "/repos/acme-org/proofs/keys", http.StatusUnauthorized},
+		{"a commit status, to the token holding statuses at write", statusWriter, http.MethodPost, commit, http.StatusCreated},
+		{"a commit status, to a token without it", reader, http.MethodPost, commit, http.StatusForbidden},
+		{"the repository read of the minted token", reader, http.MethodGet, "/repos/acme-org/proofs", http.StatusOK},
 	} {
 		if status, body := callGitHub(t, client, tlsStand.URL, c.method, c.path, c.token); status != c.want {
 			t.Errorf("%s: %s %s answered %d %s; want %d", c.name, c.method, c.path, status, body, c.want)
 		}
 	}
-	// The repository read of the stand-in package's own routes answers at the github-tls stand
-	// as well, so one host serves every call a command behind the proxy makes.
-	if status, body := callGitHub(t, client, tlsStand.URL, http.MethodGet, "/repos/acme-org/proofs", reader); status != http.StatusOK {
-		t.Errorf("GET /repos/acme-org/proofs at the github-tls stand answered %d %s; want 200", status, body)
-	}
-	if records := recordsOf(t, tlsStand.Records); len(records) != 13 {
-		t.Errorf("the github-tls stand recorded %d requests; want the 13 this row made there", len(records))
+	if records := recordsOf(t, tlsStand.Records); len(records) != 3 {
+		t.Errorf("the github-tls stand recorded %d requests; want the 3 this row made there", len(records))
 	}
 }
 

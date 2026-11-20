@@ -437,8 +437,8 @@ func TestLoadRefusesTheAirlockRulesFileSetting(t *testing.T) {
 	}
 }
 
-// airlockEnv is validEnv with the airlock in force: a profiles file and the three settings its
-// proxy cannot run without.
+// airlockEnv is validEnv with the airlock in force: a profiles file and the three settings the
+// proxy of its proxy blocks cannot run without.
 func airlockEnv() map[string]string {
 	e := validEnv()
 	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
@@ -448,29 +448,51 @@ func airlockEnv() map[string]string {
 	return e
 }
 
-// TestTheAirlocksProxySettingsAreRequiredWithAProfilesFile: a broker that reads profiles but
-// cannot proxy would hold back every name a proxy block names and release nothing in their place,
-// so each missing setting refuses the boot by name. With no profiles file there is no proxy and
-// the four are ignored, whatever they say.
-func TestTheAirlocksProxySettingsAreRequiredWithAProfilesFile(t *testing.T) {
-	if _, err := Load(env(airlockEnv())); err != nil {
+// TestTheAirlocksProxySettingsAreRequiredForAProxyBlock: a broker whose profiles hold a proxy
+// block but that cannot proxy would hold back every name such a block names and release nothing
+// in its place, so each missing setting refuses the boot by name, beside the profiles whose proxy
+// blocks need it. A profiles file is not a proxy block: Load takes one with none of the settings,
+// and RequireAirlock of profiles with no proxy block - a deployment that serves GitHub Apps and
+// runs no airlock - asks for none of them. With no profiles file there is no proxy and the four
+// are ignored, whatever they say.
+func TestTheAirlocksProxySettingsAreRequiredForAProxyBlock(t *testing.T) {
+	proxied := []string{"DEEL_API_KEY", "STORED_TOKEN_READ"}
+	cfg, err := Load(env(airlockEnv()))
+	if err != nil {
 		t.Fatalf("Load with the airlock fully configured: %v", err)
+	}
+	if err := cfg.RequireAirlock(proxied); err != nil {
+		t.Fatalf("RequireAirlock with the airlock fully configured: %v", err)
 	}
 	for _, missing := range []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"} {
 		e := airlockEnv()
 		delete(e, missing)
-		_, err := Load(env(e))
-		if err == nil || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || !strings.Contains(err.Error(), "missing "+missing) {
-			t.Errorf("Load without %s = %v; want a refusal naming the profiles file and the missing setting", missing, err)
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load without %s = %v; want it taken, since a profiles file need not hold a proxy block", missing, err)
 		}
+		err = cfg.RequireAirlock(proxied)
+		if err == nil || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || !strings.Contains(err.Error(), "DEEL_API_KEY, STORED_TOKEN_READ") || !strings.Contains(err.Error(), "missing "+missing) {
+			t.Errorf("RequireAirlock without %s = %v; want a refusal naming the profiles file, the profiles with a proxy block and the missing setting", missing, err)
+		}
+	}
+
+	// A profiles file whose profiles hold no proxy block, with none of the proxy's settings.
+	e := validEnv()
+	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
+	if cfg, err = Load(env(e)); err != nil {
+		t.Fatalf("Load with a profiles file and none of the proxy's settings: %v", err)
+	}
+	if err := cfg.RequireAirlock(nil); err != nil {
+		t.Fatalf("RequireAirlock of profiles with no proxy block and none of the proxy's settings: %v; want nil", err)
 	}
 
 	// No profiles file: the same configuration minus the file, and minus every proxy setting, is
 	// accepted, and so is one that still names the listen address and the idle bound.
-	e := validEnv()
+	e = validEnv()
 	e["BROKER_AIRLOCK_LISTEN_ADDR"] = "127.0.0.1:13999"
 	e["BROKER_AIRLOCK_IDLE_SECONDS"] = "60"
-	cfg, err := Load(env(e))
+	cfg, err = Load(env(e))
 	if err != nil {
 		t.Fatalf("Load with no profiles file: %v", err)
 	}
@@ -606,12 +628,22 @@ func TestLoadRefusesAClusterRangeItCannotRead(t *testing.T) {
 }
 
 // TestTheClusterRangesMustHoldTheKubernetesServiceAddress: in a cluster, which Kubernetes says by
-// setting KUBERNETES_SERVICE_HOST in every container, a broker with the airlock on refuses to start
-// unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address, the kubernetes Service's ClusterIP, so a
-// deployment that forgot the setting or gave the wrong range cannot pass silently. Each refusal
-// names both variables. Outside a cluster, and in a cluster with no airlock, the setting is
-// optional.
+// setting KUBERNETES_SERVICE_HOST in every container, a broker whose profiles hold a proxy block
+// refuses to start unless BROKER_AIRLOCK_CLUSTER_RANGES holds that address, the kubernetes
+// Service's ClusterIP, so a deployment that forgot the setting or gave the wrong range cannot pass
+// silently. Each refusal names both variables. Outside a cluster, and in a cluster with no proxy
+// block, whether or not there is a profiles file, the setting is optional.
 func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
+	// requireAirlock loads e, which must load, and answers RequireAirlock of proxied over it.
+	requireAirlock := func(t *testing.T, e map[string]string, proxied []string) error {
+		t.Helper()
+		cfg, err := Load(env(e))
+		if err != nil {
+			t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v; want it taken, since the ranges are required by the profiles the boot reads", e["KUBERNETES_SERVICE_HOST"], e["BROKER_AIRLOCK_CLUSTER_RANGES"], err)
+		}
+		return cfg.RequireAirlock(proxied)
+	}
+	proxied := []string{"DEEL_API_KEY"}
 	for _, row := range []struct{ name, host, ranges, want string }{
 		{"the setting missing", "34.118.224.1", "", "BROKER_AIRLOCK_CLUSTER_RANGES is required"},
 		{"a KUBERNETES_SERVICE_HOST that is not an address", "kubernetes.default.svc", "34.118.224.0/20", "KUBERNETES_SERVICE_HOST is not an IP address"},
@@ -627,9 +659,9 @@ func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 			e := airlockEnv()
 			e["KUBERNETES_SERVICE_HOST"] = row.host
 			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
-			_, err := Load(env(e))
+			err := requireAirlock(t, e, proxied)
 			if err == nil {
-				t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q) = nil; want a refusal", row.host, row.ranges)
+				t.Fatalf("RequireAirlock(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q) = nil; want a refusal", row.host, row.ranges)
 			}
 			for _, want := range []string{"BROKER_AIRLOCK_CLUSTER_RANGES", "KUBERNETES_SERVICE_HOST", row.want} {
 				if !strings.Contains(err.Error(), want) {
@@ -656,16 +688,23 @@ func TestTheClusterRangesMustHoldTheKubernetesServiceAddress(t *testing.T) {
 			e := airlockEnv()
 			e["KUBERNETES_SERVICE_HOST"] = row.host
 			e["BROKER_AIRLOCK_CLUSTER_RANGES"] = row.ranges
-			if _, err := Load(env(e)); err != nil {
-				t.Fatalf("Load(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", row.host, row.ranges, err)
+			if err := requireAirlock(t, e, proxied); err != nil {
+				t.Fatalf("RequireAirlock(KUBERNETES_SERVICE_HOST=%q, BROKER_AIRLOCK_CLUSTER_RANGES=%q): %v", row.host, row.ranges, err)
 			}
 		})
 	}
 	t.Run("starts in a cluster with no airlock and no ranges", func(t *testing.T) {
 		e := validEnv()
 		e["KUBERNETES_SERVICE_HOST"] = "34.118.224.1"
-		if _, err := Load(env(e)); err != nil {
-			t.Fatalf("Load with no rules file in a cluster: %v", err)
+		if err := requireAirlock(t, e, nil); err != nil {
+			t.Fatalf("RequireAirlock with no profiles file in a cluster: %v", err)
+		}
+	})
+	t.Run("starts in a cluster with a profiles file that holds no proxy block and no ranges", func(t *testing.T) {
+		e := airlockEnv()
+		e["KUBERNETES_SERVICE_HOST"] = "34.118.224.1"
+		if err := requireAirlock(t, e, nil); err != nil {
+			t.Fatalf("RequireAirlock of profiles with no proxy block in a cluster: %v", err)
 		}
 	})
 }

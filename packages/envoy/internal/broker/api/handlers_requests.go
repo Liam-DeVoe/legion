@@ -1,12 +1,10 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -21,47 +19,30 @@ import (
 )
 
 // gitHubAppFieldRemovedMessage is the refusal of a body carrying github_app, the narrowing a
-// command line of an earlier release sends (refusedGitHubApp).
+// command line of an earlier release sends (refuseGitHubApp).
 const gitHubAppFieldRemovedMessage = "github_app was removed: name a profile and narrow it with --target ACCOUNT[/REPOSITORY]"
 
-// refusedGitHubApp answers 400 GITHUB_APP_FIELD_REMOVED, and reports true, for a body that
-// carries a top-level github_app, whatever its value, null included, and whatever else the body
-// holds; it reports false, with r.Body left to be read whole again, for every other body. It
-// reads the body before the route's own reader (readJSON), which answers a field it does not take
-// 400 INVALID_REQUEST on POST /v1/requests: agent-secrets of an earlier release reads that code as
-// a broker from before github_app and sends the same request again without it, which would run
-// its command with a token wider than the one it asked for. A body that is no JSON object, or past
-// the size readJSON allows, is left to readJSON, which answers it as before.
-func refusedGitHubApp(w http.ResponseWriter, r *http.Request) bool {
-	data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONBodyBytes))
-	r.Body = io.NopCloser(io.MultiReader(bytes.NewReader(data), errorReader{err}))
-	var fields map[string]json.RawMessage
-	if err != nil || json.Unmarshal(data, &fields) != nil {
-		return false
-	}
-	if _, carried := fields["github_app"]; !carried {
+// refuseGitHubApp answers 400 GITHUB_APP_FIELD_REMOVED, and reports true, when a body readJSON has
+// read carries a top-level github_app, field being that field as read: any value of it, null
+// included, since encoding/json hands a JSON null to a json.RawMessage as the bytes "null" and
+// leaves it nil only when the body has no such field. The field is declared on each body that
+// refuses it, rather than left to readJSON's refusal of a field the body does not take, because
+// that refusal is 400 INVALID_REQUEST on POST /v1/requests: agent-secrets of an earlier release
+// reads that code as a broker from before github_app and sends the same request again without it,
+// which would run its command with a token wider than the one it asked for. A body that carries
+// github_app beside a field the route does not take is refused at that field first, since the
+// body is read once; no released command line sends such a body.
+func refuseGitHubApp(w http.ResponseWriter, field json.RawMessage) bool {
+	if field == nil {
 		return false
 	}
 	writeError(w, http.StatusBadRequest, "GITHUB_APP_FIELD_REMOVED", gitHubAppFieldRemovedMessage)
 	return true
 }
 
-// errorReader answers err at its first read, nil err being io.EOF: what remains of a body
-// refusedGitHubApp read, so readJSON meets the read's own error (a body past its size among them)
-// where the body ended.
-type errorReader struct{ err error }
-
-func (e errorReader) Read([]byte) (int, error) {
-	if e.err == nil {
-		return 0, io.EOF
-	}
-	return 0, e.err
-}
-
 // createRequestBody is POST /v1/requests's exact shape: a signed request object plus one optional,
 // unsigned field, session_id (wake-only). The v8 "secrets"/"reason"/"issue" top-level fields are
-// gone — they now live inside the signed request object itself. A body carrying github_app, the
-// narrowing an earlier release took, is refused 400 GITHUB_APP_FIELD_REMOVED (refusedGitHubApp).
+// gone — they now live inside the signed request object itself.
 type createRequestBody struct {
 	// The session's signed request: a compact ES256 JWS, signed with the session's key and
 	// addressed to the broker's public URL, naming the secrets (authorization_details) and the
@@ -69,6 +50,10 @@ type createRequestBody struct {
 	Request string `json:"request"`
 	// Optional: the Envoy session the broker notifies if this request expires undecided.
 	SessionID *string `json:"session_id"`
+	// Removed: the narrowing of a github-app secret an earlier release took. A body carrying it,
+	// with any value, null included, is refused 400 GITHUB_APP_FIELD_REMOVED, and nothing is
+	// requested; a profile names the scope now, and --target narrows it.
+	GitHubApp json.RawMessage `json:"github_app"`
 }
 
 // createRequestResponse is POST /v1/requests's exact wire shape: request_id, state, secrets,
@@ -123,11 +108,8 @@ type createRequestResponse struct {
 // the body: a session may only ever request secrets for itself. The request object itself (not
 // this handler) names the secrets, the reason, and — implicitly, via the policy — the approver.
 func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
-	if refusedGitHubApp(w, r) {
-		return
-	}
 	var body createRequestBody
-	if !readJSON(w, r, &body, "INVALID_REQUEST") {
+	if !readJSON(w, r, &body, "INVALID_REQUEST") || refuseGitHubApp(w, body.GitHubApp) {
 		return
 	}
 	req, err := s.deps.Machine.Create(r.Context(), enrollmentID, body.Request, derefOr(body.SessionID, ""))
@@ -261,9 +243,8 @@ type requestStatusResponse struct {
 }
 
 // grantValuesBody is POST /v1/grants/{id}/values's optional body: no body at all releases every
-// value as the grant holds it, and so does one naming only what the session says of the release. A
-// body carrying github_app, the narrowing an earlier release took, is refused 400
-// GITHUB_APP_FIELD_REMOVED (refusedGitHubApp), and one the route cannot read 400 INVALID_RELEASE.
+// value as the grant holds it, and so does one naming only what the session says of the release.
+// One the route cannot read is refused 400 INVALID_RELEASE.
 type grantValuesBody struct {
 	// Optional: the command this release starts, as its argument vector. The broker logs it with
 	// the grant's reason: its first 32 arguments, each cut to 256 bytes, with `[redacted]` in place
@@ -280,6 +261,10 @@ type grantValuesBody struct {
 	// release. A broker from before this field refuses a body that holds it, as
 	// INVALID_NARROWING naming the unknown field, and releases nothing.
 	Reason string `json:"reason"`
+	// Removed: the narrowing of a github-app secret an earlier release took. A body carrying it,
+	// with any value, null included, is refused 400 GITHUB_APP_FIELD_REMOVED, and nothing is
+	// released; a profile names the scope now, and the grant's request its target.
+	GitHubApp json.RawMessage `json:"github_app"`
 }
 
 // grantValuesResponse is POST /v1/grants/{id}/values's answer.
@@ -487,7 +472,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		return
 	}
 	var body grantValuesBody
-	if r.ContentLength != 0 && (refusedGitHubApp(w, r) || !readJSON(w, r, &body, "INVALID_RELEASE")) {
+	if r.ContentLength != 0 && (!readJSON(w, r, &body, "INVALID_RELEASE") || refuseGitHubApp(w, body.GitHubApp)) {
 		return
 	}
 	release, err := s.deps.Machine.Values(r.Context(), id, enrollmentID, requests.ReleaseCall{Command: body.Command, Reason: body.Reason})

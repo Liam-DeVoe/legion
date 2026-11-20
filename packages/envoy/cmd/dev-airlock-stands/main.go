@@ -51,10 +51,11 @@
 // stand-in package's own map where it names nothing, and a token request naming a permission
 // past what it holds is refused 422, as GitHub refuses it; only github-profile-check.sh passes
 // the flag, so every other driver reads the stand's own map. Three routes answer by what the
-// token holds, as GitHub answers them (github.go): GET /repos/{owner}/{repo}/keys needs
-// administration, GET /orgs/{org}/installations needs organization_administration, and POST
-// /repos/{owner}/{repo}/statuses/{sha} needs statuses at write and answers 422 for any commit
-// but the one the report names (github_commit_sha). The github-tls stand is that same GitHub
+// token holds, as GitHub answers them (airlocktest.GitHubStand): GET
+// /repos/{owner}/{repo}/keys needs administration, GET /orgs/{org}/installations needs
+// organization_administration, and POST /repos/{owner}/{repo}/statuses/{sha} needs statuses at
+// write and answers 422 for any commit but the one the report names (github_commit_sha,
+// airlocktest.GitHubCommitSHA). The github-tls stand is that same GitHub
 // over TLS: a token minted at the github stand, where the broker's minter reaches it, is spent
 // at github-tls, where a command reaches it through the proxy under a bound host's name. What it
 // answers a token request is set while it runs by the same device as the model's: POST
@@ -507,7 +508,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	out := report{
 		Dir: dir, CACertFile: certFile, CAKeyFile: keyFile,
 		AWSKeyID: o.awsKeyID, AWSSecretKey: o.awsSecretKey,
-		GitHubAppID: standInGitHubAppID, GitHubAppKeyFile: appKeyFile, GitHubCommitSHA: standInCommitSHA,
+		GitHubAppID: standInGitHubAppID, GitHubAppKeyFile: appKeyFile, GitHubCommitSHA: airlocktest.GitHubCommitSHA,
 		DispatchOpenIssue: standInOpenIssue, DispatchDoneIssue: standInDoneIssue,
 		DispatchAnsweredAsk: standInAnsweredAsk, DispatchAskAnsweredBy: o.askAnsweredBy,
 		Stands: map[string]standReport{},
@@ -542,16 +543,15 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	services[standS].AnswerWith(airlocktest.NewUpgradeStand(airlocktest.UpgradeOptions{Path: upgradePath}).Answer)
 	// The GitHub stand answers each token request what its body asked for, with metadata at read
 	// beside it, until a check sets another answer, so a stack driven with no call to its answer
-	// route mints as GitHub does. It
-	// mints a token of its own for every request, as GitHub does (DistinctTokens): the broker
-	// revokes a token it minted and hands to nobody, and a stand that answered one string for a
-	// scope would have that revoke end the token the airlock's proxy holds for the same scope.
-	// Each installation holds what --installation-permissions names for its owner, or the
-	// stand-in package's own map. One answer serves both GitHub stands (githubRoutes), so a token
+	// route mints as GitHub does. It mints a token of its own for every request, as GitHub does
+	// (DistinctTokens): the broker revokes a token it minted and hands to nobody, and a stand that
+	// answered one string for a scope would have that revoke end the token the airlock's proxy
+	// holds for the same scope. Each installation holds what --installation-permissions names for
+	// its owner, or the stand-in package's own map. One stand serves both GitHub stands, so a token
 	// minted at the plain one is spent at the TLS one.
-	github := newGitHubRoutes(airlocktest.NewGitHubStand(airlocktest.GitHubOptions{
+	github := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{
 		Installations: o.installations, Permissions: o.permissions, DistinctTokens: true,
-	}), o.installations)
+	})
 	services[standGitHub].AnswerWith(github.Answer)
 	services[standGitHubTLS].AnswerWith(github.Answer)
 	services[standGoogle].AnswerWith(airlocktest.NewGoogleStand(airlocktest.GoogleOptions{Lifetime: o.googleLifetime}).Answer)
@@ -578,7 +578,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	}).Answer)
 	services[standMetadata].AnswerWith(airlocktest.NewMetadataStand(airlocktest.MetadataOptions{}).Answer)
 
-	records := &http.Server{Handler: recordsHandler(services, model, github.stand), ReadHeaderTimeout: 30 * time.Second}
+	records := &http.Server{Handler: recordsHandler(services, model, github), ReadHeaderTimeout: 30 * time.Second}
 	recordsURL, stopRecords, err := serveRecords(records, o.recordsAddress)
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: %v\n", err)

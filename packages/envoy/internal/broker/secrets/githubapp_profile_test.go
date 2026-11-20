@@ -55,10 +55,6 @@ var everyGrant = map[string]string{
 	"actions": "write", "checks": "write", "contents": "write", "issues": "write", "metadata": "read", "pull_requests": "write", "statuses": "write",
 }
 
-// levelRank orders the levels GitHub gives a permission, so the stub refuses a level past the one
-// an installation holds.
-var levelRank = map[string]int{"read": 1, "write": 2, "admin": 3}
-
 func newProfileGitHub(t *testing.T) *profileGitHub {
 	t.Helper()
 	g := &profileGitHub{answer: asGitHubAnswers, revokeStatus: http.StatusNoContent}
@@ -118,7 +114,7 @@ func newProfileGitHub(t *testing.T) *profileGitHub {
 // at the level asked or above.
 func heldAll(held, asked map[string]string) bool {
 	for permission, level := range asked {
-		if levelRank[held[permission]] < levelRank[level] {
+		if secrets.LevelRank(held[permission]) < secrets.LevelRank(level) {
 			return false
 		}
 	}

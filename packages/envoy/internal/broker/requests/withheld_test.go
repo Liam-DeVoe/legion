@@ -868,6 +868,49 @@ func TestWithholdingASourceWithholdsEachProfileOfIt(t *testing.T) {
 	}
 }
 
+// TestWithholdingAProfileWithholdsEachNameOfItsSource pins the other direction of the same rule:
+// a withhold decides by source (policy.Set.Withholds), so an operator who revokes a grant of one
+// profile withholds every name served from that profile's source, the source's own name among
+// them. The session got AUTO_TOKEN_PROXY, a profile of AUTO_TOKEN, and AUTO_TOKEN, the profile
+// that holds the source's own name, without asking, and its operator revokes the AUTO_TOKEN_PROXY
+// grant. The AUTO_TOKEN grant ends with it: it releases nothing, the proxy refuses the connection
+// its placeholder opened, and a grant.revoked row by the operator names AUTO_TOKEN. The session's
+// next request for AUTO_TOKEN asks the owner rather than getting it without asking, and the judge
+// reads AUTO_TOKEN as withheld.
+func TestWithholdingAProfileWithholdsEachNameOfItsSource(t *testing.T) {
+	m, enr, key := proxiedProfileFixture(t)
+	ctx := t.Context()
+	_, narrow := grantOf(t, m, enr, key, "a profile of the source", "AUTO_TOKEN_PROXY")
+	_, wide := grantOf(t, m, enr, key, "the source's own name", "AUTO_TOKEN")
+	release, err := m.Values(ctx, wide, enr, ReleaseCall{})
+	if err != nil || release.Airlock == nil {
+		t.Fatalf("Values(AUTO_TOKEN's grant) = %+v, %v; want a release behind the airlock", release, err)
+	}
+
+	if err := m.RevokeByApprover(ctx, narrow, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+		t.Fatalf("RevokeByApprover: %v", err)
+	}
+	if got := withheldFrom(t, m, enr); !slices.Equal(got, []string{"AUTO_TOKEN_PROXY"}) {
+		t.Fatalf("withheld = %v; want [AUTO_TOKEN_PROXY], the revoked grant's name", got)
+	}
+	if again, err := m.Values(ctx, wide, enr, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || again.Values != nil {
+		t.Errorf("Values(AUTO_TOKEN's grant) once a profile of its source is withheld = %v, %v; want ErrGrantNotLive", again.Values, err)
+	}
+	if conn, err := m.AirlockConnection(ctx, release.Airlock.ProxyPassword); !errors.Is(err, ErrGrantNotLive) {
+		t.Errorf("AirlockConnection of AUTO_TOKEN's grant once a profile of its source is withheld = %+v, %v; want ErrGrantNotLive", conn, err)
+	}
+	asked, err := m.Create(ctx, enr, signRequest(t, m, key, "the source's own name, again", "AUTO_TOKEN"), "")
+	if err != nil || asked.State != "pending" || asked.GrantID != nil {
+		t.Errorf("Create(AUTO_TOKEN) once a profile of its source is withheld = %+v, %v; want an approval request, not a grant", asked, err)
+	}
+	if decision, withheld, _, err := m.JudgePolicy(ctx, enr, "AUTO_TOKEN"); err != nil || !withheld || decision.Outcome != policy.Approval {
+		t.Errorf("JudgePolicy(AUTO_TOKEN) once a profile of its source is withheld = %+v, withheld %v, %v; want withheld, and an approval", decision, withheld, err)
+	}
+	if actor, withheld := revokedAudit(t, m, wide); actor != record.HumanActor(fixtureOperator) || !slices.Equal(withheld, []string{"AUTO_TOKEN"}) {
+		t.Errorf("AUTO_TOKEN's grant.revoked audit = %s withheld %v; want human:%s withheld [AUTO_TOKEN]", actor, withheld, fixtureOperator)
+	}
+}
+
 // TestTheJudgeSettlesNoProfileOfAWithheldSource pins the judge's own guard on the same rule: the
 // decision transaction refuses the judge's approval of a profile whose source the session's
 // operator withheld, as it refuses a name withheld directly (TestTheJudgeSettlesNoWithheldName).

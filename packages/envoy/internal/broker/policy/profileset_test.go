@@ -318,6 +318,55 @@ func TestWithholdingASourceWithholdsItsProfiles(t *testing.T) {
 	}
 }
 
+// TestAWithholdDecidesBySource: a withheld name withholds every name whose source is its source,
+// in both directions. A name's source is the source of the profile the set serves or refuses by
+// that name, and the name itself for any other: a stored secret served by its own name, a source
+// asked for by its own name, or a name the policy has never heard of. So a read profile withholds
+// its write sibling and the profile that holds its source's name, a refused profile withholds and
+// is withheld as its file names it, and a stored secret no profile uses withholds itself alone.
+func TestAWithholdDecidesBySource(t *testing.T) {
+	cur, _ := profiled(t, everySource(), readProfile,
+		`{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["acme"], "permissions": {"contents": "write", "metadata": "read"}}}`,
+		`{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["acme"], "permissions": {"contents": "write", "metadata": "read"}}}`,
+		`{"name": "GITHUB_WIDE", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["other-org"], "permissions": {"metadata": "read"}}}`,
+		`{"name": "PLAIN_READ", "source": "PLAIN_KEY", `+apiProxy+`}`)
+	set := cur.Get()
+	for _, name := range []string{"GITHUB_READ", "GITHUB_WRITE", appSourceName, "PLAIN_READ"} {
+		servedProfile(t, set, name)
+	}
+	refusedProfile(t, set, "GITHUB_WIDE", policy.ReasonProfileBlockMismatch)
+	if secret, served := set.Secrets["TAKEN_KEY"]; !served || secret.Profile != nil {
+		t.Fatalf("TAKEN_KEY = %+v (served %t); want it served by its own name, as no profile", secret, served)
+	}
+	for _, row := range []struct {
+		withheld, name string
+		want           bool
+	}{
+		{"GITHUB_READ", "GITHUB_WRITE", true},
+		{"GITHUB_READ", appSourceName, true},
+		{appSourceName, "GITHUB_READ", true},
+		{appSourceName, "GITHUB_WRITE", true},
+		{"GITHUB_WIDE", "GITHUB_WRITE", true},
+		{"GITHUB_READ", "GITHUB_WIDE", true},
+		{"PLAIN_READ", "PLAIN_KEY", true},
+		{"PLAIN_KEY", "PLAIN_READ", true},
+		{"TAKEN_KEY", "TAKEN_KEY", true},
+		{"TAKEN_KEY", "PLAIN_KEY", false},
+		{"TAKEN_KEY", "GITHUB_READ", false},
+		{"GITHUB_READ", "PLAIN_READ", false},
+		{"PLAIN_READ", "GITHUB_WRITE", false},
+		{"GONE_KEY", "GONE_KEY", true},
+		{"GONE_KEY", "GITHUB_READ", false},
+	} {
+		if got := set.Withholds(policy.Requester{Withheld: []string{row.withheld}}, row.name); got != row.want {
+			t.Errorf("Withholds(%s) withholding %s = %t; want %t", row.name, row.withheld, got, row.want)
+		}
+	}
+	if set.Withholds(policy.Requester{}, "GITHUB_READ") {
+		t.Errorf("Withholds(GITHUB_READ) withholding nothing = true; want false")
+	}
+}
+
 // TestAnEditedProfileEndsItsGrants: a change of one permission of a profile's entry moves the
 // policy version and the profile's digest, which a release compares its grant against; an edit of
 // its guidance alone, which tells the judge how to decide requests to come, moves neither.

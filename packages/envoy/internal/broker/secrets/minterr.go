@@ -76,7 +76,7 @@ type GitHubScope struct {
 	Repositories []string
 	// Permissions are the profile's, before the cut: each GitHub App permission and its level.
 	Permissions map[string]string
-	// Value is policy.ValueInstallations or policy.ValueToken: today's JSON of one entry per
+	// Value is ValueInstallations or ValueToken: today's JSON of one entry per
 	// account, or the bare token of the one account in effect.
 	Value string
 }

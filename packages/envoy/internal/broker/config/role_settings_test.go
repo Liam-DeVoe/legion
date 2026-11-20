@@ -204,19 +204,13 @@ func TestEveryBrokerSettingLoadReadsIsMarked(t *testing.T) {
 // name Load asks for, and answers the names recorded: one for each value of the person sign-in's
 // switch, BROKER_SIGNIN unset (parseSignIn reads the sign-in's settings) and off
 // (parseSignInSwitch reads each setting it refuses beside it). Each sets every condition Load
-// puts in front of a read: BROKER_ENVOY_URL, which reads BROKER_ENVOY_ACCOUNT_TOKEN_FILE, and
-// BROKER_PROFILES_FILE with its proxy URL and CA files, which reads KUBERNETES_SERVICE_HOST.
-// Each must load, since a refused configuration stops reading.
+// puts in front of a read: BROKER_ENVOY_URL, which reads BROKER_ENVOY_ACCOUNT_TOKEN_FILE. Each
+// must load, since a refused configuration stops reading.
 func settingsLoadReads(t *testing.T) map[string]bool {
 	t.Helper()
 	withEveryCondition := func(e map[string]string) map[string]string {
 		e["BROKER_ENVOY_URL"] = "https://listener.example"
 		e["BROKER_ENVOY_ACCOUNT_TOKEN_FILE"] = "/var/run/secrets/tokens/envoy"
-		for name, value := range airlockEnv() {
-			if strings.HasPrefix(name, "BROKER_AIRLOCK_") || name == "BROKER_PROFILES_FILE" {
-				e[name] = value
-			}
-		}
 		return e
 	}
 	configurations := []struct {

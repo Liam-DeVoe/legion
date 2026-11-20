@@ -169,6 +169,31 @@ func TestAirlockConnectionDropsAProfileOfAWithheldSource(t *testing.T) {
 	}
 }
 
+// TestAirlockConnectionDropsTheSourcesOwnNameOnceAProfileOfItIsWithheld is the other direction: a
+// withhold decides by source (policy.Set.Withholds), so a connection whose grant, one the session
+// got without asking, holds AUTO_TOKEN, the proxied profile that holds the source's own name, is
+// refused with ErrAirlockNoNames once AUTO_TOKEN_PROXY, another profile of that source, is the one
+// name withheld.
+func TestAirlockConnectionDropsTheSourcesOwnNameOnceAProfileOfItIsWithheld(t *testing.T) {
+	m, enr, key := proxiedProfileFixture(t)
+	_, grantID := grantOf(t, m, enr, key, "the source through the proxy", "AUTO_TOKEN")
+	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
+	if err != nil {
+		t.Fatalf("Values: %v", err)
+	}
+	placeholder := release.Airlock.ProxyPassword
+	if conn, err := m.AirlockConnection(t.Context(), placeholder); err != nil || !slices.Equal(slices.Sorted(maps.Keys(conn.Names)), []string{"AUTO_TOKEN"}) {
+		t.Fatalf("AirlockConnection before the withhold = %+v, %v; want AUTO_TOKEN carried", conn, err)
+	}
+
+	if _, err := m.Store.Pool.Exec(t.Context(), `insert into withheld_secrets (enrollment_id, name) values ($1,'AUTO_TOKEN_PROXY')`, enr); err != nil {
+		t.Fatal(err)
+	}
+	if conn, err := m.AirlockConnection(t.Context(), placeholder); !errors.Is(err, ErrAirlockNoNames) {
+		t.Fatalf("AirlockConnection with another profile of the source withheld = %+v, %v; want ErrAirlockNoNames", conn, err)
+	}
+}
+
 // withholdAsItsOperator withholds source from session enr as its operator does: the session gets
 // source without asking, and the operator revokes that grant (RevokeByApprover, withhold).
 func withholdAsItsOperator(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey, source string) {

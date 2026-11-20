@@ -202,24 +202,13 @@ var ErrGitHubOwnersComma = errors.New(`github-owners separates GitHub logins wit
 // underscores, is longer than 39 characters, or is the word none.
 var ErrGitHubOwnersLogin = errors.New("github-owners names GitHub logins: up to 39 ASCII letters, digits, hyphens and underscores, starting with a letter or digit")
 
-// gitHubLogin is what a GitHub login can be: an ASCII letter or digit, then ASCII letters, digits,
-// hyphens and underscores. It is matched against the entry as written, before it is lowercased,
-// since Unicode lowercasing maps some non-ASCII letters onto ASCII ones (U+212A KELVIN SIGN to `k`,
-// U+0130 to `i` with a combining dot). GitHub's sign-up rule today also refuses an underscore and
-// a trailing or doubled hyphen, but accounts made under its older rules keep their hyphens (`x-`
-// is an organization from 2011), and a managed user's login ends in `_<shortcode>`
-// (`mona-cat_octo`), so this refuses only what no login can hold. A login is at most 39
-// characters (maxGitHubLogin), which the pattern does not check.
-var gitHubLogin = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
-
-const maxGitHubLogin = 39
-
 // ParseGitHubLogin reads one GitHub account login, as written: up to 39 ASCII letters, digits,
-// hyphens and underscores, starting with a letter or digit, and not the word none
-// (ErrGitHubOwnersLogin). It answers it lowercased, since GitHub compares logins without regard to
-// case. White space is no part of a login, so "ada ada" is refused rather than read as one.
+// hyphens and underscores, starting with a letter or digit (secrets.ValidLogin), and not the word
+// none (ErrGitHubOwnersLogin). It answers it lowercased, since GitHub compares logins without
+// regard to case. White space is no part of a login, so "ada ada" is refused rather than read as
+// one.
 func ParseGitHubLogin(raw string) (string, error) {
-	if len(raw) > maxGitHubLogin || !gitHubLogin.MatchString(raw) {
+	if !secrets.ValidLogin(raw) {
 		return "", fmt.Errorf("%w, not %q", ErrGitHubOwnersLogin, raw)
 	}
 	login := strings.ToLower(raw)
@@ -552,10 +541,6 @@ func TagRules(t TagSet) string {
 	return ""
 }
 
-// gitHubRepositoryName is what a repository name GitHub creates can be: ASCII letters, digits,
-// '.', '-' and '_', at most 100 of them. The names . and .. are refused beside it.
-var gitHubRepositoryName = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
-
 // TypeNeedsGitHubOwners reports whether a secret of type must carry a github-owners tag naming at
 // least one account. Only a github-app secret reads the tag.
 func TypeNeedsGitHubOwners(secretType string) bool {
@@ -619,19 +604,6 @@ var ErrServedOnlyAsProfiles = errors.New("is served only through its profiles")
 // profile that failed against its source, or a github-app secret no profile names
 // (ReasonGitHubAppNoProfile). Evaluate's error gives the reason and its detail.
 var ErrProfileRefused = errors.New("is refused by the profiles file")
-
-// notServed is Evaluate's error for a name the set does not serve for a reason the profiles file
-// gives. errors.Is matches its kind, ErrServedOnlyAsProfiles or ErrProfileRefused, and
-// ErrUnknownSecret too: the name is one no secret the policy serves carries, so a caller that
-// answers every such name alike - a release's re-check of a live grant, an approval's - answers
-// these alike, and one that tells them apart (the request route) asks for the kind first.
-type notServed struct {
-	kind error
-	text string
-}
-
-func (e *notServed) Error() string   { return e.text }
-func (e *notServed) Unwrap() []error { return []error{e.kind, ErrUnknownSecret} }
 
 // ReasonAbsent is LoadOne's answer for a name no secret carries: none exists under the prefix, or
 // the one that does is scheduled for deletion. It is not a refusal, so it is never in
@@ -808,6 +780,10 @@ type Set struct {
 	// ErrProfileRefused. Refused itself is keyed by store id, which Evaluate, holding no prefix,
 	// cannot form.
 	profileRefused map[string]Refusal
+	// profileSources is ProfilesOf read the other way: for each profile of another name, whether
+	// it passes or fails, its source's name. It is how source reads the source of a profile the
+	// set refuses, which serves no Secret to carry it.
+	profileSources map[string]string
 }
 
 // ValueVersion is the version of the type secret name's value as s lists it, and "" for a name s
@@ -916,7 +892,7 @@ type Requester struct {
 	Service string
 	// Withheld is the names the session's operator withheld from it by revoking a grant of them
 	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each,
-	// and each profile whose source is one of them (Set.Withholds), as a human-tier secret.
+	// and every other name served from the same source (Set.Withholds), as a human-tier secret.
 	Withheld []string
 }
 
@@ -939,19 +915,6 @@ type Decision struct {
 // re-checks a grant of such a name on every use rather than only once Version moves.
 func (s *Set) ServiceOwned(name string) bool {
 	return s.Secrets[name].ownership == ownerService
-}
-
-// Withholds reports whether r's withheld names withhold name: the name itself, or the source of
-// the profile s serves by that name, since a session's operator who withholds a source withholds
-// each profile of it. A source is withheld by its own name, which a profile that holds that name
-// is granted under. It is the one reading of Requester.Withheld: Evaluate decides by it, and so
-// does every check of the request machine that asks whether a name is withheld from a session.
-func (s *Set) Withholds(r Requester, name string) bool {
-	if slices.Contains(r.Withheld, name) {
-		return true
-	}
-	profile := s.Secrets[name].Profile
-	return profile != nil && slices.Contains(r.Withheld, profile.Source)
 }
 
 // ReasonRequesterNotListed is the Reason of a Deny the requesters tag decided: neither the
@@ -979,9 +942,9 @@ const ReasonSignInOff = "a person must approve it, and this broker signs nobody 
 // naming what the caller asks for instead or why (notServed). A secret whose requesters are
 // listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every requester the list
 // does not name, before owner and tier are read at all. A name withheld from r
-// (Requester.Withheld), or a profile whose source is, is decided as a human-tier secret: what r
-// would have got at once is an approval request to the owner, or to anyone for a shared secret,
-// and a service's own secret, which no person approves, is denied.
+// (Requester.Withheld), or served from the source of a name that is (Set.Withholds), is decided
+// as a human-tier secret: what r would have got at once is an approval request to the owner, or
+// to anyone for a shared secret, and a service's own secret, which no person approves, is denied.
 func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	secret, ok := s.Secrets[name]
 	if !ok {
@@ -1004,33 +967,4 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 		d.Outcome, d.Approver = Approval, secret.approver()
 	}
 	return d, nil
-}
-
-// unservedError is Evaluate's error for name, which s does not serve: the refusal the profiles file
-// gives it, with its reason and detail; the profiles of name that s serves, to ask for in its
-// place, or, where s refuses each of them, that each is refused, naming them, so a caller is never
-// sent to a name it would be refused again for; or ErrUnknownSecret.
-func (s *Set) unservedError(name string) error {
-	if refusal, refused := s.profileRefused[name]; refused {
-		why := refusal.Reason
-		if refusal.Detail != "" {
-			why += " (" + refusal.Detail + ")"
-		}
-		return &notServed{kind: ErrProfileRefused, text: name + " " + ErrProfileRefused.Error() + ": " + why}
-	}
-	profiles := s.ProfilesOf[name]
-	if len(profiles) == 0 {
-		return ErrUnknownSecret
-	}
-	var served []string
-	for _, profile := range profiles {
-		if _, ok := s.Secrets[profile]; ok {
-			served = append(served, profile)
-		}
-	}
-	text := name + " " + ErrServedOnlyAsProfiles.Error() + ": ask for " + strings.Join(served, " or ")
-	if len(served) == 0 {
-		text = name + " " + ErrServedOnlyAsProfiles.Error() + ", and each of them is refused: " + strings.Join(profiles, ", ")
-	}
-	return &notServed{kind: ErrServedOnlyAsProfiles, text: text}
 }

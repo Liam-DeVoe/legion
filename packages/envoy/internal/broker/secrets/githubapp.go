@@ -81,16 +81,6 @@ type githubAccessTokensBody struct {
 	Permissions  map[string]string `json:"permissions,omitempty"`
 }
 
-// valueToken is the word policy.ValueToken holds, which GitHubScope.Value takes for a profile
-// whose release is the one account's bare token. This package cannot import policy, which
-// imports it; TestAValueTokenProfileReleasesTheBareToken mints with policy's own constant, so the
-// two cannot drift apart unseen.
-const valueToken = "token"
-
-// levelRank orders the levels GitHub gives a permission. A level it does not know ranks 0, below
-// read, so a cut asks for nothing at it and heldBy refuses a token holding it.
-var levelRank = map[string]int{"read": 1, "write": 2, "admin": 3}
-
 // cut is what a token request asks GitHub for of an installation that holds held
 // (githubInstallation.Permissions): each of the profile's permissions at its own level where the
 // installation holds it at that level or above, at the installation's level where it holds a
@@ -105,9 +95,9 @@ func cut(profile, held map[string]string) (asked map[string]string, leftOut []st
 	for _, permission := range slices.Sorted(maps.Keys(profile)) {
 		level, holds := profile[permission], held[permission]
 		switch {
-		case levelRank[holds] == 0:
+		case LevelRank(holds) == 0:
 			leftOut = append(leftOut, permission)
-		case levelRank[holds] < levelRank[level]:
+		case LevelRank(holds) < LevelRank(level):
 			asked[permission] = holds
 			leftOut = append(leftOut, permission+":"+level)
 		default:
@@ -117,11 +107,6 @@ func cut(profile, held map[string]string) (asked map[string]string, leftOut []st
 	return asked, leftOut
 }
 
-// grantedPermission is the permission GitHub grants with every installation token, at read,
-// whatever its request named, and which every installation it lists holds; every GitHub profile
-// names it (policy.ParseProfiles).
-const grantedPermission = "metadata"
-
 // emptyCut reports whether asked, the cut of profile's permissions to what an installation holds,
 // leaves the token nothing the profile is for: no permission at all, or metadata alone of a
 // profile that names more. Every installation GitHub lists holds metadata, so a cut that keeps it
@@ -129,7 +114,7 @@ const grantedPermission = "metadata"
 // does none of what the profile asks, after the check before an approval had let a person be
 // asked for it. A profile that names metadata alone asks for nothing more, and its cut is whole.
 func emptyCut(profile, asked map[string]string) bool {
-	_, kept := asked[grantedPermission]
+	_, kept := asked[MetadataPermission]
 	return len(asked) == 0 || (kept && len(asked) == 1 && len(profile) > 1)
 }
 
@@ -195,7 +180,7 @@ func permissionWords(permissions map[string]string) string {
 // in effect holds none, is refused naming that account, since that account's token would name no
 // repository and so reach every one its installation does.
 func (s *GitHubScope) refusal(appID string) error {
-	if len(s.Accounts) > 1 && s.Value == valueToken {
+	if len(s.Accounts) > 1 && s.Value == ValueToken {
 		return fmt.Errorf("%w: github app %s: the profile releases one account's bare token, and %s are in effect: name one with --target", ErrMintNarrowingRefused, appID, strings.Join(s.Accounts, ", "))
 	}
 	if s.Repositories == nil {
@@ -265,7 +250,7 @@ func heldBy(token githubInstallationToken, repositories []string, asked map[stri
 		if !named {
 			return errors.New("GitHub's token holds a permission the request did not name")
 		}
-		if levelRank[level] == 0 || levelRank[level] > levelRank[want] {
+		if LevelRank(level) == 0 || LevelRank(level) > LevelRank(want) {
 			return errors.New("GitHub's token holds a permission at a level past the request")
 		}
 	}
@@ -608,7 +593,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 		// this sentinel alone.
 		return Minted{}, fmt.Errorf("%w: github app %s has no installation on %s", ErrMintNoInstallation, secret.AppID, strings.Join(scope.Accounts, " or "))
 	}
-	if scope.Value == valueToken && len(each) > 1 {
+	if scope.Value == ValueToken && len(each) > 1 {
 		// GitHubScope.refusal has held a value-token scope to one account, so these are that
 		// account's installations, whose logins differ only in case: the release hands over one
 		// bare token, and minting each would leave the others live with nobody holding them.
@@ -681,7 +666,7 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (_ Minted, err err
 		// below holds no verdict a check could miss by returning here.
 		return Minted{}, nil
 	}
-	if scope.Value == valueToken {
+	if scope.Value == ValueToken {
 		// GitHubScope.refusal has refused a value-token scope of more than one account, and the
 		// check above one of more than one installation, so the one installation minted is the
 		// release.

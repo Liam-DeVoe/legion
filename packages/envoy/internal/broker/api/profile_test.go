@@ -144,12 +144,15 @@ func minting(secrets.MintRequest) (secrets.Minted, error) {
 }
 
 // TestTheGitHubAppFieldIsRefusedWithItsOwnCode: a body of POST /v1/requests or of POST
-// /v1/grants/{id}/values that carries github_app — any value of it, null too, and beside a field
-// the route does not take — is refused 400 GITHUB_APP_FIELD_REMOVED with C-5's message, and never
+// /v1/grants/{id}/values that carries github_app — any value of it, null too — and no field the
+// route does not take is refused 400 GITHUB_APP_FIELD_REMOVED with C-5's message, and never
 // INVALID_REQUEST, which a command line of an earlier release reads as a broker that does not
 // know the field and answers by sending its request again without it. Neither route writes a
-// request or runs a minter for it. A body that carries no github_app keeps its own route's
-// refusal of a field it does not take.
+// request or runs a minter for it. A body that also carries a field the route does not take is
+// refused at that field first, as the route's own unknown field, since the route reads the body
+// once: no released command line sends github_app beside such a field, so none of them reads that
+// refusal as a broker from before github_app. A body that carries no github_app keeps its own
+// route's refusal of a field it does not take.
 func TestTheGitHubAppFieldIsRefusedWithItsOwnCode(t *testing.T) {
 	s := newProfileServer(t, minting)
 	grantID := s.grant(t)
@@ -160,9 +163,10 @@ func TestTheGitHubAppFieldIsRefusedWithItsOwnCode(t *testing.T) {
 		body map[string]any
 	}{
 		{"a narrowing", map[string]any{"github_app": map[string]any{"owner": "ada", "read_only": true}}},
+		// encoding/json hands a JSON null to a json.RawMessage field as the bytes "null", so a
+		// null is a github_app the route carries like any other value.
 		{"null", map[string]any{"github_app": nil}},
 		{"a value of no narrowing's shape", map[string]any{"github_app": "ada"}},
-		{"beside a field the route does not take", map[string]any{"github_app": map[string]any{"owner": "ada"}, "narrowing": true}},
 	} {
 		t.Run("POST /v1/requests, "+tc.name, func(t *testing.T) {
 			status, body := s.request(t, "HUMAN_APP_KEY", tc.body)
@@ -187,9 +191,27 @@ func TestTheGitHubAppFieldIsRefusedWithItsOwnCode(t *testing.T) {
 		t.Fatalf("the minter ran %d times for bodies carrying github_app, want none", len(minted))
 	}
 
-	status, body := s.request(t, "HUMAN_APP_KEY", map[string]any{"narrowing": true})
-	if reply := decode[wireError](t, body); status != http.StatusBadRequest || reply.Code != "INVALID_REQUEST" {
-		t.Fatalf("POST /v1/requests with a field it does not take and no github_app = %d %s; want 400 INVALID_REQUEST", status, body)
+	// The accepted trade-off of the one read: github_app beside a field the route does not take
+	// is that route's unknown field, as the same field is without github_app.
+	for _, body := range []map[string]any{
+		{"github_app": map[string]any{"owner": "ada"}, "narrowing": true},
+		{"narrowing": true},
+	} {
+		status, answer := s.request(t, "HUMAN_APP_KEY", body)
+		if reply := decode[wireError](t, answer); status != http.StatusBadRequest || reply.Code != "INVALID_REQUEST" || !strings.Contains(reply.Error, "narrowing") {
+			t.Fatalf("POST /v1/requests with %v = %d %s; want 400 INVALID_REQUEST naming the field the route does not take", body, status, answer)
+		}
+		delete(body, "request")
+		status, answer = s.values(t, grantID, body)
+		if reply := decode[wireError](t, answer); status != http.StatusBadRequest || reply.Code != "INVALID_RELEASE" || !strings.Contains(reply.Error, "narrowing") || strings.Contains(string(answer), `"values"`) {
+			t.Fatalf("POST values with %v = %d %s; want 400 INVALID_RELEASE naming the field the route does not take, and no value", body, status, answer)
+		}
+	}
+	if rows, records := s.pendingRows(t); rows != 1 || records != 0 {
+		t.Fatalf("the refused bodies left %d request rows and %d records; want the one grant's request and no record", rows, records)
+	}
+	if minted := s.take(); len(minted) != 0 {
+		t.Fatalf("the minter ran %d times for refused bodies, want none", len(minted))
 	}
 }
 
