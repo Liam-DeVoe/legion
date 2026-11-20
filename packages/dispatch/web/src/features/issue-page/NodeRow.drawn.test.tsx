@@ -1237,6 +1237,54 @@ test("a chip names a deleted post by its deleted line, and an edited one by its 
   }
 });
 
+// R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 07:52Z, on a chip cut
+// short: a deleted post's chip whose actor is named by one long word is cut right after "Deleted
+// by" (`chipWords`), and that cut still draws the deleted line, in its italic, its opening marked
+// as the page's own words and none of it as the author's.
+test("a deleted post's chip cut right after Deleted by keeps the deleted line's italic and its page-chrome mark", () => {
+  const title = "legion-infra-1523-implementer";
+  const by: Actor = {
+    id: "2b3c4d5e-1111-4222-8333-444455556666",
+    kind: "session",
+    origin: { session_title: title },
+  };
+  // The title's one word runs past the chip's room, so the cut ends at the space before it.
+  expect(nodeRowChip.chipWords(`Deleted by ${title}`)).toBe("Deleted by…");
+  const view = renderRow(
+    node({
+      chips: [
+        {
+          answered: true,
+          deletedAt: DELETED_AT,
+          deletedBy: by,
+          gone: false,
+          name: `Deleted by ${actorLabelText(by)}`,
+          ref: "dispatch://CORE-1/comment/c-deleted",
+        },
+      ],
+      id: "comment-9",
+      text: "Read these.",
+      type: "comment",
+    }),
+    { body: false }
+  );
+  try {
+    const name = view.container.querySelector("[data-chip-name]");
+    const line = name?.querySelector("[data-post-deleted]");
+    expect({
+      italic: line?.classList.contains("italic"),
+      line: line?.textContent,
+      words: wordsByMark(name),
+    }).toEqual({
+      italic: true,
+      line: "Deleted by…",
+      words: { author: [], chrome: ["deleted", "by"], unmarked: [] },
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
 /** The names the page's one batched read brought, and the references it read as ambiguous, as
  *  edited and as deleted, published as the page publishes them. */
 function Named({

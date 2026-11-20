@@ -30,7 +30,7 @@ import {
 } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
 import { DeletedBody, EditedMark } from "../refs/PostBody";
-import { deletedLineText, editedName, type PostDeletion, postDeletion } from "../refs/post-marks";
+import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
@@ -54,7 +54,7 @@ import { chipWords } from "./node-row-chip";
 import { shortDay } from "./node-time";
 import { type ThreadMark, ThreadReadMark } from "./outline-thread-read";
 import { type OutlineWriter, replyItemOf, takesAnswer, useOutlineWriter } from "./outline-writer";
-import { authorText, pageChrome } from "./page-structure";
+import { authorText, freeze, pageChrome } from "./page-structure";
 import {
   ANSWER_LINES,
   type AuthorKind,
@@ -434,7 +434,7 @@ export function NodeRow({
  * with the actor named as no registry knows it and the time as stored, so the row draws the line
  * from the delete and never from that text. The line's words are the page's own, marked as its
  * chrome and declared in `page-words.ts` (`CONTROL_LABELS.post_deleted_by`), and the actor's name
- * and the time are not (FixAudit3 F8).
+ * and the time are not (INFRA-1523, R3).
  */
 function DeletedLine({ deleted }: { deleted: PostDeletion }): ReactNode {
   const agentText = useAgentText();
@@ -672,6 +672,13 @@ function Bullet({
   );
 }
 
+/** What the row margin's edited mark draws its element with (`EditedMark`): `data-node-edited`,
+ *  and the page's chrome, since ` · edited` is the page's own word. */
+const NODE_EDITED_MARKS: Readonly<Record<string, string>> = freeze({
+  "data-node-edited": "",
+  ...pageChrome,
+});
+
 /**
  * What stands at the right end of the row's first line (R9, R34, the prototype's `.mg`): the
  * node's kind as one tag - its word and its shape, in its colour - where it has a typed kind,
@@ -771,11 +778,11 @@ export function RowMargin({
                 surface (`EditedMark`, INFRA-1523, R2): here at the right of the row, which no
                 cut of its words reaches, so a post cut to six lines or folded to one keeps it.
                 The mark is the page's own word (`CONTROL_LABELS.post_edited`). */}
-            {node.editedAt === undefined ? null : (
-              <span className="whitespace-nowrap" data-node-edited="" {...pageChrome}>
-                <EditedMark at={node.editedAt} />
-              </span>
-            )}
+            <EditedMark
+              at={node.editedAt}
+              className="whitespace-nowrap"
+              marks={NODE_EDITED_MARKS}
+            />
           </span>
         )}
       </div>
@@ -1125,7 +1132,7 @@ export function NodeEdges({
  * its time, in the deleted line's italic, as a link to the post does (`RefLink`), the actor named
  * as the row names it (`DeletedLine`), where the model's name holds it as no registry knows it;
  * and a post its author edited by its words cut to the chip's length, then ` · edited`
- * (`editedName`), so no cut takes the mark (INFRA-1523, R2 and R3).
+ * (`EditedMark`), drawn after the cut, so no cut takes the mark (INFRA-1523, R2 and R3).
  */
 function Chip({
   chip,
@@ -1152,25 +1159,20 @@ function Chip({
   const name = deletedName ? deletedLineText(deleted, { label: agentText.author }) : chip.name;
   const cut = chipWords(name);
   const edited = chip.editedAt !== undefined && cut !== "";
-  const words = ambiguous ? chip.ref : (word ?? editedName(cut, edited));
+  const words = ambiguous ? chip.ref : (word ?? cut);
   // A target's name is its author's words, but for the page's own in it: the deleted line's
-  // opening and the edited mark, marked as the page's chrome (FixAudit3 F8).
+  // opening and the edited mark, marked as the page's chrome (INFRA-1523, R3).
   const opening =
     deleted === null
       ? ""
       : deleted.by === null
         ? CONTROL_LABELS.post_deleted
-        : `${CONTROL_LABELS.post_deleted_by} `;
-  const mark = edited ? (
-    <span {...pageChrome}>
-      {" · "}
-      {CONTROL_LABELS.post_edited}
-    </span>
-  ) : null;
+        : CONTROL_LABELS.post_deleted_by;
+  const mark = edited ? <EditedMark at={chip.editedAt} marks={pageChrome} /> : null;
   const shown =
     ambiguous || word !== undefined ? (
       words
-    ) : deletedName && cut.startsWith(opening) ? (
+    ) : deletedName ? (
       <span className="italic" data-post-deleted="" {...pageChrome}>
         {opening}
         {cut === opening ? null : <span {...authorText}>{cut.slice(opening.length)}</span>}

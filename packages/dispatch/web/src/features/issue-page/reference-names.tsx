@@ -185,7 +185,9 @@ export function usePublishReferenceNames(
 
 /** The name the page read for `reference`, the words alone, or `undefined` where it read none
  *  and the caller must read its own. A reference in `useKnownEditedReferences` is drawn with
- *  ` · edited` after what the caller's cut leaves of it (`editedName`). */
+ *  ` · edited` after what the caller's cut leaves of it: in one string by `editedName`, as a
+ *  row's link writes it (`row-references.ts`), or as an element of its own by `EditedMark`, as
+ *  the row's chip draws its own name (`NodeRow.tsx`'s `Chip`). */
 export function useKnownReferenceName(reference: string | undefined): string | undefined {
   const { names } = useContext(ReferenceNamesContext);
   return reference === undefined ? undefined : names.get(reference);
@@ -209,8 +211,10 @@ export function useKnownAmbiguousReferences(): ReadonlySet<string> {
 
 /** Every reference among the page's names whose post its author edited, a comment, a message or
  *  a block of either, empty where the page published none. A surface that draws such a
- *  reference's name cuts the name to its own length and then marks it ` · edited`
- *  (`editedName`), so no cut takes the mark. */
+ *  reference's name cuts the name to its own length and then marks it ` · edited`, so no cut
+ *  takes the mark: in one string by `editedName`, as a row's link does (`row-references.ts`), or
+ *  as an element of its own by `EditedMark`, as the row's chip does with its own name
+ *  (`NodeRow.tsx`'s `Chip`). */
 export function useKnownEditedReferences(): ReadonlySet<string> {
   return useContext(ReferenceNamesContext).edited;
 }

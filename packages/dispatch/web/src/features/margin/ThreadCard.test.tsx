@@ -1061,6 +1061,11 @@ for (const kept of ["typed", "refused", "stopped"] as const) {
   });
 }
 
+/** The line a kept edit over a comment deleted since is announced by, which says it is the
+ *  reader's own. */
+const KEPT_EDIT_LINE =
+  "This comment was deleted, and Dispatch saves no edit of a deleted comment. Your unsaved edit is kept in this browser.";
+
 // Dispatch saves no edit of a deleted comment (409 POST_DELETED). An editor open over a comment
 // its author then deletes - holding words of the reader's own, or a save Dispatch refused - is
 // not left open on an empty body: the comment reads as deleted where its body was, and the edit
@@ -1109,9 +1114,6 @@ for (const kept of ["typed", "refused"] as const) {
     const card = () => screen.getByTestId(`margin-comment-${root.id}`);
     const editKey = ["comment-edit", root.id];
     const edit = `An edit ${heldDraftWords[kept]}`;
-    // The line the kept edit is announced by, which says it is the reader's own.
-    const lead =
-      "This comment was deleted, and Dispatch saves no edit of a deleted comment. Your unsaved edit is kept in this browser.";
 
     try {
       const [rootEdit] = within(card()).getAllByRole("button", { name: "Edit" });
@@ -1173,9 +1175,9 @@ for (const kept of ["typed", "refused"] as const) {
           edit: false,
           editor: false,
           field: false,
-          lines: [lead],
+          lines: [KEPT_EDIT_LINE],
           save: false,
-          words: `${root.anchor?.quote}Deleted by alice · alice · ${lead}`,
+          words: `${root.anchor?.quote}Deleted by alice · alice · ${KEPT_EDIT_LINE}`,
         },
         saves: { after: 0, before: kept === "refused" ? 1 : 0 },
         started: root.body,
@@ -1242,9 +1244,6 @@ async function editKeptOverDeletedRoot(draft: string) {
     user,
   };
 }
-
-const KEPT_EDIT_LINE =
-  "This comment was deleted, and Dispatch saves no edit of a deleted comment. Your unsaved edit is kept in this browser.";
 
 // The kept edit is drawn nowhere, so Copy my edit is how the reader takes it with them: the whole
 // edit, every line of it, goes to the clipboard, and still none of it is drawn.

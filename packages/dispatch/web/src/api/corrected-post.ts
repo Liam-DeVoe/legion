@@ -1,4 +1,5 @@
 import {
+  type InfiniteData,
   type Query,
   type QueryClient,
   type QueryKey,
@@ -8,7 +9,7 @@ import {
 import { type PostDeletion, postDeletion } from "../features/refs/post-marks";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
-import { correctedPostAddresses } from "./event-refresh";
+import { correctedPostAddresses, rowsOf } from "./event-refresh";
 import type { ReferenceTargetsAnswer } from "./queries";
 import type {
   Actor,
@@ -68,6 +69,12 @@ interface CorrectedPost {
  *  where it holds none. */
 type FamilyWrite = (answer: unknown, post: CorrectedPost, queryKey: QueryKey) => unknown;
 
+/** The writer of an ask's thread, by its own read (`["ask", id]`) or the Inbox's
+ *  (`askThreadQuery`): its thread's replies. */
+const askThreadWrite = ofKind("comment", (answer, post) =>
+  markedAskThread(answer as AskThread, post)
+);
+
 /**
  * Every query family whose answer holds a comment or an issue message, or a copy of one's body or
  * marks, with what a correction writes into it (`markCorrectedPost`). A family is named as census
@@ -79,48 +86,48 @@ type FamilyWrite = (answer: unknown, post: CorrectedPost, queryKey: QueryKey) =>
  */
 export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
   /** An ask's read (`["ask", id]`): its thread's replies. */
-  ask: ofKind("comment", (answer, post) => markedAskThread(answer as AskThread, post)),
+  ask: askThreadWrite,
   /** An Inbox thread's ask (`askThreadQuery`): its thread's replies. */
-  "ask-thread": ofKind("comment", (answer, post) => markedAskThread(answer as AskThread, post)),
+  "ask-thread": askThreadWrite,
   /** An issue's asks (`["asks", key, …]`), each with its thread where the read asked for it. */
   asks: ofKind("comment", markedAskRows),
   /** A session's conversation (`agentMessagesQuery`, `["agents", session, "messages"]`), which
    *  lists each issue message sent to it; `["agents"]` itself lists the sessions. */
   agents: ofKind("message", (answer, post, queryKey) =>
-    queryKey[2] === "messages"
-      ? markEach(listOf<MessageRead>(answer), (read) => markedMessageRead(read, post))
-      : undefined
+    queryKey[2] === "messages" ? markedMessageReads(answer, post) : undefined
   ),
   /** A document's own read (`["artifact", id]`), the name of each of its versions among it, a
    *  read of one version (`["artifact", id, "version", n]`, and `["artifact", id, n]` where a
    *  reference pins version n) with that version's name, its comments
    *  (`["artifact", id, "comments"]`) and its asks with their threads (`["artifact", id, "asks"]`);
    *  the document's other reads hold no post. */
-  artifact: ofKind("comment", (answer, post, queryKey) =>
-    queryKey.length === 2
-      ? withRenamedVersion(answer as Artifact, post)
-      : queryKey[2] === "comments"
-        ? markEach(listOf<CommentWithTrees>(answer), (comment) => markedComment(comment, post))
-        : queryKey[2] === "asks"
-          ? markedAskRows(answer, post)
-          : renamedVersionRead(answer as ArtifactVersionContent, post, queryKey)
-  ),
+  artifact: ofKind("comment", (answer, post, queryKey) => {
+    if (queryKey.length === 2) {
+      return withRenamedVersion(answer as Artifact, post);
+    }
+    switch (queryKey[2]) {
+      case "comments":
+        return markedComments(answer, post);
+      case "asks":
+        return markedAskRows(answer, post);
+      default:
+        return renamedVersionRead(answer as ArtifactVersionContent, post, queryKey);
+    }
+  }),
   /** A project document read by its project and slug (`["artifact-ref", "<project>/<slug>"]`):
    *  the name of each of its versions. */
   "artifact-ref": ofKind("comment", (answer, post) => withRenamedVersion(answer as Artifact, post)),
   /** A comment's read (`["comment", id]`): the comment and its replies. */
   comment: ofKind("comment", (answer, post) => markedCommentRead(answer as CommentRead, post)),
   /** An issue's comments, or a document's on it (`["comments", key, …]`). */
-  comments: ofKind("comment", (answer, post) =>
-    markEach(listOf<CommentWithTrees>(answer), (comment) => markedComment(comment, post))
-  ),
+  comments: ofKind("comment", markedComments),
   /** An issue's event log (`["events", key]`, pages), its unread line and head, and the margin's
    *  pinned events: each event of the post's own that carries its body. */
   events: (answer, post) => {
     const marked = (event: DispatchEvent) => markedEvent(event, post);
     return isPages<DispatchEvent[]>(answer)
       ? markedPages(answer, (page) => markEach(page, marked))
-      : markEach(listOf<DispatchEvent>(answer), marked);
+      : markEach(rowsOf<DispatchEvent>(answer), marked);
   },
   /** The Inbox's ask rows (`inboxQuery`, `["inbox", project]`), each with its thread. */
   inbox: ofKind("comment", markedAskRows),
@@ -136,9 +143,7 @@ export const CORRECTED_POST_FAMILIES: Readonly<Record<string, FamilyWrite>> = {
   ),
   /** An issue's messages (`["issue-messages", key]`) and the margin's pinned ones
    *  (`["issue-messages", key, "margin-pinned", …]`). */
-  "issue-messages": ofKind("message", (answer, post) =>
-    markEach(listOf<MessageRead>(answer), (read) => markedMessageRead(read, post))
-  ),
+  "issue-messages": ofKind("message", markedMessageReads),
   /** The reader's answers and ask replies (`["me", "answers"]`, pages): each reply's body. */
   "me answers": ofKind("comment", (answer, post) =>
     isPages<MyAnswersResponse>(answer)
@@ -291,10 +296,11 @@ export function markCorrectedPost(queryClient: QueryClient, event: DispatchEvent
   }
   const out = new Set<string>();
   for (const query of queryClient.getQueryCache().getAll()) {
-    if (familyWrite(query.queryKey) === undefined) {
+    const write = familyWrite(query.queryKey);
+    if (write === undefined) {
       continue;
     }
-    writeCorrections(queryClient, query, [post]);
+    writeCorrections(queryClient, query, write, [post]);
     if (query.state.fetchStatus === "fetching") {
       out.add(query.queryHash);
     }
@@ -324,24 +330,27 @@ function familyWrite(queryKey: QueryKey): FamilyWrite | undefined {
     : undefined;
 }
 
-/** Writes each of `posts`' corrections, in order, into the answer `query` holds, where its family
- *  holds posts and the answer then reads otherwise than it does. */
+/** Writes each of `posts`' corrections, in order, with `write`, the writer of the family `query`
+ *  is of, into the answer it holds, where the answer then reads otherwise than it does. The cache
+ *  takes the answer with each part the corrections left as it was still the cached one's, so its
+ *  own structural sharing walks only what they changed. */
 function writeCorrections(
   queryClient: QueryClient,
   query: Query,
+  write: FamilyWrite,
   posts: readonly CorrectedPost[]
 ): void {
-  const write = familyWrite(query.queryKey);
   const answer = query.state.data;
-  if (write === undefined || answer === undefined) {
+  if (answer === undefined) {
     return;
   }
   let marked: unknown = answer;
   for (const post of posts) {
     marked = write(marked, post, query.queryKey) ?? marked;
   }
-  if (replaceEqualDeep(answer, marked) !== answer) {
-    queryClient.setQueryData(query.queryKey, marked);
+  const shared = replaceEqualDeep(answer, marked);
+  if (shared !== answer) {
+    queryClient.setQueryData(query.queryKey, shared);
   }
 }
 
@@ -399,24 +408,40 @@ function keptCorrectionsOf(queryClient: QueryClient): KeptCorrection[] {
   }
   const kept: KeptCorrection[] = [];
   keptCorrections.set(queryClient, kept);
+  // The query the subscription is writing the kept corrections into. The cache tells the write's
+  // own update before the write returns, and that answer already reads as every kept correction
+  // leaves it, so the corrections are not written into it again.
+  let rewriting: Query | undefined;
   queryClient.getQueryCache().subscribe((change) => {
     if (kept.length === 0 || (change.type !== "updated" && change.type !== "removed")) {
       return;
     }
     const { query } = change;
-    if (change.type === "updated" && change.action.type === "success") {
-      writeCorrections(
-        queryClient,
-        query,
-        kept.map((correction) => correction.post)
-      );
+    if (change.type === "updated" && change.action.type === "success" && query !== rewriting) {
+      const write = familyWrite(query.queryKey);
+      if (write !== undefined) {
+        const outer = rewriting;
+        rewriting = query;
+        try {
+          writeCorrections(
+            queryClient,
+            query,
+            write,
+            kept.map((correction) => correction.post)
+          );
+        } finally {
+          rewriting = outer;
+        }
+      }
     }
     if (change.type === "removed" || query.state.fetchStatus !== "fetching") {
-      const left = kept.filter((correction) => {
+      for (const correction of kept) {
         correction.out.delete(query.queryHash);
-        return correction.out.size > 0;
-      });
-      kept.splice(0, kept.length, ...left);
+      }
+      const left = kept.filter((correction) => correction.out.size > 0);
+      if (left.length !== kept.length) {
+        kept.splice(0, kept.length, ...left);
+      }
     }
   });
   return kept;
@@ -535,14 +560,9 @@ function renamedVersionRead(
     : undefined;
 }
 
-/** An infinite read's answer (`useInfiniteQuery`): its pages, each one request's answer. */
-interface Pages<P> {
-  readonly pageParams: readonly unknown[];
-  readonly pages: readonly P[];
-}
-
-/** Whether `answer` is an infinite read's. */
-function isPages<P>(answer: unknown): answer is Pages<P> {
+/** Whether `answer` is an infinite read's (`useInfiniteQuery`): its pages, each one request's
+ *  answer. */
+function isPages<P>(answer: unknown): answer is InfiniteData<P> {
   return (
     typeof answer === "object" &&
     answer !== null &&
@@ -551,15 +571,11 @@ function isPages<P>(answer: unknown): answer is Pages<P> {
   );
 }
 
-/** `answer` as a list of a family's rows, where the read is one; undefined for a read of another
- *  shape under the family's prefix. A family's list holds rows of one type, which the caller
- *  names (`T`): a cached answer is the one its own read returned. */
-function listOf<T>(answer: unknown): readonly T[] | undefined {
-  return Array.isArray(answer) ? (answer as readonly T[]) : undefined;
-}
-
 /** `answer` with each page `mark` answers for in its place; undefined where it answers for none. */
-function markedPages<P>(answer: Pages<P>, mark: (page: P) => P | undefined): Pages<P> | undefined {
+function markedPages<P>(
+  answer: InfiniteData<P>,
+  mark: (page: P) => P | undefined
+): InfiniteData<P> | undefined {
   const pages = markEach(answer.pages, mark);
   return pages === undefined ? undefined : { ...answer, pages };
 }
@@ -632,6 +648,12 @@ function markedComment(
   };
 }
 
+/** A list of comments - an issue's, or a document's (`["artifact", id, "comments"]`) - once
+ *  `post`, a comment, is corrected; undefined where none is the post or quotes it. */
+function markedComments(answer: unknown, post: CorrectedPost): CommentWithTrees[] | undefined {
+  return markEach(rowsOf<CommentWithTrees>(answer), (comment) => markedComment(comment, post));
+}
+
 /** A comment's read, the comment and its replies, once `post` is corrected; undefined where it
  *  holds no copy of the post. */
 function markedCommentRead(read: CommentRead, post: CorrectedPost): CommentRead | undefined {
@@ -655,7 +677,7 @@ function markedAskThread<T extends Pick<AskThread, "replies">>(
 /** A list of ask rows, each with its thread where the read carries one (`InboxRow`,
  *  `IssueAskThreadRow`), once `post` is corrected; undefined where no thread holds a copy. */
 function markedAskRows(answer: unknown, post: CorrectedPost): unknown[] | undefined {
-  return markEach(listOf<{ readonly thread?: AskThread | null }>(answer), (row) => {
+  return markEach(rowsOf<{ readonly thread?: AskThread | null }>(answer), (row) => {
     const thread =
       row.thread === undefined || row.thread === null
         ? undefined
@@ -718,6 +740,12 @@ function markedMessageRead(read: MessageRead, post: CorrectedPost): MessageRead 
   return root === undefined && replies === undefined
     ? undefined
     : { ...read, message: root ?? read.message, replies: replies ?? read.replies };
+}
+
+/** A list of message reads - an issue's messages, or a session's conversation - once `post`, a
+ *  message, is corrected; undefined where none holds a copy of the post. */
+function markedMessageReads(answer: unknown, post: CorrectedPost): MessageRead[] | undefined {
+  return markEach(rowsOf<MessageRead>(answer), (read) => markedMessageRead(read, post));
 }
 
 /** The events whose payload is a post of each kind with its body, which the server's read of the

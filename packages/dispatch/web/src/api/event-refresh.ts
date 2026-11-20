@@ -80,8 +80,9 @@ function isViewer(login: string | undefined, viewer: string | undefined): boolea
 }
 
 /** A list read's rows, as the reader that holds the query wrote them; none for a query with no
- *  list (an error, or not loaded). */
-function rowsOf<Row>(data: unknown): readonly Row[] {
+ *  list (an error, or not loaded), or a read of another shape. The caller names the rows' type
+ *  (`Row`): a cached answer is the one its own read returned. */
+export function rowsOf<Row>(data: unknown): readonly Row[] {
   return Array.isArray(data) ? (data as Row[]) : [];
 }
 

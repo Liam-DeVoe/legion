@@ -112,7 +112,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		kind, err := s.deps.Docs.RejectDeletedCommentSuggestion(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, actor)
-		quoteIsBody = kind == "insert" || storedKind == "insert"
+		orphaned := false
 		if err != nil {
 			if !errors.Is(err, docs.ErrAnchorOrphaned) {
 				s.writeHandlerError(w, err)
@@ -122,10 +122,10 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			if storedKind == "" {
-				quoteIsBody = comment.Anchor.Quote == comment.Suggestion.ReplaceWith
-			}
+			orphaned = true
 		}
+		quoteIsBody = kind == "insert" || storedKind == "insert" ||
+			(orphaned && storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
 	}
 	// An accepted suggestion's proof is a version of the document, which the accept named
 	// after the comment's body (acceptedVersionName); every read of the document's versions

@@ -155,43 +155,56 @@ function conditionalBranches(expression: string): readonly [string, string] | un
   return undefined;
 }
 
+/** `make`'s answer, worked out the first time it is asked for and kept. */
+function once<T>(make: () => T): () => T {
+  let made: { readonly value: T } | undefined;
+  return () => {
+    if (made === undefined) made = { value: make() };
+    return made.value;
+  };
+}
+
 /** A name a file binds with `const` or `let`, or declares as a function, where it binds it. */
 interface Binding {
   readonly path: string;
   readonly at: number;
   readonly exported: boolean;
-  /** The bound expression, or each `return` of a function's body. */
-  readonly expressions: readonly string[];
+  /** The bound expression, or each `return` of a function's body, read from the source the first
+   *  time a key is resolved through the binding. */
+  readonly expressions: () => readonly string[];
 }
 
 /** Every `const`, `let` and `function` of the source, by the name it binds. */
 const BINDINGS: ReadonlyMap<string, readonly Binding[]> = (() => {
   const bindings = new Map<string, Binding[]>();
-  const bind = (name: string, binding: Binding) =>
-    bindings.set(name, [...(bindings.get(name) ?? []), binding]);
+  const bind = (name: string, binding: Binding) => {
+    const named = bindings.get(name);
+    if (named === undefined) bindings.set(name, [binding]);
+    else named.push(binding);
+  };
   for (const { path, text } of SOURCES) {
     for (const found of text.matchAll(
       /(export\s+)?(?:const|let)\s+([a-zA-Z_$][\w$]*)\s*(?::[^=;]+?)?=(?![=>])\s*/gu
     )) {
-      const name = found[2] ?? "";
-      const expression = expressionAt(text, (found.index ?? 0) + found[0].length);
-      bind(name, {
+      const from = (found.index ?? 0) + found[0].length;
+      bind(found[2] ?? "", {
         at: found.index ?? 0,
         exported: found[1] !== undefined,
-        expressions: [expression],
+        expressions: once(() => [expressionAt(text, from)]),
         path,
       });
     }
     for (const found of text.matchAll(/(export\s+)?function\s+([a-zA-Z_$][\w$]*)\s*[<(]/gu)) {
       const start = text.indexOf("{", text.indexOf(")", found.index ?? 0));
-      const body = start < 0 ? "" : `{${expressionAt(text, start + 1)}}`;
-      const returns = [...body.matchAll(/\breturn\s+/gu)].map((one) =>
-        expressionAt(body, (one.index ?? 0) + one[0].length)
-      );
       bind(found[2] ?? "", {
         at: found.index ?? 0,
         exported: found[1] !== undefined,
-        expressions: returns,
+        expressions: once(() => {
+          const body = start < 0 ? "" : `{${expressionAt(text, start + 1)}}`;
+          return [...body.matchAll(/\breturn\s+/gu)].map((one) =>
+            expressionAt(body, (one.index ?? 0) + one[0].length)
+          );
+        }),
         path,
       });
     }
@@ -267,7 +280,7 @@ function keyFamilies(
   for (const binding of bindings) {
     const key = `${binding.path}:${binding.at}`;
     if (seen.has(key)) return undefined;
-    for (const bindingExpression of binding.expressions) {
+    for (const bindingExpression of binding.expressions()) {
       const resolved = keyFamilies(
         bindingExpression,
         binding.path,

@@ -121,7 +121,9 @@ export interface NodeChip {
    *  is of, last replaced its body (`ReferenceTarget.edited_at`); absent for a post nobody
    *  edited, for a deleted one and for every other target. The chip's `name` is the words alone:
    *  a view that draws the name of a chip carrying this must cut the words to its own length
-   *  first and then add ` · edited` (`editedName`), so no cut takes the mark. */
+   *  first and then add ` · edited`, so no cut takes the mark: the row's chip draws the mark as an
+   *  element of its own (`NodeRow.tsx`'s `Chip`, with `EditedMark`), and a place that names the
+   *  post in one string writes it with `editedName`. */
   readonly editedAt?: string;
   /** Whether nothing answers to this reference now. */
   readonly gone: boolean;
@@ -631,8 +633,10 @@ export function buildIssueTree(reads: IssueTreeReads): TreeNode {
  *   author wrote it and links nothing, where it reads the second's own.
  * - **`edited`**: the references among `names` whose post its author edited, a comment, a
  *   message or a block of either (`NodeChip.editedAt`). A link that draws a published name cuts
- *   it to its own length and then marks it ` · edited` (`editedName`), so no cut takes the mark:
- *   a mark published inside the name would be cut off a long one.
+ *   it to its own length and then marks it ` · edited`, so no cut takes the mark: a mark
+ *   published inside the name would be cut off a long one. A row's link names the post in one
+ *   string, marked with `editedName` (`row-references.ts`); the row's chip, which draws its own
+ *   `NodeChip.name`, draws the mark as an element of its own with `EditedMark`.
  * - **`deleted`**: the references among `names` whose comment or message its author deleted, by
  *   its delete (`NodeChip.deletedAt`, `deletedBy`), each named in `names` by its deleted line. A
  *   row's words draw that line in the deleted line's italic and name its actor as the page names

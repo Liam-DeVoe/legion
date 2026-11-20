@@ -62,8 +62,9 @@ export function deletedLineText(deleted: PostDeletion, text: Pick<AgentText, "la
  *  to it writes the name: `words` then ` · edited`, the mark the post's byline writes
  *  (`EditedMark`). `words` as they are for a post nobody edited (`edited` false), and `""` for no
  *  words, which take no mark. A place that cuts a name to a length cuts `words` and marks what
- *  the cut left, so no cut takes the mark. Every place that marks a name marks it here, so no
- *  two can drift apart. */
+ *  the cut left, so no cut takes the mark. Every place that writes a marked name as one string
+ *  marks it here; one that draws the mark as an element of its own, as the issue page's chip
+ *  does, draws `EditedMark`. Both write `POST_MARK_WORDS.edited`, so no two can drift apart. */
 export function editedName(words: string, edited: boolean): string {
   return !edited || words === "" ? words : `${words} · ${POST_MARK_WORDS.edited}`;
 }

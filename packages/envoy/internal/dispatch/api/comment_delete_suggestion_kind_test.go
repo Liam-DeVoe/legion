@@ -50,19 +50,16 @@ func retypeSuggestedWords(t *testing.T, documentService *docs.Service, artifactI
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		retyped := false
-		var walk func(node *pmdoc.Node)
-		walk = func(node *pmdoc.Node) {
+		pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
 			for _, mark := range node.Marks {
-				if !retyped && mark.Type == string(docs.MarkSuggestion) && mark.Attrs["id"] == markID && strings.Contains(node.Text, from) {
+				if mark.Type == string(docs.MarkSuggestion) && mark.Attrs["id"] == markID && strings.Contains(node.Text, from) {
 					node.Text = strings.Replace(node.Text, from, to, 1)
 					retyped = true
+					return false
 				}
 			}
-			for _, child := range node.Children {
-				walk(child)
-			}
-		}
-		walk(tree)
+			return true
+		})
 		if !retyped {
 			return fmt.Errorf("no text under the suggestion mark %q holds %q", markID, from)
 		}

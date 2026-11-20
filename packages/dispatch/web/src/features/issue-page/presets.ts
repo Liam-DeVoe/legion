@@ -123,7 +123,7 @@ function kindOf(node: TreeNode): NodeType | undefined {
  *  post its author deleted holds none: its text is the deleted line as the model writes it
  *  (`tree-drafts.ts`'s `deletedPostLine`), naming the actor by a short id and the time as stored,
  *  and its row draws the page's own deleted line in its place (`NodeRow.tsx`'s `DeletedLine`), so
- *  no word typed finds it (FixAudit3 F8). */
+ *  no word typed finds it (INFRA-1523, R3). */
 function holds(node: TreeNode, wanted: string): boolean {
   return (
     wanted === "" ||
