@@ -218,6 +218,81 @@ func TestABrokerRestoredAloneIsRecoveredByTellingItAgainWhatWasSettledSince(t *t
 	}
 }
 
+// TestABrokerRestoredBeforeTheResetIsRecoveredByRepeatingTheResetCredentialBlocks covers two
+// restores in sequence. Restored Dispatch still records A, because B's replacement was owed when
+// Dispatch's database was lost. The reset ends A's broker sign-in, but a broker backup taken before
+// the reset brings it back. No revocation names A yet, so record-again has nothing to write. The
+// runbook therefore runs the reset's credentials and directory blocks again after record-again:
+// A's sign-in is ended before Dispatch starts, then B's sign-in pays the revocation that refuses A.
+//
+// Control in the runbook: without that second credentials block, the restored broker leaves A's
+// sign-in live before Dispatch starts.
+func TestABrokerRestoredBeforeTheResetIsRecoveredByRepeatingTheResetCredentialBlocks(t *testing.T) {
+	ctx := context.Background()
+	runbook := strings.Join(runbookLines(t), "\n")
+	repeatResetBlocks := strings.Contains(runbook, "run **End every person's credential at the broker** and **Clear a\nrefusal only for the directory's holder** again")
+	for _, want := range []string{
+		`select to_timestamp(generation / 1000000.0) from session_generation_floors where login = '*'`,
+		"run **End every person's credential at the broker** and **Clear a\nrefusal only for the directory's holder** again",
+		"If the deployment floor row `*`\nexists, a reset ran before this broker was made again",
+	} {
+		if !strings.Contains(runbook, want) {
+			t.Errorf("the broker-alone recovery is missing %q", want)
+		}
+	}
+	r := newRecoveryRig(t)
+	const email = "reset-then-broker@example.com"
+	if err := r.people.SignInSubject(ctx, email, "a-reset", "refresh-a", "", model.MemberFull); err != nil {
+		t.Fatal(err)
+	}
+	signIn := r.signInMachine(t, email, "a-reset", strings.Repeat("z", 43))
+	backup := time.Now()
+
+	r.resetSessions(t)
+	if left := r.endBrokerCredentials(t); len(left) != 0 {
+		t.Fatalf("STILL LIVE after the reset's credentials block: %v", left)
+	}
+	if r.machineSignInLive(t, signIn) {
+		t.Fatal("the reset left A's sign-in live")
+	}
+
+	// Restore the broker to the backup before the reset: its record of B replacing A remains, and
+	// A's sign-in the reset ended is live again.
+	if _, err := r.rig.Store.Pool.Exec(ctx, `update person_signins set revoked_at = null where id = $1::uuid`, signIn); err != nil {
+		t.Fatalf("restore A's broker sign-in from before the reset: %v", err)
+	}
+	if !r.machineSignInLive(t, signIn) {
+		t.Fatalf("setup: broker restored before the reset leaves A's sign-in live %t; want live", r.machineSignInLive(t, signIn))
+	}
+	block := runbookBlockAfter(t, brokerRestoredLead)
+	runStatements(t, r.dispatch.Pool, block.statements, pgx.NamedArgs{"backup": backup})
+	if owing, err := r.revocations.Owing(ctx, email); err != nil || len(owing) != 0 {
+		t.Fatalf("the broker-alone record-again with no revocation naming A owes %+v, %v; want nothing", owing, err)
+	}
+	if repeatResetBlocks {
+		if left := r.endBrokerCredentials(t); len(left) != 0 {
+			t.Fatalf("STILL LIVE after the reset's second credentials block: %v", left)
+		}
+		output, err := r.clearHoldersRefusals(t, map[string]directoryAnswer{
+			email: {User: directoryUser{ID: "b-reset", PrimaryEmail: email}},
+		})
+		if err != nil {
+			t.Fatalf("the reset's second directory block: %v\n%s", err, output)
+		}
+	}
+	if r.machineSignInLive(t, signIn) {
+		t.Errorf("after the broker-alone recovery and the reset blocks again, A's sign-in is live; want ended before Dispatch starts")
+	}
+	if err := r.people.SignInSubject(ctx, email, "b-reset", "refresh-b", "", model.MemberFull); err != nil {
+		t.Fatal(err)
+	}
+	r.ageClaims(t)
+	r.served.revokeOwedBrokerCredentials(ctx)
+	if r.machineSignInLive(t, signIn) || !r.refused(t, email, "a-reset") {
+		t.Errorf("after B signs in and Dispatch pays the revocation, A's sign-in is live %t and the broker refuses A %t; want ended and refused", r.machineSignInLive(t, signIn), r.refused(t, email, "a-reset"))
+	}
+}
+
 // TestABrokerDatabaseMadeAgainIsToldEveryRevocationSettled: a broker database made again, rather
 // than restored, has forgotten every refusal and every replacement, and has no backup moment to
 // give the block. The runbook says to give it `-infinity`, which records again every revocation

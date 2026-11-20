@@ -240,7 +240,7 @@ func (b BlockIndexing) queueBlockParents(batch *store.WriteBatch) {
 // index among them of the block that holds it, -1 for a block the document holds. blocks are
 // the version's rendered blocks, as IndexBlocks takes them.
 //
-// It is the one walk the index states each part_of from (reconcileBlockParents) and the sizing
+// It is the one walk the index states each part_of from (planBlockParents) and the sizing
 // counts the parents a version moved with (graphcensus), so what the sizing counts and what the
 // writer appends cannot drift.
 func PlaceBlocks(refKey string, blocks []model.ArtifactBlock) (nodes []model.ArtifactBlock, placed, parents []int) {
@@ -382,7 +382,7 @@ type heldLink struct{ kind, toKind, toID string }
 // standing in that state for ever, with nothing projecting it.
 //
 // It is the store's own side of the document, and IndexBlocks reads it only where that side is
-// stale (standsAtVersion): another release indexed the document after the store last stated its
+// stale (blockStand.stale): another release indexed the document after the store last stated its
 // blocks, and that release deleted the rows of the blocks and the links its version dropped and
 // retracted nothing, so no row is left to say what the store still holds. The pass's input stays
 // the version's render: this read is what the store would otherwise go on asserting against it,
@@ -392,6 +392,13 @@ type heldLink struct{ kind, toKind, toID string }
 // graph_tuples_current's predicate, and that index leaves delivered_to out. The kinds and the
 // value kind are written into the text so the planner can prove each index's partial predicate
 // whatever plan it caches.
+//
+// Each member probes its own node through graph_nodes' primary key, in a subquery behind an
+// offset 0 the planner cannot flatten. Joined plainly, the planner took `kind = 'block'` alone
+// for the index's condition wherever the table's statistics counted few blocks, and read every
+// block node again for each member, its id left to a join filter: on a document of 1,000 blocks
+// that removed 499,500 rows, and a document of 150,000 blocks is the read this pass makes
+// (TestTheHeldDocumentReadProbesEachMembersNodeOnce).
 func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[string][]heldLink, error) {
 	rows, err := q.Query(ctx, `
 		select member.id, held.kind, held.to_kind, held.to_id
@@ -400,8 +407,11 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 			where t.to_kind = 'artifact' and t.to_id = $1
 			  and t.kind = '`+TupleInDocument+`' and t.from_kind = '`+BlockNodeKind+`'
 		) member
-		join graph_nodes n on n.kind = '`+BlockNodeKind+`' and n.id = member.id
-			and n.state <> '`+graphstore.StateGone+`'
+		cross join lateral (
+			select n.state from graph_nodes n
+			where n.kind = '`+BlockNodeKind+`' and n.id = member.id
+			offset 0
+		) node
 		left join lateral (
 			select current.kind, current.to_kind, current.to_id
 			from (
@@ -412,6 +422,7 @@ func heldDocumentBlocks(ctx context.Context, q Queryer, refKey string) (map[stri
 			) current
 			where current.asserted
 		) held on true
+		where node.state <> '`+graphstore.StateGone+`'
 		order by member.id, held.kind, held.to_kind, held.to_id
 	`, refKey)
 	if err != nil {
@@ -467,13 +478,13 @@ func goneSinceStated(held map[string][]heldLink, nodes []model.ArtifactBlock, de
 }
 
 // unheldLinks retracts each link the store states now out of a block of the document (held) that
-// no pair of the version writes, at the version's time and by its writer, as replaceBlockRefs
-// retracts the pair of a row it drops: a link another release's version dropped after the store
-// last stated the document, deleting its block_refs row and retracting nothing. The links of a
-// block goneSinceStated names are among them, as a dropped block's rows are among the rows
-// replaceBlockRefs drops. stated is the tuples replaceBlockRefs answered, and a link it already
-// retracts, the pair of a row it dropped, is not retracted twice. The retractions come in block
-// id order and in the read's order within a block, so a reader of the log can predict them.
+// no pair of the version writes, at the version's time and by its writer, as planBlockRefs
+// retracts the pair of a row the pass drops: a link another release's version dropped after the
+// store last stated the document, deleting its block_refs row and retracting nothing. The links
+// of a block goneSinceStated names are among them, as a dropped block's rows are among the rows
+// queueBlockRefs drops. stated is the tuples planBlockRefs answered, and a link it already
+// retracts, the pair of a row the pass dropped, is not retracted twice. The retractions come in
+// block id order and in the read's order within a block, so a reader of the log can predict them.
 func unheldLinks(held map[string][]heldLink, refKey string, pairs []blockPair, stated []graphstore.UncausedTuple, at time.Time, writer model.Actor) []graphstore.UncausedTuple {
 	if len(held) == 0 {
 		return nil

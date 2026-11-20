@@ -1,41 +1,38 @@
 -- 20261119060414_session_generation_floors.up.sql — the generation an address's first session row
--- starts at, so an address with no session row can be recovered after a Dispatch database restored
--- or made again alone.
+-- starts at after a Dispatch database is restored or made again alone.
 --
 -- The secrets broker refuses a machine-login approve whose session generation is below one a
 -- revocation recorded at the address, and answers a revocation below the greatest it applied there
 -- superseded. A Dispatch database made again, or restored to an earlier point, holds generations
--- below the broker's, and the runbook's recovery ("Signing people in") raises each listed address's
--- user_sessions.generation past every generation the lost history can have issued, the broker's
--- plus a million. An address with no user_sessions row had nothing to
--- raise: the row cannot be made by hand (user_sessions_login_fkey needs a people row, which only a
--- sign-in makes), the raise matched no row, and the first sign-in there made the row at generation
--- 1 (end_people_sessions_on_new_account) — below the broker's, so every approve at the address was
--- refused 403 APPROVER_REPLACED and every revocation answered superseded, with nothing counting
--- either. After a database made again that is every address the broker holds a generation for.
+-- below the broker's. An address with no user_sessions row had nothing to raise: the row cannot be
+-- made by hand (user_sessions_login_fkey needs a people row, which only a sign-in makes), and the
+-- first sign-in there made the row at generation 1 (end_people_sessions_on_new_account) — below the
+-- broker's, so every approve at the address was refused 403 APPROVER_REPLACED and every revocation
+-- answered superseded. After a database made again that is every address the broker holds a
+-- generation for.
 --
--- So the recovery writes that same number here instead, for an address with a row and for one
--- without, and every statement that makes a user_sessions row starts the row at that floor:
--- start_session_generation_at_floor, before insert on user_sessions, which the sign-in's trigger,
--- PgSessionStore.EnsureSession and every other writer pass through, so no writer can make the row
--- below the floor, whichever runs first and however long after the recovery. A row that already
--- exists is raised by the recovery's own update, and a generation only rises
--- (user_sessions_binding_columns), so a floor never lowers one. The sweep reads the floor beside
--- the row (greatest of the two), so an address the recovery has floored is no longer listed.
+-- The reset after a Dispatch database restored or made again alone writes one deployment floor,
+-- login `*`, above every generation the lost history can have issued: the greatest of the
+-- microseconds at its raise, the broker's greatest recorded generation plus one, and every session
+-- row and floor Dispatch holds plus one (running-dispatch.md, "Signing people in"). Every statement
+-- that makes a user_sessions row starts it at the greater of its address's floor and the deployment
+-- floor: start_session_generation_at_floor runs before insert on user_sessions, which the sign-in's
+-- trigger, PgSessionStore.EnsureSession and every other writer pass through. So no writer can make
+-- the row below the deployment floor, whichever runs first and however long after the reset. A row
+-- that already exists is raised by the reset's update, and a generation only rises
+-- (user_sessions_binding_columns), so a floor never lowers one.
 --
--- The floor is what the recovery writes, which is above the broker's generation, not the broker's
--- own number. At the broker's own number every approve would be admitted (the broker refuses an
--- approve whose point is *below* a replacement's generation and supersedes a revocation *below*
--- the greatest it applied), but every cookie the replacement that left that generation issued
--- would match the new row as well, a signed-out one included, so the runbook raises past them
--- (its "past every generation the lost history can have issued"). This table holds whatever
--- number that raise writes.
+-- The floor is above the broker's generation, not merely its own number. At the broker's own number
+-- every approve would be admitted (the broker refuses an approve whose point is *below* a
+-- replacement's generation and supersedes a revocation *below* the greatest it applied), but every
+-- cookie the replacement that left that generation issued would match the new row as well, a
+-- signed-out one included. The time term keeps a later reset after a second restore above the first
+-- one's floor. This table holds the deployment floor and any address floor a writer needs.
 --
 --   session_generation_floors.login        written once, at the insert.
---   session_generation_floors.generation   only rises: the recovery raises a floor it wrote before
---                                          when the broker's generation has moved since, and a
---                                          floor lowered would let the next row start below the
---                                          broker's generation again.
+--   session_generation_floors.generation   only rises: a later reset, or a writer's later address
+--                                          floor, must never let the next row start below an
+--                                          earlier floor.
 --   session_generation_floors row          never deleted or truncated, for the same reason.
 --
 -- guard_session_generation_floors refuses every other write with SQLSTATE 23514 (check_violation).
@@ -54,7 +51,7 @@ create table session_generation_floors (
 create function guard_session_generation_floors() returns trigger language plpgsql as $$
 begin
   if tg_op in ('DELETE', 'TRUNCATE') then
-    raise exception 'session_generation_floors holds the generation an address''s session row starts at, which the runbook''s recovery wrote from the generation the secrets broker recorded, and its rows are never removed: a row removed lets the next sign-in start below the broker''s generation again'
+    raise exception 'session_generation_floors holds the floor an address''s session row starts at, written by a reset or a later writer, and its rows are never removed: a row removed lets the next sign-in start below that floor'
       using errcode = 'check_violation';
   end if;
   if new.login is distinct from old.login then
@@ -62,7 +59,7 @@ begin
       using errcode = 'check_violation';
   end if;
   if new.generation < old.generation then
-    raise exception 'session_generation_floors.generation is the generation an address''s session row starts at, which the runbook''s recovery wrote from the generation the secrets broker recorded, and it only rises'
+    raise exception 'session_generation_floors.generation is the floor an address''s session row starts at, written by a reset or a later writer, and it only rises'
       using errcode = 'check_violation';
   end if;
   return new;

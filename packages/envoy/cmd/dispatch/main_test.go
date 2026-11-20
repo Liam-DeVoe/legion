@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -79,14 +80,17 @@ func headerIdentityEnvironment(overrides map[string]string) map[string]string {
 const testIAPAudience = "/projects/123456789012/global/backendServices/9876543210"
 
 // iapIdentityEnvironment is an IAP-identity boot environment admitting the people of example.com:
-// the identity, its audience and the domain, and no other sign-in setting.
+// the identity, its audience and the domain, the Directory reader's signer and delegated user, and
+// no other sign-in setting.
 func iapIdentityEnvironment(overrides map[string]string) map[string]string {
 	values := map[string]string{
-		"DATABASE_URL":           "postgres://dispatch",
-		"DISPATCH_AGENT_TOKEN":   "agent-token",
-		"DISPATCH_IDENTITY":      "iap",
-		"DISPATCH_IAP_AUDIENCE":  testIAPAudience,
-		"DISPATCH_SIGNIN_DOMAIN": "example.com",
+		"DATABASE_URL":               "postgres://dispatch",
+		"DISPATCH_AGENT_TOKEN":       "agent-token",
+		"DISPATCH_IDENTITY":          "iap",
+		"DISPATCH_IAP_AUDIENCE":      testIAPAudience,
+		"DISPATCH_SIGNIN_DOMAIN":     "example.com",
+		"DISPATCH_DIRECTORY_ACCOUNT": directoryCheckSigner,
+		"DISPATCH_DIRECTORY_ADMIN":   directoryCheckAdmin,
 	}
 	for name, value := range overrides {
 		values[name] = value
@@ -95,7 +99,8 @@ func iapIdentityEnvironment(overrides map[string]string) map[string]string {
 }
 
 // iapKeySet is a key set served on this machine in IAP's place, so no test calls Google, with the
-// ES256 key it publishes; iapBoot is boot pointed at it, as no setting can point a server.
+// ES256 key it publishes; iapBoot is boot pointed at it, and its Directory reader at Google hosts
+// served on this machine (directorytest), as no setting can point a server.
 func iapKeySet(t *testing.T) (*oidctest.Issuer, *oidctest.Key) {
 	t.Helper()
 	keys := oidctest.New(t)
@@ -111,6 +116,7 @@ func iapBoot(t *testing.T, keys *oidctest.Issuer, overrides map[string]string) b
 		t.Fatalf("resolve an IAP boot: %v", err)
 	}
 	boot.IAPKeySetURL = keys.URL() + "/keys"
+	boot.DirectoryOptions = directorytest.ServeGoogle(t).ClientOptions()
 	return boot
 }
 
@@ -141,25 +147,32 @@ func iapWhoami(handler http.Handler, assertion string, headers map[string]string
 }
 
 func TestResolveBootConfigReadsIAPIdentity(t *testing.T) {
-	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": " iap "})))
+	boot, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{
+		"DISPATCH_IDENTITY":          " iap ",
+		"DISPATCH_DIRECTORY_ACCOUNT": " " + directoryCheckSigner + " ",
+		"DISPATCH_DIRECTORY_ADMIN":   " " + directoryCheckAdmin + " ",
+	})))
 	if err != nil {
 		t.Fatalf("resolve boot config: %v", err)
 	}
 	if boot.IAPAudience != testIAPAudience || boot.IAPKeySetURL != oidc.IAPKeySetURL || boot.SignInDomain != "example.com" ||
-		boot.IdentityHeader != "" || boot.SignInIssuer != "" {
-		t.Fatalf("boot = %#v, want IAP identity for %s over IAP's own key set, admitting example.com", boot, testIAPAudience)
+		boot.IdentityHeader != "" || boot.SignInIssuer != "" ||
+		boot.DirectoryAccount != directoryCheckSigner || boot.DirectoryAdmin != directoryCheckAdmin || boot.DirectoryOptions != nil {
+		t.Fatalf("boot = %#v, want IAP identity for %s over IAP's own key set, admitting example.com, reading the Directory through the trimmed signer and delegated user with no test options", boot, testIAPAudience)
 	}
 }
 
 // IAP signs people in, so an IAP server takes the domain it admits and no other sign-in setting,
-// an audience of the shape IAP signs for, and no dev sign-in; the audience is refused under any
-// other identity, which would leave it unread.
+// an audience of the shape IAP signs for, both Directory settings (K12), and no dev sign-in; the
+// audience and the Directory settings are refused under any other identity, which would leave them
+// unread.
 func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 	for name, value := range map[string]string{
 		"DISPATCH_SIGNIN_ISSUER":        "https://accounts.google.com",
 		"DISPATCH_SIGNIN_CLIENT_ID":     "dispatch-client",
 		"DISPATCH_SIGNIN_CLIENT_SECRET": "client-secret",
 		"DISPATCH_SIGNIN_GROUP":         "dispatch-members",
+		"DISPATCH_OUTSIDE_ORIGIN":       "https://outside.example",
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{name: value}))); err == nil ||
 			!strings.Contains(err.Error(), name+" must be unset under DISPATCH_IDENTITY=iap") {
@@ -175,6 +188,9 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": ""}, "DISPATCH_IAP_AUDIENCE required"},
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": "123456789012-client.apps.googleusercontent.com"}, "DISPATCH_IAP_AUDIENCE=\"123456789012-client.apps.googleusercontent.com\" must be the audience IAP signs"},
 		{map[string]string{"DISPATCH_IAP_AUDIENCE": "/projects/example-project/global/backendServices/1"}, "begins /projects/<project number>/"},
+		{map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": ""}, "DISPATCH_IDENTITY=iap needs DISPATCH_DIRECTORY_ACCOUNT"},
+		{map[string]string{"DISPATCH_DIRECTORY_ADMIN": " "}, "DISPATCH_IDENTITY=iap needs DISPATCH_DIRECTORY_ADMIN"},
+		{map[string]string{"DISPATCH_DIRECTORY_ACCOUNT": "", "DISPATCH_DIRECTORY_ADMIN": ""}, "DISPATCH_IDENTITY=iap needs DISPATCH_DIRECTORY_ACCOUNT and DISPATCH_DIRECTORY_ADMIN"},
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(tc.overrides))); err == nil || !strings.Contains(err.Error(), tc.naming) {
 			t.Errorf("IAP identity with %v: err = %v, want a refusal naming %q", tc.overrides, err, tc.naming)
@@ -186,6 +202,17 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 	} {
 		if _, err := resolveBootConfig(envGetter(environment)); err == nil || !strings.Contains(err.Error(), "DISPATCH_IAP_AUDIENCE is read only with DISPATCH_IDENTITY=iap") {
 			t.Errorf("%s with DISPATCH_IAP_AUDIENCE: err = %v, want a refusal naming it", name, err)
+		}
+	}
+	for _, setting := range []string{"DISPATCH_DIRECTORY_ACCOUNT", "DISPATCH_DIRECTORY_ADMIN"} {
+		for name, environment := range map[string]map[string]string{
+			"cookie identity":    signInEnvironment(map[string]string{setting: "set@example.com"}),
+			"header identity":    headerIdentityEnvironment(map[string]string{setting: "set@example.com"}),
+			"no sign-in setting": noSignInEnvironment(map[string]string{setting: "set@example.com"}),
+		} {
+			if _, err := resolveBootConfig(envGetter(environment)); err == nil || !strings.Contains(err.Error(), setting+" is read only with DISPATCH_IDENTITY=iap") {
+				t.Errorf("%s with %s: err = %v, want a refusal naming it", name, setting, err)
+			}
 		}
 	}
 	_, err := resolveBootConfig(devSignInEnvironment(map[string]string{
@@ -682,7 +709,7 @@ func TestProcessServesMetricsToACredential(t *testing.T) {
 	failures := registry.NewCounter("envoy_dispatch_outbox_publish_failures_total", "Destinations of an outbox publish attempt that did not reach NATS")
 	failures.Inc([2]string{"reason", "denied"})
 	boot := resolveWith(t, map[string]string{"DISPATCH_AGENT_TOKEN": "agent-token"})
-	router := routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t), Metrics: registry.Handler()})
+	router := routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t), Metrics: registry})
 	process := routes.Process(router, healthzHandler(nil, nil, nil, untouchedFiles{}, "", nil, issuers{}, nil, nil))
 	scrape := func(credential string) *httptest.ResponseRecorder {
 		request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -909,8 +936,10 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 // /healthz names each GitHub read from the value main hands it alone (gitHubReads): off for a read
 // this process does not run, whatever the record holds of it; unknown before the copy of the
 // record has loaded; no_attempt for a read the record holds no attempt of; and succeeded or failed
-// from the attempt it holds, with that attempt's time in UTC, and the cause of a failed one. `at`
-// and `cause` are present and null wherever the state carries neither, and the four keys come in
+// from the attempt it holds, with that attempt's time in UTC, and a failed one's cause by its class
+// alone: the status GitHub answered ("status 503"), or "no status" for a failure that carries
+// none, since the cause's text can name a repository (gitHubReadCauseClass). `at` and `cause` are
+// present and null wherever the state carries neither, and the four keys come in
 // githubreads.Reads' order. A failed read leaves the status 200 and `ok` true, and a database that
 // does not answer leaves the entries as the copy has them beside its 503.
 func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
@@ -943,7 +972,7 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 	fromTheCopy := map[string]map[string]any{
 		"webhook_redelivery":  entry("no_attempt", nil, nil),
 		"architecture_import": entry("succeeded", &succeededAt, nil),
-		"delivery_reconcile":  entry("failed", &failedAt, &cause),
+		"delivery_reconcile":  entry("failed", &failedAt, new("status 503")),
 		"ci_reconcile":        entry("off", nil, nil),
 	}
 
@@ -966,6 +995,15 @@ func TestHealthzNamesEachStateOfAGitHubReadFromItsCopy(t *testing.T) {
 		"architecture_import": entry("unknown", nil, nil),
 		"delivery_reconcile":  entry("unknown", nil, nil),
 		"ci_reconcile":        entry("off", nil, nil),
+	})
+
+	// A failure that carries no status GitHub answered is the class "no status".
+	unanswered := &gitHubReads{recordCopy: loadedGitHubReadCopy(t, []githubreads.Recorded{
+		{Read: githubreads.DeliveryReconcile, At: failedAt, Cause: `GET https://api.github.com/repos/acme/deploy/pulls: dial tcp: lookup api.github.com: no such host`},
+	}), runs: reads.runs}
+	_, health = probeGitHubReads(t, database, unanswered)
+	requireGitHubReads(t, "with a failure that carries no status", health.GitHub, map[string]map[string]any{
+		"delivery_reconcile": entry("failed", &failedAt, new("no status")),
 	})
 }
 
@@ -1595,6 +1633,31 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 	}
 	if last := strings.TrimSpace(out.String()); !strings.HasSuffix(last, "census: REFUSED (1 reason)") {
 		t.Errorf("stdout does not end with the verdict:\n%s", out.String())
+	}
+}
+
+// `envoy-dispatch versions` exits 2 when it cannot be taken, 0 over a database this image
+// migrated, and 1 when a recorded version names another file, which it prints. The control is the
+// migrated database itself, read before the row is changed.
+func TestVersionsSubcommandExitCodes(t *testing.T) {
+	ctx := context.Background()
+	var out, errOut bytes.Buffer
+	if code := versions(ctx, "", &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "DATABASE_URL is required") {
+		t.Errorf("no URL: exit %d, stderr %q", code, errOut.String())
+	}
+	database := storetest.Open(t)
+	url := database.Pool.Config().ConnString()
+	out.Reset()
+	errOut.Reset()
+	if code := versions(ctx, url, &out, &errOut); code != 0 || !strings.HasSuffix(strings.TrimSpace(out.String()), "versions: ok") {
+		t.Fatalf("control, a migrated database: exit %d, stderr %q, stdout:\n%s", code, errOut.String(), out.String())
+	}
+	if _, err := database.Pool.Exec(ctx, "update schema_migrations set name = '0001_another_branch.up.sql' where version = 1"); err != nil {
+		t.Fatalf("record another file under version 1: %v", err)
+	}
+	out.Reset()
+	if code := versions(ctx, url, &out, &errOut); code != 1 || !strings.Contains(out.String(), "versions: REFUSED version 1 is recorded as 0001_another_branch.up.sql") {
+		t.Errorf("another file under version 1: exit %d, stdout:\n%s", code, out.String())
 	}
 }
 

@@ -654,12 +654,15 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 // credential, which works again once the hold ends.
 const codeMembershipHeld = "MEMBERSHIP_HELD"
 
-// The two texts of codeMembershipHeld Dispatch can give a rule for (errMembershipHeld): a recorded
-// hold, or the unopenable rule, which a sign-in ends; and the 24-hour rule, which the next
-// confirmation ends. The words name no person: whoever holds the token is told why it stopped.
+// The three texts of codeMembershipHeld Dispatch can give a rule for (errMembershipHeld): a
+// recorded hold, or the unopenable rule, which a sign-in ends; the 24-hour rule, which the next
+// confirmation ends; and, under IAP identity, a hold the Workspace Directory's answer recorded,
+// which its next Active answer ends, since a sign-in through IAP releases nothing. The words name no
+// person: whoever holds the token is told why it stopped.
 const (
-	membershipHeldText      = "this token's owner must sign in to Dispatch again: Google no longer confirms their sign-in, so the token is held until they do"
-	membershipHeldGraceText = "no refresh confirmed this token's owner in 24 hours; the token works again at the next confirmation"
+	membershipHeldText          = "this token's owner must sign in to Dispatch again: Google no longer confirms their sign-in, so the token is held until they do"
+	membershipHeldGraceText     = "no refresh confirmed this token's owner in 24 hours; the token works again at the next confirmation"
+	membershipHeldDirectoryText = "Google's Workspace Directory no longer confirms this token's owner; the token works again once it does"
 )
 
 // errMembershipHeld is the refusal of a held person's credential, saying text.
@@ -695,10 +698,17 @@ const ownerHoldColumns = `coalesce(people.held_since > people.signed_in_at, fals
 // confirmation asks Standing itself, with owner as model.CanonicalLogin spells it, which may
 // refresh the owner with Google: a held answer is 401 MEMBERSHIP_HELD with its rule's words, and
 // one it cannot give is 503 IDENTITY_UNAVAILABLE, never an accept.
+//
+// Under IAP identity (Standing.ChecksDirectory) it asks Standing at every use, before those steps:
+// IAP keeps no refresh token, so the fast path for an owner with none would serve every token past
+// the Directory's deadline, and the Directory, not a sign-in, records and ends a hold. A held
+// answer is 401 MEMBERSHIP_HELD in the Directory's words, and an unavailable one
+// (identity.Standing.Unavailable: no Active Directory answer in 24 hours) 503 IDENTITY_UNAVAILABLE.
 func (s *server) personalTokenHeld(ctx context.Context, owner string, hold ownerHold) error {
 	switch {
 	case s.deps.Standing == nil:
 		return nil
+	case s.deps.Standing.ChecksDirectory():
 	case hold.recorded:
 		return errMembershipHeld(membershipHeldText)
 	case !hold.stored, hold.age != nil && *hold.age < identity.MembershipMaxAge:
@@ -707,16 +717,27 @@ func (s *server) personalTokenHeld(ctx context.Context, owner string, hold owner
 	standing, err := s.deps.Standing.Standing(ctx, owner)
 	if err != nil {
 		slog.Warn("dispatch: a personal token was refused: whether Dispatch holds its owner could not be read", "error", err)
-		return errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
-			"whether this token's owner may still act could not be read; try again in a minute")
+		return errOwnerStandingUnavailable()
 	}
 	switch {
+	case standing.Unavailable():
+		return errOwnerStandingUnavailable()
 	case !standing.Held:
 		return nil
+	case s.deps.Standing.ChecksDirectory():
+		return errMembershipHeld(membershipHeldDirectoryText)
 	case standing.ByGrace && !standing.Unopenable:
 		return errMembershipHeld(membershipHeldGraceText)
 	}
 	return errMembershipHeld(membershipHeldText)
+}
+
+// errOwnerStandingUnavailable is a personal token whose owner Dispatch can neither hold nor serve:
+// Standing failed, or under IAP no Active Directory answer confirmed them in 24 hours. It is never
+// an accept.
+func errOwnerStandingUnavailable() error {
+	return errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+		"whether this token's owner may still act could not be read; try again in a minute")
 }
 
 // tokenAccountReplaced is the SQL expression, over the row agent_tokens joined to its owner's

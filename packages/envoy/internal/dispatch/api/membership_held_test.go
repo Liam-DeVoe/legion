@@ -31,11 +31,13 @@ import (
 )
 
 // standingFake is a Deps.Standing answering what answer says (not held while it is nil), and
-// keeping each email it was asked about, so a test counts what a check cost.
+// keeping each email it was asked about, so a test counts what a check cost. directory is its
+// ChecksDirectory: false, cookie identity, unless a test of IAP identity sets it.
 type standingFake struct {
-	mu     sync.Mutex
-	asked  []string
-	answer func(email string) (identity.Standing, error)
+	mu        sync.Mutex
+	asked     []string
+	answer    func(email string) (identity.Standing, error)
+	directory bool
 }
 
 func (f *standingFake) Standing(_ context.Context, email string) (identity.Standing, error) {
@@ -48,6 +50,8 @@ func (f *standingFake) Standing(_ context.Context, email string) (identity.Stand
 	}
 	return answer(email)
 }
+
+func (f *standingFake) ChecksDirectory() bool { return f.directory }
 
 // answers makes every later call answer standing and err.
 func (f *standingFake) answers(standing identity.Standing, err error) {

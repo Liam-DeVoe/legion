@@ -23,7 +23,6 @@ const runbookPath = "../../../../../docs/site/src/content/docs/dispatch/running-
 const (
 	brokerURLLead      = "Every block below that reads the broker's database reaches it with `psql`"
 	madeAgainLead      = "A broker database **made again**, rather than restored, has no such moment"
-	writeBackLead      = "The broker refuses an account it was told no longer holds an address"
 	brokerRestoredLead = "The other way round, when it is **the broker's database that was restored alone**"
 )
 

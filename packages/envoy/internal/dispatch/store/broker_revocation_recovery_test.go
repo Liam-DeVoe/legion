@@ -224,3 +224,64 @@ func TestAnAccountWrittenBackByItselfIsRecoveredByRecordingTheSkippedRevocation(
 		t.Errorf("control: the block without its settle leaves %s owing %v; want member-a's still owed before member-b's, so the settle is what ends it", control, got)
 	}
 }
+
+// TestAnAccountWrittenBackOverARevocationPaidBeforeIsRecordedAgain runs the same recovery where
+// the replaced account's revocation already has a row: member-a and member-b each held the address
+// twice, so member-b's revocation from member-a's earlier take-back was recorded and paid. The
+// recovery's record of member-b then meets that row, and its conflict arm makes it owed again
+// under its next generation, naming member-a as its holder at the address's session generation, so
+// the loop ends member-b's credentials, as a sign-in by member-a would have.
+//
+// Control, in the test: at another address with the same history, the block with its conflict arm
+// made do nothing leaves member-b's paid row as it was and nothing of member-b owed, so the arm is
+// what records it.
+func TestAnAccountWrittenBackOverARevocationPaidBeforeIsRecordedAgain(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	people := brokerPeople(database)
+	revocations := NewBrokerRevocations(database.Pool)
+	statements := operatorBlock(t, skippedRevocationDocs, "insert into broker_revocations ")
+	// paidThenWrittenBack gives email the history: member-a, member-b, member-a (whose sign-in
+	// records member-b's revocation, which the loop then pays), member-b again, and a statement
+	// writing member-a back into people.sub by itself.
+	paidThenWrittenBack := func(email string) {
+		t.Helper()
+		signInAll(t, people, email, "member-a", "member-b", "member-a")
+		if _, err := database.Pool.Exec(ctx, `update broker_revocations set done_at = now() where email = $1 and subject = 'member-b' and done_at is null`, email); err != nil {
+			t.Fatalf("the payment of member-b's revocation at %s: %v", email, err)
+		}
+		signInAll(t, people, email, "member-b")
+		if _, err := database.Pool.Exec(ctx, `update people set sub = 'member-a' where email = $1`, email); err != nil {
+			t.Fatalf("the statement writing member-a back by itself at %s: %v", email, err)
+		}
+		rows := brokerRevocationsOf(t, database, email)
+		paid := brokerRevocationRow{Issuer: canonicalIssuer, Subject: "member-b", HolderSubject: "member-a", Generation: 1, Done: true}
+		if !slices.Contains(rows, paid) || !slices.Contains(rows, owedRow("member-a", "member-b", 2)) {
+			t.Fatalf("before the recovery, the revocations of %s are %+v; want member-b's paid at generation 1 and member-a's owed at generation 2", email, rows)
+		}
+	}
+
+	const email = "written-back-paid@example.com"
+	paidThenWrittenBack(email)
+	runOperatorBlock(t, database.Pool, statements, email, "member-b")
+	want := OwedBrokerRevocation{Email: email, Issuer: canonicalIssuer, Subject: "member-b", HolderSubject: "member-a", Generation: 2,
+		SessionGeneration: new(sessionGenerationOf(t, database.Pool, email))}
+	if owing, err := revocations.Owing(ctx, email); err != nil || len(owing) != 1 || !reflect.DeepEqual(owing[0], want) {
+		t.Fatalf("after the recovery, %s owes %s, %v; want %s alone, member-a's settled", email, owedText(owing...), err, owedText(want))
+	}
+
+	const control = "written-back-paid-control@example.com"
+	paidThenWrittenBack(control)
+	const arm = " on conflict (email, issuer, subject) do update "
+	inert := slices.Clone(statements)
+	last := len(inert) - 1
+	cut := strings.Index(inert[last], arm)
+	if cut < 0 {
+		t.Fatalf("the block's record %q has no conflict arm %q to leave out", inert[last], arm)
+	}
+	inert[last] = inert[last][:cut] + " on conflict (email, issuer, subject) do nothing"
+	runOperatorBlock(t, database.Pool, inert, control, "member-b")
+	if owing, err := revocations.Owing(ctx, control); err != nil || len(owing) != 0 {
+		t.Errorf("control: the block with its conflict arm made do nothing leaves %s owing %s, %v; want nothing, so the arm is what records member-b again", control, owedText(owing...), err)
+	}
+}

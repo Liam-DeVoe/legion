@@ -293,8 +293,9 @@ pair. While the two databases agree, Dispatch's loop never hears that answer for
 It means the broker applied a later replacement at the address than the one the row names: a
 Dispatch database recreated or restored alone, or a generation written by hand at either. Outside
 a reset, run the reset below. After one, the reset has already ended every credential the row
-would end, so settle it with `envoy-dispatch clear-broker-revocation '<address>'
-'<subject>:<generation>'`, naming it as the command's list prints it.
+would end and settled every restored debt, so settle a later `superseded` row with
+`envoy-dispatch clear-broker-revocation '<address>' '<subject>:<generation>'`, naming it as the
+command's list prints it.
 
 ### After a Dispatch database restored or made again alone
 
@@ -314,7 +315,9 @@ every agent a new personal token. Four steps, in order:
 
 Stop every Dispatch process before the first step (scale its Deployment to zero), as the move
 between the pool and a domain below does, so no sign-in and no token mint runs while the steps
-do; the broker keeps serving.
+do; the broker keeps serving. Start step 2 no sooner than one hour after the database was lost:
+the broker can still trade a Google ID token it accepted before the address moved during that
+hour, and restored Dispatch can still record that old account until the reset's steps finish.
 
 **End every browser session and revoke every personal token.** A cookie carries its address and a
 generation, and Dispatch admits it while the generation is its address's in `user_sessions`, so
@@ -324,12 +327,14 @@ the epoch at the raise, the broker's greatest recorded generation plus one, and 
 and floor Dispatch holds plus one. It writes that number first as the deployment's floor
 (`session_generation_floors`, the row `*`, migration `20261119183355`), where every session row
 made later starts, so an address the restored database has never seen also starts above every
-cookie of the lost history; then it raises the rows; then it revokes every personal token, each
-of which a restored database may have brought back from an account that no longer holds its
-address. The time term is what keeps a second restore from undoing the first reset: restored to
-before it, the database loses both the floor and the raised rows, and the cookies issued under
-the first reset's number would match a raise to that same number again; a reset run later takes a
-later time, so its number is above the first one's, as long as the database's clock has not been
+cookie of the lost history; then it raises the rows, revokes every personal token, and settles
+every restored broker revocation, each of which the credentials and directory steps cover instead
+of letting the first pass after the reset apply it at the broker. A restored database may have
+brought each token back from an account that no longer holds its address. The time term is what
+keeps a second restore from undoing the first reset: restored to before it, the database loses both
+the floor and the raised rows, and the cookies issued under the first reset's number would match a
+raise to that same number again; a reset run later takes a later time, so its number is above the
+first one's, as long as the database's clock has not been
 set back by more than the time between the two. The broker's term keeps the number at or above
 every generation the broker recorded, so it refuses no approve `APPROVER_REPLACED` for it. The
 number is about 1.8 × 10¹⁵, inside a JSON number's exact range. The block reads the broker's
@@ -344,11 +349,12 @@ SQL
 ) || { echo 'UNKNOWN: the broker database could not be read, so nothing was reset'; exit 1; }
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v broker_greatest="$greatest" <<'SQL'
 begin;
-lock table session_generation_floors, user_sessions, agent_tokens in exclusive mode;
+lock table session_generation_floors, user_sessions, agent_tokens, broker_revocations in exclusive mode;
 create temp table reset_generation on commit drop as select greatest((extract(epoch from clock_timestamp()) * 1000000)::bigint, :'broker_greatest'::bigint + 1, coalesce((select max(generation) from user_sessions), 0) + 1, coalesce((select max(generation) from session_generation_floors), 0) + 1) as generation;
 insert into session_generation_floors (login, generation) select '*', generation from reset_generation on conflict (login) do update set generation = excluded.generation where excluded.generation > session_generation_floors.generation;
 update user_sessions set generation = r.generation from reset_generation r where user_sessions.generation < r.generation;
 update agent_tokens set revoked_at = now() where revoked_at is null;
+update broker_revocations set done_at = now() where done_at is null;
 select generation from reset_generation;
 commit;
 SQL
@@ -367,8 +373,11 @@ block below keeps it. The subcommand writes the broker's database as the serving
 it runs wherever your deployment runs a one-off process of the broker's image, with the serving
 broker's settings: its database URL and whatever it signs in to the database with,
 `BROKER_PUBLIC_URL`, and its secret store's settings, with `BROKER_SIGNIN=off` in place of every
-`BROKER_SIGNIN_*` setting where the image has that setting. `broker_run` below is the command
-that runs its arguments there. Each call that fails prints `NOT REVOKED <id>` or
+`BROKER_SIGNIN_*` setting where the image has that setting. With that switch, leave every model
+judge setting unset too: the broker refuses a judge beside sign-in off because no request waits for
+a person, and the broker's [Running a subcommand](/legion/broker/operate/#running-a-subcommand)
+lists them all. `broker_run` below is the
+command that runs its arguments there. Each call that fails prints `NOT REVOKED <id>` or
 `NOT ENDED <login>`, and the last step reads the broker's database again:
 
 ```sh
@@ -391,7 +400,7 @@ logins | while read -r id approver; do
   curl -sS --fail-with-body -w '\n' -X POST -H @"$header" -d "{\"approver\":\"$approver\"}" "$broker_url/v1/launcher-credentials/$id/revoke-by-approver" || echo "NOT REVOKED $id"
 done
 pages | while read -r login; do
-  broker_run envoy-broker end-sessions "$login" || echo "NOT ENDED $login"
+  broker_run envoy-broker end-sessions "$login" </dev/null || echo "NOT ENDED $login"
 done
 if left=$( { signins && logins && pages; } ); then
   if [ -z "$left" ]; then echo 'no person credential is live at the broker'; else printf 'STILL LIVE:\n%s\n' "$left"; false; fi
@@ -405,9 +414,7 @@ Only `no person credential is live at the broker` means done. `STILL LIVE` lists
 machine login by id and person, and each login with a page session, that no call ended; the lines
 above give the broker's answer for each: for `ACCOUNT_TOKEN_EXPIRED` mint another token, for any
 other answer fix what it names, and run the block again. `UNKNOWN` says nothing about the broker:
-run it again once `$BROKER_PSQL_URL` connects. Each machine logs in again
-(`agent-secrets machine login`, approved by its person) and each person signs in again on the
-approval page and with `agent-secrets login`.
+run it again once `$BROKER_PSQL_URL` connects.
 
 **Clear a refusal only for the directory's holder.** The broker refuses each account a
 revocation named, under each address, and a restored Dispatch cannot tell which of those refusals
@@ -415,11 +422,13 @@ are right: a take-back the lost database still owed leaves the broker refusing t
 gives the address now. Only the identity provider settles it, so read, for each address the broker
 refuses any account at, which account holds the address in the Workspace directory, whose user
 `id` is the Google `sub` an ID token carries ("equivalent to the ID exposed in the Directory API",
-Google's token types page), with a token holding
+Google's token types page). Set `DIRECTORY_TOKEN` to a Workspace directory read token from wherever
+the deployment keeps it, holding
 `https://www.googleapis.com/auth/admin.directory.user.readonly`. The directory's answer counts only
-when it names the address itself as `primaryEmail`, since `users.get` answers an alias too; any
-other answer, and every non-200, counts as no account. The directory answers `404` for an address
-that is no account of the organization: someone from outside the domain
+when it is `200` and names the address itself as `primaryEmail`, since `users.get` answers an alias
+too; a `404` counts as no account. Every other status is `UNKNOWN`, leaves every refusal alone and
+makes the block fail, so repair the directory read before continuing. The directory answers `404`
+for an address that is no account of the organization: someone from outside the domain
 ([People from outside the domain](#people-from-outside-the-domain)) and a deleted Workspace user
 alike. Where it names a refused account, clear that one refusal, with the broker clear above;
 every other refusal stays. The token goes in a file curl reads the header from, never in the
@@ -432,9 +441,22 @@ set -o pipefail
 header=$(mktemp) || exit 1
 trap 'rm -f "$header"' EXIT
 printf 'Authorization: Bearer %s\n' "$DIRECTORY_TOKEN" >"$header"
-psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct person from replaced_person_subjects order by person" | while read -r person; do
-  answer=$(curl -sS --fail-with-body -H @"$header" "https://admin.googleapis.com/admin/directory/v1/users/$person?projection=basic&viewType=admin_view") || { echo "NO ACCOUNT $person: the directory answered no holder"; continue; }
-  id=$(printf '%s' "$answer" | jq -r '.id') && email=$(printf '%s' "$answer" | jq -r '.primaryEmail' | tr '[:upper:]' '[:lower:]') || { echo "NO ACCOUNT $person: the directory's answer did not parse"; continue; }
+people=$(psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct person from replaced_person_subjects order by person") || {
+  echo 'UNKNOWN: the broker database could not be read, so no refusal was cleared'
+  exit 1
+}
+unknown=0
+while read -r person; do
+  [ -n "$person" ] || continue
+  answer=$(curl -sS --fail-with-body -w '\n%{http_code}' -H @"$header" "https://admin.googleapis.com/admin/directory/v1/users/$person?projection=basic&viewType=admin_view" || true)
+  status=${answer##*$'\n'}
+  answer=${answer%$'\n'*}
+  case "$status" in
+  200) ;;
+  404) echo "NO ACCOUNT $person: the directory answered no holder"; continue ;;
+  *) echo "UNKNOWN $person: the directory read failed ($status)"; unknown=1; continue ;;
+  esac
+  id=$(printf '%s' "$answer" | jq -r '.id') && email=$(printf '%s' "$answer" | jq -r '.primaryEmail' | tr '[:upper:]' '[:lower:]') || { echo "UNKNOWN $person: the directory's 200 answer did not parse"; unknown=1; continue; }
   if [ "$email" != "$person" ]; then echo "NO ACCOUNT $person: the directory names $email"; continue; fi
   echo "HOLDER $person $id"
   psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person="$person" -v issuer='https://accounts.google.com' -v subject="$id" <<'SQL'
@@ -443,23 +465,30 @@ select set_config('broker.replaced_subject_delete', jsonb_build_array(pg_current
 delete from replaced_person_subjects where person = :'person' and issuer = :'issuer' and subject = :'subject';
 commit;
 SQL
-done
+done <<< "$people"
+[ "$unknown" -eq 0 ] || exit 1
 )
 ```
 
 `HOLDER` names each address whose holder the directory gave; the delete after it deletes nothing
 where the broker did not refuse that account. `NO ACCOUNT` leaves the address's refusals as they
-are. For an address the directory answered `404` for, the holder is whoever signs in to Dispatch as
-that address once it is back: Google gives an ID token for an address to the account that holds it
-alone. Once that person has signed in, read the account the address records
-(`select sub from people where email = '<address>'`); if the broker refuses that `sub` at the
-address, clear it with the broker clear above.
+are. `UNKNOWN` leaves every refusal alone and makes the block fail, so correct the directory read
+and run the block again. For an address the directory answered `404` for, the holder is whoever
+signs in to Dispatch as that address once it is back: Google gives an ID token for an address to
+the account that holds it alone. Once that person has signed in, read the account the address
+records (`select sub from people where email = '<address>'`); if the broker refuses that `sub` at
+the address, clear it with the broker clear above.
 
-**Start Dispatch again.** Each person signs in again. A sign-in by an account other than the one
+**Start Dispatch again.** A sign-in by an account other than the one
 the restored `people` row records is a replacement Dispatch records as any other: it ends the
 recorded account's sessions, revokes its tokens, and owes the broker its revocation, at the raised
 generation, which the broker applies. The directory's holder can sign in and approve; an account
 the broker refuses that the directory did not name stays refused.
+
+Only after step 4 has started Dispatch, each machine logs in again (`agent-secrets machine login`,
+approved by its person) and each person signs in again on the approval page and with
+`agent-secrets login`. Mint every agent a new personal token too, including the Legion daemon's
+token in its `dispatch_token_file`.
 
 `api.TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal` runs these blocks from this
 page against Dispatch's database and a real broker's, over the histories a lone restore leaves:
@@ -491,10 +520,12 @@ it lifts any refusal of the address's account now. So the margin only has to cov
 an hour covers a rounded moment too; widen it where the two clocks are further apart than that, or
 where the backup's moment is less exact.
 
-A broker database **made again**, rather than restored, has no such moment: it has forgotten
-every refusal and every replacement. Give the block `-infinity`, so it records again every
-revocation Dispatch has ever settled, and the loop tells the broker each. That is the whole of
-its recovery; nothing else below applies to it.
+A broker database **made again**, rather than restored, has no such moment: it has forgotten every
+refusal and every replacement. Give the block `-infinity`, so it records again every revocation
+Dispatch has ever settled, and the loop tells the broker each. If the deployment floor row `*`
+exists, a reset ran before this broker was made again; after the record-again block, run those same
+credentials and directory blocks again before starting Dispatch. The broker made again has no
+backup moment to compare, so the floor's existence is the instruction.
 
 The block records each again at its next generation, naming the account the address records now
 as its holder and the address's session generation, exactly as the record-again block above does
@@ -522,6 +553,20 @@ revocation an operator settled by hand with `clear-broker-revocation` is recorde
 is right — the broker was never told — unless the account it names holds the address again, which
 the statement leaves out.
 
+A broker backup can also predate a reset that ended every person credential at the broker. Read the
+reset's moment from Dispatch's deployment floor:
+
+```sh
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -At -c "select to_timestamp(generation / 1000000.0) from session_generation_floors where login = '*'"
+```
+
+The time term of the reset writes that moment, unless Dispatch's clock moved backwards before the
+reset; compare it with the broker's backup moment. When the floor is later, the broker restore has
+revived credentials the reset ended that no revocation names. After the record-again block above
+and before starting Dispatch, run **End every person's credential at the broker** and **Clear a
+refusal only for the directory's holder** again. The first ends every restored person credential;
+the second restores the directory's decision about any refusal the backup brought back.
+
 A revocation an earlier head of this branch recorded holds no session generation, and the broker
 refuses a revoke without one (`400 SESSION_GENERATION_REQUIRED`), so the loop's ERROR line for it
 repeats each retry. It holds back no other revocation of its address; record it again with the
@@ -544,16 +589,33 @@ but that page says nothing of the refresh tokens already issued. Signing each us
 <https://docs.aws.amazon.com/cognito-user-identity-pools/latest/APIReference/API_AdminUserGlobalSignOut.html>),
 but it leaves sign-in working, so it comes second. It ends every token the pool issued the user,
 for every app client of the pool, not Dispatch's alone. The pool's id is the last part of
-`DISPATCH_SIGNIN_ISSUER`, and a later return to the pool needs a new app client:
+`DISPATCH_SIGNIN_ISSUER`, and a later return to the pool needs a new app client. Delete the app
+client first; `aws` prints the error of a call that fails and exits non-zero:
 
 ```sh
-pool='<the pool id, the last part of DISPATCH_SIGNIN_ISSUER>'
-aws cognito-idp delete-user-pool-client --user-pool-id "$pool" --client-id '<DISPATCH_SIGNIN_CLIENT_ID>'
-aws cognito-idp list-users --user-pool-id "$pool" --query 'Users[].Username' --output text | tr '\t' '\n' |
-while read -r user; do
-  aws cognito-idp admin-user-global-sign-out --user-pool-id "$pool" --username "$user" || echo "NOT SIGNED OUT $user"
-done
+aws cognito-idp delete-user-pool-client --user-pool-id '<the pool id, the last part of DISPATCH_SIGNIN_ISSUER>' --client-id '<DISPATCH_SIGNIN_CLIENT_ID>'
 ```
+
+Only once that call has succeeded, sign every user of the pool out. A second sign-out of a user
+does no harm, so the block can run again until it is done:
+
+```sh
+(
+pool='<the pool id, the last part of DISPATCH_SIGNIN_ISSUER>'
+users=$(aws cognito-idp list-users --user-pool-id "$pool" --query 'Users[].Username' --output text) || { echo 'UNKNOWN: the pool could not be listed, so no user was signed out'; exit 1; }
+failed=0
+while read -r user; do
+  [ -n "$user" ] || continue
+  aws cognito-idp admin-user-global-sign-out --user-pool-id "$pool" --username "$user" </dev/null || { echo "NOT SIGNED OUT $user"; failed=1; }
+done <<< "$(printf '%s\n' "$users" | tr '\t' '\n')"
+[ "$failed" -eq 0 ] || exit 1
+echo 'every user of the pool is signed out'
+)
+```
+
+Only `every user of the pool is signed out` means done. `UNKNOWN` signs no one out, and
+`NOT SIGNED OUT` names each user whose call failed, after the error `aws` printed for it: fix what
+the error names and run the block again.
 
 Then stop every Dispatch process still running in pool mode, and only once the last has exited run
 the statements below and end the pool-era machine logins (further down), all before any Dispatch
@@ -633,7 +695,7 @@ that the database could not be read says nothing about the logins: run it again 
 `$BROKER_DATABASE_URL` connects.
 
 That ends every person's machine login that records no approving account, those from before the
-broker recorded approving accounts (its migration 0037) included, with every session each
+broker recorded approving accounts (its migration 0040) included, with every session each
 enrolled; each machine logs in again (`agent-secrets machine login`) and its person approves the
 new code. A service's login, the Legion daemon's, is not among them. Until it runs, whoever the
 pool signed in as an address during the pool era keeps the machines that person logged in reading
@@ -1057,17 +1119,20 @@ Each entry is `{"state": …, "at": …, "cause": …}`:
     and `webhook_redelivery` and `ci_reconcile` are `off` without NATS too.
 - `at` is when the newest attempt was recorded, as its pass ended, by the database's clock, in
   RFC 3339 UTC. It is `null` unless the state is `succeeded` or `failed`.
-- `cause` is the text of the first failure of that attempt, at most 1,024 bytes. A longer text is
-  cut, and ends with `… (cut from <n> bytes)`. It is `null` unless the state is `failed`.
+- `cause` is the class of the first failure of that attempt: `status <n>`, the HTTP status GitHub
+  answered, or `no status` for a failure that names none: GitHub never answered, or the read
+  itself failed on an answer it got. It is `null` unless the state is `failed`.
 
 `github` never decides `ok` or the status: a server serves everything but these reads while
 GitHub fails. Each server keeps a copy of the record of attempts in memory, reads it again each
 time any server records an attempt, and answers from that copy, so `github` sends the database
 nothing and waits on nothing.
 
-A cause can name a repository, because a GitHub error carries the address it asked. `/healthz`
-needs no credential, so whoever reaches the server's HTTP port can read the cause. Serve Dispatch
-on a private network.
+The failure's own text can name a repository, because a GitHub error carries the address it
+asked, and `/healthz` needs no credential, so whoever reaches the server's HTTP port can read the
+answer. So `/healthz` answers the class alone. Read the text, at most 1,024 bytes, in the
+database's `github_read_attempts` table: `select read, at, cause from github_read_attempts;`. A
+longer text is cut, and ends with `… (cut from <n> bytes)`.
 
 The delivery intakes also read GitHub, for each webhook event, and have no entry of their own.
 They report through `delivery_reconcile`: the reconcile reads the same pull requests and runs with
@@ -1152,7 +1217,7 @@ dashboard's own files does: a caller that sees every public project reads it, th
 shared agent token among them, and a restricted member or a credential that lists its projects
 is refused `403 DEPLOYMENT_READ_REFUSED`. A caller with no credential is refused `401`, whatever
 address or network it comes from.
-It answers in the Prometheus text format with two counters.
+It answers in the Prometheus text format with two counters and four gauges.
 `envoy_dispatch_outbox_publish_failures_total` counts each destination of an event publish that
 was not reached, labelled `reason`. `denied` is a publish NATS refused under the server's own
 grant, `refused` one NATS refuses however often it is retried, `unanswered` a forward NATS took
@@ -1168,6 +1233,18 @@ holder keeps its claim, and the event is retried until the session answers - so 
 here rather than with the failures above, and its event's back-off is logged at INFO
 (`dispatch outbox: event waits for its role's holder`). An event that reaches the dead-letter
 threshold logs at ERROR however it was held.
+
+A copy of a comment's mention waits until every earlier event of its issue that a session may
+take first has been published, so the session takes them in order. The wait has no limit, so it
+shows. `envoy_dispatch_mention_sends_held` counts the mention sends that wait, and
+`envoy_dispatch_mention_send_held_oldest_seconds` is how long the oldest of them has waited.
+`envoy_dispatch_outbox_fallback_copies_held` and
+`envoy_dispatch_outbox_fallback_copy_held_oldest_seconds` are the same for the copies the outbox
+holds for a mention whose send did not settle. The four carry no label: an issue key is private,
+and anyone who reaches the port reads this endpoint. A copy that waits a minute logs one WARN
+that names the owner, the earlier event and that event's last publish error. The cause is the
+earlier event's failed publish, which logs `dispatch outbox: publish event` at ERROR at each
+attempt and counts in `envoy_dispatch_outbox_publish_failures_total`.
 
 ## Behind a proxy
 
@@ -1307,6 +1384,42 @@ Dispatch applies its database migrations every time it starts, before it serves 
 starting together take turns, so a migration runs once. Each migration waits at most five seconds
 for a lock. When something holds the table longer, the start fails and names the migration and
 what it waited on; end the holder, or let it finish, and start again.
+
+Dispatch records each migration it applies: the name and sha256 of the file the version first
+shipped with, which a later edit of the file names in its first `-- replaces:` line, and the sha256
+of the text it applied. At every start, before it applies anything, it compares each recorded
+migration with the file of the same version in the release it runs. A migration recorded before
+this check, with no name, takes the identity the release records of the file and is never
+refused, so the first start of the release that brings the check refuses nothing. When the
+database records another file under a version, or a text of it the release's file does not name,
+as a database that ran another branch's edit does, the start fails before it applies any
+migration, and the log names the version, what the database records and what the release's file
+is. Dispatch judges every recorded migration again before each one it applies, so a start that
+finds such a row only then, because another server recorded it meanwhile, stops before that
+migration and keeps the ones it applied. A database that ran another branch's or an earlier
+commit's migration, or an edit of one, such as a test or preview database, is reset: drop it,
+create it empty, and start Dispatch, which migrates it from the first file. This includes a fresh
+preview or development database that a newer build created and an older build then starts on:
+the older build refuses it, and you reset it. It includes too a development or preview database
+whose rows recorded no name when a branch's build first started on it under this check, where that
+branch edits a migration in place and its file does not yet declare the main branch's identity of
+it in a replaces line: that start recorded the branch's own identity, not the main branch's, and
+the main branch's release refuses it. A branch whose edited file already declares the main
+branch's identity, as the pre-merge check requires, records that identity, and the main branch's
+release starts on it. A migration edited or renamed on purpose takes the
+`-- replaces: <name> sha256:<hex>` line the refusal gives, after the replaces lines it has, and the
+next start accepts the recorded row as it is. A release cannot accept a text it has never seen, so
+it refuses a database whose migration a
+later release applied from an edited text. On a production database, created once, that happens
+only on a rollback by hand to a release the database never ran: roll back only to a release it
+ran, as the auto-deployer does, which goes back to the image that was running. An edited text a
+database ran before this check is not detected: the first start records its own file. To see
+what a start would do, without changing the database, run
+`DATABASE_URL='<your database URL>' envoy-dispatch versions` with the image you mean to roll
+out, where the server would run, as you run its census. On the Kubernetes component
+(`packages/envoy/infra/README.md`, "The pods"), both run in a one-off pod of that image under the
+app's account, with the app's Cloud SQL Auth Proxy sidecar and its `DATABASE_URL`; the README
+gives the commands.
 
 Before you roll a new version out, you can see what its migrations will touch:
 

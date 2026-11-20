@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
 
@@ -67,23 +68,34 @@ type Refresher interface {
 // (ErrMembershipUnreadable) end nothing either: the request is refused with that error and the
 // sign-in kept, so a database blip signs nobody out.
 //
-// Standing answers whether a person's personal tokens and broker credentials are held.
+// Standing answers whether a person's personal tokens and broker credentials are held. Under IAP
+// identity (Directory set) no refresh token is kept, and Standing and the membership pass follow the
+// person's Google Workspace account in the Directory instead (directoryStanding, ConfirmDirectory).
 type Membership struct {
 	People auth.PeopleStore
 	SignIn Refresher
 	Rule   SignInRule
+	// Directory checks each person's Workspace account through the Directory API under IAP
+	// identity (DISPATCH_IDENTITY=iap): nil outside IAP. With it set, nothing is refreshed, and
+	// People must also be a DirectoryPeople, which records each check's outcome.
+	Directory *DirectoryReader
 
 	// refreshes holds one refresh per person in flight in this process: a page load's many
 	// requests and Standing's calls share it. Another server process refreshes on its own, so two
 	// processes that find one confirmation lapsed at once may each refresh it; each records the
 	// refresh token its issuer answered, and the later write stands.
 	refreshes singleflight.Group
+	// checks holds one Directory check per person in flight in this process, which Standing and
+	// the membership pass share, as refreshes does for a refresh.
+	checks singleflight.Group
 	// unavailable maps an email to the unavailable outcome (its time and error) of the last
 	// refresh of that person in this process, while that refresh ended with ErrSignInUnavailable
-	// or ErrMembershipUnreadable: Standing starts no refresh for unavailablePause after it.
+	// or ErrMembershipUnreadable, or of the last Directory check while it was Failed: Standing
+	// starts no refresh or check for unavailablePause after it.
 	unavailable sync.Map
-	// started maps an email to the start time of the refresh running for that person in this
-	// process, so Standing does not wait on one that has already run past standingWait.
+	// started maps an email to the start time of the refresh, or the Directory check, running for
+	// that person in this process, so Standing does not wait on one that has already run past
+	// standingWait.
 	started sync.Map
 }
 
@@ -127,12 +139,33 @@ var endOutcomes = map[auth.EndMode]RefreshOutcome{
 // Standing is whether Dispatch holds a person's personal tokens and broker credentials
 // (Membership.Standing). ByGrace is true when the 24-hour rule or the unopenable rule answered
 // held, and Unopenable when the unopenable rule did. AsOf is the database time of the read the
-// answer rests on: the first read, or the re-read after a refresh.
+// answer rests on: the first read, or the re-read after a refresh or a Directory check.
+//
+// NotHeldUntil is set under IAP identity alone, on an answer that is not held: the last Active
+// Directory answer plus 24 hours, after which the answer is no longer served, or AsOf itself for an
+// answer that is unavailable (Unavailable). It is zero on a held answer and outside IAP.
 type Standing struct {
-	Held       bool
-	ByGrace    bool
-	Unopenable bool
-	AsOf       time.Time
+	Held         bool
+	ByGrace      bool
+	Unopenable   bool
+	AsOf         time.Time
+	NotHeldUntil time.Time
+}
+
+// Unavailable reports an answer under IAP identity that is neither held nor served: no Active
+// Directory answer is younger than 24 hours. Standing writes it as NotHeldUntil equal to AsOf, and
+// a not-held answer always carries a NotHeldUntil later than its AsOf, so it is judged on the
+// database's clock, as every confirmation is. A personal token is then 503 IDENTITY_UNAVAILABLE,
+// never served and never 401 MEMBERSHIP_HELD.
+func (s Standing) Unavailable() bool {
+	return !s.Held && !s.NotHeldUntil.IsZero() && !s.NotHeldUntil.After(s.AsOf)
+}
+
+// ChecksDirectory reports whether m follows the Workspace Directory (IAP identity, Directory set),
+// where no refresh token or sign-in confirmation is kept: a caller's own read of those columns then
+// answers nothing, and only Standing does.
+func (m *Membership) ChecksDirectory() bool {
+	return m.Directory != nil
 }
 
 // Confirm returns nil when email may still use Dispatch, ErrNoIdentity when their sign-in has
@@ -160,14 +193,27 @@ func (m *Membership) ConfirmFor(ctx context.Context, email string) (RefreshOutco
 // flight starts, or joins, the one refresh of email in flight in this process. The refresh
 // belongs to the person, not to the request that found it due: a browser hanging up must neither
 // cancel it nor have its cancellation read as the issuer's refusal, and a caller that stops
-// waiting (Standing) leaves it to run to its own bound.
+// waiting (Standing) leaves it to run to its own bound. It runs on detached(ctx).
 func (m *Membership) flight(ctx context.Context, email string) <-chan singleflight.Result {
 	return m.refreshes.DoChan(email, func() (any, error) {
-		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+		refreshCtx, cancel := context.WithTimeout(detached(ctx), refreshTimeout)
 		defer cancel()
 		outcome, err := m.refresh(refreshCtx, email)
 		return outcome, err
 	})
+}
+
+// detached is the context a flight - a refresh, or a Directory check - runs on, from ctx, the
+// context of the request or pass that started it: ctx's values, none of its cancellation or
+// deadline, and none of the request's own pool bookkeeping. A flight outlives the request and
+// writes the person's state, never the request's work, so it takes no commit step
+// (store.WithoutBeforeCommit): a keyed request's step taken by the flight's transaction would mark
+// the request's Idempotency-Key committed for a write it never made. And it holds a hold mark of
+// its own (store.ForConcurrentWorker): sharing the request's would have the pool read the
+// request's held connection as the flight's, and the flight's as the request's, and refuse the
+// second one (store.ErrNestedAcquire), once the request goes on after Standing stops waiting.
+func detached(ctx context.Context) context.Context {
+	return store.ForConcurrentWorker(store.WithoutBeforeCommit(context.WithoutCancel(ctx)))
 }
 
 // outcomeOf is the RefreshOutcome and error of a finished flight.
@@ -313,12 +359,18 @@ func endModeFor(read auth.PersonMembership, err error) auth.EndMode {
 // The 24-hour rule is not held while the last confirmation is younger than graceWithoutGoogle, and
 // held, ByGrace, after; the unopenable rule is the same, with Unopenable set. Neither records
 // anything. AsOf is the ReadAt of the read the answer rests on: the first read, or the re-read.
+//
+// Under IAP identity (Directory set) step 1 treats the rule as one that holds, and the steps after
+// the read are directoryStanding's: the Workspace Directory, never a refresh, answers.
 func (m *Membership) Standing(ctx context.Context, email string) (Standing, error) {
 	begun := time.Now()
 	email = model.CanonicalLogin(email)
 	membership, found, err := m.People.Membership(ctx, email)
 	if err != nil {
 		return Standing{}, err
+	}
+	if m.Directory != nil {
+		return m.directoryStanding(ctx, email, membership, found, begun)
 	}
 	answer := Standing{AsOf: membership.ReadAt}
 	if !m.Rule.Holds() {

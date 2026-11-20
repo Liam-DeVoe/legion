@@ -117,10 +117,7 @@ type AppContextOptions struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from, which main holds in its own
 	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
-	BuildCommit string
-	// Metrics is the process's metrics registry, which GET /metrics serves; nil serves an empty
-	// one. See api.DepsInput.
-	Metrics        http.Handler
+	BuildCommit    string
 	Sessions       auth.SessionStore
 	People         auth.PeopleStore
 	Identity       identity.Identity
@@ -206,6 +203,12 @@ type AppContextOptions struct {
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
+	// OutboxPublishes is that an outbox publishes this deployment's events (cmd/dispatch: every
+	// deployment but DISPATCH_NATS_DISABLED=1's); see api.Deps.OutboxPublishes.
+	OutboxPublishes bool
+	// Metrics is the process's metrics registry, which GET /metrics serves and the API adds its
+	// held gauges to; nil serves an empty one. See api.Deps.Metrics.
+	Metrics *metrics.Registry
 	// DevSignIn mounts GET /auth/_dev/signin, which issues the session cookie for any person
 	// named with no sign-in issuer exchange, and makes the whole router refuse a request whose Host
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
@@ -290,9 +293,10 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		HorizonStallAfter:      opts.HorizonStallAfter,
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
+		OutboxPublishes:        opts.OutboxPublishes,
+		Metrics:                opts.Metrics,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
-		Metrics:                opts.Metrics,
 		// The process's count of revocations the broker answered superseded.
 		BrokerRevocationsSuperseded: opts.BrokerRevocationsSuperseded,
 	})
