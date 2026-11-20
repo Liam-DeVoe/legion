@@ -53,6 +53,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -359,7 +360,7 @@ type relaySocket struct {
 	replyOrder []forwardedReply
 	// strayLogged is set once this socket has logged a message on its relay subject that was no
 	// relay frame.
-	strayLogged bool
+	strayLogged atomic.Bool
 
 	endOnce sync.Once
 	done    chan struct{}
@@ -589,11 +590,7 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 // stray logs, once a socket, a message on the relay subject that is no relay frame: one whose
 // reply is no relay receipt, which this socket could not publish an answer to.
 func (socket *relaySocket) stray(msg *nats.Msg) {
-	socket.repliesMu.Lock()
-	logged := socket.strayLogged
-	socket.strayLogged = true
-	socket.repliesMu.Unlock()
-	if !logged {
+	if !socket.strayLogged.Swap(true) {
 		socket.sockets.logger.Warn("listener: the relay socket passed over a message on its relay subject whose reply is no relay receipt",
 			slog.String("session_id", socket.session), slog.String("reply", msg.Reply))
 	}
