@@ -210,11 +210,17 @@ export const natsState = {
   /** Each connection `close()` was called on, by the name its dial carried: a dial nothing holds
    *  is never drained, and with `maxReconnectAttempts: -1` it outlives every session. */
   closedNames: [] as string[],
+  /** Every connection the stand-in made, in order, so a row can close one for good, as nats.js
+   *  closes a connection on an authorization error it does not ignore, or on `close()`. */
+  connections: [] as { readonly close: () => Promise<void> }[],
   failConnects: 0,
   /** The error a failed connect throws, as nats.js throws it: its refusal by default, a
    *  resolver's (`getaddrinfo`, its text naming the host) for a row that sees what a notice
    *  carries of it. */
   failError: (): unknown => NatsError.errorForCode(ErrorCode.ConnectionRefused),
+  /** What `closed()` of a connection settles with once it is closed, as nats.js settles it with
+   *  the close's own error (protocol.js:906-913); none by default. */
+  closeError: undefined as Error | undefined,
   /** Every connection reports itself closed, as one NATS dropped does. */
   connectionsClosed: false,
   /** Hands each connect, once recorded, to nats.js itself, for a row that watches what it dials. */
@@ -256,8 +262,9 @@ const clipboardState = {
 // The dial `extensions/envoy.ts` opens NATS with, handed to it below through
 // `setNatsConnectForTests`. The `nats` module itself stays as it is: a row that sets
 // `natsState.realConnect` gets nats.js's own connect from here, and every file in this `bun test`
-// process — `card-delivery-omp.test.ts` among them — reads the real module.
-const natsStandInConnect = async (options: {
+// process — `card-delivery-omp.test.ts` among them — reads the real module. A row that hands the
+// entry a plan of redials of its own hands it this stand-in again with that plan.
+export const natsStandInConnect = async (options: {
   readonly name: string;
   readonly servers: readonly string[];
   readonly authenticator?: unknown;
@@ -285,15 +292,15 @@ const natsStandInConnect = async (options: {
     return realConnect(options as unknown as Parameters<typeof realConnect>[0]);
   }
   let closed = false;
-  // nats.js's `closed()`: settles once the connection is closed for good.
-  const ended = Promise.withResolvers<void>();
-  return {
+  // nats.js's `closed()`: settles once the connection is closed for good, with the close's error.
+  const ended = Promise.withResolvers<Error | undefined>();
+  const made = {
     isClosed: () => closed || natsState.connectionsClosed,
     closed: () => ended.promise,
     close: async () => {
       closed = true;
       natsState.closedNames.push(name);
-      ended.resolve();
+      ended.resolve(natsState.closeError);
     },
     drain: async () => {
       natsState.drainStarted = true;
@@ -435,6 +442,8 @@ const natsStandInConnect = async (options: {
       return subscription;
     },
   };
+  natsState.connections.push(made);
+  return made;
 };
 
 mock.module("@oh-my-pi/pi-coding-agent", () => ({
@@ -576,6 +585,10 @@ const { resetNatsConnectForTests, resetSessionRoleLoggedForTests, setNatsConnect
   (await import(natsStandInEntry)) as typeof EnvoyEntry;
 restoreEntryLoad();
 
+// A row that dials with a plan of redials of its own, or with a dial of its own, sets it here,
+// and sets the stand-in back with the default plan when it ends.
+export { setNatsConnectForTests };
+
 function setUpRow(): void {
   // `bun test` runs every file in one process: a Legion suite's bootstrapped-session record on
   // the process-wide interface would otherwise make every transcript here look like a
@@ -691,6 +704,7 @@ async function tearDownRow(): Promise<void> {
   natsState.presented.length = 0;
   natsState.timeline.length = 0;
   natsState.closedNames.length = 0;
+  natsState.connections.length = 0;
   // A test aborted at Bun's own timeout never runs its `finally`: a connect left parked here
   // would park every later test's connect for the rest of the process.
   natsState.heldConnect = undefined;
@@ -704,6 +718,7 @@ async function tearDownRow(): Promise<void> {
   natsState.controlsByTopic.clear();
   natsState.failConnects = 0;
   natsState.failError = () => NatsError.errorForCode(ErrorCode.ConnectionRefused);
+  natsState.closeError = undefined;
   natsState.connectionsClosed = false;
   natsState.failSubscribes = 0;
   natsState.realConnect = false;

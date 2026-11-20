@@ -898,13 +898,16 @@ export function inboundRestoredNoticeText(why: string): string {
  * it is told that it receives nothing (`inboundUnavailable`). At a pod's start the first NATS
  * dial can fail, and the relay opens on a later try. That race closes within about a minute
  * (dispatch://INFRA-3589, R24): on 2026-11-16 an Oh My Pi session whose NATS was held closed
- * for its first pass took 67 s from its start to its first accepted registration. pi-envoy tries
- * again every 15 s (`NATS_RETRY_INTERVAL_MS`), so a real outage is told within about 135 s of
- * the start, inside the listener's 300 s live window. The bound starts at the first registration
- * that found no relay subject, not at the start. A session whose NATS connection presents its
- * broker token (`NATS_AUTH=broker`) waits up to 20 s for the token before each dial
- * (`TRADE_DEADLINE_MS`), so its first such registration and each later try come up to 20 s
- * later, and its outage is told within about three minutes of the start, still inside that
+ * for its first pass took 67 s from its start to its first accepted registration. The bound
+ * starts at the first registration that found no relay subject, not at the start.
+ *
+ * A pass's dial dials again after a failure, for at most 25 s (`connectNats`, `NATS_DIAL_PLAN`),
+ * so a pass whose dials all fail registers up to 25 s after it began. pi-envoy starts the next
+ * pass at the first 15 s tick after the last one ended (`NATS_RETRY_INTERVAL_MS`). So a real
+ * outage is told within about three minutes of the start, inside the listener's 300 s live
+ * window. A session whose NATS connection presents its broker token (`NATS_AUTH=broker`) waits up
+ * to 20 s for the token before each dial (`TRADE_DEADLINE_MS`), so each of its passes takes up to
+ * 20 s more, and its outage is told within about four minutes of the start, still inside that
  * window.
  */
 export const INBOUND_FIRST_OPEN_BOUND_MS = 120_000;
@@ -1045,6 +1048,12 @@ export interface RelayRegistration<Result> {
    * session holds no relay subject (no NATS connection yet, or inbound off for this session).
    */
   readonly relay: RegisteringRelay | undefined;
+  /**
+   * Why the session holds no relay subject when `relay` is undefined, in words a notice may hold
+   * (`natsFailureReason` of the failure of the NATS call that would have opened it); the refusal and
+   * the outage notice name it. Undefined when the host has no failure to name.
+   */
+  readonly relayMissing?: string;
   /** This session's own agent subject, which every registration carries. */
   readonly ownAgentSubject: string;
   /** Every topic the session follows now, filtered by `registrationTopics`. */
@@ -1063,6 +1072,13 @@ export interface RelayRegistration<Result> {
 }
 
 /**
+ * `registerWithRelay`'s refusal of a session that holds no relay subject, so a host can tell it
+ * from a refusal the listener sent. Its message names why the relay is missing when the host said
+ * (`relayMissing`).
+ */
+export class NoRelaySubjectError extends Error {}
+
+/**
  * One registration, as every host that holds a relay makes it: the topics the listener will
  * store (`registrationTopics`), stamped on the relay before the registration carries them, then
  * sent, with the outage told once whichever way it ends.
@@ -1075,6 +1091,7 @@ export interface RelayRegistration<Result> {
  */
 export function registerWithRelay<Result>({
   relay,
+  relayMissing,
   ownAgentSubject,
   followed,
   roles,
@@ -1083,8 +1100,8 @@ export function registerWithRelay<Result>({
   answered,
 }: RelayRegistration<Result>): Promise<Result> {
   if (relay === undefined) {
-    const refused = new Error(
-      "this session holds no relay subject, so the listener can give it no consumer and it can receive nothing"
+    const refused = new NoRelaySubjectError(
+      `this session holds no relay subject, so the listener can give it no consumer and it can receive nothing${relayMissing === undefined ? "" : `, because its relay subject could not be opened: ${relayMissing}`}`
     );
     outage.noRelay(refused);
     return Promise.reject(refused);
