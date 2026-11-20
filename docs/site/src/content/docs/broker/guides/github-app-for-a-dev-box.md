@@ -269,7 +269,9 @@ the JSON object of installations, so a command that sends it to GitHub in a head
 Such a profile needs one account in effect: give `--target` when it names more than one.
 
 The broker asks GitHub for the profile's permissions cut to what the App's installation holds, and
-names each permission it left out in the release (`github_left_out`).
+names each permission it left out in the release (`github_left_out`); `agent-secrets` writes one
+line on stderr for each account, `the profile <NAME> left out <permissions> for <account>, since
+the installation there does not hold them`, and runs the command.
 Every GitHub profile names `metadata: read`, which GitHub grants with every installation token, so
 an installation that holds none of the profile's other permissions gets a token of `metadata`
 alone, and the release names each of the others as left out.
