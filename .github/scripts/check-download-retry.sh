@@ -351,11 +351,12 @@
 #      steps of one action cannot be priced by two entries of one library, and one entry cannot
 #      be charged to one of two steps of one name.
 #   5. A LOOP'S PASSES: a `for x in <literal words>`, 19, of which dequeued.yaml's seven-pass
-#      timeline poll is the one around a priced call, with a `sleep <n>` of that loop's body
-#      as its wait. A `$(seq …)` list, a `for ((…))`, a `while`, and a `for` over anything else
-#      is a loop whose passes this check does not read, refused where it holds a priced call
-#      unless a DECLARED_LOOPS entry writes its seconds; the tree's four `$(seq …)` loops and
-#      its one `for ((…))`, over check-pr-text.sh's `lists`, enter no figure. A loop runs from a
+#      timeline poll is the one around a priced call, with each `sleep <n>` of that loop's body
+#      as its waits, charged as rule 8 says (sleep_of). A `$(seq …)` list, a `for ((…))`, a
+#      `while`, and a `for` over anything else is a loop whose passes this check does not read,
+#      refused where it holds a priced call unless a DECLARED_LOOPS entry writes its seconds;
+#      the tree's four `$(seq …)` loops and its one `for ((…))`, over check-pr-text.sh's `lists`,
+#      enter no figure. A loop runs from a
 #      bare `for`, `while`, `until` or `select` opening a command to a bare `done` opening one,
 #      and such a word in quotes or after a backslash, or a `case` pattern or an extglob
 #      alternative that opens a command, `done)` on a line of its own or after `;;`, `(done)` or
@@ -422,6 +423,14 @@
 #     `}` that bash reads as a word of its command (in quotes, after a backslash, or after a
 #     word that is no reserved word), and a loop's own word bash reads as another word, each
 #     refused where the text fetches anywhere (whole_text);
+#   - a `sleep <n>` written after a test of an `&&` or an `||` in the body of a loop that holds a
+#     fetch, where every loop around it writes its passes, but `[ "$x" = <last> ] || sleep <n>`,
+#     the loop's own variable against the last word of its list, in a body that sets no `x`:
+#     rule 8 charges a sleep at every pass, and every pass but the last behind that one test,
+#     and reads no other test's passes; and a loop whose passes this check does not read and
+#     whose body sleeps, in the body of a loop whose passes it reads and that holds a fetch
+#     beside it, since each pass of that loop waits for every run of this one (sleep_of,
+#     close_loop; dispatch://INFRA-1545, round 44);
 #   - a command after the `}` that closes a function, on a line its body holds a command of,
 #     which is read as the function's;
 #   - a definition of a function named `retry_fetch` anywhere but in .github/scripts/ci-retry.sh,
@@ -842,15 +851,34 @@
 #          the step's once per pass, as a call written in the `run:` would be.
 #
 #      Two written calls of one function are two, branches or not, as two fetches written in
-#      one `run:` are two: this check reads no branch, and the figure it sums is the one a step
-#      could wait for. The pass count is read where the loop writes it, and only in the shape
-#      this tree writes, a `for x in 1 2 3 4 5 6 7`, whose list is literal words (THE FORMS RULE
-#      8 READS, 5). dequeued.yaml's timeline read is one `retry_fetch` call of 300 s written
-#      inside a seven-pass poll, so the step waits 2100 s for it and not 300 s. The
-#      loop's own waits between the passes are added where they are written as a `sleep <n>` of
-#      that loop's body — the poll's six 10 s waits above — and a loop whose wait is computed
-#      rather than written adds none, so the figure there is the attempts alone and the passes
-#      between them cost nothing in it.
+#      one `run:` are two: this check reads no branch around a fetch, and the figure it sums is
+#      the one a step could wait for. The pass count is read where the loop writes it, and only
+#      in the shape this tree writes, a `for x in 1 2 3 4 5 6 7`, whose list is literal words
+#      (THE FORMS RULE 8 READS, 5). dequeued.yaml's timeline read is one `retry_fetch` call of
+#      300 s written inside a seven-pass poll, so the step waits 2100 s for it and not 300 s.
+#      The loop's own waits are the `sleep <n>` commands of its body, each charged as bash runs
+#      it (sleep_of). One written as a command of its own runs after every pass, the last
+#      included, so it is charged once for each pass, and two of them in one body are both
+#      charged. One in a branch of an `if` or a `case` runs at most once in a pass, so the
+#      construct is charged its longest branch at every pass. And one the text itself skips on
+#      the last pass, read literally as dequeued.yaml's `[ "$attempt" = 7 ] || sleep 10` is, the
+#      loop's own variable tested against the last word of its list in a body that sets it
+#      nowhere, is charged once for each pass but the last: the poll's six 10 s waits above. A
+#      sleep behind any other test of an `&&` or an `||`, or behind that one where the body sets
+#      its variable, is refused by name where its loop holds a fetch (REFUSED BY NAME above).
+#      A loop in the body of a loop runs, its sleeps among it, at each pass of the outer one, and
+#      its whole run's sleeps are that pass's, whether the fetch is in it or beside it, so a
+#      call is charged the sleeps of one run of the outermost loop around it. r43's step, `for
+#      round in 1 2` around `for pass in 1 2` around a 300 s script and `sleep 600`, with `sleep
+#      480` after the inner loop, waits 4 x 300 + 4 x 600 + 2 x 480 = 4560 s; and `for i in 1 2;
+#      do <fetch>; for j in 1 2 3; do sleep 100; done; done` waits 2 x 3 x 100 s beside its
+#      fetches. Until round 44 a loop's longest sleep alone was charged, once fewer times than
+#      the loop's passes, and only for the loops around the call, so the first step was charged
+#      2880 s and the second loop's sleeps nothing (dispatch://INFRA-1545, the tester's rounds
+#      43 and 44). A loop in the body whose passes this check does not read, and whose body
+#      sleeps, is refused by name where the loop around it holds a fetch beside it. A loop whose
+#      wait is computed rather than written adds none, so the figure there is the attempts alone
+#      and the passes between them cost nothing in it.
 #
 #      A loop whose pass count is not written — a `while read` over a list the run makes, a
 #      `while :` over the pages of a route — is a count this check does not make, and no pass
@@ -1404,7 +1432,7 @@ HEREDOC_DATA = {"python3", "cat", "read"}
 # name or a digit alone, so `"$@"` and `"${cmd[@]}"` ran a fetching function no reading charged.
 VARIABLE_CALL = re.compile(r"\$(?:\{[^{}]*\}|[A-Za-z_]\w*|\d|[@*#?$!-])")
 # A word of a `for` list that is itself and nothing else: no expansion, no glob, no quoting. A
-# list of these is the one pass count rule 8 reads off a loop (passes_of below).
+# list of these is the one pass count rule 8 reads off a loop (loop_list below).
 LITERAL_WORD = re.compile(r"[A-Za-z0-9_@%+:,./=-]+")
 # The characters bash writes a pattern with: a glob's `*`, `?` and `[…]`, which it expands into
 # the names of files that match as it runs, and a brace expansion's `{…,…}` and `{a..b}`, which
@@ -2229,15 +2257,29 @@ class CallScanner(Scanner):
 
 class Loops:
     """What rule 8 reads of one shell body: each loop by its own line, with the line its `done`
-    sits on, the passes it makes and the seconds it waits between two of them; the line of the
-    loop in each function that holds one — the loop a call of that function reaches; and where
-    each function this body defines is written and where it is called, which is how many times
-    a call inside it runs. A pass count is None where the loop does not write one."""
+    sits on, the passes it makes and the seconds one run of it sleeps, its own sleeps and those
+    of the loops in its body included (sleep_of, close_loop); the line of the loop in each
+    function that holds one — the loop a call of that function reaches; and where each function
+    this body defines is written and where it is called, which is how many times a call inside
+    it runs. A pass count is None where the loop does not write one, and such a loop has no
+    waits."""
 
     def __init__(self) -> None:
         self.function_loop: dict[str, int] = {}
         self.passes: dict[int, int | None] = {}
-        self.sleep: dict[int, int] = {}
+        self.waits: dict[int, int] = {}
+        # Each `sleep <n>` of a loop's body written after a test of an `&&` or an `||` other
+        # than the one guard this check reads, as (its line, the loop's line, the operator, the
+        # seconds, the loop's variable, the last word of its list, the line the body sets that
+        # variable on where it writes the guard this check reads but sets the variable it
+        # tests), refused by name where the loop holds a fetch (sleep_of; dispatch://INFRA-1545,
+        # round 44).
+        self.guarded_sleeps: list[tuple[int, int, str, int, str, str, int | None]] = []
+        # Each loop whose passes this check does not read and whose body sleeps, written in the
+        # body of a loop whose passes it does read, as (its line, that outer loop's line),
+        # refused by name where the outer loop holds a fetch beside it (close_loop;
+        # dispatch://INFRA-1545, round 44).
+        self.unread_nested: list[tuple[int, int]] = []
         self.extent: dict[int, int] = {}
         self.function_span: dict[str, tuple[int, int]] = {}
         self.function_calls: dict[str, list[int]] = {}
@@ -2307,21 +2349,215 @@ class Loops:
         return found
 
 
-def passes_of(text: str, command: Command) -> int | None:
-    """The passes a loop makes, where the loop writes them as this tree does: a `for x in 1 2 3
-    4 5 6 7`, whose list is literal words. Everything else — a `while`, an `until`, a `for` over
-    a variable, over the lines a command printed or over `$(seq 1 7)`, and a `for ((…))` —
-    writes no count this check reads, and reads as None rather than as one pass, which is a loop
-    refused unless a declaration writes its seconds. Until round 37 a `$(seq …)` list and a
-    `for ((i = 0; i < <bound>; i += <step>))` over a number or an array's `${#name[@]}` were
-    counted too, and the count of an array's words read `read -ra name` and `("${@}")` as one
-    word each; no such loop of this tree holds a call whose figure its passes enter
-    (dispatch://INFRA-1545, round 37)."""
-    match = re.match(r"for\s+[A-Za-z_]\w*\s+in\s+([^\n;]*)", text[command.offset:])
-    words = match.group(1).split() if match else []
-    if words and all(LITERAL_WORD.fullmatch(word) for word in words):
-        return len(words)
+def loop_list(text: str, command: Command) -> tuple[str, list[str]] | None:
+    """The variable and the words of a loop's list, where the loop writes its passes as this
+    tree does: a `for x in 1 2 3 4 5 6 7`, whose list is literal words, which makes one pass for
+    each word. Everything else — a `while`, an `until`, a `for` over a variable, over the lines a
+    command printed or over `$(seq 1 7)`, and a `for ((…))` — writes no count this check reads,
+    and reads as None rather than as one pass, which is a loop refused unless a declaration
+    writes its seconds. Until round 37 a `$(seq …)` list and a `for ((i = 0; i < <bound>; i +=
+    <step>))` over a number or an array's `${#name[@]}` were counted too, and the count of an
+    array's words read `read -ra name` and `("${@}")` as one word each; no such loop of this
+    tree holds a call whose figure its passes enter (dispatch://INFRA-1545, round 37). The
+    variable and the last word are what the one guard of a sleep this check reads tests
+    (last_pass_guard; round 44)."""
+    match = re.match(r"for\s+([A-Za-z_]\w*)\s+in\s+([^\n;]*)", text[command.offset:])
+    words = match.group(2).split() if match else []
+    if match and words and all(LITERAL_WORD.fullmatch(word) for word in words):
+        return match.group(1), words
     return None
+
+
+def joined_by(text: str, offset: int) -> str:
+    """The last three characters written before an offset of a shell body, blanks, newlines and
+    the backslash of a continued line skipped: the operator that joins the command starting
+    there to the one before it, `&&`, `||`, `|` or `;;`, where one does."""
+    end = offset
+    while end > 0 and text[end - 1] in " \t\n\\":
+        end -= 1
+    return text[max(0, end - 3):end]
+
+
+def last_pass_guard(text: str, test: Command | None, sleep: Command,
+                    listed: tuple[str, list[str]] | None) -> bool:
+    """Whether a `sleep <n>` written after `||` is skipped on its loop's last pass, read
+    literally in the one form this tree writes, dequeued.yaml's `[ "$attempt" = 7 ] || sleep
+    10`: the command before the `||` is that test and nothing else, opening its list, of the
+    loop's own variable against the last word of the loop's list (dispatch://INFRA-1545, round
+    44). Bash then runs the sleep at every pass but the last, where the test holds."""
+    if test is None or listed is None:
+        return False
+    variable, words = listed
+    lead = 0
+    while lead < len(test.words) and test.words[lead] in ("do", "then", "else"):
+        lead += 1
+    if test.words[lead:] != ["[", "$" + variable, "=", words[-1], "]"]:
+        return False
+    if lead == 0 and joined_by(text, test.offset)[-1:] in ("&", "|"):
+        return False
+    return re.fullmatch(r"(?:(?:do|then|else)\s+)*\[\s+(\"?)\$" + variable + r"\1\s+=\s+"
+                        + re.escape(words[-1]) + r"\s+\]\s*\|\|\s*",
+                        text[test.offset:sleep.offset]) is not None
+
+
+def sets_variable(command: Command, variable: str) -> bool:
+    """Whether a command of a loop's body can set the variable the loop's guard tests
+    (last_pass_guard; dispatch://INFRA-1545, round 44): an assignment, `attempt=0`, before a
+    command, alone or after `local`, `export` and the like; a loop of its own over it, `for
+    attempt in`; `read`, `mapfile`, `readarray`, `getopts`, `unset` or `printf -v` naming it; and
+    arithmetic changing it, `((attempt++))`, `(( attempt += 1 ))` or `let attempt=7`. Its words
+    written in quotes are read only for `let`, so the text of an `echo` sets nothing here."""
+    words = command.words
+    if words[0] in ("for", "select") and words[1:2] == [variable]:
+        return True
+    plain = [word for word, quoted in zip(words, command.quoted or [False] * len(words))
+             if not quoted or words[0] == "let"]
+    if any(re.match(re.escape(variable) + r"(?:\[[^]]*\])?\+?=", word) for word in plain):
+        return True
+    reduced = reduce_words(words)[0]
+    name = program_name(reduced[0]) if reduced else ""
+    if name in ("read", "mapfile", "readarray", "getopts", "unset") and variable in reduced[1:]:
+        return True
+    if name == "printf" and any(flag == "-v" and value == variable
+                                for flag, value in zip(reduced, reduced[1:])):
+        return True
+    return re.search(r"(?<![\w${])(?:(?:\+\+|--)\s*" + re.escape(variable) + r"\b|"
+                     + re.escape(variable) + r"\s*(?:\+\+|--|(?:[-+*/%&|^]|<<|>>)?=(?!=)))",
+                     " ".join(plain)) is not None
+
+
+# The reserved words a command of a loop's body may open with before what it runs, read for the
+# waits of that body (sleep_of; dispatch://INFRA-1545, round 44): `if` and `case` open a
+# construct whose branches each run at most once in a pass, `then`, `elif`, `else`, `fi` and
+# `esac` move through one or close it, and `do`, `{`, `}`, `!` and `time` change nothing a pass
+# sleeps.
+BODY_WORDS = {"if", "then", "elif", "else", "fi", "case", "esac", "do", "{", "}", "!", "time"}
+
+
+class SleepFrame:
+    """What the sleeps of one part of a shell body take in a pass of the loop holding it
+    (sleep_of): a loop's body, or an `if` or a `case`, each of whose branches runs at most once
+    in a pass. `each` is the seconds the part sleeps at every pass and `but_last` the seconds it
+    sleeps at every pass but the last; `branches` holds those two of each branch a construct has
+    closed, and `condition` marks an `if` or an `elif` before its `then`, whose test runs
+    whichever branch then runs (dispatch://INFRA-1545, round 44)."""
+
+    def __init__(self, kind: str, line: int) -> None:
+        self.kind = kind
+        self.line = line
+        self.each = 0
+        self.but_last = 0
+        self.branches: list[tuple[int, int]] = []
+        self.condition = kind == "if"
+
+    def close_branch(self) -> None:
+        self.branches.append((self.each, self.but_last))
+        self.each = self.but_last = 0
+
+    def longest(self) -> tuple[int, int]:
+        """The construct's waits, as its longest branch: the most a last pass sleeps in any one
+        branch, and what any other pass can sleep beyond that."""
+        self.close_branch()
+        last = max(each for each, _but_last in self.branches)
+        other = max(each + but_last for each, but_last in self.branches)
+        return last, other - last
+
+
+def add_sleep(frames: list[SleepFrame], each: int, but_last: int) -> None:
+    """Adds waits to the part of the body they run in: the innermost frame but an `if` still in
+    its test, whose test runs as its own enclosing part's command does."""
+    target = next((frame for frame in reversed(frames) if not frame.condition), None)
+    if target is not None:
+        target.each += each
+        target.but_last += but_last
+
+
+def close_loop(frames: list[SleepFrame], read: Loops) -> None:
+    """Closes the innermost loop's frame at its `done`, with any `if` or `case` its body leaves
+    open, and keeps what one run of it sleeps as that loop's waits: its passes times what a
+    pass sleeps, and the passes but the last times what only they sleep. Those waits are the
+    waits of a pass of the loop around it, in the branch they sit in, whether or not a fetch is
+    in this loop too: bash runs it, its sleeps among them, at every pass of that loop, so
+    `for i in 1 2; do <fetch>; for j in 1 2 3; do sleep 100; done; done` waits 2 x 3 x 100 s
+    beside its fetches. Until round 44 only the loops around a fetch were charged and that one
+    was charged nothing (dispatch://INFRA-1545, round 44). A loop whose passes are not read has
+    no waits; where its body sleeps and every loop around it writes its passes, it is kept for
+    its refusal (unread_nested)."""
+    while frames:
+        frame = frames.pop()
+        if frame.kind != "loop":
+            add_sleep(frames, *frame.longest())
+            continue
+        passes = read.passes.get(frame.line)
+        if passes is not None:
+            read.waits[frame.line] = (passes * frame.each
+                                      + max(passes - 1, 0) * frame.but_last)
+            add_sleep(frames, read.waits[frame.line], 0)
+            return
+        outer = [other.line for other in frames if other.kind == "loop"]
+        if (frame.each or frame.but_last) and outer and all(
+                read.passes.get(line) is not None for line in outer):
+            read.unread_nested.append((frame.line, outer[-1]))
+        return
+
+
+def sleep_of(command: Command, previous: Command | None, frames: list[SleepFrame], text: str,
+             read: Loops, lists: dict[int, tuple[str, list[str]] | None],
+             bodies: dict[int, list[Command]]) -> None:
+    """Reads one command for the waits of the loop holding it (structure): the `if` and `case`
+    constructs its first words open, move through or close, and a `sleep <n>` after them, its
+    seconds written as a number. Bash runs a sleep written as a command of its own in a loop's
+    body at every pass, the last included, so it is charged at every pass, and two of them are
+    both charged. Until round 44 a loop's longest sleep was charged once between each two
+    passes, so `for pass in 1 2 3; do <fetch>; sleep 300; done` was charged 600 s of the 900 s
+    it sleeps (dispatch://INFRA-1545, the tester's rounds 43 and 44). A sleep in one branch of
+    an `if` or a `case` runs at most once in a pass, and the construct is charged its longest
+    branch at every pass; one in the test of an `if` or an `elif` is charged as a command of the
+    part holding the construct. The one sleep charged at every pass but the last is one the text
+    skips on the last pass, `[ "$attempt" = 7 ] || sleep 10` (last_pass_guard), where the body
+    sets the variable it tests nowhere (sets_variable). A sleep after any other test of an `&&`
+    or an `||`, or after that test where the body sets its variable, is charged at every pass,
+    and refused by name where every loop around it writes its passes and its own loop holds a
+    fetch (guarded_sleeps). A sleep whose seconds are computed, `sleep "$(( 10 << (i - 1)
+    ))"`, adds nothing; the loops a body holds add their own waits at its `done` (close_loop)."""
+    words = command.words
+    top = frames[-1] if frames else None
+    if top is not None and top.kind == "case" and joined_by(text, command.offset)[-2:] == ";;":
+        # A clause ends at its `;;`; one ending at `;&` or `;;&` runs on into the next, whose
+        # sleeps are then the same branch's.
+        top.close_branch()
+    lead = 0
+    while lead < len(words) and words[lead] in BODY_WORDS:
+        word = words[lead]
+        top = frames[-1] if frames else None
+        if word in ("if", "case"):
+            frames.append(SleepFrame(word, command.line))
+        elif top is not None and top.kind == "if" and word in ("then", "elif", "else"):
+            if word != "then":
+                top.close_branch()
+            top.condition = word == "elif"
+        elif top is not None and (word, top.kind) in (("fi", "if"), ("esac", "case")):
+            frames.pop()
+            add_sleep(frames, *top.longest())
+        lead += 1
+    rest = words[lead:]
+    if (command.loop is None or len(rest) != 2 or rest[0] != "sleep"
+            or not re.fullmatch(r"\d+", rest[1])):
+        return
+    seconds = int(rest[1])
+    operator = joined_by(text, command.offset)[-2:] if lead == 0 else ""
+    listed = lists.get(command.loop)
+    setter = None
+    if operator == "||" and last_pass_guard(text, previous, command, listed):
+        setter = next((other.line for other in bodies.get(command.loop, ())
+                       if sets_variable(other, listed[0])), None)
+        if setter is None:
+            add_sleep(frames, 0, seconds)
+            return
+    add_sleep(frames, seconds, 0)
+    if operator in ("&&", "||") and listed and all(lists.get(loop) for loop in command.loops):
+        read.guarded_sleeps.append((command.line, command.loop, operator, seconds, listed[0],
+                                    listed[1][-1], setter))
 
 
 # The function definitions bash takes and this check does not read, each refused by name where a
@@ -2392,6 +2628,51 @@ LOOP_AFTER_WORD = ("a loop after a reserved word on its line, such as `then for 
 LOOP_REFUSAL = ("writes {shape}, and a fetch, or a call of a script that fetches, is written in "
                 "the same text. This check reads a loop by the line it opens on, and finds one "
                 "only where its word opens a command. {why}. {cure}")
+# A `sleep <n>` of a loop's body written after a test of an `&&` or an `||` other than the one
+# guard this check reads, or after that guard where the body sets the variable it tests,
+# refused by name where every loop around it writes its passes and its own loop holds a fetch,
+# or a call of a script that fetches (sleep_of; dispatch://INFRA-1545, round 44). Its cure for
+# an `&&`, and with `!` for an `||`, is the `if` that sleeps at the same passes, whose sleep this
+# check charges at every pass; none is written in this tree, whose one guarded sleep in a loop
+# around a fetch is dequeued.yaml's `[ "$attempt" = 7 ] || sleep 10`, whose body sets no
+# `attempt`. The sentence is SLEEP_GUARD_REFUSAL's with the reason and the cure of its form.
+SLEEP_GUARD_REFUSAL = (
+    "writes `sleep {seconds}` after `{operator}` in the loop over `{variable}` opened on line "
+    "{loop}, and a fetch, or a call of a script that fetches, is in that loop. This check "
+    "charges a `sleep <n>` of a loop's body at every pass, the last included, as bash runs one "
+    "written as a command of its own; one in a branch of an `if` or a `case` at every pass too, "
+    "the most it can run; and one at every pass but the last behind one test alone, `[ "
+    "\"${variable}\" = {last} ] || sleep <n>`, the loop's own variable against the last word of "
+    "its list, which holds on the last pass and skips the sleep there where the body sets that "
+    "variable nowhere. {why} {cure} (dispatch://INFRA-1545, round 44)")
+SLEEP_GUARD_OTHER = (
+    "A sleep after any other test of an `&&` or an `||` runs at the passes that test lets it, "
+    "which this check does not read, so it cannot tell how many of the loop's passes wait for "
+    "this one.",
+    "Write the commands before the `{operator}` as the test of an `if` around the sleep, `if "
+    "{negation}<test>; then sleep {seconds}; fi`, which sleeps at the same passes and which this "
+    "check charges at every pass; or, where the sleep is to be skipped on the last pass alone, "
+    "write `[ \"${variable}\" = {last} ] || sleep {seconds}`")
+SLEEP_GUARD_SET = (
+    "This test is written in that form, but the loop's body sets `{variable}` on line {setter}, "
+    "so the test may hold at another pass than the last, or at none, which this check does not "
+    "read, and it cannot tell how many of the loop's passes wait for this sleep.",
+    "Count in a variable of its own and leave `{variable}` to the loop, or write the test as "
+    "an `if` around the sleep, `if ! [ \"${variable}\" = {last} ]; then sleep {seconds}; fi`, "
+    "which sleeps at the same passes and which this check charges at every pass")
+# A loop whose passes this check does not read, whose body sleeps, written in the body of a loop
+# whose passes it does read and that holds a fetch, or a call of a script that fetches, beside it
+# (close_loop; dispatch://INFRA-1545, round 44): each pass of the outer loop waits for every run
+# of it, which no figure here holds. None is written in this tree.
+NESTED_UNREAD_REFUSAL = (
+    "writes a loop on line {line}, inside the loop opened on line {outer}, whose passes this "
+    "check does not read and whose body sleeps, and a fetch, or a call of a script that fetches, "
+    "is in that outer loop beside it. Bash runs the inner loop, its sleeps among them, at every "
+    "pass of the outer one, so the fetch's step waits for them too, and this check charges a "
+    "loop's sleeps only where it reads the loop's passes, a `for x in <literal words>`. Write "
+    "this loop's passes as literal words, `for try in 1 2 3 4 5; do …; done` with a `break` "
+    "where a poll is answered, whose sleeps this check charges at each pass around the fetch, "
+    "or run it outside the loop that holds the fetch (dispatch://INFRA-1545, round 44)")
 # Three more forms refused by name where a fetch, or a call of a script that fetches, is written
 # anywhere in the text, none written in this tree, each hiding a count of lines as a loop does
 # (dispatch://INFRA-1545, round 37): an alias, a brace bash reads as a word, and a loop's own
@@ -2590,7 +2871,7 @@ def function_bodies(commands: list[Command]) -> tuple[list[str | None], dict[str
 
 def structure(commands: list[Command], text: str) -> Loops:
     """Marks each command with the loops it sits in, and returns what rule 8 reads of them: each
-    loop's extent, passes and own wait between two passes, the loop each function holds, and
+    loop's extent, passes and the waits of its body (sleep_of), the loop each function holds, and
     where each function this body defines is written and called — function_bodies's reading of
     which commands a function's body holds, with the definitions it does not read. A call is a
     command whose first word, once the words CALL_PREFIXES lists are gone, is a function's name,
@@ -2611,6 +2892,25 @@ def structure(commands: list[Command], text: str) -> Loops:
     last = 0
     read = Loops()
     holders, defined, read.odd_functions, read.after_close = function_bodies(commands)
+    # Each loop's list where its passes are read (loop_list), the parts of the body the sleeps
+    # are read in, innermost last, and the command before the one being read (sleep_of).
+    lists: dict[int, tuple[str, list[str]] | None] = {}
+    frames: list[SleepFrame] = []
+    previous: Command | None = None
+    # The commands of each loop's body, its header and its `done` left out, read off the same
+    # words the loop below opens and closes loops on, for the variable a guard tests
+    # (sets_variable).
+    bodies: dict[int, list[Command]] = {}
+    open_loops: list[int] = []
+    for command in commands:
+        if command.words[0] == "done" and open_loops:
+            open_loops.pop()
+            continue
+        for line in open_loops:
+            bodies[line].append(command)
+        if command.words[0] in LOOP_WORDS:
+            open_loops.append(command.line)
+            bodies.setdefault(command.line, [])
     for command, holder in zip(commands, holders):
         first = command.words[0]
         if first in LOOP_WORDS or first == "done":
@@ -2633,16 +2933,12 @@ def structure(commands: list[Command], text: str) -> Loops:
                                         LOOP_WORD_REFUSAL.format(word=first, how=how)))
         if first == "done" and loops:
             read.extent[loops.pop()] = command.line
+            close_loop(frames, read)
         command.loops = list(loops)
         command.loop = loops[-1] if loops else None
         last = max(last, command.line)
-        if (command.loop is not None and first == "sleep" and len(command.words) == 2
-                and re.fullmatch(r"\d+", command.words[1])):
-            # The loop's own wait between two passes, where it is written as a number. A
-            # `sleep "$(( 10 << (i - 1) ))"` is computed rather than written and adds nothing,
-            # and where a loop writes more than one the longest is what a pass can wait.
-            seconds = int(command.words[1])
-            read.sleep[command.loop] = max(read.sleep.get(command.loop, 0), seconds)
+        sleep_of(command, previous, frames, text, read, lists, bodies)
+        previous = command
         if holder is not None and command.loop is not None and holder not in read.function_loop:
             read.function_loop[holder] = command.loop
         # The first word that is no reserved word but a loop's: a loop opened after one, as in
@@ -2656,10 +2952,15 @@ def structure(commands: list[Command], text: str) -> Loops:
             if command.line in read.passes:
                 read.odd_loops.append((command.line, LOOP_SHARED))
             loops.append(command.line)
-            read.passes[command.line] = passes_of(text, command)
+            lists[command.line] = loop_list(text, command)
+            listed = lists[command.line]
+            read.passes[command.line] = len(listed[1]) if listed else None
+            frames.append(SleepFrame("loop", command.line))
     # A loop or a function whose closing word this body never writes runs to the end of it.
     for line in loops:
         read.extent[line] = last
+    while frames:
+        close_loop(frames, read)
     for name, index in defined.items():
         start = commands[index].line
         read.function_span[name] = (start, max(
@@ -3213,7 +3514,7 @@ class Site:
     floor but a retry to refuse. `loops` is rule 8's: every loop this call sits in, outermost
     first, and `loop` is the innermost of them, which is rule 2's. `factor` is how many times
     the body runs this call once those loops, the function holding it and the loops around that
-    function's own calls are all read; `wait` is what those loops sleep between their passes;
+    function's own calls are all read; `wait` is what the bodies of those loops sleep (around);
     and `blocked` names the one loop whose passes this check could neither read nor find
     declared, which is the case it refuses rather than counts. `helper_bound` is the seconds
     word of the `retry_fetch` its command opens with, as written, which a refusal of a bound
@@ -3248,7 +3549,7 @@ class Occurrence:
     which is the line the loops are read against, and `shown` the line the path itself sits
     on; `factor` is how many times the body runs that line — the loops around it and the calls
     of the function holding it — and None where a loop around it writes no count, `wait` what
-    those loops sleep between their passes, and `loop` the loop whose passes could not be read.
+    the bodies of those loops sleep, and `loop` the loop whose passes could not be read.
     A `uses:` of a local composite action is a run of the action.yml it names, written as one of
     these with a factor of 1."""
 
@@ -3399,21 +3700,24 @@ def declared_arithmetic(site: Site) -> "DeclaredArithmetic | None":
 
 def around(loops: Loops, lines: list[int]) -> tuple[int | None, int, int | None]:
     """Folding a cost at one position outwards through the loops around it: how many times they
-    run it, what they sleep between their passes, and the loop whose passes could not be read
-    where there is one. Each loop multiplies what is inside it and adds its own waits —
-    `passes * inside + (passes - 1) * sleep` — so a call in a loop inside a loop is multiplied
-    by both. A loop whose count this check never made stops the fold rather than taking a
-    figure from somewhere else: that site is refused below, or answered in seconds by a
+    run it, what they sleep, and the loop whose passes could not be read where there is one.
+    Each loop multiplies what is inside it, so a call in a loop inside a loop is multiplied by
+    both; and what the loops sleep is one run of the outermost, whose waits hold each pass's
+    sleeps and every run of each loop in its body, the one around the call and any beside it
+    (close_loop). A sleep of a body runs at every pass, the last included, and one the text
+    skips on the last pass at every other (sleep_of; dispatch://INFRA-1545, round 44: until then
+    every sleep was charged `(passes - 1)` times, so r43's two nested loops, which sleep
+    4 x 600 + 2 x 480 s in bash, were charged 2 x 600 + 480, and a loop beside the call was
+    charged nothing). A loop whose count this check never made stops the fold rather than
+    taking a figure from somewhere else: that site is refused below, or answered in seconds by a
     DeclaredArithmetic entry, because a pass count nobody read is a pass count nobody checks."""
     factor = 1
-    wait = 0
     for line in reversed(lines):
         passes = loops.passes.get(line)
         if passes is None:
             return None, 0, line
-        wait = passes * wait + max(passes - 1, 0) * loops.sleep.get(line, 0)
         factor *= passes
-    return factor, wait, None
+    return factor, loops.waits.get(lines[0], 0) if lines else 0, None
 
 
 def times_run(loops: Loops, line: int, stack: list[int] | None = None,
@@ -3756,7 +4060,8 @@ def occurrences_of(text: str, first_line: int, loops: Loops) -> list[Occurrence]
     no loop's waits for a source. Charging them took a model of every path to the library, and
     the first one round 37 wrote, by the names along a path, undercounted a library sourced in a
     loop and again after it: `for p in 1 2 3; do . <lib>; sleep 60; done` and then `. <lib>`, the
-    lib at 1050 s, waits 3270 s and was charged 3150 s.
+    lib at 1050 s, waits 3330 s in its loop, 3 x 1050 + 3 x 60, and was charged 3150 s
+    (r37-library-order; 3270 s here until round 44, which charges a sleep at every pass).
 
     A heredoc body is left out with the comments, which is the reading without_heredocs makes:
     the paths a `cat` or a `python3 <<'PY'` body spells are paths something prints rather than
@@ -3852,10 +4157,11 @@ def unread_shapes_of(path: str, text: str, first_line: int, step: str, loops: Lo
                      ) -> list[tuple[int, str, bool, set[str], set[str], set[str]]]:
     """The shapes of one shell body this check refuses by name rather than reads
     (dispatch://INFRA-1545, round 37): each function definition function_bodies, structure and
-    Scanner name, each loop structure names, each call of a function structure names, each
-    heredoc unread_heredocs names, each `bash -c`, `sh -c` or `eval` text sites_of_command
-    names, each form whole_text holds, each command after a function's closing `}` on its line,
-    each command odd_command names and each definition of the helper's own name. Each is (line,
+    Scanner name, each loop structure names, each sleep of a loop's body behind a test sleep_of
+    names (round 44), each call of a function structure names, each heredoc unread_heredocs
+    names, each `bash -c`, `sh -c` or `eval` text sites_of_command names, each form whole_text
+    holds, each command after a function's closing `}` on its line, each command odd_command
+    names and each definition of the helper's own name. Each is (line,
     sentence, waits, targets, names, sources): the line it is written on, what the refusal says
     of it, whether a fetch it can hide is written in it, the scripts it can hide a call of, the
     names of the commands in its reach and the libraries this body sources. It is refused where
@@ -3868,7 +4174,9 @@ def unread_shapes_of(path: str, text: str, first_line: int, step: str, loops: Lo
     its body follows its name, and the body of every function a call in that reach calls, in
     turn, since a fetch there runs once for each of those calls; a call's is the reach of the
     function it calls, from its definition; a loop's, and that of each form whole_text holds, is
-    the whole text, since what it hides is a count of lines; a command's after a closing `}` is
+    the whole text, since what it hides is a count of lines; a guarded sleep's is its loop's,
+    from the line it opens on to its `done`, and the bodies of the functions called there, since
+    it is what the passes of that loop wait; a command's after a closing `}` is
     its own line's; a heredoc's is its body, read as shell for this question alone, where any
     fetch counts, since no other rule reads that body; a text's is the fetches read in it, each
     a site on the command's line; and a `retry_fetch` that fetches nothing, and a definition of
@@ -3915,6 +4223,20 @@ def unread_shapes_of(path: str, text: str, first_line: int, step: str, loops: Lo
                        *held(reach(start, last))))
     for line, (shape, why, cure) in dict.fromkeys(loops.odd_loops):
         shapes.append((line, LOOP_REFUSAL.format(shape=shape, why=why, cure=cure), *whole))
+    for line, loop, operator, seconds, variable, last_word, setter in loops.guarded_sleeps:
+        why, cure = SLEEP_GUARD_OTHER if setter is None else SLEEP_GUARD_SET
+        fields = {"seconds": seconds, "operator": operator, "variable": variable, "loop": loop,
+                  "last": last_word, "setter": setter,
+                  "negation": "! " if operator == "||" else ""}
+        shapes.append((line, SLEEP_GUARD_REFUSAL.format(why=why.format(**fields),
+                                                        cure=cure.format(**fields), **fields),
+                       *held(reach(loop, loops.extent[loop]))))
+    for line, outer in loops.unread_nested:
+        # The fetches beside the loop: those inside it stop the fold at it already.
+        beside = (reach(outer, loops.extent[outer])
+                  - set(range(line, loops.extent[line] + 1)))
+        shapes.append((line, NESTED_UNREAD_REFUSAL.format(line=line, outer=outer),
+                       *held(beside)))
     for line, sentence in dict.fromkeys(loops.whole_text):
         shapes.append((line, sentence, *whole))
     for line, name in loops.after_close:
@@ -6338,6 +6660,39 @@ UNREADABLE_ELSEWHERE = (
     "since which programs run the files a word names is no list it can hold, and it cannot tell "
     "that this word names none. " + ARGUMENT_CURE + "; a pattern this check can read, `[c-z]` "
     "rather than `[z-c]`, is refused in turn wherever it could name such a script")
+# Such a word written where a construct, and not a program, takes it (word_construct;
+# dispatch://INFRA-1545, round 44): until round 44 each refusal named the construct's first
+# word after its reserved word as the program, so `for f in .github/scripts/zz-*.sh` was said
+# to write that pattern "as an argument of `f`", and `[[ -e … ]]` and `case "$1" in …)` were
+# said to be filled in from the files, which bash does not do there. A loop's list is filled in,
+# and the body runs once with the variable set to each name; LOOP_LIST_ELSEWHERE follows
+# PATTERN_RUN or UNREADABLE_PATTERN, and its cure, driven on the tester's three loops, passes
+# and makes the same passes. Bash fills in no file names inside `[[ … ]]`, from a `case`
+# pattern or from a `case`'s word, which UNEXPANDED_PLACE says instead of either sentence, with
+# a cure for each place driven to a step this check passes that bash runs the same way: the
+# word quoted where bash reads it as text, and the dot of `.github/` in a bracket expression
+# where it is a pattern matched as text, which a word bash fills in would not name `.github/`
+# with either. A `=~`'s regular expression, where a `[.]` is another expression, keeps the
+# reading of an argument.
+LOOP_LIST_ELSEWHERE = (
+    "Bash runs the loop's body once for each name the list fills in, with `{variable}` set to "
+    "it, and this check does not follow `${variable}` into the commands the body hands it to, so "
+    "it cannot tell whether the body runs those files. Let bash fill the pattern in as an "
+    "argument of `printf`, whose words no shell runs, and loop over the names it prints, "
+    "`{loop} {variable} in $(printf '%s\\n' {word}); do`, the same list where no name holds a "
+    "blank: a run of `${variable}` in the body is then refused as a run this check cannot name, "
+    "and a body that runs none of them passes")
+UNEXPANDED_PLACE = (
+    "Bash fills in no file names {where}: {so}. This check reads {what} as it reads a command's "
+    "arguments, and refuses there too a word whose literal text holds `.github/` and {could}. "
+    "{cure}")
+UNEXPANDED_QUOTE = ("Quote the word, `\"{word}\"`, which bash reads the same way there and this "
+                    "check reads as the one path it spells")
+UNEXPANDED_BRACKET = (
+    "Write the dot that opens `.github/` as a bracket expression, `{bracketed}`, which matches "
+    "the same text and which this check reads as no path under `.github/`; in a word bash does "
+    "fill in, it names no such path either, since bash matches the dot that opens a file's name "
+    "only with a dot written as itself")
 # THE SETTINGS THAT CHANGE HOW BASH EXPANDS A WORD (dispatch://INFRA-1545, round 41). Every
 # pattern above is read as bash reads it with its default options (globs_in, plain_set,
 # word_pattern), so a setting that changes how bash expands a word or matches a pattern makes a
@@ -6992,6 +7347,91 @@ def word_place(words: list[str], at: int | None, start: int) -> str:
     return f"as an argument of `{head}`"
 
 
+def word_construct(words: list[str], at: int, start: int) -> tuple[str, str, str] | None:
+    """The construct that takes the word at `at` of a command's words, where a construct and not
+    a program does, as (its kind, the place as a refusal says it, the word the construct names):
+    "for" and "select" for a word of that loop's list, named by the loop's variable; "test" for
+    an operand of a `[[ … ]]` that bash reads as text; "match" for the pattern of `==`, `=` or
+    `!=` in a `[[ … ]]` and "pattern" for a pattern of a `case`, each named by the word it is
+    matched against; and "subject" for the word a `case` matches. `start` is where the command
+    reduce_words reads begins, past these reserved words, and None answers every other place, a
+    `=~`'s regular expression among them (pattern_words; dispatch://INFRA-1545, round 44)."""
+    opener = next((word for word in reversed(words[:start])
+                   if word in ("for", "select", "case", "[[")), None)
+    if opener in ("for", "select"):
+        if start + 1 < at and words[start + 1] == "in":
+            return (opener, f"in the list of the `{opener}` loop over `{words[start]}`",
+                    words[start])
+        return None
+    if opener == "case":
+        if at == start:
+            return "subject", "as the word a `case` matches", words[start]
+        if "in" in words[start + 1:at]:
+            return "pattern", f"as a pattern of the `case` over `{words[start]}`", words[start]
+        return None
+    if opener == "[[":
+        operator = words[at - 1]
+        if operator in ("==", "=", "!="):
+            return ("match", f"in a `[[ … ]]` test, as the pattern `{operator}` matches "
+                    f"`{words[at - 2]}` against", words[at - 2])
+        if operator == "=~":
+            return None
+        return ("test", f"in a `[[ … ]]` test, after `{operator}`" if operator not in ("[[", "!")
+                else "in a `[[ … ]]` test", "")
+    return None
+
+
+def pattern_refusal(does: str, word: str, names: str | None, writes: bool,
+                    construct: tuple[str, str, str] | None) -> str:
+    """What the refusal of a word pattern_words names says after naming the step or the
+    script, its citation included: `does` is what the command does with the word, `names` the
+    files it could name, None for a pattern this check cannot turn into a match, `writes`
+    whether the word stands anywhere but at a run's target, and `construct` the construct that
+    takes it where one does (word_construct; dispatch://INFRA-1545, rounds 38 to 40 and 44)."""
+    named = f"{does}, which could name {names}" if names is not None else does
+    if construct is None:
+        if names is None:
+            return (f"{does}, {UNREADABLE_PATTERN}. "
+                    f"{UNREADABLE_ELSEWHERE if writes else UNREADABLE_AT_RUN} "
+                    "(dispatch://INFRA-1545, rounds 39 and 40).")
+        if not writes:
+            return (UNNAMED_RUN.format(does=named, why=PATTERN_RUN,
+                                       cure=REASON_CURES[PATTERN_RUN])
+                    + " (dispatch://INFRA-1545, round 38).")
+        return f"{named}, {PATTERN_RUN}. {PATTERN_ELSEWHERE} (dispatch://INFRA-1545, round 38)."
+    kind, _place, name = construct
+    if kind in ("for", "select"):
+        return (f"{named}, {PATTERN_RUN if names is not None else UNREADABLE_PATTERN}. "
+                + LOOP_LIST_ELSEWHERE.format(variable=name, loop=kind, word=word)
+                + " (dispatch://INFRA-1545, round 44).")
+    bracketed = re.sub(r"(^|/)\.github/", r"\1[.]github/", word, count=1)
+    where, so, what, cure = {
+        "test": ("inside `[[ … ]]`",
+                 "the word is the one path its text spells, its pattern characters as written",
+                 "the words of a `[[ … ]]`", UNEXPANDED_QUOTE.format(word=word)),
+        "match": ("inside `[[ … ]]`",
+                  f"the pattern is matched against `{name}` as text and names no file",
+                  "the words of a `[[ … ]]`",
+                  UNEXPANDED_BRACKET.format(bracketed=bracketed if bracketed != word
+                                            else "[.]github/")),
+        "pattern": ("from a `case` pattern",
+                    f"the pattern is matched against `{name}` as text and names no file",
+                    "the patterns of a `case`",
+                    UNEXPANDED_BRACKET.format(bracketed=bracketed if bracketed != word
+                                              else "[.]github/")),
+        "subject": ("from the word a `case` matches",
+                    "the word is matched against the patterns as the text it spells and names "
+                    "no file", "the word of a `case`", UNEXPANDED_QUOTE.format(word=word)),
+    }[kind]
+    could = ("a pattern that, filled in as bash fills in a command's arguments, could name a "
+             "script that fetches or a file this check does not read, as this one could name "
+             f"{names}" if names is not None
+             else "a pattern this check cannot turn into a match, such as this one")
+    return (f"{does}. " + UNEXPANDED_PLACE.format(where=where, so=so, what=what, could=could,
+                                                 cure=cure)
+            + " (dispatch://INFRA-1545, round 44).")
+
+
 # The commands whose arguments set a shell variable as a word before a command does
 # (literal_values).
 DECLARERS = {"local", "export", "declare", "typeset", "readonly"}
@@ -7060,12 +7500,13 @@ def substituted(word: str, plain: frozenset[int],
 
 
 def pattern_words(text: str, first_line: int, action: str | None, elsewhere: bool,
-                  within: str = "", depth: int = 0) -> list[tuple[int, int, str, str]]:
+                  within: str = "", depth: int = 0) -> list[tuple[int, int, str]]:
     """Each command of a body holding a word that is no literal path and could name a CI script
     that fetches or a file of unread_files, as (the first and the last line of the command, what
-    it does with the first such word, why it is refused), the reason PATTERN_RUN, UNNAMED_RUN's
-    `does` and `why` at a run's target, and PATTERN_ELSEWHERE, the sentence after PATTERN_RUN,
-    anywhere else (dispatch://INFRA-1545, rounds 38 and 43). The word is read as bash reads it
+    its refusal says after naming the step or the script, pattern_refusal): UNNAMED_RUN's
+    sentence with the reason PATTERN_RUN at a run's target, and PATTERN_ELSEWHERE, the sentence
+    after PATTERN_RUN, anywhere else (dispatch://INFRA-1545, rounds 38 and 43), but in the places
+    word_construct names (round 44). The word is read as bash reads it
     (word_pattern): its globs, braces and expansions are filled in from the files and the values
     the step holds as it runs, so it names whatever matches then.
       - At a run's target (run_places), in the step or in the text a shell's `-c` runs, the word
@@ -7080,7 +7521,10 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
         runs its argument included, a set with no end, which is why the word is read and not the
         program. A word naming no such file passes, `ls .github/workflows/*.yaml`, and so does one
         with no literal `.github/`, `ls packages/*/package.json` or `rm -rf "$RUNNER_TEMP"/*`. A
-        redirect's file is such a word too, `bash /dev/stdin < .github/scripts/x.s?`.
+        redirect's file is such a word too, `bash /dev/stdin < .github/scripts/x.s?`. A word of
+        a loop's list is filled in so too, and its refusal says so (LOOP_LIST_ELSEWHERE); a word
+        of a `[[ … ]]` or a `case`, which bash fills in no file names from, is read the same way
+        and refused with what bash does there (UNEXPANDED_PLACE; round 44).
     In both, a variable the same text sets once to a literal value (literal_values) is read as
     that value (substituted), so `d=.github/scripts` and then `flock /tmp/l "$d"/x.s[h]` or `cp
     "$d"/x.p? "$RUNNER_TEMP/zz"` is refused, which a reader of the text as written can see.
@@ -7156,6 +7600,7 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
                 does = (f"sources `{word}`" if at > start and head in (".", "source")
                         else f"runs `{word}` with `{head}`" if at > start
                         else f"runs `{word}` as a command")
+                construct = None
             else:
                 if at is not None and at > start and head in ("echo", "printf"):
                     continue
@@ -7171,7 +7616,9 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
                 files = ([file for file in candidates
                           if matcher.fullmatch(file) or matcher.fullmatch("/" + file)]
                          if matcher is not None else [])
-                does = f"writes `{word}` {word_place(words, at, start)}"
+                construct = word_construct(words, at, start) if at is not None else None
+                does = (f"writes `{word}` "
+                        + (construct[1] if construct else word_place(words, at, start)))
             named = {str(SCRIPTS / match.group(1))
                      for match in SCRIPT_CALL.finditer(text[span[0]:span[1] + 1] if span else word)}
             named |= set(unread_named(value, action, elsewhere)[0])
@@ -7186,12 +7633,9 @@ def pattern_words(text: str, first_line: int, action: str | None, elsewhere: boo
             ends = [span[1] for span in command.spans if span]
             last_line = first_line + text.count("\n", 0, max(ends)) if ends else command.line
             found.append((command.line, max(last_line, command.line),
-                          f"{within}{does}, which could name {names}" if matcher is not None
-                          else f"{within}{does}",
-                          (PATTERN_ELSEWHERE if does.startswith("writes") else PATTERN_RUN)
-                          if matcher is not None
-                          else UNREADABLE_ELSEWHERE if does.startswith("writes")
-                          else UNREADABLE_AT_RUN))
+                          pattern_refusal(f"{within}{does}", word,
+                                          names if matcher is not None else None,
+                                          does.startswith("writes"), construct)))
             break
         if head in INTERPRETERS and depth < 3:
             kind, target = shell_operand(reduced)
@@ -8091,7 +8535,9 @@ def function_sites(found: list[Site], loops: Loops, name: str) -> list[Site]:
 for path, line, who, sentence, waits, targets, names, sources in unread_shapes:
     if (waits or not all(retries_nothing(target, set()) for target in targets)
             or any(name in library_functions(source) for source in sources for name in names)):
-        problem(path, line, f"{who} {sentence} (dispatch://INFRA-1545, round 37).")
+        # A shape a later round added cites that round in its own sentence (SLEEP_GUARD_REFUSAL).
+        problem(path, line, f"{who} {sentence}" + ("." if "(dispatch://" in sentence
+                                                   else " (dispatch://INFRA-1545, round 37)."))
 
 # An `env:` setting a variable of EXPANSION_VARIABLES, the file's, a job's or a step's, and a
 # `shell:` starting a shell with a setting that changes how bash expands a word, a step's own or
@@ -8269,18 +8715,12 @@ for path, name, (who, loops, found, called), owner in body_reads:
             else "pipes into a shell, "))
         for _operator, consumer, start, held in loops.programs]
     for read_text, read_line, within in readings:
-        for line, last, does, why in pattern_words(read_text, read_line, action,
-                                                   loops.elsewhere, within):
+        for line, last, sentence in pattern_words(read_text, read_line, action, loops.elsewhere,
+                                                  within):
             named_at = tuple(f"::error file={path},line={at}::{who} "
                              for at in range(line, last + 1))
             if not any(earlier.startswith(named_at) for earlier in problems):
-                problem(path, line, f"{who} " + (
-                    UNNAMED_RUN.format(does=does, why=why, cure=REASON_CURES[why])
-                    + " (dispatch://INFRA-1545, round 38)." if why == PATTERN_RUN
-                    else f"{does}, {PATTERN_RUN}. {why} (dispatch://INFRA-1545, round 38)."
-                    if why == PATTERN_ELSEWHERE
-                    else f"{does}, {UNREADABLE_PATTERN}. {why} (dispatch://INFRA-1545, rounds 39 "
-                    "and 40)."))
+                problem(path, line, f"{who} {sentence}")
     # A `.` or a `source` of anything but a literal path to a file of the tree is refused by name
     # (tree_sources; dispatch://INFRA-1545, round 42), where no refusal above names its command
     # already: a pattern there is pattern_words's, which names what it could reach, and an

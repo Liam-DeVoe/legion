@@ -1462,7 +1462,10 @@ check "exits 0" "$(is "$status" 0)"
 # dequeued.yaml's timeline read is the site these cases close: one `retry_fetch` call of
 # 5 x 30 + 150 = 300 s written inside a seven-pass poll with a 10 s sleep between the passes,
 # 7 x 300 + 6 x 10 = 2160 s, which the check read as 300 s before this change and passed under
-# a budget of 16 minutes.
+# a budget of 16 minutes. This fixture's `sleep 10` is a command of its own, which bash runs
+# after every pass whose read did not break the loop, the seventh included: where every read
+# exhausts its attempts, 7 x 300 + 7 x 10 = 2170 s (dispatch://INFRA-1545, round 44: until then
+# it was charged 2160 s, its sleep once fewer times than the passes).
 echo "case: a counted loop multiplies the call in it, and a budget written for one call fails"
 root=$(fixture loop-counted)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
@@ -1485,7 +1488,7 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the step" "$(contains "$out" "Poll the pull request's timeline")"
 check "multiplies the call by the passes and adds the loop's own sleeps" \
-  "$(contains "$out" 'retries take 2160 s to exhaust')"
+  "$(contains "$out" 'retries take 2170 s to exhaust')"
 check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 37')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
@@ -5497,13 +5500,15 @@ check "names the budget that would hold them" "$(contains "$out" 'timeout-minute
 
 # The loop waits of the path a file is charged through are charged at every call of that path,
 # each multiplied by the passes above it, and not at its last call alone. The step runs l-a.sh
-# twice with `sleep 120` between the passes, l-a.sh runs l-b.sh three times with `sleep 20`
-# between them, and l-b.sh retries at 180 s, 5 x 180 + 150 = 1050 s. The step waits
-# 6 x 1050 = 6300 s for the attempts, 120 s in its own loop and 2 x 40 = 80 s in l-a.sh's,
-# 6500 s, which `timeout-minutes: 108`, 6480 s, does not exceed. A walk charging the waits of the
-# outer call alone (6420 s), of the inner call alone (6380 s), of neither (6300 s), or taking
-# them away (6100 s) passed it; round 36's mutation pass of dispatch://INFRA-1545 found all four
-# standing.
+# twice, each pass ending with `sleep 120`, l-a.sh runs l-b.sh three times, each pass ending with
+# `sleep 20`, and l-b.sh retries at 180 s, 5 x 180 + 150 = 1050 s. The step waits
+# 6 x 1050 = 6300 s for the attempts, 2 x 120 = 240 s in its own loop and 2 x 60 = 120 s in
+# l-a.sh's, 6660 s, which `timeout-minutes: 108`, 6480 s, does not exceed; 6660 s is 111
+# minutes, so the key that holds it is 112. A walk charging the waits of the outer call alone
+# (6540 s), of the inner call alone (6420 s), of neither (6300 s), or taking them away (5940 s)
+# prints another figure, and each but the first passes the key; round 36's mutation pass of
+# dispatch://INFRA-1545 found all four standing under the reading of then, which charged each
+# sleep once fewer times than its loop's passes and this step 6500 s (round 44).
 echo "case: the loop waits along a nested path are charged at every call of it"
 root=$(fixture path-waits-nested)
 cat > "$root/.github/scripts/l-b.sh" <<'SH'
@@ -5539,17 +5544,21 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "charges both loops' waits along the path, once each" \
-  "$(contains "$out" 'its own retries take 6500 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 109')"
+  "$(contains "$out" 'its own retries take 6660 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 112')"
 
-# Two loops nested in one text, each sleeping between its passes, are folded outwards from the
-# inner one (around): the outer loop runs the inner loop, its waits among it, once for each of its
-# own passes. The step runs r43-fetch.sh, which retries at 30 s, 5 x 30 + 150 = 300 s, in two
-# passes of an inner loop with `sleep 600` between them, inside two passes of an outer loop with
-# `sleep 480` between them. It waits 4 x 300 = 1200 s for the attempts, 2 x 600 = 1200 s for the
-# inner loop's sleeps and 480 s for the outer loop's, 2880 s, which `timeout-minutes: 48`, 2880 s,
-# does not exceed. A fold that adds the inner loop's waits once, `wait + …` for `passes * wait + …`
-# in around(), charges 2280 s and passes the step (dispatch://INFRA-1545, round 43).
+# Two loops nested in one text, each sleeping in its passes, are read from the inner one out
+# (close_loop): the outer loop runs the inner loop, its waits among it, once for each of its own
+# passes. The step runs r43-fetch.sh, which retries at 30 s, 5 x 30 + 150 = 300 s, in two passes
+# of an inner loop that ends each pass with `sleep 600`, inside two passes of an outer loop that
+# ends each with `sleep 480`. It waits 4 x 300 = 1200 s for the attempts, 4 x 600 = 2400 s for
+# the inner loop's sleeps and 2 x 480 = 960 s for the outer loop's, 4560 s, which
+# `timeout-minutes: 48`, 2880 s, does not exceed, and 4560 s is 76 minutes, so the key that holds
+# it is 77. A reading that adds the inner loop's waits to the outer loop's once, rather than at
+# each of its passes, charges 3360 s. Round 43 asserted 2880 s, which charged
+# each sleep once fewer times than its loop's passes; bash runs the sleep that ends a pass after
+# the last pass too, and round 44 charges it at every pass (dispatch://INFRA-1545, rounds 43 and
+# 44).
 echo "case: r43 two loops nested in one text, each sleeping, charge the inner loop's waits at every pass of the outer"
 root=$(fixture r43-nested-loop-waits)
 cat > "$root/.github/scripts/r43-fetch.sh" <<'SH'
@@ -5580,8 +5589,8 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "charges the inner loop's waits at both passes of the outer one" \
-  "$(contains "$out" 'its own retries take 2880 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 49')"
+  "$(contains "$out" 'its own retries take 4560 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 77')"
 
 # T13. A `sleep` written as the last command of a loop's body runs after every pass, the last one
 # included, so a loop of three passes sleeps three times. around() adds `(passes - 1) * sleep`,
@@ -5622,16 +5631,354 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
+# A loop's own waits are each `sleep <n>` of its body, charged as bash runs it (sleep_of;
+# dispatch://INFRA-1545, round 44). Two sleeps written as commands of their own both run after
+# every pass: the first step runs r44-fetch.sh, 300 s, in three passes that each sleep 100 s and
+# 200 s, 3 x 300 + 3 x 300 = 1800 s, which `timeout-minutes: 29`, 1740 s, does not exceed, and
+# 1800 s is 30 minutes, so the key that holds it is 31. A reading keeping a loop's longest sleep
+# alone charged 3 x 300 + 3 x 200 = 1500 s, and the reading before round 44, which also charged
+# that sleep once fewer times than the passes, 1300 s: each passed the step. A sleep in one branch
+# of an `if` runs at most once in a pass, so the `if` is charged its longest branch at every
+# pass: the second step's passes sleep 200 s, 200 s and 100 s in bash, 500 s, and are charged
+# 3 x 200 = 600 s, 1500 s with the attempts, which `timeout-minutes: 25`, 1500 s, does not
+# strictly exceed. Summing the branches charged 1800 s, and charging the longest branch once
+# fewer times than the passes 1300 s, which passed the step.
+echo "case: r44 two sleeps of one pass are both charged at every pass, and an if its longest branch"
+root=$(fixture r44-two-sleeps)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sleep twice in each pass
+        timeout-minutes: 29
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 100
+            sleep 200
+          done
+      - name: Sleep in one branch of an if in each pass
+        timeout-minutes: 25
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            if [ "$pass" = 3 ]; then
+              sleep 100
+            else
+              sleep 200
+            fi
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "charges both sleeps at every pass" \
+  "$(contains "$out" "step 'Sleep twice in each pass' carries .timeout-minutes: 29., 1740 s, and its own retries take 1800 s to exhaust")"
+check "names the budget that would hold them" \
+  "$(contains "$out" "step 'Sleep twice in each pass' carries .*write .timeout-minutes: 31. or more")"
+check "charges the if's longest branch at every pass" \
+  "$(contains "$out" "step 'Sleep in one branch of an if in each pass' carries .timeout-minutes: 25., 1500 s, and its own retries take 1500 s to exhaust")"
+check "refuses nothing else" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+# The one sleep charged at every pass but the last is one the text skips on the last pass, read
+# literally in the form dequeued.yaml writes, `[ "$attempt" = 7 ] || sleep 10`: the loop's own
+# variable tested against the last word of its list (last_pass_guard; dispatch://INFRA-1545,
+# round 44). Each step runs r44-fetch.sh, 300 s, in three passes, the first two sleeping 300 s:
+# 3 x 300 + 2 x 300 = 1500 s, which `timeout-minutes: 25`, 1500 s, does not strictly exceed and
+# `timeout-minutes: 26`, 1560 s, does. Charging the guarded sleep at every pass, 1800 s, refused
+# both; charging it at one pass fewer still, 1200 s, passed both.
+echo "case: r44 a sleep the text skips on the last pass is charged at every pass but the last"
+root=$(fixture r44-last-pass-guard)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Skip the last pass's sleep under a key its waits reach
+        timeout-minutes: 25
+        run: |
+          for attempt in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            [ "$attempt" = 3 ] || sleep 300
+          done
+      - name: Skip the last pass's sleep under a key above its waits
+        timeout-minutes: 26
+        run: |
+          for attempt in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            [ "$attempt" = 3 ] || sleep 300
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "charges the guarded sleep at the first two passes" \
+  "$(contains "$out" "step 'Skip the last pass's sleep under a key its waits reach' carries .timeout-minutes: 25., 1500 s, and its own retries take 1500 s to exhaust")"
+check "names the budget that would hold them" \
+  "$(contains "$out" "step 'Skip the last pass's sleep under a key its waits reach' carries .*write .timeout-minutes: 26. or more")"
+check "passes the same loop under 26 minutes" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 1)"
+
+# A sleep after any other test of an `&&` or an `||` runs at the passes that test lets it, which
+# this check does not read, so it is refused by name where its loop holds a fetch, with the test
+# written as the `if` that sleeps at the same passes as its cure (SLEEP_GUARD_REFUSAL;
+# dispatch://INFRA-1545, round 44). The `||` test of another pass than the last, `[ "$attempt" =
+# 2 ] || sleep 300`, skips the sleep at the second pass and sleeps at the third; the `&&` test
+# sleeps at the first two. Both run under keys their attempts and sleeps cannot reach, so each
+# refusal is by name and of no figure. The cure's `if` is charged at every pass,
+# 3 x 300 + 3 x 300 = 1800 s, which `timeout-minutes: 31`, 1860 s, exceeds.
+echo "case: r44 a sleep after another test of an && or an || is refused by name, and its if passes"
+root=$(fixture r44-guarded-sleep)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sleep after an and test
+        timeout-minutes: 60
+        run: |
+          for attempt in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            [ "$attempt" -lt 3 ] && sleep 300
+          done
+      - name: Sleep after an or test of another pass
+        timeout-minutes: 60
+        run: |
+          for attempt in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            [ "$attempt" = 2 ] || sleep 300
+          done
+      - name: Sleep in the if the refusal advises
+        timeout-minutes: 31
+        run: |
+          for attempt in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            if [ "$attempt" -lt 3 ]; then sleep 300; fi
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the sleep after && by name, with the if as its cure" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Sleep after an and test' of job 'build' writes .sleep 300. after .&&. in the loop over .attempt. opened on line 10, and a fetch, or a call of a script that fetches, is in that loop\..*cannot tell how many of the loop's passes wait for this one\. Write the commands before the .&&. as the test of an .if. around the sleep, .if <test>; then sleep 300; fi.")"
+check "refuses the sleep after || by name, with the negated if as its cure" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=19::step 'Sleep after an or test of another pass' of job 'build' writes .sleep 300. after .||. in the loop over .attempt. opened on line 17,.*.if ! <test>; then sleep 300; fi.*write .\[ \"\$attempt\" = 3 \] || sleep 300.")"
+check "passes the if, charged at every pass" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+# The tester's item 5 of round 44 (dispatch://INFRA-1545): a word that could name a script that
+# fetches, written where a construct and not a program takes it, was refused as an argument of
+# the construct's first word, `f` for a loop's list and `-e` and `$1` for a `[[ … ]]` and a
+# `case`, and with the clause that bash fills in its patterns from the files, which it does not
+# do inside `[[ … ]]` or from a `case` pattern (word_construct; round 44). Each refusal now says
+# what the construct does with the word, and each cure it writes passes, as the last five steps
+# show, and runs the same way in bash: a loop over the names `printf` prints, the same list where
+# no name holds a blank; the `[[ … ]]`'s word quoted, where bash reads it as text either way; and
+# the `case` pattern's dot written `[.]`, which matches the same text.
+echo "case: r44 a pattern in a loop's list, a [[ … ]] or a case is refused for what that construct does"
+root=$(fixture r44-construct-words)
+cp "$work/shared-script-most-expensive/.github/scripts/zz-c.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/zz-c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Print each name of a for loop's list
+        timeout-minutes: 30
+        run: for f in .github/scripts/zz-*.sh; do echo "$f"; done
+      - name: Print each name of a for loop's list that names a file
+        timeout-minutes: 30
+        run: for f in .github/scripts/zz-*.sh; do [ -e "$f" ] || continue; echo "$f"; done
+      - name: Offer each name of a select loop's list
+        timeout-minutes: 30
+        run: select f in .github/scripts/zz-*.sh; do break; done </dev/null
+      - name: Test the word in a double-bracket test
+        timeout-minutes: 30
+        run: '[[ -e .github/scripts/zz-*.sh ]] && echo yes'
+      - name: Match the word in a case pattern
+        timeout-minutes: 30
+        run: case "$1" in .github/scripts/zz-*.sh) echo m;; esac
+      - name: Print each name printf prints
+        timeout-minutes: 30
+        run: for f in $(printf '%s\n' .github/scripts/zz-*.sh); do echo "$f"; done
+      - name: Print each name printf prints that names a file
+        timeout-minutes: 30
+        run: for f in $(printf '%s\n' .github/scripts/zz-*.sh); do [ -e "$f" ] || continue; echo "$f"; done
+      - name: Offer each name printf prints
+        timeout-minutes: 30
+        run: select f in $(printf '%s\n' .github/scripts/zz-*.sh); do break; done </dev/null
+      - name: Test the quoted word in a double-bracket test
+        timeout-minutes: 30
+        run: '[[ -e ".github/scripts/zz-*.sh" ]] && echo yes'
+      - name: Match the word with its dot in a bracket
+        timeout-minutes: 30
+        run: case "$1" in [.]github/scripts/zz-*.sh) echo m;; esac
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for refusal in "9	Print each name of a for loop's list	for" \
+  "12	Print each name of a for loop's list that names a file	for" \
+  "15	Offer each name of a select loop's list	select"; do
+  IFS=$'\t' read -r line step loop <<<"$refusal"
+  check "refuses '$step' as a word of the loop's list, filled in, with the printf loop as its cure" \
+    "$(contains "$out" "::error file=.github/workflows/case.yaml,line=$line::step '$step' of job 'build' writes ..github/scripts/zz-\*\.sh. in the list of the .$loop. loop over .f., which could name .github/scripts/zz-c.sh, a script that fetches or a file this check does not read, since bash fills in its patterns and expansions from the files .*Bash runs the loop's body once for each name the list fills in, with .f. set to it, .*.$loop f in .(printf '%s\\\\n' \.github/scripts/zz-\*\.sh); do.")"
+done
+check "refuses the [[ … ]] word as text bash fills in no file names from, with the quoted word as its cure" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=18::step 'Test the word in a double-bracket test' of job 'build' writes ..github/scripts/zz-\*\.sh. in a .\[\[ .* test, after .-e.\. Bash fills in no file names inside .\[\[ .*: the word is the one path its text spells.*as this one could name .github/scripts/zz-c.sh\. Quote the word, .\"\.github/scripts/zz-\*\.sh\".")"
+check "refuses the case pattern as text bash fills in no file names from, with the bracketed dot as its cure" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=21::step 'Match the word in a case pattern' of job 'build' writes ..github/scripts/zz-\*\.sh. as a pattern of the .case. over .\$1.\. Bash fills in no file names from a .case. pattern: the pattern is matched against .\$1. as text.*as this one could name .github/scripts/zz-c.sh\. Write the dot that opens .\.github/. as a bracket expression, .\[\.\]github/scripts/zz-\*\.sh.")"
+check "names no construct's first word as a program" \
+  "$(is "$(contains "$out" 'as an argument of .\(f\|-e\|\$1\).')" false)"
+check "passes each cure" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+
+# A loop in the body of a loop runs, its sleeps among it, at each pass of the outer one, whether
+# the fetch is in it or beside it (close_loop; dispatch://INFRA-1545, round 44). The first two
+# steps run r44-fetch.sh, 300 s, in two passes, each of which runs a loop of three passes
+# sleeping 100 s: 2 x 300 + 2 x 3 x 100 = 1200 s, which `timeout-minutes: 20`, 1200 s, does not
+# strictly exceed and `timeout-minutes: 21`, 1260 s, does. Until round 44 the loop beside the
+# fetch was charged nothing, 600 s, which passed both. A loop there whose passes this check does
+# not read, a `while` poll that sleeps, is refused by name, and the counted poll its refusal
+# advises is charged: 2 x 300 + 2 x 5 x 10 = 700 s, which `timeout-minutes: 12`, 720 s, exceeds.
+echo "case: r44 a loop that sleeps beside a fetch is charged at every pass of the loop around both"
+root=$(fixture r44-loop-beside-fetch)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sleep in a loop beside the fetch under a key its waits reach
+        timeout-minutes: 20
+        run: |
+          for i in 1 2; do
+            .github/scripts/r44-fetch.sh
+            for j in 1 2 3; do
+              sleep 100
+            done
+          done
+      - name: Sleep in a loop beside the fetch under a key above its waits
+        timeout-minutes: 21
+        run: |
+          for i in 1 2; do
+            .github/scripts/r44-fetch.sh
+            for j in 1 2 3; do
+              sleep 100
+            done
+          done
+      - name: Poll in a loop beside the fetch
+        timeout-minutes: 60
+        run: |
+          for i in 1 2; do
+            .github/scripts/r44-fetch.sh
+            while [ ! -e ready ]; do
+              sleep 10
+            done
+          done
+      - name: Poll in the counted loop the refusal advises
+        timeout-minutes: 12
+        run: |
+          for i in 1 2; do
+            .github/scripts/r44-fetch.sh
+            for try in 1 2 3 4 5; do
+              [ -e ready ] && break
+              sleep 10
+            done
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "charges the loop beside the fetch at both passes of the loop around them" \
+  "$(contains "$out" "step 'Sleep in a loop beside the fetch under a key its waits reach' carries .timeout-minutes: 20., 1200 s, and its own retries take 1200 s to exhaust")"
+check "names the budget that would hold them" \
+  "$(contains "$out" "step 'Sleep in a loop beside the fetch under a key its waits reach' carries .*write .timeout-minutes: 21. or more")"
+check "refuses the uncounted poll beside the fetch by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=30::step 'Poll in a loop beside the fetch' of job 'build' writes a loop on line 30, inside the loop opened on line 28, whose passes this check does not read and whose body sleeps, and a fetch, or a call of a script that fetches, is in that outer loop beside it\..*Write this loop's passes as literal words")"
+check "passes the same loop under 21 minutes and the counted poll under 12" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
+# The guard `[ "$attempt" = 3 ] || sleep 300` skips the last pass only where the loop's body sets
+# `attempt` nowhere (sets_variable; dispatch://INFRA-1545, round 44). The first step sets it to 0
+# before the test, so the test never holds and bash sleeps at all three passes, 900 s, where the
+# guard read as skipping the last pass charged 600 s; the second counts it up after the test.
+# Each is refused by name. The third counts in a variable of its own and is charged
+# 3 x 300 + 2 x 300 = 1500 s, which `timeout-minutes: 26`, 1560 s, exceeds.
+echo "case: r44 a last-pass guard whose variable the body sets is refused by name"
+root=$(fixture r44-guard-variable-set)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set the guard's variable in the body
+        timeout-minutes: 60
+        run: |
+          for attempt in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            attempt=0
+            [ "$attempt" = 3 ] || sleep 300
+          done
+      - name: Count the guard's variable up in the body
+        timeout-minutes: 60
+        run: |
+          for attempt in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            [ "$attempt" = 3 ] || sleep 300
+            ((attempt++))
+          done
+      - name: Count in a variable of its own
+        timeout-minutes: 26
+        run: |
+          for attempt in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            tries=$((tries + 1))
+            [ "$attempt" = 3 ] || sleep 300
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the guard whose variable is set before it, by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=13::step 'Set the guard's variable in the body' of job 'build' writes .sleep 300. after .||. in the loop over .attempt. opened on line 10,.*This test is written in that form, but the loop's body sets .attempt. on line 12,.*.if ! \[ \"\$attempt\" = 3 \]; then sleep 300; fi.")"
+check "refuses the guard whose variable is counted up after it, by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=20::step 'Count the guard's variable up in the body' of job 'build' writes .sleep 300. after .||. .*the loop's body sets .attempt. on line 21,")"
+check "passes the guard of a loop counting in a variable of its own" \
+  "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
+
 # Two paths reaching one file with the same product of loop factors are both charged, each run
 # with the waits of the loops around it (dispatch://INFRA-1545, round 37; until then the file
 # was charged once, through the path whose loops waited longer). The step runs pa.sh and pz.sh
-# ten times and pm.sh twenty times, in loops that do not sleep. pa.sh runs pc1.sh twice with
-# `sleep 9`, 2 x 300 + 9 = 609 s, and pm.sh runs it once; pz.sh runs pz2.sh twice with
-# `sleep 9` and pz2.sh runs pc2.sh once, 609 s again, while pm.sh reaches pc2.sh through pm2.sh.
-# Each fetch retries at 30 s (300 s), so pm.sh is 600 s and the step waits
-# 10 x (609 + 609) + 20 x 600 = 24180 s, which `timeout-minutes: 203`, 12180 s, does not exceed.
-# Round 36's reading charged each file once, 2 x 20 x 300 + 2 x 90 = 12180 s, half of the runs
-# this step makes.
+# ten times and pm.sh twenty times, in loops that do not sleep. pa.sh runs pc1.sh twice, each
+# pass ending with `sleep 9`, 2 x 300 + 2 x 9 = 618 s, and pm.sh runs it once; pz.sh runs pz2.sh
+# twice the same way and pz2.sh runs pc2.sh once, 618 s again, while pm.sh reaches pc2.sh through
+# pm2.sh. Each fetch retries at 30 s (300 s), so pm.sh is 600 s and the step waits
+# 10 x (618 + 618) + 20 x 600 = 24360 s, which `timeout-minutes: 203`, 12180 s, does not exceed;
+# 24360 s is 406 minutes, so the key that holds it is 407. Round 36's reading charged each file
+# once, 2 x 20 x 300 + 2 x 90 = 12180 s, half of the runs this step makes, and each `sleep 9`
+# once fewer times than its loop's passes; every reading did that until round 44, and the one
+# before round 44 charged this step 24180 s (dispatch://INFRA-1545, round 44).
 echo "case: of two paths of one product, every run along both is charged"
 root=$(fixture path-waits-equal-product)
 cat > "$root/.github/scripts/pc1.sh" <<'SH'
@@ -5697,16 +6044,19 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "charges every run of each file along both paths, with their waits" \
-  "$(contains "$out" 'its own retries take 24180 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 404')"
+  "$(contains "$out" 'its own retries take 24360 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 407')"
 
 # Two paths of the same product and the same waits are both charged, and each loop's waits once
 # for its own runs (dispatch://INFRA-1545, round 37; until then one of the two was charged, the
-# first by name). The step runs t-a.sh twice with `sleep 100`, then t-b.sh twice with
-# `sleep 100`. Both run t-c.sh, and t-b.sh runs t-x.sh too, each retrying at 30 s (300 s). So
-# the first loop waits 2 x 300 + 100 = 700 s and the second 2 x (300 + 300) + 100 = 1300 s,
-# 2000 s, which `timeout-minutes: 23`, 1380 s, does not exceed. Round 36's reading charged t-c.sh
-# once, through t-a.sh, 4 x 300 + 200 = 1400 s.
+# first by name). The step runs t-a.sh twice, each pass ending with `sleep 100`, then t-b.sh
+# twice the same way. Both run t-c.sh, and t-b.sh runs t-x.sh too, each retrying at 30 s
+# (300 s). So the first loop waits 2 x 300 + 2 x 100 = 800 s and the second
+# 2 x (300 + 300) + 2 x 100 = 1400 s, 2200 s, which `timeout-minutes: 23`, 1380 s, does not
+# exceed; 2200 s is 36 minutes and 40 s, so the key that holds it is 37. Round 36's reading
+# charged t-c.sh once, through t-a.sh, 4 x 300 + 200 = 1400 s, each loop's sleep once fewer
+# times than its passes, as the readings until round 44 did, which charged this step 2000 s
+# (dispatch://INFRA-1545, round 44).
 echo "case: of two paths of one product and one wait, each path's runs are charged"
 root=$(fixture path-tie-scripts)
 cat > "$root/.github/scripts/t-c.sh" <<'SH'
@@ -5751,16 +6101,18 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "charges t-c.sh for its runs along both paths" \
-  "$(contains "$out" 'its own retries take 2000 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 34')"
+  "$(contains "$out" 'its own retries take 2200 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 37')"
 
 # The same through a composite action, whose steps are shells of their own and whose `uses:`
 # is a run of the action it names (dispatch://INFRA-1545, round 37; until then one of the two
-# paths was charged, the first by name). The step uses v-top, which runs v-s.sh twice with
-# `sleep 100` and then uses v-a. v-s.sh runs v-t.sh and v-x.sh once; v-a runs v-t.sh twice with
-# `sleep 100`. So v-top's first step waits 2 x (300 + 300) + 100 = 1300 s and v-a's one step
-# 2 x 300 + 100 = 700 s, 2000 s, which `timeout-minutes: 23` does not exceed. Round 36's reading
-# charged v-t.sh once, through v-a, 4 x 300 + 200 = 1400 s.
+# paths was charged, the first by name). The step uses v-top, which runs v-s.sh twice, each pass
+# ending with `sleep 100`, and then uses v-a. v-s.sh runs v-t.sh and v-x.sh once; v-a runs v-t.sh
+# twice the same way. So v-top's first step waits 2 x (300 + 300) + 2 x 100 = 1400 s and v-a's
+# one step 2 x 300 + 2 x 100 = 800 s, 2200 s, which `timeout-minutes: 23` does not exceed, and
+# whose key is 37. Round 36's reading charged v-t.sh once, through v-a, 4 x 300 + 200 = 1400 s,
+# each loop's sleep once fewer times than its passes, as the readings until round 44 did, which
+# charged this step 2000 s (dispatch://INFRA-1545, round 44).
 echo "case: of two equal paths through a composite action, each path's runs are charged"
 root=$(fixture path-tie-action)
 cat > "$root/.github/scripts/v-t.sh" <<'SH'
@@ -5822,15 +6174,17 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "charges v-t.sh for its runs along both paths" \
-  "$(contains "$out" 'its own retries take 2000 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 34')"
+  "$(contains "$out" 'its own retries take 2200 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 37')"
 
 # And a path's waits are its own: each loop's waits are charged with that loop's runs and with
 # no other's (dispatch://INFRA-1545, round 37; until then one of the two paths was charged, the
-# one waiting longer). w-top runs w-s.sh, which runs w-t.sh twice with `sleep 100`, and uses
-# w-a, which runs w-t.sh twice with no sleep. The step waits 2 x 300 + 100 = 700 s through
-# w-s.sh and 2 x 300 = 600 s through w-a, 1300 s, which `timeout-minutes: 11`, 660 s, does not
-# exceed. Round 36's reading charged w-t.sh once, through w-s.sh, 700 s.
+# one waiting longer). w-top runs w-s.sh, which runs w-t.sh twice, each pass ending with
+# `sleep 100`, and uses w-a, which runs w-t.sh twice with no sleep. The step waits
+# 2 x 300 + 2 x 100 = 800 s through w-s.sh and 2 x 300 = 600 s through w-a, 1400 s, which
+# `timeout-minutes: 11`, 660 s, does not exceed, and whose key is 24. Round 36's reading charged
+# w-t.sh once, through w-s.sh, 700 s, its sleep once fewer times than its loop's passes, as the
+# readings until round 44 did, which charged this step 1300 s (dispatch://INFRA-1545, round 44).
 echo "case: a path waiting less and a path waiting more are each charged their own waits"
 root=$(fixture path-name-not-wait)
 cat > "$root/.github/scripts/w-t.sh" <<'SH'
@@ -5887,14 +6241,15 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "charges w-t.sh's runs along both paths, with w-s.sh's waits alone" \
-  "$(contains "$out" 'its own retries take 1300 s to exhaust')"
-check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 22')"
+  "$(contains "$out" 'its own retries take 1400 s to exhaust')"
+check "names the budget that would hold them" "$(contains "$out" 'timeout-minutes: 24')"
 
 # The waits charged are those of the paths charging a file whose own arithmetic is above 0. A
-# loop sleeping 100 s between its three passes around q-quiet.sh, which retries nothing, sits
-# beside q-fetch.sh's 1050 s, and the step's figure is 1050 s, which `timeout-minutes: 18`,
+# loop sleeping 100 s after each of its three passes around q-quiet.sh, which retries nothing,
+# sits beside q-fetch.sh's 1050 s, and the step's figure is 1050 s, which `timeout-minutes: 18`,
 # 1080 s, exceeds. A walk charging the waits of q-quiet.sh's path as well refused it at 1250 s
-# (dispatch://INFRA-1545, round 36).
+# (dispatch://INFRA-1545, round 36), its sleep charged once fewer times than the passes, and
+# would refuse it at 1350 s since round 44.
 echo "case: the waits of a loop around a script that retries nothing are not charged"
 root=$(fixture path-waits-costless)
 cat > "$root/.github/scripts/q-fetch.sh" <<'SH'
@@ -6675,12 +7030,13 @@ done
 # A library one shell reaches through a looped run is charged once, at that path's product, and
 # the run's own loop waits are charged with the run (dispatch://INFRA-1545, round 37). sa-lib.sh
 # and sa-lib2.sh each retry at 180 s, 1050 s; sa-b.sh sources sa-lib.sh and nothing else, so a
-# loop of two runs of it sleeping 61 s reaches sa-lib.sh with a product of 2,
-# 2 x 1050 + 61 = 2161 s. One more step sources sa-lib.sh and then sa-lib2.sh, two libraries,
-# 2100 s; a walk that stopped at the first library charged it 1050 s. The steps that sourced
-# sa-lib.sh inside a loop beside such a run, which pinned how a source's loop waits were charged,
-# are gone with that charge: a source inside a loop is refused by name, which the
-# r37-library-order case below proves.
+# loop of two runs of it, each pass ending with `sleep 61`, reaches sa-lib.sh with a product of
+# 2, 2 x 1050 + 2 x 61 = 2222 s, charged 2161 s until round 44 with the sleep once fewer times
+# than the passes (dispatch://INFRA-1545, round 44). One more step sources sa-lib.sh and then
+# sa-lib2.sh, two libraries, 2100 s; a walk that stopped at the first library charged it 1050 s.
+# The steps that sourced sa-lib.sh inside a loop beside such a run, which pinned how a source's
+# loop waits were charged, are gone with that charge: a source inside a loop is refused by name,
+# which the r37-library-order case below proves.
 echo "case: a library reached through a looped run is charged at that run's product, and two libraries are both charged"
 root=$(fixture sa-library-paths)
 cat > "$root/.github/scripts/sa-lib.sh" <<'SH'
@@ -6718,7 +7074,7 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 for charge in \
-  "The library reached through a looped run	2161" \
+  "The library reached through a looped run	2222" \
   "Two libraries	2100"; do
   IFS=$'\t' read -r step seconds <<<"$charge"
   check "charges '$step' $seconds s" \
@@ -7642,8 +7998,8 @@ check "refuses the path at its line as a place it reads no command at" \
 
 # A library sourced in a loop and again outside it is refused by name at the loop's source,
 # whichever of the two is written first (dispatch://INFRA-1545, round 37). r37-lib.sh retries at
-# 180 s, 5 x 180 + 150 = 1050 s; three passes sourcing it and sleeping 60 s are
-# 3 x 1050 + 2 x 60 = 3270 s, and each step's key of 54 minutes, 3240 s, is under that. The gate
+# 180 s, 5 x 180 + 150 = 1050 s; three passes sourcing it, each ending with `sleep 60`, are
+# 3 x 1050 + 3 x 60 = 3330 s, and each step's key of 54 minutes, 3240 s, is under that. The gate
 # before round 37's model, at 179c3dc9, read a path to a library as its names, so the two sources
 # were one path and the wait of the source read later stood for both: it charged the step writing
 # the loop first 3150 s and passed that key. A source inside a loop is now no call rule 8 charges,
