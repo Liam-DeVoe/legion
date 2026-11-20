@@ -926,10 +926,8 @@ test("a merge with a stopped move says the move may have been made and the sourc
   const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
   if (!source) throw new Error("The source epic has no heading row");
   await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
-  await user.selectOptions(
-    screen.getByRole("combobox", { name: "Merge into another epic" }),
-    "CORE-2"
-  );
+  await user.click(screen.getByRole("button", { name: pickNamed("Merge into another epic") }));
+  await user.click(screen.getByRole("option", { name: "Target" }));
   await user.click(screen.getByRole("button", { name: "Merge…" }));
   await user.click(
     within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {
@@ -962,10 +960,8 @@ test("a merge with a stopped move and one whose key ran out says each move's own
   const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
   if (!source) throw new Error("The source epic has no heading row");
   await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
-  await user.selectOptions(
-    screen.getByRole("combobox", { name: "Merge into another epic" }),
-    "CORE-2"
-  );
+  await user.click(screen.getByRole("button", { name: pickNamed("Merge into another epic") }));
+  await user.click(screen.getByRole("option", { name: "Target" }));
   await user.click(screen.getByRole("button", { name: "Merge…" }));
   await user.click(
     within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {

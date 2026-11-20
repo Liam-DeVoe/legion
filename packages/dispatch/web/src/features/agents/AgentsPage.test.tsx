@@ -1388,10 +1388,11 @@ test("Agents keeps selected-issue sends on the issue message route", async () =>
   }
 });
 
-/** Opens a row's issue picker and picks `issue`, the empty value being No issue. */
+/** Opens a row's Issue list and picks the row named `issue`: an issue's key and title, or No
+ *  issue. */
 async function pickIssue(user: UserEvent, row: HTMLElement, issue: string): Promise<void> {
-  await user.click(within(row).getByRole("button", { name: "Choose issue" }));
-  await user.selectOptions(await within(row).findByRole("combobox", { name: "Issue" }), issue);
+  await user.click(within(row).getByRole("button", { name: pickNamed("Choose issue") }));
+  await user.click(await within(issueList(row)).findByRole("option", { name: issue }));
 }
 
 // An Agents row's composer is one box for its session, whose address the issue picker moves. The
@@ -1416,7 +1417,7 @@ test("a direct message refused on an Agents row goes with the issue pick, and it
     fireEvent.submit(composer);
     await within(planner).findByText("Couldn't send — Dispatch refused the message");
 
-    await pickIssue(user, planner, "CORE-1");
+    await pickIssue(user, planner, "CORE-1 · Core work");
     await waitFor(() => expect(field.value).toBe("@Planner Status please"));
     expect(within(planner).queryByText(/This message was written/)).not.toBeInTheDocument();
     await user.click(within(planner).getByRole("button", { name: "Retry" }));
@@ -1459,13 +1460,13 @@ test("an upload refused on an Agents row's issue goes with the pick, and its Ret
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
     const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-    await pickIssue(user, planner, "CORE-1");
+    await pickIssue(user, planner, "CORE-1 · Core work");
     await waitFor(() => expect(field.value).toBe("@Planner"));
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(field, { clipboardData: { files: [shot] } });
     await within(planner).findByText("That file is too large.");
 
-    await pickIssue(user, planner, "");
+    await pickIssue(user, planner, "No issue");
     await waitFor(() => expect(field.value).toBe(""));
     expect(within(planner).queryByText(/This file was pasted/)).not.toBeInTheDocument();
     await user.click(within(planner).getByRole("button", { name: "Retry" }));
@@ -1497,13 +1498,13 @@ test("an upload that lands after an Agents row's issue pick joins the message at
     const planner = card(region, "Planner");
     await expand(user, planner, "Planner");
     const field = within(planner).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
-    await pickIssue(user, planner, "CORE-1");
+    await pickIssue(user, planner, "CORE-1 · Core work");
     await waitFor(() => expect(field.value).toBe("@Planner"));
     // user-event's paste carries text, never the file this field uploads.
     fireEvent.paste(field, { clipboardData: { files: [shot] } });
     await waitFor(() => expect(uploadArtifact).toHaveBeenCalledTimes(1));
 
-    await pickIssue(user, planner, "");
+    await pickIssue(user, planner, "No issue");
     await waitFor(() => expect(field.value).toBe(""));
     act(() =>
       stored.resolve({
