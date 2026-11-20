@@ -352,6 +352,7 @@ REACH = (
     "scripts/e2e/stage1-skeleton.sh",
     "scripts/e2e/lib/kind-sandbox.sh",
     "packages/daemon/internal/runtime/sandbox/testdata/agent-sandbox-v1.0.3.yaml",
+    "packages/envoy/deploy/scripts/compose-2.12.2_test.sh",
 )
 
 # A docker command whose image is a variable, and where that variable's value comes from. The

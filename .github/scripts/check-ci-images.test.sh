@@ -104,7 +104,7 @@ fixture() {
     "$root/packages/envoy/internal/tests3" "$root/packages/envoy/cmd/agent-secrets" \
     "$root/packages/envoy-client/src/__tests__" \
     "$root/scripts/e2e/lib" "$root/packages/dispatch/e2e" \
-    "$root/packages/pi-legion/scripts/skill-scenarios" \
+    "$root/packages/pi-legion/scripts/skill-scenarios" "$root/packages/envoy/deploy/scripts" \
     "$root/packages/daemon/internal/runtime/sandbox/testdata"
   ln -s "$check_script" "$root/.github/scripts/check-ci-images.sh"
   ln -s "$script_dir/workflow_paths.py" "$root/.github/scripts/workflow_paths.py"
@@ -271,6 +271,11 @@ spec:
       containers:
       - name: agent-sandbox-controller
         image: $REGISTRY@$NATS
+YAML
+  cat > "$root/packages/envoy/deploy/scripts/compose-2.12.2_test.sh" <<YAML
+# shellcheck shell=bash
+compose_2_12_image=$REGISTRY@$NATS
+container=\$(docker create "\$compose_2_12_image")
 YAML
   echo "$root"
 }
