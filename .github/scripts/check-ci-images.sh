@@ -89,10 +89,18 @@
 #      and this rule and rule 10 would then name the Dockerfile each of them builds.
 #
 # A `services:` or `container:` image from ghcr.io must set
-# `credentials: ${{ fromJSON('{"username":"anonymous"}') }}`. The evaluated mapping gives the
-# runner a non-empty username and no password, so it neither injects the job token nor logs in
-# before its anonymous pull of this public package. A `uses: docker://` action is refused: it can
-# add the same pre-checkout pull without a credentials field.
+# `credentials: ${{ fromJSON('{"username":"anonymous"}') }}`. Runner 2.338.2 fills credentials
+# that are both empty with the job's actor and token (UpdateRegistryAuthForGitHubToken in
+# ContainerOperationProvider.cs), and logs in before checkout only when the username and the
+# password are both set (ContainerRegistryLogin). The evaluated mapping sets a username and no
+# password, so the runner does neither and pulls this public package anonymously, as run
+# 44661259584 showed. A later runner that logs in with a username alone brings the login back,
+# and its job log shows `docker login` before checkout again. The form gives no access to a
+# private image. A job's `services:`, one of its services or its `container:` that is not a
+# mapping written in the workflow (an expression, or a bare image) is refused: this check cannot
+# read its image or its credentials, so neither this rule nor rules 4 to 6 could hold it. A
+# `uses: docker://` action is refused: it can add the same pre-checkout pull without a
+# credentials field.
 #
 # IN PACKAGE MODE:
 #
@@ -1181,6 +1189,21 @@ def scan_source(path: Path, lines: list[str]) -> None:
                 note(path, number, value, "this string")
 
 
+def not_a_mapping(path: Path, line: int, what: str, value: object) -> None:
+    """A job's `container:`, its `services:` or one of its services that is not a mapping written
+    in the workflow: an expression, which the runner evaluates and this check cannot, or a bare
+    image, which has no `credentials:` to set. The runner pulls each such image before checkout,
+    and logs in to ghcr.io with the job's token for one with no credentials, so this is refused by
+    name rather than passed unread: rules 4 to 6 and the credentials rule read only the images of
+    a mapping."""
+    problems.append(
+        f"{path}:{line}: {what} {one_line(value)}, not a mapping written in the workflow, so this "
+        f"check cannot read the image the runner pulls before checkout or its credentials. Write "
+        f"a mapping, with image: {REGISTRY}@<digest>, naming a digest {CI_IMAGES} holds, and "
+        f"credentials: {ANONYMOUS_CREDENTIALS} for each image."
+    )
+
+
 def scan_workflow(path: Path, lines: list[str]) -> None:
     """Rules 4, 5 and 6 over a workflow or a composite action: each job's runner and service
     images, each buildx driver-opts image=, and every run: script."""
@@ -1205,7 +1228,7 @@ def scan_workflow(path: Path, lines: list[str]) -> None:
         if isinstance(container, dict):
             images.append((key_line(container, "image"), container.get("image"), how, container))
         elif container is not None:
-            images.append((key_line(holder, "container"), container, how, container))
+            not_a_mapping(path, key_line(holder, "container"), "this job's container is", container)
         services = holder.get("services")
         if isinstance(services, dict):
             for name, service in services.items():
@@ -1213,7 +1236,9 @@ def scan_workflow(path: Path, lines: list[str]) -> None:
                 if isinstance(service, dict):
                     images.append((key_line(service, "image"), service.get("image"), how, service))
                 else:
-                    images.append((key_line(services, name), service, how, service))
+                    not_a_mapping(path, key_line(services, name), f"the {name} service is", service)
+        elif services is not None:
+            not_a_mapping(path, key_line(holder, "services"), "this job's services are", services)
         for line, image, how, definition in images:
             if not isinstance(image, str) or "${{" in image:
                 problems.append(
