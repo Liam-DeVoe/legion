@@ -1585,8 +1585,9 @@ const legionSuspendedBy = z.enum(["unknown", "operator", "daemon", "exit", "rele
 /** `api.OperatorClaim`, the body of the operator routes that act on one claim (`POST
  * /legion/v1/operator/claims`, `…/{token}/deliver|suspend|resume|stop|retry|forget-session|close`):
  * the claim as its supervisor holds it, but its hashes. `forgottenSession` and
- * `forgottenSessionFile` appear only in a successful `forget-session` response, and
- * `phaseNotRestarted` only in a `retry` that asked for a fresh session. */
+ * `forgottenSessionFile` appear only in a successful `forget-session` response,
+ * `phaseNotRestarted` only in a `retry` that asked for a fresh session, and `resumeOwed` only in
+ * a `resume` answered 202. */
 export const LegionOperatorClaimResponse = z.object({
   token: nonEmptyString,
   tree: nonEmptyString,
@@ -1606,6 +1607,10 @@ export const LegionOperatorClaimResponse = z.object({
    * left the claim in. Either rides a successful answer, because the request changed the claim;
    * absent when the claim came back and nothing else is to be said. */
   phaseNotRestarted: nonEmptyString.optional(),
+  /** The sentence of a `resume` that a release's take of the claim's issue pod made wait, answered
+   * 202 and nowhere else: the resume is owed, and the daemon resumes the claim once that release
+   * ends, in a new pod, with no second request. */
+  resumeOwed: nonEmptyString.optional(),
   locator: legionLocator.optional(),
   budgets: z.object({
     launchFailures: z.number().int().nonnegative(),

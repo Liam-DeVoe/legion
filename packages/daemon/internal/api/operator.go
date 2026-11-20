@@ -69,9 +69,9 @@ type ForgetSessionRequest struct {
 // carries and no claim's; the table's withheld column reaches no surface at all,
 // the claim's two hashes among it. Two fields stand here whole where a claim view reduces them:
 // the four counts, under `budgets` and again inside `failure`, and the pending task with its
-// text, under `pending`. Three keys below are no field of the claim record and stand on the
+// text, under `pending`. Four keys below are no field of the claim record and stand on the
 // answer of the one route that writes them rather than on every claim: ForgottenSession,
-// ForgottenSessionFile and PhaseNotRestarted.
+// ForgottenSessionFile, PhaseNotRestarted and ResumeOwed.
 type OperatorClaim struct {
 	Token                claim.Token `json:"token"`
 	Tree                 string      `json:"tree"`
@@ -90,6 +90,16 @@ type OperatorClaim struct {
 	// brought it back (notStartedAgain). It is absent everywhere else, a refused retry
 	// included, since that answer is the refusal itself and nothing of the claim changed.
 	PhaseNotRestarted string `json:"phaseNotRestarted,omitempty"`
+	// ResumeOwed is the sentence of an operator's resume that a release's take of the claim's
+	// issue pod made wait (supervise.ResumeOwedError), which only the resume route sets, with a
+	// 202: the resume is owed, and the daemon resumes the claim once that release ends, in a new
+	// pod, with no second request. It is absent everywhere else. The operator's `legion claims`
+	// prints it under the claim's line; no plugin reads the operator's routes, and the answer side
+	// of every schema of `packages/contracts` strips a key it does not name, so it moves no
+	// contract. A `legion` binary from before it refuses that one answer's body, as its reader
+	// refuses any key it does not know (cmd/legion's decodeAnswer), and the resume is owed all
+	// the same.
+	ResumeOwed string `json:"resumeOwed,omitempty"`
 	// Locator is the claim's process, the runtime's nested shape; none while nothing runs.
 	Locator         *runtime.Locator `json:"locator,omitempty"`
 	Budgets         BudgetsView      `json:"budgets"`
@@ -502,36 +512,43 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 		if !ok {
 			return
 		}
-		held, ok := s.claimEvent(w, r, m, token, request, ev)
+		held, owed, ok := s.claimEvent(w, r, m, token, request, ev)
 		if !ok {
 			return
 		}
 		status := http.StatusOK
-		if held {
+		if held || owed != "" {
 			status = http.StatusAccepted
 		}
 		s.operatorDone(r, token)
-		writeJSON(w, status, s.operatorAnswer(r.Context(), m.View().Claim))
+		answer := s.operatorAnswer(r.Context(), m.View().Claim)
+		answer.ResumeOwed = owed
+		writeJSON(w, status, answer)
 	}
 }
 
 // claimEvent posts one request to a claim's machine (postClaimEvent), as every operator request
 // on a claim does (claimRequest): it answers the caller itself when the daemon is stopping or
 // the machine refuses, and reports whether the machine held the request for the agent's turn
-// (supervise.ErrSuspendHeld), which is no refusal.
+// (supervise.ErrSuspendHeld), which is no refusal, and the sentence of a resume a release's take
+// made owed (supervise.ResumeOwedError), which is none either: the daemon resumes the claim once
+// that release ends.
 func (s *server) claimEvent(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
-	request string, ev supervise.Event) (held, ok bool) {
+	request string, ev supervise.Event) (held bool, owed string, ok bool) {
 	posted, err := s.postClaimEvent(w, r, m, token, request, ev)
+	var resumeOwed *supervise.ResumeOwedError
 	switch {
 	case !posted:
-		return false, false
+		return false, "", false
 	case errors.Is(err, supervise.ErrSuspendHeld):
-		return true, true
+		return true, "", true
+	case errors.As(err, &resumeOwed):
+		return false, resumeOwed.Error(), true
 	case err != nil:
 		s.operatorFailure(w, request, token, err)
-		return false, false
+		return false, "", false
 	}
-	return false, true
+	return false, "", true
 }
 
 // postClaimEvent posts one request to a claim's machine under a decision of the route's, which
@@ -568,12 +585,13 @@ func suspendEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (su
 }
 
 // resumeEvent is the operator's resume of a suspended claim, a launch the pause holds for every
-// claim but the controller's (refusedWhilePaused).
+// claim but the controller's (refusedWhilePaused). A launch a release's take refuses is owed
+// (supervise.RequestResume.Owe), and the route answers it 202 with its sentence (claimEvent).
 func (s *server) resumeEvent(w http.ResponseWriter, r *http.Request, c supervise.Claim) (supervise.Event, bool) {
 	if s.refusedWhilePaused(w, r, "resume", c) {
 		return nil, false
 	}
-	return supervise.RequestResume{Claim: c.Token}, true
+	return supervise.RequestResume{Claim: c.Token, Owe: true}, true
 }
 
 func stopEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (supervise.Event, bool) {
@@ -787,7 +805,7 @@ func (s *server) restartWorkedPhase(r *http.Request, token claim.Token, c superv
 // machine holds for the agent's turn answers 202, as every operator request on a claim answers one
 // (claimRequest).
 func (s *server) machineRetry(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, fresh bool) (int, bool) {
-	held, ok := s.claimEvent(w, r, m, token, "retry", supervise.RequestOperatorRetry{Claim: token, FreshSession: fresh})
+	held, _, ok := s.claimEvent(w, r, m, token, "retry", supervise.RequestOperatorRetry{Claim: token, FreshSession: fresh})
 	if !ok {
 		return 0, false
 	}
@@ -982,12 +1000,21 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 }
 
 // operatorFailure answers an operator request its machine did not take: 409 with the machine's
-// reason when the claim's state does not allow it, and otherwise a 500 that says what failed — the
-// operator is the one who has to act on a launch the runtime refused.
+// reason when the claim's state does not allow it, 409 too for a launch that waits for a release
+// deleting the claim's issue pod (supervise.PodTakenLaunchError), which nothing of this request
+// runs later, so the answer tells the operator to ask again once the release ends; and otherwise
+// a 500 that says what failed — the operator is the one who has to act on a launch the runtime
+// refused. The operator's resume is never answered here for such a launch: it is owed, and
+// answered 202 (claimEvent).
 func (s *server) operatorFailure(w http.ResponseWriter, request string, token claim.Token, err error) {
 	var refused *supervise.RefusedError
 	if errors.As(err, &refused) {
 		writeJSON(w, http.StatusConflict, errorBody(refused.Error()))
+		return
+	}
+	var taken *supervise.PodTakenLaunchError
+	if errors.As(err, &taken) {
+		writeJSON(w, http.StatusConflict, errorBody(fmt.Sprintf("%s %s refused: %v; ask again once the release ends", request, token, taken)))
 		return
 	}
 	s.logFailure("api: an operator request failed", "request", request, "claim", token, "error", err)

@@ -112,7 +112,9 @@ func decodeAnswer(answer []byte, into any) error {
 // one, or the claim was stopped and the machine refused the forget or the start that would
 // have brought it back. The line above reports the claim as it stands, which is a success in
 // the first of those and a stopped or launching claim in the second, and without this one an
-// operator would read either as work handed back.
+// operator would read either as work handed back. A resume that a release's take made wait
+// (api.OperatorClaim.ResumeOwed) is a second line the same way: the claim line still reads
+// suspended, and the sentence says the daemon resumes it once the release ends.
 func printClaim(w io.Writer, answer []byte) error {
 	var c api.OperatorClaim
 	if err := decodeAnswer(answer, &c); err != nil {
@@ -121,6 +123,9 @@ func printClaim(w io.Writer, answer []byte) error {
 	writeClaimLine(w, c)
 	if c.PhaseNotRestarted != "" {
 		fmt.Fprintln(w, c.PhaseNotRestarted)
+	}
+	if c.ResumeOwed != "" {
+		fmt.Fprintln(w, c.ResumeOwed)
 	}
 	return nil
 }
