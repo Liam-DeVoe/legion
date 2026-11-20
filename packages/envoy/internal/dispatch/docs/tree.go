@@ -124,13 +124,25 @@ func producedSchemaError(err error) error {
 	return err
 }
 
+// refusalWrappers are this package's own wrappers of a schema refusal, which LoggedError and
+// RefusalClass count among refusals: ErrDocSchema and ErrInvalidMarkdown carry the refusal's
+// message in theirs, and ErrDocNewerContent its cause's.
+var refusalWrappers = []error{ErrDocSchema, ErrInvalidMarkdown, ErrDocNewerContent}
+
 // LoggedError is err as a log line carries it (pmdoc.LoggedError), counting this package's own
-// wrappers of a schema refusal among refusals: ErrDocSchema and ErrInvalidMarkdown carry the
-// refusal's message in theirs, and ErrDocNewerContent its cause's. A refusal is logged by its
-// class alone, since its message quotes the document, which can hold a person's address; any other
+// wrappers of a schema refusal among refusals (refusalWrappers). A refusal is logged by its class
+// alone, since its message quotes the document, which can hold a person's address; any other
 // error is logged as it is. The error a caller is answered with keeps the whole message.
 func LoggedError(err error) slog.Value {
-	return pmdoc.LoggedError(err, ErrDocSchema, ErrInvalidMarkdown, ErrDocNewerContent)
+	return pmdoc.LoggedError(err, refusalWrappers...)
+}
+
+// RefusalClass is the class LoggedError logs err by when err refuses a document
+// (pmdoc.RefusalClass), and "" when it refuses none. A line that only ever logs a refusal logs it
+// by this rather than by LoggedError, so that line carries a sentinel's own words and never the
+// error: nothing the refusal quotes, nor anything a request wrapped it in, can reach it.
+func RefusalClass(err error) string {
+	return pmdoc.RefusalClass(err, refusalWrappers...)
 }
 
 // ErrDocumentTooLarge is the refusal of a write that would leave a document larger than the server

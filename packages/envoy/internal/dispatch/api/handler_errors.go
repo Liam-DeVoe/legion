@@ -255,16 +255,18 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 	}
 	// A tree outside the schema that the document holds answers 409 with its one message, the same
 	// on every route whatever the route wrapped it in (docs.OutsideSchemaError). Any other schema
-	// refusal is a tree an operation produced, which is the server's fault.
+	// refusal is a tree an operation produced, which is the server's fault. Either line logs the
+	// refusal by its class (docs.RefusalClass), never the error: its chain carries the document's
+	// text and whatever the request wrapped it in, the caller's own identity among it.
 	if documentCode == codeDocSchema {
 		var outside *docs.OutsideSchemaError
 		if errors.As(err, &outside) {
 			writeError(w, documentCode, http.StatusConflict, outside.Error())
-			slog.Warn("dispatch: API document outside Proof schema", "error", docs.LoggedError(err))
+			slog.Warn("dispatch: API document outside Proof schema", "error", docs.RefusalClass(err))
 			return
 		}
 		writeError(w, documentCode, http.StatusInternalServerError, err.Error())
-		slog.Error("dispatch: API document outside Proof schema", "error", docs.LoggedError(err))
+		slog.Error("dispatch: API document outside Proof schema", "error", docs.RefusalClass(err))
 		return
 	}
 	if errors.Is(err, docs.ErrIssueClosed) {

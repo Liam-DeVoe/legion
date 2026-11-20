@@ -132,10 +132,10 @@ func newMisread(before, after *Node, spanCells int) (misread, error) {
 
 // refusedMisread is refused, a schema refusal (ErrSchema) of a read-back, as the misread of no
 // block it is: its reason is the refusal's message, which the writer is told, and its kind the
-// refusal's class (refusalClass), which a log line names instead, since the message can quote the
+// refusal's class (RefusalClass), which a log line names instead, since the message can quote the
 // document.
 func refusedMisread(refused error) misread {
-	return misread{kind: refusalClass(refused, nil).Error(), reason: refused.Error()}
+	return misread{kind: RefusalClass(refused), reason: refused.Error()}
 }
 
 // sameMisread is what makes a misread one a document already held (NewMisread,
@@ -332,15 +332,16 @@ var ErrMisreadRendering = fmt.Errorf("%w: the markdown the document would be sto
 // where no reader read it, found how it reads back otherwise where one did, and err anything else,
 // which is the error. The refusal the writer gets carries the reason, the write's own text among
 // it. Each refusal is logged too, but by what names none of the document's text: a misread by its
-// block id and kind, and a refusal by its class (LoggedError). A reason quotes a block's text, and
-// a refusal can quote an attribute's value, either of which can be a person's address or other
-// private text, and a log line is read by whoever reads the server's logs.
+// block id and kind, and a refusal by its class (RefusalClass), never by the refusal itself. A
+// reason quotes a block's text, and a refusal can quote an attribute's value, either of which can
+// be a person's address or other private text, and a log line is read by whoever reads the
+// server's logs.
 func refuseMisread(found misread, refused, err error) error {
 	switch {
 	case err != nil:
 		return err
 	case refused != nil:
-		slog.Warn("pmdoc: refused a write whose markdown cannot be read back", "refusal", LoggedError(refused))
+		slog.Warn("pmdoc: refused a write whose markdown cannot be read back", "refusal", RefusalClass(refused))
 		return fmt.Errorf("%w: %w", ErrRenderingRefused, refused)
 	case found.reason == "":
 		return nil

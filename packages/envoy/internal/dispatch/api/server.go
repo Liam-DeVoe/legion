@@ -1347,9 +1347,11 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 // to one session — decides it instead, so such a caller need not name itself at all. A body
 // actor is then only an agreement: one that names the same session is taken, for its Origin,
 // which nothing else carries; one that names any other writer is 403 ACTOR_SESSION_MISMATCH,
-// naming the session the credential proved, rather than silently recording the write as a
-// session the caller merely asked for. Every credential that proves no session — a cookie, a
-// personal token, a Kubernetes service-account token — keeps the rule above exactly.
+// rather than silently recording the write as a session the caller merely asked for. The refusal
+// points the caller at whoami for the session the credential proved rather than naming it: it is
+// an error that writeHandlerError reads, and an error that carries an actor's ID can reach that
+// function's log lines, which name no writer. Every credential that proves no session — a
+// cookie, a personal token, a Kubernetes service-account token — keeps the rule above exactly.
 func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *model.Actor) (model.Actor, error) {
 	if authenticated.Kind == "session" && authenticated.ID != "" {
 		// A body that names no writer at all leaves the session to the credential; one that names
@@ -1357,7 +1359,7 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		named := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 		if named && (supplied.Kind != "session" || strings.TrimSpace(supplied.ID) != authenticated.ID) {
 			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
-				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)
+				"this request's credential acts for a session of its own, and its actor names another writer; GET /api/v1/whoami names the credential's session")
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
 		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
