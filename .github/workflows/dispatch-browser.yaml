@@ -1622,7 +1622,7 @@ jobs:
           export TMPDIR="$RUNNER_TEMP"
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
           export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
-          bun test e2e/__tests__/harness-postgres-image-port.test.ts e2e/__tests__/harness-postgres-image-mount.test.ts e2e/__tests__/harness-postgres-image-ready.test.ts
+          bun test e2e/__tests__/harness-postgres-image-port.test.ts e2e/__tests__/harness-postgres-image-mount.test.ts e2e/__tests__/harness-postgres-image-ready.test.ts e2e/__tests__/harness-postgres-image-stall.test.ts
           bun test -t '^image provider: ' e2e/__tests__/harness-postgres-leftover.test.ts
         working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard against its baselines

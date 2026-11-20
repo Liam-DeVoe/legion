@@ -10,6 +10,7 @@ standalone helpers they run, and the files they source, which `shellcheck` follo
 - [`lib/rig.sh`](#librigsh)
 
 - [`lib/held-front.sh`](#libheld-frontsh)
+
 - [`lib/process-tree.sh`](#libprocess-treesh)
 
 - [`lib/workflow.sh`](#libworkflowsh)

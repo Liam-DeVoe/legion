@@ -47,7 +47,7 @@
  *  directory and starts every server with it preloaded, at the same path, so a row can make the
  *  disk stop answering (e2e/disk-stall.ts). */
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -531,6 +531,24 @@ function bindMount(source: string, target: string): string {
   return `type=bind,"source=${source.replaceAll('"', '""')}",target=${target}`;
 }
 
+/** A passwd file for the container, written under `dir`, holding the image's own two users and
+ *  this process's, so that the image's entrypoint finds the user it runs as and leaves
+ *  `LD_PRELOAD` alone (the comment on `stalled` says why that matters). The entrypoint reads this
+ *  file for the user's name and home alone; the image's postgres user keeps the id the image
+ *  gives it (999), as its data directory's owner. */
+function passwdWith(dir: string, uid: number, gid: number): string {
+  const path = join(dir, `passwd-${uid}`);
+  const users = [
+    "root:x:0:0:root:/root:/bin/bash",
+    "postgres:x:999:999::/var/lib/postgresql:/bin/bash",
+  ];
+  if (uid !== 0 && uid !== 999) {
+    users.push(`stack:x:${uid}:${gid}::/var/lib/postgresql:/bin/bash`);
+  }
+  writeFileSync(path, `${users.join("\n")}\n`, { mode: 0o644 });
+  return path;
+}
+
 function imageProvider(
   image: string,
   dir: string,
@@ -546,14 +564,26 @@ function imageProvider(
         "process's user, and this platform names no user id."
     );
   }
-  // The stall's directory, read-only at its own path (a `--mount`, as `bindMount` says why), and
-  // the library preloaded into every process of the container, the server's among them.
+  // The stall's directory, read-only at its own path (a `--mount`, as `bindMount` says why), the
+  // library preloaded into every process of the container, the server's among them, and a passwd
+  // file that holds this user.
+  //
+  // The passwd file is what keeps the preload: this provider runs the container as this process's
+  // user, which the image does not know, and for a user its passwd file does not hold the image's
+  // entrypoint preloads nss_wrapper INSTEAD of what it was given
+  // (`export LD_PRELOAD="$wrapper"`, docker-library/postgres's docker-entrypoint.sh), and unsets
+  // LD_PRELOAD altogether once the cluster is made. So the server loaded no stall library and
+  // every flush went through: `read-marker-disk-stall.multiprocess.e2e.ts` failed in run
+  // 44647294777, naming the library its processes had not loaded. With this user in the file the
+  // entrypoint leaves LD_PRELOAD as it is.
   const stalled =
     stall === undefined
       ? []
       : [
           "--mount",
           `${bindMount(stall.dir, stall.dir)},readonly`,
+          "--mount",
+          `${bindMount(passwdWith(dir, uid, gid), "/etc/passwd")},readonly`,
           ...Object.entries(stall.environment).flatMap(([name, value]) => [
             "--env",
             `${name}=${value}`,

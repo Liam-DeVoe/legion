@@ -120,6 +120,9 @@ describe("the search for a start that refuses or creates its Postgres before it 
     const planted = plant("planted", {
       "lib/process-tree.sh": [":"],
       "lib/planted.sh": [
+        // The shell's own expansion, which this planted library holds verbatim so the search reads
+        // its sibling source.
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: the shell expands it, not JavaScript
         '. "${BASH_SOURCE[0]%/*}/process-tree.sh"',
         "check_port() {",
         '  [ -z "$(ss -Hltn "sport = :$1")" ] || fail "port $1 is taken"',
@@ -144,26 +147,37 @@ describe("the search for a start that refuses or creates its Postgres before it 
     });
     const parsed = sweepOrder(planted);
     const lineOf = (file: string, text: string) => {
-      const line = readFileSync(join(planted, file), "utf8").split("\n").findIndex((each) => each.includes(text));
+      const line = readFileSync(join(planted, file), "utf8")
+        .split("\n")
+        .findIndex((each) => each.includes(text));
       expect(line).not.toBe(-1);
       return line + 1;
     };
     const first = "scripts/e2e/first.sh";
-    const leftoversLine = lineOf("scripts/e2e/lib/leftovers.sh", 'fail "refuse_leftovers: $proc lists no process');
+    const leftoversLine = lineOf(
+      "scripts/e2e/lib/leftovers.sh",
+      'fail "refuse_leftovers: $proc lists no process'
+    );
     const checkLine = lineOf("scripts/e2e/lib/planted.sh", '[ -z "$(ss -Hltn "sport = :$1")" ]');
     const markLine = lineOf(first, 'pg_mark=$(postgres_mark "$work" "$pg")');
     expect(parsed.drivers.map((each) => each.driver)).toEqual(["scripts/e2e/after.sh", first]);
     expect(parsed.unread).toEqual([]);
     const findings = parsed.findings.flatMap((each) =>
-      each.before.map((call) => `${call.name} at ${call.at} from ${call.from} through ${call.via.join(",")}`)
+      each.before.map(
+        (call) => `${call.name} at ${call.at} from ${call.from} through ${call.via.join(",")}`
+      )
     );
-    const beginLine = readFileSync(join(planted, first), "utf8").split("\n").findIndex((line) => line === "begin") + 1;
+    const beginLine = readFileSync(join(planted, first), "utf8").split("\n").indexOf("begin") + 1;
     expect(beginLine).toBeGreaterThan(0);
     expect(findings).toContain(
       `fail at scripts/e2e/lib/leftovers.sh:${leftoversLine} from ${first}:${beginLine} through begin,refuse_leftovers`
     );
-    expect(findings).toContain(`fail at scripts/e2e/lib/planted.sh:${checkLine} from ${first}:${lineOf(first, "check_port 1234")} through check_port`);
-    expect(findings).toContain(`postgres_mark at ${first}:${markLine} from ${first}:${markLine} through `);
+    expect(findings).toContain(
+      `fail at scripts/e2e/lib/planted.sh:${checkLine} from ${first}:${lineOf(first, "check_port 1234")} through check_port`
+    );
+    expect(findings).toContain(
+      `postgres_mark at ${first}:${markLine} from ${first}:${markLine} through `
+    );
     expect(findings).toContain(`fail at ${first}:${markLine} from ${first}:${markLine} through `);
   });
 
@@ -219,9 +233,10 @@ describe("the search for a start that refuses or creates its Postgres before it 
     expect(drivers.find((each) => each.driver === "scripts/e2e/then-sweep.sh")?.sweep).toBe(
       "scripts/e2e/then-sweep.sh:5"
     );
-    const leftoversLine = readFileSync(join(planted, "scripts/e2e/lib/leftovers.sh"), "utf8")
-      .split("\n")
-      .findIndex((line) => line.includes('fail "refuse_leftovers: $proc lists no process')) + 1;
+    const leftoversLine =
+      readFileSync(join(planted, "scripts/e2e/lib/leftovers.sh"), "utf8")
+        .split("\n")
+        .findIndex((line) => line.includes('fail "refuse_leftovers: $proc lists no process')) + 1;
     expect(leftoversLine).toBeGreaterThan(0);
     expect(found(planted)).toContain(
       `fail at scripts/e2e/lib/leftovers.sh:${leftoversLine} from scripts/e2e/then-sweep.sh:4 through refuse_leftovers`
