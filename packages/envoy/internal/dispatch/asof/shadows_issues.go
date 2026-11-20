@@ -30,6 +30,12 @@ var issueClaimTypes = []string{"issue.claimed", "issue.released"}
 // of the predicate of events_issue_claim.
 func IssueClaimTypes() []string { return slices.Clone(issueClaimTypes) }
 
+// The type lists of the issues' shadows as SQL lists (sqlList), each quoted once.
+var (
+	issueStateList = sqlList(issueStateTypes)
+	issueClaimList = sqlList(issueClaimTypes)
+)
+
 // issueStateAt is the newest whole-issue event of the issue aliased issue at the cut, by seq:
 // its seq, its created_at and its payload. One owner's seq is its events' commit order, which
 // created_at, each transaction's start, is not.
@@ -39,16 +45,15 @@ func IssueClaimTypes() []string { return slices.Clone(issueClaimTypes) }
 // A read that compared each event's created_at from the table fetched every event of an issue made
 // after the cut and found none: at an early cut most issues are such issues, and an issue read,
 // whose children's progress reads every issue, spent 1.2 to 1.6 s in those fetches on a copy of
-// production's event log (task t12). The outer LIMIT keeps the read a subquery of one row; without
-// it the planner flattens it into the statement, counts a fraction of a row for each issue, and
-// plans the issue listing as if it held a few dozen issues (87 s on the copy).
+// production's event log. The outer LIMIT keeps the read a subquery of one row; without it the
+// planner flattens it into the statement, counts a fraction of a row for each issue, and plans
+// the issue listing as if it held a few dozen issues (87 s on the copy).
 func issueStateAt(issue, cut string) string {
-	types := sqlList(issueStateTypes)
 	return `select e.seq, e.created_at, e.payload from public.events e
-			where e.issue_key = ` + issue + `.key and e.type in ` + types + `
+			where e.issue_key = ` + issue + `.key and e.type in ` + issueStateList + `
 				and e.seq = (
 					select sx.seq from public.events sx
-					where sx.issue_key = ` + issue + `.key and sx.type in ` + types + `
+					where sx.issue_key = ` + issue + `.key and sx.type in ` + issueStateList + `
 						and sx.created_at <= ` + cut + `
 					order by sx.seq desc limit 1)
 			limit 1`
@@ -65,7 +70,7 @@ func issueClaimAt(issue, state, cut string) string {
 			select ` + state + `.seq, ` + state + `.payload->'claim' as claim
 			union all
 			(select e.seq, e.payload->'claim' from public.events e
-				where e.issue_key = ` + issue + `.key and e.type in ` + sqlList(issueClaimTypes) + `
+				where e.issue_key = ` + issue + `.key and e.type in ` + issueClaimList + `
 					and e.created_at <= ` + cut + `
 				order by e.seq desc limit 1)
 		) x order by x.seq desc limit 1)`
@@ -76,7 +81,7 @@ func issueClaimAt(issue, state, cut string) string {
 // events_issue_activity, so that the read reads that index alone.
 func issueActivityAt(aggregate, cut string) string {
 	return `(select ` + aggregate + ` from public.events e
-				where e.issue_key = i.key and e.type not in ` + sqlList(issueStateTypes) + ` and e.created_at <= ` + cut + `)`
+				where e.issue_key = i.key and e.type not in ` + issueStateList + ` and e.created_at <= ` + cut + `)`
 }
 
 // issuesShadow is decision 2's issues. Columns that no write changes after the insert (key,
@@ -110,7 +115,7 @@ func issueActivityAt(aggregate, cut string) string {
 //     never the present text.
 //
 //   - tasks_done, tasks_total and tasks_version: the row's present values. Progress at a cut is
-//     counted in Go from the primary document's version at the cut (decision 9, task t6).
+//     counted in Go from the primary document's version at the cut (decision 9).
 func issuesShadow(cut string) string {
 	title := `coalesce(s.payload->>'title', '')`
 	return `select i.key as key,
@@ -126,13 +131,13 @@ func issuesShadow(cut string) string {
 		greatest(
 			` + issueActivityAt("max(e.created_at)", cut) + `,
 			(select max(e.created_at) from public.events e
-				where e.issue_key = i.key and e.type in ` + sqlList(issueStateTypes) + ` and e.created_at <= ` + cut + `),
+				where e.issue_key = i.key and e.type in ` + issueStateList + ` and e.created_at <= ` + cut + `),
 			(s.payload->>'updated_at')::timestamptz) as updated_at,
 		case
 			when s.payload->>'closed_at' is null then null
 			when i.closed_at is not null and not exists (
 				select from public.events later
-				where later.issue_key = i.key and later.type in ` + sqlList(issueStateTypes) + `
+				where later.issue_key = i.key and later.type in ` + issueStateList + `
 					and later.created_at > ` + cut + `
 					and later.payload->>'closed_at' is distinct from s.payload->>'closed_at')
 			then i.closed_at

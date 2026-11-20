@@ -183,6 +183,18 @@ func TestBindWritesOnlyTheShadowsAStatementNames(t *testing.T) {
 			sql:  "-- events\nselect 'issues' as a, E'asks' as b, $q$ comments $q$ as c /* messages */ from people",
 			want: "-- events\nselect 'issues' as a, E'asks' as b, $q$ comments $q$ as c /* messages */ from people",
 		},
+		{
+			// PostgreSQL goes on with an E'...' string across a newline and a second quote, and
+			// reads the second part with escapes too: the literal is x' and events is a table.
+			name: "an E string that goes on after a newline",
+			sql:  "select e'x'\n'\\'' as a from events where 'y' = 'y'",
+			want: "with " + asof.Shadows(cut, "events") + "\nselect e'x'\n'\\'' as a from events where 'y' = 'y'",
+		},
+		{
+			name: "a -- comment that a carriage return ends",
+			sql:  "select 1 -- n\rfrom events",
+			want: "with " + asof.Shadows(cut, "events") + "\nselect 1 -- n\rfrom events",
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			got, err := asof.Bind(row.sql, cut)
@@ -227,5 +239,29 @@ func TestBindPassesStatementsThatReadNoTable(t *testing.T) {
 				t.Errorf("Bind(%q) = %q, want the statement unchanged", sql, bound)
 			}
 		})
+	}
+}
+
+// The escapes of a U&"..." identifier can spell the name of any table, which Bind does not read
+// from them, so Bind refuses a statement that holds one rather than send it unbound. A U&'...'
+// string is a literal, which names no table, and passes.
+func TestBindRefusesAUnicodeEscapedIdentifier(t *testing.T) {
+	cut := mustCut(t, "2026-11-10T00:00:00Z")
+	for _, sql := range []string{`select * from U&"\0065vents"`, `select * from people join u&"asks" on true`} {
+		t.Run(sql, func(t *testing.T) {
+			bound, err := asof.Bind(sql, cut)
+			var refused *asof.RefusedError
+			if !errors.As(err, &refused) {
+				t.Fatalf("Bind(%q) = %q, %v; want an *asof.RefusedError", sql, bound, err)
+			}
+			if refused.Statement != sql {
+				t.Errorf("Bind(%q) refusal names %q, want the statement", sql, refused.Statement)
+			}
+		})
+	}
+
+	const literal = `select U&'\0065vents' as a from people`
+	if bound, err := asof.Bind(literal, cut); err != nil || bound != literal {
+		t.Errorf("Bind(%q) = %q, %v; want the statement unchanged", literal, bound, err)
 	}
 }

@@ -199,7 +199,10 @@ func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.
 // therefore capped at the safe horizon, at or below which every event is final, the same cap and
 // the same wait GET /api/v1/references?since= reads under (sinceHorizon): every event committed
 // before the request stands at or below it, so paging to the end of this answer skips nothing.
-// At a cut the page also ends at the newest event id at the cut (newestEventIDAtTheCut).
+// At a cut the page also ends at the newest event id at the cut (newestEventIDAtTheCut). The wait
+// for the horizon runs with no cut: it reads no table as it stood at the cut, and where the
+// horizon observes through the shared pool, which binds each statement under a cut, the begin of
+// its observation would be refused.
 func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -215,7 +218,7 @@ func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	through, err := s.sinceHorizon(r.Context())
+	through, err := s.sinceHorizon(asof.WithoutCut(r.Context()))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -436,11 +439,14 @@ func (s *server) readEventRows(ctx context.Context, query string, arguments ...a
 }
 
 // askEventKinds are the kinds of event whose payload is an ask, to which a read adds the ask's
-// fields (attachAskEventFields).
-var askEventKinds = map[string]bool{
-	"ask.opened": true, "ask.anchor_refreshed": true, "ask.answered": true, "ask.resolved": true,
-	"ask.edited": true, "ask.handed_back": true, "ask.asked_of": true,
-}
+// fields (attachAskEventFields): the types the asks shadow reads an ask's state from.
+var askEventKinds = func() map[string]bool {
+	kinds := map[string]bool{}
+	for _, kind := range asof.AskStateTypes() {
+		kinds[kind] = true
+	}
+	return kinds
+}()
 
 // postBodyEventKinds is the kind of post each event kind's payload is about: the kind whose
 // table the payload's `id` names, and whose own body the payload carries under `body`. They are

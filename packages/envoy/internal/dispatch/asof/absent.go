@@ -56,21 +56,21 @@ const (
 	reasonGitHub = "This field is a GitHub read now. A past-time answer makes no GitHub read."
 	// S
 	reasonBroadened = "Broadening reads search_term_stats, which counts only the present text. A past-time search does not broaden."
-	// S
-	reasonSnippetTree = "A snippet tree comes from the display trees of the present text. A past-time search draws no tree."
 )
 
 // AbsentFields is, by route ("<method> <pattern>" as in api/routes_table.go), each member that a
 // past-time answer of the route can leave out. It holds the plan's list "Absent fields, by
-// route", and beside it the members that the implementer added for a field the records at the cut
-// do not give (decision 5): the delivery mode and the session of a delivery attempt and the text
-// of the block that a reply names (commentFields, messageFields), the route's status reason of an
-// ask's reach (routeReachFields), each reply of an ask's thread (commentFields), the documents of
-// an approval request in the inbox (askFields), the place of an anchored block, and of the blocks
-// that the text route gives, the anchored counts and the ids of a table's rows and cells, which
-// the block routes leave out too (blockFields). A route that the plan lists with no field has an
-// empty list. A past-time answer names a member in the Dispatch-As-Of-Absent header only when it
-// leaves that member out, and it names only members this table holds for its route (ValidAbsent).
+// route", and beside it the members that the list does not name for a field the records at the
+// cut do not give (decision 5): the delivery mode and the session of a delivery attempt and the
+// text of the block that a reply names (commentFields, messageFields), the route's status reason
+// of an ask's reach (routeReachFields), each reply of an ask's thread (commentFields), the
+// documents of an approval request in the inbox (askFields), the place of an anchored block, and
+// of the blocks that the text route gives, the anchored counts and the ids of a table's rows and
+// cells, which the block routes leave out too (blockFields). The list's snippet tree of a search
+// result is not here: a past-time search draws each snippet tree from the headline of the text at
+// the cut, so it never leaves one out. A route that the plan lists with no field has an empty
+// list. A past-time answer names a member in the Dispatch-As-Of-Absent header only when it leaves
+// that member out, and it names only members this table holds for its route (ValidAbsent).
 var AbsentFields = map[string][]AbsentField{
 	"GET /api/v1/issues/{key}": {
 		{"/route_status", reasonLiveness},
@@ -177,41 +177,47 @@ func eventLogFields() []AbsentField {
 	}
 }
 
+// UndatedCommentAttempt is the members of a comment's delivery attempt that a past-time answer
+// leaves out where no receipt or reply event at the cut dates the attempt (reason E): the state,
+// the members that a send writes with the state, and the delivery mode and the session that a
+// send resolves with no event.
+func UndatedCommentAttempt() []string { return slices.Clone(undatedCommentAttempt) }
+
+// UndatedMessageAttempt is UndatedCommentAttempt for a message's delivery attempt.
+func UndatedMessageAttempt() []string { return slices.Clone(undatedMessageAttempt) }
+
+var (
+	undatedCommentAttempt = []string{"state", "reply_id", "envelope_id", "resolve_error", "created_at", "delivery", "session_id"}
+	undatedMessageAttempt = []string{"state", "reply_id", "envelope_id", "created_at", "requested_by", "delivery", "session_id"}
+)
+
 // commentFields are the fields of a comment at prefix: of a comment route's comment, and of each
 // reply of an ask's thread. Not in the plan's list: the text of the block that the reply names,
 // which an item changed after the cut rewrote as it rewrote whether the block is removed; and the
 // delivery mode and the session of an attempt, which a send resolves with no event, so for an
 // attempt that no event at the cut dates they are absent too (decision 5).
 func commentFields(prefix string) []AbsentField {
-	return []AbsentField{
-		{prefix + "/body", reasonBody},
-		{prefix + "/reply_block/text", reasonReplyBlock},
-		{prefix + "/reply_block/removed", reasonReplyBlock},
-		{prefix + "/deliveries/*/state", reasonDeliveryState},
-		{prefix + "/deliveries/*/reply_id", reasonDeliveryState},
-		{prefix + "/deliveries/*/envelope_id", reasonDeliveryState},
-		{prefix + "/deliveries/*/resolve_error", reasonDeliveryState},
-		{prefix + "/deliveries/*/created_at", reasonDeliveryState},
-		{prefix + "/deliveries/*/delivery", reasonDeliveryState},
-		{prefix + "/deliveries/*/session_id", reasonDeliveryState},
-	}
+	return postFields(prefix, undatedCommentAttempt)
 }
 
 // messageFields are the fields of an issue message at prefix, with the block that the reply names
 // and the delivery mode and the session of an attempt for the reasons commentFields gives.
 func messageFields(prefix string) []AbsentField {
-	return []AbsentField{
+	return postFields(prefix, undatedMessageAttempt)
+}
+
+// postFields are the fields of a post at prefix: its body, the block that it replies to, and the
+// members attempt of each of its delivery attempts.
+func postFields(prefix string, attempt []string) []AbsentField {
+	fields := []AbsentField{
 		{prefix + "/body", reasonBody},
 		{prefix + "/reply_block/text", reasonReplyBlock},
 		{prefix + "/reply_block/removed", reasonReplyBlock},
-		{prefix + "/deliveries/*/state", reasonDeliveryState},
-		{prefix + "/deliveries/*/reply_id", reasonDeliveryState},
-		{prefix + "/deliveries/*/envelope_id", reasonDeliveryState},
-		{prefix + "/deliveries/*/created_at", reasonDeliveryState},
-		{prefix + "/deliveries/*/requested_by", reasonDeliveryState},
-		{prefix + "/deliveries/*/delivery", reasonDeliveryState},
-		{prefix + "/deliveries/*/session_id", reasonDeliveryState},
 	}
+	for _, member := range attempt {
+		fields = append(fields, AbsentField{prefix + "/deliveries/*/" + member, reasonDeliveryState})
+	}
+	return fields
 }
 
 // askFields are the fields of an ask at prefix.
@@ -257,26 +263,19 @@ func blockFields(prefix string) []AbsentField {
 	}
 }
 
-// searchFields are the fields of a search answer. A snippet tree is left out only where the
-// present read draws one: for a caller that sends Dispatch-Trees. An ask hit's href links the
-// ask's typed block only while the block is a node of the reference graph, which is the graph
-// now: it is left out where the block's document changed after the cut.
+// searchFields are the fields of a search answer. An ask hit's href links the ask's typed block
+// only while the block is a node of the reference graph, which is the graph now: it is left out
+// where the block's document changed after the cut.
 func searchFields() []AbsentField {
 	return []AbsentField{
 		{"/query/broadened", reasonBroadened},
-		{"/results/*/snippet_tree", reasonSnippetTree},
 		{"/results/*/href", reasonGraph},
 	}
 }
 
 // Absent reports whether AbsentFields holds pointer for route.
 func Absent(route, pointer string) bool {
-	for _, field := range AbsentFields[route] {
-		if field.Pointer == pointer {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(AbsentFields[route], func(field AbsentField) bool { return field.Pointer == pointer })
 }
 
 // HeaderValue is the value of the Dispatch-As-Of-Absent header (contracts.DispatchAsOfAbsentHeader)

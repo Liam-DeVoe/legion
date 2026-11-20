@@ -28,11 +28,27 @@ var messageStateTypes = []string{"message.created", "message.answered", "message
 func MessageStateTypes() []string { return slices.Clone(messageStateTypes) }
 
 // commentRewriteTypes and messageRewriteTypes are the events of a post's edit and of its delete.
-// From the time post_body_history began (postHistoryBegan), the transaction of each one writes one
+// From the time post_body_history began (PostHistoryBegan), the transaction of each one writes one
 // post_body_history row, which keeps the body that the edit or the delete replaced.
 var (
 	commentRewriteTypes = []string{"comment.edited", "comment.deleted"}
 	messageRewriteTypes = []string{"message.edited", "message.deleted"}
+)
+
+// CommentRewriteTypes are the event types of a comment's edit and of its delete, each of which
+// writes one post_body_history row from the time post_body_history began (PostHistoryBegan).
+func CommentRewriteTypes() []string { return slices.Clone(commentRewriteTypes) }
+
+// MessageRewriteTypes are the event types of a message's edit and of its delete, each of which
+// writes one post_body_history row from the time post_body_history began (PostHistoryBegan).
+func MessageRewriteTypes() []string { return slices.Clone(messageRewriteTypes) }
+
+// The type lists of the posts' shadows as SQL lists (sqlList), each quoted once.
+var (
+	commentStateList   = sqlList(commentStateTypes)
+	messageStateList   = sqlList(messageStateTypes)
+	commentRewriteList = sqlList(commentRewriteTypes)
+	messageRewriteList = sqlList(messageRewriteTypes)
 )
 
 // CommentBodiesNotGivenStatement reads, of the comments whose ids $1 holds (uuid[]), the id of each
@@ -52,14 +68,14 @@ var CommentBodiesNotGivenStatement = `select c.id::text from public.comments c
 	where c.id = any($1::uuid[]) and c.deleted_at is null
 		and coalesce((
 			select (e.payload->>'body_truncated')::boolean from public.events e
-			where e.payload->>'id' = c.id::text and e.type in ` + sqlList(commentStateTypes) + `
+			where e.payload->>'id' = c.id::text and e.type in ` + commentStateList + `
 				and e.created_at <= $2::timestamptz
 			order by e.id desc limit 1), false)
 		and (
 			select f.created_at from public.events f
-			where f.payload->>'id' = c.id::text and f.type in ` + sqlList(commentRewriteTypes) + `
+			where f.payload->>'id' = c.id::text and f.type in ` + commentRewriteList + `
 				and f.created_at > $2::timestamptz
-			order by f.id limit 1) < ` + postHistoryBegan
+			order by f.id limit 1) < ` + PostHistoryBegan
 
 // ItemsChangedAfterStatement reads, of the items whose ids $1 holds (text[]), the id of each item
 // that changed after the cut $2 (timestamptz): a comment or a message with an edit or a delete
@@ -69,34 +85,31 @@ var CommentBodiesNotGivenStatement = `select c.id::text from public.comments c
 // removed, as they stood at the cut for an item that did not change after it. The block index
 // keeps no earlier state with its time, so for an item that changed, the answer leaves both out.
 // The statement names public.events by its schema, so the store's binding at a cut does not
-// read the events shadow in its place (Bind).
-var ItemsChangedAfterStatement = `select distinct e.payload->>'id' from public.events e
-	where e.payload->>'id' = any($1::text[]) and e.type in ` +
-	sqlList(slices.Concat(commentRewriteTypes, messageRewriteTypes, askStateTypes)) + `
-		and e.created_at > $2::timestamptz`
+// read the events shadow in its place (Bind). It reads each kind of item through the partial
+// index of its types (events_comment_state, events_message_state, events_ask_state), one part of
+// a union each: one list of the types of every kind implies no index's predicate. The union
+// answers each id once.
+var ItemsChangedAfterStatement = `select e.payload->>'id' from public.events e
+	where e.payload->>'id' = any($1::text[]) and e.type in ` + commentRewriteList + `
+		and e.created_at > $2::timestamptz
+	union
+	select e.payload->>'id' from public.events e
+	where e.payload->>'id' = any($1::text[]) and e.type in ` + messageRewriteList + `
+		and e.created_at > $2::timestamptz
+	union
+	` + AsksChangedAfterStatement
 
 // CommentHistoryRowsAtCut and MessageHistoryRowsAtCut are SQL expressions for the history read of
 // one post at a cut (decision 17). Each is the number of post_body_history rows that the post had
 // at the cut, for the post whose row the alias p names: one row for each edit or delete event of
-// the post that began at or after the time post_body_history began (postHistoryBegan). The
-// transaction of each such event wrote one row, and the rows of a post in edited_at, id order are
-// the rows of those events in their order. So the history at the cut is the first rows, as many
-// as this number. An edit made before the history began wrote no row, and it does not count. The
-// expression reads the events by their bare name, so the binding at the cut reads the events at
-// the cut (the events shadow).
+// the post that began at or after the time post_body_history began (historyEventsCount). So the
+// history at the cut is the first rows, as many as this number. An edit made before the history
+// began wrote no row, and it does not count. The expression reads the events by their bare name,
+// so the binding at the cut reads the events at the cut (the events shadow).
 var (
-	CommentHistoryRowsAtCut = historyRowsAtCut(commentRewriteTypes)
-	MessageHistoryRowsAtCut = historyRowsAtCut(messageRewriteTypes)
+	CommentHistoryRowsAtCut = historyEventsCount("events", "p", commentRewriteList, "")
+	MessageHistoryRowsAtCut = historyEventsCount("events", "p", messageRewriteList, "")
 )
-
-// historyRowsAtCut counts the events of types of the post p that began at or after the time
-// post_body_history began, by the post's id in their payload (events_comment_state,
-// events_message_state).
-func historyRowsAtCut(types []string) string {
-	return `(select count(*) from events e
-		where e.payload->>'id' = p.id::text and e.type in ` + sqlList(types) + `
-			and e.created_at >= ` + postHistoryBegan + `)`
-}
 
 // commentsShadow is decision 2's comments: each comment whose creating event (comment.created, or
 // the comment.answered of a delivery callback's reply) began at or before the cut. Its
@@ -141,23 +154,23 @@ func commentsShadow(cut string) string {
 	from public.comments c
 	cross join lateral (
 		select from public.events e
-		where e.payload->>'id' = c.id::text and e.type in ` + sqlList(postCreatedTypes) + `
+		where e.payload->>'id' = c.id::text and e.type in ` + commentCreatedList + `
 			and e.created_at <= ` + cut + `
 		limit 1
 	) created
 	cross join lateral (
 		select e.id, e.payload from public.events e
-		where e.payload->>'id' = c.id::text and e.type in ` + sqlList(commentStateTypes) + `
+		where e.payload->>'id' = c.id::text and e.type in ` + commentStateList + `
 			and e.created_at <= ` + cut + `
 		order by e.id desc limit 1
 	) p
 	left join lateral (
 		select e.id, e.created_at from public.events e
-		where e.payload->>'id' = c.id::text and e.type in ` + sqlList(commentRewriteTypes) + `
+		where e.payload->>'id' = c.id::text and e.type in ` + commentRewriteList + `
 			and e.created_at > ` + cut + `
 		order by e.id limit 1
 	) f on true
-	cross join lateral (select ` + postBodyAtCut("c", "comment_id", "p", "f") + ` as body) b`
+	cross join lateral (select ` + postBodyAtCut("c", "comment_id", "p", "f", commentRewriteList, cut) + ` as body) b`
 }
 
 // messagesShadow is decision 2's messages: each message whose creating event (message.created, or
@@ -192,16 +205,16 @@ func messagesShadow(cut string) string {
 	left join lateral (
 		select e.id, e.payload from public.events e
 		where e.payload->>'id' = m.id::text
-			and e.type in ` + sqlList(messageStateTypes) + ` and e.created_at <= ` + cut + `
+			and e.type in ` + messageStateList + ` and e.created_at <= ` + cut + `
 		order by e.id desc limit 1
 	) p on true
 	left join lateral (
 		select e.id, e.created_at from public.events e
 		where e.payload->>'id' = m.id::text
-			and e.type in ` + sqlList(messageRewriteTypes) + ` and e.created_at > ` + cut + `
+			and e.type in ` + messageRewriteList + ` and e.created_at > ` + cut + `
 		order by e.id limit 1
 	) f on true
-	cross join lateral (select ` + postBodyAtCut("m", "message_id", "p", "f") + ` as body) b
+	cross join lateral (select ` + postBodyAtCut("m", "message_id", "p", "f", messageRewriteList, cut) + ` as body) b
 	where m.created_at <= ` + cut
 }
 
@@ -213,9 +226,9 @@ func messagesShadow(cut string) string {
 // writes it, api/comment_delivery.go), and the columns its send wrote with that state
 // (envelope_id, resolve_error) are the row's, which nothing writes again once the attempt is
 // settled. An attempt no event at the cut dates holds a state the records cannot give (reason E):
-// its state is ” and every column a send writes is its default (delivery ”, session_id,
-// envelope_id, error, resolve_error and reply_id null, duplicate false). claimed_at is a sender's
-// lease, which no record dates; it is null.
+// its state is the empty string and every column a send writes is its default (delivery the
+// empty string; session_id, envelope_id, error, resolve_error and reply_id null; duplicate
+// false). claimed_at is a sender's lease, which no record dates; it is null.
 func commentDeliveriesShadow(cut string) string {
 	return `select d.comment_id as comment_id,
 		d.target as target,
@@ -246,7 +259,7 @@ func commentDeliveriesShadow(cut string) string {
 	left join lateral (
 		select e.id from public.events e
 		where d.reply_id is not null and e.payload->>'id' = d.reply_id::text
-			and e.type in ` + sqlList(postCreatedTypes) + `
+			and e.type in ` + commentCreatedList + `
 			and e.created_at <= ` + cut + `
 		limit 1
 	) y on true
@@ -264,8 +277,9 @@ func commentDeliveriesShadow(cut string) string {
 //     writes accepted_at as its transaction's now(), the time its message.accepted takes
 //     (acceptDelivery, api/message_delivery.go).
 //   - urgency and connected_only: the row's, which the attempt's insert writes.
-//   - An attempt no event dates: state ”, delivery ” and session_id ” (both not null, with no
-//     default), envelope_id, error, reply_id and requested_by null, duplicate false.
+//   - An attempt no event dates: state, delivery and session_id the empty string (the two last
+//     are not null, with no default); envelope_id, error, reply_id and requested_by null;
+//     duplicate false.
 //   - claimed_at: a sender's lease, null.
 func messageDeliveriesShadow(cut string) string {
 	return `select d.message_id as message_id,

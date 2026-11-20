@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -198,11 +199,20 @@ func omitObjectMembers(value []byte, paths [][]string) ([]byte, error) {
 }
 
 // omitArrayMembers is the array value with each path applied to the elements it names: the
-// element its number names, or every element for *.
+// element its number names, or every element for *. The paths are grouped once, before the
+// elements are read: the paths of * apply to each element, and the paths of a number only to
+// the element of that number.
 func omitArrayMembers(value []byte, paths [][]string) ([]byte, error) {
+	var every [][]string
+	numbered := map[string][][]string{}
 	for _, path := range paths {
 		if len(path) == 1 {
 			return nil, fmt.Errorf("asof: the pointer segment %q names an element of an array, not a member of an object", path[0])
+		}
+		if path[0] == "*" {
+			every = append(every, path[1:])
+		} else {
+			numbered[path[0]] = append(numbered[path[0]], path[1:])
 		}
 	}
 	decoder := json.NewDecoder(bytes.NewReader(value))
@@ -216,10 +226,10 @@ func omitArrayMembers(value []byte, paths [][]string) ([]byte, error) {
 		if err := decoder.Decode(&element); err != nil {
 			return nil, fmt.Errorf("asof: read element %d of the answer's array: %w", index, err)
 		}
-		var below [][]string
-		for _, path := range paths {
-			if path[0] == "*" || path[0] == strconv.Itoa(index) {
-				below = append(below, path[1:])
+		below := every
+		if len(numbered) > 0 {
+			if own := numbered[strconv.Itoa(index)]; len(own) > 0 {
+				below = append(slices.Clip(every), own...)
 			}
 		}
 		if len(below) > 0 {

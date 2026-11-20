@@ -1,7 +1,7 @@
-// as_of_logs_test.go holds the three event logs at a cut (task t9 of INFRA-4620's plan) to the
-// cases the equality harness (as_of_equality_test.go) does not write: the events of posts deleted
-// after the cut in each log, beside a post deleted before it and an edited message; the page of
-// the whole log that reaches the cut; and the validator of an issue's log at a cut.
+// as_of_logs_test.go holds the three event logs at a cut to the cases the equality harness
+// (as_of_equality_test.go) does not write: the events of posts deleted after the cut in each log,
+// beside a post deleted before it and an edited message; the page of the whole log that reaches
+// the cut; and the validator of an issue's log at a cut.
 package api
 
 import (
@@ -15,7 +15,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -267,15 +270,46 @@ func TestAPastTimeEventLogPageStopsAtTheCut(t *testing.T) {
 	}
 }
 
+// TestAPastTimeEventLogPageUnderTheFallbackHorizonPool: where the event horizon's own pool does
+// not open, the horizon observes through the shared request pool (server.horizon), which binds
+// each statement it sends under a cut. The page's wait for the horizon reads no table as it stood
+// at the cut, so it waits under no cut: the page at a cut is answered, and the observation that it
+// shares with the readers at the present is not refused.
+func TestAPastTimeEventLogPageUnderTheFallbackHorizonPool(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	served.horizonOnce.Do(func() { served.eventHorizon = events.NewHorizon(database.Pool) })
+	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ASDH", "name": "The log on the shared pool"}, "alice")
+	settleServed(t, served)
+	cut := databaseCut(t, database)
+	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ASDI", "name": "Written after the cut"}, "alice")
+
+	page := documentRead(t, handler, withAsOf(t, "/api/v1/events/log?after=0", cut))
+	if page.status != http.StatusOK || page.header.Get(contracts.DispatchAsOfHeader) != cut.String() {
+		t.Fatalf("GET /api/v1/events/log as of the cut on the shared pool: status=%d %s=%q body=%s", page.status,
+			contracts.DispatchAsOfHeader, page.header.Get(contracts.DispatchAsOfHeader), abbreviateAnswer(page.body))
+	}
+	if ids := loggedEventIDs(t, page.body); len(ids) == 0 {
+		t.Errorf("GET /api/v1/events/log as of the cut on the shared pool holds no event, want the events at the cut")
+	}
+}
+
 // pageBounds is the upper bound of the id range of each read of a page of the whole log
-// (readEventsAfterID) that statements recorded since mark.
+// (readEventsAfterID) that statements recorded since mark. The store sends a statement that it
+// bound to a cut with pgx.QueryExecModeCacheDescribe in front of its arguments, which the tracer
+// records with them.
 func pageBounds(statements *statementCounter, since int) []string {
 	statements.mu.Lock()
 	defer statements.mu.Unlock()
 	var bounds []string
 	for _, statement := range statements.sent[since:] {
-		if strings.Contains(statement.sql, "e.id > $1 and e.id <= $2") && len(statement.args) > 1 {
-			bounds = append(bounds, fmt.Sprint(statement.args[1]))
+		args := statement.args
+		if len(args) > 0 {
+			if _, mode := args[0].(pgx.QueryExecMode); mode {
+				args = args[1:]
+			}
+		}
+		if strings.Contains(statement.sql, "e.id > $1 and e.id <= $2") && len(args) > 1 {
+			bounds = append(bounds, fmt.Sprint(args[1]))
 		}
 	}
 	return bounds

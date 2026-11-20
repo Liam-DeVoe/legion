@@ -5,40 +5,38 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// The issue read and the issue listing at a cut (task t6 of INFRA-4620's plan). Both run their
-// present statements under the cut, which the store binds to the shadows. These are the parts of
-// the two answers that the shadows do not give, and that each answer leaves out (leaveOut), or
-// reads another way, at a cut.
+// The issue read and the issue listing at a cut. Both run their present statements under the
+// cut, which the store binds to the shadows. These are the parts of the two answers that the
+// shadows do not give, and that each answer leaves out (leaveOut), or reads another way, at a cut.
 
-// refuseListingFilterAtCut answers 400 AS_OF_NOT_SERVED, naming the parameter, for a listing at a
-// cut that sends a filter the records at the cut cannot evaluate (decision 5): route_status reads
-// the route roster now, and pinned reads one person's pins now; neither keeps a history. It
-// reports whether it answered.
-func refuseListingFilterAtCut(w http.ResponseWriter, r *http.Request) bool {
-	if _, atCut := asof.CutFrom(r.Context()); !atCut {
+// refuseParameterAtCut answers 400 AS_OF_NOT_SERVED, naming parameter, for a request at a cut
+// that sends parameter, which the records at the cut cannot evaluate (decision 5): its message is
+// "<parameter>: <reason>; send the request with no <parameter>". It reports whether it answered.
+func refuseParameterAtCut(w http.ResponseWriter, r *http.Request, parameter, reason string) bool {
+	if _, atCut := asof.CutFrom(r.Context()); !atCut || !r.URL.Query().Has(parameter) {
 		return false
 	}
-	query := r.URL.Query()
-	for _, filter := range []struct{ parameter, source string }{
-		{"route_status", "the route roster"},
-		{"pinned", "the pins of a person"},
-	} {
-		if query.Has(filter.parameter) {
-			writeError(w, contracts.DispatchAsOfNotServed, http.StatusBadRequest, fmt.Sprintf(
-				"%s: %s keeps no history, so a listing at a past time cannot filter by %s; send the request with no %s",
-				filter.parameter, filter.source, filter.parameter, filter.parameter))
-			return true
-		}
-	}
-	return false
+	writeError(w, contracts.DispatchAsOfNotServed, http.StatusBadRequest,
+		parameter+": "+reason+"; send the request with no "+parameter)
+	return true
+}
+
+// refuseListingFilterAtCut refuses a listing at a cut that sends a filter the records at the cut
+// cannot evaluate (refuseParameterAtCut): route_status reads the route roster now, and pinned
+// reads one person's pins now; neither keeps a history. It reports whether it answered.
+func refuseListingFilterAtCut(w http.ResponseWriter, r *http.Request) bool {
+	return refuseParameterAtCut(w, r, "route_status",
+		"the route roster keeps no history, so a listing at a past time cannot filter by route_status") ||
+		refuseParameterAtCut(w, r, "pinned",
+			"the pins of a person keeps no history, so a listing at a past time cannot filter by pinned")
 }
 
 // issueAtTheCut completes the issue read at the cut ctx carries. The read does not read the route
@@ -53,10 +51,8 @@ func refuseListingFilterAtCut(w http.ResponseWriter, r *http.Request) bool {
 // approvalAtTheCut), and the open asks what the records at the cut do not give of them
 // (leaveOutPastAskFields).
 func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail) error {
-	leaveOut(ctx, "/design_gates", "/referenced_by_count")
-	if read.Route != nil {
-		leaveOut(ctx, "/route_status", "/route_holder", "/route_status_reason")
-	}
+	leaveOut(ctx, "/design_gates", "/"+model.ReferencedByCountKey)
+	leaveOutRouteReach(ctx, read.Route, "")
 	if issueClaimSession(read.Claim) != "" {
 		leaveOut(ctx, "/holder_state", "/last_seen", "/takeable_at")
 	}
@@ -74,20 +70,21 @@ func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail) error {
 	for index := range read.OpenAsks {
 		asks[index] = read.OpenAsks[index].Ask
 	}
+	artifact := elementsOf("/artifacts")
 	for index := range read.Artifacts {
 		if approval := read.Artifacts[index].Approval; approval != nil {
-			approvalAtTheCut(ctx, &approval.ArtifactApproval, "/artifacts/"+strconv.Itoa(index))
+			approvalAtTheCut(ctx, &approval.ArtifactApproval, artifact(index))
 		}
 	}
 	return s.leaveOutPastAskFields(ctx, asks, elementsOf("/open_asks"))
 }
 
 // issueSummariesAtTheCut completes the listing at the cut ctx carries, each issue at the place
-// that prefix and its index name in the answer ("/" for an unpaged answer, "/issues/" for a
-// paged one). The listing does not read the route roster: an issue with a route leaves out the
-// route's reach, which is null at any time for an issue with none. An issue with an explicit
-// component attachment leaves out its members, which the present component model splits.
-// Progress follows decision 9 (tasksAtTheCut).
+// that prefix and its index name in the answer ("" for an unpaged answer, "/issues" for a paged
+// one). The listing does not read the route roster: an issue with a route leaves out the route's
+// reach, which is null at any time for an issue with none. An issue with an explicit component
+// attachment leaves out its members, which the present component model splits. Progress follows
+// decision 9 (tasksAtTheCut).
 func (s *server) issueSummariesAtTheCut(ctx context.Context, issues []model.IssueSummary, prefix string) error {
 	keys := make([]string, len(issues))
 	for index := range issues {
@@ -97,14 +94,13 @@ func (s *server) issueSummariesAtTheCut(ctx context.Context, issues []model.Issu
 	if err != nil {
 		return err
 	}
+	place := elementsOf(prefix)
 	for index := range issues {
-		at := prefix + strconv.Itoa(index)
+		at := place(index)
 		if counted, ok := tasks[issues[index].Key]; ok {
 			issues[index].Progress.Tasks = counted
 		}
-		if issues[index].Route != nil {
-			leaveOut(ctx, at+"/route_status", at+"/route_holder", at+"/route_status_reason")
-		}
+		leaveOutRouteReach(ctx, issues[index].Route, at)
 		if issues[index].Components.Mode == "explicit" {
 			leaveOut(ctx, at+"/components/ids", at+"/components/unknown")
 		}
@@ -117,8 +113,8 @@ func (s *server) issueSummariesAtTheCut(ctx context.Context, issues []model.Issu
 // (tasks_version, which the issues shadow gives as the row holds it now), with that version's
 // markdown: the newest version that holds markdown, or the empty text. It is the
 // reconciliation's own reading of a drifted count (docs.RecordTaskProgressMarkdown,
-// latestPrimaryVersion), read through the shadows of artifacts and artifact_versions, so it reads
-// the versions at the cut.
+// docs.TaskProgressDrift), read through the shadows of artifacts and artifact_versions, so it
+// reads the versions at the cut.
 const tasksAtTheCutStatement = `
 		select i.key,
 		       coalesce((
@@ -127,11 +123,7 @@ const tasksAtTheCutStatement = `
 		         order by v.number desc limit 1
 		       ), '')
 		from issues i
-		where i.key = any($1::text[]) and i.tasks_version is distinct from (
-			select coalesce(max(v.number), 0)
-			from artifacts a join artifact_versions v on v.artifact_id = a.id
-			where a.issue_key = i.key and a.is_primary
-		)`
+		where i.key = any($1::text[]) and ` + docs.TaskProgressDrift
 
 // tasksAtTheCut is progress.tasks at the cut ctx carries for each of keys whose primary
 // document's newest version at the cut is not the version its stored count names (decision 9):
@@ -193,15 +185,9 @@ func (s *server) leaveOutPastAskFields(ctx context.Context, asks []model.Ask, at
 	}
 	for index, ask := range asks {
 		place := at(index)
-		leaveOut(ctx, place+"/referenced_by_count")
+		leaveOut(ctx, place+"/"+model.ReferencedByCountKey)
 		if changed[ask.ID] {
-			leaveOut(ctx, place+"/revision")
-			for option := range ask.Options {
-				leaveOut(ctx, place+"/options/"+strconv.Itoa(option)+"/id")
-			}
-			if ask.Answer != nil {
-				leaveOut(ctx, place+"/answer/id")
-			}
+			leaveOutAskParts(ctx, place, len(ask.Options), ask.Answer != nil)
 		}
 		if ask.WaitingOnPerson == "" {
 			leaveOut(ctx, place+"/waiting_on_person")

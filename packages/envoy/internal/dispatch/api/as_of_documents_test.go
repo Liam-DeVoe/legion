@@ -1,4 +1,4 @@
-// as_of_documents_test.go holds the document routes at a cut (task t8 of INFRA-4620's plan) to
+// as_of_documents_test.go holds the document routes at a cut to
 // the cases the equality harness (as_of_equality_test.go) does not write: a document read after a
 // version and an unsettled edit made after the cut, with a typed block, two blocks of one text and
 // a table; a document removed after the cut; a version made after the cut; and an approval

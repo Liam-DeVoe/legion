@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -51,6 +52,11 @@ const (
 	batchMessage = "dispatch: the keyword fill wrote a batch"
 	resetMessage = "dispatch: the event log was reset under the keyword fill's cursor; the fill emptied its table and starts again from the first event"
 )
+
+// rulesReadMessage is the line of the batch that read again the last of the events that earlier
+// rules passed and records rulesVersion in the cursor row (filler.reread).
+var rulesReadMessage = "dispatch: the keyword fill read again every event that earlier rules passed, and records rules version " +
+	strconv.Itoa(rulesVersion)
 
 // FillToHorizon writes the rows of every event up to the event log's safe horizon once, from the
 // fill's cursor, in batches with their rest, and returns: with no hold, so two fills that run at
@@ -210,7 +216,7 @@ func (f *filler) batchesTo(ctx context.Context, safe int64) (bool, error) {
 		if err := f.rest(ctx, result.took); err != nil {
 			return false, err
 		}
-		if !result.full {
+		if !result.full && !result.reread {
 			return false, nil
 		}
 	}
@@ -355,7 +361,7 @@ with candidates as (
               ` + eventTextSize + ` as size
          from public.events e
         where e.id > $1 and e.id <= $2 and e.type = any($5::text[])
-          and e.created_at >= ` + postHistoryBegan + `
+          and e.created_at >= ` + asof.PostHistoryBegan + `
           and not exists (select from public.search_text_versions v
                            where v.kind = split_part(e.type, '.', 1) and v.id = e.payload->>'id'
                              and v.event_seq = e.seq)
@@ -605,7 +611,6 @@ func (f *filler) reread(ctx context.Context, tx pgx.Tx, started time.Time, curso
 		rows:   len(got.Versions),
 		cut:    got.Cut,
 		cursor: cursor,
-		full:   true,
 	}
 	if len(read) > 0 {
 		result.first, result.last = read[0].ID, read[len(read)-1].ID
@@ -625,7 +630,7 @@ func (f *filler) reread(ctx context.Context, tx pgx.Tx, started time.Time, curso
 	switch {
 	case done:
 		f.rereadAfter = 0
-		f.logger.Info("dispatch: the keyword fill read again every event that earlier rules passed, and records rules version "+strconv.Itoa(rulesVersion),
+		f.logger.Info(rulesReadMessage,
 			"cursor", cursor, "earlier_rules", rules)
 	case len(read) > 0:
 		f.rereadAfter = result.last

@@ -4,15 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strconv"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The three event logs at a cut (task t9 of INFRA-4620's plan, decision 13): the log of an issue
-// (listIssueEvents), of a document (listArtifactEvents) and the whole log (listEventLog). Each
+// The three event logs at a cut (decision 13): the log of an issue (listIssueEvents), of a
+// document (listArtifactEvents) and the whole log (listEventLog). Each
 // runs its present statement under the cut, so it reads the events shadow: the events whose
 // transaction began at or before the cut. An event carries its payload as its write stored it.
 // The read adds to a payload what it adds at the present (readEventRows), from the shadows: the
@@ -68,6 +68,7 @@ func (s *server) eventPageAtTheCut(ctx context.Context, events []model.Event) er
 	}
 	var asks []pageAsk
 	var ids []string
+	at := elementsOf("")
 	for index := range events {
 		kind := events[index].Type
 		_, carriesBody := postBodyEventKinds[kind]
@@ -78,7 +79,7 @@ func (s *server) eventPageAtTheCut(ctx context.Context, events []model.Event) er
 		if !ok {
 			return fmt.Errorf("decode %s payload: expected raw JSON", kind)
 		}
-		place := "/" + strconv.Itoa(index) + "/payload"
+		place := at(index) + "/payload"
 		if carriesBody {
 			var mark struct {
 				DeletedAt *time.Time `json:"deleted_at"`
@@ -106,21 +107,30 @@ func (s *server) eventPageAtTheCut(ctx context.Context, events []model.Event) er
 	if len(asks) == 0 {
 		return nil
 	}
-	changed, err := s.idsReadAtTheCut(ctx, asof.AsksChangedAfterStatement, ids, cut)
+	// A page can hold many events of one ask; the statement reads each ask once.
+	slices.Sort(ids)
+	changed, err := s.idsReadAtTheCut(ctx, asof.AsksChangedAfterStatement, slices.Compact(ids), cut)
 	if err != nil {
 		return fmt.Errorf("read which asks of an event page changed after the cut: %w", err)
 	}
 	for _, ask := range asks {
-		if !changed[ask.id] {
-			continue
-		}
-		leaveOut(ctx, ask.place+"/revision")
-		for option := range ask.options {
-			leaveOut(ctx, ask.place+"/options/"+strconv.Itoa(option)+"/id")
-		}
-		if ask.answered {
-			leaveOut(ctx, ask.place+"/answer/id")
+		if changed[ask.id] {
+			leaveOutAskParts(ctx, ask.place, ask.options, ask.answered)
 		}
 	}
 	return nil
+}
+
+// leaveOutAskParts names the parts of the ask at place that the present ask_blocks give, for an
+// ask that changed after the cut (reason P, asof.AsksChangedAfterStatement): its revision, the id
+// of each of its options options, and the id of its answer when it is answered.
+func leaveOutAskParts(ctx context.Context, place string, options int, answered bool) {
+	leaveOut(ctx, place+"/revision")
+	option := elementsOf(place + "/options")
+	for index := range options {
+		leaveOut(ctx, option(index)+"/id")
+	}
+	if answered {
+		leaveOut(ctx, place+"/answer/id")
+	}
 }

@@ -179,12 +179,21 @@ func keywords(q string) url.Values { return url.Values{"q": {q}, "keywords_only"
 func meaning(q string) url.Values { return url.Values{"q": {q}} }
 
 // requireNoWord fails t when any result or snippet of answer holds word: no result may be an
-// item that holds it, and no snippet may show it.
+// item whose text in the answer, its owner's title or name, holds it, and no snippet may show it.
 func requireNoWord(t *testing.T, answer searchAnswer, word, why string) {
 	t.Helper()
 	for _, result := range answer.Results {
-		if strings.Contains(strings.ToLower(result.Snippet), word) {
-			t.Errorf("%s: the %s %s has the snippet %q, which holds %q", why, result.Kind, result.ID, result.Snippet, word)
+		texts := []string{result.Snippet, result.Owner.Title, result.Owner.Name}
+		if result.Issue != nil {
+			texts = append(texts, result.Issue.Title)
+		}
+		if result.Artifact != nil {
+			texts = append(texts, result.Artifact.Name)
+		}
+		for _, text := range texts {
+			if strings.Contains(strings.ToLower(text), word) {
+				t.Errorf("%s: the %s %s holds %q in %q", why, result.Kind, result.ID, word, text)
+			}
 		}
 	}
 }

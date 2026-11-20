@@ -1,5 +1,5 @@
-// as_of_relations_test.go holds the relation inventory of a read at a cut (the plan's task t3, by
-// its decisions 1 and 2): each statement that an answers route sends at a cut reads a shadowed
+// as_of_relations_test.go holds the relation inventory of a read at a cut (by the plan's
+// decisions 1 and 2): each statement that an answers route sends at a cut reads a shadowed
 // table by its bare name only through its shadow. Outside the shadows it reads only a table that
 // the shadows read, or a table that asof.MachineryTables or asof.CutReadTables lists with its
 // reason. The test reads every row of the t-routes harness on that harness's rig and world

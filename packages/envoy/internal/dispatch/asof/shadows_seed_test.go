@@ -119,7 +119,7 @@ func (w world) project(key, defaultAssignee string, created time.Time) {
 // newIssue is an issue as its payload carries it (model.Issue), with every list an empty list.
 func newIssue(key, project string, number int, title string, created time.Time) model.Issue {
 	return model.Issue{
-		Key: key, Project: project, Number: number, Title: title, Status: "triage", Rank: "m",
+		Key: key, Project: project, Number: number, Title: title, Status: model.IssueStatusTriage, Rank: "m",
 		Labels: []string{}, BlockedBy: []string{}, Advances: []model.IssueAdvance{},
 		Components:    model.IssueComponents{Mode: "inherit", IDs: []string{}, Unknown: []string{}},
 		ExternalLinks: []model.ExternalLink{}, CreatedBy: &alice, CreatedAt: created, UpdatedAt: created,

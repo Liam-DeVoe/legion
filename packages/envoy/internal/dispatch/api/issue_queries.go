@@ -719,9 +719,9 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	if atCut {
 		// At a cut the listing reads no route roster, and the request carries no route_status
 		// (refuseListingFilterAtCut), so the page is cut in SQL whenever it is paged.
-		prefix := "/"
+		prefix := ""
 		if inSQL {
-			prefix = "/issues/"
+			prefix = "/issues"
 		}
 		if err := s.issueSummariesAtTheCut(r.Context(), issues, prefix); err != nil {
 			s.writeHandlerError(w, err)

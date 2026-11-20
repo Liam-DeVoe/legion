@@ -40,10 +40,16 @@ func (e *RefusedError) Error() string {
 //
 // Bind refuses, with a *RefusedError, a statement whose first word after its WITH list is not
 // select, values, table or "(", a statement whose own WITH list holds an insert, update, delete
-// or merge, and a string that holds more than one statement, whether or not it names a shadowed
+// or merge, a string that holds more than one statement, whether or not it names a shadowed
+// table, and a statement that holds a U&"..." identifier, whose escapes can spell the name of any
 // table. Keywords are case-insensitive. Bind reads sql with a tokenizer that reads a string
 // literal, a quoted identifier and a dollar-quoted body each as one token and skips comments, so
-// a word inside a literal, a body or a comment is not SQL to it and names no table.
+// a word inside a literal, a body or a comment is not SQL to it and names no table. It reads them
+// as PostgreSQL's lexer does where a table's name depends on it: a literal goes on after
+// whitespace that holds a newline and a second quote, an E'...' literal with its backslash
+// escapes in each part; a -- comment ends at a newline or a carriage return; and /* */ comments
+// nest. It reads no setting: a backslash in a plain literal is a character, as under
+// standard_conforming_strings on, the default.
 func Bind(sql string, cut Cut) (string, error) {
 	scan := scanner{sql: sql}
 	first := scan.next()
@@ -53,6 +59,9 @@ func Bind(sql string, cut Cut) (string, error) {
 	head := scan.head(first)
 	if reason := scan.single(); reason != "" {
 		return "", refuse(sql, first, reason)
+	}
+	if scan.unicodeIdentifier {
+		return "", refuse(sql, first, `it holds a U&"..." identifier, whose escapes can spell the name of any table`)
 	}
 	if !head.with && head.main.kind == tokenWord && passes(sql[head.main.start:head.main.end]) {
 		return sql, nil
@@ -299,6 +308,8 @@ type scanner struct {
 	// named marks each shadowed table that a word or a quoted identifier of the tokens read so
 	// far names, by its place in shadows.
 	named [len(shadows)]bool
+	// unicodeIdentifier is whether the tokens read so far hold a U&"..." identifier.
+	unicodeIdentifier bool
 }
 
 // mark marks the shadowed table that identifier names (shadowNamed), when it names one.
@@ -365,11 +376,15 @@ func (s *scanner) next() token {
 		}
 		kind = tokenWord
 		// E'...' is a string with backslash escapes. B'...', X'...', N'...' and U&'...' end
-		// as a plain string does, so the next token reads them.
-		if s.pos-start == 1 && (c == 'e' || c == 'E') && s.pos < len(s.sql) && s.sql[s.pos] == '\'' {
+		// as a plain string does, so the next token reads them. U&"..." is an identifier whose
+		// escapes Bind does not read (unicodeIdentifier).
+		switch {
+		case s.pos-start == 1 && (c == 'e' || c == 'E') && s.at(s.pos, '\''):
 			s.skipString(true)
 			kind = tokenString
-		} else {
+		case s.pos-start == 1 && (c == 'u' || c == 'U') && s.at(s.pos, '&') && s.at(s.pos+1, '"'):
+			s.unicodeIdentifier = true
+		default:
 			s.mark(s.sql[start:s.pos], false)
 		}
 	case isDigit(c):
@@ -387,15 +402,10 @@ func (s *scanner) next() token {
 func (s *scanner) skipSpaceAndComments() {
 	for s.pos < len(s.sql) {
 		switch c := s.sql[s.pos]; {
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v':
+		case isSpace(c):
 			s.pos++
 		case c == '-' && s.at(s.pos+1, '-'):
-			end := strings.IndexByte(s.sql[s.pos:], '\n')
-			if end < 0 {
-				s.pos = len(s.sql)
-				return
-			}
-			s.pos += end + 1
+			s.pos = s.commentEnd(s.pos)
 		case c == '/' && s.at(s.pos+1, '*'):
 			s.pos += 2
 			for nested := 1; nested > 0 && s.pos < len(s.sql); {
@@ -416,9 +426,21 @@ func (s *scanner) skipSpaceAndComments() {
 	}
 }
 
+// commentEnd is where the -- comment that begins at start ends: at the newline or the carriage
+// return after it, which is not part of it, or at the end.
+func (s *scanner) commentEnd(start int) int {
+	end := strings.IndexAny(s.sql[start+2:], "\n\r")
+	if end < 0 {
+		return len(s.sql)
+	}
+	return start + 2 + end
+}
+
 // skipString moves past a string literal whose opening quote is at the scanner's position. A
 // doubled quote is a quote inside the string; with escapes (an E'...' string), a backslash takes
-// the next byte too. An unterminated string runs to the end.
+// the next byte too. The literal goes on where its quote is followed by a quote after whitespace
+// that holds a newline (continuedAt), with escapes as before. An unterminated string runs to the
+// end.
 func (s *scanner) skipString(escapes bool) {
 	s.pos++
 	for s.pos < len(s.sql) {
@@ -429,14 +451,57 @@ func (s *scanner) skipString(escapes bool) {
 			}
 		case '\'':
 			if !s.at(s.pos+1, '\'') {
+				next := s.continuedAt(s.pos + 1)
+				if next < 0 {
+					s.pos++
+					return
+				}
+				s.pos = next
+			} else {
 				s.pos++
-				return
 			}
-			s.pos++
 		}
 		s.pos++
 	}
 	s.pos = len(s.sql)
+}
+
+// continuedAt is the place of the quote that goes on with a string literal whose part ended
+// before from, or -1 where none does: scan.l's {quotecontinue}, whitespace that holds a newline,
+// then a quote. Before the newline the whitespace holds no other newline and may hold a --
+// comment; after it, any whitespace and -- comments that a newline ends.
+func (s *scanner) continuedAt(from int) int {
+	at := from
+	for at < len(s.sql) {
+		if c := s.sql[at]; c == ' ' || c == '\t' || c == '\f' || c == '\v' {
+			at++
+		} else if c == '-' && s.at(at+1, '-') {
+			at = s.commentEnd(at)
+		} else {
+			break
+		}
+	}
+	if at >= len(s.sql) || !isNewline(s.sql[at]) {
+		return -1
+	}
+	for at++; at < len(s.sql); {
+		c := s.sql[at]
+		if isSpace(c) {
+			at++
+			continue
+		}
+		if c == '-' && s.at(at+1, '-') {
+			if end := s.commentEnd(at); end < len(s.sql) {
+				at = end + 1
+				continue
+			}
+		}
+		break
+	}
+	if !s.at(at, '\'') {
+		return -1
+	}
+	return at
 }
 
 // skipQuoted moves past a quoted identifier; a doubled quote is a quote inside it.
@@ -486,6 +551,14 @@ func (s *scanner) at(index int, c byte) bool {
 }
 
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+// isSpace reports whether c is whitespace to PostgreSQL (scan.l's {space}).
+func isSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v'
+}
+
+// isNewline reports whether c ends a line to PostgreSQL (scan.l's {newline}).
+func isNewline(c byte) bool { return c == '\n' || c == '\r' }
 
 // isIdentifierStart reports whether c begins an identifier or a keyword: a letter, an
 // underscore, or a byte of a non-ASCII character.

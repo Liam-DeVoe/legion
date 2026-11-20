@@ -1,5 +1,5 @@
-// as_of_results_test.go holds the read of an issue's results at a cut (task t9 of INFRA-4620's
-// plan) to what the equality harness (as_of_equality_test.go) cannot see: the GitHub reads and
+// as_of_results_test.go holds the read of an issue's results at a cut to what the equality
+// harness (as_of_equality_test.go) cannot see: the GitHub reads and
 // the writes of the present read, which the harness's server, holding no App key, never makes.
 package api
 

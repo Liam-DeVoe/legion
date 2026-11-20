@@ -704,7 +704,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 	var rawAsks []byte
 	// mine names the ask columns active and the count read: a.* would compute every column for
 	// every ask of the scope, which at a cut includes the asks shadow's search vector, about
-	// 0.7 ms an ask (INFRA-4620's plan, task t12).
+	// 0.7 ms an ask on a copy of production's event log.
 	err := s.deps.Store.Pool.QueryRow(r.Context(), `
 		with mine as (
 			select a.id, a.issue_key, a.artifact_id, a.question, a.kind, a.urgency, a.state, a.created_at,

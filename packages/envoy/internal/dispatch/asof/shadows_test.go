@@ -13,8 +13,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
 
-// decisionTwoTables are the tables the plan's decision 2 gives a shadow, events among them.
-var decisionTwoTables = []string{
+// shadowedTables are the tables the plan's decision 2 gives a shadow, events among them.
+var shadowedTables = []string{
 	"events", "issues", "asks", "comments", "messages", "artifacts", "artifact_versions",
 	"artifact_reviews", "check_results", "check_result_retractions", "issue_links",
 	"issue_external_links", "issue_components", "priority_tuples", "projects", "repo_projects",
@@ -35,7 +35,7 @@ func TestEveryShadowAnswersEveryColumnOfItsTable(t *testing.T) {
 	ctx := context.Background()
 
 	shadowed := asof.ShadowedTables()
-	if missing, extra := difference(decisionTwoTables, shadowed); len(missing)+len(extra) > 0 {
+	if missing, extra := difference(shadowedTables, shadowed); len(missing)+len(extra) > 0 {
 		t.Fatalf("the shadows hold %v: decision 2's tables %v have none, and %v are not decision 2's", shadowed, missing, extra)
 	}
 
@@ -199,7 +199,7 @@ func seedEveryShadowedTable(t *testing.T, w world) {
 	unclaimed.Claim = nil
 	w.issueEvent("issue.created", unclaimed, made)
 	w.event(issueOwned("ASOF-1"), "issue.claimed", sessionActor("s-1"), model.IssueClaimEventPayload{
-		Key: "ASOF-1", Status: "triage", Claim: issue.Claim, Reason: "claimed",
+		Key: "ASOF-1", Status: model.IssueStatusTriage, Claim: issue.Claim, Reason: "claimed",
 	}, made.Add(time.Minute))
 
 	tx, err := w.database.Pool.Begin(ctx)
@@ -461,6 +461,82 @@ func TestTheShadowsGiveAPostsPresentDeletedAtAndItsBodyAtTheCut(t *testing.T) {
 	})
 }
 
+// Two edits of one post can overlap: the second edit's transaction begins while the first one
+// holds the post's lock, and the first writes its post_body_history row after the second began.
+// So a history row's edited_at does not pair it with its edit. Its place does: the j-th row of a
+// post in edited_at, id order is the row of the post's j-th edit or delete since the history
+// began. At a cut between the two starts the post reads with the body the first edit wrote, the
+// one the second edit replaced.
+func TestABodyAtACutBetweenTwoOverlappingEditsIsTheFirstEditsBody(t *testing.T) {
+	w := newWorld(t)
+	var (
+		made   = when(t, "2026-11-10T08:00:00Z")
+		began  = when(t, "2026-11-10T09:00:00Z") // the history began
+		first  = when(t, "2026-11-10T11:00:00Z") // the first edit's transaction begins
+		second = when(t, "2026-11-10T11:00:01Z") // the second begins while the first holds the lock
+		key    = "ASOF-1"
+	)
+	w.exec(`update schema_migrations set applied_at = $1 where version = 20261110224508`, began)
+	w.project("ASOF", "carol", made.Add(-time.Hour))
+	issue := newIssue(key, "ASOF", 1, "Posts", made.Add(-time.Hour))
+	w.insertIssue(issue)
+	w.issueEvent("issue.created", issue, issue.CreatedAt)
+
+	const (
+		commentID = "00000000-0000-4000-8000-0000000000e1"
+		messageID = "00000000-0000-4000-8000-0000000000e2"
+	)
+	comment := newComment(commentID, key, alice, "draft", made)
+	w.exec(`insert into comments (id, issue_key, author, body, created_at, edited_at) values ($1, $2, $3, 'final', $4, $5)`,
+		commentID, key, w.encode(alice), made.Add(time.Millisecond), second)
+	w.event(issueOwned(key), "comment.created", alice, commentPayload(comment), made)
+	message := model.Message{ID: messageID, IssueKey: &key, Author: alice, Body: "draft", CreatedAt: made, Deliveries: []model.MessageDelivery{}}
+	w.exec(`insert into messages (id, issue_key, author, body, created_at, edited_at) values ($1, $2, $3, 'final', $4, $5)`,
+		messageID, key, w.encode(alice), made, second)
+	w.event(issueOwned(key), "message.created", alice, messagePayload(message), made)
+
+	// Each edit appends its event and keeps the body it replaced under the post's lock: the first
+	// edit at a moment after the second began, the second once the first committed.
+	for _, edit := range []struct {
+		at, kept time.Time
+		replaced string
+		body     string
+	}{
+		{at: first, kept: second.Add(time.Millisecond), replaced: "draft", body: "revised"},
+		{at: second, kept: second.Add(2 * time.Millisecond), replaced: "revised", body: "final"},
+	} {
+		stamp := edit.at.Format(time.RFC3339Nano)
+		comment.Body, comment.EditedAt = edit.body, &stamp
+		w.event(issueOwned(key), "comment.edited", alice, commentPayload(comment), edit.at)
+		w.exec(`insert into post_body_history (comment_id, body, edited_by, edited_at) values ($1, $2, $3, $4)`,
+			commentID, edit.replaced, w.encode(alice), edit.kept)
+		message.Body, message.EditedAt = edit.body, &edit.at
+		w.event(issueOwned(key), "message.edited", alice, messagePayload(message), edit.at)
+		w.exec(`insert into post_body_history (message_id, body, edited_by, edited_at) values ($1, $2, $3, $4)`,
+			messageID, edit.replaced, w.encode(alice), edit.kept)
+	}
+
+	for _, row := range []struct {
+		name, cut, want string
+	}{
+		{name: "before both edits", cut: "2026-11-10T10:00:00Z", want: "draft"},
+		{name: "between the two edits' starts", cut: "2026-11-10T11:00:00.5Z", want: "revised"},
+		{name: "after both edits", cut: "2026-11-10T12:00:00Z", want: "final"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			for _, post := range []struct{ table, id string }{{"comments", commentID}, {"messages", messageID}} {
+				var body string
+				if err := w.database.Pool.QueryRow(atCut(t, row.cut), "select body from "+post.table+" where id = $1", post.id).Scan(&body); err != nil {
+					t.Fatalf("read the %s row at %s: %v", post.table, row.cut, err)
+				}
+				if body != row.want {
+					t.Errorf("%s at %s: body %q, want %q", post.table, row.cut, body, row.want)
+				}
+			}
+		})
+	}
+}
+
 func sameTime(a, b *time.Time) bool {
 	if a == nil || b == nil {
 		return a == nil && b == nil
@@ -560,7 +636,7 @@ func TestTheIssueShadowTakesTheNewestPayloadBySeqAtTheCut(t *testing.T) {
 	third.Title, third.UpdatedAt = "Third by seq, earlier by clock", when(t, "2026-11-10T10:10:00Z")
 	w.issueEvent("issue.updated", third, third.UpdatedAt)
 	w.event(issueOwned("ASOF-1"), "issue.claimed", sessionActor("s-1"), model.IssueClaimEventPayload{
-		Key: "ASOF-1", Status: "triage", Claim: present.Claim, Reason: "claimed",
+		Key: "ASOF-1", Status: model.IssueStatusTriage, Claim: present.Claim, Reason: "claimed",
 	}, present.Claim.At)
 	w.issueEvent("issue.updated", present, present.UpdatedAt)
 

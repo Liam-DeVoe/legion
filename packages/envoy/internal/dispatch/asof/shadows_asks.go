@@ -26,12 +26,20 @@ func AskStateTypes() []string { return slices.Clone(askStateTypes) }
 var AsksChangedAfterStatement = `select a.id from unnest($1::text[]) as a(id)
 	where exists (
 		select from public.events e
-		where e.payload->>'id' = a.id and e.type in ` + sqlList(askStateTypes) + `
+		where e.payload->>'id' = a.id and e.type in ` + askStateList + `
 			and e.created_at > $2::timestamptz)`
 
-// postCreatedTypes are the events that create a comment: comment.created, and comment.answered,
+// commentCreatedTypes are the events that create a comment: comment.created, and comment.answered,
 // which a delivery callback's reply is created with (api/comment_delivery.go).
-var postCreatedTypes = []string{"comment.created", "comment.answered"}
+var commentCreatedTypes = []string{"comment.created", "comment.answered"}
+
+// The type lists of the asks' shadows and of the creating events of a comment as SQL lists
+// (sqlList), each quoted once.
+var (
+	askStateList       = sqlList(askStateTypes)
+	askFollowerList    = sqlList(askFollowerTypes)
+	commentCreatedList = sqlList(commentCreatedTypes)
+)
 
 // asksShadow is decision 2's asks: the newest ask.* payload of each ask at the cut, by event id,
 // the follower events excepted. An ask none of whose events is at the cut did not exist then.
@@ -96,7 +104,7 @@ func asksShadow(cut string) string {
 	from public.asks a
 	cross join lateral (
 		select e.payload from public.events e
-		where e.payload->>'id' = a.id::text and e.type in ` + sqlList(askStateTypes) + `
+		where e.payload->>'id' = a.id::text and e.type in ` + askStateList + `
 			and e.created_at <= ` + cut + `
 		order by e.id desc limit 1
 	) s`
@@ -132,7 +140,7 @@ func askFollowersShadow(cut string) string {
 				union all
 				select e.payload->>'session_id', e.type = 'ask.follower_added', e.id, e.created_at
 				from public.events e
-				where e.type in ` + sqlList(askFollowerTypes) + `
+				where e.type in ` + askFollowerList + `
 					and e.payload->>'ask_id' = a.id::text and e.created_at <= ` + cut + `
 			) w
 			where coalesce(w.session_id, '') <> ''
@@ -163,6 +171,6 @@ func commentCreatedEvent(comment, event, cut string) string {
 		bound = " and " + event + ".created_at <= " + cut
 	}
 	return `select ` + event + `.id, ` + event + `.created_at, ` + event + `.payload from public.events ` + event + `
-					where ` + event + `.payload->>'id' = ` + comment + `.id::text and ` + event + `.type in ` + sqlList(postCreatedTypes) + bound + `
+					where ` + event + `.payload->>'id' = ` + comment + `.id::text and ` + event + `.type in ` + commentCreatedList + bound + `
 					order by ` + event + `.id limit 1`
 }

@@ -1,5 +1,5 @@
 // as_of_threads_test.go holds the comment, message and ask routes, the inbox, open asks and an
-// agent's answers at a cut (task t7 of INFRA-4620's plan) to the cases the equality harness
+// agent's answers at a cut to the cases the equality harness
 // (as_of_equality_test.go) does not write: a post deleted after the cut in every thread a route
 // shows, a message edited before and after the cut, a post's history at a cut, an older build's
 // long edit, a delivery attempt no event dates, the inbox's asks at a cut, an answers poll later
@@ -149,7 +149,7 @@ func stringsHolding(doc any, words ...string) []string {
 }
 
 // TestAPostDeletedAfterTheCutReadsAsDeletedInEveryThread: a post its author deletes after the cut
-// reads at the cut as deleted, with no part of its body, in every thread of a route of task t7
+// reads at the cut as deleted, with no part of its body, in every thread of a post or ask route
 // (decision 14). The comment and message routes, and the threads of the ask routes and of the
 // inbox, leave its body out and name it absent (reason T); an agent's answers give the deleted
 // mark and an empty text; the history routes give the post's present mark and every body empty

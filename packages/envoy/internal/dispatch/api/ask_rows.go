@@ -58,12 +58,13 @@ const lastReplyJoin = `
 // approval.version and approval.requested_version, and it is moved when the second is below the
 // first, as that build read it. Every stored row holds its documents (asks_approval_kind_check),
 // so only a read at a cut meets such an approval, in the payload of an older event (the asks
-// shadow), and every present read reads the documents alone. A pair with no requested_version is
-// from before migration 0064, which set it to the version the request named, so that request is
-// not moved.
+// shadow), and every present read reads the documents alone: the case tests the key first, so a
+// present read runs one path query for each row. A pair with no requested_version is from before
+// migration 0064, which set it to the version the request named, so that request is not moved.
 const approvalMoved = `(a.kind = 'approval'
-		and (jsonb_path_exists(a.approval, '$.documents[*] ? (@.requested_version < @.version)')
-			or jsonb_path_exists(a.approval, '$ ? (!exists(@.documents) && @.requested_version < @.version)')))`
+		and case when a.approval ? 'documents'
+			then jsonb_path_exists(a.approval, '$.documents[*] ? (@.requested_version < @.version)')
+			else jsonb_path_exists(a.approval, '$ ? (@.requested_version < @.version)') end)`
 
 // waitingOnExpression is the one turn rule every open-ask read, the Inbox order, a document's
 // awaiting approval and the approval route's hand-back decision share; a reply's own waiting_on

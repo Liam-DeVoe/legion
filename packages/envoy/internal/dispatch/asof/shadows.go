@@ -19,9 +19,7 @@ var shadows = [...]shadow{
 	// An event exists at the cut when the transaction that wrote it began at or before the cut:
 	// created_at is that transaction's start. The index events_created_at (created_at, id) holds
 	// the events at the cut in its first key.
-	{Table: "events", Definition: func(cut string) string {
-		return "select * from public.events where created_at <= " + cut
-	}},
+	{Table: "events", Definition: createdByTheCut("events")},
 	{Table: "issues", Definition: issuesShadow},
 	{Table: "issue_links", Definition: issueLinksShadow},
 	{Table: "issue_external_links", Definition: issueExternalLinksShadow},
@@ -53,8 +51,19 @@ func ShadowedTables() []string {
 
 // createdByTheCut is the shadow of an append-only table: each row whose insert began at or before
 // the cut, as the row stands. created_at is the inserting transaction's now(), the clock events
-// keep, and no writer changes such a row's content after its insert. Every column of the table
-// is the row's own, so a column added later is answered with no change here.
+// keep. Every column of the table is the row's own, so a column added later is answered with no
+// change here. A writer changes such a row after its insert only where the row as it stands is
+// right at the cut too:
+//   - artifact_reviews.event_seq: the transaction of the review's insert writes it (docs.QueueReview).
+//   - artifact_reviews.content_sha256: the boot backfill (docs.FillReviewContentHashes) writes the
+//     hash of the text of the reviewed version, which no write changes, so the hash is the one
+//     that text had at the cut.
+//   - artifact_versions.accepted_from: the transaction that inserts the version writes it, the
+//     accept of a suggestion (api/comment_actions.go).
+//   - artifact_versions.summary and renamed_by_delete: the delete of a comment renames the version
+//     that its accepted suggestion named (renameAcceptedVersion, api/comment_delete.go). A post
+//     deleted after the cut reads at the cut as deleted, with no part of its body (decision 14),
+//     so the version reads renamed at the cut too, as the present read gives it.
 func createdByTheCut(table string) func(cut string) string {
 	return func(cut string) string {
 		return "select * from public." + table + " where created_at <= " + cut
@@ -106,31 +115,49 @@ func ownedBy(event, row string) string {
 // in its own transaction.
 const postHistoryMigration = "20261110224508"
 
-// postHistoryBegan is the time post_body_history began, as a SQL expression.
-const postHistoryBegan = `(select m.applied_at from public.schema_migrations m where m.version = ` + postHistoryMigration + `)`
+// PostHistoryBegan is the time post_body_history began, as a SQL expression. The keyword table's
+// fill reads the same time (textversions), so the two pair a post's history rows with its edits
+// alike.
+const PostHistoryBegan = `(select m.applied_at from public.schema_migrations m where m.version = ` + postHistoryMigration + `)`
+
+// historyEventsCount is the number of the edit and delete events (types, a SQL list) of the post
+// whose row the alias post names that began at or after post_body_history began and that bound
+// holds (a further condition on e, or empty), read from events (public.events, or events, the
+// events shadow under a cut) by the post's id in their payload (events_comment_state,
+// events_message_state). The transaction of each such event wrote one history row, and the rows
+// of a post in edited_at, id order are the rows of those events in their order. An edit's
+// transaction begins before it takes the post's lock, so a row's edited_at does not pair it with
+// its event: two edits can overlap, and the first then writes its row after the second began.
+func historyEventsCount(events, post, types, bound string) string {
+	return `(select count(*) from ` + events + ` e
+		where e.payload->>'id' = ` + post + `.id::text and e.type in ` + types + `
+			and e.created_at >= ` + PostHistoryBegan + bound + `)`
+}
 
 // postBodyAtCut is the body a comment or a message had at the cut, by decision 2's one clock,
 // the events'. post is the row's alias and column post_body_history's column that names it;
 // newest is the alias of its newest state event at the cut and later the alias of its first
-// edit or delete event after the cut (each with no row when there is none). A post deleted at
-// any time reads with no body (decision 14), as the present read gives it.
+// edit or delete event after the cut (each with no row when there is none); types are the post's
+// edit and delete types (a SQL list). A post deleted at any time reads with no body (decision
+// 14), as the present read gives it.
 //
 //   - No edit or delete after the cut: the row's body.
 //   - The first such event began at or after post_body_history did: the body that event
-//     replaced, the history row its transaction wrote, which is the oldest row of the post
-//     whose edited_at (clock_timestamp() inside that transaction) is at or after the event's
-//     created_at (that transaction's start).
+//     replaced, the history row its transaction wrote. The post's edits and deletes at the cut
+//     since the history began wrote the rows before it (historyEventsCount), so it is the row
+//     after as many rows as those events.
 //   - An edit made before that history began (no row holds what it replaced): the body of the
 //     newest event at the cut, unless that event cut it at 32,000 UTF-16 units
 //     (body_truncated), which the answer names absent (reason T).
-func postBodyAtCut(post, column, newest, later string) string {
+func postBodyAtCut(post, column, newest, later, types, cut string) string {
 	return `case
 			when ` + post + `.deleted_at is not null then ''
 			when ` + later + `.id is null then ` + post + `.body
-			when ` + later + `.created_at >= ` + postHistoryBegan + ` then coalesce((
+			when ` + later + `.created_at >= ` + PostHistoryBegan + ` then coalesce((
 				select h.body from public.post_body_history h
-				where h.` + column + ` = ` + post + `.id and h.edited_at >= ` + later + `.created_at
-				order by h.edited_at, h.id limit 1), '')
+				where h.` + column + ` = ` + post + `.id
+				order by h.edited_at, h.id
+				offset ` + historyEventsCount("public.events", post, types, " and e.created_at <= "+cut) + ` limit 1), '')
 			when coalesce((` + newest + `.payload->>'body_truncated')::boolean, false) then ''
 			else coalesce(` + newest + `.payload->>'body', '')
 		end`
@@ -145,9 +172,8 @@ func postBodyAtCut(post, column, newest, later string) string {
 // does not read. It stays so where a statement names a table many times (the issue listing names
 // issues in eleven places): a materialized shadow is read once, but for every row of the table
 // and with every column, a search vector and a claim included. On a copy of production's event
-// log (task t12) the issues shadow materialized made each statement measured slower: the issue
-// listing 6.7 s against 8.5 s, the issue read's row 0.15 s against 7.5 s, an issue's asks 0.4 s
-// against 11 s.
+// log the issues shadow materialized made each statement measured slower: the issue listing 6.7 s
+// against 8.5 s, the issue read's row 0.15 s against 7.5 s, an issue's asks 0.4 s against 11 s.
 func Shadows(cut Cut, tables ...string) string {
 	var named [len(shadows)]bool
 	for _, table := range tables {
@@ -161,7 +187,7 @@ func Shadows(cut Cut, tables ...string) string {
 // shadowList is the body of a WITH list that holds the shadow of each table that named marks, by
 // its place in shadows.
 func shadowList(cut Cut, named *[len(shadows)]bool) string {
-	literal := cut.literal()
+	literal := cut.Literal()
 	var list strings.Builder
 	for index := range shadows {
 		if !named[index] {
@@ -249,8 +275,8 @@ var CutReadTables = map[string]string{
 	"embeddings": "Only the windows of items that did not change after the cut, " +
 		"embedded at or before the cut.",
 	"post_body_history": "Only the body that the first comment.edited, comment.deleted, message.edited or message.deleted event " +
-		"of the post after the cut replaced: the oldest row of the post whose edited_at is at or after that event's created_at, " +
-		"for an event at or after the time schema_migrations records for 20261110224508. " +
+		"of the post after the cut replaced, for an event at or after the time schema_migrations records for 20261110224508: " +
+		"the row of the post, in edited_at and id order, after as many rows as the post has such events at the cut at or after that time. " +
 		"In the history read of one post, only the rows that the post's edit and delete events at the cut wrote: " +
 		"the first rows in edited_at and id order, as many as the post has such events at or after that time " +
 		"(CommentHistoryRowsAtCut, MessageHistoryRowsAtCut).",

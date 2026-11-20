@@ -7,36 +7,42 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// The ask routes, the inbox and open asks at a cut (task t7 of INFRA-4620's plan). Each runs its
-// present statements under the cut, which the store binds to the shadows. What the shadows do not
-// give of an ask, each answer leaves out: the fields of leaveOutPastAskFields, the reach of an
-// ask's route, which the route roster gives now and which keeps no past state (loadAskReaches
-// reads no roster at a cut), and of each reply of an ask's thread what commentsAtTheCut names. A
-// request at no cut leaves out nothing.
+// The ask routes, the inbox and open asks at a cut. Each runs its present statements under the
+// cut, which the store binds to the shadows. What the shadows do not give of an ask, each answer
+// leaves out: the fields of leaveOutPastAskFields, the reach of an ask's route, which the route
+// roster gives now and which keeps no past state (loadAskReaches reads no roster at a cut), and
+// of each reply of an ask's thread what commentsAtTheCut names. A request at no cut leaves out
+// nothing.
 
-// leaveOutRouteReach names, for reach the reach of an ask with a route, the route's status, its
-// holder and the reason for its status at place (the ask read's own place, or a thread's): the
-// roster that gives them now keeps no past state. A reach with no route holds none of them at any
+// leaveOutRouteReach names, for an item whose route is route, the route's status, its holder and
+// the reason for its status at place (an issue's, the ask read's own place, or a thread's): the
+// roster that gives them now keeps no past state. An item with no route holds none of them at any
 // time, so nothing is left out.
-func leaveOutRouteReach(ctx context.Context, reach askReach, place string) {
-	if reach.Route != nil {
+func leaveOutRouteReach(ctx context.Context, route *string, place string) {
+	if route != nil {
 		leaveOut(ctx, place+"/route_status", place+"/route_holder", place+"/route_status_reason")
 	}
 }
 
-// threadAtTheCut names what a past-time answer leaves out of thread at place: the reach of the
-// ask's route, and of each reply what commentsAtTheCut names.
-func (s *server) threadAtTheCut(ctx context.Context, thread askThread, place string) error {
-	leaveOutRouteReach(ctx, thread.askReach, place)
-	replies := make([]model.Comment, len(thread.Replies))
-	for index := range thread.Replies {
-		replies[index] = thread.Replies[index].Comment
+// threadsAtTheCut names what a past-time answer leaves out of each of threads, the thread at
+// places[index]: the reach of the ask's route, and of each reply what commentsAtTheCut names. One
+// call of commentsAtTheCut reads the replies of every thread, as messagesAtTheCut reads every
+// message of its threads, so a list of threads costs the statements of one.
+func (s *server) threadsAtTheCut(ctx context.Context, threads []*askThread, places []string) error {
+	var replies []model.Comment
+	var at []string
+	for index, thread := range threads {
+		leaveOutRouteReach(ctx, thread.Route, places[index])
+		reply := elementsOf(places[index] + "/replies")
+		for number := range thread.Replies {
+			replies, at = append(replies, thread.Replies[number].Comment), append(at, reply(number))
+		}
 	}
-	return s.commentsAtTheCut(ctx, replies, elementsOf(place+"/replies"))
+	return s.commentsAtTheCut(ctx, replies, func(index int) string { return at[index] })
 }
 
 // issueAsksAtTheCut names what an issue's ask list at a cut leaves out: of each row, the fields of
-// leaveOutPastAskFields, and of a row's thread (?thread=1) what threadAtTheCut names. asks are the
+// leaveOutPastAskFields, and of a row's thread (?thread=1) what threadsAtTheCut names. asks are the
 // rows' asks, in the rows' order.
 func (s *server) issueAsksAtTheCut(ctx context.Context, asks []model.Ask, rows []issueAskRow) error {
 	if _, atCut := asof.CutFrom(ctx); !atCut {
@@ -46,14 +52,14 @@ func (s *server) issueAsksAtTheCut(ctx context.Context, asks []model.Ask, rows [
 	if err := s.leaveOutPastAskFields(ctx, asks, at); err != nil {
 		return err
 	}
+	var threads []*askThread
+	var places []string
 	for index := range rows {
 		if rows[index].Thread != nil {
-			if err := s.threadAtTheCut(ctx, *rows[index].Thread, at(index)+"/thread"); err != nil {
-				return err
-			}
+			threads, places = append(threads, rows[index].Thread), append(places, at(index)+"/thread")
 		}
 	}
-	return nil
+	return s.threadsAtTheCut(ctx, threads, places)
 }
 
 // openAsksAtTheCut names what open asks at a cut leave out of each of asks: the person an ask
@@ -72,7 +78,7 @@ func openAsksAtTheCut(ctx context.Context, asks []openAsk) {
 }
 
 // askAtTheCut names what the read of one ask at a cut leaves out: the fields of
-// leaveOutPastAskFields of the ask, and of its thread what threadAtTheCut names. The place of
+// leaveOutPastAskFields of the ask, and of its thread what threadsAtTheCut names. The place of
 // the ask's anchored block is left out where the read skips it (anchorAtTheCut).
 func (s *server) askAtTheCut(ctx context.Context, read askRead) error {
 	if _, atCut := asof.CutFrom(ctx); !atCut {
@@ -81,24 +87,27 @@ func (s *server) askAtTheCut(ctx context.Context, read askRead) error {
 	if err := s.leaveOutPastAskFields(ctx, []model.Ask{read.Ask.Ask}, func(int) string { return "/ask" }); err != nil {
 		return err
 	}
-	return s.threadAtTheCut(ctx, read.askThread, "")
+	return s.threadsAtTheCut(ctx, []*askThread{&read.askThread}, []string{""})
 }
 
 // inboxAtTheCut names what the inbox at a cut leaves out of each of rows (decision 10): the
 // caller's snooze, which keeps no history, the fields of leaveOutPastAskFields, and of the row's
-// thread what threadAtTheCut names.
+// thread what threadsAtTheCut names.
 func (s *server) inboxAtTheCut(ctx context.Context, rows []inboxAsk) error {
 	if _, atCut := asof.CutFrom(ctx); !atCut {
 		return nil
 	}
 	asks := make([]model.Ask, len(rows))
+	threads := make([]*askThread, len(rows))
+	places := make([]string, len(rows))
 	at := elementsOf("")
 	for index := range rows {
 		asks[index] = rows[index].Ask
 		leaveOut(ctx, at(index)+"/snoozed_until")
-		if err := s.threadAtTheCut(ctx, rows[index].Thread, at(index)+"/thread"); err != nil {
-			return err
-		}
+		threads[index], places[index] = &rows[index].Thread, at(index)+"/thread"
+	}
+	if err := s.threadsAtTheCut(ctx, threads, places); err != nil {
+		return err
 	}
 	return s.leaveOutPastAskFields(ctx, asks, at)
 }

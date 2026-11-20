@@ -2,7 +2,7 @@ package asof
 
 // artifactsShadow is decision 2's artifacts: each row made at or before the cut (created_at, its
 // insert's now()). A document removed since has no row and is in no shadow: it answers 404 by id
-// and is left out of every list at the cut, as it is now (task t8).
+// and is left out of every list at the cut, as it is now.
 //   - name: the previous_name of the first artifact.renamed after the cut, which records the
 //     name the correction replaced (renameArtifact, api/artifact_rename.go); else the row's. The
 //     rename names the document in its payload (artifact.id), by which events_artifact_renamed

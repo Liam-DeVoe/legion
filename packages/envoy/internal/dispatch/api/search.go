@@ -1114,7 +1114,7 @@ const searchMeaningCommentJoinedProjection = `meaning_comment as (
 // by each arm, the planner took the table's versions at the cut as the outer side, for an
 // estimate of a few dozen rows (it cannot read how many versions a later version ends), joined
 // each version to its item's shadow, and tested the match last: on a copy of production's event
-// log, every comment of a cut, and more than two minutes for a search at the newest cut (task t12).
+// log, every comment of a cut, and more than two minutes for a search at the newest cut.
 // It carries each match's rank (searchKeywordRank) in place of its vector, so its rows are small.
 func searchAsOfVersions(versions store.TextVersions) string {
 	return "text_versions as not materialized " + versions.SQL() + ",\n" +
@@ -1122,10 +1122,10 @@ func searchAsOfVersions(versions store.TextVersions) string {
 		" as r from text_versions v, q where v.search @@ q.tsq),\n"
 }
 
-// searchAsOfLiteral is the cut of versions as a timestamptz literal. It comes from the time value
-// alone, never from the text of a request, as the relation writes it.
+// searchAsOfLiteral is the cut of versions as a timestamptz literal (asof.Cut.Literal). It comes
+// from the time value alone, never from the text of a request, as the relation writes it.
 func searchAsOfLiteral(versions store.TextVersions) string {
-	return "'" + versions.Cut.UTC().Truncate(time.Microsecond).Format("2006-01-02T15:04:05.000000Z") + "'::timestamptz"
+	return asof.CutAt(versions.Cut).Literal()
 }
 
 // searchAsOfKeywordLegs is searchKeywordLegs at a cut: the same arms, columns, filters and rank
@@ -1413,7 +1413,7 @@ func writeSearchNotFilled(w http.ResponseWriter, cut asof.Cut, refusal *store.Te
 			"as_of: a search at "+cut.String()+" reads the keyword index of past text, and its fill has reached no time yet; search again later")
 		return
 	}
-	reach := refusal.Reach.UTC().Truncate(time.Microsecond).Format("2006-01-02T15:04:05.000000Z07:00")
+	reach := asof.CutAt(refusal.Reach).String()
 	w.Header().Set(contracts.DispatchAsOfFilledThroughHeader, reach)
 	writeError(w, contracts.DispatchAsOfSearchNotFilled, http.StatusConflict,
 		"as_of: a search at "+cut.String()+" reads the keyword index of past text, and its fill has reached "+reach+

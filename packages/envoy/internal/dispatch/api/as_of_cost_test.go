@@ -1,5 +1,5 @@
-// as_of_cost_test.go holds the record of what a read at a cut costs at production's size (task
-// t12 of INFRA-4620's plan, by its departure D7). It sends the routes' own requests with as_of
+// as_of_cost_test.go holds the record of what a read at a cut costs at production's size (by the
+// plan's departure D7). It sends the routes' own requests with as_of
 // through the server, so each statement it times is the statement the route sends at a cut, bound
 // by the store (asof.Bind) as every read at a cut is bound. The routes' statements are built in
 // this package, which is why the test is here and not in internal/dispatch/asof.
@@ -37,7 +37,7 @@ var asOfCorpusDerived = []string{
 	"projects", "issues", "artifacts", "artifact_versions", "document_search", "events", "asks", "comments", "messages",
 }
 
-// asOfCostCuts are the two fixed cuts of the plan's task t12. The third cut is the copy's newest
+// asOfCostCuts are the two fixed cuts that the plan names. The third cut is the copy's newest
 // event.
 var asOfCostCuts = []string{"2026-10-26T12:00:00Z", "2026-11-10T00:00:00Z"}
 
@@ -58,10 +58,10 @@ const (
 	// stopped, its statement cancelled, and its row says so: such a read is far over every bound,
 	// and three cuts of reads that each run for many minutes would hold the pod for hours.
 	asOfCostCap = 2 * time.Minute
-	// asOfCostBound is the bound of task t12 on each read at a cut, on the pod.
+	// asOfCostBound is the plan's bound on each read at a cut, on the pod.
 	asOfCostBound = 2 * time.Second
 	// asOfCostSearchMargin is how much longer than the present search the same search at a cut
-	// may take (task t12).
+	// may take.
 	asOfCostSearchMargin = 3 * time.Second
 	// asOfCostReader is the person the reads are sent as (headerIdentity).
 	asOfCostReader = "alice"
@@ -243,10 +243,10 @@ func asOfCostTargetsAt(t *testing.T, database *store.Store, cut asof.Cut) asOfCo
 // 12:00Z, 2026-11-10 00:00Z and the copy's newest event), with each read at the present for
 // comparison. It prints one table: what each row reads, its cut, how many runs it
 // sent, the first run's time and the median of the runs (the whole request, the server's Go
-// included), how many statements the request sent and the longest of them, and the bound of task
-// t12 the median is held to. A read is sent three times, or once when its first run is over its
+// included), how many statements the request sent and the longest of them, and the plan's bound
+// the median is held to. A read is sent three times, or once when its first run is over its
 // bound, and a run is stopped at asOfCostCap. The test fails no bound: what a copy answers in
-// depends on the machine, and the pull request records the figures (plan task t12). It is gated
+// depends on the machine, and the pull request records the figures. It is gated
 // on DISPATCH_ASOF_CORPUS_URL, so CI never runs it.
 //
 // The database DISPATCH_ASOF_CORPUS_URL names is a new database of the test server (createdb, so
@@ -266,9 +266,10 @@ func asOfCostTargetsAt(t *testing.T, database *store.Store, cut asof.Cut) asOfCo
 // event log does not hold, so on its first run the test derives them from the copy and moves the
 // copy into public.events (testdata/asof_corpus_derive.test.sql), and vacuums them. Each run then
 // fills the keyword table to the copy's newest event (textversions.FillToHorizon), which the first
-// run does from the start of the log. What the copy cannot give, the output says: no event holds a
-// document's text, so each document version is empty, and no event holds an embedding, so a search
-// with meaning is not timed.
+// run does from the start of the log. What a copy derived from the event log cannot give, the
+// output says: no event holds a document's text, so each document version is empty, and no event
+// holds an embedding, so a search with meaning is not timed. A database that holds no
+// corpus.events, such as a restored dump, is read as it stands, with no such notes.
 func TestAsOfCostOnACorpusCopy(t *testing.T) {
 	databaseURL := os.Getenv(asOfCorpusURLEnv)
 	if databaseURL == "" {
@@ -290,7 +291,7 @@ func TestAsOfCostOnACorpusCopy(t *testing.T) {
 		t.Fatalf("migrate the corpus copy: %v", err)
 	}
 	t.Logf("migrated the copy in %v", time.Since(started).Round(time.Millisecond))
-	deriveAsOfCorpus(t, database)
+	derived := deriveAsOfCorpus(t, database)
 
 	var newest time.Time
 	if err := database.Pool.QueryRow(ctx, `select max(created_at) from public.events`).Scan(&newest); err != nil {
@@ -330,8 +331,10 @@ func TestAsOfCostOnACorpusCopy(t *testing.T) {
 		present[search.query] = row.median
 		rows = append(rows, row)
 	}
-	rows = append(rows, asOfCostRow{statement: "present search with meaning", cut: "present",
-		note: "not timed: the copy holds no embedding (no event holds one), so the meaning legs would read no window"})
+	if derived {
+		rows = append(rows, asOfCostRow{statement: "present search with meaning", cut: "present",
+			note: "not timed: the copy holds no embedding (no event holds one), so the meaning legs would read no window"})
+	}
 
 	for _, cut := range cuts {
 		for _, read := range asOfCostReads(asOfCostTargetsAt(t, database, cut)) {
@@ -342,13 +345,17 @@ func TestAsOfCostOnACorpusCopy(t *testing.T) {
 				withAsOf(t, "/api/v1/search/results?"+url.Values{"q": {search.query}, "keywords_only": {"true"}}.Encode(), cut),
 				present[search.query]+asOfCostSearchMargin))
 		}
-		rows = append(rows, asOfCostRow{statement: "search at the cut with meaning", cut: cut.String(),
-			note: "not timed: the copy holds no embedding (no event holds one), so the meaning legs would read no window"})
+		if derived {
+			rows = append(rows, asOfCostRow{statement: "search at the cut with meaning", cut: cut.String(),
+				note: "not timed: the copy holds no embedding (no event holds one), so the meaning legs would read no window"})
+		}
 	}
 
-	t.Logf("the copy's newest event is at %s; documents carry no text in the copy (no event holds it), "+
-		"so the document leg reads each document's version at the cut and tests an empty vector\n%s",
-		cuts[len(cuts)-1], asOfCostTable(rows))
+	if derived {
+		t.Logf("documents carry no text in the copy (no event holds it), so the document leg reads each document's version " +
+			"at the cut and tests an empty vector")
+	}
+	t.Logf("the copy's newest event is at %s\n%s", cuts[len(cuts)-1], asOfCostTable(rows))
 	t.Logf("sizes:\n%s", asOfCorpusSizes(t, database))
 }
 
@@ -396,13 +403,18 @@ func asOfCorpusHoldsTheCopy(t *testing.T, database *store.Store) bool {
 // deriveAsOfCorpus writes, on the first run, the present tables the shadows join on from the copy
 // in corpus.events, and the copy into public.events (testdata/asof_corpus_derive.test.sql), then
 // vacuums them, as production's tables are; a later run finds public.events filled and writes
-// nothing. Either way it logs the derived tables with their rows.
-func deriveAsOfCorpus(t *testing.T, database *store.Store) {
+// nothing. It reports whether the present tables are derived from corpus.events, now or by an
+// earlier run, and then logs them with their rows. A database whose public.events is filled and
+// that holds no corpus.events (a restored dump) is not derived: it reports false and logs nothing.
+func deriveAsOfCorpus(t *testing.T, database *store.Store) bool {
 	t.Helper()
 	ctx := t.Context()
-	var filled bool
-	if err := database.Pool.QueryRow(ctx, `select exists (select from public.events)`).Scan(&filled); err != nil {
+	var filled, copied bool
+	if err := database.Pool.QueryRow(ctx, `select exists (select from public.events), to_regclass('corpus.events') is not null`).Scan(&filled, &copied); err != nil {
 		t.Fatalf("read whether the copy is derived: %v", err)
+	}
+	if !copied {
+		return false
 	}
 	if !filled {
 		statements, err := os.ReadFile("testdata/asof_corpus_derive.test.sql")
@@ -432,6 +444,7 @@ func deriveAsOfCorpus(t *testing.T, database *store.Store) {
 	}
 	t.Logf("tables derived from the copy of the event log (testdata/asof_corpus_derive.test.sql), with their rows: %s",
 		strings.Join(counts, ", "))
+	return true
 }
 
 // asOfCostTable is rows as a table of aligned columns.
@@ -473,11 +486,12 @@ func asOfCorpusSizes(t *testing.T, database *store.Store) string {
 		union all
 		select 'events heap (pg_relation_size)', pg_relation_size('public.events'), 1
 		union all
-		select * from (select 'index ' || c.relname, pg_relation_size(c.oid), 2
-		                 from pg_index x join pg_class c on c.oid = x.indexrelid
-		                where x.indrelid = 'public.events'::regclass order by c.relname) i
+		select 'index ' || c.relname, pg_relation_size(c.oid), 2
+		  from pg_index x join pg_class c on c.oid = x.indexrelid
+		 where x.indrelid = 'public.events'::regclass
 		union all
-		select 'search_text_versions, its indexes and its TOAST (pg_total_relation_size)', pg_total_relation_size('public.search_text_versions'), 3`)
+		select 'search_text_versions, its indexes and its TOAST (pg_total_relation_size)', pg_total_relation_size('public.search_text_versions'), 3
+		order by 3, 1`)
 	if err != nil {
 		t.Fatalf("read the copy's sizes: %v", err)
 	}

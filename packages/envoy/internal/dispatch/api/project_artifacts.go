@@ -39,7 +39,7 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := artifactReads(artifacts, reader)
 	reader.resolve()
-	approvalsAtTheCut(r.Context(), artifacts, "")
+	approvalsAtTheCut(r.Context(), artifacts)
 	WriteJSON(w, http.StatusOK, reads)
 }
 

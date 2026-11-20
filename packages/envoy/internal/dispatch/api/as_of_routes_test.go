@@ -244,7 +244,7 @@ func TestEveryRowThatDoesNotAnswerAsOfRefusesIt(t *testing.T) {
 		asOf    = "2026-01-02T03:04:05.123456789Z"
 		wantCut = "2026-01-02T03:04:05.123456Z"
 	)
-	query := url.Values{"as_of": {asOf}}.Encode()
+	query := url.Values{asOfParameter: {asOf}}.Encode()
 
 	walked, refused, answered := 0, 0, 0
 	for _, route := range readOnlyTable() {
@@ -307,10 +307,7 @@ func TestAnAnswersRowRefusesAMalformedOrFutureAsOf(t *testing.T) {
 	if route.Handler == nil {
 		t.Fatalf("the table mounts no row %s", name)
 	}
-	var now time.Time
-	if err := database.Pool.QueryRow(t.Context(), "select now()").Scan(&now); err != nil {
-		t.Fatalf("read the database's now(): %v", err)
-	}
+	now := databaseNow(t, database.Pool)
 	past := now.Add(-time.Hour).UTC().Truncate(time.Second)
 	pastText := past.Format(time.RFC3339)
 	for _, row := range []struct {
@@ -332,7 +329,7 @@ func TestAnAnswersRowRefusesAMalformedOrFutureAsOf(t *testing.T) {
 			recorder := &cutRecorder{}
 			route.Handler = recorder.handler
 			response := httptest.NewRecorder()
-			served.routeHandler(route, nil).ServeHTTP(response, asOfProbe(route, url.Values{"as_of": row.values}.Encode()))
+			served.routeHandler(route, nil).ServeHTTP(response, asOfProbe(route, url.Values{asOfParameter: row.values}.Encode()))
 			if row.wantCut != "" {
 				if response.Code != http.StatusNoContent || !slices.Equal(recorder.runs, []string{row.wantCut}) {
 					t.Fatalf("as_of=%v answered %d %s with its handler's runs seeing the cuts %q, want one run under the cut %s",
@@ -344,7 +341,7 @@ func TestAnAnswersRowRefusesAMalformedOrFutureAsOf(t *testing.T) {
 			if len(recorder.runs) != 0 {
 				t.Errorf("as_of=%v ran the handler %d times, want none", row.values, len(recorder.runs))
 			}
-			if response.Code != http.StatusBadRequest || refusal.Code != contracts.DispatchInvalidAsOf || !strings.Contains(refusal.Error, "as_of") {
+			if response.Code != http.StatusBadRequest || refusal.Code != contracts.DispatchInvalidAsOf || !strings.Contains(refusal.Error, asOfParameter) {
 				t.Errorf("as_of=%v answered %d %s, want 400 %s naming as_of",
 					row.values, response.Code, strings.TrimSpace(response.Body.String()), contracts.DispatchInvalidAsOf)
 			}

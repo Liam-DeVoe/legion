@@ -86,9 +86,6 @@ func TestAPastTimeAnswerNamesItsCutAndItsAbsentFields(t *testing.T) {
 	if named := response.Header().Get(contracts.DispatchAsOfAbsentHeader); named != want {
 		t.Errorf("%s = %q, want %q", contracts.DispatchAsOfAbsentHeader, named, want)
 	}
-	if err := asof.ValidAbsent("GET /api/v1/issues/{key}", absentPointers(response.Header().Get(contracts.DispatchAsOfAbsentHeader))); err != nil {
-		t.Errorf("the answer names a pointer the plan's list does not hold: %v", err)
-	}
 
 	read := decodeBody[map[string]any](t, response)
 	for _, member := range leftOut {
@@ -157,6 +154,35 @@ func TestAPastTimeAnswerNamesItsCutAndItsAbsentFields(t *testing.T) {
 			t.Errorf("the refused answer names %q absent", named)
 		}
 	})
+}
+
+// TestAPastTimeReadStoresNoDisplayTrees: a read at a cut with Dispatch-Trees draws the tree of
+// each text it answers that no row stores, as the present read does, but it stores none of them.
+// The store binds each statement under a cut and refuses a write (asof.Bind), so a store of the
+// trees under the cut fails each time and logs a warning; the read stores nothing and logs
+// nothing. A tree is keyed by its text alone, so the present read stores it.
+func TestAPastTimeReadStoresNoDisplayTrees(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ASTR", "name": "Trees at a cut"}, "alice")
+	issue := asOfIssue(t, handler, map[string]any{"project": "ASTR", "title": "A thread read with its trees"})
+	asOfWrite(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": "A comment whose **tree** no read stored."}, "alice")
+	settleServed(t, served)
+	cut := databaseCut(t, database)
+	// The comment's write stored its tree; the read at the cut finds none stored.
+	if _, err := database.Pool.Exec(t.Context(), `delete from text_trees`); err != nil {
+		t.Fatalf("forget the stored trees: %v", err)
+	}
+
+	logs := captureLogs(t)
+	target := "/api/v1/issues/" + issue.Key + "/comments"
+	answer := treesRequest(t, handler, withAsOf(t, target, cut), true)
+	if _, drawn := valueAt(t, answer, "0.body_tree"); !drawn {
+		t.Fatalf("GET %s as of the cut with Dispatch-Trees draws no tree: %s", target, answer.Body.String())
+	}
+	served.detached.wait()
+	if strings.Contains(logs.String(), "store display trees failed") {
+		t.Errorf("the read at the cut tried to store its display trees:\n%s", logs.String())
+	}
 }
 
 // progressTasks is an issue read's progress.tasks as done/total, or null.

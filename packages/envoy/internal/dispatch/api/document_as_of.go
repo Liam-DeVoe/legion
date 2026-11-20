@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -13,13 +12,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// Documents at a cut (task t8 of INFRA-4620's plan). The document routes run their present
-// statements under the cut, and the shadows give each document, its versions and its approval as
-// they stood then. A document removed since has no row, so a read of it by id answers 404
-// ARTIFACT_NOT_FOUND and no list holds it. The text and the blocks of a document come from its
-// live room, which holds the present only. So at a cut the text route and the block routes read no
-// room: they read the document's newest version at the cut (versionAtTheCut). Each answer leaves
-// out what the records at the cut do not give (leaveOut).
+// Documents at a cut. The document routes run their present statements under the cut, and the
+// shadows give each document, its versions and its approval as they stood then. A document
+// removed since has no row, so a read of it by id answers 404 ARTIFACT_NOT_FOUND and no list holds
+// it. The text and the blocks of a document come from its live room, which holds the present
+// only. So at a cut the text route and the block routes read no room: they read the document's
+// newest version at the cut (versionAtTheCut). Each answer leaves out what the records at the cut
+// do not give (leaveOut).
 
 // versionAtTheCutStatement reads the newest version of document $1 that the artifact_versions
 // shadow gives at the cut: its markdown, and the document token that its writer stored with it,
@@ -29,17 +28,20 @@ const versionAtTheCutStatement = `
 		from artifact_versions v where v.artifact_id = $1
 		order by v.number desc limit 1`
 
-// blockTextsAtTheCutStatement reads what the block index recorded of the blocks of document $1's
-// newest version at the cut, N: each block id with its text in N, which is the latest row of
-// document_block_texts at or before N. A version writes a row where it changes the text of a
-// block, and a row with no text where it deletes the block (refs.PlanBlocks). The statement reads
-// the rows only where document_indexed_versions holds N: no record holds the blocks of a version
-// that no block-aware build indexed (migration 0121).
-const blockTextsAtTheCutStatement = `
-		select t.block_id, t.text
+// blockIndexAtTheCutStatement reads what the block index recorded of the blocks of document $1's
+// newest version at the cut, N, which the artifact_versions shadow gives: each block id with the
+// latest row of document_block_texts at or before N. Its version is the version in which the text
+// of the block last changed at N, which document_blocks.changed_version held then, and its text
+// the block's text in N, whose digest document_blocks.text_sha256 held then (refs.BlockTextSum). A
+// version writes a row where it changes the text of a block, and a row with no text where it
+// deletes the block (refs.PlanBlocks): such a block is not read. The statement reads the rows
+// only where document_indexed_versions holds N: no record holds the blocks of a version that no
+// block-aware build indexed (migration 0121).
+const blockIndexAtTheCutStatement = `
+		select t.block_id, t.version, t.text
 		from (select max(v.number) as number from artifact_versions v where v.artifact_id = $1) n
 		cross join lateral (
-			select distinct on (b.block_id) b.block_id, b.text
+			select distinct on (b.block_id) b.block_id, b.version, b.text
 			from document_block_texts b
 			where b.artifact_id = $1 and b.version <= n.number
 			order by b.block_id, b.version desc
@@ -47,14 +49,22 @@ const blockTextsAtTheCutStatement = `
 		where t.text is not null
 		  and exists (select 1 from document_indexed_versions i where i.artifact_id = $1 and i.version = n.number)`
 
+// blockIndex is what the block index recorded of the blocks of one version, by block id: the
+// text of each block, and the version in which that text last changed.
+type blockIndex struct {
+	texts    map[string]string
+	versions map[string]int
+}
+
 // versionAtTheCut reads document artifactID's newest version at the cut ctx carries: its markdown
 // ("" for a document with no version then) and the document token stored with it (nil for none).
-// With blocks it also reads the text of each block id that the block index recorded for that
-// version, by id. One batch sends the statements.
-func (s *server) versionAtTheCut(ctx context.Context, artifactID string, blocks bool) (string, *string, map[string]string, error) {
+// With blocks it also reads what the block index recorded of that version's blocks
+// (blockIndexAtTheCutStatement). One batch sends the statements; each caller names the batch's
+// error.
+func (s *server) versionAtTheCut(ctx context.Context, artifactID string, blocks bool) (string, *string, blockIndex, error) {
 	var markdown string
 	var token *string
-	var recorded map[string]string
+	var index blockIndex
 	batch := &pgx.Batch{}
 	batch.Queue(versionAtTheCutStatement, artifactID).QueryRow(func(row pgx.Row) error {
 		if err := row.Scan(&markdown, &token); err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -63,22 +73,23 @@ func (s *server) versionAtTheCut(ctx context.Context, artifactID string, blocks 
 		return nil
 	})
 	if blocks {
-		recorded = map[string]string{}
-		batch.Queue(blockTextsAtTheCutStatement, artifactID).Query(func(rows pgx.Rows) error {
+		index = blockIndex{texts: map[string]string{}, versions: map[string]int{}}
+		batch.Queue(blockIndexAtTheCutStatement, artifactID).Query(func(rows pgx.Rows) error {
 			for rows.Next() {
 				var id, text string
-				if err := rows.Scan(&id, &text); err != nil {
+				var version int
+				if err := rows.Scan(&id, &version, &text); err != nil {
 					return err
 				}
-				recorded[id] = text
+				index.texts[id], index.versions[id] = text, version
 			}
 			return rows.Err()
 		})
 	}
 	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
-		return "", nil, nil, fmt.Errorf("read the version of document %s at the cut: %w", artifactID, err)
+		return "", nil, blockIndex{}, err
 	}
-	return markdown, token, recorded, nil
+	return markdown, token, index, nil
 }
 
 // artifactTextAtTheCut is the markdown and the token of the text route at the cut ctx carries:
@@ -87,9 +98,9 @@ func (s *server) versionAtTheCut(ctx context.Context, artifactID string, blocks 
 // answer gives the blocks of that markdown (blocksAtTheCut) beside the rendering they index,
 // which is the markdown itself for each version this build's renderer wrote.
 func (s *server) artifactTextAtTheCut(ctx context.Context, artifactID string, blocks bool) (string, string, *[]model.ArtifactBlock, error) {
-	markdown, token, recorded, err := s.versionAtTheCut(ctx, artifactID, blocks)
+	markdown, token, index, err := s.versionAtTheCut(ctx, artifactID, blocks)
 	if err != nil {
-		return "", "", nil, err
+		return "", "", nil, fmt.Errorf("read the version of document %s at the cut: %w", artifactID, err)
 	}
 	if token == nil {
 		leaveOut(ctx, "/token")
@@ -104,22 +115,22 @@ func (s *server) artifactTextAtTheCut(ctx context.Context, artifactID string, bl
 	if listed == nil {
 		listed = []model.ArtifactBlock{}
 	}
-	blocksAtTheCut(ctx, rendered, listed, recorded, "/blocks")
+	blocksAtTheCut(ctx, rendered, listed, index.texts, "/blocks")
 	return rendered, deref(token), &listed, nil
 }
 
 // artifactBlocksAtTheCut is the answer of a block route at the cut ctx carries: the blocks of
 // document artifactID's newest version then (blocksAtTheCut).
 func (s *server) artifactBlocksAtTheCut(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error) {
-	markdown, _, recorded, err := s.versionAtTheCut(ctx, artifactID, true)
+	markdown, _, index, err := s.versionAtTheCut(ctx, artifactID, true)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read the version of document %s at the cut: %w", artifactID, err)
 	}
 	rendered, blocks, err := docs.VersionBlocks(markdown)
 	if err != nil {
 		return nil, err
 	}
-	blocksAtTheCut(ctx, rendered, blocks, recorded, "")
+	blocksAtTheCut(ctx, rendered, blocks, index.texts, "")
 	return blocks, nil
 }
 
@@ -154,11 +165,12 @@ func blocksAtTheCut(ctx context.Context, markdown string, blocks []model.Artifac
 	for id, text := range recorded {
 		holders[text] = append(holders[text], id)
 	}
+	at := elementsOf(place)
 	for index := range blocks {
 		block := &blocks[index]
 		block.Token = ""
 		if block.Table != nil {
-			tableAtTheCut(ctx, block.Table, place+"/"+strconv.Itoa(index))
+			tableAtTheCut(ctx, block.Table, at(index))
 		}
 		if pmdoc.IsTypedBlock(block.Type) {
 			continue
@@ -169,7 +181,7 @@ func blocksAtTheCut(ctx context.Context, markdown string, blocks []model.Artifac
 			continue
 		}
 		block.ID = ""
-		leaveOut(ctx, place+"/"+strconv.Itoa(index)+"/id")
+		leaveOut(ctx, at(index)+"/id")
 	}
 }
 
@@ -203,11 +215,12 @@ func approvalAtTheCut(ctx context.Context, approval *model.ArtifactApproval, pla
 	}
 }
 
-// approvalsAtTheCut is approvalAtTheCut of each of artifacts, a list at prefix in the answer.
-func approvalsAtTheCut(ctx context.Context, artifacts []model.Artifact, prefix string) {
+// approvalsAtTheCut is approvalAtTheCut of each of artifacts, an answer that is the list.
+func approvalsAtTheCut(ctx context.Context, artifacts []model.Artifact) {
+	at := elementsOf("")
 	for index := range artifacts {
 		if approval := artifacts[index].Approval; approval != nil && approval.DocumentsUnknown {
-			approvalAtTheCut(ctx, approval, prefix+"/"+strconv.Itoa(index))
+			approvalAtTheCut(ctx, approval, at(index))
 		}
 	}
 }

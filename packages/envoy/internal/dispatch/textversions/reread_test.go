@@ -73,7 +73,7 @@ func TestTheFillReadsAgainThePostEventsItPassed(t *testing.T) {
 	if cursor := readCursorRow(t, database); cursor.rules != rulesVersion || cursor.eventID < later.id {
 		t.Fatalf("the cursor row records rules %d at event %d, want rules %d at or past event %d", cursor.rules, cursor.eventID, rulesVersion, later.id)
 	}
-	if !loggedMessage(t, &rereadLogs, "dispatch: the keyword fill read again every event that earlier rules passed, and records rules version 2") {
+	if !loggedMessage(t, &rereadLogs, rulesReadMessage) {
 		t.Errorf("the fill that read again logged no line saying so:\n%s", rereadLogs.String())
 	}
 	awaitReachPast(t, database, after)

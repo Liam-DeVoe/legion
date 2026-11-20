@@ -350,7 +350,8 @@ end $$;
 
 -- The comments: each comment a comment.created or comment.answered names, its body and its other
 -- changing columns from its newest event of its state; its reply_to and answers once every
--- comment is written.
+-- comment is written. A comment whose newest event is its comment.deleted reads as the delete left
+-- it: no body and no suggestion, and its delete mark, from that event.
 create temporary table corpus_comment_created on commit drop as
 select distinct on (e.payload->>'id') (e.payload->>'id')::uuid as id, e.payload, e.issue_key, e.artifact_id, e.created_at, e.actor
   from corpus.events e
@@ -358,7 +359,7 @@ select distinct on (e.payload->>'id') (e.payload->>'id')::uuid as id, e.payload,
  order by e.payload->>'id', e.id;
 
 create temporary table corpus_comment_state on commit drop as
-select distinct on (e.payload->>'id') (e.payload->>'id')::uuid as id, e.payload
+select distinct on (e.payload->>'id') (e.payload->>'id')::uuid as id, e.payload, e.type, e.created_at, e.actor
   from corpus.events e
  where e.type in ('comment.created', 'comment.answered', 'comment.edited', 'comment.deleted', 'comment.resolved',
                   'comment.reopened', 'comment.anchor_refreshed', 'suggestion.accepted', 'suggestion.rejected')
@@ -366,14 +367,14 @@ select distinct on (e.payload->>'id') (e.payload->>'id')::uuid as id, e.payload
  order by e.payload->>'id', e.id desc;
 
 insert into public.comments (id, issue_key, author, body, anchor, resolved, suggestion, created_at, ask_id, artifact_id, search,
-                             resolved_by, resolved_at, edited_at, turn)
+                             resolved_by, resolved_at, edited_at, turn, deleted_at, deleted_by)
 select c.id,
        c.issue_key,
        coalesce(nullif(c.payload->'author', 'null'::jsonb), c.actor),
        b.body,
        nullif(s.payload->'anchor', 'null'::jsonb),
        coalesce((s.payload->>'resolved')::boolean, false),
-       nullif(s.payload->'suggestion', 'null'::jsonb),
+       case when s.type <> 'comment.deleted' then nullif(s.payload->'suggestion', 'null'::jsonb) end,
        coalesce((c.payload->>'created_at')::timestamptz, c.created_at),
        k.ask_id,
        c.artifact_id,
@@ -381,10 +382,13 @@ select c.id,
        nullif(s.payload->'resolved_by', 'null'::jsonb),
        (s.payload->>'resolved_at')::timestamptz,
        (s.payload->>'edited_at')::timestamptz,
-       case when k.ask_id is not null and c.payload->>'turn' in ('human', 'agent') then c.payload->>'turn' end
+       case when k.ask_id is not null and c.payload->>'turn' in ('human', 'agent') then c.payload->>'turn' end,
+       case when s.type = 'comment.deleted' then coalesce((s.payload->>'deleted_at')::timestamptz, s.created_at) end,
+       case when s.type = 'comment.deleted' then coalesce(nullif(s.payload->'deleted_by', 'null'::jsonb), s.actor) end
   from corpus_comment_created c
   join corpus_comment_state s on s.id = c.id
- cross join lateral (select coalesce(s.payload->>'body', c.payload->>'body', '') as body) b
+ cross join lateral (select case when s.type = 'comment.deleted' then ''
+                                else coalesce(s.payload->>'body', c.payload->>'body', '') end as body) b
  cross join lateral (select (select a.id from public.asks a
                               where pg_input_is_valid(c.payload->>'ask_id', 'uuid') and a.id = (c.payload->>'ask_id')::uuid) as ask_id) k
  where (c.issue_key is null) <> (c.artifact_id is null);
@@ -402,7 +406,8 @@ update public.comments m
    and exists (select from public.comments p where p.id = (c.payload->>'answers')::uuid);
 
 -- The messages: each message a message.created or message.answered names (message.answered is the
--- reply's own event), made at its event's time, its body from its newest event of its state.
+-- reply's own event), made at its event's time, its body from its newest event of its state. A
+-- message whose newest event is its message.deleted reads with no body and its delete mark.
 create temporary table corpus_message_created on commit drop as
 select distinct on (e.payload->>'id') (e.payload->>'id')::uuid as id, e.payload, e.issue_key, e.created_at, e.actor
   from corpus.events e
@@ -410,13 +415,13 @@ select distinct on (e.payload->>'id') (e.payload->>'id')::uuid as id, e.payload,
  order by e.payload->>'id', e.id;
 
 create temporary table corpus_message_state on commit drop as
-select distinct on (e.payload->>'id') (e.payload->>'id')::uuid as id, e.payload
+select distinct on (e.payload->>'id') (e.payload->>'id')::uuid as id, e.payload, e.type, e.created_at, e.actor
   from corpus.events e
  where e.type in ('message.created', 'message.answered', 'message.edited', 'message.deleted')
    and pg_input_is_valid(e.payload->>'id', 'uuid')
  order by e.payload->>'id', e.id desc;
 
-insert into public.messages (id, issue_key, author, body, created_at, search, target, edited_at)
+insert into public.messages (id, issue_key, author, body, created_at, search, target, edited_at, deleted_at, deleted_by)
 select m.id,
        o.issue_key,
        coalesce(nullif(m.payload->'author', 'null'::jsonb), m.actor),
@@ -424,10 +429,13 @@ select m.id,
        m.created_at,
        public.search_vector('', public.search_text(b.body)),
        nullif(m.payload->>'target', ''),
-       (s.payload->>'edited_at')::timestamptz
+       (s.payload->>'edited_at')::timestamptz,
+       case when s.type = 'message.deleted' then coalesce((s.payload->>'deleted_at')::timestamptz, s.created_at) end,
+       case when s.type = 'message.deleted' then coalesce(nullif(s.payload->'deleted_by', 'null'::jsonb), s.actor) end
   from corpus_message_created m
   join corpus_message_state s on s.id = m.id
- cross join lateral (select coalesce(s.payload->>'body', m.payload->>'body', '') as body) b
+ cross join lateral (select case when s.type = 'message.deleted' then ''
+                                else coalesce(s.payload->>'body', m.payload->>'body', '') end as body) b
  cross join lateral (select (select i.key from public.issues i where i.key = coalesce(m.issue_key, m.payload->>'issue_key')) as issue_key) o
  where o.issue_key is not null or nullif(m.payload->>'target', '') is not null;
 

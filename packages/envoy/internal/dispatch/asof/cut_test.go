@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -56,9 +55,6 @@ func TestParseCutRoundsDownToTheMicrosecond(t *testing.T) {
 			var invalid *asof.InvalidError
 			if !errors.As(err, &invalid) {
 				t.Fatalf("ParseCut(%q) = %s, %v; want an *asof.InvalidError", row.raw, cut, err)
-			}
-			if invalid.Code() != contracts.DispatchInvalidAsOf {
-				t.Errorf("ParseCut(%q) refusal code = %s, want %s", row.raw, invalid.Code(), contracts.DispatchInvalidAsOf)
 			}
 		})
 	}

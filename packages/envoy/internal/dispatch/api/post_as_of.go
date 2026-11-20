@@ -11,26 +11,25 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// Comments and messages at a cut (task t7 of INFRA-4620's plan). The comment and message routes
-// run their present statements under the cut, and the shadows give each post as it stood then:
-// its body at the cut, its present delete mark (decision 14), and each delivery attempt with the
-// state that its receipt or reply event at the cut gives. A comment's mentions are the rows its
-// creating transaction wrote, which no write changes. These are the parts of a post that the
-// records at the cut do not give. The comment and message routes, and the threads of the ask
-// routes, leave them out (leaveOut).
+// Comments and messages at a cut. The comment and message routes run their present statements
+// under the cut, and the shadows give each post as it stood then: its body at the cut, its
+// present delete mark (decision 14), and each delivery attempt with the state that its receipt or
+// reply event at the cut gives. A comment's mentions are the rows its creating transaction wrote,
+// which no write changes. These are the parts of a post that the records at the cut do not give.
+// The comment and message routes, and the threads of the ask routes, leave them out (leaveOut).
 
 // undatedCommentAttempt and undatedMessageAttempt are the members of a delivery attempt that no
-// receipt or reply event at the cut dates, which a past-time answer leaves out (reason E): the
-// state, the members that a send writes with the state, and the delivery mode and the session
-// that a send resolves with no event. The shadows give such an attempt the empty state and the
-// defaults of those members (commentDeliveriesShadow, messageDeliveriesShadow in asof). Each
-// settle of an attempt writes its receipt in its transaction (settleDeliveryAttempt, the delivery
-// sweep, the outbox's abandoned mentions, a delete's settle), so an attempt that no receipt dates
-// at the cut was not settled then: it held no error and was no duplicate, and the answer gives
-// those two.
+// receipt or reply event at the cut dates, which a past-time answer leaves out (reason E,
+// asof.UndatedCommentAttempt): the state, the members that a send writes with the state, and the
+// delivery mode and the session that a send resolves with no event. The shadows give such an
+// attempt the empty state and the defaults of those members (commentDeliveriesShadow,
+// messageDeliveriesShadow in asof). Each settle of an attempt writes its receipt in its
+// transaction (settleDeliveryAttempt, the delivery sweep, the outbox's abandoned mentions, a
+// delete's settle), so an attempt that no receipt dates at the cut was not settled then: it held
+// no error and was no duplicate, and the answer gives those two.
 var (
-	undatedCommentAttempt = []string{"state", "reply_id", "envelope_id", "resolve_error", "created_at", "delivery", "session_id"}
-	undatedMessageAttempt = []string{"state", "reply_id", "envelope_id", "created_at", "requested_by", "delivery", "session_id"}
+	undatedCommentAttempt = asof.UndatedCommentAttempt()
+	undatedMessageAttempt = asof.UndatedMessageAttempt()
 )
 
 // elementsOf names element index of the array at prefix in an answer: "" for an answer that is a
@@ -154,8 +153,9 @@ func (s *server) messagesAtTheCut(ctx context.Context, reads []messageRead, at f
 	for index, read := range reads {
 		thread := at(index)
 		visit(thread+"/message", read.Message.Message)
+		replyAt := elementsOf(thread + "/replies")
 		for reply, shaped := range read.Replies {
-			visit(thread+"/replies/"+strconv.Itoa(reply), shaped.Message)
+			visit(replyAt(reply), shaped.Message)
 		}
 	}
 	return s.replyBlocksAtTheCut(ctx, cut, blocks, func(index int) string { return places[index] })

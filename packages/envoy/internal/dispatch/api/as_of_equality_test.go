@@ -577,18 +577,15 @@ func (r *asOfRig) cut(t *testing.T) asof.Cut {
 	return databaseCut(t, r.database)
 }
 
-// databaseCut reads the database's clock_timestamp() and parses it as the gate parses as_of.
+// databaseCut is the cut at the database's clock_timestamp(), rounded down to the microsecond as
+// the gate rounds an as_of (asof.CutAt).
 func databaseCut(t *testing.T, database *store.Store) asof.Cut {
 	t.Helper()
 	var now time.Time
 	if err := database.Pool.QueryRow(t.Context(), `select clock_timestamp()`).Scan(&now); err != nil {
 		t.Fatalf("read the database's clock: %v", err)
 	}
-	cut, err := asof.ParseCut(now.UTC().Format(time.RFC3339Nano))
-	if err != nil {
-		t.Fatalf("parse the database's clock as a cut: %v", err)
-	}
-	return cut
+	return asof.CutAt(now)
 }
 
 // withAsOf is target with as_of set to cut.
@@ -605,7 +602,7 @@ func withAsOfValue(t *testing.T, target, value string) string {
 		t.Fatalf("parse %s: %v", target, err)
 	}
 	query := parsed.Query()
-	query.Set("as_of", value)
+	query.Set(asOfParameter, value)
 	parsed.RawQuery = query.Encode()
 	return parsed.RequestURI()
 }
@@ -710,8 +707,8 @@ func movedSinceTheCut(then, present asOfAnswer) bool {
 	if thenErr != nil || presentErr != nil {
 		return !bytes.Equal(then.body, present.body)
 	}
-	dropTopMember(thenDoc, "took_ms")
-	dropTopMember(presentDoc, "took_ms")
+	dropMember(thenDoc, []string{"took_ms"})
+	dropMember(presentDoc, []string{"took_ms"})
 	return !reflect.DeepEqual(thenDoc, presentDoc)
 }
 
@@ -857,8 +854,8 @@ func (c asOfComparison) problems(then, asOf asOfAnswer) []string {
 	problems = append(problems, c.deletedBodies(asOfDoc)...)
 	problems = append(problems, absentButGiven(asOfDoc, absent)...)
 
-	dropTopMember(thenDoc, "took_ms")
-	dropTopMember(asOfDoc, "took_ms")
+	dropMember(thenDoc, []string{"took_ms"})
+	dropMember(asOfDoc, []string{"took_ms"})
 	broadenedAtTheCut(thenDoc)
 	if c.world.removed != "" {
 		var held int
@@ -1012,13 +1009,6 @@ func dropAbsent(then, asOf any, pointers []string) {
 				delete(parent, key)
 			}
 		})
-	}
-}
-
-// dropTopMember takes key out of doc's top object, where doc is one.
-func dropTopMember(doc any, key string) {
-	if object, ok := doc.(map[string]any); ok {
-		delete(object, key)
 	}
 }
 
@@ -1242,7 +1232,7 @@ func openAsksWindow(cut asof.Cut, then, asOf any) []string {
 		}
 	}
 	for _, doc := range []any{then, asOf} {
-		dropTopMember(doc, "as_of")
+		dropMember(doc, []string{asOfParameter})
 		eachParent(doc, []string{"asks", "*"}, "", func(_ string, ask map[string]any) { delete(ask, "age_seconds") })
 	}
 	return problems

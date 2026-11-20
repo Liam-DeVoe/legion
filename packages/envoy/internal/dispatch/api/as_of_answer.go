@@ -131,7 +131,7 @@ func (a *pastAnswer) WriteHeader(status int) {
 		a.ResponseWriter.WriteHeader(status)
 		return
 	}
-	a.members, a.status, a.held = members, status, &bytes.Buffer{}
+	a.status, a.held = status, &bytes.Buffer{}
 }
 
 // start decides a body written with no status of its own as a 200, as net/http answers it.
@@ -144,11 +144,16 @@ func (a *pastAnswer) start() {
 	}
 }
 
-// Write writes the body, or holds it while members are to be taken out of it.
+// Write writes the body, or holds it while members are to be taken out of it. The media type is
+// named here, on this writer, where the handler named none (answerNamesNoType says why in this
+// function and not in a helper).
 func (a *pastAnswer) Write(body []byte) (int, error) {
 	a.start()
 	if a.held != nil {
 		return a.held.Write(body)
+	}
+	if answerNamesNoType(a.Header(), http.StatusOK) {
+		a.Header().Set("Content-Type", "application/octet-stream")
 	}
 	return a.ResponseWriter.Write(body)
 }
@@ -195,6 +200,9 @@ func (a *pastAnswer) finish() {
 		a.Header().Del(contracts.DispatchAsOfAbsentHeader)
 	}
 	a.Header().Del("Content-Length")
+	if answerNamesNoType(a.Header(), a.status) {
+		a.Header().Set("Content-Type", "application/octet-stream")
+	}
 	a.ResponseWriter.WriteHeader(a.status)
 	if _, err := a.ResponseWriter.Write(body); err != nil {
 		slog.Warn("dispatch: write a past-time answer failed", "route", a.route, "error", err)

@@ -3946,7 +3946,7 @@ An answer names a member only when it leaves that member out.
 
 - `GET /api/v1/issues/{key}/results`: `/checks/*/compared_with`, `/checks/*/compared_nothing`, `/checks/*/pass_stands`, `/checks/*/ci`, `/checks/*/results/*/commit_stands`, `/checks/*/results/*/currency`, `/checks/*/version`, `/checks/*/sha256`, `/checks/*/results/*/check_words_moved`.
 
-- `GET /api/v1/search` and `GET /api/v1/search/results`: `/query/broadened`, `/results/*/snippet_tree`, `/results/*/href`.
+- `GET /api/v1/search` and `GET /api/v1/search/results`: `/query/broadened`, `/results/*/href`.
 
 The reasons, which `asof.AbsentFields` gives for each member:
 
@@ -3970,7 +3970,7 @@ The reasons, which `asof.AbsentFields` gives for each member:
 
 - A GitHub read now: what each check is compared with, whether a pass stands, the CI result, and where a result's commit stands.
 
-- Broadening and snippet trees read the present text, so a search at a cut does not broaden and draws no tree.
+- Broadening reads the present text, so a search at a cut does not broaden.
 
 **A read-only token that carries a cut** (`model.Credential.Cut`, the broker's `as_of`) reads at that cut.
 On a route of kind answers, Dispatch answers as of the token's cut, whatever `as_of` the request sends (none, an earlier one or a later one), and reads no `as_of`.

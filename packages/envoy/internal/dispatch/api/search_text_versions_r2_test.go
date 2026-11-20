@@ -1,9 +1,8 @@
 // search_text_versions_r2_test.go holds INFRA-4684's R2 (dispatch://INFRA-4684/spec#b-k-deleted)
 // over dispatch://INFRA-1523's routes: the keyword table's fill reads the edit of an issue
 // message and the delete of a comment or a message, and the relation of the versions at a time
-// (store.TextVersions) gives every version of a post the post's present deleted_at. INFRA-4684
-// merged before INFRA-1523's events reached its branch, so INFRA-4620's task t16 carries these
-// rows, which INFRA-4684's plan names (its task t9).
+// (store.TextVersions) gives every version of a post the post's present deleted_at: the rows
+// that INFRA-4684's plan names.
 package api
 
 import (

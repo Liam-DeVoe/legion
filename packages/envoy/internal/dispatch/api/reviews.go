@@ -83,14 +83,19 @@ const latestReviewsStatement = `
 		order by artifact_id, ` + docs.ReviewOrder + `
 	`
 
+// openApprovalAsksHead is the select list, the from and the head of the lateral join that both
+// statements of the open approval requests share, so the two scan alike
+// (scanOpenApprovalRequests). Each statement goes on with the documents it joins.
+const openApprovalAsksHead = `
+		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
+		from asks a` + lastReplyJoin + `
+		cross join lateral jsonb_array_elements(`
+
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
 // turn waitingOnExpression gives each; scanOpenApprovalRequests reads its rows. One row per
 // document of each open request naming one of these documents, so a request that covers a spec
 // and its Verification document is found by either and reported on both.
-const openApprovalAsksStatement = `
-		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
-		from asks a` + lastReplyJoin + `
-		cross join lateral jsonb_array_elements(a.approval -> 'documents') document
+const openApprovalAsksStatement = openApprovalAsksHead + `a.approval -> 'documents') document
 		where a.kind = 'approval' and a.state = 'open'
 		  and ` + docs.ApprovalDocumentsJSONPath + ` ?| $1::text[]
 		  and document ->> 'artifact_id' = any($1::text[])
@@ -104,10 +109,7 @@ const openApprovalAsksStatement = `
 // that document, with null documents (scanOpenApprovalRequests). The shadow is a relation of its
 // own, which the index asks_open_approval_documents does not serve, so the statement does not test
 // the path of the documents.
-const openApprovalAsksAtCutStatement = `
-		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
-		from asks a` + lastReplyJoin + `
-		cross join lateral jsonb_array_elements(coalesce(a.approval -> 'documents',
+const openApprovalAsksAtCutStatement = openApprovalAsksHead + `coalesce(a.approval -> 'documents',
 			jsonb_build_array(jsonb_build_object('artifact_id', a.approval -> 'artifact_id')))) document
 		where a.kind = 'approval' and a.state = 'open'
 		  and document ->> 'artifact_id' = any($1::text[])

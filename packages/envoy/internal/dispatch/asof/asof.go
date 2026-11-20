@@ -15,8 +15,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // cutLayout is RFC 3339 with exactly six fractional digits. A Cut in UTC formats its offset as
@@ -58,11 +56,12 @@ func (c Cut) Time() time.Time { return c.t }
 // (contracts.DispatchAsOfHeader).
 func (c Cut) String() string { return c.t.Format(cutLayout) }
 
-// literal is the cut as a PostgreSQL timestamptz literal. The shadows hold it. It comes from the
-// parsed time, never from the text of a request.
-func (c Cut) literal() string { return "'" + c.String() + "'::timestamptz" }
+// Literal is the cut as a PostgreSQL timestamptz literal, such as
+// '2026-11-10T00:00:00.000000Z'::timestamptz. The shadows hold it. It comes from the parsed
+// time, never from the text of a request.
+func (c Cut) Literal() string { return "'" + c.String() + "'::timestamptz" }
 
-// InvalidError is an as_of that ParseCut cannot read. The gate answers it with 400 and Code,
+// InvalidError is an as_of that ParseCut cannot read. The gate answers it with 400
 // contracts.DispatchInvalidAsOf.
 type InvalidError struct {
 	// Value is the as_of as the request sent it.
@@ -76,9 +75,6 @@ func (e *InvalidError) Error() string {
 }
 
 func (e *InvalidError) Unwrap() error { return e.Err }
-
-// Code is the code of the 400 that refuses the as_of.
-func (e *InvalidError) Code() string { return contracts.DispatchInvalidAsOf }
 
 type cutKey struct{}
 

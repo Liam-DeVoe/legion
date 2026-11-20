@@ -9,12 +9,23 @@ import "slices"
 // present one only for a cut from this time on (decision 2).
 const projectDefaultsRecordedFrom = `'2026-11-15T07:01:28Z'::timestamptz`
 
-// projectSettingTypes are the events of a project's own settings that projectsShadow reads: its
-// create and update, which carry the project, and its default assignee's change. The predicate
-// of the partial index events_project_setting names exactly these types, in this order, so that
-// the planner can prove that the index serves each read of them, which names one or two of
-// them: a change here needs a new index.
-var projectSettingTypes = []string{"project.created", "project.updated", "settings.project_default_assignee.updated"}
+// projectTypes are the events of a project's create and update, which carry the project, and
+// defaultAssigneeTypes the event of its default assignee's change: the events of a project's own
+// settings that projectsShadow reads. The predicate of the partial index events_project_setting
+// names exactly projectSettingTypes, in this order, so that the planner can prove that the index
+// serves each read of them, which names one of the two lists: a change here needs a new index.
+var (
+	projectTypes         = []string{"project.created", "project.updated"}
+	defaultAssigneeTypes = []string{"settings.project_default_assignee.updated"}
+	projectSettingTypes  = slices.Concat(projectTypes, defaultAssigneeTypes)
+)
+
+// projectList and defaultAssigneeList are projectTypes and defaultAssigneeTypes as SQL lists
+// (sqlList), each quoted once.
+var (
+	projectList         = sqlList(projectTypes)
+	defaultAssigneeList = sqlList(defaultAssigneeTypes)
+)
 
 // ProjectSettingTypes are the event types projectsShadow reads a project's settings from, in the
 // order of the predicate of events_project_setting.
@@ -36,8 +47,6 @@ func ProjectSettingTypes() []string { return slices.Clone(projectSettingTypes) }
 // Each column read from events is a scalar subquery of the select list, so a statement that
 // joins a project for its key alone reads none of its events.
 func projectsShadow(cut string) string {
-	defaultEvent := sqlList(projectSettingTypes[2:])
-	projectEvents := sqlList(projectSettingTypes[:2])
 	return `select p.key as key,
 		p.name as name,
 		p.next_number - (
@@ -49,19 +58,19 @@ func projectsShadow(cut string) string {
 			order by e.seq desc limit 1), 0) as last_seq,
 		coalesce(
 			(select e.payload->>'assignee' from public.events e
-				where e.project_key = p.key and e.type in ` + defaultEvent + ` and e.created_at <= ` + cut + `
+				where e.project_key = p.key and e.type in ` + defaultAssigneeList + ` and e.created_at <= ` + cut + `
 				order by e.seq desc limit 1),
 			case when ` + cut + ` >= ` + projectDefaultsRecordedFrom + ` and not exists (
 				select from public.events e
-				where e.project_key = p.key and e.type in ` + defaultEvent + ` and e.created_at > ` + cut + `)
+				where e.project_key = p.key and e.type in ` + defaultAssigneeList + ` and e.created_at > ` + cut + `)
 			then p.default_assignee end) as default_assignee,
 		coalesce(
 			(select ` + textArray(`e.payload->'gated_steps'`) + ` from public.events e
-				where e.project_key = p.key and e.type in ` + projectEvents + ` and e.created_at <= ` + cut + `
+				where e.project_key = p.key and e.type in ` + projectList + ` and e.created_at <= ` + cut + `
 				order by e.seq desc limit 1),
 			case when not exists (
 				select from public.events e
-				where e.project_key = p.key and e.type in ` + projectEvents + ` and e.created_at > ` + cut + `)
+				where e.project_key = p.key and e.type in ` + projectList + ` and e.created_at > ` + cut + `)
 			then p.gated_steps else '{}'::text[] end) as gated_steps
 	from public.projects p
 	where p.created_at <= ` + cut

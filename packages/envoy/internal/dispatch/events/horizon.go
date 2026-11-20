@@ -103,8 +103,11 @@
 // time (asof), which bounds its page by H and by the newest event at its cut. So each statement
 // here names the log with its schema, public.events, as each deliberate read of the present log
 // at a cut does (asof.AsksChangedAfterStatement, store.TextVersionsAt): the name shows that the
-// read is of the present, and no table of another schema on the search_path, such as a shadow,
-// can take its place.
+// read is of the present. A shadow is a WITH member of the same name that the store puts in
+// front of a statement under a cut (asof.Bind), which a schema-qualified name does not read. The
+// caller of a read at a cut waits for H under no cut (asof.WithoutCut): where H observes through
+// the shared request pool, that pool binds each statement under a cut and refuses the begin of
+// an observation.
 package events
 
 import (

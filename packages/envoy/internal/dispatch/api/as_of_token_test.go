@@ -202,8 +202,8 @@ func cutTokenAnswerDifference(want, got asOfAnswer) string {
 		}
 		return ""
 	}
-	dropTopMember(wantDoc, "took_ms")
-	dropTopMember(gotDoc, "took_ms")
+	dropMember(wantDoc, []string{"took_ms"})
+	dropMember(gotDoc, []string{"took_ms"})
 	if difference, found := firstDifference("", wantDoc, gotDoc); found {
 		return difference
 	}

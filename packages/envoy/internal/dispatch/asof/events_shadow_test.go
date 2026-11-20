@@ -129,6 +129,18 @@ func TestABoundStatementReadsTheEventsShadow(t *testing.T) {
 		if err := database.Pool.AcquireFunc(atCut, func(*pgxpool.Conn) error { return nil }); !refusedAtCut(err, "AcquireFunc") {
 			t.Errorf("a connection acquired for a function at the cut: %v, want it refused", err)
 		}
+		if connection, err := database.Pool.Listener(atCut); !refusedAtCut(err, "Listener") {
+			if connection != nil {
+				_ = connection.Close(ctx)
+			}
+			t.Errorf("a listening connection at the cut: %v, want it refused", err)
+		}
+		if connection, err := database.Pool.Dedicated(atCut, "asof-test"); !refusedAtCut(err, "Dedicated") {
+			if connection != nil {
+				_ = connection.Close(ctx)
+			}
+			t.Errorf("a dedicated connection at the cut: %v, want it refused", err)
+		}
 	})
 
 	t.Run("a write at the cut is refused before it is sent", func(t *testing.T) {
@@ -139,6 +151,35 @@ func TestABoundStatementReadsTheEventsShadow(t *testing.T) {
 		}
 		count(t, "a read with no cut after the refused delete", database.Pool.QueryRow(ctx, countEvents), 2)
 	})
+}
+
+// A statement bound to a cut holds the cut in its text, so each new cut is a new text. The store
+// sends such a statement with its description cached on the client alone
+// (pgx.QueryExecModeCacheDescribe): a read at a cut leaves no prepared statement on its
+// connection, where pgx's default mode would keep one for each text and push the present
+// statements out of the connection's cache.
+func TestABoundStatementLeavesNoPreparedStatement(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	atCut := asof.WithCut(ctx, mustCut(t, "2026-11-10T00:00:00Z"))
+	tx, err := database.Pool.BeginTx(atCut, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		t.Fatalf("begin at the cut: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var events, prepared int
+	if err := tx.QueryRow(ctx, "select count(*) from events where type <> $1", "asof.none").Scan(&events); err != nil {
+		t.Fatalf("read the events at the cut: %v", err)
+	}
+	if _, err := tx.Exec(ctx, "select count(*) from events where type = $1", "asof.none"); err != nil {
+		t.Fatalf("run a statement at the cut: %v", err)
+	}
+	if err := tx.QueryRow(ctx, "select count(*) from pg_prepared_statements where strpos(statement, $1) > 0", "public.events where created_at <=").Scan(&prepared); err != nil {
+		t.Fatalf("read the connection's prepared statements: %v", err)
+	}
+	if prepared != 0 {
+		t.Errorf("the connection holds %d prepared statements bound to the cut, want none", prepared)
+	}
 }
 
 // refusedAtCut reports whether err is the store's refusal of method under a cut.

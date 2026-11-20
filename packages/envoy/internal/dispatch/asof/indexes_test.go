@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// The reads at a cut each have an index of their own on events (decision 15 of the plan, and task
-// t12, which measured them on a copy of production's event log): the issue listing reads each
+// The reads at a cut each have an index of their own on events (decision 15 of the plan, each
+// measured on a copy of production's event log): the issue listing reads each
 // issue's newest state through events_issue_state, its claim through events_issue_claim and when
 // it last changed through events_issue_activity; the asks read each ask's newest state through
 // events_ask_state and its follows through events_ask_follower; the comments and the messages
@@ -112,6 +112,26 @@ func TestTheShadowsUseTheirIndexes(t *testing.T) {
 			statement: asof.NewestEventIDStatement,
 			index:     "events_created_at",
 		},
+		{
+			// Which posts and asks of a thread changed after the cut (api/post_as_of.go): each
+			// kind of item through the index of its own types.
+			name:      "the comments changed after the cut",
+			statement: asof.ItemsChangedAfterStatement,
+			arguments: []any{[]string{"comment-7", "message-7", "ask-7"}, cut.Time()},
+			index:     "events_comment_state",
+		},
+		{
+			name:      "the messages changed after the cut",
+			statement: asof.ItemsChangedAfterStatement,
+			arguments: []any{[]string{"comment-7", "message-7", "ask-7"}, cut.Time()},
+			index:     "events_message_state",
+		},
+		{
+			name:      "the asks changed after the cut",
+			statement: asof.ItemsChangedAfterStatement,
+			arguments: []any{[]string{"comment-7", "message-7", "ask-7"}, cut.Time()},
+			index:     "events_ask_state",
+		},
 	} {
 		t.Run(read.name, func(t *testing.T) {
 			bound, err := asof.Bind(read.statement, cut)
@@ -128,25 +148,19 @@ func TestTheShadowsUseTheirIndexes(t *testing.T) {
 	}
 }
 
-// The ask-state index's predicate names the event types the asks shadow reads, in its order. The
-// migration writes the list by hand, since a migration is SQL that never changes once applied: a
-// type the shadow reads later would leave the index unused, and a type the shadow no longer
-// reads would keep its events in the index for nothing.
-func TestTheAskStateIndexNamesTheTypesTheAsksShadowReads(t *testing.T) {
-	if types, want := indexedTypes(t, "events_ask_state"), asof.AskStateTypes(); !slices.Equal(types, want) {
-		t.Errorf("events_ask_state indexes the types %v, want the asks shadow's %v", types, want)
-	}
-}
-
-// Each partial index task t12 added names, in its predicate, the event types its shadow reads, in
-// its order, for the reason TestTheAskStateIndexNamesTheTypesTheAsksShadowReads gives. The
-// activity index names the whole-issue types as `type not in`, which its read names the same way.
+// Each partial index that a shadow reads names, in its predicate, the event types that its shadow
+// reads, in its order. A migration writes the list by hand, since a migration is SQL that never
+// changes once applied: a type the shadow reads later would leave the index unused, and a type
+// the shadow no longer reads would keep its events in the index for nothing. The activity index
+// names the whole-issue types as `type not in`, which its read names the same way.
 func TestEachEventIndexNamesTheTypesItsShadowReads(t *testing.T) {
 	for _, index := range []struct {
 		name  string
 		types []string
 	}{
 		{"events_issue_claim", asof.IssueClaimTypes()},
+		{"events_issue_state", asof.IssueStateTypes()},
+		{"events_ask_state", asof.AskStateTypes()},
 		{"events_issue_activity", asof.IssueStateTypes()},
 		{"events_project_setting", asof.ProjectSettingTypes()},
 		{"events_comment_state", asof.CommentStateTypes()},

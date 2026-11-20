@@ -161,8 +161,9 @@ func logRefusal() {
 // sends to the cut (asof.Bind) before it sends it: a statement of Query, QueryRow, Exec or
 // SendBatch, and each statement of a transaction that Begin or BeginTx opens and of its
 // savepoints. A statement that Bind refuses is not sent, and the call returns the refusal. The
-// pool refuses each way to send SQL that it cannot bind (RefusedAtCutError). Under a context with
-// no cut, the pool sends each statement as the caller wrote it.
+// pool refuses each way to send SQL that it cannot bind (RefusedAtCutError): a connection that
+// it hands out (Acquire, AcquireFunc, Listener, Dedicated) and a copy. Under a context with no
+// cut, the pool sends each statement as the caller wrote it.
 type Pool struct {
 	pool *pgxpool.Pool
 	// mu guards each separate pool's creation against this pool's close: one lock, so a
@@ -361,6 +362,9 @@ const listenerPoolSize = 1
 // of the shared pool held that long would be one fewer for every request, and a LISTEN on a
 // pooled connection would end when the pool recycled it.
 func (p *Pool) Listener(ctx context.Context) (*pgx.Conn, error) {
+	if err := refuseAtCut(ctx, "Listener"); err != nil {
+		return nil, err
+	}
 	listen, err := p.separate(&p.listen, listenerPoolSize, "listener", "")
 	if err != nil {
 		return nil, err
@@ -381,6 +385,9 @@ func (p *Pool) Listener(ctx context.Context) (*pgx.Conn, error) {
 // processes are listening (docs.ListenerApplicationPrefix), and the document rooms' NOTIFY sender
 // (docs/room_sync.go), which a request inside a transaction sends through.
 func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn, error) {
+	if err := refuseAtCut(ctx, "Dedicated"); err != nil {
+		return nil, err
+	}
 	conn, err := p.Listener(ctx)
 	if err != nil {
 		return nil, err
@@ -823,6 +830,21 @@ func bindAtCut(ctx context.Context, sql string) (string, error) {
 	return asof.Bind(sql, cut)
 }
 
+// boundArgs is args for bound, the statement that Bind made of sql: args themselves where Bind
+// changed nothing, else pgx.QueryExecModeCacheDescribe in front of them. A bound statement holds
+// its cut in its text, so each new cut makes each of its statements a new text. pgx's default
+// mode prepares each new text as a named statement of the connection and keeps 512 of them: each
+// cut would leave a large plan of each statement on the server and push the present statements
+// out of the cache, which must then be prepared again. A described statement is cached on the
+// client alone, and one seen before takes one round trip as a prepared one does. A mode that the
+// caller passes comes after this one and wins. A batch takes the connection's mode (bindBatch).
+func boundArgs(sql, bound string, args []any) []any {
+	if bound == sql {
+		return args
+	}
+	return append([]any{pgx.QueryExecModeCacheDescribe}, args...)
+}
+
 // refuseAtCut is the refusal of method when ctx carries a cut, or nil when it carries none.
 func refuseAtCut(ctx context.Context, method string) error {
 	if cut, ok := asof.CutFrom(ctx); ok {
@@ -841,11 +863,11 @@ func (p *Pool) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, er
 	if err := p.guard(ctx); err != nil {
 		return nil, err
 	}
-	sql, err := bindAtCut(ctx, sql)
+	bound, err := bindAtCut(ctx, sql)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := p.pool.Query(ctx, sql, args...)
+	rows, err := p.pool.Query(ctx, bound, boundArgs(sql, bound, args)...)
 	if err != nil {
 		return nil, err
 	}
@@ -898,11 +920,11 @@ func (p *Pool) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if err := p.guard(ctx); err != nil {
 		return errRow{err: err}
 	}
-	sql, err := bindAtCut(ctx, sql)
+	bound, err := bindAtCut(ctx, sql)
 	if err != nil {
 		return errRow{err: err}
 	}
-	return p.pool.QueryRow(ctx, sql, args...)
+	return p.pool.QueryRow(ctx, bound, boundArgs(sql, bound, args)...)
 }
 
 // Exec runs a statement on a pooled connection.
@@ -910,11 +932,11 @@ func (p *Pool) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comman
 	if err := p.guard(ctx); err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	sql, err := bindAtCut(ctx, sql)
+	bound, err := bindAtCut(ctx, sql)
 	if err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	return p.pool.Exec(ctx, sql, args...)
+	return p.pool.Exec(ctx, bound, boundArgs(sql, bound, args)...)
 }
 
 // Acquire takes a pooled connection the caller holds until it releases it.
@@ -1115,7 +1137,7 @@ func (t *cutTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, e
 	if err != nil {
 		return nil, err
 	}
-	return t.Tx.Query(ctx, bound, args...)
+	return t.Tx.Query(ctx, bound, boundArgs(sql, bound, args)...)
 }
 
 func (t *cutTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
@@ -1123,7 +1145,7 @@ func (t *cutTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
 	if err != nil {
 		return errRow{err: err}
 	}
-	return t.Tx.QueryRow(ctx, bound, args...)
+	return t.Tx.QueryRow(ctx, bound, boundArgs(sql, bound, args)...)
 }
 
 func (t *cutTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
@@ -1131,7 +1153,7 @@ func (t *cutTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.Comma
 	if err != nil {
 		return pgconn.CommandTag{}, err
 	}
-	return t.Tx.Exec(ctx, bound, args...)
+	return t.Tx.Exec(ctx, bound, boundArgs(sql, bound, args)...)
 }
 
 func (t *cutTx) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
@@ -1199,13 +1221,13 @@ func (b errBatchResults) Tx() pgx.Tx                       { return nil }
 
 // RefusedAtCutError is a method that a read at a cut cannot use. The pool refuses it under a
 // context that carries a cut (asof.WithCut), before it sends anything. The pool refuses Acquire,
-// AcquireFunc and CopyFrom: a connection that the pool hands out sends statements that nothing
-// binds, and a copy writes. A transaction opened under a cut refuses its CopyFrom, Prepare,
-// LargeObjects and Conn for the same reasons; LargeObjects and Conn return no error, so they
-// panic with this error.
+// AcquireFunc, Listener, Dedicated and CopyFrom: a connection that the pool hands out sends
+// statements that nothing binds, and a copy writes. A transaction opened under a cut refuses its
+// CopyFrom, Prepare, LargeObjects and Conn for the same reasons; LargeObjects and Conn return no
+// error, so they panic with this error.
 type RefusedAtCutError struct {
-	// Method names the refused method: "Acquire", "AcquireFunc", "CopyFrom", "Tx.CopyFrom",
-	// "Tx.Prepare", "Tx.LargeObjects" or "Tx.Conn".
+	// Method names the refused method: "Acquire", "AcquireFunc", "Listener", "Dedicated",
+	// "CopyFrom", "Tx.CopyFrom", "Tx.Prepare", "Tx.LargeObjects" or "Tx.Conn".
 	Method string
 	Cut    asof.Cut
 }

@@ -1571,9 +1571,9 @@ func (s *server) gateRouteScopes(scopes []string, handler http.HandlerFunc) http
 // reads.
 func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.HandlerFunc) http.HandlerFunc {
 	read := entry.Writes == readWritesNothing
-	// A cut holds no answer on the socket, nor on a read that holds no history (asOfNoHistory)
-	// or describes the caller now (asOfCaller), but whoami, which names the cut.
-	refusesACut := name == liveSocketRoute || (read && entry.AsOf != asOfAnswers && name != whoamiRoute)
+	// A cut holds no answer on the socket, nor on a read that holds no history (asOfNoHistory).
+	// whoami (asOfCaller) names the cut, and a row of kind answers answers at it.
+	refusesACut := name == liveSocketRoute || (read && entry.AsOf == asOfNoHistory)
 	noPastAnswer := "; " + name + " holds no past answer"
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.resolvePersonalToken(r)
@@ -1599,10 +1599,6 @@ func (s *server) refuseReadOnlyToken(name string, entry readEntry, next http.Han
 // text that names no route, since the read class is the table's own and a refusal that listed it
 // would be stale the day a row joins it.
 const readOnlyRefusal = "this request's credential is a read-only token, which may call only the GET routes Dispatch classes as reads: nothing ran"
-
-// whoamiRoute is the one read that describes the caller now: it reads the credential rather than
-// Dispatch's state, and names the cut a read-only token carries (whoami).
-const whoamiRoute = http.MethodGet + " /api/v1/whoami"
 
 // liveSocketRoute is GET /ws/live as the read-only gate names it.
 const liveSocketRoute = http.MethodGet + " " + liveSocketPattern
@@ -1633,6 +1629,13 @@ func (s *server) resolvePersonalToken(r *http.Request) *http.Request {
 	if presented, _ := s.credentialOf(r); presented != credentialPersonalToken {
 		return r
 	}
+	return s.withResolvedCaller(r)
+}
+
+// withResolvedCaller is r carrying its caller as optionalActor resolves it, its refusal included
+// (resolvedCallerKey): optionalActor answers a later call with what this carried, and every layer
+// behind and the handler read that result.
+func (s *server) withResolvedCaller(r *http.Request) *http.Request {
 	actor, human, err := s.optionalActor(r)
 	return r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human, err: err}))
 }
@@ -1673,7 +1676,6 @@ func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) h
 	answers := entry.AsOf == asOfAnswers
 	notServed := asOfParameter + ": " + name + " holds no history; it answers the present only"
 	return func(w http.ResponseWriter, r *http.Request) {
-		_, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller)
 		if credential := readOnlyCredential(r.Context()); credential != nil && !credential.Cut.IsZero() {
 			if answers {
 				serveAtCut(w, r, name, asof.CutAt(credential.Cut), next)
@@ -1682,7 +1684,9 @@ func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) h
 			next(w, r)
 			return
 		}
-		if r.URL.RawQuery == "" {
+		// A query key reads as_of only where the raw query holds as_of, or a percent-escape that
+		// decodes to it, so a query that holds neither is not parsed here.
+		if raw := r.URL.RawQuery; !strings.Contains(raw, asOfParameter) && !strings.Contains(raw, "%") {
 			next(w, r)
 			return
 		}
@@ -1715,12 +1719,11 @@ func (s *server) asOfGate(name string, entry readEntry, next http.HandlerFunc) h
 		if cut.Time().After(now) {
 			writeError(w, contracts.DispatchInvalidAsOf, http.StatusBadRequest, fmt.Sprintf(
 				"as_of %s is later than the database's present time, %s: a read at a past time answers only a time that is past",
-				cut, now.UTC().Format(time.RFC3339Nano)))
+				cut, cutText(now)))
 			return
 		}
-		if !decided {
-			actor, human, err := s.optionalActor(r)
-			r = r.WithContext(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{actor: actor, human: human, err: err}))
+		if _, decided := r.Context().Value(resolvedCallerKey{}).(resolvedCaller); !decided {
+			r = s.withResolvedCaller(r)
 		}
 		serveAtCut(w, r, name, cut, next)
 	}

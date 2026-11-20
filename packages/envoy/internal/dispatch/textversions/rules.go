@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -816,20 +817,14 @@ func presentBody(ctx context.Context, tx pgx.Tx, kind, id string, at time.Time) 
 	return body, !deleted && (editedAt == nil || !editedAt.After(at)), nil
 }
 
-// postHistoryBegan is the time post_body_history began, as a SQL expression: the time
-// schema_migrations records for dispatch://INFRA-1523's migration 20261110224508. From then on the
-// transaction of each edit and each delete of a comment or a message writes one row of it, which
-// keeps the body the edit or the delete replaced; no build wrote an edit of a message or a delete
-// of a post before it.
-const postHistoryBegan = `(select m.applied_at from public.schema_migrations m where m.version = 20261110224508)`
-
 // historyBodyQuery reads the body the version that event $1 started of post $3 held, from the
 // post's body history (column names the post's column): the body that the post's next edit or
 // delete event replaced. That event is the post's first event of the types $2 (its edit and
 // delete) after $1 in their owner's seq order, and it must have begun at or after the history
-// began. The j-th history row of a post in (edited_at, id) order is written by its j-th edit or
-// delete event that began at or after the history began, which is how the asof package pairs
-// them too. No row is answered where no such event or row is.
+// began (asof.PostHistoryBegan). The j-th history row of a post in (edited_at, id) order is
+// written by its j-th edit or delete event that began at or after the history began; the asof
+// package reads a post's body at a cut by the same count. No row is answered where no such event
+// or row is.
 func historyBodyQuery(column string) string {
 	return `
 	select h.body
@@ -843,13 +838,13 @@ func historyBodyQuery(column string) string {
 	        select count(*) as j from public.events c
 	         where (c.issue_key = o.issue_key or c.artifact_id = o.artifact_id) and c.seq <= r.seq
 	           and c.type = any($2::text[]) and c.payload->>'id' = $3
-	           and c.created_at >= ` + postHistoryBegan + `) n
+	           and c.created_at >= ` + asof.PostHistoryBegan + `) n
 	  cross join lateral (
 	        select h.body from public.post_body_history h
 	         where h.` + column + ` = $3::uuid
 	         order by h.edited_at, h.id
 	        offset greatest(n.j - 1, 0) limit 1) h
-	 where o.id = $1 and r.created_at >= ` + postHistoryBegan
+	 where o.id = $1 and r.created_at >= ` + asof.PostHistoryBegan
 }
 
 // historyBodyQueries are historyBodyQuery for each kind of post, with the types of its edit and
@@ -858,8 +853,8 @@ var historyBodyQueries = map[string]struct {
 	sql   string
 	types []string
 }{
-	kindComment: {historyBodyQuery("comment_id"), []string{"comment.edited", "comment.deleted"}},
-	kindMessage: {historyBodyQuery("message_id"), []string{"message.edited", "message.deleted"}},
+	kindComment: {historyBodyQuery("comment_id"), asof.CommentRewriteTypes()},
+	kindMessage: {historyBodyQuery("message_id"), asof.MessageRewriteTypes()},
 }
 
 // historyBody is the body the version that e started of post id of kind held, from the post's

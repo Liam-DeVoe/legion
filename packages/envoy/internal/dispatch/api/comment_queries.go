@@ -223,13 +223,20 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := s.commentsAtTheCut(r.Context(), comments, func(int) string { return "/comment" }); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := s.commentsAtTheCut(r.Context(), replies, elementsOf("/replies")); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// At a cut one call reads the comment and its replies: the comment at /comment, each reply
+	// at /replies/<n>.
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		thread := append([]model.Comment{comments[0]}, replies...)
+		reply := elementsOf("/replies")
+		if err := s.commentsAtTheCut(r.Context(), thread, func(index int) string {
+			if index == 0 {
+				return "/comment"
+			}
+			return reply(index - 1)
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	read := commentRead{Replies: shapedComments(replies, reader)}
