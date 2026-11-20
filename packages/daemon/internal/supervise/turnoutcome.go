@@ -4,6 +4,9 @@ import (
 	"cmp"
 	"context"
 	"slices"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 )
 
 // TurnOutcome is one turn of a claim's agent as the backend's producer reported it when that turn
@@ -49,7 +52,8 @@ func compareTurnOutcomes(a, b TurnOutcome) int {
 
 // maxRefusalMessage bounds, in runes, the provider's message a report carries. The store keeps
 // the newest reports for readers that inspect the provider's outcome, so a provider that returns a
-// page of diagnostics leaves a sentence rather than a page in the store.
+// page of diagnostics leaves a sentence rather than a page in the store. A message past the bound
+// keeps its first maxRefusalMessage-1 runes and "…" (redact.Runes).
 const maxRefusalMessage = 500
 
 // turnOutcomeWindow is how many recent reports a claim keeps. The launch failure limit supplies
@@ -68,12 +72,13 @@ func (m *Machine) turnOutcomeWindow() int { return max(m.deps.Limits.LaunchFailu
 // it needs from the window as it stands, which is what makes a late report and an in-order one
 // leave the same answer. A report so late that its key is older than every entry the window keeps
 // is counted in the place the bound gives it, the window's oldest end.
+//
+// The message is the provider's text, so it is kept as the daemon keeps a far side's text
+// (storetext.FarSideText: made valid, then read whole by the URL rule) before redact.Runes cuts
+// it, so the window in memory is the window the store holds, and the cut cannot leave half a
+// credential.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) {
-	if len(o.Message) > maxRefusalMessage {
-		if runes := []rune(o.Message); len(runes) > maxRefusalMessage {
-			o.Message = string(runes[:maxRefusalMessage]) + "…"
-		}
-	}
+	o.Message = redact.Runes(storetext.FarSideText(o.Message), maxRefusalMessage)
 	at, found := slices.BinarySearchFunc(m.claim.TurnOutcomes, o, compareTurnOutcomes)
 	if found {
 		if o.Refused {
