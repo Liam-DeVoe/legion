@@ -18,7 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 const testAudience = "broker"
@@ -457,7 +457,7 @@ func TestReplayReportsFreshOnceThenSeen(t *testing.T) {
 // seen, and a rollback forgets the jti.
 func TestReplayRecordsInTheTransactionItIsHanded(t *testing.T) {
 	svc := newService(t, "pool_max_conns=1")
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	expires := time.Now().Add(time.Hour)
 	jti := uuid.New().String()

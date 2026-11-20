@@ -23,8 +23,8 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/migrationid"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func testDatabaseURL(t *testing.T) string {
@@ -1681,14 +1681,14 @@ func askThreadShape(t *testing.T, store *Store) map[string]commentThreadRow {
 
 // applyMigrationFile runs one migration's statements the way the runner does: one transaction,
 // so an `on commit drop` temporary table lives exactly that long. The statements are given what
-// the test's deadline leaves (testwait.Answered).
+// the test's deadline leaves (testdeadline.Answered).
 func applyMigrationFile(t *testing.T, store *Store, name string) {
 	t.Helper()
 	statements, err := migrationFiles.ReadFile("migrations/" + name)
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	tx, err := store.Pool.Begin(ctx)
 	if err != nil {

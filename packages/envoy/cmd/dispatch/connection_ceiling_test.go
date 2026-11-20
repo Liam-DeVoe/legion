@@ -12,7 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // Every Dispatch process a test starts against one Postgres may open store.ConnectionsPerProcess
@@ -112,7 +112,7 @@ const tooManyConnections = "(SQLSTATE 53300)"
 // backends.
 func connectionRefusalCause(t testing.TB, refused, databaseURL string) string {
 	reason := "Postgres refused it a connection for too many clients (SQLSTATE 53300):\n" + refused + "\n"
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	var allowed, open int
 	conn, err := pgx.Connect(ctx, databaseURL)

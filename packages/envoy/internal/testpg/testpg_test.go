@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // noDeadline is a testing.TB whose test has no deadline, as under `go test -timeout 0`.
@@ -23,13 +23,13 @@ func TestTheReadyWaitTakesWhatTheTestsDeadlineLeaves(t *testing.T) {
 		t.Fatal("the ready wait has no startup timeout, so testcontainers gives it its own 60 s")
 	}
 	if !set {
-		if *given != testwait.NoBound {
+		if *given != testdeadline.NoBound {
 			t.Errorf("with no test deadline the ready wait was given %s, want no bound", *given)
 		}
-	} else if end := deadline.Add(-testwait.Cleanup); *given > end.Sub(before) || *given < end.Sub(after) {
+	} else if end := deadline.Add(-testdeadline.Cleanup); *given > end.Sub(before) || *given < end.Sub(after) {
 		t.Errorf("the ready wait was given %s, want what the test's deadline left less its cleanup, %s to %s", *given, end.Sub(after), end.Sub(before))
 	}
-	if none := readyWait(noDeadline{t}).Timeout(); none == nil || *none != testwait.NoBound {
+	if none := readyWait(noDeadline{t}).Timeout(); none == nil || *none != testdeadline.NoBound {
 		t.Errorf("a test with no deadline gave the ready wait %v, want no bound", none)
 	}
 }

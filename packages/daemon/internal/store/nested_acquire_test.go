@@ -17,7 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // refusalLine is the message logRefusal writes, which is what a count of refusals in the log
@@ -36,7 +36,7 @@ const refusalLine = "second pooled connection requested while one is held"
 // One connection in the pool, so a connection the caller holds is the only one there is: a
 // request the guard did not refuse would have nothing to be served with and would wait, and so
 // would the call after a hold whose connection the pool never got back. Each request is given
-// what the test's own deadline leaves (testwait.Answered), so such a wait fails this test naming
+// what the test's own deadline leaves (testdeadline.Answered), so such a wait fails this test naming
 // the request rather than hanging the package.
 func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 	store := storeWith(t, map[string]string{"pool_max_conns": "1"})
@@ -58,7 +58,7 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 		if _, err := tx.Exec(ctx, "select 1"); err != nil {
 			return err
 		}
-		asking, cancel := testwait.Answered(t, ctx)
+		asking, cancel := testdeadline.Answered(t, ctx)
 		defer cancel()
 		started := time.Now()
 		inner = pgx.BeginFunc(asking, pool, func(pgx.Tx) error { return nil })
@@ -87,7 +87,7 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open the caller's cursor: %v", err)
 	}
-	asking, cancel := testwait.Answered(t, ctx)
+	asking, cancel := testdeadline.Answered(t, ctx)
 	started := time.Now()
 	second, err := pool.Query(asking, "select 1")
 	took = time.Since(started)
@@ -126,11 +126,11 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 }
 
 // served fails the test unless the pool serves caller a read before the test's deadline leaves
-// only testwait.Cleanup (testwait.Answered): a hold the pool never ended refuses it, and a
+// only testdeadline.Cleanup (testdeadline.Answered): a hold the pool never ended refuses it, and a
 // connection it never got back leaves it, in a pool of one, nothing to be served with.
 func served(t *testing.T, pool *Pool, caller context.Context, who string) {
 	t.Helper()
-	asking, cancel := testwait.Answered(t, caller)
+	asking, cancel := testdeadline.Answered(t, caller)
 	defer cancel()
 	var one int
 	if err := pool.QueryRow(asking, "select 1").Scan(&one); err != nil || one != 1 {

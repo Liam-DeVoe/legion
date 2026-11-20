@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -58,7 +59,7 @@ func TestReadyzIsFalseUntilTheDaemonServes(t *testing.T) {
 	}
 	d := startDaemon(t, cfg, o)
 
-	held, cancelHeld := testwait.Answered(t, context.Background())
+	held, cancelHeld := testdeadline.Answered(t, context.Background())
 	defer cancelHeld()
 	select {
 	case <-serving:

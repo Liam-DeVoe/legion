@@ -20,12 +20,13 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/testcontainers/testcontainers-go"
 	tcnats "github.com/testcontainers/testcontainers-go/modules/nats"
 	"github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"
+
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // capped limits a smoke container to cpus CPUs and mib MiB, as every container the repository's
@@ -107,9 +108,9 @@ func TestSmoke(t *testing.T) {
 					}
 					return json.NewDecoder(body).Decode(&health) == nil && health.Status == "healthy"
 				}).
-				// What the test's deadline leaves (testwait.StartupBound): a listener that warms
+				// What the test's deadline leaves (testdeadline.StartupBound): a listener that warms
 				// slowly on a loaded host still becomes healthy, and a bound of its own would fail it.
-				WithStartupTimeout(testwait.StartupBound(t)),
+				WithStartupTimeout(testdeadline.StartupBound(t)),
 		),
 	)
 	testcontainers.CleanupContainer(t, listenerC)

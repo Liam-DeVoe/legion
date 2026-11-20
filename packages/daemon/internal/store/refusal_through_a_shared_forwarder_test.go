@@ -7,7 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // beginThrough is a forwarder the compiler keeps as one function, as it keeps intake.ApplyFact
@@ -40,7 +40,7 @@ func TestRefusalsThroughAForwarderTheCompilerKeepsWholeLogOneLineEach(t *testing
 		if _, err := tx.Exec(ctx, "select 1"); err != nil {
 			return err
 		}
-		asking, cancel := testwait.Answered(t, ctx)
+		asking, cancel := testdeadline.Answered(t, ctx)
 		defer cancel()
 		for range 2 {
 			if err := askThroughFromA(asking, pool); !errors.Is(err, ErrNestedAcquire) {

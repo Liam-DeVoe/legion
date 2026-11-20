@@ -62,7 +62,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 const (
@@ -616,9 +616,9 @@ func (w *Watch) Poll(t *testing.T, what string, every time.Duration, detail func
 // horizon's diagnosis runs, as a warning: dated by the database's own clock, so its holder's age
 // is read on one clock, and holding for that age (pending_for), since a watch that reads it has
 // been waiting at least as long as the holder it finds has stood. The read is given what t's
-// deadline leaves (testwait.Answered): the watch needs its answer, not its speed.
+// deadline leaves (testdeadline.Answered): the watch needs its answer, not its speed.
 func readHolder(t *testing.T, db Querier) (Warning, bool, error) {
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	var kind, state, application, database, query string
 	var pid int32

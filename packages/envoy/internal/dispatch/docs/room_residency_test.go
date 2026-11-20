@@ -23,13 +23,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/crdt"
 	ygws "github.com/reearth/ygo/provider/websocket"
+
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A room that only ever receives valid writes is never refused and never loses one while readers,
@@ -765,7 +766,7 @@ func TestAPublishSurvivesACloseOfItsRoomAskedForWhileItRuns(t *testing.T) {
 		// Shutdown waits on the paused write's durable append, which this test holds, until its
 		// budget ends, then closes the room with a connected editor once the publish has left.
 		{"Shutdown with a connected editor", true, true, func(service *Service, _ string) error {
-			ctx, cancel := testwait.Answered(t, context.Background())
+			ctx, cancel := testdeadline.Answered(t, context.Background())
 			defer cancel()
 			_ = service.Shutdown(ctx)
 			return nil

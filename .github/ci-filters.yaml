@@ -43,6 +43,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/clitest/*'
   - 'packages/envoy/dispatchbody/*'
+  - 'packages/envoy/testdeadline/*'
   # why: .github/ci-notes/ci.md#daemon_envoy_deps-the-airlocks-rules-its-decision-and-its-header-swap
   - 'packages/envoy/internal/broker/airlock/*'
   - 'packages/envoy/internal/broker/answer/*'
@@ -414,6 +415,7 @@ plugin_pack:
   - 'packages/envoy/dispatchbody/*'
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
+  - 'packages/envoy/testdeadline/*'
   - 'packages/envoy/sessiontiming/*'
   - 'packages/envoy/subjectforms/*'
   - 'packages/envoy/natsversion/*'
@@ -508,7 +510,6 @@ plugin_pack:
   - '!packages/daemon/internal/testnats/**/*_test.go'
   - '!packages/daemon/internal/testpg/**/*_test.go'
   - '!packages/daemon/internal/testtmp/**/*_test.go'
-  - '!packages/daemon/internal/testwait/**/*_test.go'
   - '!packages/daemon/internal/textcheck/**/*_test.go'
   - '!packages/daemon/internal/wait/**/*_test.go'
   - '!packages/daemon/internal/wakepace/**/*_test.go'
@@ -1594,6 +1595,7 @@ envoy_infra_go:
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/testdeadline/*'
   - 'packages/envoy/internal/weborigin/*'
   - '.github/actions/pull-test-images/**'
   - '.github/scripts/go-tagged-tests.sh'
@@ -1610,6 +1612,7 @@ envoy_infra_go:
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 envoy_go:
   - *ci_router
@@ -1736,6 +1739,7 @@ dispatch_memory:
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/testdeadline/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - '.github/scripts/go-tagged-tests.sh'
   - '.github/scripts/pg-connection-ceiling.sh'
@@ -1763,6 +1767,7 @@ dispatch_memory:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 dispatch_multiprocess:
   - *ci_router
@@ -1774,6 +1779,7 @@ dispatch_multiprocess:
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/testdeadline/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - '.github/scripts/go-tagged-tests.sh'
   - '.github/scripts/pg-connection-ceiling.sh'
@@ -1802,6 +1808,7 @@ dispatch_multiprocess:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#dispatch_two_builds_go-the-two-build-jobs-go-step-alone-behind-a-gate-of
 dispatch_two_builds_go:
@@ -1814,6 +1821,7 @@ dispatch_two_builds_go:
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/testdeadline/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/scripts/build-dispatch-build.sh'
@@ -1895,6 +1903,7 @@ dispatch_two_builds_go:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#dispatch_two_builds-the-two-build-job-its-go-steps-reads-named-again
 dispatch_two_builds:
@@ -1907,6 +1916,7 @@ dispatch_two_builds:
   - 'packages/envoy/internal/testnats/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/testdeadline/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - '.github/scripts/go-tagged-tests.sh'
   - 'packages/envoy/scripts/build-dispatch-build.sh'
@@ -1991,6 +2001,7 @@ dispatch_two_builds:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#listener_server_change-the-server-change-soak-listener-server-change-go
 listener_server_change:
@@ -2070,6 +2081,7 @@ listener_server_change:
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/testdeadline/*'
   - 'packages/envoy/migrationid/*'
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
   - 'packages/contracts/fixtures/envoy-session-no-interests.json'
@@ -2085,6 +2097,7 @@ listener_server_change:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 broker_multiprocess:
   - *ci_router
@@ -2286,7 +2299,6 @@ envoy_smoke:
   - '!packages/envoy/internal/testpg/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
-  - '!packages/envoy/internal/testwait/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/verify/**/*_test.go'
   - '!packages/envoy/internal/webhook/**/*_test.go'
@@ -2301,6 +2313,7 @@ envoy_smoke:
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 envoy_e2e_local:
   - *ci_router
@@ -2673,7 +2686,6 @@ envoy_go_race:
   - '!packages/envoy/internal/testpg/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
-  - '!packages/envoy/internal/testwait/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/verify/**/*_test.go'
   - '!packages/envoy/internal/webhook/**/*_test.go'
@@ -2687,6 +2699,7 @@ envoy_go_race:
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_race_api-the-api-race-job-not-packagesenvoy-as-envoy_go_race-has-that
 envoy_go_race_api:
@@ -2815,6 +2828,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/internal/testport/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/testdeadline/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/migrationid/*'
   - 'packages/envoy/roleholder/*'
@@ -2907,12 +2921,12 @@ envoy_go_race_api:
   - '!packages/envoy/internal/store/**/*_test.go'
   - '!packages/envoy/internal/testpg/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
-  - '!packages/envoy/internal/testwait/**/*_test.go'
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_claim_model-the-mention-senders-claim-models-own-job
 envoy_go_claim_model:
@@ -3016,7 +3030,6 @@ envoy_go_claim_model:
   - '!packages/envoy/internal/testpg/**/*_test.go'
   - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
-  - '!packages/envoy/internal/testwait/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
   - '!packages/envoy/internal/verify/**/*_test.go'
   - '!packages/envoy/internal/webhook/**/*_test.go'
@@ -3031,6 +3044,7 @@ envoy_go_claim_model:
   - '!packages/envoy/natsversion/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#envoy_go_race_docs-the-document-services-own-race-job-not-packagesenvoy-as-envoy_go_race
 envoy_go_race_docs:
@@ -3082,6 +3096,7 @@ envoy_go_race_docs:
   - 'packages/envoy/internal/pgmigrate/*'
   - 'packages/envoy/internal/stacktest/*'
   - 'packages/envoy/internal/testwait/*'
+  - 'packages/envoy/testdeadline/*'
   - 'packages/envoy/internal/testpg/testdb/*'
   - 'packages/envoy/listenerwire/*'
   - 'packages/envoy/migrationid/*'
@@ -3113,9 +3128,9 @@ envoy_go_race_docs:
   - '!packages/envoy/internal/pgmigrate/**/*_test.go'
   - '!packages/envoy/internal/stacktest/**/*_test.go'
   - '!packages/envoy/internal/testpg/**/*_test.go'
-  - '!packages/envoy/internal/testwait/**/*_test.go'
   - '!packages/envoy/listenerwire/**/*_test.go'
   - '!packages/envoy/migrationid/**/*_test.go'
+  - '!packages/envoy/testdeadline/**/*_test.go'
   # END generated
 # why: .github/ci-notes/ci.md#private_names_port-the-private-name-port-harness-in-a-job-of-its-own-it
 private_names_port:

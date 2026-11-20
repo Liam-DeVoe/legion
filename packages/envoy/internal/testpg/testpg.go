@@ -19,7 +19,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // Image is the pgvector server image CI uses for Dispatch's Postgres service: pgvector 0.8.7 on
@@ -112,7 +112,7 @@ func containerURL(t testing.TB) string {
 // WithStartupTimeout testcontainers gives it 60 s (wait/wait.go, defaultStartupTimeout), one
 // bound over that initdb and the restart in a container of two CPUs, which a loaded host can pass
 // while Postgres still works and logs; so it is given what t's deadline leaves
-// (testwait.StartupBound), and with no deadline no bound.
+// (testdeadline.StartupBound), and with no deadline no bound.
 func readyWait(t testing.TB) *wait.LogStrategy {
-	return wait.ForLog("database system is ready to accept connections").WithOccurrence(2).WithStartupTimeout(testwait.StartupBound(t))
+	return wait.ForLog("database system is ready to accept connections").WithOccurrence(2).WithStartupTimeout(testdeadline.StartupBound(t))
 }

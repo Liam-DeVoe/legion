@@ -15,7 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A write transaction runs a read phase holding no transaction id - its owner's advisory lock
@@ -451,7 +451,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		case <-time.After(10 * time.Second):
 			t.Fatal("the accept never reached the replacement")
 		}
-		ctx, cancel := testwait.Answered(t, context.Background())
+		ctx, cancel := testdeadline.Answered(t, context.Background())
 		defer cancel()
 		if _, err := database.Pool.Exec(ctx, `
 			update comments set suggestion = jsonb_set(suggestion, '{accepted}', 'false'::jsonb) where id = $1

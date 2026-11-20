@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The embeddings trigger migrations (0073-0077) take one table's lock at a time, each in its
@@ -37,12 +37,12 @@ func TestEmbeddingsMigrationsLockOneTableAtATime(t *testing.T) {
 	go func() { migrated <- store.Migrate(ctx) }()
 
 	// Wait until the runner is queued on messages, then read issues, given what the test's deadline
-	// leaves (testwait.Answered).
+	// leaves (testdeadline.Answered).
 	waitForQueuedLock(t, store, "messages", "ShareRowExclusiveLock")
 	var version int
 	var issues int
 	err = func() error {
-		read, cancel := testwait.Answered(t, ctx)
+		read, cancel := testdeadline.Answered(t, ctx)
 		defer cancel()
 		tx, err := store.Pool.Begin(read)
 		if err != nil {

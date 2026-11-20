@@ -12,16 +12,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func lockOrderServiceFor(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Settle: time.Hour})
 	// The service's shutdown runs the settlements it still owes against the test's database; it is
-	// given what the test's deadline leaves (testwait.Answered), not a fixed 5 s, which a loaded host
+	// given what the test's deadline leaves (testdeadline.Answered), not a fixed 5 s, which a loaded host
 	// could spend while Postgres still answers and then drop the database under a settlement.
 	t.Cleanup(func() {
-		stop, cancel := testwait.Answered(t, context.Background())
+		stop, cancel := testdeadline.Answered(t, context.Background())
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
@@ -63,7 +64,7 @@ func lockWaits(t *testing.T, ctx context.Context, database *store.Store, like st
 }
 
 func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	database, service, id := lockOrderService(t)
 	seedServiceText(t, service, id, "first\n\nsecond")
@@ -194,7 +195,7 @@ func awaitUnblocked(t *testing.T, subject string, op func() error) {
 // advisory lock and the append's row lock is `for no key update`: they still serialise the
 // writers that take them, including the event sequence allocation, and do not block a foreign key.
 func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
@@ -222,7 +223,7 @@ func TestDurableAppendIsNotBlockedByTheOwnerLock(t *testing.T) {
 }
 
 func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)
@@ -247,7 +248,7 @@ func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 // loser is failRoom - it evicts the room and drops the in-flight update rather than returning
 // an error to anyone.
 func TestLiveUpdateIsNotBlockedByTheOwnerLock(t *testing.T) {
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	database, service, id := lockOrderDocument(t)
 	settling := ownerLockedTransaction(t, ctx, database, id)

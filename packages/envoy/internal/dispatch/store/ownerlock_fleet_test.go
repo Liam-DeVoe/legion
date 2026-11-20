@@ -14,7 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/sjawhar/envoy/internal/testwait"
+
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The owner lock beside an earlier build (OwnerLockProtocol). A build before this one serialises
@@ -286,10 +287,10 @@ var earlierBuildArrivals = []earlierBuildArrival{
 }
 
 // arriveOn runs arrival for key in a transaction of its own on conn, given what the test's
-// deadline leaves (testwait.Answered) so a wait that never ends fails the test rather than hangs
+// deadline leaves (testdeadline.Answered) so a wait that never ends fails the test rather than hangs
 // it, and commits it.
 func arriveOn(ctx context.Context, t *testing.T, conn *pgxpool.Conn, arrival earlierBuildArrival, key string) error {
-	ctx, cancel := testwait.Answered(t, ctx)
+	ctx, cancel := testdeadline.Answered(t, ctx)
 	defer cancel()
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -355,9 +356,9 @@ const (
 // error. This build's writers take their write phase's row locks in touch's order, an order of the
 // handler's appends, which no rule fixes since the advisory locks they hold already exclude each
 // other; the earlier build's take theirs sorted by `<kind>:<key>` up front. Its statements are given
-// what the test's deadline leaves (testwait.Answered).
+// what the test's deadline leaves (testdeadline.Answered).
 func raceWriter(ctx context.Context, t *testing.T, s *Store, shape writerShape, owners []Owner, touch []Owner) (legacy bool, err error) {
-	ctx, cancel := testwait.Answered(t, ctx)
+	ctx, cancel := testdeadline.Answered(t, ctx)
 	defer cancel()
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -534,9 +535,9 @@ func randomOwners(all []Owner) (subset, touch []Owner) {
 
 // heartbeatAsThisBuild stamps instance's heartbeat as processes' heartbeat does: under the
 // registry's lock, in a transaction of its own, given what the test's deadline leaves
-// (testwait.Answered).
+// (testdeadline.Answered).
 func heartbeatAsThisBuild(ctx context.Context, t *testing.T, s *Store, instance string) error {
-	ctx, cancel := testwait.Answered(t, ctx)
+	ctx, cancel := testdeadline.Answered(t, ctx)
 	defer cancel()
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {

@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // lastIssueEventPayload reads the payload of the issue's newest event.
@@ -250,11 +250,11 @@ func TestIssueParentRefusalPastTheCapSaysMoreThan32Links(t *testing.T) {
 // earlier release's API could build one; migration 0113 refuses to apply while one exists, so
 // after it only a direct database write, or an earlier release left serving against the rollout
 // rule, makes one. This test writes one directly. Its reads are given what the test's deadline
-// leaves (testwait.Answered): the walk's time is logged, not tested, since a walk that climbs every
+// leaves (testdeadline.Answered): the walk's time is logged, not tested, since a walk that climbs every
 // link of this chain still answers in seconds.
 func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "DEEP", "name": "Deep"}, "alice")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "DEEP", "default": true}, "alice")

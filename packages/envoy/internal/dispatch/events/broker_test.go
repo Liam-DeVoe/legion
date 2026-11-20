@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestPublishDisconnectsOverflowedSubscriber(t *testing.T) {
@@ -379,10 +380,10 @@ func TestChildAndParentPatchesCompleteWithoutDeadlock(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed parent and child: %v", err)
 	}
-	// The two patches are given what the test's deadline leaves (testwait.Answered), started once
+	// The two patches are given what the test's deadline leaves (testdeadline.Answered), started once
 	// the database is provisioned and seeded: an inverted lock order ends in Postgres's deadlock
 	// error, and a patch that waits on the other for good never ends.
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	broker := NewBroker()
 	childEvent := model.Event{
@@ -657,9 +658,9 @@ func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
 		t.Fatalf("append on PP-1: %v", err)
 	}
 
-	// The write is given what the test's deadline leaves (testwait.Answered): a write that waits
+	// The write is given what the test's deadline leaves (testdeadline.Answered): a write that waits
 	// for the open one waits until that one ends, which is only after this test gives up on it.
-	writeCtx, cancel := testwait.Answered(t, ctx)
+	writeCtx, cancel := testdeadline.Answered(t, ctx)
 	defer cancel()
 	// The second write runs on one connection it holds for its whole transaction, so every lock
 	// Append takes is taken on that backend and the watch below sees each of them.
@@ -696,7 +697,7 @@ func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
 	// then got through before the deadline is caught; its own ceiling is above the write's, so
 	// the write's answer, not the watch, is what ends it.
 	pid := <-backends
-	answer, answered := storetest.WaitForQueuedBehind(t, open, pid, written, testwait.Bounded(t, math.MaxInt64, testwait.Cleanup/2))
+	answer, answered := storetest.WaitForQueuedBehind(t, open, pid, written, testwait.Bounded(t, math.MaxInt64, testdeadline.Cleanup/2))
 	if !answered {
 		t.Fatalf("backend %d, the append on PP-2, queued behind a lock PP-1's open write holds; "+
 			"an append must wait for no lock of another owner's write", pid)
@@ -739,8 +740,8 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 		}},
 	} {
 		t.Run(owner.name, func(t *testing.T) {
-			// The two writes are given what the test's deadline leaves (testwait.Answered).
-			ctx, cancel := testwait.Answered(t, context.Background())
+			// The two writes are given what the test's deadline leaves (testdeadline.Answered).
+			ctx, cancel := testdeadline.Answered(t, context.Background())
 			defer cancel()
 			open, err := database.Pool.Begin(ctx)
 			if err != nil {

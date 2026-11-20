@@ -12,7 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A comment list is answered under a validator read before its body is built: the watermark three
@@ -317,12 +317,12 @@ func TestADocumentsCommentListAnswersItsOwnNotModified(t *testing.T) {
 // are deferred for: an immediate trigger would take the issue's counter row where the write
 // happens and hold it until that transaction ended, so one long-running comment transaction would
 // serialise every comment write of its issue for its whole life. The test's writes are given what
-// its deadline leaves (testwait.Answered), so an immediate trigger fails this test, naming the
+// its deadline leaves (testdeadline.Answered), so an immediate trigger fails this test, naming the
 // write that waited, instead of hanging the suite.
 func TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "HELDW", "A write held open", "A spec")
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 
 	holder, err := database.Pool.Begin(ctx)

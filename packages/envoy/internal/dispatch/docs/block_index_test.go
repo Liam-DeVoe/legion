@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // blockIndexService is a document service whose settle delay is an hour, so no timer settles a
@@ -735,7 +735,7 @@ func TestOlderItemTextCitingABlockIsReindexed(t *testing.T) {
 // other for good.
 func TestADrainedItemKeepsAConcurrentEdit(t *testing.T) {
 	database, service := blockIndexService(t)
-	ctx, cancel := testwait.Answered(t, context.Background())
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	var comment string
 	if err := database.Pool.QueryRow(ctx, `

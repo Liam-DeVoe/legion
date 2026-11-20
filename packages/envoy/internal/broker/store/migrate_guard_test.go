@@ -18,7 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
-	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The broker's set is numbered 1 to N with none missing; pgmigratetest.CheckNumberedOneToN says
@@ -342,7 +342,7 @@ func TestMigrateResetsTheSessionSettingsAMigrationLeftOnItsConnection(t *testing
 		t.Fatalf("a new connection already reads the migration's settings (%q, %q), so the row proves nothing", wantTimeout, wantSearchPath)
 	}
 
-	acquire, cancel := testwait.Answered(t, ctx)
+	acquire, cancel := testdeadline.Answered(t, ctx)
 	defer cancel()
 	held := make([]*pgxpool.Conn, 0, s.Pool.Config().MaxConns)
 	t.Cleanup(func() {

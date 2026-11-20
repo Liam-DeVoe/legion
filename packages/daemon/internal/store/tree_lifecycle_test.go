@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -288,7 +289,7 @@ func holdSerializerThenLock(t *testing.T, store *Store, lock string, step func()
 	}) {
 		t.Fatalf("the cleanup step never waited for the serializer (it returned %v)", <-done)
 	}
-	lockCtx, cancel := testwait.Answered(t, ctx)
+	lockCtx, cancel := testdeadline.Answered(t, ctx)
 	defer cancel()
 	if _, err := fact.Exec(lockCtx, lock, rootIssue); err != nil {
 		t.Fatalf("the fact transaction could not lock the row behind the waiting cleanup step: %v", err)
