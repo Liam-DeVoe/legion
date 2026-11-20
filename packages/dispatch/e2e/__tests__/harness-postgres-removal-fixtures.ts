@@ -554,7 +554,7 @@ export const rowRoomMs = 60_000;
  *  (`Waits.ends`), and its room above them, `rowRoomMs` or its own (`Waits.roomMs`). Every row of
  *  the files these fixtures serve that counts its waits (`rowOf`) states its limit so, and no
  *  other way, which `harness-postgres-source-rules.test.ts` reads from their source
- *  (`limitsNotSummed`). */
+ *  (`limitsNotSummed` of `@legion/test-fixtures/row-sums`). */
 export function rowMs(waits: Waits): number {
   const ends = (waits.ends ?? []).reduce<number>(
     (sum, end) => sum + (typeof end === "number" ? end : end.ms),

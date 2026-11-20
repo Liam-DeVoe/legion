@@ -11,6 +11,8 @@
  *    is its body, as Bun reads both; a hook's is its second;
  *  - a row that counts `rowOf(<waits>)` and states anything but `rowMs(<waits>)`, and a row that
  *    states `rowMs(<waits>)` and counts no `rowOf(<waits>)`, compared as the file writes them.
+ *    The rows and this rule are read by `packages/test-fixtures/src/row-sums.ts`, the one reading
+ *    that the source rows of `packages/dispatch/e2e/__tests__` hold their files to as well.
  *
  *  What it does not read: a process started by a function another module exports (a fixture's
  *  helper), and a file limit (`setDefaultTimeout`), which no file below writes. The files are those
@@ -21,6 +23,7 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { functionsOf, sumRefusal, testCalls } from "@legion/test-fixtures/row-sums";
 import * as ts from "typescript";
 
 const root = join(import.meta.dir, "..", "..", "..");
@@ -56,9 +59,6 @@ const childProcessStarts = new Set([
   "spawnSync",
 ]);
 
-/** The hooks of `bun:test` that take a limit as their second argument. */
-const hooks = new Set(["beforeAll", "afterAll", "beforeEach", "afterEach"]);
-
 /** What `limitsOfRows` read of one file: how many rows and hooks, how many of those start a
  *  process, and each that the rule refuses, one line each with its line in the file. */
 interface Read {
@@ -67,7 +67,9 @@ interface Read {
   readonly refused: string[];
 }
 
-/** The rows and hooks of `source`, a test file named `file`, as the rule above reads them. */
+/** The rows and hooks of `source`, a test file named `file`, as the rule above reads them: each
+ *  row and hook as `testCalls` reads it, refused where it starts a process and states no limit,
+ *  and otherwise where its limit is not the sum it counts (`sumRefusal`). */
 function limitsOfRows(file: string, source: string): Read {
   const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
   // The names the file reaches `node:child_process`'s starts by: each import of one, and each
@@ -94,22 +96,7 @@ function limitsOfRows(file: string, source: string): Read {
       }
     }
   }
-  // The functions of the file's own, at any scope, by name.
-  const functions = new Map<string, ts.Node>();
-  const collect = (node: ts.Node): void => {
-    if (ts.isFunctionDeclaration(node) && node.name !== undefined) {
-      functions.set(node.name.text, node);
-    } else if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.initializer !== undefined &&
-      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
-    ) {
-      functions.set(node.name.text, node.initializer);
-    }
-    ts.forEachChild(node, collect);
-  };
-  collect(parsed);
+  const functions = functionsOf(parsed);
   // The start `node` makes, as the file writes its callee, where it makes one.
   const startOf = (node: ts.Node): string | undefined => {
     const callee = ts.isCallExpression(node)
@@ -156,69 +143,22 @@ function limitsOfRows(file: string, source: string): Read {
     visit(body);
     return found;
   };
-  // Whether `node` is a body rather than a limit: a function written there, or the name of one of
-  // the file's own.
-  const isBody = (node: ts.Expression | undefined): boolean =>
-    node !== undefined &&
-    (ts.isArrowFunction(node) ||
-      ts.isFunctionExpression(node) ||
-      (ts.isIdentifier(node) && functions.has(node.text)));
-  const isRow = (callee: ts.Expression): boolean =>
-    ts.isIdentifier(callee)
-      ? callee.text === "test" || callee.text === "it"
-      : (ts.isPropertyAccessExpression(callee) || ts.isCallExpression(callee)) &&
-        isRow(callee.expression);
-  // The argument of a call of `name`, as the file writes it, where `node` is one.
-  const argumentOf = (node: ts.Node | undefined, name: string): string | undefined =>
-    node !== undefined &&
-    ts.isCallExpression(node) &&
-    ts.isIdentifier(node.expression) &&
-    node.expression.text === name
-      ? (node.arguments[0]?.getText(parsed) ?? "")
-      : undefined;
-  let rows = 0;
+  const calls = testCalls(parsed, functions);
   let starting = 0;
   const refused: string[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
-      const hook =
-        ts.isIdentifier(node.expression) && hooks.has(node.expression.text)
-          ? node.expression.text
-          : undefined;
-      const row = hook === undefined && isRow(node.expression) && node.arguments.length >= 2;
-      if (hook !== undefined || row) {
-        rows += 1;
-        const [first, second, third] = node.arguments;
-        const [body, limit] =
-          hook !== undefined ? [first, second] : isBody(second) ? [second, third] : [third, second];
-        const line = parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
-        const at = `${file}:${line}`;
-        const bodyNode =
-          body !== undefined && ts.isIdentifier(body) ? functions.get(body.text) : body;
-        const start = bodyNode === undefined ? undefined : startUnder(bodyNode, new Set());
-        if (start !== undefined) starting += 1;
-        const counted: string[] = [];
-        const count = (inner: ts.Node): void => {
-          const waits = argumentOf(inner, "rowOf");
-          if (waits !== undefined) counted.push(waits);
-          ts.forEachChild(inner, count);
-        };
-        if (body !== undefined) count(body);
-        const summed = argumentOf(limit, "rowMs");
-        const stated = limit?.getText(parsed) ?? "no limit";
-        if (start !== undefined && limit === undefined) {
-          refused.push(`${at}: ${hook ?? "a row"} starts ${start} and states no limit`);
-        } else if (counted.length > 0 && counted.some((waits) => waits !== summed)) {
-          refused.push(`${at}: counts rowOf(${counted.join("), rowOf(")}), states ${stated}`);
-        } else if (counted.length === 0 && summed !== undefined) {
-          refused.push(`${at}: states ${stated}, counts no rowOf(${summed})`);
-        }
-      }
+  for (const call of calls) {
+    const start = call.body === undefined ? undefined : startUnder(call.body, new Set());
+    if (start !== undefined) starting += 1;
+    const sum = sumRefusal(file, parsed, call);
+    if (start !== undefined && call.limit === undefined) {
+      refused.push(
+        `${file}:${call.line}: ${call.hook ?? "a row"} starts ${start} and states no limit`
+      );
+    } else if (sum !== undefined) {
+      refused.push(sum);
     }
-    ts.forEachChild(node, visit);
-  };
-  visit(parsed);
-  return { rows, starting, refused };
+  }
+  return { rows: calls.length, starting, refused };
 }
 
 test("each row of these files that starts a process states its limit as the sum of what it waits for, and counts it", () => {
@@ -273,6 +213,8 @@ test("a row or a hook that starts a process and states no limit is named, and so
     'test("another sum", () => {\n  run(rowOf(waits));\n}, rowMs(other));',
     'test("a sum it does not count", () => {}, rowMs(waits));',
     'test("the sum", () => {\n  run(rowOf(waits));\n}, rowMs(waits));',
+    'it("an it row", () => {\n  run(rowOf(waits));\n}, 600_000);',
+    'test("a limit before its body", rowMs(other), () => {\n  run(rowOf(waits));\n});',
   ].join("\n");
   const read = limitsOfRows("planted.test.ts", planted);
   expect(read.refused).toEqual([
@@ -285,6 +227,8 @@ test("a row or a hook that starts a process and states no limit is named, and so
     "planted.test.ts:34: counts rowOf(waits), states 600_000",
     "planted.test.ts:37: counts rowOf(waits), states rowMs(other)",
     "planted.test.ts:40: states rowMs(waits), counts no rowOf(waits)",
+    "planted.test.ts:44: counts rowOf(waits), states 600_000",
+    "planted.test.ts:47: counts rowOf(waits), states rowMs(other)",
   ]);
   expect(read.starting).toBe(9);
 });

@@ -25,6 +25,10 @@
       "types": "./src/natives-environment.ts",
       "bun": "./src/natives-environment.ts"
     },
+    "./row-sums": {
+      "types": "./src/row-sums.ts",
+      "bun": "./src/row-sums.ts"
+    },
     "./row-waits": {
       "types": "./src/row-waits.ts",
       "bun": "./src/row-waits.ts"

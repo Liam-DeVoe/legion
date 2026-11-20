@@ -1,14 +1,16 @@
 /** The rules of the source of `v-no-leftover-postgres`'s rows and of the CI steps that run them,
  *  which no row of `harness-postgres-removal.test.ts` sees at run time: the start's removal of a
  *  container reads the time and runs `docker` only through its machine; each row that counts its
- *  waits states its limit as the program's sum of them (`limitsNotSummed`); no stand-in lives a
- *  fixed time; and each CI step that runs those rows exports when its own limit ends it. Each reads
- *  files and plants copies, and starts no process. */
+ *  waits states its limit as the program's sum of them (`limitsNotSummed` of
+ *  `@legion/test-fixtures/row-sums`, the one reading `scripts/e2e/lib/row-waits.test.ts` holds its
+ *  own files to); no stand-in lives a fixed time; and each CI step that runs those rows exports when
+ *  its own limit ends it. Each reads files and plants copies, and starts no process. */
 
 import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { limitsNotSummed } from "@legion/test-fixtures/row-sums";
 import ts from "typescript";
 import { stepEndsVariable } from "./step-end";
 
@@ -110,56 +112,8 @@ test("v-no-leftover-postgres: a start's removal of a dead stack's container read
   expect(offTheMachine(capped)).toEqual([expect.stringMatching(/^\d+:\d+ 120_000$/)]);
 });
 
-/** The rows of `source`, a test file these fixtures serve, named `file`, whose limit is not the
- *  program's sum of the waits they count, one line each, with the row's line and what it states:
- *  a row whose body counts its waits (`rowOf(<waits>)`) and states anything but `rowMs` of those
- *  same waits, a number above all, and a row that states `rowMs` of waits its body does not count.
- *  The row's charge (`Row`) holds each fixture to the waits the row counts; this holds the row's
- *  own clock, which Bun runs and no fixture sees, to the same waits. A row is a call of `test`, or
- *  of what `test` reaches through dotted members and calls (`test.skipIf(<x>)`), whose second
- *  argument is its body and whose third is its limit. */
-function limitsNotSummed(file: string, source: string): string[] {
-  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-  const isRow = (callee: ts.Expression): boolean =>
-    ts.isIdentifier(callee)
-      ? callee.text === "test"
-      : (ts.isPropertyAccessExpression(callee) || ts.isCallExpression(callee)) &&
-        isRow(callee.expression);
-  // The argument of a call of `name`, as the file writes it, where `node` is one.
-  const argumentOf = (node: ts.Node | undefined, name: string) =>
-    node !== undefined &&
-    ts.isCallExpression(node) &&
-    ts.isIdentifier(node.expression) &&
-    node.expression.text === name
-      ? (node.arguments[0]?.getText(parsed) ?? "")
-      : undefined;
-  const found: string[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node) && isRow(node.expression) && node.arguments.length >= 2) {
-      const [, body, limit] = node.arguments;
-      const counted: string[] = [];
-      const count = (inner: ts.Node): void => {
-        const waits = argumentOf(inner, "rowOf");
-        if (waits !== undefined) counted.push(waits);
-        ts.forEachChild(inner, count);
-      };
-      if (body !== undefined) count(body);
-      const summed = argumentOf(limit, "rowMs");
-      const stated = limit?.getText(parsed) ?? "no limit";
-      const line = parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1;
-      if (counted.length > 0 && counted.some((waits) => waits !== summed)) {
-        found.push(`${file}:${line}: counts rowOf(${counted.join("), rowOf(")}), states ${stated}`);
-      } else if (counted.length === 0 && summed !== undefined) {
-        found.push(`${file}:${line}: states ${stated}, counts no rowOf(${summed})`);
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(parsed);
-  return found;
-}
-
-/** The test files whose rows count their waits with these fixtures (`rowOf`). */
+/** The test files whose rows count their waits with these fixtures (`rowOf`), which the shared
+ *  reading holds to the sum rule (`limitsNotSummed`). */
 const summedFiles = [
   "harness-postgres-holders.test.ts",
   "harness-postgres-image-mount.test.ts",
@@ -251,7 +205,13 @@ function fixedLives(file: string, source: string): string[] {
 test("every row that counts its waits states its limit as the program's sum of those waits, and no stand-in lives a fixed time", () => {
   for (const name of summedFiles) {
     const text = readFileSync(fileURLToPath(new URL(`./${name}`, import.meta.url)), "utf8");
-    expect({ name, found: limitsNotSummed(name, text) }).toEqual({ name, found: [] });
+    const read = limitsNotSummed(name, text);
+    // A file read as holding no row is one the read could not see into, never one that passes.
+    expect({ name, rows: read.calls > 0, found: read.refused }).toEqual({
+      name,
+      rows: true,
+      found: [],
+    });
   }
   const planted = [
     "const waits: Waits = { children: 1, reads: 0, bounds: [] };",
@@ -259,11 +219,15 @@ test("every row that counts its waits states its limit as the program's sum of t
     'test("another\'s sum", async () => {\n  rowOf(waits);\n}, rowMs(other));',
     'test("a sum it does not count", async () => {}, rowMs(waits));',
     'test("the program\'s", async () => {\n  rowOf(waits);\n}, rowMs(waits));',
+    'it("an it row", async () => {\n  rowOf(waits);\n}, 600_000);',
+    'test("a limit before its body", rowMs(other), async () => {\n  rowOf(waits);\n});',
   ].join("\n");
-  expect(limitsNotSummed("planted.test.ts", planted)).toEqual([
+  expect(limitsNotSummed("planted.test.ts", planted).refused).toEqual([
     "planted.test.ts:2: counts rowOf(waits), states 600_000",
     "planted.test.ts:5: counts rowOf(waits), states rowMs(other)",
     "planted.test.ts:8: states rowMs(waits), counts no rowOf(waits)",
+    "planted.test.ts:12: counts rowOf(waits), states 600_000",
+    "planted.test.ts:15: counts rowOf(waits), states rowMs(other)",
   ]);
 
   for (const name of standInFiles) {
