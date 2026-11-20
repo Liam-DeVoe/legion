@@ -113,6 +113,25 @@ sed -i 's|^COPY data/pages.json data/pages.json$|COPY data/pages.json data/|' "$
 run_check "$root"
 check "a file copied into a directory passes" "$(is "$status" 0)"
 
+echo "case: a bind mount of the RUN puts its source at its target, in each spelling Docker reads"
+# The check and check-image-trigger-paths.sh read a mount by one grammar (workflow_paths.py):
+# the type is bind when it names none, the source is source= or src=, the target target=, dst= or
+# destination=.
+for spelling in "type=bind,source=data,target=/repo/data" "src=data,target=/repo/data" "source=data,dst=/repo/data"; do
+  root=$(fixture "mount-${spelling//[=,\/]/-}")
+  write_dockerfile "$root"
+  sed -i '/data\/pages.json/d' "$root/docker/app.Dockerfile"
+  sed -i "s|^RUN bun build|RUN --mount=$spelling bun build|" "$root/docker/app.Dockerfile"
+  run_check "$root"
+  check "a mount --mount=$spelling passes" "$(is "$status" 0)"
+done
+root=$(fixture mount-from)
+write_dockerfile "$root"
+sed -i '/data\/pages.json/d' "$root/docker/app.Dockerfile"
+sed -i "s|^RUN bun build|RUN --mount=from=build,src=data,target=/repo/data bun build|" "$root/docker/app.Dockerfile"
+run_check "$root"
+check "a mount from another stage counts for nothing" "$(is "$status" 1)"
+
 echo "case: a file the .dockerignore drops is in no COPY's reach"
 root=$(fixture ignored)
 write_dockerfile "$root"

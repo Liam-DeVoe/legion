@@ -3,7 +3,9 @@ them: a walk of the repository's files, a path glob as a regex, an ordered patte
 negates, a dorny/paths-filter filter under its predicate quantifier, and a workflow's events; the
 YAML those filters are written in, read as strictly as those readers read it: a mapping's repeated
 keys, and a loader that refuses a file holding one. And what a Docker build's context holds: a
-`.dockerignore` read as Docker reads it.
+`.dockerignore` read as Docker reads it, and the instructions of a Dockerfile, the sources and the
+destination of a COPY or ADD, and the bind mounts of a RUN, each read one way for each check that
+reads them.
 
 check-image-trigger-paths.sh, check-image-build-inputs.sh and check-ci-filters.sh (through
 ci_filter_coverage.py) import it from the repository they check, running
@@ -12,8 +14,10 @@ check-workflow-files.sh imports it from beside its own file, which a test fixtur
 script leads back to.
 """
 
+import json
 import posixpath
 import re
+import shlex
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
@@ -97,6 +101,99 @@ def dockerignore_filter(path: str | None):
 
     return ignored
 
+
+class DockerfileUnreadable(ValueError):
+    """An instruction of a Dockerfile whose operands a check cannot read; the message says how to
+    write it so a check can."""
+
+
+def dockerfile_instructions(text: str) -> Iterator[tuple[int, str, str]]:
+    """(line, command, arguments) of each instruction of a Dockerfile, as Docker reads one: comment
+    lines dropped, also inside a continuation, continuation lines joined, blank lines skipped, the
+    command in upper case, the line the one the instruction starts on. check-image-trigger-paths.sh
+    reads the context sources of each, and check-image-build-inputs.sh where each puts them."""
+    pending, start = "", 0
+    for number, raw in enumerate(text.splitlines(), start=1):
+        stripped = raw.strip()
+        if not pending:
+            start = number
+        if stripped.startswith("#") or (not pending and not stripped):
+            continue
+        if stripped.endswith("\\"):
+            pending += stripped[:-1] + " "
+            continue
+        command, _, arguments = (pending + stripped).strip().partition(" ")
+        pending = ""
+        yield start, command.upper(), arguments.strip()
+    if pending:
+        command, _, arguments = pending.strip().partition(" ")
+        yield start, command.upper(), arguments.strip()
+
+
+def copy_operands(arguments: str) -> tuple[list[str], str] | None:
+    """(context sources, destination) of a COPY or ADD from its arguments, in its JSON form or its
+    plain form; None for one that reads another stage or an image (`--from`). A URL or a git
+    address is no source of the context. Raises DockerfileUnreadable for malformed JSON, quotes a
+    shell could not read, no source and destination, and a heredoc source, whose content no file of
+    the context holds."""
+    if arguments.startswith("["):
+        try:
+            entries = json.loads(arguments)
+        except json.JSONDecodeError as error:
+            raise DockerfileUnreadable(
+                f"malformed JSON-array form: {error.msg}; write it as valid JSON, or as a "
+                f"plain argument list"
+            ) from error
+        flags = []
+    else:
+        try:
+            words = shlex.split(arguments)
+        except ValueError as error:
+            raise DockerfileUnreadable(
+                f"unparseable: {error}; balance its quotes so a shell could read it"
+            ) from error
+        flags = [word for word in words if word.startswith("--")]
+        entries = [word for word in words if not word.startswith("--")]
+    if any(flag.startswith("--from=") for flag in flags):
+        return None
+    if not isinstance(entries, list) or len(entries) < 2:
+        raise DockerfileUnreadable("no source and destination; give it both")
+    sources = []
+    for source in entries[:-1]:
+        if "://" in source or source.startswith("git@"):
+            continue
+        if source.startswith("<<"):
+            raise DockerfileUnreadable(
+                "a heredoc source, which this check cannot read; write the content into a "
+                "file the context carries, and COPY that"
+            )
+        sources.append(source)
+    return sources, entries[-1]
+
+
+def bind_mounts(arguments: str) -> list[tuple[str, str | None]]:
+    """(source, target) of each bind mount of a RUN, from its arguments, that reads the context: a
+    `--mount=` of type bind, which is the type when it names none, and with no `from=`. Its source
+    is `source` or `src`, the whole context when it names neither; its target is `target`, `dst` or
+    `destination`, None when it names none. Raises DockerfileUnreadable for quotes a shell could not
+    read."""
+    try:
+        words = shlex.split(arguments)
+    except ValueError as error:
+        raise DockerfileUnreadable(f"unparseable: {error}; balance its quotes so a shell could read it") from error
+    mounts = []
+    for word in words:
+        if not word.startswith("--mount="):
+            continue
+        options = dict(
+            item.split("=", 1) if "=" in item else (item, "")
+            for item in word[len("--mount=") :].split(",")
+        )
+        if options.get("type", "bind") == "bind" and "from" not in options:
+            source = options.get("source", options.get("src", "."))
+            target = options.get("target", options.get("dst", options.get("destination")))
+            mounts.append((source, target))
+    return mounts
 
 
 class Filter:

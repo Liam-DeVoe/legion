@@ -53,14 +53,14 @@ import json
 import os
 import posixpath
 import re
-import shlex
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 from image_build_entries import STAGES
-from workflow_paths import dockerignore_filter, glob_regex, walk
+from workflow_paths import (DockerfileUnreadable, bind_mounts, copy_operands, dockerfile_instructions,
+                            dockerignore_filter, glob_regex, walk)
 
 REPO = os.path.realpath(".")
 problems: list[str] = []
@@ -93,26 +93,14 @@ def dockerfiles(files: list[str]) -> list[str]:
 
 
 def instructions(path: str) -> list[dict]:
-    """Each instruction of the Dockerfile with its line, the stage it is in and the WORKDIR it
+    """Each instruction of the Dockerfile (dockerfile_instructions, the grammar that
+    check-image-trigger-paths.sh reads too) with its line, the stage it is in and the WORKDIR it
     runs under. A stage built FROM an earlier stage starts in that stage's WORKDIR, any other in
     `/`."""
-    out, pending, start = [], "", 0
+    out = []
     stage, workdir, finals = None, "/", {}
     index = 0
-    for number, raw in enumerate(Path(path).read_text().splitlines(), start=1):
-        stripped = raw.strip()
-        if not pending:
-            start = number
-        if stripped.startswith("#") or (not pending and not stripped):
-            continue
-        if stripped.endswith("\\"):
-            pending += stripped[:-1] + " "
-            continue
-        text = (pending + stripped).strip()
-        pending = ""
-        command, _, arguments = text.partition(" ")
-        command = command.upper()
-        arguments = arguments.strip()
+    for line, command, arguments in dockerfile_instructions(Path(path).read_text()):
         if command == "FROM":
             if stage is not None:
                 finals[stage] = workdir
@@ -123,51 +111,30 @@ def instructions(path: str) -> list[dict]:
             workdir = finals.get(base, "/")
         elif command == "WORKDIR":
             workdir = posixpath.normpath(posixpath.join(workdir, arguments))
-        out.append({"line": start, "command": command, "arguments": arguments, "stage": stage,
+        out.append({"line": line, "command": command, "arguments": arguments, "stage": stage,
                     "workdir": workdir})
     return out
 
 
 def copy_parts(instruction: dict, path: str):
-    """(sources, destination) of a COPY or ADD that reads the context; None for one from another
-    stage or image (`--from`), or whose form this check cannot read, which it refuses."""
-    arguments = instruction["arguments"]
-    if arguments.startswith("["):
-        try:
-            entries = json.loads(arguments)
-        except json.JSONDecodeError as exc:
-            error(path, f"{path}:{instruction['line']}: a {instruction['command']} whose JSON form this check "
-                        f"cannot read ({exc.msg}); write it as valid JSON, or as a plain argument list")
-            return None
-        flags = []
-    else:
-        try:
-            words = shlex.split(arguments)
-        except ValueError as exc:
-            error(path, f"{path}:{instruction['line']}: a {instruction['command']} this check cannot split "
-                        f"({exc}); balance its quotes")
-            return None
-        flags = [word for word in words if word.startswith("--")]
-        entries = [word for word in words if not word.startswith("--")]
-    if any(flag.startswith("--from=") for flag in flags):
+    """(sources, destination) of a COPY or ADD that reads the context (copy_operands); None for one
+    from another stage or image (`--from`), or whose form the grammar cannot read, which it
+    refuses."""
+    try:
+        return copy_operands(instruction["arguments"])
+    except DockerfileUnreadable as exc:
+        error(path, f"{path}:{instruction['line']}: {instruction['command']}: {exc}")
         return None
-    if len(entries) < 2:
-        error(path, f"{path}:{instruction['line']}: a {instruction['command']} with no source and destination")
-        return None
-    sources = [s for s in entries[:-1] if "://" not in s and not s.startswith("git@") and not s.startswith("<<")]
-    return sources, entries[-1]
 
 
-def bind_mounts(instruction: dict) -> list:
-    """(source, target) of each bind mount of a RUN from the context (no `from=`)."""
-    mounts = []
-    for word in shlex.split(instruction["arguments"]):
-        if not word.startswith("--mount="):
-            continue
-        fields = dict(field.partition("=")[::2] for field in word[len("--mount="):].split(","))
-        if fields.get("type") == "bind" and "from" not in fields and "target" in fields:
-            mounts.append((fields.get("source", "."), fields["target"]))
-    return mounts
+def mounts_of(instruction: dict, path: str) -> list:
+    """(source, target) of each bind mount of a RUN from the context that names its target
+    (bind_mounts); a RUN whose words the grammar cannot read is refused."""
+    try:
+        return [(source, target) for source, target in bind_mounts(instruction["arguments"]) if target is not None]
+    except DockerfileUnreadable as exc:
+        error(path, f"{path}:{instruction['line']}: RUN: {exc}")
+        return []
 
 
 def placed(context: list[str], copies: list, root: str) -> set:
@@ -321,7 +288,7 @@ for row in STAGES:
             parts = copy_parts(instruction, dockerfile)
             if parts is not None and parts[0]:
                 copies.append((parts[0], parts[1], instruction["workdir"], False))
-    for source, target in bind_mounts(run):
+    for source, target in mounts_of(run, dockerfile):
         copies.append(([source], target, run["workdir"], True))
     there = placed(context, copies, root)
     steps += 1
