@@ -10,6 +10,7 @@ import {
   NODE_TYPE_NAMES,
 } from "../web/src/features/issue-page/page-words";
 import { getAsk, getIssue, listComments } from "./api";
+import { expectRootFont, LARGE_FONT, setDefaultFont, XL } from "./default-font";
 import { nextFrames } from "./frames";
 import {
   DESKTOP,
@@ -436,15 +437,10 @@ test("at a 20 px default font just under xl, a row's fold control takes none of 
   browser,
 }) => {
   await phase(browser, seedRows, async (page, seeded) => {
-    const cdp = await page.context().newCDPSession(page);
-    await cdp.send("Page.setFontSizes", { fontSizes: { fixed: 13, standard: 20 } });
-    await page.setViewportSize({ height: DESKTOP.height, width: 80 * 20 - 1 });
+    await setDefaultFont(page, LARGE_FONT);
+    await page.setViewportSize({ height: DESKTOP.height, width: XL * LARGE_FONT - 1 });
     await openIssue(page, seeded.key);
-    await expect
-      .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize), {
-        message: "the root's font size",
-      })
-      .toBe("20px");
+    await expectRootFont(page, LARGE_FONT);
     const floor = await page.evaluate(() => {
       const probe = document.createElement("button");
       document.body.append(probe);
@@ -456,8 +452,8 @@ test("at a 20 px default font just under xl, a row's fold control takes none of 
       "44px"
     );
     const bullet = nodeRows(page).locator("button[data-node-bullet]").first();
-    await expect(bullet, "no row draws its bullet as its fold control").toBeVisible();
-    await expect(bullet, "a row's fold control takes the 44 px floor").toHaveCSS(
+    await expect(bullet, "a row draws its bullet as its fold control").toBeVisible();
+    await expect(bullet, "a row's fold control takes none of the 44 px floor").toHaveCSS(
       "min-height",
       "0px"
     );

@@ -141,10 +141,10 @@ test(
 
     // Every project of the configuration owns at least one row of those listings. The question
     // is asked of the rows and never of `listedProjects(report)`: Playwright reports every
-    // project of the resolved configuration whatever the command selected - this head's
-    // `-alone` listing names six projects and reports all eighteen - so an assertion over
+    // project of the resolved configuration whatever the command selected - the `-alone`
+    // listing at 77471f15 names six projects and reports all eighteen - so an assertion over
     // the project list could not fail, and would pass with the `-alone` listing missing
-    // altogether. Measured at this head, the two listings hold 1,628 rows and every project
+    // altogether. Listed at 77471f15, the two listings hold 1,707 rows and every project
     // owns some: the smallest is `firefox-download-navigation` with one, and the `-alone`
     // six hold 23, 13, 16, 2, 2 and 3.
     const projectsWithRows = new Set(rows.map((row) => row.project));
@@ -181,11 +181,11 @@ test(
  *  inverts the three that read a reader's place (`readersPlaceRows`, e2e/playwright.config.ts),
  *  which is the one title left in that list and drops rows rather than taking them.
  *
- *  Measured at this head with `--list`, and the same numbers
- *  `.github/workflows/dispatch-browser.yaml` prints beside them. Moving a wall-clock row to
- *  another file, or another project, is an edit of this table in the same commit, which is
- *  what makes such a move something a reader decides on rather than something a run goes
- *  quiet about. */
+ *  Measured with `--list`, and the test below holds this table to the listing at every head;
+ *  `.github/ci-notes/dispatch-browser.md` gives the same numbers for the alone job, and says
+ *  which rows they are. Moving a wall-clock row to another file, or another project, is an
+ *  edit of this table in the same commit, which is what makes such a move something a reader
+ *  decides on rather than something a run goes quiet about. */
 const clockRowsOwned: Readonly<Record<string, Readonly<Record<string, number>>>> = {
   "chromium-alone": {
     "agent-workspace-timing.e2e.ts": 4,

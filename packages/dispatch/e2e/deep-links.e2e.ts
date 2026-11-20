@@ -553,9 +553,20 @@ test("a focus the page moves out of the document while a comment link lands does
     await expect(reply).toBeFocused();
     // The paragraph above the quote grows, below every line the browser could anchor the page
     // on, so the quote goes down with it and only the landing can bring it back.
-    await page.addStyleTag({
-      content: `.ProseMirror p:has(+ p [data-id="${markId}"]) { padding-bottom: 240px; }`,
-    });
+    const above = `.ProseMirror p:has(+ p [data-id="${markId}"])`;
+    await page.addStyleTag({ content: `${above} { padding-bottom: 240px; }` });
+    // The rule took: a selector that matched nothing would grow nothing, and the landing would
+    // then have nothing to correct.
+    await expect
+      .poll(
+        () =>
+          page.evaluate((selector) => {
+            const paragraph = document.querySelector(selector);
+            return paragraph === null ? "no paragraph" : getComputedStyle(paragraph).paddingBottom;
+          }, above),
+        { message: "the paragraph above the quote's padding-bottom" }
+      )
+      .toBe("240px");
     await markLanded(page, markId);
     await expect(markSpan(page, markId)).toBeInViewport();
   } finally {

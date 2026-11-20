@@ -4,10 +4,12 @@ import { fileURLToPath } from "node:url";
 
 // What a reader opening a document waits for is the entry chunk: the browser downloads it,
 // compiles it and evaluates every static import of it in one main-thread task before anything
-// of the page's own runs (dispatch://INFRA-341, R11). The parts below are not on the screen
-// when a document's first block is, and the issue page's own first render is the largest commit
-// the app makes, so neither belongs in that task. Both rules are shapes of `app.tsx`, which is
-// what this reads - as `e2e/__tests__/two-builds-routes.test.ts` reads its router.
+// of the page's own runs (dispatch://INFRA-341, R11). The shell's parts below are not on the
+// screen when a document's first block is, so none of them belongs in that task. The issue
+// page's own first render is the largest commit the app makes, so the route renders it in a
+// transition, which React splits into short tasks. Each rule is a shape of `app.tsx` and of the
+// modules it takes those parts from, which is what this reads - as
+// `e2e/__tests__/two-builds-routes.test.ts` reads its router.
 const source = (path: string) =>
   readFileSync(fileURLToPath(new URL(path, import.meta.url)), "utf8");
 
@@ -95,5 +97,19 @@ describe("the shell's deferred parts", () => {
     expect(state).toContain("export function closeRefPreview(");
     expect(preview).toContain("export function RefPreviewHost(");
     expect(preview).not.toContain("export function referenceTriggerProps(");
+  });
+});
+
+describe("the issue page's first render", () => {
+  test("is the route's element, and that element renders the page in a transition", () => {
+    expect(app).toContain('<Route element={<IssuePageInATransition />} path="/issues/:key/*" />');
+    const gate = app.slice(app.indexOf("function IssuePageInATransition("));
+    expect(gate).toContain("startTransition(() => setRenderThePage(true));");
+    // Until the transition commits the reader has the space the page's chunk keeps
+    // (`IssuePageSpace`), the skeleton the route's Suspense boundary draws for the same address
+    // while that chunk arrives: nothing new appears in between.
+    expect(gate.slice(0, gate.indexOf("\n}\n"))).toContain(
+      "renderThePage ? <IssuePage /> : <IssuePageSpace />"
+    );
   });
 });

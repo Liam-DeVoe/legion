@@ -33,9 +33,13 @@
 // other header.
 //
 // The documents themselves are `large-documents.ts`, what a page announces about its own draw
-// and its build is `large-documents-page.ts`, and the probe two of the wall-clock rows read a
-// build through (`whatTheBuildServes`) is `large-documents-build-probe.ts`, which stood at the
-// end of this file until the two together passed 1,000 lines.
+// and its build is `large-documents-page.ts`, the steps a page takes on its way to an open
+// editor, which `large-documents-long-build.e2e.ts` waits on (`watchThePageMove`,
+// `whileThePageMoves`), are `large-documents-page-moves.ts`, which stood at the end of
+// `large-documents-page.ts` until that file passed 1,000 lines, and the probe two of the
+// wall-clock rows read a build through (`whatTheBuildServes`) is
+// `large-documents-build-probe.ts`, which stood at the end of this file until the two together
+// passed 1,000 lines.
 import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import { expect, type Page } from "@playwright/test";
 import * as Y from "yjs";

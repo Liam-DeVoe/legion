@@ -32,9 +32,8 @@ import {
   theMomentThePageReached,
   throttleTheCpu,
   watchTheDocument,
-  watchThePageMove,
-  whileThePageMoves,
 } from "./large-documents-page";
+import { watchThePageMove, whileThePageMoves } from "./large-documents-page-moves";
 import {
   blocksBuilt,
   drawnBlocks,
@@ -108,7 +107,7 @@ import { asUser } from "./users";
 //
 // Every wait of the second and third rows on the page goes on for as long as the page keeps
 // moving, rather than for a time a quiet machine earned (`whileThePageMoves`, with the steps
-// `watchThePageMove` hears, both `large-documents-page.ts`'s). Beside a loaded
+// `watchThePageMove` hears, both `large-documents-page-moves.ts`'s). Beside a loaded
 // machine the clock is the wrong shape: at 897ae8da, in a `chromium` row on two CPUs beside the
 // full lane's shard 3 of 4 with three workers and no retry, the third row's build over one
 // screenful was still not open 60 s after its first block, and beside the same load at adcb2968

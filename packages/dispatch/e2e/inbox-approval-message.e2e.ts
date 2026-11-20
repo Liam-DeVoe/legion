@@ -441,14 +441,25 @@ test("a reply typed in the approval pane and not sent is not read as a reply to 
     await expect(selectedRow(page)).toHaveAttribute("data-inbox-row", seed.askId);
     const thread = paneScroller(page).getByTestId(`thread-${seed.askId}`);
     await expect(thread.getByText(PERSON_REPLY, { exact: true })).toBeVisible();
-    await thread.getByRole("textbox", { name: "Reply" }).fill("A reply I have not sent yet.");
+    const draft = "A reply I have not sent yet.";
+    const box = thread.getByRole("textbox", { name: "Reply" });
+    await box.fill(draft);
+    await expect(box).toHaveValue(draft);
 
     await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH - 1 });
     const card = await askCard(page, seed.askId);
     await expect(card).toBeVisible();
     await expect(card.getByRole("radio", { name: /^Approve/ })).toBeVisible();
     await nextFrames(page);
+    // The box a card draws a reply it reads as unsent in, by the id it gives that box
+    // (`UnsentReply`, web/src/features/inbox/AskThread.tsx), and the note that box says.
+    await expect(page.getByTestId("ask-unsent-reply")).toHaveCount(0);
     await expect(page.getByText(/opened again before you sent your reply/)).toHaveCount(0);
+
+    // The draft is still the ask's, so the card had a draft to read: the pane drawn again
+    // holds it in its box.
+    await page.setViewportSize({ height: 900, width: READING_PANE_WIDTH });
+    await expect(box, "the pane's reply box keeps the draft").toHaveValue(draft);
   } finally {
     await alice.close();
   }

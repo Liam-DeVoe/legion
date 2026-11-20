@@ -2161,7 +2161,7 @@ BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
-# The step that reads the stacks' connection limit before a browser step starts its stacks
+# The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
 # shard, alone and visual jobs, whose containers have no Go or which keep none, and the
 # multiprocess, embedder and two-build jobs' own, outside their browser steps' budgets. One

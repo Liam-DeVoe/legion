@@ -1,20 +1,25 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { createIssue, createProject, createProjectDocument } from "./api";
+import { expectRootFont, LARGE_FONT, setDefaultFont, XL } from "./default-font";
 import { nextFrames } from "./frames";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
 /**
- * The shell's layout rows that need the real stack, with the reason they are not stubbed rows
+ * The shell's layout rows that run on the real stack, with the reason they are not stubbed rows
  * below. What this file held before - the Conversation's geometry at three widths and the
  * compact review sheet a comment deep link leaves reachable - is in `layout.stub.e2e.ts`.
  *
- * The rows here read a whole page load on each of the two routes that draw a margin, and one of
- * those routes is a project document, whose page is the live document's: the margin sits on
- * that document's room, which no recording replays (packages/dispatch/AGENTS.md, "The stubbed
+ * The first two rows read a whole page load on each of the two routes that draw a margin, and
+ * one of those routes is a project document, whose page is the live document's: the margin sits
+ * on that document's room, which no recording replays (packages/dispatch/README.md, "The stubbed
  * layer"). The resize row reads one of those loads, an issue's, on every frame of two resizes
  * across 1280 px.
+ *
+ * The two default-font rows read only the shell's navigation over the Inbox, which a recording
+ * could answer. No recording of them is committed, and one is made only against the real
+ * harness (`bun run e2e:stub:record`), so they stay here, on the stack they were written on.
  */
 
 test.beforeEach(async () => {
@@ -261,20 +266,22 @@ test("the resize row that crosses 1280 px in both directions and reads every ani
   }
 });
 
-// The shell's two halves must read one breakpoint whatever the reader's default font size. The
-// `xl:` classes that show the sidebar compile to `@media (width >= 80rem)`, and a media query's
-// rem is the browser's default font size, while the compact bar with its Menu follows
-// `COMPACT_VIEWPORT_QUERY`, written in pixels. A reader who set a 20 px default font meets a
-// 1440 px window in which the sidebar waits for 1600 px and the Menu stopped at 1279 px, so no
-// way to the navigation is drawn at all; at a 12 px font the bar's Menu goes at 1280 px while the
-// sidebar has shown since 960 px (INFRA-341, testing round 17, at 1808df5f).
+// The shell's two halves read one breakpoint whatever the reader's default font size. The `xl:`
+// classes that show the sidebar compile to `@media (width >= 80rem)`, and a media query's rem is
+// the browser's default font size; the compact bar with its Menu follows
+// `COMPACT_VIEWPORT_QUERY`, which is in rem too (`web/src/features/shell/useDialog.ts`). While
+// that query was written in pixels, a reader who set a 20 px default font met a 1440 px window in
+// which the sidebar waited for 1600 px and the Menu had stopped at 1279 px, so no way to the
+// navigation was drawn at all, and at a 12 px font neither was drawn from 960 px to 1279 px
+// (INFRA-341, testing round 17, at 1808df5f). This row reads, at those fonts inside those bands
+// and at the browser's own 16 px either side of 1280 px, that the Menu, the rail or the sidebar
+// is drawn, on a fresh load of the Inbox held to its font size each time.
 test("a reader whose default font is 20 px or 12 px is drawn a way to the navigation at every width", async ({
   browser,
 }) => {
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    const cdp = await context.newCDPSession(page);
     for (const [fontSize, width] of [
       [20, 1440],
       [20, 1300],
@@ -282,10 +289,12 @@ test("a reader whose default font is 20 px or 12 px is drawn a way to the naviga
       [16, 1440],
       [16, 1100],
     ] as const) {
-      await cdp.send("Page.setFontSizes", { fontSizes: { fixed: 13, standard: fontSize } });
+      const at = `at ${width} px with a ${fontSize} px default font`;
+      await setDefaultFont(page, fontSize);
       await page.setViewportSize({ height: 900, width });
-      await page.goto("/inbox");
-      await expect(page.getByTestId("main-content")).toBeVisible();
+      await page.goto("/");
+      await expect(page.getByTestId("main-content"), `${at}: main`).toBeVisible();
+      await expectRootFont(page, fontSize, at);
       const ways = await page.evaluate(() => {
         const shown = (selector: string) =>
           [...document.querySelectorAll<HTMLElement>(selector)].some(
@@ -299,25 +308,17 @@ test("a reader whose default font is 20 px or 12 px is drawn a way to the naviga
       });
       expect(
         ways.menu || ways.rail || ways.sidebar,
-        `at ${width} px with a ${fontSize} px default font: ${JSON.stringify(ways)}`
+        `${at}: the Menu, the rail or the sidebar is drawn (${JSON.stringify(ways)})`
       ).toBe(true);
-      expect(
-        ways.menu && (ways.rail || ways.sidebar),
-        `at ${width} px with a ${fontSize} px default font both layouts draw: ${JSON.stringify(ways)}`
-      ).toBe(false);
     }
   } finally {
     await context.close();
   }
 });
 
-/** A reader's own larger default font size, at which every `rem` is 20 px. */
-const LARGE_FONT = 20;
-/** Tailwind's `md` and `xl` in rem (`--breakpoint-md`, `--breakpoint-xl` in its `theme.css`):
- *  from `xl` the shell draws its sidebar beside `<main>`, and under it the compact bar with its
- *  Menu; `md` is where the pages' own `md:` classes and `MD_VIEWPORT_QUERY` switch. */
+/** Tailwind's `md` in rem (`--breakpoint-md` in its `theme.css`): where the pages' own `md:`
+ *  classes and `MD_VIEWPORT_QUERY` switch. */
 const MD = 48;
-const XL = 80;
 
 /** A box the page draws, in the page's px. */
 interface Edges {
@@ -355,8 +356,7 @@ test("at a 20 px default font the navigation is reachable and the shell draws no
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
-    const cdp = await context.newCDPSession(page);
-    await cdp.send("Page.setFontSizes", { fontSizes: { fixed: 13, standard: LARGE_FONT } });
+    await setDefaultFont(page, LARGE_FONT);
     for (const width of [
       MD * LARGE_FONT - 1,
       MD * LARGE_FONT,
@@ -374,11 +374,7 @@ test("at a 20 px default font the navigation is reachable and the shell draws no
       await expect(firstRow, `${at}: the page's first row`).toBeVisible();
       // The page is drawn at the size the row says it reads, so a 16 px reading cannot pass
       // for this one.
-      await expect
-        .poll(() => page.evaluate(() => getComputedStyle(document.documentElement).fontSize), {
-          message: `${at}: the root's font size`,
-        })
-        .toBe(`${LARGE_FONT}px`);
+      await expectRootFont(page, LARGE_FONT, at);
       const menu = page.getByRole("button", { exact: true, name: "Open navigation" });
       const sidebar = page.getByRole("complementary", { exact: true, name: "Navigation" });
       const rail = page.getByRole("complementary", { exact: true, name: "Collapsed sidebar" });

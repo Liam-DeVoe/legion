@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 
-import { type Browser, devices, expect, type Locator, type Page, test } from "@playwright/test";
+import { type Browser, devices, expect, type Locator, test } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions } from "./agents";
 import {
@@ -24,6 +24,7 @@ import {
   type Rect,
   readAtHostWidth,
 } from "./ask-header-reader";
+import { expectRootFont, LARGE_FONT, setDefaultFont, XL } from "./default-font";
 import { documentEditor, indexedBlockAsk, marginCard, setSheet } from "./editor";
 import { askCard, inboxPane } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
@@ -100,15 +101,6 @@ const STYLESHEET = readFileSync(new URL("../web/src/styles.css", import.meta.url
 /** The browser's own default font size, which every row reads at unless it says otherwise: the
  *  px of a `rem`, since nothing in `styles.css` sizes the root. */
 const DEFAULT_FONT = 16;
-
-/** A reader's own larger default font size, which the switch-width rows read at. */
-const LARGE_FONT = 20;
-
-/** Tailwind's `xl` in rem (`--breakpoint-xl` in its `theme.css`). Of the viewport's own switches
- *  it is the one a header draws differently across: below it every button is a 44 px touch box
- *  (`web/src/styles.css`, unlayered, so it outranks the `md:` size a control's classes give it),
- *  and from it each control has its own box. */
-const XL = 80;
 
 /** The width `styles.css`'s `@theme` names `--container-<name>`, in px of a root whose `rem` is
  *  `rem` px: the one place each layout width is written, so these rows read the width the
@@ -506,26 +498,18 @@ test("the answered, resolved, retracted and declined records' headers hold their
 });
 
 /** The viewport widths on either side of `xl` at `LARGE_FONT`: one pixel under it, where every
- *  button is the 44 px touch box, and at it. */
+ *  button is the 44 px touch box, and at it. Of the viewport's own switches `xl` is the one a
+ *  header draws differently across: below it the touch floor (`web/src/styles.css`, unlayered,
+ *  so it outranks the `md:` size a control's classes give it), and from it each control's own
+ *  box. */
 const XL_SIDES = [XL * LARGE_FONT - 1, XL * LARGE_FONT] as const;
-
-/** Sets `page`'s default font size to `px`, as the reader's own browser setting does: Chromium's
- *  `Page.setFontSizes`, so a row that calls it runs under `chromium` alone. */
-async function setDefaultFont(page: Page, px: number): Promise<void> {
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Page.setFontSizes", { fontSizes: { fixed: 13, standard: px } });
-}
 
 /** Holds a switch-width row to what it says it reads, by what the page draws: the root at
  *  `LARGE_FONT`, and `header`'s copy control the 44 px touch box under `xl` and a box of its own
  *  from it. A row that read at the browser's own size, or on the other side of `xl`, fails here
  *  rather than passing for this one. */
 async function readsAtLargeFont(header: Locator, compact: boolean): Promise<void> {
-  await expect
-    .poll(() => header.page().evaluate(() => getComputedStyle(document.documentElement).fontSize), {
-      message: "the root's font size",
-    })
-    .toBe(`${LARGE_FONT}px`);
+  await expectRootFont(header.page(), LARGE_FONT);
   const copy = header.locator("[data-copy-ref] button").first();
   if (compact) await expect(copy).toHaveCSS("min-height", "44px");
   else await expect(copy).not.toHaveCSS("min-height", "44px");

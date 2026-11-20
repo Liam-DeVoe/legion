@@ -306,7 +306,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/large-documents-long-build.e2e.ts` | its rows read a build the server's sync begins over the document it drew into the page it sent, and the edit row writes as another person on the document socket |
 | `e2e/large-documents-measured.e2e.ts` | its two measurements are taken over a build the server's sync begins, in front of the draw that server sent, and run one row at a time in `iphone-measure-alone` |
 | `e2e/large-documents-reader.e2e.ts` | the document is read in its live editor and the decisions in it are answered against the asks the server records; the reconnect row reads the frames the document's room answers a SyncStep1 with, and an edit's arrival in the server's `/text` |
-| `e2e/layout.e2e.ts` | its rows read a whole page load on each of the routes that draw a margin, one of those a project document, whose margin sits on the live document's room, and one resizes such a page across 1280 px and back |
+| `e2e/layout.e2e.ts` | three of its rows read a page that draws a margin: a whole page load on each of the two routes that draw one, one of those a project document, whose margin sits on the live document's room, and a resize of such a page across 1280 px and back; its two default-font rows read only the shell's navigation over the Inbox, which a recording could answer, but no recording of them is committed and one is made only against the real harness |
 | `e2e/legion.e2e.ts` | the Settings page's Legion daemon field: naming a project's daemon, refusing a state URL that is not a daemon's in the server's own words, and removing it |
 | `e2e/live-socket.e2e.ts` | the `/ws/live` socket's own behaviour |
 | `e2e/live.e2e.ts` | live delivery of writes made after the page loaded |

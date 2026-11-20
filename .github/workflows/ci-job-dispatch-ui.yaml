@@ -41,8 +41,8 @@ jobs:
       # same reason and carries a `Build contracts for dispatch e2e` step of its own, which that
       # file's shard job explains).
       # `build:dispatch` bundles only the contracts entries Dispatch imports - the package itself
-      # and the twelve schema-free subpaths packages/contracts/AGENTS.md names under "Plain
-      # values, no schema" (web/vite.config.ts aliases the same twelve) - so the build compiles no
+      # and the twelve subpaths packages/dispatch/web/vite.config.ts names one alias each under
+      # `resolve.alias`, the dashboard's own list of them - so the build compiles no
       # module outside the set the dashboard's tsc programs compile, which is what this job's
       # filter lists, and not ./legion-api, which Dispatch never imports. package.json allows no
       # comment, so this is where the list is explained: a new import of a contracts subpath by

@@ -488,6 +488,9 @@ test("End onto the already-selected last tab brings it back into view after the 
     // The last tab rests at the end of the scroll, 749 - 528 = 221.
     layOut(528);
     expect(tablist.scrollLeft).toBe(221);
+    // The mount's settle waits a frame; it runs here, so no frame of the mount's runs during
+    // the keystroke below and puts the strip back by itself.
+    await nextFrame();
     // The reader scrolls the strip back to its start, which leaves Collaborators out of view.
     scrollTo(0);
     collaborators.focus();

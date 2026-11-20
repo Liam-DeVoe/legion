@@ -6591,7 +6591,7 @@ function AskRow({
 // `disabled` while the write is out, and the card hands the focus to the row as it disables the
 // control.
 for (const control of ASK_CARD_CONTROLS) {
-  test(`inside NoTooltips AskCard's ${control.name} keeps the focus while its write is out, then the card hands it to the row`, async () => {
+  test(`inside NoTooltips AskCard's ${control.name} keeps the focus while its write is out, then the card hands it to the row unless the control stays drawn`, async () => {
     const user = userEvent.setup();
     for (const surface of ["inside", "outside"] as const) {
       for (const write of ["lands", "fails"] as const) {

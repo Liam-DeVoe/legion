@@ -34,6 +34,7 @@ import {
   webDistOf,
 } from "./harness-processes";
 import { withIssuePage } from "./issue-page-option";
+import { expectNoneOf } from "./none-of";
 import { sql } from "./psql";
 import { type Browser, expect, type Locator, type Page, type Request, test } from "./test";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
@@ -695,23 +696,32 @@ async function walk(
 ): Promise<void> {
   const seed = await seedEveryRoute();
   const planned = visits(seed);
-  expect(
-    walkRoutes.filter((route) => !planned.some((visit) => visit.route === route.path)),
-    "every route of e2e/two-builds-routes.ts has a visit"
-  ).toEqual([]);
-  expect(
-    Object.keys(lazyPieces).filter((piece) =>
-      planned.every((visit) => !visit.loads?.includes(piece as LazyPiece))
-    ),
-    "every lazy piece of e2e/two-builds-routes.ts has a visit that loads it"
-  ).toEqual([]);
-  expect(
-    Object.keys(issueTabChunks).filter(
-      (tab) => !planned.some((visit) => visit.url === `/issues/${seed.issue}/${tab}`)
-    ),
-    "every issue tab that is a chunk of its own (`issueTabChunks`, " +
-      "web/src/features/issue/issue-tab-list.ts) has a visit that opens it"
-  ).toEqual([]);
+  // Every route and every lazy piece has a visit, over the 23 routes and 7 pieces the table holds
+  // (e2e/two-builds-routes.ts): a table emptied from under this read would meet each clause with
+  // nothing in it. The visits the walk then makes are those, so the failures read below range
+  // over at least the 23 routes' pages.
+  expectNoneOf(walkRoutes, {
+    amongAtLeast: 23,
+    are: (route) => !planned.some((visit) => visit.route === route.path),
+    matched: "routes no visit opens",
+    measured: "routes of e2e/two-builds-routes.ts (`walkRoutes`)",
+  });
+  expectNoneOf(Object.keys(lazyPieces), {
+    amongAtLeast: 7,
+    are: (piece) => planned.every((visit) => !visit.loads?.includes(piece as LazyPiece)),
+    matched: "lazy pieces no visit loads",
+    measured: "lazy pieces of e2e/two-builds-routes.ts (`lazyPieces`)",
+  });
+  // Every issue tab that is a chunk of its own has a visit that opens it, over the eight the map
+  // holds: a map emptied or moved from under this read would meet the clause with no tab at all.
+  expectNoneOf(Object.keys(issueTabChunks), {
+    amongAtLeast: 8,
+    are: (tab) => !planned.some((visit) => visit.url === `/issues/${seed.issue}/${tab}`),
+    matched: "tabs no visit opens",
+    measured:
+      "issue tabs that are a chunk of their own (`issueTabChunks`, " +
+      "web/src/features/issue/issue-tab-list.ts)",
+  });
 
   const assetsFrom = `Dispatch ${assetProcess.toUpperCase()}`;
   const context = await browser.newContext();
@@ -823,16 +833,20 @@ async function walk(
         `assets from ${assetsFrom}`
     )
     .toEqual([]);
-  const missed = build.assets.filter(
-    (file) =>
-      /\.(js|css)$/.test(file) &&
-      !unreachable.some(({ file: pattern }) => pattern.test(file)) &&
-      !answers.get(`/assets/${file}`)?.includes(200)
+  // Every script and stylesheet of the build was answered 200, over at least one chunk per lazy
+  // piece and per issue tab that is a chunk of its own (each is split apart by design), so a
+  // build whose assets this read missed altogether cannot meet the clause.
+  expectNoneOf(
+    build.assets.filter(
+      (file) => /\.(js|css)$/.test(file) && !unreachable.some(({ file: p }) => p.test(file))
+    ),
+    {
+      amongAtLeast: Object.keys(lazyPieces).length + Object.keys(issueTabChunks).length,
+      are: (file) => !answers.get(`/assets/${file}`)?.includes(200),
+      matched: `scripts and stylesheets ${assetsFrom} did not answer 200`,
+      measured: `scripts and stylesheets of ${build.dist}/assets`,
+    }
   );
-  expect(
-    missed,
-    `every script and stylesheet of ${build.dist}/assets was answered 200 by ${assetsFrom}`
-  ).toEqual([]);
 }
 
 // A walk opens about twenty-five pages, each waiting on its own content, so it outlasts the
