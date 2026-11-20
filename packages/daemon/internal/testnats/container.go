@@ -36,6 +36,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/envoy/testport"
 )
 
 const (
@@ -101,11 +103,18 @@ type startOptions struct {
 // start runs a NATS container of image with JetStream, its debug and protocol trace (-DV), and its
 // monitoring endpoint on 8222, which is the command testcontainers-go's NATS module gave it, capped
 // at one CPU and 512 MiB as every container the repository's tests start is capped on a shared
-// host. Its two ports are published as daemonHost says for the daemon the docker CLI reaches. It
-// returns once the server has logged its ready line, which is after its client listener accepts
-// connections. A container that Docker created and that never became ready is returned beside the
-// error, and is removed before start returns: no test's end would remove a container that the
-// package shares.
+// host. It returns once the server has logged its ready line, which is after its client listener
+// accepts connections. A container that Docker created and that never became ready is returned
+// beside the error, and is removed before start returns: no test's end would remove a container
+// that the package shares.
+//
+// On a Docker daemon of this machine (dockerDaemon.local) the two ports are published on a
+// loopback address of the container's own and ports the kernel chose there
+// (testport.LoopbackPorts), so a client another test left dialing an earlier container's port
+// cannot reach this one; a publish Docker refuses because a probed port was taken in between is
+// tried again on a fresh address and ports, up to startTries starts, and the error then names
+// every refusal. On another machine's daemon they are published as daemonHost says, on ports
+// Docker picks.
 func start(image string, o startOptions) (*Container, error) {
 	label, err := armReaper()
 	if err != nil {
@@ -115,9 +124,36 @@ func start(image string, o startOptions) (*Container, error) {
 	if err != nil {
 		return nil, err
 	}
+	var refused []error
+	for range startTries {
+		dial, publish := daemon.dial, []string{daemon.publish(clientPort), daemon.publish(monitorPort)}
+		if daemon.local() {
+			host, ports, err := testport.LoopbackPorts(2)
+			if err != nil {
+				return nil, errors.Join(append(refused, fmt.Errorf("choose loopback ports to publish NATS on: %w", err))...)
+			}
+			dial = host
+			publish = []string{publishAt(host, ports[0], clientPort), publishAt(host, ports[1], monitorPort)}
+		}
+		c, err := startAt(image, o, label, dial, publish)
+		if err == nil || !daemon.local() || !testport.AddressInUse(err) {
+			return c, errors.Join(append(refused, err)...)
+		}
+		refused = append(refused, err)
+	}
+	return nil, fmt.Errorf("every one of %d published addresses was refused as in use: %w", startTries, errors.Join(refused...))
+}
+
+// startTries bounds the starts start makes, each on a fresh loopback address and ports, while
+// Docker refuses to publish a port because something took the probed one first.
+const startTries = 5
+
+// startAt creates and runs one container of image, its two ports published as publish says, and
+// dials them at dial.
+func startAt(image string, o startOptions, label, dial string, publish []string) (*Container, error) {
 	ctx := context.Background()
 	args := []string{"create", "--label", label, "--cpus", "1", "--memory", "512m",
-		"--publish", daemon.publish(clientPort), "--publish", daemon.publish(monitorPort)}
+		"--publish", publish[0], "--publish", publish[1]}
 	for name, value := range o.labels {
 		args = append(args, "--label", name+"="+value)
 	}
@@ -136,15 +172,15 @@ func start(image string, o startOptions) (*Container, error) {
 	if c.id == "" {
 		return nil, fmt.Errorf("create a NATS container of %s: docker create printed no container ID", image)
 	}
-	if err := c.run(ctx, o); err != nil {
+	if err := c.run(ctx, o, dial); err != nil {
 		return c, errors.Join(fmt.Errorf("start the NATS container %s of %s: %w", c.id, image, err), c.remove())
 	}
 	return c, nil
 }
 
 // run copies the configuration into the created container, starts it, waits for its ready line and
-// reads its two published ports.
-func (c *Container) run(ctx context.Context, o startOptions) error {
+// reads its two published ports, which this process dials at dial.
+func (c *Container) run(ctx context.Context, o startOptions, dial string) error {
 	if o.config != "" {
 		archive, err := configArchive(o.config)
 		if err != nil {
@@ -172,11 +208,7 @@ func (c *Container) run(ctx context.Context, o startOptions) error {
 	if err != nil {
 		return err
 	}
-	daemon, err := reachedDaemon()
-	if err != nil {
-		return err
-	}
-	c.url, c.monitorURL = "nats://"+daemon.address(client), "http://"+daemon.address(monitoring)
+	c.url, c.monitorURL = "nats://"+net.JoinHostPort(dial, client), "http://"+net.JoinHostPort(dial, monitoring)
 	return nil
 }
 
@@ -275,6 +307,15 @@ func (d dockerDaemon) publish(port string) string {
 
 // address is the address this process dials for a published port.
 func (d dockerDaemon) address(port string) string { return net.JoinHostPort(d.dial, port) }
+
+// local is whether the daemon runs on this machine and publishes on its loopback, where start
+// gives each container a loopback address of its own.
+func (d dockerDaemon) local() bool { return d.bind == "127.0.0.1" && isLoopback(d.dial) }
+
+// publishAt is docker create's --publish value for the container's port at host's port.
+func publishAt(host string, port int, containerPort string) string {
+	return host + ":" + strconv.Itoa(port) + ":" + containerPort
+}
 
 // reachedDaemon is daemonHost of the endpoint the docker CLI resolves (cliEndpoint), with
 // TESTCONTAINERS_HOST_OVERRIDE applied (withHostOverride), read once per process: every `docker

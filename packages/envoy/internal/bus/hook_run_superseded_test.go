@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testport"
 )
 
 // supersede is what a reconnect hook does to lose the connection its run is on: it stops srv, and
@@ -204,7 +205,7 @@ type proxiedConn struct {
 
 func newHalfOpenProxy(t *testing.T, upstream string) *halfOpenProxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("proxy listen: %v", err)
 	}
