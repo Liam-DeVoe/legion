@@ -142,15 +142,25 @@ func refusedFingerprint(t *testing.T, served *server, bound time.Duration) strin
 // before the second's reads ended: a table it changed would read as the request's.
 func assertUnchanged(t *testing.T, request string, before, after fingerprint) {
 	t.Helper()
+	for _, failure := range unchangedFailures(request, before, after) {
+		t.Error(failure)
+	}
+}
+
+// unchangedFailures is what assertUnchanged fails with for two fingerprints of one database, one
+// failure each, and nothing when the pair shows that no write landed between them.
+func unchangedFailures(request string, before, after fingerprint) []string {
+	var failures []string
 	if !before.quiet.At.IsZero() && !after.ended.Before(before.quiet.At) {
-		t.Errorf("%s: %s could write from %s, before the second fingerprint's reads ended at %s, so a table it changed cannot be told from the request's",
-			request, before.quiet.Writer, before.quiet.At.Format(time.RFC3339Nano), after.ended.Format(time.RFC3339Nano))
+		failures = append(failures, fmt.Sprintf("%s: %s could write from %s, before the second fingerprint's reads ended at %s, so a table it changed cannot be told from the request's",
+			request, before.quiet.Writer, before.quiet.At.Format(time.RFC3339Nano), after.ended.Format(time.RFC3339Nano)))
 	}
 	for _, table := range slices.Sorted(maps.Keys(after.tables)) {
 		if before.tables[table] != after.tables[table] {
-			t.Errorf("%s changed table %s", request, table)
+			failures = append(failures, fmt.Sprintf("%s changed table %s", request, table))
 		}
 	}
+	return failures
 }
 
 // awaitBackgroundWrites waits for every write srv's earlier requests left to its background

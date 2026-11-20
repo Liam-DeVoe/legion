@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -459,6 +460,54 @@ func storedUpdateRows(t *testing.T, database *store.Store, document string) int 
 		t.Fatalf("count the rows of document %s: %v", document, err)
 	}
 	return rows
+}
+
+// A document whose oldest row after its first comes of age between two fingerprints may be
+// compacted between them, by its room's close or by the compaction queue, and that compaction
+// would read as the change of a request between the two. The wait compacts only rows that have
+// aged already; for the rest it answers the moment the oldest of them comes of age, read by the
+// compaction queue's own check (docs.BackgroundQuiet), and the pair's comparison fails naming that
+// compaction when the second fingerprint's reads end past it. The test reads that moment from a
+// first fingerprint, ages the spec's rows so it comes a few seconds after the next fingerprint,
+// and takes the second fingerprint once it has passed.
+func TestAFingerprintPairFailsNamingADocumentRowThatCameOfAgeBetweenThem(t *testing.T) {
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createInteractionIssue(t, handler, "TEST", "A row that comes of age between fingerprints", "A spec")
+	spec := issue.PrimaryArtifactID
+	if edited := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", map[string]any{
+		"ops": []map[string]string{{"op": "insert", "after": "end", "markdown": "A second row."}},
+	}, "alice"); edited.Code != http.StatusOK {
+		t.Fatalf("edit the spec: status=%d body=%s", edited.Code, edited.Body.String())
+	}
+	awaitBackgroundWrites(t, served)
+	if rows := storedUpdateRows(t, database, spec); rows < 2 {
+		t.Fatalf("UNKNOWN: the spec stores %d rows, so no compaction can fold any, and this run shows nothing", rows)
+	}
+	first := databaseFingerprint(t, served)
+	if !strings.Contains(first.quiet.Writer, spec) {
+		t.Fatalf("UNKNOWN: the wait answered %q at %s, not the compaction of the spec, so this run shows nothing", first.quiet.Writer, first.quiet.At.Format(time.RFC3339Nano))
+	}
+	// The row comes of age margin after the next fingerprint begins: past its reads, which take
+	// milliseconds, and soon enough that the test waits only that long.
+	const margin = 5 * time.Second
+	if _, err := database.Pool.Exec(context.Background(),
+		`update doc_updates set created_at = created_at - make_interval(secs => $2) where artifact_id = $1`,
+		spec, time.Until(first.quiet.At.Add(-margin)).Seconds()); err != nil {
+		t.Fatalf("age the spec's rows: %v", err)
+	}
+	before := databaseFingerprint(t, served)
+	if !strings.Contains(before.quiet.Writer, spec) || time.Until(before.quiet.At) > margin {
+		t.Fatalf("UNKNOWN: the wait answered %q at %s, not the spec's compaction within %s, so this run shows nothing", before.quiet.Writer, before.quiet.At.Format(time.RFC3339Nano), margin)
+	}
+	time.Sleep(time.Until(before.quiet.At))
+	after := databaseFingerprint(t, served)
+	failures := unchangedFailures("no request (a document row that came of age between the fingerprints)", before, after)
+	named := slices.ContainsFunc(failures, func(failure string) bool {
+		return strings.Contains(failure, "a compaction of document "+spec) && strings.Contains(failure, "before the second fingerprint's reads ended")
+	})
+	if !named {
+		t.Fatalf("the pair of fingerprints across the moment the spec's row came of age failed with %q, want a failure naming the spec's compaction", failures)
+	}
 }
 
 // An architecture sync runs as a flight its callers join (architecture.Importer.Sync), on a
