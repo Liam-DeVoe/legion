@@ -35,8 +35,7 @@ later phase keeps it current rather than replacing it:
 
 **Checks:** one line per `check` block of the issue's Verification document, in the document's
 order. Each is the line `dispatch result` printed when the result was recorded, or the
-`Pull request line` that `dispatch results` prints under the line of this pull request's head,
-for a check with `ci_check`:
+`Pull request line` that `dispatch results` prints for a check with `ci_check`:
 - Check <block id> (<when>): <pass|fail> at <the commit>, recorded by <role>. <the reading that role recorded, cut with an ellipsis where it is long>
 - Check <block id> (before_merge): <pass|fail> at <the commit>, from CI run <name>. <the check's words>
 - Check <block id> (before_merge): CI run <name> has no result (<case>)
@@ -123,10 +122,10 @@ The agent that develops the change records its results this way before the merge
 blocks a check is fixed, not skipped (*When no surface reaches the changed path*, below).
 
 **Record a result after the commit is pushed.** Dispatch asks GitHub whether the repository of
-the check's issue, or of one of the issue's pull requests, holds the commit, and refuses a result
-at one that none of them holds with `400 RESULT_COMMIT_UNKNOWN`, naming the commit and each
-repository; a commit that is still only local is such a commit. Where Dispatch cannot read a
-repository it stores the result as before, and says so when the results are read.
+the check's issue holds the commit, and refuses a result at one it does not hold with `400
+RESULT_COMMIT_UNKNOWN`, naming the commit and the repository; a commit that is still only local
+is such a commit. Where Dispatch cannot read the repository at all it stores the result as
+before, and says so when the results are read.
 
 **A check that cannot fail is not a result.** Before a check counts as evidence, show it
 failing: the negative control is that demonstration, run on the same command with a deliberately
@@ -147,19 +146,18 @@ results recorded against it and the commit each one was recorded at;
 `dispatch read --issue <issue>` names each requirement of the spec no check serves.
 Where a result's commit stands is read, not stored. A `before_merge` result is compared only with
 the heads of the pull requests attributed to the check's issue, with no fallback to the default
-branch. Dispatch attributes a pull request to the first issue its five ranked sources name
-(`packages/envoy/internal/dispatch/delivery/attribution.go`): the issue whose external link is the
-pull request, in any repository, and then, only where the issue resolves to the pull request's
-repository, the issue linked to a GitHub issue its body cites, a key in its head branch, a key in
-its title or body, and a key in its commit messages. A pull request whose head is in a fork is
-attributed to no issue. So a result reads as at another commit (`older` in a client before
-pi-envoy 17.1.0) when its commit is an earlier head, when no attributed head is its commit, as
-when the pull request is attributed to another issue, or when any field of the check changed
-after it was recorded.
+branch. Dispatch attributes a pull request to the first issue its five ranked sources name in the
+pull request's repository (`packages/envoy/internal/dispatch/delivery/attribution.go`): the issue
+whose external link is the pull request, the issue linked to a GitHub issue its body cites, a key
+in its head branch, a key in its title or body, and a key in its commit messages. So a result reads
+as at another commit (`older` in a client before pi-envoy 17.1.0) when its commit is an earlier
+head, when no attributed head is its commit, as when the pull request is attributed to another
+issue, or when any field of the check changed after it was recorded.
 
-**An issue is proved by its own checks.** A result a child recorded proves nothing for a root —
-it was recorded at the child's head — and a child never records the result that proves a root's
-check. A child carrying part of a root's requirement proves it with a check on its own
+**An issue is proved by its own checks.** Approval is gated by the `before_merge` checks of its
+own Verification document, read at its own head, so a result a child recorded proves nothing for
+a root — it was recorded at the child's head — and a child never records the result that proves
+a root's check. A child carrying part of a root's requirement proves it with a check on its own
 Verification document whose `serves` names that requirement. A root's own checks are proven at
 its own head, or, for an `after_merge` check, on the branch the root's pull request merged into
 or on the repository's default branch, in its last round.
@@ -174,8 +172,8 @@ and decides there, the only gate on such an issue.
 
 - **The implementer records a result for every `before_merge` check before its phase completes,
   and writes the `Checks` lines when the pull request opens.** A check carrying `ci_check` is
-  CI's: the implementer records nothing for it and copies the `Pull request line` of this pull
-  request's head from `dispatch results` (`skill://legion-worker/references/ci-checks.md`).
+  CI's: the implementer records nothing for it and copies its `Pull request line` from
+  `dispatch results` (`skill://legion-worker/references/ci-checks.md`).
   A check with no surface yet is the report of *When no surface reaches the changed path* below,
   never a check left unrecorded. The results are on the Dispatch issue, the lines in the
   PR body, because the reviewer and the merger verify facts on GitHub and never from a handoff.
@@ -184,15 +182,12 @@ and decides there, the only gate on such an issue.
   What a handoff does carry is `head`, the 40-character lower-case commit its work was done
   against, which the completion sends to the daemon.
 - **The tester judges the implementer's results and records its own.** It runs and records no
-  check with `ci_check`, whose results come from CI: the one `dispatch results` derives, and each
-  one its CI job recorded. It runs no check whose `run` is a whole test suite in the pod: that
-  check's words are wrong, and the architect rewrites it with `ci_check`. A `ci_check` check with no
-  pass standing at the head (the line of that head under the check), because a result from CI there
-  is a fail, a pass and a fail from CI are there, or its run concluded `skipped`, `neutral` or
-  `cancelled`, is a test failure. A run still going, or GitHub
-  unread, goes in `implementerProof.how` and fails no round, unless that head's line reads not
-  known because a pass and a fail count there, which is that test failure, at once. A name no run
-  answers once the head's checks have settled goes to the architect as a finding. It re-runs the
+  check with `ci_check`, whose result `dispatch results` derives from that CI job's run, conclusion
+  and `completed_at` at the head, and it runs no check whose `run` is a whole test suite in the pod:
+  that check's words are wrong, and the architect rewrites it with `ci_check`. A derived fail, or a run that
+  concluded `skipped`, `neutral` or `cancelled`, is a test failure. A run still going, or GitHub
+  unread, goes in `implementerProof.how` and fails no round. A name no run answers once the head's
+  checks have settled goes to the architect as a finding. It re-runs the
   implementer's command or drives the same surface independently, and records the verdict in
   its `test` handoff as `implementerProof` (`{verdict, how}`). The tester runs the
   application, not CI again, and by hand it drives only the changed behaviour on the real surface,

@@ -23,8 +23,10 @@ document (`verification.md`) with it, uploading each version after the first wit
 `serves` naming the requirements it serves, its `surface`, its `run`, its `when` and its
 `negative_control`, or `ci_check` in place of its `run` (below). The human approves both
 documents in one request (step 4 below), and every later role reads the checks: the implementer
-and the tester record a result against each check with no `ci_check`, and the reviewer approves
-as `skill://legion-worker/references/merge-gate.md` says.
+and the tester record a result against each check with no `ci_check`, and the
+reviewer approves only once a pass stands for every `before_merge` check at the head, which is the
+check's own answer in `dispatch results --issue <issue>`, and never a pass at another commit, a
+pass recorded under an older wording of the check or a retracted one.
 
 A check proves only the clauses that something drove, so each clause of its `negative_control`
 names the test row or the run that drives it. A check of a requirement over every member of a
@@ -48,16 +50,15 @@ evidence of a controller's `Filed for Legion from <role> on <issue>:` line
 
 A check carrying `ci_check` is CI's: `ci_check` names the GitHub check run that proves the check
 at the head, and the check takes no `run`. Its `when` is `before_merge`, and it names its
-`negative_control`. No role runs it or records a result for it. `dispatch results` derives a
-result from the named run, and a run of its CI job on a push of the change's branch records its
-own result (`skill://legion-worker/references/ci-checks.md`). Where a CI job that runs on an
-ordinary pull request already makes a check's proof, write that check as `ci_check` rather than as
-a command. A check that a whole test suite proves names the CI job that runs that suite as its
-`ci_check`, and a check's `run` that names tests names specific tests or files, never a package
-path, a `./...` pattern or a package's whole `test` script: CI proves a suite on the pull request
-and the merge queue on the merged tree, and a suite run in a pod repeats that work slower. Any
-other `run` is the procedure a role drives on the check's surface. Write a `ci_check` check by
-three rules:
+`negative_control`. No role runs it or records a result for it. `dispatch results` derives its
+one result from the named run (`skill://legion-worker/references/ci-checks.md`). Where a CI job
+that runs on an ordinary pull request already makes a check's proof, write that check as
+`ci_check` rather than as a command. A check that a whole test suite proves names the CI job that
+runs that suite as its `ci_check`, and a check's `run` that names tests names specific tests or
+files, never a package path, a `./...` pattern or a package's whole `test` script: CI proves a
+suite on the pull request and the merge queue on the merged tree, and a suite run in a pod repeats
+that work slower. Any other `run` is the procedure a role drives on the check's surface.
+Write a `ci_check` check by three rules:
 
 1. Name the check run of the job that runs the proof, never a roll-up run that stands for other
    jobs. A roll-up run can pass at a head where the job of the check did not run.

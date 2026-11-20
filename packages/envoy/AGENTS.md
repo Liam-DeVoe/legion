@@ -406,58 +406,35 @@ Each item below names a task and where its code is, then notes on it.
   A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
   Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
 
-- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_recorder.go`, `internal/dispatch/api/results_rows.go`, `internal/dispatch/api/results_settled_check.go`, `internal/dispatch/api/results_comparison.go`, `internal/dispatch/api/results_pass_stands.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/api/result_attestation.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`, `store/migrations/20261116213930_ci_check_results.up.sql`
+- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/results_currency.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
-  `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, a role's as `check_results` and a CI job's as `ci_check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
+  `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
   What a read says about a result is computed at the read, never written by a push.
   Each check answers the commits and branches its results are compared with (`compared_with`), why it has none where it has none (`compared_nothing`) and whether a pass of it stands (`pass_stands`);
   each result answers where its commit stands against those (`commit_stands`) and whether the check's words moved after it was recorded (`check_words_moved`):
 
   - a `before_merge` check is compared with every head Dispatch holds for the check's own issue — the head of an `open` pull request, or the final head of a `merged` one (`pull_request_heads`, which the GitHub intake and the reconcile keep);
-    after them, in name order, with the head of each branch that a result a CI job recorded on that issue names (`branch_head`, `comparisonReader.headBases`), as GitHub answers it on that read (`githubapp.Client.Branch`, under the 10-second `ciReadDeadline`), so a pass at the commit a pushed branch is at stands before any pull request opens;
-    a branch whose head a pull request head already names adds nothing, and a branch GitHub no longer holds (a 404, 409 or 422 of that read) adds no basis;
-    a head GitHub did not answer for leaves each result at no compared commit `unknown`, since it may be that head;
-    the issue a result was recorded on counts for nothing here, so a child's pull request, and the branch a child's CI job pushed, are never a basis for a check above it;
+    the issue a result was recorded on counts for nothing here, so a child's pull request is never a basis for a check above it;
 
   - an `after_merge` check with the branch the check's issue's pull request merged into and with the repository's default branch — that default branch alone where Dispatch holds no merge of it;
 
   - a `default_branch` check with the repository's default branch, whatever branch it merged into (`branch_commits`, the App's answer cached: a yes for good, a no for five minutes);
 
-  - a check whose issue resolves to no repository, and a `before_merge` check of an issue that holds no pull request and no branch a CI job pushed, compare with nothing for `no_pull_request_or_branch`:
+  - a check whose issue resolves to no repository, and a `before_merge` check of an issue that holds no pull request, compare with nothing for `no_pull_request_or_branch`:
     their results stand at no basis and no pass of them stands, since Dispatch holds every head such an issue will ever have.
     A `before_merge` check whose repository the App cannot read compares with nothing for `repository_unreadable`, and each of its results and its own `pass_stands` answer `unknown`.
     A branch check of such a repository still compares with every branch Dispatch can name — the branch its issue merged into, read from the database, and the default branch this process last resolved — because a `branch_commits` yes is keyed by a branch and stands for good, so a stored answer still places the commit (`branchBases`);
     a commit no stored row places there answers `unknown` for `repository_unreadable`, as it does for `read_failed` wherever a read failed instead, and a branch check of a repository Dispatch can name no branch of compares with nothing.
     A read GitHub refused on an `after_merge` check's base branch is the one exception (a 403 or 404, which a branch it no longer holds answers with), and says the commit is not on that branch, leaving the default branch to decide.
 
-  - a check CI proves - its `ci_check` names a GitHub check run, its `when` is `before_merge`, it carries no `run` and it names a `negative_control` (`validCICheck`, `docs.CICheckRule`: the block's attributes, read on every read) - takes no result from a role:
-    `POST` refuses one with `409 CHECK_PROVED_BY_CI` from every credential but a results token, right after `resolveCheck` and again inside its transaction (`refuseResultOfAnotherRecorder`).
-    A check carrying a `ci_check` that breaks a rule reads as an ordinary check.
-    A role's result of a check CI proves carries `not_counted` and counts for nothing (`notCountedOnCICheck`, `standingCommit`); such a row stands against a block that carries `ci_check` only between a document write that raced the result and the settlement that holds the block to the fourth rule (below), since a browser's write reaches the block index only through that settlement.
-    So does a CI job's result whose run is another job's than the one the check's `ci_check` names (`model.ResultNotCountedAnotherJob`): the digest a result keeps covers the block's attributes, and both routes read a check's attributes, words, version and digest from the block index alone (`api/results_settled_check.go`), so this is the second line of that binding.
-
-  - a check CI proves takes its result from the CI job that its `ci_check` names, which records it there under its own results token (`model.Credential.ResultsOnly`; the route is on `resultsScopeRoutes`):
-    the body is `{check, commit, verdict, observed}`, and any other member is `400 RESULT_INPUT` naming it;
-    the commit is the run's (`403 COMMIT_NOT_THE_RUNS`) and the run a push of a branch (`403 REF_NOT_A_BRANCH`);
-    the check is one CI proves whose `ci_check` is the name of the token's check run (`409 CHECK_NOT_THIS_JOBS`);
-    GitHub names that check run at the run's commit (`githubapp.Client.CheckRun`, read through the project route's cache, `403 CHECK_RUN_NOT_THE_RUNS`, or `503 CHECK_RUN_UNREADABLE` where GitHub does not answer);
-    the run's repository is the one the check's issue resolves to (`403 REPOSITORY_NOT_THE_ISSUES`);
-    and the branch the run pushed belongs to the issue the result is recorded on (`delivery.BranchOfIssue`, `403 BRANCH_NOT_THE_ISSUES`): the head branch of one of its pull requests, or a branch whose name gives it to the issue by the attribution rule's branch source.
-    The results read compares a check only with the heads of the branches that belong to its issue, whatever a stored row names.
-    Its row is a row of `ci_check_results` (`insertCIJobCheckResult`), never of `check_results`, which holds what a role recorded: the release before this table reads a `check_results` row against a check as a reason that it is no check CI proves, and reads no row of this table.
-    The row takes role `ci`, the check run's name as its run, the check's surface and negative control, the token's session and commit, `observed` kept by the project route's rule (`cutObserved`, below), and `branch`, the run's ref without `refs/heads/` (`ciJobCheckResult`).
-    It also stores `attestation`, the in-toto Statement v1 of the run, which `api/result_attestation.go` builds for both results routes (`attestedResult.statement`): predicate type `check-block-result/v1`, `check` the check's block reference, `procedure_digest` the row's `check_sha256`, `test.job` the check's `ci_check`, and the job, the leg, the run, the recorder and `recorded_at` as the project's route writes them.
-    A role's row and a derived result carry none.
-    A role's row names no branch, which is how the read tells it from a CI job's: on a check CI proves it counts for nothing.
-    A CI job's result is retracted as any result is, by the same three callers (`api/results_retract.go`, `resultTables`): the retraction is a row of `ci_check_result_retractions`, whose key is a foreign key into `ci_check_results`.
-    The results read carries it as `retracted` on the job's result, and no pass of a retracted result stands.
-
-  - a check CI proves also carries a result `GET` derives on every read, which stores nothing of it (`api/results_ci.go`, `deriveCIResults`):
+  - a check CI proves - its `ci_check` names a GitHub check run, its `when` is `before_merge`, it carries no `run`, it names a `negative_control` and no result is recorded against it (`validCICheck`, `docs.CICheckRuleIn`) - takes no recorded result:
+    `POST` refuses one with `409 CHECK_PROVED_BY_CI` for every role, right after `resolveCheck` and again inside its transaction (`refuseCheckProvedByCI`).
+    `GET` reads its one result on every read instead, and stores nothing (`api/results_ci.go`, `deriveCIResults`):
     at the head of the issue's open pull request of the highest number, else of its merged one of the highest number (`delivery.NewestPullRequestHead`), one paged read of that commit's check runs under one 10-second deadline (`ciReadDeadline`), made only when the issue holds such a check, decides each such check by the run of its name with the highest id.
     The check carries `ci`, `{run, state, case, detail, line}` (`model.CheckCI`), and for a pass or a fail one derived result, `ci-run:<run id>` by role `ci` and actor kind `github_app`, which `comparisonReader` judges as it judges a recorded result.
-    The derived result is alone in `results`; recorded results are in `recorded_results`, branch heads in `branch_heads`, a result's head in `at_branch_head` (`keepFieldsOlderCommandsRead`).
     `?at=` leaves that read in place, so a derived result stands at the named commit only where that commit is the head.
+    A check carrying a `ci_check` that breaks a rule, or one that holds a recorded result, reads as an ordinary check.
 
   - each result of a read that names no commit also answers `currency`, a compatibility field for `dispatch` clients older than pi-envoy 17.1.0, which print it and read none of the fields above (`results_currency.go`, `compatibilityCurrency`):
     `current` at a basis under the check's words now with no retraction, `older` at another commit or at a basis under words that moved, and left out otherwise, so those clients print "unknown".
@@ -473,34 +450,7 @@ Each item below names a task and where its code is, then notes on it.
   a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
   `GET /api/v1/issues/{key}/coverage` answers what each `requirement` block of the issue's spec lacks, counting the `check` and `plan_task` blocks of the issue and of its descendants;
   the same lines end `dispatch read --issue` and the answer to an approval request.
-  Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage`, `ResultAttestation` in `packages/contracts/src/dispatch-api.ts`
-
-- **Results of the spec checks a CI job ran**: `internal/dispatch/api/spec_results.go`, `internal/dispatch/githubapp/check_run.go`, `store/migrations/20261116094741_spec_check_results.up.sql`
-
-  `POST /api/v1/projects/{key}/results` takes one result of one check of the spec files, written by the CI job that ran its test, under a results token (`brokertoken.Caller.ResultsOnly`):
-  one of the two routes the results list names (`resultsScopeRoutes`), and the one credential it takes (`403 RESULTS_SCOPE_REQUIRED` for every other).
-  The body is `{commit, check, verdict, observed}`, verdict `pass`, `fail` or `could_not_run`, and any other member is `400 RESULT_INPUT` naming it, since the identity on a result is the one the token proved and never a field the caller set.
-  Dispatch reads the rest from the token, from GitHub and from `.dispatch/spec` at the run's commit, in this order:
-  the commit is the run's (`403 COMMIT_NOT_THE_RUNS`, naming both);
-  the project, which must be the token's (`withinProjectScope`), maps the run's repository, compared lowercased on both sides as every comparison of a repository is (`403 REPOSITORY_NOT_THE_PROJECTS`);
-  GitHub names the token's check run at that commit (`githubapp.Client.CheckRun`, `403 CHECK_RUN_NOT_THE_RUNS`);
-  the graph logic takes the files, as spec-check reads them (`specgraph.Judge`, `409 SPEC_FILES_REFUSED` naming the first problem), each file over `notes.MaxFileSize` one problem;
-  before it reads any file, GitHub's listing of the directory is held to at most `notes.MaxFiles` (1,000) files, since Dispatch reads a listing as one GitHub answer of at most 1 MiB, and to `notes.MaxSetSize` (16 MiB) in sum, since the cache of a commit's judged checks keeps no entry over that size, a set over either one problem (`notes.CheckSet`), as spec-check holds a checkout's, and a listing GitHub truncates or one over that 1 MiB is one problem too, since no read of that commit answers otherwise;
-  the files hold the check (`409 CHECK_NOT_IN_FILES`);
-  and the check's job is the check run's name without its matrix values, cut at its last ` (` (`409 CHECK_NOT_THIS_JOBS`).
-  A check run or files GitHub does not answer is `503 CHECK_RUN_UNREADABLE` or `503 FILES_UNREADABLE`, and nothing is stored.
-  A check run's name and commit, and what a commit's files hold, are kept for the life of the process in byte-bounded caches, since neither changes.
-
-- **The stored result of a spec check**: `internal/dispatch/api/spec_results.go`, `internal/dispatch/api/result_attestation.go`, `store/migrations/20261116094741_spec_check_results.up.sql`
-
-  The result is stored as a new row of `spec_check_results` (`insertSpecCheckResult`, its one writer), with Dispatch's record number `seq` and an in-toto Statement v1 of the run (`attestedResult.statement`): its subject the repository at the commit, and its predicate the check, its procedure digest (`specgraph.Check.Digest`), its test part, the verdict, `observed`, the job and the leg, the run, the recorder, and `recorded_at`.
-  The recorder is the run's session and principal, and no person: the person of the result entry is the broker's configuration, who ran no test, so no result, no answer and no access-log line names that person (the line names the run's session as the caller), and the run's keys are its own (`requestKeyLogin`).
-  The principal is read by the broker's own rule from the run it authenticated: the workflow_ref without the repository and without `@` and the run's ref (`oauthwire.WorkflowPath`, `oauthwire.ResultPrincipal`), so a workflow file or a branch whose name holds an `@` is recorded as the broker authenticated it.
-  A result keeps `contracts.SpecCheckObservedMax` (2000) runes of `observed`: a longer text is its first `contracts.SpecCheckObservedStart` runes, `contracts.SpecCheckObservedCutNote`, which says that the middle was cut, and its last `contracts.SpecCheckObservedEnd` runes, since a test's output names the test at its start and says why it failed at its end (`cutObserved`).
-  `dispatch result --project` cuts the text by the same rule before it sends it, and sends a NUL as U+FFFD, so a test log of any size still writes its result.
-  No row is updated or deleted: another run, attempt or leg of one job is another row.
-  `GET /api/v1/projects/{key}/results?commit=<sha>[&check=<id>]` answers every row of the project at that commit, newest first by `seq`, and a results token is refused it.
-  Shapes: `SpecCheckResult` in `packages/contracts/src/dispatch-api.generated.ts`
+  Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
 
 - **Words and trees of check and requirement blocks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/api/reference_targets.go`
 
@@ -2485,11 +2435,8 @@ The shipped types are `callout`, `ask`, `requirement`, `plan_task` and `check` (
 `plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the tasks of the same plan it needs first);
 and `check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run`, `negative_control` and `ci_check` (the GitHub check run that proves the check), and the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`).
 A document holding them is an ordinary document: the role its name gave it (`verification`, `plan`) says which blocks a reader expects, and nothing refuses a `check` block in another document.
-A check whose `ci_check` names a run carries no `run`, keeps `when` `before_merge`, names its `negative_control` and holds no result a role recorded (`docs.CICheckRuleIn`: a row of `check_results`, retracted or not; a CI job's result is a row of `ci_check_results` and does not count), and no rule of `blocks.json` can say so, since an attribute there declares only itself:
+A check whose `ci_check` names a run carries no `run`, keeps `when` `before_merge`, names its `negative_control` and holds no recorded result (`docs.CICheckRuleIn`), and no rule of `blocks.json` can say so, since an attribute there declares only itself:
 an API write that adds a check block, or changes a check's `ci_check`, `run`, `when` or `negative_control`, so that it breaks one is `400 INVALID_CI_CHECK` (`refuseCICheckBlocks`), and settlement repairs what a browser writes (below).
-The release before holds a write to the same four rules, so the two builds keep or delete a block's `ci_check` alike while they serve one database.
-The results read and the record route read the first three alone (`validCICheck`).
-A writer who wants CI to prove a check that holds a role's result writes a new check block under a new id: a retraction leaves the result's row, so it does not lift the fourth rule.
 
 A `block[]` attribute points at blocks; the shipped ones are a plan task's `serves` and `needs` and a check's `serves`.
 Its value is the empty string (no pointers) or canonical block references joined by exactly one space, none leading or trailing, no other whitespace and none repeated (`pmdoc.ParseBlockPointerValue`, and the renderer joins them with one space);
@@ -2645,7 +2592,7 @@ An open ask's indexed row stays open and unchanged; an answered or resolved ask 
 Repairing its body clears `invalid` before updating the ask row, and writes a decided ask's decided wording back into the block.
 An emptied question is repaired by an ask edit carrying one, the route's own path above;
 every other reading failure is repaired where a person writes it, or by the document edit the refusal names.
-A browser-written check block carrying a `ci_check` that breaks one of its four rules (`docs.CICheckRuleIn`: no `run`, `when` of `before_merge`, a `negative_control`, no result a role recorded against the block, read in the settlement's transaction) loses that `ci_check` at settlement (`reconcileCICheckBlocks`), and one `block.invalid` names the block, the rule as `reason` and `block_type: "check"`; a block it repaired carries no `ci_check`, so no later settlement repairs it again.
+A browser-written check block carrying a `ci_check` that breaks one of its four rules (`docs.CICheckRuleIn`: no `run`, `when` of `before_merge`, a `negative_control`, no recorded result against the block, read in the settlement's transaction) loses that `ci_check` at settlement (`reconcileCICheckBlocks`), and one `block.invalid` names the block, the rule as `reason` and `block_type: "check"`; a block it repaired carries no `ci_check`, so no later settlement repairs it again.
 Markdown that becomes a whole document - a spec at issue creation, an uploaded document or version - is refused with `400 INVALID_ASK_BLOCK` when an ask's body breaks its content rule, `paragraph+ bullet_list?` - one or more paragraphs, then at most one bullet list, last (`pmdoc.AskContentError`) - as the browser editor's parser refuses to build such a block.
 A new document is held to it for every ask, and so are a version that repairs a stored tree outside the schema, which has no readable asks to compare with, and a rebuild from supplied markdown;
 any other new version only for each ask it writes or changes (`refuseChangedAsks`), comparing the ask's rendering with the current one (`newAskMarkdown`, the asks of one check sharing one budget of span cells, spent in document order as the document's own render spent it, so a live ask over a table with colspans or rowspans matches the cells its stored markdown wrote them out as while that budget lasts), since a version is markdown and cannot carry a comment's anchor mark or the id a reader's browser derives for a heading;
@@ -3220,6 +3167,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 - The architecture importer (`internal/dispatch/architecture`, migrations `0037` and `0117`) imports each architecture source of a project on its own:
   a project has any number of sources, one per repository (`architecture_sources` keyed `(project_key, id)`, unique on `(project_key, repo)`;
   a source that predates `0117` is `id` 0), and its component model is every source's components together, each `components` row carrying `source_id`, a foreign key to its source with `on delete cascade`.
+  What a note is, how large one may be and whether a set is valid are the rules of one note set, which live in a package of their own, `internal/dispatch/architecture/notes`:
+  pure, with no database and no network, it imports nothing outside the standard library but `gopkg.in/yaml.v3` and `internal/dispatch/text`.
+  `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
+  `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
+  and `Parse` validates the set.
+  `ReadSet` reads one directory of a checkout by that rule and bound, for `cmd/architecture-check` and `cmd/spec-check`.
+  `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bound through those two, and it calls `notes.Parse` itself.
   For one source it reads every note directly inside `.dispatch/architecture/` at that source's branch head commit with one subtree read (`GET /git/trees/{commit}:.dispatch/architecture`, never the recursive repository tree;
   GitHub's 404 is an empty model) and one blob read per note (an entry listed over 1 MiB is a typed `file too large` failure, `notes.CheckSize`'s, before any blob is fetched), validates the set whole (`notes.Parse`:
   slug file names, text PostgreSQL can store (`text.Storable`:
@@ -3234,15 +3188,6 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the first problems and a count of the rest, the same text the `sync_failed` payload carries);
   the source's previous projection, and every other source's, stays up.
   `graph_edges` gains the `part_of`/`depends_on` arms over node kind `component` (`<project>/<id>`), never rows in `refs`.
-
-- What a note is, how large one may be and whether a set is valid are the rules of one note set, which live in a package of their own, `internal/dispatch/architecture/notes`:
-  pure, with no database and no network, it imports nothing outside the standard library but `gopkg.in/yaml.v3` and `internal/dispatch/text`.
-  `IsNote` keeps a regular `*.md` file directly in the directory, read as a blob of mode 100644/100755 from a GitHub tree entry by `GitKind` or as a regular file of a checkout by `FileKind`, and passes over symlinks, submodules and nested directories;
-  `CheckSize` refuses a note over `MaxFileSize`, 1 MiB, with `ErrFileTooLarge`, whose text is `file too large`;
-  `CheckSet` refuses a set of more than `MaxFiles` notes, 1,000, or of more than `MaxSetSize` bytes in sum, 16 MiB, with one `ErrSetTooLarge`, whose text is `set too large`: the server lists a directory in one GitHub response of at most 1 MiB, which holds 1,000 entries of the longest names, and it keeps the checks of a commit's spec files in a cache of 16 MiB;
-  and `Parse` validates the set.
-  `ReadSet` reads one directory of a checkout by that rule and those bounds, checking the set and each note from the listing before it reads any note, for `cmd/architecture-check` and `cmd/spec-check`.
-  `githubapp`'s `Dir` lists only the entries `IsNote` keeps, and its `DirFiles` checks the listing with `CheckSet`, each listed size and each decoded blob with `CheckSize`, so the importer reaches the note rule and the bounds through those two, and it calls `notes.Parse` itself.
 
 - `cmd/architecture-check` reads one directory of architecture notes from disk, a checkout's `.dispatch/architecture`, and judges it by the rules the importer applies to that directory on GitHub (`cmd/architecture-check/main.go`).
   `architecture-check [--allow-empty] <directory>` makes the directory absolute before it reads anything, and every line it prints about the directory or an entry of it names that absolute path.
@@ -3309,7 +3254,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   any other report that names no test, an empty one included, reads as a run of no tests: `MatchTests` then gives no entry for a check, and a reporter must read a check with no entry as a check with no result, which R9 of the spec reads as unknown and never true.
 
 - `cmd/spec-check` runs those rules over directories of spec files on disk (`cmd/spec-check/main.go`).
-  It reads each directory with `notes.ReadSet`, so the entries it reads and its bounds are the architecture importer's and the results route's: at most 1 MiB a file, and at most 1,000 files and 16 MiB in sum (`notes.MaxFiles`, `notes.MaxSetSize`), a set over either one problem before any file is read.
+  It reads each directory with `notes.ReadSet`, so the entries it reads and the 1 MiB bound are the architecture importer's.
   `spec-check tree --dir <dir> [--allow-empty] [--retired <file>]` judges one directory:
   a valid tree is exit 0 and `spec-check: <dir>: <n> statements, <n> checks, <n> components, <n> interfaces, <n> terms; the tree is valid` on stdout, each noun in the singular for one, `components` counting the components other than interfaces and `interfaces` those with `kind="interface"`;
   a refused tree is exit 1, one line on stderr for each problem, `spec-check: <dir>/<file>:<line>: <node>: <detail>`, the detail starting with the rule, then the count line ending `; the tree is refused`;
@@ -3389,7 +3334,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The guard does not read a file outside the four directories, such as the `package.json` script a `bun run` step runs, nor a command held in a variable; the refusal of `compare` covers those when the step passes the runner's environment on.
   A Go program that calls `specgraph.Compare` is outside both the guard and the refusal of `compare`.
   The guard follows no symbolic link at or under the four directories (the path to them, `--root` and `.github` included, resolves as the system resolves it), and it reads each file whole, with no bound on its size.
-  `ci-filters` runs the guard over this repository (`go run ./cmd/spec-check guard --root ../..`, in `.github/workflows/ci-job-ci-filters.yaml`), and its filter `ci_filters` takes the four directories, so a change under any of them starts the job.
+  `envoy-go-checks` runs the guard over this repository (`go run ./cmd/spec-check guard --root ../..`, in `.github/workflows/ci-job-envoy-go-checks.yaml`), and its filter `envoy_go_checks` takes the four directories, so a change under any of them starts the job.
 
 - Each bound of the guard's rule reads the file's own bytes (`nameStart` and `compareEnds` in `cmd/spec-check/cifiles.go`).
   Right before the name, a letter, a digit, `_` or `-` makes the name part of another word.
@@ -4125,7 +4070,7 @@ RFC 9449 Section 7.2 refuses a DPoP-bound token presented under any other scheme
 it is its own branch (`api.brokerTokenActor`) with its own refusals, `401 BROKER_TOKEN_NOT_ACTIVE`, `401 BROKER_TOKEN_PROOF_INVALID`, `401 BROKER_TOKEN_KEY_MISMATCH`, `401 BROKER_TOKEN_NOT_A_SESSION` for a live token that is no session's credential (`brokertoken.ErrNotASession`:
 the broker's answer names no session, or names neither a person nor a service, or the token was issued to a client other than `oauthwire.ExchangeClientID`, which a machine login's own access token is
 — DPoP-bound and perfectly live, and no exchange decided a session for it, so Dispatch acts on none of them rather than taking the session a body names
-— or its project scope and its OAuth scope together are a shape no broker mints: the scope `read` or `results`, or a run, beside the project scope `named` or `person`, or the project scope `none` or `results` in any shape but its own token's), `429 BROKER_TOKEN_RATE_LIMITED`, and `503 BROKER_UNAVAILABLE` for a broker that answered nothing, which is a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is.
+— or its project scope and its OAuth scope together are a shape no broker mints: the scope `read` beside the project scope `named` or `person`, or the project scope `none` in any shape but a read-only token's), `429 BROKER_TOKEN_RATE_LIMITED`, and `503 BROKER_UNAVAILABLE` for a broker that answered nothing, which is a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is.
 None of them repeats the token.
 It is the only credential that proves a session of its own, so its caller writes as that session with no `actor` in the body at all;
 a body `actor` naming the same session is taken, for its `Origin`, which nothing else carries, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
@@ -4139,12 +4084,6 @@ A read-only token is the token a read entry mints (`BROKER_EXCHANGE_READ_ACCOUNT
 Dispatch's verifier accepts it because `brokerTokenVerifier` sets `brokertoken.Options.ServesReadOnly`, and marks its caller `brokertoken.Caller.ReadOnly`.
 `brokerTokenActor` carries that mark as `model.Credential.ReadOnly` with no OAuth scope, and the read-only gate below reads only that mark.
 A verifier built without the switch answers that token `brokertoken.ErrNotASession`, as a build before the switch does.
-A results token is the token a result entry mints (`BROKER_EXCHANGE_RESULT_WORKFLOWS`): it holds the OAuth scope `results` alone and the project scope `results`, names a person, one project, the session of its workflow and the run it was minted for (`ci`, every field set in the form the broker mints it, the `workflow_ref` one `oauthwire.WorkflowPath` reads under its repository and its ref), and names no service.
-A verifier built with `brokertoken.Options.ServesResults` accepts it and marks its caller `brokertoken.Caller.ResultsOnly`, with the run as `brokertoken.Caller.CI`;
-a verifier built without that switch answers it `brokertoken.ErrNotASession`, as a build before the switch does.
-Dispatch's verifier sets the switch, so Dispatch serves a results token on the routes its results list names (`resultsScopeRoutes`), `POST /api/v1/projects/{key}/results` and `POST /api/v1/issues/{key}/results`;
-`brokerTokenActor` carries the mark as `model.Credential.ResultsOnly`, with the run as `model.Credential.CI` and no OAuth scope, and `refuseLimitedToken` answers the token `403 RESULTS_ONLY_TOKEN` on every other route and on `/ws/live`, before the route's handler, its sign-in check and its idempotency key.
-The person a results token names stays inside Dispatch: the result it writes names the run as its recorder (on `POST /api/v1/issues/{key}/results`, the row's `attestation` names the run's session and principal as its recorder, and the row and its `result.recorded` event carry the run's session as their actor, with no `owner`), and its access-log line names the run's session as the caller.
 `GET /api/v1/whoami` answers `session` and `project` beside `owner` and `service`, so a caller can see which session Dispatch records its writes as.
 A proof is single use by its `jti` and `htu` (`store.DPoPProofs`, migration `0150`, swept by the maintenance pass), so each request is decided exactly once (`api.decideBrokerToken`) and the live socket's heartbeat re-resolution asks only whether the token is still live (`brokertoken.Verifier.Live`) rather than presenting the upgrade's proof again.
 The verifier is built from settings Dispatch already has and takes none of its own (`cmd/dispatch`'s `brokerTokenVerifier`:
@@ -4176,7 +4115,7 @@ A read-only token reaches the routes that `api/routes_table.go`'s `readScopeRout
 The list stands beside `routeScopes` and is not a value of it, because a scope there is one the caller must hold and no person holds `read`.
 `routes()` stamps it onto `apiRoute.ReadScope`, and `GET /api/v1`, the OpenAPI document and the reference generated from it do not carry it.
 `register` refuses to mount a table whose list names anything but a GET row it mounts (`readRoutesNotMountedAsGET`), so a route added later stays closed to such a token until someone lists it.
-`api.refuseLimitedToken` is the gate, and it is the outermost check of every row:
+`api.refuseReadOnlyToken` is the gate, and it is the outermost check of every row:
 `register` wraps every row in it outside `gateRouteScopes` and every layer inside that, and inside the drain and `varyOnDisplayTrees` (`routeHandler`), and puts it on `GET /ws/live` just inside `decideBrokerToken`, before the upgrade (`liveSocketHandler`).
 On every row the list does not name, and on `/ws/live`, a read-only token is `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`), with no `WWW-Authenticate` challenge, since no scope makes the route the token's to call.
 That answer comes before the row's scopes, a `Dispatch-Login` check, an id prefix's lookup, the sign-in, project and session checks, the `Idempotency-Key` and the handler, so the refused request claims no key and writes nothing but the row of its spent DPoP proof, which `decideBrokerToken` records as it verifies the token, outside the gate.
@@ -5632,7 +5571,7 @@ the page drops the presser's writes on that answer.
 A caller that resolves to nobody (a lapsed cookie) is passed on to the `401` written further in, the keyed layer's for a keyed write and the handler's for any other, and a write without the header (the `dispatch` command, an agent, a script) is not checked.
 
 `keyedWrites` (`internal/dispatch/api/request_keys.go`), which `register` wraps around every `POST` and `PATCH` route, keeps one `request_keys` row per key (migration `0137`), keyed on `(login, idempotency_key)`:
-`login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, `ci-run:<repository>#<check run>` for a CI job's results token, whose result entry's person sent nothing, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
+`login` is a person's canonical login whether they write from the dashboard or through an agent's personal token, a service token's subject, or `agent-token` for the shared agent token, so one caller's key is never another's.
 The row holds a SHA-256 of the method, the route pattern, its path values, the query, the media type and the body (a multipart body with its boundary masked, since a client mints a boundary per attempt), so a repeat is told from a reuse:
 
 - Before it spools a byte of the body, the layer looks the key up by login and key alone, naming no digest.
@@ -5922,7 +5861,6 @@ A send or publish that names no `source_session` acts as no session and is not r
 The read routes that name another session by design (`GET /v1/registry/{session_id}`, `GET /v1/interests/{session_id}`, `GET /v1/sessions`) are not narrowed: every session looks another up.
 A token naming a service and no person (a machine nobody has signed in on) is admitted on all of them and bound to its own session like any other.
 A read-only token is not admitted on any `/v1` route: the listener's verifier is built without `brokertoken.Options.ServesReadOnly`, so it answers that token `401` with the class `not_a_session`, and no code of the listener's own names that token.
-A results token is not admitted on any `/v1` route either: the listener's verifier is built without `brokertoken.Options.ServesResults`, so it answers that token `401` with the class `not_a_session`.
 A presentation the listener does not admit is one `listener: broker token rejected` warning carrying the class and the path, never the token or the proof: `starting` (the spent-proof bucket is not open yet), `not_active` (unknown, revoked or expired), `key_mismatch`, `proof_invalid` (a replayed proof among them), `not_a_session`, `rate_limited`, `unavailable` and `check_failed` (the spent-proof store did not answer, so nothing was decided).
 Each is the same 401 `unauthorized` body the other credentials' refusals get, except the three that refuse nobody: the broker unreachable, the bucket still opening and the spent-proof store unanswered are 503s with `Retry-After: 1`, since a caller told its token was refused would discard one that may be live and would not retry, and a source address out of introspections is 429 with the wait its bucket gives (`brokertoken.DefaultAddressLimit`).
 A service-account token the verifier refuses is one `listener: service-account token rejected` warning carrying `oidc.Reason`'s class and the path
@@ -7230,17 +7168,7 @@ whitespace-separated `<repository>=<workflow path>=<ref>=<project>=<person>[=<se
 Every field is compared exactly and nothing is wildcarded, so a run of another workflow, or of this one on another ref, is not this entry;
 the session is everything after the fifth `=`, and a workflow listed twice is refused.
 Needs `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_EXCHANGE_GITHUB_AUDIENCE`;
-unset, no workflow exchanges), `BROKER_EXCHANGE_RESULT_WORKFLOWS` (optional;
-whitespace-separated `<repository>=<workflow path>=<ref pattern>=<project>=<person>` entries, such as `example-org/example-repo=.github/workflows/ci-results.yaml=refs/heads/*=EXAMPLE=ada@example.com`:
-the token minted for a run of that workflow on a ref the pattern matches holds the OAuth scope `results` alone and the project scope `results`, acts for that person, names that project, writes under the session `ci-results:<repository>/<workflow path>`, and carries the run as its `ci` claim (`oauthwire.CIRun`: the repository, the workflow, the ref, the commit, the event, the run, the attempt, the runner and the check run of the job).
-The repository and the path are compared exactly, the path being the run's `workflow_ref` without its repository and without `@` and its `ref` claim (`oauthwire.WorkflowPath`), since a workflow file's name and a branch's name can each hold an `@`, and the pattern is read as `path.Match` reads one, so a `*` stands for one segment of the ref and never a `/`;
-its first two segments are literal, `refs/` and a kind of ref such as `refs/heads/` (`exchange.CheckRefPattern`).
-Every field is required and none may carry `=`.
-The run's GitHub token must carry every claim of the run, the `check_run_id` of its job among them, and a run whose ref two patterns of one workflow match is refused (`exchange.ErrTwoEntries`).
-A workflow listed twice under one pattern, and a workflow `BROKER_EXCHANGE_WORKFLOWS` lists too, are refused, the second naming both entries.
-A broker of a build older than this setting does not read it, so it mints those runs no token at all.
-Needs `BROKER_EXCHANGE_GITHUB_ISSUER` and `BROKER_EXCHANGE_GITHUB_AUDIENCE`;
-unset, no run exchanges for a results token), `BROKER_ACCESS_TOKEN_SECONDS` (default 900, min 1, max 3600
+unset, no workflow exchanges), `BROKER_ACCESS_TOKEN_SECONDS` (default 900, min 1, max 3600
 — how long an access token the OAuth provider issues lasts, a machine login's and an exchanged one's alike:
 it trades how often every caller renews against how long a revoked credential's last token stays spendable), `BROKER_ENVOY_URL` (optional;
 turns on best-effort wake notifications to the requesting session through Envoy's `/v1/messages/send`, sent with `BROKER_ENVOY_TOKEN` — read only when the URL is set, and not itself required at startup), `BROKER_LEASE_SECONDS` (default 900, max 3600), `BROKER_SESSION_CARRY_SECONDS` (default 43200, min 0, max 86400
@@ -7276,7 +7204,7 @@ a `BROKER_SECRETS_STORE` that is neither store's name;
 with the AWS store, a `BROKER_SECRETS_PREFIX` that does not end in `/`, starts with one or holds white space, and a `BROKER_SECRETS_KMS_KEY_ARN` that is not a key ARN (an alias can be pointed elsewhere, and a bare key id names no account);
 with the GCP store, a prefix not of its form (a project id in place of the number among them) and a key name outside `global`;
 the other store's key variable set; exactly one of `BROKER_K8S_OIDC_ISSUER`/`BROKER_K8S_OIDC_AUDIENCE` set;
-a `BROKER_API_ACCOUNTS`, `BROKER_SERVICE_LOGINS` or `BROKER_EXCHANGE_K8S_AUDIENCE` set with no cluster issuer, a `BROKER_EXCHANGE_ACCOUNTS` or `BROKER_EXCHANGE_READ_ACCOUNTS` with no `BROKER_EXCHANGE_K8S_AUDIENCE` and a `BROKER_EXCHANGE_WORKFLOWS` or `BROKER_EXCHANGE_RESULT_WORKFLOWS` with no `BROKER_EXCHANGE_GITHUB_ISSUER`, each naming the pair whose tokens its callers present;
+a `BROKER_API_ACCOUNTS`, `BROKER_SERVICE_LOGINS` or `BROKER_EXCHANGE_K8S_AUDIENCE` set with no cluster issuer, a `BROKER_EXCHANGE_ACCOUNTS` or `BROKER_EXCHANGE_READ_ACCOUNTS` with no `BROKER_EXCHANGE_K8S_AUDIENCE` and a `BROKER_EXCHANGE_WORKFLOWS` with no `BROKER_EXCHANGE_GITHUB_ISSUER`, each naming the pair whose tokens its callers present;
 an account that both `BROKER_EXCHANGE_ACCOUNTS` and `BROKER_EXCHANGE_READ_ACCOUNTS` name, naming both settings, since one account mints one kind of token;
 any of `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_SIGNIN_DEVICE_AUDIENCE` set with no `BROKER_GOOGLE_OIDC_AUDIENCE`, that audience set with neither a `google:` entry in `BROKER_API_ACCOUNTS` nor a `BROKER_VM_SERVICES` entry, and `BROKER_SIGNIN_DEVICE_AUDIENCE` set with no `BROKER_VM_SERVICES`;
 each machine-account refusal of the paragraph above; and a `_SECONDS` variable that isn't a whole number between the min and max its row of Load's `ints` table gives (non-numeric fails the same check as out of range).
@@ -7438,19 +7366,17 @@ Any other request — another client presenting nothing, this client on another 
 — goes to the library and is answered as it always was.
 `internal/broker/exchange` is the policy half and nothing else (it verifies no token, reads no configuration and takes no clock):
 handed the verified claims and the projects the request asked for, it answers the session the token writes as, the person it acts for or the service it is, its project scope and its list of projects
-— `named` with the one project `BROKER_EXCHANGE_ACCOUNTS`/`BROKER_EXCHANGE_WORKFLOWS`/`BROKER_VM_EXCHANGE_ACCOUNTS` fixes, or none for an account entry that names none (`<account>==<person>`, the shared public-session account's, refused for a restricted member), a request naming any other being `ErrProjectsFixed`; `person` with the projects its trade asked for, which is what a person's own credential gets, and the word a machine's token naming no person carries with no project, such a token's request naming one being `ErrProjectsNoPerson`; `none` with no project at all, which only a read entry's token carries (`BROKER_EXCHANGE_READ_ACCOUNTS`, `exchange.ReadEntry`), its request naming one being `ErrProjectsNoPerson` too, since that token names no person either; or `results` with the one project a result entry names, whose results alone it writes, a request naming any other being `ErrProjectsFixed`, which only a result entry's token carries (`BROKER_EXCHANGE_RESULT_WORKFLOWS`, `exchange.ResultWorkflowEntry`), beside the run it was minted for (`exchange.Claims.CI`).
+— `named` with the one project `BROKER_EXCHANGE_ACCOUNTS`/`BROKER_EXCHANGE_WORKFLOWS`/`BROKER_VM_EXCHANGE_ACCOUNTS` fixes, or none for an account entry that names none (`<account>==<person>`, the shared public-session account's, refused for a restricted member), a request naming any other being `ErrProjectsFixed`; `person` with the projects its trade asked for, which is what a person's own credential gets, and the word a machine's token naming no person carries with no project, such a token's request naming one being `ErrProjectsNoPerson`; or `none` with no project at all, which only a read entry's token carries (`BROKER_EXCHANGE_READ_ACCOUNTS`, `exchange.ReadEntry`), its request naming one being `ErrProjectsNoPerson` too, since that token names no person either.
 A read entry is keyed on a pod's service account as an account entry is, gives a service and a fixed session in place of a project and a person, and is a list of its own so that a broker of an older build reads none of it.
-A result entry is keyed on a workflow's repository and path as a workflow entry is, matches the run's ref against a pattern rather than exactly, fixes the session `ci-results:<repository>/<workflow path>` under the principal `workflow-results:<repository>/<workflow path>` whatever the ref, and is a list of its own for the same reason.
-`oauth.Provider.decide` writes one wire word for each of the four project scopes (`writeProjectScope`), grants the OAuth scope `read` beside `none`, `results` beside `results` and no scope beside the other two, and writes the run as the `ci` claim (`oauth.ClaimCI`) beside `results` alone, which an introspection answers as `Introspection.CI`.
-It refuses any other value, a run beside any other scope and a `results` decision with no run, with a server error that names it and writes nothing, so a value this package adds later is never minted as one of the four.
-The entry decides the scope, and the request's own `scope` parameter never does: the exchange client is registered for `machine` alone, so the library refuses a request that names `read` or `results` with `invalid_scope` under every entry.
-Every exchanged token is issued to that client, which the library refuses to exchange its own token (`invalid_grant`), so no read-only or results token is the subject token of another exchange.
+`oauth.Provider.decide` writes one wire word for each of the three project scopes (`writeProjectScope`), and grants the OAuth scope `read` beside `none` and no scope beside the other two.
+It refuses any other value with a server error that names it and writes nothing, so a value this package adds later is never minted as one of the three.
+The entry decides the scope, and the request's own `scope` parameter never does: the exchange client is registered for `machine` alone, so the library refuses a request that names `read` with `invalid_scope` under every entry.
 It is also the one reading of a Google identity token's own claim shapes (`exchange.ReadGoogleIdentity`, `GoogleIdentity`, `ComputeEngine`), which `api.GoogleTokens.VerifyGoogle` reads the same token through (the verifier and its `api.GoogleToken` live beside their two callers in `internal/broker/api`, behind the `api.GoogleVerifier` interface a test wires its own), so `email`, `email_verified` and the `google.compute_engine` members are spelled once.
 `Set.MappedProjects` and `Set.ProjectsForAccount` read the same entries for a caller holding no token: the person and projects an entry gives a principal, and the projects a token minted for one account carries.
 Its refusals are one answer an operator can act on each:
-`ErrNoEntry`, `ErrTwoEntries` of a run whose ref two result entries' patterns match, `ErrNoPodBinding`, `ErrSessionMismatch`, `ErrSessionRequired`, `ErrSessionInvalid`, `ErrClaimMissing`, `ErrEmailNotVerified`, `ErrNoComputeEngine` and `ErrMachineNotAllowed` of a machine, `ErrNotInDomain` and `ErrNoActorToken` of a person's sign-in, `ErrProjectsFixed` and `ErrProjectsNoPerson` of a request's projects, and, of a pod-session registration, `ErrSessionFixed`.
+`ErrNoEntry`, `ErrNoPodBinding`, `ErrSessionMismatch`, `ErrSessionRequired`, `ErrSessionInvalid`, `ErrClaimMissing`, `ErrEmailNotVerified`, `ErrNoComputeEngine` and `ErrMachineNotAllowed` of a machine, `ErrNotInDomain` and `ErrNoActorToken` of a person's sign-in, `ErrProjectsFixed` and `ErrProjectsNoPerson` of a request's projects, and, of a pod-session registration, `ErrSessionFixed`.
 The exchange reads and decides the request outside any transaction, then asks Dispatch about the projects it decided (`oauth.Provider.projectAccess`, `internal/broker/projectaccess`, configured by `BROKER_PROJECT_ACCESS_URL` and `BROKER_PROJECT_ACCESS_TOKEN_FILE`), so no Dispatch call holds a lock or a pooled connection; the DPoP proof's and a GitHub token's single-use markers therefore commit on their own, and a refused trade has spent them.
-A `person` token's projects must each be one Dispatch says its person sees, refused `invalid_request` in one sentence whether Dispatch holds the project or not; a restricted member's trade must name at least one; a person's sign-in asks no member kind, the broker having checked its Workspace domain itself; a `named` token's and a `results` token's project must be one Dispatch says the entry's person sees.
+A `person` token's projects must each be one Dispatch says its person sees, refused `invalid_request` in one sentence whether Dispatch holds the project or not; a restricted member's trade must name at least one; a person's sign-in asks no member kind, the broker having checked its Workspace domain itself; a `named` token's project must be one Dispatch says the entry's person sees.
 With no project-access check configured, a trade naming no project and an entry's token mint as before, and a person's trade naming a project is refused `invalid_request` naming the settings.
 The broker's own account token not working is `projectaccess.ErrBrokerRefused`: Dispatch answering 401 or 403 to it (Dispatch does not list the broker's account, or does not accept its token, one minted for another audience, say), or the broker unable to read `BROKER_PROJECT_ACCESS_TOKEN_FILE` at all (missing, empty or unreadable).
 It refuses every trade that asks `server_error` (`oauth.refusedByDispatch`), never minting unchecked.
@@ -8079,10 +8005,9 @@ The variables, all unset by default, in which case the helper and the controller
 
 | Variable | Form | Default | What it does |
 | --- | --- | --- | --- |
-| `AGENT_SECRETS_MACHINE_IDENTITY` | `kubernetes`, `metadata`, `pool` or `github-actions` | unset | the one identity this machine proves at the exchange; unset, the helper and the controller prove none and `agent-secrets` detects one (`brokerclient.DetectMachineIdentity`); `agent-secrets` refuses `kubernetes` (exit 2), for which the exchange mints no launcher credential |
-| `AGENT_SECRETS_MACHINE_TOKEN_FILE` | a path | unset | the projected Kubernetes service-account token `kubernetes` reads and `pool` federates, and the workflow run's token a `github-actions` job with no runner endpoint reads |
-| `AGENT_SECRETS_MACHINE_AUDIENCE` | an audience | unset | the `aud` of this machine's Google identity token, which `metadata` mints for and `pool` names on its mint, and of the OIDC token a `github-actions` job's runner mints |
-| `ACTIONS_ID_TOKEN_REQUEST_URL`, `ACTIONS_ID_TOKEN_REQUEST_TOKEN` | a URL, a bearer | set by the runner | the runner's OIDC token endpoint and the bearer it takes, which GitHub sets in a job granted `id-token: write` and `github-actions` asks at every trade |
+| `AGENT_SECRETS_MACHINE_IDENTITY` | `kubernetes`, `metadata` or `pool` | unset | the one identity this machine proves at the exchange; unset, the helper and the controller prove none and `agent-secrets` detects one (`brokerclient.DetectMachineIdentity`); `agent-secrets` refuses `kubernetes` (exit 2), for which the exchange mints no launcher credential |
+| `AGENT_SECRETS_MACHINE_TOKEN_FILE` | a path | unset | the projected Kubernetes service-account token `kubernetes` reads and `pool` federates |
+| `AGENT_SECRETS_MACHINE_AUDIENCE` | an audience | unset | the `aud` of this machine's Google identity token, which `metadata` mints for and `pool` names on its mint |
 | `AGENT_SECRETS_POOL_AUDIENCE` | `//iam.googleapis.com/projects/…` | unset | the workload identity pool provider an external credential is traded at |
 | `AGENT_SECRETS_POOL_ACCOUNT` | a service account | unset | the managed identity `generateIdToken` is called on, with `includeEmail` |
 | `AGENT_SECRETS_SESSION` | a session name | unset | the session a trade writes under for a caller that acts as no session of its own; a caller that is a session writes under its own id and reads this for nothing, and a person's trade never writes under it |
@@ -8094,7 +8019,6 @@ The variables, all unset by default, in which case the helper and the controller
 
 The TypeScript client (`packages/broker-client`, `environment.ts` and `signins.ts`) reads the same variables with the same meanings, so a deployment writes one set of values for both clients.
 Both clients federate at a workload identity pool under `pool`: the TypeScript client's `pool-identity.ts` is a port of `pool.go`, and asks the same two services with the same bodies.
-Both read a GitHub Actions job's own OIDC token under `github-actions` (`internal/brokerclient/github_actions.go`, `packages/broker-client/src/github-actions.ts`) and present it as a workflow run's token (`urn:envoy:params:oauth:token-type:github-workflow-run`), which the broker takes once, so each trade asks the runner for a new one.
 Both trade a person's sign-in where the store holds one, with the sign-in's box key, the person's renewed identity token as the subject and this machine's identity as the actor.
 The TypeScript client trades under the caller's own session where it has one, else under `SessionFor`'s name, because the Envoy listener holds a session's writes to the session its token names (`packages/envoy/cmd/listener/brokerauth.go`, `sessionNotBound`).
 It never falls back to this machine's identity while a sign-in record is on the machine: where the Go helper enrols a session under the machine after a refusal, the TypeScript client fails the call, naming `agent-secrets login`.

@@ -767,21 +767,12 @@ test("each text that orders a check run or recorded leaves out a check CI proves
   ]);
 });
 
-// The same rule where a text orders a check's evidence judged or recorded. Retro's trigger is met
-// by a pass from CI, the derived result or one its CI job recorded, and names R5's three cases: no
-// pass standing by the line of that head under the check because of a fail from CI, a pass and a
-// fail at that head, or a run that concluded and proved nothing, goes back to implementing; a
-// run not concluded is waited for, unless the head's line reads not known for a pass and a fail,
-// which goes back at once; and a name no run answers is the architect's finding. The
-// architect's last round records only the checks with no `ci_check`, and the tester reads a
-// `ci_check` job as that check's evidence, which its prompt's core part says too.
+// The role prompts carry the decisions about an inconclusive CI result. Retro keeps only its
+// mechanics: it waits for a CI run or unread GitHub, and neither condition moves an issue back.
 test("a result from CI satisfies the passages that judge or record a check's evidence", () => {
   const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
   expect(retro).toContain(
-    "A `ci_check` check has no pass standing at that head when no pass stands at that head (the line of that head under the check) because a result from CI there is a fail, a pass and a fail are there, or its run concluded `skipped`, `neutral` or `cancelled`."
-  );
-  expect(retro).toContain(
-    "Wait for a run that has not concluded, and read again where GitHub could not be read, unless that head's line reads not known because a pass and a fail count there: that check moves the issue back at once, as below."
+    "Wait for a run that has not concluded, and read again where GitHub could not be read."
   );
   expect(retro).toContain("Neither wait nor that finding moves the issue back.");
   expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(

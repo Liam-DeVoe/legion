@@ -9,44 +9,31 @@ cites is in cybermonklabs/legion.
 A `check` block can carry `ci_check`: the name of the GitHub check run that proves the check at
 the head. Such a check has no `run`, its `when` is `before_merge`, and it names its
 `negative_control`. Through the documents API, Dispatch refuses a write that breaks one of these
-rules, or that gives `ci_check` to a check that already holds a result a role recorded. A write in
-the live editor lands, and the next settlement removes that `ci_check` and names the rule in the
-issue's Activity. To give such a check to CI, write a new check block under a new id: a retraction
-does not lift the rule, since the retracted result stays recorded.
+rules, or that gives `ci_check` to a check that already holds a recorded result. A write in the
+live editor lands, and the next settlement removes that `ci_check` and names the rule in the
+issue's Activity.
 
 ## No role runs it
 
 A check carrying `ci_check` is CI's. No role runs its work in its own pod, and no role records a
-result for it: Dispatch refuses a role's result with `409 CHECK_PROVED_BY_CI`, and takes the result
-of a run of its CI job. A `ci_check` that a person adds or removes in the browser takes effect
-when Dispatch stores the edit as a new version of the document, about 2 s after the last keystroke
-in it: until then, a role's result of a check given `ci_check` is taken, and the store then
-removes that `ci_check` as above, and a role's result of a check whose `ci_check` was removed is
-refused. The CI job stays a job like any other, and the rules for a red CI job apply
-to it. `dispatch results --issue <issue>` reads the named check run at the head of each open pull
-request of the issue, in that pull request's repository, and derives one result at each. A run of
-the named job on a push of the change's branch also records its own result, at the commit it
-tested, through the secrets broker. The command prints the derived result of the newest open head
-and the same `A pass stands:` line a recorded check gets. Then it prints one line for each head,
-each with the line for that pull request's body. Then it prints each result that the job
-recorded, as a recorded result prints, with `on branch <branch>` after `by ci`:
+result for it: Dispatch refuses such a result with `409 CHECK_PROVED_BY_CI`. The CI job stays a
+job like any other, and the rules for a red CI job apply to it. `dispatch results --issue <issue>`
+reads the named check run at the head of the issue's pull request. It prints the one result it
+derives from that run, the same `A pass stands:` line a recorded check gets, and the line for the
+pull request body:
 
 ```
 - <id> (before_merge): <verdict> at <sha> by ci (CI run <name>, <conclusion>), <currency>. <text>
-  A pass stands: <yes, from ci | no, as <k> of <n> heads read yes | not known, as <k> of <n> heads read yes>.
-  - #<number> at <commit>: yes, from <roles>. Pass <id> decides it.
-    Pull request line: - Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <words>
-  - <verdict> by ci on branch <branch> at <sha>. <where that commit stands>. …
+  A pass stands: <yes, from ci | no | not known>.
+  Pull request line: - Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <words>
 ```
 
 When the run gives no result, the command prints the case in place of a verdict:
 
 ```
-- <id> (before_merge): <no result | its CI job's results below, and CI run <name> derives none>: <detail> <text>
-  A pass stands: <no | not known>, as <k> of <n> heads read yes.
-  - #<number> at <commit>: no, as it holds no result.
-    Pull request line: - Check <id> (before_merge): CI run <name> has no result (<case>)
-  - <verdict> by ci on branch <branch> at <sha>. <where that commit stands>. …
+- <id> (before_merge): no result: <detail> <text>
+  A pass stands: <no | not known>.
+  Pull request line: - Check <id> (before_merge): CI run <name> has no result (<case>)
 ```
 
 The case is one of these:
@@ -56,9 +43,6 @@ The case is one of these:
 - `no_head`: Dispatch holds no pull request head of the issue.
 - `neutral`, `skipped` or `cancelled`: the run concluded and proved nothing.
 
-An issue with no pull request (`no_head`) prints no `Pull request line:`, and a pass that the job
-recorded stands at the head of its branch.
-
 The case `github_unreadable` means that Dispatch could not read GitHub. That read is neither a
 pass nor a fail, and the next read tries again. The tester and the reviewer treat it as a run that
 is still going (below). Each read is made at the head, so a push needs no write from any role.
@@ -67,36 +51,27 @@ is still going (below). Each read is made at the head, so a push needs no write 
 
 Read `dispatch results --issue <issue>` first. Then run and record only the checks that carry no
 `ci_check` and whose `run` is no whole test suite, and the proofs on a real surface that CI cannot
-make. A check with `ci_check` needs no pass from the implementer. It is an entry in `failures`
-when no pass of it stands at that head (the line of that head under the check): a result from CI
-there is a fail, CI holds a pass and a fail at that commit (`not known`), or its run concluded
-`skipped`, `neutral` or `cancelled`.
+make. A check with `ci_check` needs no
+pass from the implementer. It is an entry in `failures` only when its derived result is a fail, or
+its run concluded `skipped`, `neutral` or `cancelled`.
 
 ## The `Checks` line
 
 The implementer writes the line of each such check in the pull request body's `Checks` block. It
-copies the `Pull request line` that `dispatch results` prints under the line of its own head. While
-the named run gives no result, that line is the no-result line. The next role that writes the body
-reads `dispatch results` again and puts the derived line in its place.
+copies the `Pull request line` that `dispatch results` prints. While the named run gives no
+result, that line is the no-result line. The next role that writes the body reads
+`dispatch results` again and puts the derived line in its place.
 
 ## A run that is still going
 
-A pass and a fail that count at a head leave the line of that head `not known`, and no later
-result at that commit ends that, so nothing in this section holds for such a check while its run
-is still going or GitHub is unread: the tester lists it in `failures`, the reviewer requests
-changes naming the check, and the architect sends the issue back naming the check, each at once,
-with no wait for the run or for GitHub.
-
 A named run that has not concluded is no test failure, and it is the fault of no role. The tester
 writes in its `test` handoff's `implementerProof.how` that the run is still going. The handoff
-gets no new field, and the tester fails no round for the run, unless the line of that head reads
-not known because a pass and a fail count there, which is a failure at once.
+gets no new field, and the tester fails no round for the run.
 
-Unless the line of that head reads not known because a pass and a fail count there, the reviewer
-waits for that run by its name, as it waits for a required check that GitHub shows `queued` or
-`in progress`, and until the run concludes it neither approves nor requests changes for that
-check. The named run is usually not one the base branch requires, so the wait on required checks
-does not cover it.
+The reviewer waits for that run by its name, as it waits for a required check that GitHub shows
+`queued` or `in progress`. Until the run concludes, the reviewer does not approve and does not
+request changes for that check. The named run is usually not one the base branch requires, so the
+wait on required checks does not cover it.
 
 ## A job held back from an ordinary pull request
 

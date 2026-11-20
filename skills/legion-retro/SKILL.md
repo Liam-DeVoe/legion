@@ -46,25 +46,20 @@ Dispatch message (step 5) is for a finished retro only.
    request, and the tester's and reviewer's handoffs
    (`dispatch handoff-read --issue <issue> --phase test`, then the review
    at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command
-   that line quotes). Every `before_merge` check of the issue reads yes on the line of the approved
-   head, from the implementer and from the tester alike: `dispatch results` prints those head
-   lines under each check, and the pull request body's `Checks` block holds none of them. A pass
-   at another commit does not count, and
-   a pass and a fail at one head leave it not known. A check carrying `ci_check` is CI's: a pass
-   from CI is the pass it needs: the one `dispatch results` derives, or one its CI job recorded at
-   that head, and its CI job is its evidence (`skill://legion-worker/references/ci-checks.md`). In
+   that line quotes). A pass stands for every `before_merge` check of the issue at the approved
+   head, from the implementer and from the tester alike, and the pull request
+   body's `Checks` block carries each of those lines. A check carrying `ci_check` is CI's: the
+   result that `dispatch results` derives is the pass it needs, and its CI job is its evidence
+   (`skill://legion-worker/references/ci-checks.md`). In
    cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
    `scripts/e2e/`, or a live check at the operator's next daemon restart recorded on the pull
-   request. A `ci_check` check has no pass standing at that head when no pass stands at that head
-   (the line of that head under the check) because a result from CI there is a fail, a pass and a
-   fail are there, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
-   concluded, and read again where GitHub could not be read, unless that head's line reads
-   not known because a pass and a fail count there: that check moves the issue back at once, as
-   below. Send a name that no run answers (`absent`) to the architect as a finding, because the
-   words of the check are wrong. Neither wait nor that finding moves the issue back. A check whose
-   `run` is a whole test suite has wrong words too: send it to the architect the same way, and it
-   moves the issue back no more than that finding does. When any other check has no pass standing
-   at that head, or
+   request. A `ci_check` check has no pass standing at that head when its derived result is a
+   fail, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
+   concluded, and read again where GitHub could not be read. Send a name that no run answers
+   (`absent`) to the architect as a finding, because the words of the check are wrong. Neither
+   wait nor that finding moves the issue back. A check whose `run` is a whole test suite has wrong
+   words too: send it to the architect the same way, and it moves the issue back no more than that
+   finding does. When any other check has no pass standing at that head, or
    a check with no `ci_check` has a unit suite as its only evidence, call the `legion` tool's
    `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check`
    check, or `to: testing` for the tester's result, its `reason` naming the check by its block
