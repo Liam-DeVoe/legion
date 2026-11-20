@@ -660,6 +660,83 @@ func TestARelaySocketClosesOnAFrameOverItsReadLimit(t *testing.T) {
 	}
 }
 
+// A frame the socket cannot read as K-E2's - one that is not JSON, one of an unknown op, a sub or
+// unsub that names no sid, and a sub of a sid the socket already holds - is answered the err frame
+// bad_frame, and the socket is closed 1008 with reason bad_frame. Control: a well-formed sub on the
+// same rig is taken and closes nothing.
+func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
+	rig := newRelaySocketRig(t)
+	const session = "ses_edge_bad_frames"
+	for _, row := range []struct {
+		name   string
+		before []string
+		frame  string
+	}{
+		{name: "not JSON", frame: `not json`},
+		{name: "an unknown op", frame: `{"op":"publish","subject":"x"}`},
+		{name: "a sub naming no sid", frame: `{"op":"sub","subject":"` + bus.DeliverSubject(session) + `"}`},
+		{name: "an unsub naming no sid", frame: `{"op":"unsub"}`},
+		{name: "a sub of a sid held", before: []string{`{"op":"sub","sid":1,"subject":"` + bus.DeliverSubject(session) + `"}`},
+			frame: `{"op":"sub","sid":1,"subject":"` + bus.DeliverSubject(session) + `"}`},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			client, _ := rig.open(t, session)
+			for _, frame := range append(row.before, row.frame) {
+				client.writeMu.Lock()
+				err := client.conn.WriteMessage(websocket.TextMessage, []byte(frame))
+				client.writeMu.Unlock()
+				if err != nil {
+					t.Fatalf("send %s: %v", frame, err)
+				}
+			}
+			if frame := client.next(5 * time.Second); frame.Op != "err" || frame.Code != relayErrBadFrame {
+				t.Fatalf("%s was answered %s, want err %s", row.frame, frame.raw, relayErrBadFrame)
+			}
+			if code, text := client.closeCode(5 * time.Second); code != websocket.ClosePolicyViolation || text != relayErrBadFrame {
+				t.Fatalf("%s closed the socket %d %q, want %d %q", row.frame, code, text, websocket.ClosePolicyViolation, relayErrBadFrame)
+			}
+		})
+	}
+	client, _ := rig.open(t, session)
+	client.sub(1, bus.DeliverSubject(session))
+	client.ping()
+	select {
+	case <-client.pongs:
+	case err := <-client.closed:
+		t.Fatalf("a well-formed sub closed the socket: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("no pong within 5 s of a well-formed sub")
+	}
+}
+
+// A sub past relaySocketMaxSubscriptions is answered that sid's err subscription_limit and takes no
+// subscription, and the socket stays open and goes on forwarding under the sids it holds.
+// Control: the subs up to the bound are each taken.
+func TestARelaySocketRefusesASubscriptionPastItsLimit(t *testing.T) {
+	rig := newRelaySocketRig(t)
+	const session = "ses_edge_many_subs"
+	client, _ := rig.open(t, session)
+	held := rig.client.Connection().NumSubscriptions()
+	for sid := 1; sid <= relaySocketMaxSubscriptions; sid++ {
+		client.sub(sid, bus.DeliverSubject(session))
+	}
+	client.sub(relaySocketMaxSubscriptions+1, bus.DeliverSubject(session))
+	frame := client.next(5 * time.Second)
+	if frame.Op != "err" || frame.Code != relayErrSubscriptionLimit || frame.sid(t) != relaySocketMaxSubscriptions+1 {
+		t.Fatalf("sub %d was answered %s, want err %s for that sid", relaySocketMaxSubscriptions+1, frame.raw, relayErrSubscriptionLimit)
+	}
+	if now := rig.client.Connection().NumSubscriptions(); now != held+relaySocketMaxSubscriptions {
+		t.Fatalf("the replica holds %d subscriptions for the socket, want the %d it took", now-held, relaySocketMaxSubscriptions)
+	}
+	publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
+	for range relaySocketMaxSubscriptions {
+		if got := client.next(5 * time.Second); got.Op != "msg" {
+			t.Fatalf("the socket sent %s, want a msg under each sid it holds", got.raw)
+		}
+	}
+	client.stillOpen(time.Second, "a sub past the limit")
+}
+
 // K-E2 clarification (1): a socket's frames are read one at a time, in order, and a sub is handled
 // whole - its subscribe and the flush that makes the server hold it - before the next frame is
 // read. The socket's replica reaches NATS over a link with a 400 ms round trip, so a subscribe

@@ -5249,7 +5249,8 @@ The code is `cmd/listener/relay_socket.go`.
   `{"op":"unsub","sid":<int>}` ends it.
   `{"op":"pub","subject":<s>,"data":<base64>}` publishes on `s`, which must be the receipt subject of a frame this socket forwarded in the last 10 minutes, else `{"op":"err","code":"publish_not_granted"}`.
   The server's `{"op":"msg","sid":…,"subject":…,"reply":…,"headers":{…},"data":<base64>}` is one relay frame; `headers` is always present, `nats.Header` as JSON (each name as NATS carries it, case kept, to every one of its values in order, `{}` when there are none).
-  `{"op":"err","code":"bad_frame"}` answers a frame the socket cannot take at all: not JSON, an unknown op, a `sub` or `unsub` naming no `sid`, a `sid` already held, or a fifth subscription of one socket.
+  A frame the socket cannot read at all (not JSON, an unknown op, a `sub` or `unsub` naming no `sid`, or a `sub` of a `sid` already held) is answered `{"op":"err","code":"bad_frame"}`, and the socket is closed `1008` with reason `bad_frame`.
+  A fifth `sub` of one socket is answered that `sid`'s `{"op":"err","sid":<int>,"code":"subscription_limit"}` and takes no subscription; the socket stays open.
   A frame over 1 MiB closes the socket `1009`, and a binary frame `1003`.
 
 - **Order.**

@@ -12,8 +12,9 @@ package main
 //   - the client's {"op":"sub","sid":<int>,"subject":<s>} subscribes, on this replica's own NATS
 //     connection, exactly the socket's own relay subject (bus.DeliverSubject), and is answered
 //     {"op":"err","sid":<int>,"code":"subject_not_granted"} for any other subject, the agent
-//     stream's included, or when the server refuses the subscription; a sub that succeeds is
-//     answered nothing;
+//     stream's included, or when the server refuses the subscription; a sub past
+//     relaySocketMaxSubscriptions is answered that sid's err subscription_limit and the socket
+//     stays open; a sub that succeeds is answered nothing;
 //   - {"op":"unsub","sid":<int>} ends that subscription;
 //   - {"op":"pub","subject":<s>,"data":<base64>} publishes data on s, which must be the receipt
 //     subject of a frame this socket forwarded in the last relaySocketReplyWindow, else
@@ -21,9 +22,9 @@ package main
 //   - the server's {"op":"msg","sid":…,"subject":…,"reply":…,"headers":{…},"data":<base64>} is
 //     one relay frame, its headers always present as nats.Header in JSON (each name as NATS carries
 //     it, case kept, to every one of its values in order; {} when there are none);
-//   - {"op":"err","code":"bad_frame"} answers a frame the socket cannot take at all: not JSON, an
-//     unknown op, a sub or unsub naming no sid, a sid already held, or a subscription past
-//     relaySocketMaxSubscriptions.
+//   - {"op":"err","code":"bad_frame"}, then a close 1008 with reason bad_frame, answers a frame the
+//     socket cannot read at all: not JSON, an unknown op, a sub or unsub naming no sid, or a sub
+//     of a sid already held.
 //
 // The socket reads its frames one at a time on one reader and handles each whole before it reads
 // the next: a sub's subscribe and the flush that makes the server hold it, a pub's publish and
@@ -121,6 +122,7 @@ const (
 	relayErrSubjectNotGranted = "subject_not_granted"
 	relayErrPublishNotGranted = "publish_not_granted"
 	relayErrBadFrame          = "bad_frame"
+	relayErrSubscriptionLimit = "subscription_limit"
 )
 
 // relaySocketCheckBuild is a test build's check interval, as time.ParseDuration reads it, which a
@@ -441,7 +443,7 @@ func (socket *relaySocket) handle(data []byte) {
 	}
 	var frame relayClientFrame
 	if err := json.Unmarshal(data, &frame); err != nil {
-		socket.refuse(nil, relayErrBadFrame)
+		socket.badFrame(nil)
 		return
 	}
 	switch frame.Op {
@@ -452,15 +454,24 @@ func (socket *relaySocket) handle(data []byte) {
 	case "pub":
 		socket.publish(frame)
 	default:
-		socket.refuse(frame.SID, relayErrBadFrame)
+		socket.badFrame(frame.SID)
 	}
+}
+
+// badFrame answers a frame the socket cannot read as the wire's - one that is not JSON, of an
+// unknown op, a sub or unsub naming no sid, or a sub of a sid the socket already holds - with the
+// err frame bad_frame, under sid when it named one, and closes the socket 1008 with that reason:
+// its client speaks something else, and nothing it sends next can be read either.
+func (socket *relaySocket) badFrame(sid *int64) {
+	socket.refuse(sid, relayErrBadFrame)
+	socket.end(websocket.ClosePolicyViolation, relayErrBadFrame)
 }
 
 // subscribe takes a sub: the socket's own relay subject alone, subscribed on this replica's
 // connection and flushed before the reader reads on.
 func (socket *relaySocket) subscribe(frame relayClientFrame) {
 	if frame.SID == nil {
-		socket.refuse(nil, relayErrBadFrame)
+		socket.badFrame(nil)
 		return
 	}
 	sid := *frame.SID
@@ -473,8 +484,13 @@ func (socket *relaySocket) subscribe(frame relayClientFrame) {
 	_, held := socket.subs[sid]
 	full := len(socket.subs) >= relaySocketMaxSubscriptions
 	socket.subsMu.Unlock()
-	if held || full {
-		socket.refuse(frame.SID, relayErrBadFrame)
+	switch {
+	case held:
+		socket.badFrame(frame.SID)
+		return
+	case full:
+		// The socket stays open: its subscriptions up to the bound go on.
+		socket.refuse(frame.SID, relayErrSubscriptionLimit)
 		return
 	}
 	conn := socket.sockets.client.Connection()
@@ -511,7 +527,7 @@ func (socket *relaySocket) subscribe(frame relayClientFrame) {
 // server drop it comes before the reader reads on. A sid the socket does not hold is nothing.
 func (socket *relaySocket) unsubscribe(frame relayClientFrame) {
 	if frame.SID == nil {
-		socket.refuse(nil, relayErrBadFrame)
+		socket.badFrame(nil)
 		return
 	}
 	socket.subsMu.Lock()
