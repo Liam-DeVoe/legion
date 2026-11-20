@@ -398,14 +398,15 @@ TRANSIENT_RETRY_SECONDS=5
 
 utc_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
-# kube ARGS: kubectl in the copy's namespace, bounded by timeout (never --request-timeout, which
-# drops a pod's in-cluster config: kubernetes/kubernetes#93474). kube_for SECONDS ARGS: the same
-# with its own bound.
-kube() { timeout 300 kubectl -n "$NS" "$@"; }
+# kube ARGS: kubectl in the copy's namespace, bounded by foreground timeout (never
+# --request-timeout, which drops a pod's in-cluster config: kubernetes/kubernetes#93474).
+# kube_for SECONDS ARGS: the same with its own bound. Foreground timeout stays in the daemon's
+# process group, so stop_daemon's TERM and group wait cover the kubectl it runs.
+kube() { timeout --foreground 300 kubectl -n "$NS" "$@"; }
 kube_for() {
   local seconds=$1
   shift
-  timeout "$seconds" kubectl -n "$NS" "$@"
+  timeout --foreground "$seconds" kubectl -n "$NS" "$@"
 }
 
 # kube_read ARGS: kube ARGS for a call that only reads (an exec that reads a file, a psql query,
