@@ -88,11 +88,16 @@ export interface PhaseReminderDeps {
    * it, so a daemon that hangs is left no open request. An answer that does not arrive is
    * `UNREAD_CHECK`'s to decide, and no host decides it again. */
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>;
-  /** Sends the session's activity report to the daemon now (`src/session-activity.ts`). The
-   * runner calls it when a timer's check decided not to remind: that check has cleared the
-   * reminder wake, so `phaseWake` answers `nextReminderAt: null`, and no turn starts whose settle
-   * would carry the change to the daemon. Oh My Pi wires it to its `reportActivity`, Claude Code
-   * to its `sendActivity`, which otherwise reports only at `Stop`. */
+  /** Reports the session's activity to the daemon as the host's own rules let it
+   * (`src/session-activity.ts`). The runner calls it when a timer's check decided not to remind:
+   * that check has cleared the reminder wake, so `phaseWake` answers `nextReminderAt: null`, and no
+   * turn starts whose settle would carry the change to the daemon. Oh My Pi wires it to its
+   * `reportActivity` (`packages/pi-legion/extensions/legion.ts`), which sends the change at once
+   * unless a report between turns is still open: then it sends nothing, and the first 5 s reading
+   * after that report ends sends the change, unless a turn's end has reported it first. Claude
+   * Code wires it to its `sendActivity`, which otherwise reports only at `Stop`; it sends the report
+   * at once, with what its launch last read of its own background work (`readingOf`,
+   * `packages/claude-envoy/src/legion-phase-hook.ts`). */
   readonly wakeChanged: () => void;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
@@ -494,11 +499,15 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * A check that decides not to remind — the daemon answers that the claim owes nothing, or the
    * read failed (`UNREAD_CHECK`) — sends nothing and arms nothing, and it clears the wake: it
    * bumps `generation`, so `phaseWake` answers `nextReminderAt: null`, and it asks the host to
-   * report that now (`wakeChanged`), since no turn starts whose settle would. A reported wake that
-   * is due and past holds the issue's pod from its idle release (`IdleHoldReminder`,
-   * `packages/daemon/internal/workflow/idle.go`), and the silence sweep passes over a role whose
-   * completion the record holds (`PhaseWorkerOwedTurn`, `workflow/effects.go`), so a role whose
-   * completion stands while its issue stays in its phase would hold its pod for ever. A cleared
+   * report that (`wakeChanged`), as the host's own rules let it, since no turn starts whose
+   * settle would. No timer of this session is left to remind at that wake, and a reported wake
+   * that is due and past holds the issue's pod from its idle release while the claim owes its
+   * phase (`IdleHoldReminder`, `packages/daemon/internal/workflow/idle.go`), so a wake left
+   * reported after a read that failed would hold the pod with no reminder coming. The daemon holds
+   * no pod on a past-due wake of a claim that owes nothing either: its idle release holds a pod for
+   * a reminder only of a claim that owes its phase (`record.PhaseOwed`, read in `IdleRelease`),
+   * since no reminder comes to a claim that owes nothing and the silence sweep passes over a role
+   * whose completion the record holds (`PhaseWorkerOwedTurn`, `workflow/effects.go`). A cleared
    * wake holds no pod, and `ReportExplainsQuiet` (`workflow/effects.go`) then answers false, so
    * the sweep still sends a worker that owes its phase its task. A timer armed again on a failed
    * read would report a wake in the future, which the sweep reads as a reason for the quiet (D3 of

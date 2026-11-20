@@ -122,19 +122,29 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
  * that work.
  *
  * `HANDOFF_ALREADY_RECORDED` answers a completion or a report under a key the daemon has already
- * processed (`if result.Duplicate`, `packages/daemon/internal/api/handoff.go`). The daemon keeps a
- * fact the workflow refused marked as processed (`ApplyFact`,
- * `packages/daemon/internal/intake/facts.go`), so a retry under the same key gets this answer
- * while no completion is recorded and the work stays owed. The reminder comes only while the
- * daemon's record holds the work owed, so in a reminded turn this answer always means that case,
- * and doing nothing more would leave the work owed for ever. A completion's key holds the handoff
- * record it names (`reported`, `eventID` in `answerCompletion`), and each
- * `dispatch handoff-write` makes a record with a new id, so a new version of the handoff is a new
- * key: the role reads its record with `read_record` and the refusal its first completion got,
- * writes a new version of its handoff and completes naming it. A phase that writes no handoff
- * (retro, the merger) has the commit in its key instead, and a check's report its look and
- * verdict (`eventID` in `checkReport`), so that role tells its architect (dispatch://INFRA-2746
- * R4).
+ * processed (`if result.Duplicate`, `packages/daemon/internal/api/handoff.go`). For a phase's
+ * completion, the daemon keeps one the workflow refused marked as processed (`ApplyFact`,
+ * `packages/daemon/internal/intake/facts.go`), all but one refused for the plan's rating
+ * (`Result.Unspent`), so a retry under the same key gets this answer while no completion is
+ * recorded and the phase stays owed. The reminder comes only while the daemon's record holds the
+ * work owed, so in a reminded turn this answer to a phase's completion always means that case,
+ * and doing nothing more would leave the phase owed for ever. `ApplyFact` forgets a refused report
+ * on a production check (its `(report && result.Refusal != nil) || result.Unspent` line), so for
+ * a check's report this answer means that the report on that look was taken. A taken report ends
+ * the look (`checkReported`, `packages/daemon/internal/workflow/check.go`), and the owed answer
+ * then says that the claim owes nothing (`owedBy`, `packages/daemon/internal/api/owed.go`), so
+ * "while this reminder still comes" does not occur for a check.
+ *
+ * A completion's key holds the handoff record it names (`reported`, `eventID` in
+ * `answerCompletion`), and each `dispatch handoff-write` makes a record with a new id, so a new
+ * version of the handoff is a new key: the role reads its record with `read_record` and the
+ * refusal its first completion got, writes a new version of its handoff and completes naming it.
+ * A call that names no handoff record has a commit in its key instead (retro, the merger), or a
+ * look and its verdict (a check's report, `eventID` in `checkReport`), so no new handoff makes it
+ * a new key, and the reminder's last instruction tells such a role to tell its architect. That
+ * instruction rests on the key holding a commit or a look and on the cases above, not on a kept
+ * refusal of a check's report: for retro and the merger it follows a kept refusal of their
+ * completion, and for a check's report the case does not occur (dispatch://INFRA-2746 R4).
  *
  * The opening names the work, and the last sentence is the needle the live proofs match
  * (`scripts/e2e/stage3-4b13b-acceptance.sh`, `scripts/e2e/stage4b-sandbox-tree.sh`,
