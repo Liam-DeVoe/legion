@@ -610,36 +610,132 @@ const heldPassedOverLine = "supervise: a turn started that the producer said ran
 // (turnStarted). A take of a number taken before — one a provider error's ladder, a compaction or
 // the second wait gave back, taken again — has no anchor, so a report its earlier take's hold
 // made, sent late, reaches no later take; nor does a report naming another number than the
-// pending take's, or one of a take whose connection the claim no longer has, where a frame may
-// have been dropped. Each of them is read as a report without the word.
+// pending take's, a report at or below the sequences the anchor already accounts for
+// (takeAnchor.reported), or one of a take whose connection the claim no longer has, where a frame
+// may have been dropped. Each of them is read as a report without the word.
+//
+// A take the daemon before this one accepted, which a daemon start restored, is anchored where
+// the store shows that daemon can have handled no turn start after the one it gave the take
+// (anchorRestored), and its connection is the one the first hello after the start opened
+// (bindRestoredAnchor); a report that comes before that hello is kept, and read at it.
 func (m *Machine) heldUnrun(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	a := &m.turns.anchor
-	if r.Held == 0 || r.Held != p.Number || a.number != p.Number || !m.onAnchoredConn() {
+	unbound := a.restored && a.conn == 0
+	if r.Held == 0 || r.Held != p.Number || a.number != p.Number || r.Sequence <= a.reported ||
+		(!unbound && !m.onAnchoredConn()) {
 		return nil
 	}
 	a.heldReport(r.Sequence)
-	if !p.turnStarted() || a.given == 0 {
+	since, given := m.sinceGiven()
+	if !given || unbound {
 		return nil
+	}
+	if !a.unrun(since) {
+		m.log.Info("supervise: a turn's report says the accepted take's text was held through it, but a turn may have started after it; the take keeps its turn",
+			"task", p.Number, "sequence", r.Sequence)
+		return nil
+	}
+	a.pass(since)
+	return m.putBack(ctx, "held")
+}
+
+// sinceGiven is how many turn starts the machine has seen after the one it gave the pending take
+// (takeAnchor.given), and whether that take has a given turn standing: its turn started, and a
+// start of it the anchor placed. A turn running counts as started, a compaction alone does not
+// (inTurn).
+func (m *Machine) sinceGiven() (uint64, bool) {
+	p, a := m.claim.Pending, m.turns.anchor
+	if p == nil || !p.turnStarted() || a.given == 0 {
+		return 0, false
 	}
 	seen := m.turns.ended
 	if m.inTurn() {
 		seen++
 	}
-	if seen < a.given || !a.unrun(seen-a.given) {
-		m.log.Info("supervise: a turn's report says the accepted take's text was held through it, but a turn may have started after it; the take keeps its turn",
-			"task", p.Number, "sequence", r.Sequence)
-		return nil
+	if seen < a.given {
+		return 0, false
 	}
-	a.pass(seen - a.given)
-	return m.putBack(ctx, "held")
+	return seen - a.given, true
 }
 
 // onAnchoredConn is whether the claim's connection is the one the anchored take was accepted on
-// (takeAnchor.conn).
+// (takeAnchor.conn), or, for a take a daemon start restored, the one its first hello opened.
 func (m *Machine) onAnchoredConn() bool {
 	conn, connected := m.deps.Conns.Conn(m.claim.Token)
 	return connected && conn.Sequence() == m.turns.anchor.conn
+}
+
+// anchorRestored anchors the take of the pending task a daemon start restored (NewMachine), for
+// a report saying that take's text was held to give it its turn back (heldUnrun) as one this
+// daemon accepted would be, where that can never put back a take whose own turn ran. The
+// producer's word is as exact as ever; what this daemon cannot see is the starts the daemon
+// before it handled, whose frames reached that daemon and no other, so it anchors the take only
+// where the store shows that daemon handled none after the turn it gave the take:
+//
+//   - a take awaiting its turn: that daemon handled no start after the accept, or after the report
+//     that put the take back (a start it handled then would have been given the take), so every
+//     start after that point reaches this daemon, behind the first hello, from the shim's backlog
+//     or as the agent sends it, and the first one it sees is the one it gives the take
+//     (turnStarted), as for a take it accepted itself; a run of the host's own whose setup spans
+//     the restart is such a start;
+//   - a take whose turn that daemon gave, where the claim is stored working and records no turn's
+//     end after the take's accept (Claim.LastTurnEnd, Delivery.ConfirmedAt): that daemon handled
+//     the given turn's start and nothing after it, since it writes every turn's end and start it
+//     handles, and frames reach a machine in the order the shim sent them. The given turn counts
+//     as the start running at this machine's build (takeAnchor.given 1).
+//
+// Every other restored take is refused the word: one whose given turn's end that daemon handled
+// may have had its own turn start, run and end under that daemon as well, its report still on its
+// way, and the store tells that from a take whose own turn is still to come by nothing. Put back
+// there, the take's own report would then read it as a turn whose start is still to come
+// (startedUnseen), whose mark names it in the next task's start, and a second wait that ran out
+// before that report landed would take back a task whose turn ran. So its run of the host's own
+// is given back by no report, as before this word, and that is the one take a restart leaves
+// unbounded: the store would need the time of the given turn's start to tell the two apart.
+//
+// A take whose report the store owes (owedReport) is one whose own turn ran, and is not anchored.
+// Reports at or below the newest the restored window holds were applied by that daemon or are of
+// an earlier take of the number (takeAnchor.reported), and none of them is read. What this leaves
+// is a daemon that received frames it never recorded — a write the store refused before it
+// stopped, or frames it read and never handled — which no restart can see.
+func (m *Machine) anchorRestored() {
+	p := m.claim.Pending
+	if p == nil || !p.taken() || p.TakenText == "" || m.finishOwed || m.ladderOwed != nil {
+		return
+	}
+	count := m.counted()
+	a := takeAnchor{number: p.Number, reported: m.claim.newestReported(), restored: true}
+	switch {
+	case !p.TurnStarted:
+	case m.claim.State == StateWorking && !m.claim.LastTurnEnd.After(p.ConfirmedAt):
+		a.given = count.ended + 1
+	default:
+		return
+	}
+	count.anchor = a
+}
+
+// bindRestoredAnchor gives a restored take's anchor (anchorRestored) the connection of the claim's
+// first hello after the daemon start, and reads the reports kept before it (heldUnrun). A first
+// hello whose connection is already gone leaves the anchor nothing to read starts on: frames may
+// have been lost with it, so the anchor goes.
+func (m *Machine) bindRestoredAnchor(ctx context.Context) error {
+	a := &m.turns.anchor
+	if !a.restored || a.conn != 0 || m.turns.generation != m.claim.Generation {
+		return nil
+	}
+	conn, connected := m.deps.Conns.Conn(m.claim.Token)
+	if !connected {
+		m.turns.anchor = takeAnchor{}
+		return nil
+	}
+	a.conn = conn.Sequence()
+	if since, given := m.sinceGiven(); given && a.unrun(since) {
+		a.pass(since)
+		return m.putBack(ctx, "held")
+	}
+	return nil
 }
 
 // startedUnseen is the start of the accepted take's turn, done at that turn's report because the
@@ -744,10 +840,15 @@ func (m *Machine) counted() *turnCount {
 // take's text was held unrun at its turn's end, 0 for none. passed is whether a turn given the
 // take, or a start, was passed over since the accept (pass): ceiling then counts on from that
 // turn, and a report's sequence no longer lowers it.
+//
+// restored is a take the daemon before this one accepted, which a daemon start restored
+// (anchorRestored): its accept is the point the store shows that daemon handled no start after,
+// conn is 0 until the first hello after the start opens one (bindRestoredAnchor), and it places
+// no count (learnTurns), since what that daemon counted is not this machine's.
 type takeAnchor struct {
 	number, reported, conn, given uint64
 	ceiling, held                 uint64
-	passed                        bool
+	passed, restored              bool
 }
 
 // heldReport takes the sequence of a report that said the take's text was held unrun at its
@@ -881,7 +982,7 @@ func (m *Machine) learnTurns(ctx context.Context, r RequestTurnOutcome) {
 	count := m.counted()
 	anchor := count.anchor
 	count.anchor = takeAnchor{}
-	if count.known || anchor.number == 0 || anchor.number != r.Task || anchor.given == 0 {
+	if count.known || anchor.number == 0 || anchor.number != r.Task || anchor.given == 0 || anchor.restored {
 		return
 	}
 	conn, connected := m.deps.Conns.Conn(m.claim.Token)

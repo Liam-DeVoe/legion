@@ -1423,9 +1423,13 @@ func enrolledOnly(m *Machine, ctx context.Context, _ Event) error { return m.ens
 // deadline, NewMachine), and the hello ends that wait. A restored claim whose stale-plugin
 // relaunch waits for its agent's word on whether it is in a turn (askTurn) is asked here
 // (askRestoredTurn): the hello carries no turn, and the shim replays what it held only once this
-// hello is answered.
+// hello is answered. The first hello after a daemon start gives a restored take's anchor its
+// connection (bindRestoredAnchor), before anything else of the hello can fail.
 func reconnected(m *Machine, ctx context.Context, _ Event) error {
 	m.disarm(TimerRegistration)
+	if err := m.bindRestoredAnchor(ctx); err != nil {
+		return err
+	}
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}
@@ -1516,9 +1520,13 @@ func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
 // reconnectedMidTurn is the shim's hello while the claim is working. Within one daemon's life the
 // shim's backlog replays whatever the turn did meanwhile, agent_end included; a restored claim
 // may be waiting on an agent_end an earlier daemon received and never recorded, so its first
-// hello asks. It ends the reconnect deadline a daemon start armed, as reconnected does.
+// hello asks. It ends the reconnect deadline a daemon start armed, as reconnected does, and gives
+// a restored take's anchor its connection as that does (bindRestoredAnchor).
 func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
 	m.disarm(TimerRegistration)
+	if err := m.bindRestoredAnchor(ctx); err != nil {
+		return err
+	}
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}

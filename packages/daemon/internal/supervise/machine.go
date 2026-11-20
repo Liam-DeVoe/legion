@@ -1853,6 +1853,10 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 			}
 		}
 	}
+	// The take the store holds accepted is anchored where the store shows the daemon before this
+	// one handled no turn start after the one it gave it, for the producer's word that its text
+	// was held to give it its turn back (anchorRestored, heldUnrun).
+	m.anchorRestored()
 	m.publish()
 	return m, nil
 }

@@ -25,7 +25,8 @@ body: |-
   what follows it is the provider-error wait's alone. A take whose text the worker held through a
   run of its own is put back to wait for its own turn, and so falls under the turn-start bound,
   also after a daemon restart under a live worker: the worker's report of that run names the take
-  as `held`.
+  as `held`. That holds for a take accepted before the restart too, except one whose given run the
+  daemon before the restart saw end, whose own turn may have run there as well.
   Roll out in this order: the envoy-infra release with the bucket grants first, then the listener
   image, then each project's daemon and worker image together in one apply, then restart any
   controller an operator started and every worker of a daemon that knows no plugin pair to relaunch
