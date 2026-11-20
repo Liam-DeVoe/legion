@@ -73,7 +73,7 @@ func TestAConnectionsDialTheDatabaseRefusedIsTheProxysFaultUntilOneReachesIt(t *
 	dialer.dialAt(up.listener.Addr().String())
 	client := dialProxy(t, socket)
 	writeAll(t, client, "ping")
-	if got := readString(t, up.next(t), 4); got != "ping" {
+	if got := readString(t, kept(t, up.next(t)), 4); got != "ping" {
 		t.Fatalf("the upstream read %q of the client's ping", got)
 	}
 	if err := proxy.Fault(); err != nil {
@@ -102,7 +102,7 @@ func TestAFaultIsOfTheLatestDialToStartNotTheLatestToEnd(t *testing.T) {
 	<-held.entered
 	served := dialProxy(t, socket)
 	writeAll(t, served, "ping")
-	if got := readString(t, up.next(t), 4); got != "ping" {
+	if got := readString(t, kept(t, up.next(t)), 4); got != "ping" {
 		t.Fatalf("the upstream read %q of the later client's ping", got)
 	}
 	close(held.release)
@@ -124,14 +124,17 @@ func TestAFaultIsOfTheLatestDialToStartNotTheLatestToEnd(t *testing.T) {
 // ends with a FATAL error about its own state (57P03, starting up), recorded as the error crosses.
 // One it ends with a FATAL error about the connection's configuration (28P01, a password it
 // refuses) is not, nor is the end of a session the client ended in order (Terminate), the end of a
-// cancel request, which the database answers by ending it, or one the proxy itself closes once its
-// drain is over.
+// cancel request, which the database answers by ending it, one the proxy itself closes once its
+// drain is over, or one whose client closed it with no Terminate, as a child that exits does: the
+// proxy then closes the upstream itself, and its own read meets that close (net.ErrClosed).
 func TestAServedConnectionTheDatabaseEndsWithNoWordOrOverItsOwnStateIsTheProxysFault(t *testing.T) {
 	for name, tc := range map[string]struct {
-		// sent is what the client sends, which the database reads whole before end ends it.
-		sent  []byte
-		end   func(t *testing.T, served net.Conn, proxy *Proxy)
-		fault bool
+		// sent is what the client sends, which the database reads whole before end ends it; with
+		// clientEnds the client closes the connection itself instead.
+		sent       []byte
+		end        func(t *testing.T, served net.Conn, proxy *Proxy)
+		clientEnds bool
+		fault      bool
 	}{
 		"the database resets it": {sent: []byte("ping"), fault: true, end: func(t *testing.T, served net.Conn, _ *Proxy) {
 			_ = served.(*net.TCPConn).SetLinger(0)
@@ -157,6 +160,7 @@ func TestAServedConnectionTheDatabaseEndsWithNoWordOrOverItsOwnStateIsTheProxysF
 		"control: the proxy closes it once its drain is over": {sent: []byte("ping"), end: func(t *testing.T, _ net.Conn, proxy *Proxy) {
 			_ = proxy.Close()
 		}},
+		"control: the client closes it with no Terminate": {sent: startupMessage(), clientEnds: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			up := newUpstream(t)
@@ -170,8 +174,13 @@ func TestAServedConnectionTheDatabaseEndsWithNoWordOrOverItsOwnStateIsTheProxysF
 			if got := readString(t, served, len(tc.sent)); got != string(tc.sent) {
 				t.Fatalf("the upstream read %q of the client's %q", got, tc.sent)
 			}
-			tc.end(t, served, proxy)
-			awaitClosed(t, client, "the client of a connection whose upstream ended")
+			if tc.clientEnds {
+				_ = client.Close()
+				awaitUntracked(t, proxy)
+			} else {
+				tc.end(t, served, proxy)
+				awaitClosed(t, client, "the client of a connection whose upstream ended")
+			}
 			if got := proxy.Fault(); errors.Is(got, ErrUnreachable) != tc.fault {
 				t.Fatalf("Fault after the served connection ended = %v, want ErrUnreachable %t", got, tc.fault)
 			}
@@ -180,7 +189,7 @@ func TestAServedConnectionTheDatabaseEndsWithNoWordOrOverItsOwnStateIsTheProxysF
 			}
 			client = dialProxy(t, socket)
 			writeAll(t, client, "ping")
-			if got := readString(t, up.next(t), 4); got != "ping" {
+			if got := readString(t, kept(t, up.next(t)), 4); got != "ping" {
 				t.Fatalf("the upstream read %q of the next client's ping", got)
 			}
 			if err := proxy.Fault(); err != nil {
@@ -264,4 +273,28 @@ func awaitClosed(t *testing.T, client net.Conn, what string) {
 	if _, err := io.Copy(io.Discard, client); err != nil {
 		t.Fatalf("the proxy did not close %s: the read answered %v", what, err)
 	}
+}
+
+// awaitUntracked waits until the proxy serves no connection, both copies of each having ended, so
+// whatever the end of one recorded is recorded; it fails the test by name past ten seconds.
+func awaitUntracked(t *testing.T, proxy *Proxy) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		proxy.connsMu.Lock()
+		served := len(proxy.conns)
+		proxy.connsMu.Unlock()
+		if served == 0 {
+			return
+		}
+	}
+	t.Fatal("the proxy still served a connection ten seconds after its client closed it")
+}
+
+// kept is conn, held open until the test ends: an accepted connection the test lets go is closed by
+// its finalizer once the collector runs, an end of file the proxy reads as the database's own end of
+// a connection it serves, and records (servedUpstream).
+func kept(t *testing.T, conn net.Conn) net.Conn {
+	t.Helper()
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
 }
