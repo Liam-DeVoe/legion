@@ -274,7 +274,10 @@ func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Han
 		t.Fatal(err)
 	}
 	var membership *identity.Membership
-	built.Identity, membership = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	built.Identity, membership, err = requestIdentityFor(t.Context(), boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	if err != nil {
+		t.Fatalf("build the request identity: %v", err)
+	}
 	built.Standing = standingFor(rule, membership)
 	appCtx, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
 	if err != nil {

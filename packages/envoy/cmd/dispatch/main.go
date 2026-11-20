@@ -27,6 +27,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"google.golang.org/api/option"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
@@ -121,6 +122,16 @@ type bootConfig struct {
 	// oidc.IAPKeySetURL, which no setting changes: a test points it at a key set it serves.
 	IAPAudience  string
 	IAPKeySetURL string
+	// DirectoryAccount and DirectoryAdmin are DISPATCH_DIRECTORY_ACCOUNT and
+	// DISPATCH_DIRECTORY_ADMIN under DISPATCH_IDENTITY=iap, both required there and refused under
+	// any other identity: the signer service account and the delegated Workspace user the Directory
+	// reader checks each person's account through (identity.NewDirectoryReader). DirectoryOptions
+	// are the options that reader reaches Google with, which no setting changes: none in a
+	// deployment, whose Application Default Credentials call signJwt; a test points them at the
+	// Google hosts it serves (directorytest).
+	DirectoryAccount string
+	DirectoryAdmin   string
+	DirectoryOptions []option.ClientOption
 	// SignInIssuer, SignInClientID and SignInClientSecret, with exactly one of SignInGroup and
 	// SignInDomain, configure Google sign-in (DISPATCH_SIGNIN_*): through a Cognito sign-in pool
 	// for a group, or with Google directly for a Workspace domain; empty means no sign-in.
@@ -560,9 +571,14 @@ func main() {
 		slog.Warn("dispatch: using test/local header identity", "header", boot.IdentityHeader)
 	}
 	if boot.IAPAudience != "" {
-		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain)
+		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain,
+			"directory_account", boot.DirectoryAccount, "directory_admin", boot.DirectoryAdmin)
 	}
-	requestIdentity, membership := requestIdentityFor(boot, signingKey, people, sessions, signIn, rule)
+	requestIdentity, membership, err := requestIdentityFor(ctx, boot, signingKey, people, sessions, signIn, rule)
+	if err != nil {
+		slog.Error("dispatch: build the request identity", "error", err)
+		os.Exit(1)
+	}
 
 	broker := events.NewBroker()
 	documentService := newDocumentService(boot, serverURL, docs.Deps{
@@ -1196,7 +1212,8 @@ func main() {
 	// through the API server built just above. With a list of private projects, it checks the
 	// store once as it starts, beside the serving process, then hourly. The membership pass asks
 	// the Membership the router's Standing asks, and the sign-out's check of access that outlives
-	// the browser (routes.AppContext.Outliving).
+	// the browser (routes.AppContext.Outliving); under IAP identity, whose rule is the domain's and
+	// whose Membership follows the Workspace Directory, it checks each full member's account there.
 	maintenanceInterval := api.MaintenanceSweepInterval
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
@@ -1653,6 +1670,11 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 		boot.DevSignIn = true
+	}
+	// The Directory settings are IAP identity's alone (K12), read after the dev sign-in fence, so
+	// dev sign-in beside IAP identity is refused for the identity first.
+	if boot.DirectoryAccount, boot.DirectoryAdmin, err = directorySettings(env, boot.IAPAudience != ""); err != nil {
+		return bootConfig{}, err
 	}
 	if boot.OIDCAudience != "" && len(boot.OIDCAccounts) == 0 {
 		slog.Warn("dispatch: DISPATCH_OIDC_ACCOUNTS is unset, so every service account whose token the issuer signs for the audience is admitted; list the accounts that call Dispatch to admit only them",

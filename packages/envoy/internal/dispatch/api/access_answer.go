@@ -242,7 +242,9 @@ func (s *server) getAccessPrivateProjects(w http.ResponseWriter, r *http.Request
 // stays the database's now() the member kind was read with. A Standing that fails is no answer: the
 // answer leaves held out, so the broker reads it as Dispatch not asked for the hold and still reads
 // its member_kind, keeps that now() as as_of, and logs the failure; the route still answers 200.
-// Otherwise it carries Standing's held and the time of the read it rests on.
+// Otherwise it carries Standing's held and the time of the read it rests on, and, under IAP
+// identity, the deadline of a not-held answer as not_held_until: as_of itself for an unavailable one
+// (identity.Standing.Unavailable), which the broker refuses as it refuses a deadline passed.
 func (s *server) personStanding(ctx context.Context, answer *model.PersonAnswer) {
 	if s.deps.Standing == nil {
 		answer.Held = new(bool)
@@ -254,4 +256,7 @@ func (s *server) personStanding(ctx context.Context, answer *model.PersonAnswer)
 		return
 	}
 	answer.Held, answer.AsOf = &standing.Held, standing.AsOf
+	if !standing.Held && !standing.NotHeldUntil.IsZero() {
+		answer.NotHeldUntil = &standing.NotHeldUntil
+	}
 }

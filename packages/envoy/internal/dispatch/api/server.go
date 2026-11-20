@@ -92,9 +92,13 @@ type AgentPublisher interface {
 
 // PersonStanding answers whether Dispatch holds a person's personal tokens and broker credentials
 // until they sign in again, or until a refresh confirms them: *identity.Membership is the one
-// Dispatch serves with (identity.Membership.Standing). Its error is no answer.
+// Dispatch serves with (identity.Membership.Standing). Its error is no answer. ChecksDirectory
+// reports whether it follows the Workspace Directory (IAP identity), where no refresh token or
+// sign-in confirmation is kept, so a personal token's own read of those columns answers nothing
+// and personalTokenHeld asks Standing at every use.
 type PersonStanding interface {
 	Standing(ctx context.Context, email string) (identity.Standing, error)
+	ChecksDirectory() bool
 }
 
 // Deps are the API's application dependencies.
@@ -163,10 +167,10 @@ type Deps struct {
 	RestrictedAdmission identity.RestrictedAdmission
 	// Standing answers whether Dispatch holds a person's personal tokens and broker credentials
 	// until they sign in again (identity.Membership.Standing): a personal token whose owner's
-	// confirmation is older than identity.MembershipMaxAge asks it (personalTokenActor), and the
-	// person route answers its held and as_of (getAccessPerson). It is set only where a Google
-	// rule signs people in (identity.SignInRule's Holds); nil holds nobody, a recorded hold
-	// included.
+	// confirmation is older than identity.MembershipMaxAge asks it, and under IAP identity every
+	// personal token asks it (personalTokenActor), and the person route answers its held, as_of
+	// and not_held_until (getAccessPerson). It is set only where a Google rule signs people in
+	// (identity.SignInRule's Holds), IAP's included; nil holds nobody, a recorded hold included.
 	Standing PersonStanding
 	// PrivateProjects are the keys of the projects this deployment has provisioned as private,
 	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): only these can be made

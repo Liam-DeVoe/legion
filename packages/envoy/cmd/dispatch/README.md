@@ -158,6 +158,12 @@ Each item below names a variable, then its purpose.
   that budget is no setting but one sixteenth of the Go memory limit, at least 64 MiB and at most 1 GiB, and 256 MiB when no limit is set.
   `/debug/vars` (Profiling, below) shows how near each cap a running process is.
 
+- `DISPATCH_DIRECTORY_ACCOUNT`, `DISPATCH_DIRECTORY_ADMIN`
+
+  Under `iap` identity alone, and required there: the boot refuses `DISPATCH_IDENTITY=iap` without both, naming each one missing, and refuses either one under any other identity.
+  The server builds its Workspace Directory reader from them at boot (`identity.NewDirectoryReader`), and a reader it cannot build, with no Application Default Credentials say, stops the boot: an `iap` server that could not read the Directory would hold nobody (Identity, `iap`, below).
+  Before IAP admits anyone, the deployment operator makes the Domain-wide Delegation grant and runs `envoy-dispatch directory-check` (Checking the Directory reads, below).
+
 `DISPATCH_REPO_PROJECTS` optionally seeds repository-to-project settings at boot with comma-separated `owner/repo=KEY` entries.
 Existing dashboard mappings take precedence over this seed:
 it adds only a repository with no mapping, and announces each one it adds with `settings.repo_project.updated`, as a dashboard write does.
@@ -788,7 +794,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET` and `DISPATCH_SIGNIN_GROUP` are refused beside it, and so are dev sign-in and `DISPATCH_IAP_AUDIENCE` under any other identity.
 
 - Under `iap`, IAP signs a fresh assertion for every request, so each request is decided on its own:
-  Dispatch keeps no session cookie, refresh token or hourly confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
+  Dispatch keeps no session cookie, refresh token or sign-in confirmation for it, and a person IAP or the domain stops admitting is refused from their next request.
   Each person admitted is recorded in `people`.
   A request with no assertion, one that fails a check, or one whose person the rule refuses is `401 NO_IDENTITY`;
   a refused assertion logs `msg="dispatch: IAP assertion refused" reason=<class>` and nothing else, since the error of an assertion nobody signed quotes its own unverified `iss` or `aud`, which its sender chose; a refused person logs `msg="dispatch: IAP person refused" email=<email> hd=<hd> reason=<reason>`, read from an assertion IAP signed; both at WARN.
@@ -804,6 +810,14 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   the live socket closes with `4001` (reason `credential expired`), on which the page reopens it at once and shows nothing, and the document socket with `4412` (`DOC_ADMISSION_REVOKED`), on which the provider reconnects.
   The reopened socket's upgrade carries a fresh assertion, judged again as any upgrade is, so no socket is served past its assertion, and an IAP user's sockets each reopen about every ten minutes.
   Any other refusal on a heartbeat closes the socket as before, an expired assertion that IAP's keys no longer verify (a key IAP withdrew) or whose person the rule no longer admits included: `1008` on the live socket, and no close frame (`1006`) on the document socket.
+
+- Under `iap`, IAP keeps no refresh token, so Google's refusal of a refresh cannot reach Dispatch; it follows each person's Google Workspace account in the Directory instead, through the reader `DISPATCH_DIRECTORY_ACCOUNT` and `DISPATCH_DIRECTORY_ADMIN` configure (`identity.Membership.Directory`).
+  A check reads `users.get` for the person's address and has three outcomes, which share one 15-second deadline with the database write of the outcome: Active, the person's own account not suspended, confirms them, releases a hold, and fixes `not_held_until` 24 hours later; Held, an account suspended, missing, or another account than the one the person's first Active answer named, records a hold; and Failed, any other answer, a timeout or a write that missed the deadline, changes nothing but the time of the check, and logs `msg="dispatch: a Workspace Directory check failed; ..."` at WARN.
+  The membership pass checks each full member's row about once an hour, held rows and rows that never made a request included, and runs no sign-out step (its line counts an Active outcome `confirmed`, a Held one `held` and a Failed one `unasked`).
+  A personal token asks at every use, and the person route the secrets broker reads answers the same: a recorded hold is `401 MEMBERSHIP_HELD`, saying that Google's Workspace Directory no longer confirms the token's owner; an Active answer younger than an hour is served; an older one makes the request check the Directory, waiting at most 2 seconds, and starts no new check for a minute after a Failed one; and while no Active answer is younger than 24 hours (`not_held_until`), the token is `503 IDENTITY_UNAVAILABLE`, never served and never held.
+  So an outage of the Directory longer than 24 hours stops every personal token until it answers again, and a person whom IAP admits but whose row has no Active answer yet waits for the first check.
+  Only an Active answer releases a hold: IAP's assertion, however valid, records the person and nothing more.
+  An address the Workspace deleted and created again for another person answers with another account's id and stays held until the operator runs `envoy-dispatch forget-directory-user` (Forgetting a Directory user, below).
 
 - `header:<Header-Name>` is for tests and local harnesses only, never for a production Dispatch deployment.
   It accepts a header value, lowercases it and records the person.
@@ -878,6 +892,18 @@ It exits 0 only when the `--active` login is Active, the `--held` login (a suspe
 1 for any other verdict, each named on stderr, or when the reader cannot be built (no Application Default Credentials);
 and 2 for a missing or blank flag, an argument, or `DISPATCH_DIRECTORY_ACCOUNT` or `DISPATCH_DIRECTORY_ADMIN` unset.
 Google states that a new Domain-wide Delegation grant can take up to 24 hours to take effect, so a run that fails at the token exchange soon after the grant may pass later.
+
+### Forgetting a Directory user
+
+```sh
+envoy-dispatch forget-directory-user <address>
+```
+
+Under `iap`, a person's row stores the Directory user id of their first Active answer, and a later answer for the address that carries another id is Held: the address was made an alias of a colleague's account, or deleted and created again for another person.
+Once the operator knows the account now at the address is the person the row is for, this forgets the stored id for the address (in any case and spacing), so the next check compares the answer by address, as for a row never confirmed, and an Active answer then stores the new id and releases the row at the membership pass's next check of it, within the hour.
+It changes nothing else and releases nothing itself.
+Before it, revoke whatever the earlier person still holds: their personal tokens and broker credentials name the address, and they work again once the new account's Active answer releases the row.
+It prints `forget-directory-user: <address> no longer stores a Directory user id; ...` and exits 0 once it forgot one, 1 when no row holds the address or the row stores no id, or when the database cannot be opened or written, and 2 for anything but one non-empty address.
 
 ## Local Postgres
 

@@ -29,23 +29,26 @@ const (
 // a Google rule signs people in (api.RunMaintenanceSweep, under its lease, so one process runs a
 // pass at a time). It checks every stored refresh token about once an hour, whether or not its
 // person makes a request, so Google's refusal holds a person who uses only a personal token or a
-// broker credential, and one who signed in before holds were recorded.
+// broker credential, and one who signed in before holds were recorded. Under IAP identity
+// (Membership.Directory set) it checks every full member's Workspace account in the Directory
+// about once an hour instead (checkDirectoryDue).
 type MembershipPass struct {
-	// Membership refreshes a due row's confirmation with Google (Membership.ConfirmFor), the one
-	// the router's Standing asks, so a pass and a request share one refresh of a person.
+	// Membership refreshes a due row's confirmation with Google (Membership.ConfirmFor), or under
+	// IAP checks its Directory account (Membership.ConfirmDirectory): the one the router's Standing
+	// asks, so a pass and a request share one refresh, or one check, of a person.
 	Membership *Membership
 	// People is the store the pass claims rows from.
 	People *store.PgPeopleStore
 	// Outliving answers whether a signed-out person still has access that outlives the browser,
-	// the check the sign-out asks (api.Deps.Outliving).
+	// the check the sign-out asks (api.Deps.Outliving). The pass under IAP asks it nothing.
 	Outliving agentsecrets.OutlivingAccess
 	// Observe, when set, is told of each claim attempt of either step; nil in production.
 	Observe func(MembershipPassEvent)
 }
 
 // MembershipPassEvent is one claim attempt of a membership pass: its step (1, the signed-out rows;
-// 2, the due confirmations), and the email it claimed, empty when it claimed none (Claimed false),
-// which ends that step.
+// 2, the due confirmations, or under IAP the due Directory checks), and the email it claimed, empty
+// when it claimed none (Claimed false), which ends that step.
 type MembershipPassEvent struct {
 	Step    int
 	Email   string
@@ -79,10 +82,18 @@ type passCounts struct {
 // forgot the token (not one whose guard a sign-in or sign-out since the claim made miss); unasked,
 // every other outcome of a refresh. Step 1's checks that keep a token are not counted. A step that
 // cannot claim ends, and the other still runs; Run answers both failures.
+//
+// Under IAP identity Run runs checkDirectoryDue alone, since IAP keeps no refresh token to forget
+// or refresh, and counts an Active outcome confirmed, a Held one held, and a Failed one unasked.
 func (p MembershipPass) Run(ctx context.Context) error {
 	began := time.Now()
 	var counts passCounts
-	err := errors.Join(p.checkSignedOut(ctx, began, &counts), p.confirmDue(ctx, &counts))
+	var err error
+	if p.Membership.ChecksDirectory() {
+		err = p.checkDirectoryDue(ctx, &counts)
+	} else {
+		err = errors.Join(p.checkSignedOut(ctx, began, &counts), p.confirmDue(ctx, &counts))
+	}
 	if counts.claimed {
 		slog.Info("dispatch: membership pass", "confirmed", counts.confirmed, "held", counts.held, "kept", counts.kept, "unasked", counts.unasked, "forgotten", counts.forgotten)
 	}
@@ -136,6 +147,29 @@ func (p MembershipPass) confirmDue(ctx context.Context, counts *passCounts) erro
 		}
 		counts.claimed = true
 		counts.count(p.Membership.ConfirmFor(ctx, email))
+	}
+	return nil
+}
+
+// checkDirectoryDue is Run under IAP identity: up to passRows times, while under passRefreshWindow
+// since it began and until a claim finds none, claim the full member's row whose Directory check is
+// due longest (store.PgPeopleStore.ClaimDirectoryDue: held rows and rows with no refresh token
+// included, the later of the last Active answer and the last check older than MembershipMaxAge, and
+// it stamps directory_checked_at), and check it (Membership.ConfirmDirectory). A check in flight
+// runs to its own DirectoryFlight, so the step ends within 35 seconds.
+func (p MembershipPass) checkDirectoryDue(ctx context.Context, counts *passCounts) error {
+	began := time.Now()
+	for range passRows {
+		if time.Since(began) >= passRefreshWindow {
+			return nil
+		}
+		email, ok, err := p.People.ClaimDirectoryDue(ctx, MembershipMaxAge)
+		p.observe(2, email, ok)
+		if err != nil || !ok {
+			return err
+		}
+		counts.claimed = true
+		counts.count(p.Membership.ConfirmDirectory(ctx, email))
 	}
 	return nil
 }
