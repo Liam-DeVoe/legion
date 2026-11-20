@@ -56,7 +56,7 @@ var (
 		"design-approved", "design-changes-requested", "carried-gate-opened",
 		"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
 		"catch-up", "checks-red", "review-stuck", "status-reasserted", record.VolumeNearFullNotice,
-		"session-lost", "session-store-fault",
+		"session-lost", "session-forgotten", "session-store-fault",
 	}
 	controllerKindsBeforeOwnerSteps = []record.NoticeKind{
 		record.TriageNotice, record.SlotFreeNotice, record.TodoNotice, record.TickNotice, record.UnslottedNotice,

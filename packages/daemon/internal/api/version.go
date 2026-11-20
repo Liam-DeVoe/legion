@@ -2466,7 +2466,49 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 189: the owner of an issue gives Legion a plan with one task, and the plan picks which of
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
+// up to, and not including, `legion-v20.5.0` cleared the file and kept the id
+// (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
+// same-agent fence refused at every try until the claim failed. The start frame
+// (`shimwire.LauncherStart`, `launcher_start`) gains the optional member `resumeSession`, the id
+// of the session the child resumes where the daemon holds no file of it, and the launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `resumesBySession`, the launcher's word that
+// it looks such an id up in the session table: it takes the newest row whose path ends in
+// `_<id>.jsonl` (`ompsessions.FindByID`), puts that path in the argv's one `--resume=<id>`, and
+// answers `session: gone` where the table holds no such row. `LauncherStart.Validate` refuses a
+// frame naming both `resumeFile` and `resumeSession`, an id that is not a single path element, and
+// an argv that does not hold `--resume=<resumeSession>` exactly once.
+//
+// The skew is safe in both directions. A launcher older than this entry ignores `resumeSession`
+// and sends no `resumesBySession`, so the daemon never names a session to it
+// (`launchers.resumesBySession`, sandbox's `relaunch`, which answers
+// `runtime.ErrSessionLookupUnavailable` before it sends anything): the daemon starts the agent
+// with `--resume=<session id>` in its own command instead, which Oh My Pi resolves in the table
+// itself, and names no session and no file to that launcher. An older daemon sends no
+// `resumeSession`, and a launcher of this entry answers its frames as before. The number moves
+// because the image probe pairs a daemon with a worker image by this number (entry 144), so a
+// daemon of this entry boots only on an image whose launcher says `resumesBySession`, and a
+// launcher older than it is left only in a pod kept from before the boot.
+//
+// The same change adds the notice kind `session-forgotten`, to the issue's architect and to the
+// controller, for a claim that forgot its session after a start through such an older launcher
+// did not register (`workflow.Engine.sessionLost`, `record.validNoticeKinds`). An outbox payload
+// is decoded strictly, so no daemon of an earlier release decodes such a row, and one row fails
+// `GET /legion/v1/state` for the whole project, as the `volume-near-full` entry above says of its
+// own kind. The way back of this change's migration
+// (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
+// before a rollback. No shape of `GET /legion/v1/state` moves.
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
+// 190: the owner of an issue gives Legion a plan with one task, and the plan picks which of
 // today's steps run. Two architect routes are new. `POST /legion/v1/plans/register`
 // (`api.PlanRegisterRequest`: `grantId`, `issue`, `artifactId`, `version` from 1) reads that
 // version of a document of the issue from Dispatch, with its blocks, and answers 200 with the
@@ -2501,7 +2543,7 @@ package api
 // `legion claims retry` answer `409 TASK_STOPPED` or `409 HELD_FOR_CHILDREN` on a hold of one of
 // the two new reasons; only this release writes plan rows and those reasons, so no issue a release
 // before ran gets the new answers. `readBody` refuses an unknown field, so a plugin sending
-// `returnTo` to a daemon below 189 would have the completion refused, and a daemon below 189 has
+// `returnTo` to a daemon below 190 would have the completion refused, and a daemon below 190 has
 // neither route; the bump is why the two never meet (`api.OwnerPlanContract`).
 // Every architect request of one issue — register_plan, stop_task, sign_off,
 // request_backward_move, retry_or_escalate, close_root and register_gate — names on its fact the
@@ -2520,22 +2562,25 @@ package api
 // One value set of `GET /legion/v1/state` gets wider: an issue's `holdReason` takes
 // `task-stopped` (its owner stopped its task) and `children` (a parent whose plan has no
 // acceptance step waits, before its retro, for the issues beneath it) beside `escalated`. A caller
-// from a pod whose claims record a contract below 189 is served an issue held for either new
+// from a pod whose claims record a contract below 190 is served an issue held for either new
 // reason with no `holdReason`, as a hold of no reason is served (one row of `stateNarrowings`,
-// `withoutNewHoldReasons`); the bands compose, and every reader from 189 on takes the three values.
+// `withoutNewHoldReasons`); the bands compose, and every reader from 190 on takes the three values.
 // A second value set gets wider with it: `admission.held`'s `reason` takes
 // `children_before_retro` (a parent whose plan has no acceptance step, held before its retro,
 // with `heldBy` naming each issue beneath it still in the workflow) and `task_stopped` (a task
 // that was stopped, held where it keeps no slot, with no `heldBy`), in that order between
 // `accepted_ancestor` and `at_work` (`record.HeldReasons`); both read `unclassified` before. The
-// plugin reads the word as a `z.enum`, so a caller below 189 is served each row of either word as
+// plugin reads the word as a `z.enum`, so a caller below 190 is served each row of either word as
 // `unclassified` with no `heldBy`, the row it read for that issue before (the same row of
 // `stateNarrowings`, `withoutNewHoldReasons`).
 // `settings.projects.<KEY>.default_steps`, the steps a task that names none runs, came with it: a
 // key of the settings block the plugin parses loosely, so it narrows nothing.
-// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
-// when a census read all 266 open heads from 2026-11-20T12:29:39Z to 2026-11-20T12:30:29Z. The
-// census found none declaring 189, and above it 190 (#4578), 191 (six heads), 192 (six heads and
-// this one before this merge), 193 (five) and 194 (#3831 and #4030). Read the base's own number
-// and every open pull request again at the next merge rather than from this line.)
-const DaemonAPIVersion = 189
+// (This entry takes 190, the lowest number above main's 189 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at f21107b285: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 287 open pull requests, made between
+// 2026-11-20T18:13:35Z and 18:13:40Z, read all 287 and found 188 declared by 80 of them, 189 by
+// 20 (this change's own head before this merge among them), 191 by #4573, #4049 and #2230, 192
+// by three, 193 by three, 194 by #4030 and #3831, 195 by #4590, 196 by nine, 197 by three, and
+// nothing at 190. Read the base's own number and every open pull request again at the next merge
+// rather than from this line.)
+const DaemonAPIVersion = 190
