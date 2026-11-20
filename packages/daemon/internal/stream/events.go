@@ -87,17 +87,17 @@ type ToolStep struct {
 // prompt that ran no turn at all. Error is OMP's reason when the work ended in one: the message
 // of the frame's error object (shimwire.PromptError), which is what the daemon's own log records.
 //
-// The other four members of that error object come with it. Retryable is Oh My Pi's own word for
-// a failure that may succeed on a later try, HTTPStatus the status of the provider request that
-// failed (zero when the failure had none, as a content-filter refusal does), and Provider and
-// Model the provider and the model that request went to. Whether such a failure can clear is
-// read from HTTPStatus alone (supervise's providerErrored); the message is never parsed, since
-// it is a provider's own prose and changes without notice.
+// Four of the other members of that error object come with it. Retryable is Oh My Pi's own word
+// for a failure that may succeed on a later try, HTTPStatus the status of the provider request
+// that failed (zero when the failure had none, as a content-filter refusal does), and Provider
+// and Model the provider and the model that request went to. Code, Oh My Pi's class of the
+// failure, is not carried as it came, since the one decision that reads it reads Outcome. Whether
+// such a failure can clear is read from HTTPStatus alone (supervise's providerErrored); the
+// message is never parsed, since it is a provider's own prose and changes without notice.
 //
 // Outcome is minted here for a prompt that ran no turn, from the result's machine-readable code
 // (PromptRefusalOutcome), never its words: runtime.OutcomeAgentBusy where the code says the agent
-// is in a turn of its own, else runtime.OutcomeNoTurnRun. A result whose prompt ran a turn carries
-// none.
+// was busy, else runtime.OutcomeNoTurnRun. A result whose prompt ran a turn carries none.
 type PromptResult struct {
 	Claim        claim.Token
 	DeliveryID   string

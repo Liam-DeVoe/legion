@@ -21,8 +21,7 @@ package api
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The same commit also writes this bump into the contract
-// history of `packages/pi-legion/AGENTS.md` as the last bump.
+// and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
 // disagrees with this constant.
 //
@@ -2421,7 +2420,40 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 175: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 183: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -2447,7 +2479,7 @@ package api
 // whose issue the workflow records, owed or not, and absent for an architect, the controller, a
 // failed claim and an unrecorded issue. The end-of-turn reminder renders that answer in both
 // harnesses and keeps no model of the phase of its own (dispatch://INFRA-2746), and its architect
-// notice and the stall watch's notice go to the architect it names. A plugin below 175 calls no
+// notice and the stall watch's notice go to the architect it names. A plugin below 183 calls no
 // such route, and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts`
 // mirrors the two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
@@ -2475,25 +2507,29 @@ package api
 // workflow.IdleHoldBundleTooLarge states ends the hold. An older daemon neither reads nor writes
 // the table, and marks such a release again on each idle pass, as before this release.
 //
-// This release's image pins Oh My Pi v18.18.6-sami.20261118-035823 (`.omp-pin`), the first fork
-// release whose `prompt` refusal and `prompt_result` carry `code: "session_busy"` when the agent
-// is in a turn of its own (dispatch://INFRA-3538). The daemon reads that code and no words. A pod
-// still on the earlier image, until its update round, sends its busy refusal with no code, and the
-// daemon reads it as busy from its own record of the claim working or from the agent's get_state
-// (supervise's agentRefusalOutcome). While the record does not hold the claim working, an agent on
-// the earlier image is still charged in two cases: it does not answer get_state within the RPC
-// bound, or its turn ended between its refusal and the ask, as a notice's turn can when the
-// refusal came during its pre-turn work. Its refusal is then charged as unrecognised, and its
-// prompt's result as a prompt that ran no turn. Nothing of the daemon API changes with the pin.
-// (This entry takes 175, the lowest number above main's 168 that no other open pull request
-// declares: at the forward merge of 2026-11-19 that brought main in at 168 (#4488, the entry
+// This release's image pins Oh My Pi v18.18.6-sami.20261119-162325 (`.omp-pin`), which main's
+// #4402 moved the pin to while this change was open. It carries all of
+// v18.18.6-sami.20261118-035823, the first fork release whose `prompt` refusal and `prompt_result`
+// carry `code: "session_busy"` when the agent is busy (dispatch://INFRA-3538;
+// shimwire.CodeSessionBusy names the refusals that code covers). The daemon reads that code and
+// no words. A pod of the release before this one (contract 178) runs the same Oh My Pi and sends
+// the code already. A pod still on an image before v18.18.6-sami.20261118-035823, until its update
+// round, sends its busy refusal with no code, and the daemon reads it as busy from its own record
+// of the claim working or from the agent's get_state (supervise's agentRefusalOutcome). While the
+// record does not hold the claim working, an agent on such an image is still charged in two cases:
+// it does not answer get_state within the RPC bound, or its turn ended between its refusal and the
+// ask, as a notice's turn can when the refusal came during its pre-turn work. Its refusal is then
+// charged as unrecognised, and its prompt's result as a prompt that ran no turn. Nothing of the
+// daemon API changes with the pin.
+// (This entry takes 183, the lowest number above main's 178 that no other open pull request
+// declares: at the forward merge of 2026-11-20 that brought main in at 178 (#4115, the entry
 // above), .github/scripts/check-daemon-api-contract.sh read const DaemonAPIVersion at
 // refs/pull/<n>/head for each open pull request whose file list names this file or was cut
-// short, a reading that ended at 2026-11-19T16:56:13Z, and found above main's 168: 169 (#3831
-// and #4065), 170 (#2230, #4030, #4173, #4180 and #4193), 171 (#4115, #4485 and #4495), 172
-// (#3659), 173 (#4493) and 174 (#4273). It held 162 from the forward merge of 2026-11-18, when
-// that was the lowest number above main's 152 that no open pull request declared, until main
-// reached 168. The readings behind this change's earlier numbers are in its implement handoffs
-// on dispatch://INFRA-3136. That is a reading and never the rule: read main's own number and
-// every open head again at the next forward merge rather than from this line.)
-const DaemonAPIVersion = 175
+// short, a reading that ended at 2026-11-20T01:13:50Z, and found above main's 178: 179 (#4392
+// and #4540), 180 (#4049 and #4175), 181 (#4553) and 182 (#4495). It held 175 from the forward
+// merge of 2026-11-19, when that was the lowest number above main's 168 that no open pull request
+// declared, until main reached 178, and 162 from the forward merge of 2026-11-18 until main
+// reached 168. The readings behind this change's earlier numbers are in its implement handoffs on
+// dispatch://INFRA-3136. That is a reading and never the rule: read main's own number and every
+// open head again at the next forward merge rather than from this line.)
+const DaemonAPIVersion = 183

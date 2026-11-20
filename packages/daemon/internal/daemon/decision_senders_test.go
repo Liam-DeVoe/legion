@@ -160,7 +160,7 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // again names the review whether or not the person's word has moved since, which is how the
 // sweep's send of a lost resume's start named a changes request the person's approval had
 // superseded. The resume still writes that text, which this release never sends, for the release
-// a rollback past contract 175 returns to (record.PhaseRow.EntryTask says so), so the text is
+// a rollback past contract 183 returns to (record.PhaseRow.EntryTask says so), so the text is
 // there for a new sender to read. Such a function passes only where storedTaskReaders names it,
 // with why its read sends no person's review.
 //

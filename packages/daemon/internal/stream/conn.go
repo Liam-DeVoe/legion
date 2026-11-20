@@ -94,9 +94,9 @@ func (e *RefusedError) Is(target error) bool {
 
 // PromptRefusalOutcome is the outcome a refusal of a prompt is, read from the machine-readable
 // code beside it: runtime.OutcomeAgentBusy where the code is shimwire.CodeSessionBusy, the agent
-// saying it is in a turn of its own; runtime.OutcomePromptRefused for any other code; and
-// runtime.OutcomeUnrecognised for a refusal with no code, which names nothing the daemon can
-// tell apart. It reads both refusal frames of a prompt, before its acknowledgement
+// saying it is busy (each refusal that code covers); runtime.OutcomePromptRefused for any other
+// code; and runtime.OutcomeUnrecognised for a refusal with no code, which names nothing the daemon
+// can tell apart. It reads both refusal frames of a prompt, before its acknowledgement
 // (RefusedError) and after it (LateRefusal).
 //
 // The refusal's words are never read to decide. They are a sentence for a person, free to change
@@ -625,8 +625,8 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 				Claim: c.claim, DeliveryID: delivery, AgentInvoked: frame.AgentInvoked, Error: frame.Reason(),
 			}
 			if frame.Error != nil {
-				// The whole of Oh My Pi's error object, not the message alone: the structured
-				// members are what a failure is judged on.
+				// Oh My Pi's error object, not the message alone: the structured members are what
+				// a failure is judged on. Code, its class of the failure, is left: no decision reads it.
 				event.Retryable = frame.Error.Retryable
 				event.HTTPStatus = frame.Error.HTTPStatus
 				event.Provider = frame.Error.Provider

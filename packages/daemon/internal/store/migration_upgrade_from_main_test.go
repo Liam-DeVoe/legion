@@ -84,6 +84,9 @@ import (
 // as one of main's own. It creates experiment_assignments and fills it from the issues' memory
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
+// dispatch://INFRA-3759's project pause (20261115194357) adds the pause's three tables, two
+// columns of pod_resumes and the outbox's held_by_pause, and rewrites no kind list, so it needs
+// no row of its own here (migration_20261115194357_test.go reads it).
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // the reviewer's reviewed commit, cybermonklabs/legion#4400's 20261117000528, 20261117004117 and
 // 20261117064152, cybermonklabs/legion#4488's 20261117023932, dispatch://INFRA-1997's
@@ -137,6 +140,9 @@ var thisBranchsMigrations = []int{
 	// dispatch://INFRA-2614: the architect stall marks, the architect entry upgrade, the claim
 	// handshake and the phase entry's mark that a task is sent again as written.
 	20261113181500, 20261113182000, 20261114020537, 20261114061900,
+	// cybermonklabs/legion#4115 (dispatch://INFRA-3759): the project pause, its three tables, two
+	// columns of pod_resumes and the outbox's held_by_pause.
+	20261115194357,
 	// t-e-54 (cybermonklabs/legion#4220): the claim sessions, every name of a session a claim has
 	// recorded, held to the claim that recorded it first.
 	20261116144907,
@@ -172,7 +178,8 @@ var thisBranchsMigrations = []int{
 // dispatch://INFRA-2981's 20261113082214 and 20261113110610, dispatch://INFRA-3276's
 // 20261113082415, dispatch://INFRA-3146's 20261113090512, dispatch://INFRA-3274's 20261114031356,
 // dispatch://INFRA-2614's 20261113181500, 20261113182000, 20261114020537 and 20261114061900,
-// t-e-54's 20261116144907, the role-holders publication's 20261116165926, the reviewer's reviewed
+// cybermonklabs/legion#4115's 20261115194357 (dispatch://INFRA-3759), t-e-54's 20261116144907,
+// the role-holders publication's 20261116165926, the reviewer's reviewed
 // commit, 20261116234034, cybermonklabs/legion#4400's 20261117000528, 20261117004117 and
 // 20261117064152, the kind list with the plan record (cybermonklabs/legion#4488's
 // 20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
