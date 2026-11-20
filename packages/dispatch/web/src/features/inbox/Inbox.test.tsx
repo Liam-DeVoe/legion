@@ -2513,6 +2513,81 @@ test("a refused Assign to me keeps its row under the Unassigned filter, with the
   }
 });
 
+/** What the reader sees of a row's control through a write: each drawing `commits` recorded, told
+ *  once for each run of commits that drew it. */
+function drawnChanges(commits: readonly { readonly drawn: string }[]): string[] {
+  return commits
+    .map(({ drawn }) => drawn)
+    .filter((drawn, at, all) => at === 0 || all[at - 1] !== drawn);
+}
+
+/** What the row of `askId` draws of its Assign to me for `issueKey`: the button, held
+ *  (`aria-disabled`, `held-press.ts`) or free, and its words; `(no button)`, or `(no row)` while
+ *  the list draws no such row. */
+function drawnAssign(askId: string, issueKey: string): string {
+  const row = document.querySelector(`[data-inbox-row="${askId}"]`);
+  if (row === null) return "(no row)";
+  const button = row.querySelector(`button[aria-label="Assign ${issueKey} to me"]`);
+  if (button === null) return "(no button)";
+  const held = button.getAttribute("aria-disabled") === "true" ? "held" : "free";
+  return `${held} ${button.textContent}`;
+}
+
+// Under the Unassigned filter the optimistic assignment takes the row out of the filter, and the
+// Inbox lets go of it in the effects of the commit that draws the save's answer. The button is
+// held from the press through that commit, so it goes with its row in the commit its hold ends:
+// the press is still live then, and the page's rescue reads the row's going as its doing
+// (`causedByReader`). A button let go in the answer's own commit would end the press a commit
+// before the row goes, where a browser can run the rescue's check in between.
+test("Assign to me stays held through the commit after its answer, and goes with its row in the commit its hold ends", async () => {
+  const user = userEvent.setup();
+  const orphan = issueAsk(
+    {
+      id: "ask-orphan",
+      issue: { assignee: null, key: "CORE-3", title: "Nobody's issue" },
+      issue_key: "CORE-3",
+      question: "Orphan question?",
+    },
+    null
+  );
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([orphan]);
+  const getAsk = mockAskReads([orphan]);
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const commits = recordCommits<null>(() => drawnAssign("ask-orphan", "CORE-3"));
+  const { unmount } = renderInbox("/?assignee=unassigned", { commits });
+  try {
+    await screen.findByText("Orphan question?");
+    const button = screen.getByRole("button", { name: "Assign CORE-3 to me" });
+    const fromPress = commits.markAt(button, "click");
+    await user.click(button);
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-3", { assignee: "alice" }, keyedAttempt)
+    );
+    getInbox.mockResolvedValue([
+      {
+        ...orphan,
+        issue: { assignee: "alice", key: "CORE-3", title: "Nobody's issue" },
+        waiting_on_person: "alice",
+      },
+    ]);
+    await act(async () => {
+      save.resolve(narrowIssueOf(orphan, "alice"));
+      await save.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual([]));
+
+    // `Assign to me` again is the commit that draws the answer: still held there, and the next
+    // drawing is the row gone.
+    expect(drawnChanges(fromPress())).toEqual(["held Assigning…", "held Assign to me", "(no row)"]);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 // The hand-on's optimistic `waiting_on_person` takes the row out of the reader's own list as
 // the write starts, which would unmount the card holding the control: the card registers its
 // write with the list through the context the list provides (`hand-on-live.ts`), so the
@@ -3141,6 +3216,89 @@ test("a snooze out when the control is drawn for another ask holds the row of th
     ]);
   } finally {
     view.unmount();
+    snoozeAsk.mockRestore();
+  }
+});
+
+/** What the row of `askId` draws of its Snooze: the menu's trigger (`data-inbox-snooze`), which
+ *  stays at its one place in the row through a write, held (`aria-disabled`) or free; `(no row)`
+ *  while the list draws no such row. */
+function drawnSnooze(askId: string): string {
+  const row = document.querySelector(`[data-inbox-row="${askId}"]`);
+  if (row === null) return "(no row)";
+  const trigger = row.querySelector("[data-inbox-snooze]");
+  if (trigger === null) return "(no trigger)";
+  return `Snooze ${trigger.getAttribute("aria-disabled") === "true" ? "held" : "free"}`;
+}
+
+// A Snooze pick folds its row into Later, which starts folded, in the commit after the write's
+// answer, where the Inbox lets go of the row. The pick is the reader's press, and the row's going
+// is its doing only while the trigger the menu handed the focus back to is held
+// (`causedByReader`), so the trigger stays drawn and held from the pick through that commit and
+// goes with its row in the commit its hold ends. The write is out across two of the rescue's
+// checks, as a server slower than a frame keeps it, the trigger keeping the focus, and the
+// snooze's landing hands the focus on to the item after the row (R8) - here the row before it,
+// the one row left - not to the page.
+test("a Snooze pick holds its menu's trigger through the commit after its answer, and the focus goes to the row left when the row folds away", async () => {
+  const user = userEvent.setup();
+  const askA = issueAsk({ id: "ask-a" });
+  const askB = issueAsk({
+    id: "ask-b",
+    issue: { assignee: "alice", key: "CORE-2", title: "Other issue" },
+    issue_key: "CORE-2",
+    question: "Which format?",
+  });
+  let served: InboxRow[] = [askA, askB];
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const landing = Promise.withResolvers<void>();
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    await landing.promise;
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads([askA, askB]);
+  const commits = recordCommits<null>(() => drawnSnooze("ask-b"));
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RescuedMain>
+            <commits.Recorded host={null}>
+              <Inbox />
+            </commits.Recorded>
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await screen.findByText("Which format?");
+    const trigger = within(rowOf("ask-b")).getByLabelText("Snooze CORE-2: Which format?");
+    await user.click(trigger);
+    const tomorrow = choiceOf(trigger, "Tomorrow");
+    const fromPick = commits.markAt(tomorrow, "click");
+    await user.click(tomorrow);
+    await waitFor(() => expect(snoozeAsk).toHaveBeenCalledTimes(1));
+    await afterRescue();
+    await afterRescue();
+    expect(trigger).toHaveFocus();
+
+    await act(async () => {
+      landing.resolve();
+      await landing.promise;
+    });
+    await waitFor(() => expect(rowIds()).toEqual(["ask-a"]));
+    expect(drawnChanges(fromPick())).toEqual(["Snooze held", "(no row)"]);
+    await afterRescue();
+
+    expect(rowOf("ask-a")).toHaveFocus();
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
     snoozeAsk.mockRestore();
   }
 });

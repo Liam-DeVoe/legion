@@ -1,6 +1,6 @@
 import { type ReactNode, useContext, useEffect, useRef } from "react";
 import { ChoiceMenu } from "../../components/ChoiceMenu";
-import { heldPress } from "../../components/held-press";
+import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
 import { badgeMenuTrigger, badgeSelectBadge } from "../issue/badge-select";
@@ -25,8 +25,17 @@ import { type AskSnoozePress, type SnoozeSettled, useAskSnooze } from "./useAskS
  * is live and the Inbox keeps the row rendered until it settles. The fold is the feedback for a
  * snooze that lands, and the Inbox then hands the reader on to the item after the row
  * (`InboxHandOffContext`, R8); a snooze the server refuses rolls the row back with the reason
- * still attached to it, and leaves the reader on it. Un-snooze is held while its write is out
- * (`heldPress`) and moves nobody.
+ * still attached to it, and leaves the reader on it. Un-snooze moves nobody.
+ *
+ * The menu's trigger and Un-snooze are held from the press until the commit after their write's
+ * answer (`useHeldThroughAnswer`), the one in which the Inbox lets go of the row: the trigger by
+ * `aria-disabled` (`ChoiceMenu`'s `held`), opening no menu then, so neither a key nor a click on
+ * it writes anything, and Un-snooze by `heldPress`. The trigger stays drawn, held, at its one
+ * place in the row through the write: a row the optimistic moment puts inside its window draws
+ * the return time and Un-snooze before it, never in its place. The pick is the reader's press,
+ * and the row's going after the answer is that press's doing (`causedByReader`) only while the
+ * control it landed on is still in the page and held: a trigger let go before its row goes would
+ * leave the row's fold, where no hand-off moves the reader on, to drop the focus onto the page.
  *
  * `label` names the row for assistive tech; the Inbox passes the issue key or the document.
  */
@@ -57,6 +66,7 @@ export function SnoozeControl({
   // The row held is the one the live snooze is of, which is this row's unless a host has drawn
   // the control for another ask since that press (`useAskSnooze`).
   useLiveRegistration(write.liveAskId, onLive);
+  const held = useHeldThroughAnswer(write.pending);
   /** The ask whose hand-off this control began and whose press has not settled. A press is heard
    *  only while this control is mounted, and only the latest press (`useAskSnooze`), so a
    *  hand-off the settling can no longer reach is dropped here: kept, the Inbox would give its
@@ -137,7 +147,7 @@ export function SnoozeControl({
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
           data-inbox-action="unsnooze"
-          {...heldPress(write.pending, () => write.submit(null, handingOn({ askId, until: null })))}
+          {...heldPress(held, () => write.submit(null, handingOn({ askId, until: null })))}
           type="button"
         >
           {pendingLabel ?? "Un-snooze"}
@@ -147,6 +157,7 @@ export function SnoozeControl({
       <ChoiceMenu
         choices={snoozeChoices(snoozedUntil !== null)}
         face={face}
+        held={held}
         label={`Snooze ${label}`}
         marks={{ "data-inbox-snooze": "" }}
         onChoose={(choice) => {
