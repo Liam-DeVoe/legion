@@ -4,7 +4,7 @@ Read this when the skill's wake table sends you here, and for the every-turn che
 
 ## Trees waiting on a root claim
 
-A root architect whose claim on its root was refused waits, and nothing tells it when the holder lets go. `dispatch read` each root (a record whose `tree` is its own key) that the summary's `active` line names and whose own line reads `<KEY> admitted <status>`. When `Claimed by:` is `nobody` or ends `· not running`, post `<KEY>: the claim is free; claim it again.` as a Dispatch comment on `<KEY>` that mentions `role:<issues.<KEY>.architect.locator.claim>`.
+A root architect whose claim on its root was refused waits, and nothing tells it when the holder lets go. `dispatch read` each root (a record whose `tree` is its own key) that the summary's `active` line names and whose own line reads `<KEY> admitted <status>`. When `Claimed by:` is `nobody` or ends `· not running`, post `<KEY>: the claim is free; claim it again.` as a Dispatch comment on `<KEY>` that mentions `role:<token>`. The token is `issues.<KEY>.architect.locator.claim`, else `legion-<project>-<root key, lower case>-architect`.
 
 ## `tick`
 
@@ -50,4 +50,4 @@ Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot reco
 
 ## GitHub mentions
 
-Answer a mention that asks for triage or for what `read_state` or Dispatch holds. Write any other on the owning issue for its architect: the person's words, the URL and the issue key as a Dispatch comment that mentions the tree root's architect, never a token built from a partial issue reference; then answer the person with that comment's link. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names; a project that wants no gate sets `gates.design: []` in `legion.yaml`.
+Answer a mention that asks for triage or for what `read_state` or Dispatch holds as a Dispatch comment on the issue the mention is about. Write any other on the owning issue for its architect: the person's words, the URL and the issue key as a Dispatch comment that mentions the tree root's architect, never a token built from a partial issue reference. Then reply to the person on GitHub with that comment's link alone: that reply is your one `gh` write for a mention. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names; a project that wants no gate sets `gates.design: []` in `legion.yaml`.

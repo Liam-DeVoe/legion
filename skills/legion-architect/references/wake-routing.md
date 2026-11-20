@@ -3,9 +3,10 @@
 Read this when a wake reaches you. A wake about an issue reaches its own architect while that
 architect holds its role, else the nearest one above that does. A `child-status` or `child-closed`,
 and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the
-child. Your role prompt describes each notice; this table says what to do. "Section N" is that
-section of `skill://legion-architect`. Where a row says to ask a person, a child's own architect
-sends the question to the architect above it.
+child. A root architect's own stall takes the same two finding asks as a child's own architect's
+(`worker-stalled`). Your role prompt describes each notice; this table says what to do.
+"Section N" is that section of `skill://legion-architect`. Where a row says to ask a person, a
+child's own architect sends the question to the architect above it.
 
 | Wake | What to do |
 | --- | --- |
@@ -16,7 +17,7 @@ sends the question to the architect above it.
 | `phase-finished` | The next phase already started. Read the finished handoff (`dispatch handoff-read --issue <issue> --phase <word>`) and tell the working role of any gap. A planner's departure from the design: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). A reviewer's `APPROVED`: section 6. A worker reporting that no surface reaches the changed path: build the surface in this tree, then tell it to continue. |
 | `pr-blocked` | The review round cap is reached: decide in this turn, as "A capped pull request" below says. |
 | `checks-red` | The daemon asked the implementer to merge the base forward; the issue stays in the phase the notice names. Start nothing; in `accepting`, wait for the reviewer's approval of the new head ("A conflicting head" in `skill://legion-architect/references/acceptance.md`). |
-| `review-stuck` | No review decides the round, or the approval is of other code: tell the reviewer on the notice's `topic` to approve the head or request changes; ask a person when it answers again with no review. GitHub will not merge the head: no `topic`, and its `reason` names the merge state, each check run with its conclusion and each commit status with its state; sort it as your role prompt says. |
+| `review-stuck` | No review decides the round, or the approval is of other code: tell the reviewer on the notice's `topic` to approve the head or request changes; ask a person when it answers again with no review. GitHub will not merge the head (no `topic`): sort its `reason` as your role prompt says. |
 | `pr-merged` | Merged, not closed: it waits to reach `merging`, or for the issues beneath it. Start nothing. |
 | `pr-closed-unmerged` | Decide whether the work reopens, restarts (`park_child` then `rerun_child`) or ends, and give the reason. A phase worker makes the repository change. |
 | `pull-request-missing` | Tell the implementer to open the pull request from the branch the reason names. |
@@ -30,9 +31,9 @@ sends the question to the architect above it.
 | `worker-silent` | The daemon already sent the work again; start nothing. Where a suspension holds the claim, `resume_claim` your own; ask the holder of any other. |
 | `provider-errors`, `update-stalled` | `skill://legion-architect/references/operations.md#a-claim-of-your-tree` |
 | `worker-background-stalled` | Read what the session waits on: a missing surface or a person needs your decision, a long build does not. |
-| `held` | No `reason`: answer the `worker-died` that comes with it. `reason: "escalated"`: the controller has it; start nothing. |
+| `held` | No `reason`: answer the `worker-died` that comes with it. Only your `escalate` hands it to the controller. `reason: "escalated"`: the controller has it; start nothing. |
 | `message-refused` | Post what a person still needs yourself. Where Dispatch refused the status itself, ask a person to set it. |
-| `status-reasserted` | A session outside the tree wrote a status on the root, and the daemon set it back. Ask a person when it reads as a wish to stop the tree. |
+| `status-reasserted` | Ask a person when the status write the daemon set back reads as a wish to stop the tree. |
 | `volume-near-full` | The issue volume stayed above its low mark after a cache sweep; read the issue and pod it names. Mostly cold bytes in `scratch/tmp` or a workspace: ask the pod's roles on their topics to delete by exact path what they made and no longer need. Bytes warm across the clone, workspaces and caches: open a finding ask with the sizes, since `issue_volume` is the operator's. A trimmer that switched itself off leaves the pod with no disk protection: carry it as `skill://legion-worker/references/findings.md` says. |
 | A reply on an ask you follow | Answer in its thread (`dispatch comment --reply-to <comment id>`) when it carries a question, a disagreement, a correction or a fact you lack. Under an approval request you must revise or hand back, `--reply-to-ask <ask id> --turn agent`, since a default reply gives the turn to the person. An approval or a settled answer draws no reply. Relay it to the responsible role. |
 

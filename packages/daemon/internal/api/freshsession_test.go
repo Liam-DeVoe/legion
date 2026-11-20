@@ -884,8 +884,8 @@ func TestAFreshSessionKeepsTheSessionOfAClaimASuspensionAboveTheCallerTookOver(t
 			want: func(token claim.Token) string {
 				return string(token) + " is held by the controller's suspension, which only the controller or the operator lifts, so " +
 					"a fresh session by the architect went no further than its own suspension of the claim, which that suspension " +
-					"then took over, and the claim keeps the session it recorded. Ask the controller: its `resume` of the claim is " +
-					"its own to run"
+					"then took over, and the claim keeps the session it recorded. Ask the controller: its `resume_claim` is its " +
+					"own to run"
 			},
 		},
 		{

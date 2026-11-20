@@ -11,7 +11,7 @@ Read this on a `provider-errors` or `update-stalled` wake, and before you act on
 - `update-stalled`: an update round past its bound waits on an architect's suspension of a claim you own. Read the claim in `read_record`, then `resume_claim` it once its cause is gone, or keep it held. Open no ask, and send the controller nothing.
 - Your suspension is recorded as `architect`, and your `resume_claim` lifts it. Only its holder lifts a suspension the operator or the controller holds (`SUSPENDED_BY_OPERATOR`, `SUSPENDED_BY_CONTROLLER`): ask the operator with a `dispatch ask` on the root, and the controller with `envoy_publish`.
 - The daemon's own suspension of a park, a linger, a close or a carry takes yours over and refuses your `resume_claim` (`SUSPENDED_BY_DAEMON`). If you still want the claim held when the issue comes back, suspend it again.
-- While the project is paused, `resume_claim`, `retry`, `compact` and `fresh_session` are refused `409 PROJECT_PAUSED`; `stop` and `suspend` still run. Only the project's resume lifts the pause: ask again after it.
+- While the project is paused, each claim operation that would start a turn (`resume_claim`, `retry`, `compact` and `fresh_session`) is refused `409 PROJECT_PAUSED`; `stop` and `suspend` still run. Only the project's resume lifts the pause. Wait for it, and ask nobody to resume.
 
 ## The token the secrets broker lends
 

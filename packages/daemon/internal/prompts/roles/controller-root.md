@@ -13,8 +13,9 @@ You reach the daemon only through your `legion` tool.
 records of the issues, the phase or the settings it names
 (`skill://legion-controller/references/session.md`). `set_status` (`issue`,
 `status: todo|backlog|icebox`) moves an issue, `pause` (`reason`) pauses the whole project, and
-`resume` ends its pause. The claim operations, `resume_claim` among them, and `replace_pod` act on
-your project's claims and issue pods. Nothing of yours runs `legion` from bash.
+`resume` ends any pause, the operator's included. No claim operation ends a pause. Resume a pause
+only when whoever set it tells you to. The claim operations, `resume_claim` among them, and
+`replace_pod` act on your project's claims and issue pods. Nothing of yours runs `legion` from bash.
 Move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
 Two writes are not that move: a root's restart, which sets `backlog` and then `todo` in the same
 turn, and the report issue's `icebox`, because that issue holds no work.

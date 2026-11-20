@@ -2518,11 +2518,11 @@ package api
 // that waits out that bound, reads nothing and opens nothing, and is `503 POD_UPDATE_BUSY` with a
 // `Retry-After` of the sweep's interval in seconds (60), its sentence naming which of the two
 // ended the wait, and the bound.
-// While the project is paused (178, the entry above), the controller's and an architect's
-// `claims/resume` and `claims/retry` answer 409 `PROJECT_PAUSED`, with the `pause` that stands,
-// for every claim, as their `claims/fresh-session` and `claims/compact` do, and change nothing: a
-// claim the pause stopped is the pause's to bring back at the project's resume, and no agent's
-// operation undoes the pause. Their `claims/stop` and `claims/suspend` start nothing and still
+// While the project is paused (178), the controller's and an architect's `claims/resume` and
+// `claims/retry` answer 409 `PROJECT_PAUSED`, with the `pause` that stands, for every claim, as
+// their `claims/fresh-session` and `claims/compact` do, and change nothing: a claim the pause
+// stopped is the pause's to bring back at the project's resume, and no claim operation undoes
+// the pause. Their `claims/stop` and `claims/suspend` start nothing and still
 // run. A suspension of the controller's, an architect's or the operator's and the pause's stop
 // each keep their own source: the pause stops no claim such a suspension already holds, a
 // claim the pause stopped that such a suspension then takes over stays suspended by it at the
@@ -2543,24 +2543,24 @@ package api
 // declared: 147 (#4017), 148 (#3519), 149 (#2230), 150 (#4049 and this change's own #4065), 151
 // (#4106), 152 (#3730), 153 (#4115), 154 (#3659) and 155 (#4273). It keeps 156 at the forward
 // merge of 2026-11-17 that brought main in at d9299f7a, which carries #4106 at 151, and at the
-// forward merge of 2026-11-18 that brought main in at 0b2769e5, which carries #3730 at 152, the
-// entry right above this one and the number the base now carries: 156 is still above it. Read the
-// base's own number and every open head again at the next merge rather than from this entry.)
+// forward merge of 2026-11-18 that brought main in at 0b2769e5, which carries #3730 as entry
+// 152, the number that base carried: 156 is still above it. Read the base's own number and every
+// open head again at the next merge rather than from this entry.)
 // (At the forward merge of 2026-11-19, which brought in 708ca88c, main had moved to 160 (#3519,
-// the entry above), above this entry's earlier 156, and a reading of `const DaemonAPIVersion` at
+// entry 160), above this entry's earlier 156, and a reading of `const DaemonAPIVersion` at
 // the head of every one of the 233 open pull requests, which ended at 2026-11-19T09:00:35Z, found
 // 161 (#4173, #4180, #4193 and #4259), 162 (#3712), 163 (#4049), 164 (#4017), 165 (#4392), 166
 // (#4432), 167 (#3831, #4030, #4485 and #4493) and 168 (#2230 and #4488) declared above main's
 // 160, so 169 is the lowest number above it that no open head declares, and this entry takes it.)
-// (At the forward merge of 2026-11-19 that brought main in at 5f3d552e, which declares 168 (the
-// entry above), a reading of `const DaemonAPIVersion` at the head of every one of the 242 open
+// (At the forward merge of 2026-11-19 that brought main in at 5f3d552e, which declares 168
+// (entry 168), a reading of `const DaemonAPIVersion` at the head of every one of the 242 open
 // pull requests, made between 2026-11-19T18:25:20Z and 18:28:46Z, found 169 declared by #3831 as
 // well as by this change's own head, 170 by #2230, #4173, #4180 and #4193, and 172 to 176 by
 // others, so this entry moved to 171, the lowest number above main's 168 that no other open head
 // declares. Read the base's own number and every open head again at the next merge rather than
 // from this line.)
-// (At the forward merge of 2026-11-20 that brought main in at c3b75c69, which declares 178 (the
-// entry above), .github/scripts/check-daemon-api-contract.sh named 184 as the lowest number above
+// (At the forward merge of 2026-11-20 that brought main in at c3b75c69, which declares 178
+// (entry 178), .github/scripts/check-daemon-api-contract.sh named 184 as the lowest number above
 // main's 178 that no open pull request declares: 179 (#4392 and #4540), 180 (#4049 and #4175),
 // 181 (#4273 and #4553), 182 (#4173 and #4495) and 183 (#3712) were declared, so this entry moved
 // from 171 to 184. Read the base's own number and every open head again at the next merge rather

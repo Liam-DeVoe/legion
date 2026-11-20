@@ -179,14 +179,14 @@ export interface LegionDaemonClient {
   /** The controller's or an architect's `suspend`: the claim's process stops and its session is
    * kept, the effect `legion claims suspend` runs for an operator, held for a turn's end; the
    * suspension is the caller's (`controller` or `architect`), which holds against the daemon's
-   * rules and which the caller's own resume lifts. Refused for a claim the operator's own
+   * rules and which the caller's own `resume_claim` lifts. Refused for a claim the operator's own
    * suspension holds (`SUSPENDED_BY_OPERATOR`). The answer is the claim as the suspension left it,
    * with who holds the suspension. */
   readonly suspendClaim: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
-  /** The controller's or an architect's `resume`: a suspended claim's session is relaunched, the
-   * effect `legion claims resume` runs for an operator, but never over the operator's own
+  /** The controller's or an architect's `resume_claim`: a suspended claim's session is relaunched,
+   * the effect `legion claims resume` runs for an operator, but never over the operator's own
    * suspension (`SUSPENDED_BY_OPERATOR`); a claim stored working is refused (`CLAIM_IN_A_TURN`),
    * and so is every claim while the project is paused (`PROJECT_PAUSED`): a claim the pause
    * stopped is the project's resume's to bring back. A stop and a suspension still run while the
@@ -195,10 +195,10 @@ export interface LegionDaemonClient {
    * An architect's grant reaches the claims of the issues it owns alone, through all six of these
    * claim operations: another tree's claim is refused (`ISSUE_OUTSIDE_TREE`), and so is a claim of
    * an issue of its tree it does not own (`ISSUE_NOT_OWNED`), the architect's own (`OWN_CLAIM`), a
-   * claim the controller's suspension holds (`SUSPENDED_BY_CONTROLLER`), for its resume, suspend,
-   * stop and `fresh_session` a claim the daemon suspended (`SUSPENDED_BY_DAEMON`), and, for its
-   * retry and `fresh_session`, a failed or retired claim whose issue is out of the workflow or
-   * whose tree lingers (`ISSUE_OUT_OF_WORKFLOW`). */
+   * claim the controller's suspension holds (`SUSPENDED_BY_CONTROLLER`), for its `resume_claim`,
+   * suspend, stop and `fresh_session` a claim the daemon suspended (`SUSPENDED_BY_DAEMON`), and,
+   * for its retry and `fresh_session`, a failed or retired claim whose issue is out of the
+   * workflow or whose tree lingers (`ISSUE_OUT_OF_WORKFLOW`). */
   readonly resumeClaim: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;

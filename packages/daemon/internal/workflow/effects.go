@@ -415,7 +415,8 @@ func (h phaseHandoff) onto(row record.PhaseRow) record.PhaseRow {
 // a production check's role between looks (endLookPending): the row keeps a hold it meets
 // (record.SuperviseRequest.KeepsHold), so it takes over no suspension of the operator's, the
 // controller's or an architect's and leaves the claim to that holder. A park, a linger, a close
-// and a carry take over what they outrank on purpose, and go through everyClaim.
+// and a carry take over what they outrank on purpose: the first three go through everyClaim, and
+// a carry through the daemon outbox's stopElsewhere.
 func (e *Engine) suspendKeepingHold(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, reason string) error {
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: role,
 		Generation: issue.Generation, Reason: reason, KeepsHold: true})

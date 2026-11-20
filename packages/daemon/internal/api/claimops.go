@@ -180,8 +180,8 @@ func (s *server) claimSuspend(w http.ResponseWriter, r *http.Request) {
 // which only the operator lifts; an architect's lifts an architect's suspension alone
 // (claimDoor, supervise.RequestResume.By, supervise.Claim.ResumeRefusal). While the project is
 // paused it is refused PROJECT_PAUSED and nothing of the claim changes (claimOp.startsATurn): a
-// claim the pause stopped is the pause's to bring back at the project's resume, and no agent's
-// resume undoes the pause.
+// claim the pause stopped is the pause's to bring back at the project's resume, and no claim
+// operation undoes the pause.
 func (s *server) claimResume(w http.ResponseWriter, r *http.Request) {
 	s.claimEventOperation(w, r, resumeOp, func(target claimTarget) supervise.Event {
 		return supervise.RequestResume{Claim: target.token, By: target.by}
@@ -420,7 +420,7 @@ func holdSentences(token claim.Token, err error) (code, heldBy, lifts string, he
 			"Ask the operator: `legion claims resume --claim " + string(token) + "` is theirs to run", true
 	case errors.Is(err, supervise.ErrControllerHolds):
 		return suspendedByController, "held by the controller's suspension, which only the controller or the operator lifts",
-			"Ask the controller: its `resume` of the claim is its own to run", true
+			"Ask the controller: its `resume_claim` is its own to run", true
 	case errors.Is(err, supervise.ErrNotTheArchitectsSuspension):
 		return suspendedByDaemon, "suspended by the daemon, not by an architect",
 			"The daemon's own rules start such a claim again — its issue's phase, or its role's next wake — and so do the controller's resume and the operator's", true

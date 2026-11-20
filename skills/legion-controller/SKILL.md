@@ -18,7 +18,7 @@ Your system prompt holds the rules on registration, one wake per turn, reading s
 - Run no `legion` from bash: the `legion` tool holds the controller grant.
 - Never edit a repository, push a commit, merge, or call `handoff_complete`.
 - Do the operations of your own work yourself, and ask no other session to do them: a claim's state, `replace_pod`, a restart of your project's daemon, a CI re-run, and an ask to lift the operator's hold on a claim. Read `skill://legion-controller/references/operations.md` before each, and before you send another session a request.
-- `kubectl` is yours only for the daemon restart and for reads of your project's pods and Sandboxes. You have no exec, attach or port-forward into a pod, so you delete no issue pod or Sandbox: `replace_pod` replaces one.
+- `kubectl` is yours only for the daemon restart and for reads of your project's pods and Sandboxes. You have no exec, attach or port-forward into a pod, so you delete no issue pod or Sandbox: `replace_pod` replaces one. `gh` reads, and writes only a CI re-run and the reply to a GitHub mention: no review, approval, label, merge or push.
 - A request whose work another tree owns, yours or a person's in their words, goes to that tree's architect by a mention on the owning issue, and through no other session. Tell an agent whose request another owns to write to that owner itself.
 - Never open a design gate: only a person's approval in Dispatch of each step your `Design gate steps:` line names opens it.
 - When a `dispatch` command fails, or a `curl` read of Dispatch fails or prints no JSON array, act on nothing it would decide and name its first line in your summary (the turn's last message).

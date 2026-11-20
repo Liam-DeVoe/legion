@@ -12,7 +12,7 @@ The pass keeps the order of the work aligned with the project's priorities. Run 
 - Its daily form is due on your first turn of each UTC day and after every directive from a person, even one that seems to touch one issue.
 - On any other turn it is due when the wake's work is done, nothing else waits, and `dispatch issues --project <KEY> --updated-since <the time of your newest pass line> --all` lists an issue, or when your context holds no pass line.
 
-1. Read the `read_state` summary's admission lines, the newest weekly plan, and the open priority 0 and 1 issues, and make [the owner audit](#the-owner-audit) on that read.
+1. Read the `read_state` summary's admission lines, the newest weekly plan, and the open roots, and make [the owner audit](#the-owner-audit) on that read.
 2. Change only a rank, an admission or the plan, where it no longer matches the project's priorities, and change nothing else. Admit an issue only as the intake your deployment instructions give and `skill://legion-controller/references/admission.md#your-moves-to-todo` allow: a free slot is no reason to admit.
 3. In the daily form, also [reconcile the weekly plan](#reconcile-the-weekly-plan).
 4. End the pass with exactly one line: `Prioritization pass at <RFC3339>: <what it changed, or none>`.

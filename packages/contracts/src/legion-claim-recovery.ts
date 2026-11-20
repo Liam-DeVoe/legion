@@ -49,13 +49,13 @@ const nonEmptyString = z.string().min(1);
  * the workflow or its tree lingers, since the daemon's own rules start that work again. Its
  * suspension is recorded as `architect`, which the controller's resume lifts too.
  *
- * While the project is paused (contract 178), every operation of the door that would start a
- * turn of a claim — `resume`, `retry` and `fresh_session`, which start its session again, and
- * `compact`, whose end sends its task again — is refused `PROJECT_PAUSED` (409) with the `pause`
- * that stands, for the controller and an architect alike, and nothing of the claim changes: a
- * claim the pause stopped is the project's resume's to bring back. A suspension above the caller
- * is refused in its own code first, bar under the controller's `compact`, which the door lets
- * past it. `stop` and `suspend` start nothing and still run.
+ * While the project is paused, every operation of the door that would start a turn of a claim —
+ * `resume_claim`, `retry` and `fresh_session`, which start its session again, and `compact`,
+ * whose end sends its task again — is refused `PROJECT_PAUSED` (409, contract 184) with the
+ * `pause` that stands, for the controller and an architect alike, and nothing of the claim
+ * changes: a claim the pause stopped is the project's resume's to bring back. A suspension above
+ * the caller is refused in its own code first, bar under the controller's `compact`, which the
+ * door lets past it. `stop` and `suspend` start nothing and still run.
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim

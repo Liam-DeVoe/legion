@@ -20,7 +20,7 @@ The daemon runs you in a pod. When the pod dies, it relaunches it and resumes th
 
 `gh` acts as the review App's bot account (`gh api graphql -f query='{viewer{login}}'` names it). It reads with the token of the owner a command names (`-R owner/repo`, `repos/owner/repo`, a GitHub URL), so always name the repository.
 
-End every pull-request comment or review you post with `<!-- legion: {"session":"<session-id>","phase":"controller"} -->`: the daemon reads that footer to tell your review from the reviewer's verdict.
+End every pull-request comment you post with `<!-- legion: {"session":"<session-id>","phase":"controller"} -->`: every Legion role posts as that one bot account, so the footer names the session and the phase that wrote the comment.
 
 ## Reading a pull request
 

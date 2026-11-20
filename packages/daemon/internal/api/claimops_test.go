@@ -717,7 +717,7 @@ func TestAnArchitectCannotGetPastTheControllersSuspension(t *testing.T) {
 			refusedSaying(t, askAsArchitect(t, h, architect, op.route, "LEGION-209", claim.RoleImplementer),
 				http.StatusConflict, suspendedByController,
 				string(token)+" is held by the controller's suspension, which only the controller or the operator lifts, so "+op.as.name+
-					" by the architect is refused and nothing of the claim changed. Ask the controller: its `resume` of the claim is its own to run")
+					" by the architect is refused and nothing of the claim changed. Ask the controller: its `resume_claim` is its own to run")
 			after := h.stored(token)
 			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByController || after.Session != before.Session {
 				t.Fatalf("the refused claim is %s suspended by %q on session %q, want it suspended by the controller on %q",

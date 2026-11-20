@@ -13,10 +13,10 @@ import (
 // While the project is paused, the claim door's resume and retry are refused PROJECT_PAUSED for
 // the controller and for an architect alike, with the pause that stands and a sentence that names
 // the controller's resume operation as what lifts the pause, and nothing of the claim changes: no
-// agent's operation undoes the pause (claimOp.startsATurn, refusedWhilePaused). The door's stop
-// and suspend start nothing and still run, for either caller. The controller's pod update is
-// refused PROJECT_PAUSED as well, before the daemon is asked anything (issuePodUpdate,
-// refusedForPause).
+// claim operation undoes the pause (claimOp.startsATurn, refusedWhilePaused). The door's stop
+// and suspend start nothing and still run: the test asks the controller's suspend and an
+// architect's stop. The controller's pod update is refused PROJECT_PAUSED as well, before the
+// daemon is asked anything (issuePodUpdate, refusedForPause).
 //
 // The negative control is the pause check undone (claimEventOperation's and claimRetry's
 // `startsATurn` checks, and issuePodUpdate's refusedForPause): the resume and the retry reach the
@@ -88,7 +88,8 @@ func TestWhilePausedTheClaimDoorRefusesResumeAndRetryAndStillStopsAndSuspends(t 
 		t.Fatalf("the implementer is %s by %q after the refused resumes, want suspended by the architect", got.State, got.SuspendedBy)
 	}
 
-	// A suspension and a stop start nothing, and still run for either caller.
+	// A suspension and a stop start nothing, and still run: the controller's suspend and an
+	// architect's stop.
 	wantClaimOperationAnswer(t, askClaimOperation(t, h.harness, "/legion/v1/claims/suspend", "LEGION-209", claim.RoleReviewer),
 		http.StatusOK, ClaimOperationResponse{State: "suspended", SuspendedBy: "controller"})
 	wantClaimOperationAnswer(t, askAsArchitect(t, h.harness, architect, "/legion/v1/claims/stop", "LEGION-209", claim.RolePlanner),

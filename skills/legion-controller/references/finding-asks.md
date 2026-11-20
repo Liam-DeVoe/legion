@@ -29,7 +29,7 @@ dispatch comment --issue '<the evidence's issue>' --reply-to '<comment id>' --me
 
 ## Follow it
 
-A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Follow it so that its answer reaches you: `dispatch follow --ask 'dispatch://<KEY>/ask/<id>' --action follow`. When `dispatch read --ref` shows it answered already, act on its answer now.
+A finding ask another role opened reaches you as `dispatch://<KEY>/ask/<id>`. Follow it so its answer reaches you: `dispatch follow --ask 'dispatch://<KEY>/ask/<id>' --action follow`. When `dispatch read --ref` shows it answered already, act on its answer now.
 
 ## Act on its answer
 
@@ -45,10 +45,10 @@ Then reply under the ask, first line exactly `Filed dispatch://<NEW KEY>` or `No
 
 ## Catch up at every start
 
-An answer that arrives while no controller runs never wakes you, a reference published then reaches nobody, and a new session follows none of the asks an earlier one followed. So at every start:
+While no controller runs, an answer wakes nobody, a reference published then reaches nobody, and a new session follows none of the asks an earlier one followed. So at every start:
 
 1. `dispatch read` the report issue (none yet: nothing to catch up). Reopen and assign it as `skill://legion-controller/references/daily-report.md` "Keep it answerable" says.
-2. `dispatch open-asks --project <PROJECT>` lists every open ask; an ask on a closed issue is not listed. Follow those on the report issue. On another issue, a question opening `Finding from ` is a role's own-issue ask: move it to the report issue with the same question, options and `--ref`, reply `Moved dispatch://<REPORT KEY>/ask/<new id>` under the old one, and resolve it.
+2. `dispatch open-asks --project <PROJECT>` lists every open ask; it lists no ask on a closed issue. Follow those on the report issue. On another issue, a question opening `Finding from ` is a role's own-issue ask: move it to the report issue with the same question, options and `--ref`, reply `Moved dispatch://<REPORT KEY>/ask/<new id>` under the old one, and resolve it.
 3. List the answered asks still waiting on you, for the report issue and then each issue of one snapshot of `dispatch issues --project <PROJECT> --status needs_review --all` (never paged):
 
    ```text
@@ -56,7 +56,7 @@ An answer that arrives while no controller runs never wakes you, a reference pub
    printf '%s' "$asks" | jq -cn 'input | if type == "array" then [.[] | select(any(.options[]; .label == "Do not file" or .label == "Admit it" or .label == "Park it" or .label == "Leave it admitted" or .label == "Defer it" or .label == "Let it run")) | .answer.at as $t | select([.thread.replies[]? | select(.author.kind == "session" and .created_at > $t and (.body | test("^(Filed dispatch://|Handed dispatch://|Admitted dispatch://|Not filed:|Not admitted:|Parked dispatch://|Not parked dispatch://|Left admitted dispatch://|Deferred dispatch://|Not deferred dispatch://|Let run dispatch://)")))] | length == 0) | {id, question, answer}] else error("Dispatch did not answer the list") end'
    ```
 
-   Exit 0 with `[]` is nothing waiting; anything else is a failed read. Act on each as above, a triage ask as `skill://legion-controller/references/triage.md` says.
+   Exit 0 with `[]` is nothing waiting; anything else is a failed read. Act on each as above, a triage ask as `skill://legion-controller/references/triage.md` says, and a `Hand it to the owning tree` answer as step 5 says.
 4. List the clear defects nobody took yet (no `Filed`, `Not filed`, or older `Handed` or `Asked` reply):
 
    ```text
@@ -65,5 +65,4 @@ An answer that arrives while no controller runs never wakes you, a reference pub
    ```
 
    Take each as [File a clear defect no tree owns](#file-a-clear-defect-no-tree-owns) says.
-5. Take each ask earlier rules opened whose question opens `Clear defect from ` (step 2 lists the open ones, step 3 the answered ones) as [File a clear defect no tree owns](#file-a-clear-defect-no-tree-owns) says, with `--reply-to-ask '<ask id>'` for `--reply-to`. Resolve an open one once it carries your reply.
-   - A person's answer `Hand it to the owning tree` is a write to that tree's architect: reply as step 3 there says.
+5. Take each ask earlier rules opened whose question opens `Clear defect from ` as [File a clear defect no tree owns](#file-a-clear-defect-no-tree-owns) says, with `--reply-to-ask '<ask id>'` for `--reply-to`: an open one (step 2 lists it), resolved once it has your reply, and one answered `Hand it to the owning tree` (step 3 lists it), read as a write to that tree's architect: reply as step 3 there says.

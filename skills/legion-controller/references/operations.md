@@ -26,7 +26,7 @@ Use these on a claim of your project that needs action, a tree's architect claim
 2. After a refusal, ask again later: the refusal says what the claim does now. For a root with no architect claim, `compact` and `fresh_session` answer `NO_CLAIM`.
 3. While a wave runs (the summary's `wakes waiting` count is above 0), a start you raised waits its turn: ask for nothing again.
 
-While your project is paused (the summary's `paused:` line), the daemon refuses `resume_claim`, `retry`, `compact`, `fresh_session` and `replace_pod` with `409 PROJECT_PAUSED`, since each would start a turn. Only the project's resume lifts the pause: your `resume` operation, which names no issue, or the operator's `legion project resume`; `resume_claim` lifts none. `stop` and `suspend` still run. On `409 SUSPENDED_BY_OPERATOR`, see [A claim the operator holds](#a-claim-the-operator-holds).
+While your project is paused (the summary's `paused:` line), the daemon refuses `resume_claim`, `retry`, `compact`, `fresh_session` and `replace_pod` with `409 PROJECT_PAUSED`. Only the project's resume lifts the pause: your `resume` operation or the operator's `legion project resume`; `resume_claim` lifts none. `stop` and `suspend` still run. On `409 SUSPENDED_BY_OPERATOR`, see [A claim the operator holds](#a-claim-the-operator-holds).
 
 ## A restart of your project's daemon
 
@@ -41,7 +41,7 @@ Publish to no role topic while the restart runs: a message starts a turn that th
 
 ## A replacement of an issue's pod
 
-Replace an issue pod only when a person asks or your deployment instructions name the case, never to reach one claim. Delete no issue pod or Sandbox with `kubectl`: its disk can hold unpushed work. `replace_pod` opens the daemon's update round: each role is asked to push and answer `ready_for_update`, and the pod is replaced once all answered or at `pod_update_grace_minutes`.
+Replace an issue pod only when a person asks or your deployment instructions name the case, never to reach one claim. Delete no issue pod or Sandbox with `kubectl`: its disk can hold unpushed work. `replace_pod` opens an update round: it asks each role to push, then replaces the pod.
 
 1. `legion({ op: "replace_pod", issue: "<KEY>" })`. A round already open is answered as it stands.
 2. On a refusal: `NO_CLAIM` or `NO_POD`, there is no pod to replace now; `POD_CHANGING` or `POD_UPDATE_LIMITED`, ask at a later wake; `POD_UPDATE_BUSY`, ask after a minute; `POD_UPDATE_NOT_RECORDED` or `POD_UPDATE_FAILED`, read `updateRound` on the issue's claims first; `PROJECT_PAUSED`, ask after the resume; `POD_HELD_BY_PAUSE`, ask once a role of the pod runs again.
@@ -50,6 +50,8 @@ Replace an issue pod only when a person asks or your deployment instructions nam
 Ask no other session to remove the pod.
 
 ## A re-run of a CI run
+
+Of these operations, only the re-run writes with `gh` or the broker's token. The controller's one other `gh` write is its reply to a GitHub mention.
 
 1. Read the failed job's log: `gh run view <id> --log-failed --repo <owner>/<repo>`. Re-run only the failed jobs, and only for an infrastructure failure the log shows, such as a lost runner. Never re-run to test a theory, or on a head a run already tested with the same inputs.
 2. A test that failed and passed on the same code is flaky: write it to the tree whose code it is by a mention (`skill://legion-worker/references/findings.md#write-to-the-owner`), to be fixed at its cause.

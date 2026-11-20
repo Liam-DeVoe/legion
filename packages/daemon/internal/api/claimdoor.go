@@ -70,7 +70,7 @@ type ClaimRequest struct {
 // retry — which a paused project holds for every claim but the controller's. While the project
 // is paused such an operation is refused 409 PROJECT_PAUSED, with the pause that stands, after
 // the door and before anything is asked of the claim (refusedWhilePaused, claimEventOperation,
-// claimRetry), as the operator's resume and retry are: no agent's operation undoes the pause,
+// claimRetry), as the operator's resume and retry are: no claim operation undoes the pause,
 // which the project's resume alone lifts. The two recoveries meet the same refusal in the paths
 // they share with the operator's door (freshSession, compact), and leave it false here. The stop
 // and the suspension start nothing and are let through, as the operator's are.

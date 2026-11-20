@@ -94,7 +94,9 @@ func (s *supervision) reconcilePodUpdates(ctx context.Context, claims []supervis
 // (podUpdateWalk) from its read of the limits (beginPodUpdateSweep) to its record, so a round
 // the controller asks for (requestPodUpdate) is opened before that read or after that record,
 // and never between them on limits the walk has already spent. It waits for the turn as long as
-// a request holds it: a request holds it for its read of the claims and its post alone.
+// a request holds it: a request holds it for its store reads of the claims and of the pause holds
+// on the issue's pod (podPauseHolds), its read of the limits (beginPodUpdateSweep), and its post,
+// whose ask of a ready role first reads the asks still queued (askRound).
 func (s *supervision) walkPodUpdates(ctx context.Context, claims []supervise.Claim) []podReplacement {
 	issues, byIssue := podUpdateGroups(claims)
 	turn := s.podUpdateWalkTurn()
