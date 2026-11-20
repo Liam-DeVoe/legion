@@ -203,9 +203,9 @@ var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,20}$`)
 // and with each id named once. The secrets broker reads a private project's Slack channels to
 // release the Legion Slack bot token to that project's credentials for those channels alone (R14),
 // so only the project's owner writes them: the caller makes that check first, under the project's
-// row lock (LockForAccessWrite). A list different from the one stored, compared sorted, sets
+// owner lock (LockForAccessWrite). A list different from the one stored, compared sorted, sets
 // slack_channels_changed_at in the same update to statement_timestamp(), that update's own start:
-// it comes after the project's row lock and the channel lock are held, so it never precedes a
+// it comes after the project's owner lock and the channel lock are held, so it never precedes a
 // lock wait, and two writes of one project are stamped in the order they wrote. The transaction's
 // now() would be its start, before those waits. The same list leaves the time.
 //
@@ -270,8 +270,8 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 // lockSlackChannels takes, for the rest of tx, the one lock every write of a project's Slack
 // channels takes before it reads any project's list, so two writes naming one channel for two
 // private projects cannot both read the other's list as it was and both commit. It comes after the
-// project's row lock (LockForAccessWrite) in the order every access write takes its locks, and no
-// writer takes a project's row after it.
+// project's owner lock (lockProject, which LockForAccessWrite also takes) in the order every access
+// write takes its locks, and a project's row is written only under that project's owner lock.
 func lockSlackChannels(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-slack-channel'), 0)`); err != nil {
 		return fmt.Errorf("lock the Slack channels: %w", err)
