@@ -1,11 +1,12 @@
 kind: Fixed
 body: |-
   A standby Dispatch process now becomes the publisher within six seconds of a kill, a freeze or
-  a loss of NATS of the process that published: its `/healthz` reports `outbox_publisher: true`
-  and it logs that it took the publisher hold within 6 s, and it takes the hold itself within 6 s
-  on the database's clock. A kill or a freeze at the moment of a renewal of the publisher hold was
-  followed by a take-over six seconds or more later before. A NATS connection that went silent
-  while the publisher had nothing to send was taken over eight to nine seconds into the silence.
+  a loss of NATS of the process that published: it logs that it took the publisher hold, which
+  it writes as it begins to publish, within 6 s of the stop, and after a kill or a freeze it takes
+  the hold itself within 6 s on the database's clock. A kill or a freeze at the moment of a
+  renewal of the publisher hold was followed by a take-over six seconds or more later before. A
+  NATS connection that went silent while the publisher had nothing to send was taken over eight
+  to nine seconds into the silence.
   The publisher hold `dispatch-outbox` lasts 5 s after each renewal instead of 6 s, and a holder
   reports itself lost 1 s before its row lapses instead of 2 s, so a renewal still has 4 s from
   the last confirmed one. A holder gives the hold up after 2 s without NATS instead of 3 s, the
