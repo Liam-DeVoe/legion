@@ -212,6 +212,10 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
+	// a parent's status out of line with its children's (R24) is refused 409
+	// PARENT_STATUS_CONFLICT. The zero value is off.
+	ParentStatusRule ParentStatusRule
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -293,6 +297,8 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE; see Deps.ParentStatusRule.
+	ParentStatusRule ParentStatusRule
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -378,6 +384,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Metrics:                input.Metrics,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		ParentStatusRule:       input.ParentStatusRule,
 	}, nil
 }
 
@@ -1243,12 +1250,20 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 	if err != nil {
 		return model.Actor{}, err
 	}
+	return recordedActor(r, actor, present, supplied)
+}
+
+// recordedActor is actorFrom for a caller that optionalActor already resolved: the caller, when
+// present says the caller is a person at a browser, else the session that bearerSessionActor
+// resolves, with no credential.
+func recordedActor(r *http.Request, caller model.Actor, present bool, supplied *model.Actor) (model.Actor, error) {
 	if !present {
-		if actor, err = bearerSessionActor(r, actor, supplied); err != nil {
+		var err error
+		if caller, err = bearerSessionActor(r, caller, supplied); err != nil {
 			return model.Actor{}, err
 		}
 	}
-	return actor.Recorded(), nil
+	return caller.Recorded(), nil
 }
 
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own

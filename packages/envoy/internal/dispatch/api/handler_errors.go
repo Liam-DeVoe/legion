@@ -132,6 +132,12 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		}
 		return
 	}
+	// A write that R24 refuses names each issue that holds the rule (parent_status_rule.go).
+	var conflict *parentStatusConflict
+	if errors.As(err, &conflict) {
+		WriteJSON(w, http.StatusConflict, conflict.body())
+		return
+	}
 	documentCode := documentErrorCode(err)
 	switch documentCode {
 	case codeDocServiceUnavailable:

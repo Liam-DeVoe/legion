@@ -48,11 +48,13 @@ var (
 // caller's, and commit it before they return (see TestCopyLockComesBeforeEveryPendingRowAndEvent):
 // each settlement settleOwedNow runs opens and commits its own, and SettleIssueDocuments, which
 // settleIssueBeforeClose calls, refuses a joined context; sweepClosedIssueAsks begins and commits
-// its own.
+// its own; and writeIssue, the PATCH's write core, begins and commits its own, so what one call
+// of it takes does not order its caller's later calls.
 var ownTransactionFunctions = []string{
 	"docs.Service.settleOwedNow",
 	"api.server.settleIssueBeforeClose",
 	"api.server.sweepClosedIssueAsks",
+	"api.server.writeIssue",
 }
 
 // TestCopyLockComesBeforeEveryPendingRowAndEvent enforces the order the copy lock's deadlock
