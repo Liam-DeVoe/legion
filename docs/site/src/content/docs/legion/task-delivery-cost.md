@@ -130,6 +130,10 @@ So each figure that names a task names its claim too.
     When the worker's report of that turn names no task, that turn was the turn of something else.
     The daemon then puts the take back to wait for its own turn, and writes `supervise: a turn's report names no task of the take whose turn it was given; the take awaits its turn again`.
     The command counts the turn that the daemon put back as a turn with no cause, at its start and at its end, although these two lines name the task.
+    The worker's report says this for certain when it names the take as `held`: the take's text was still waiting, unrun, when the turn ended.
+    After a daemon restart under a live worker, the daemon has lost its count of the worker's turns, and such a report is the only one that puts the first take back.
+    When that report arrives before the start of its turn, the daemon gives that turn no take, and writes `supervise: a turn started that the producer said ran with the accepted take's text held; the turn is no task's, and the take awaits its turn`.
+    The command counts that turn as a turn with no cause, since its lines name no task.
 
 - `turns each number took` is, for each task, the number of turns that started with that task as their cause.
   A turn that the daemon put back does not count.

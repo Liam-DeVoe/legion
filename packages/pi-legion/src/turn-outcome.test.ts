@@ -10,7 +10,7 @@ import {
   createTurnOutcomeReporter,
   type ReportedClaim,
   type TurnOutcomeLog,
-  type TurnReportAnswer,
+  type TurnOutcomeReporter,
 } from "./turn-outcome";
 
 const SESSION = "ses_implementer_208";
@@ -27,11 +27,7 @@ const implementer: ReportedClaim = {
 };
 
 interface Rig {
-  readonly report: (
-    sessionID: string,
-    event: AgentEndEvent,
-    task?: number
-  ) => Promise<TurnReportAnswer | undefined>;
+  readonly report: TurnOutcomeReporter["report"];
   readonly sessionEnded: (sessionID: string) => void;
   readonly posted: Record<string, unknown>[];
   readonly debugged: string[];
@@ -153,6 +149,27 @@ test("the report of a take's turn names the task's number, and a turn of no task
     task: 4,
   });
   expect(posted[1]).not.toHaveProperty("task");
+});
+
+// A run that ended while the claim's take held an accepted take's text unrun names that take as
+// held, which tells the daemon for certain the run was not the task's turn; a report that names
+// none holds nothing, as every report before the field did.
+test("the report of a run that held a take's text names it held, and a report of none names nothing held", async () => {
+  const { report, posted } = rig();
+
+  await report(SESSION, clean, undefined, 4);
+  await report(SESSION, clean, 4);
+
+  expect(posted[0]).toEqual({
+    claimToken: "legion-legion-legion-208-implementer",
+    sessionId: SESSION,
+    secret: "U2VjcmV0",
+    generation: 3,
+    sequence: 1,
+    outcome: "clean",
+    held: 4,
+  });
+  expect(posted[1]).not.toHaveProperty("held");
 });
 
 // A provider error keeps the task under its number on the daemon, which decides by the status

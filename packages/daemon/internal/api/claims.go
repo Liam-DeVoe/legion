@@ -322,7 +322,7 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	err := m.Handle(ctx, supervise.RequestTurnOutcome{
 		Claim: token, Generation: req.Generation, Sequence: req.Sequence,
 		Refused: req.Outcome == claim.TurnRefused, Message: req.Message,
-		Task: req.Task, ProviderError: (*supervise.ProviderError)(req.ProviderError),
+		Task: req.Task, ProviderError: (*supervise.ProviderError)(req.ProviderError), Held: req.Held,
 	})
 	if err != nil {
 		s.claimFailure(w, "turn outcome", token, err)

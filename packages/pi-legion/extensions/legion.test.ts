@@ -2347,10 +2347,12 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     // At the pane: a run no take started (here a reminder's) begins
     // after the take was asked and before its answer comes back. Nothing is sent into that run —
-    // no follow-up, which Oh My Pi would fold into it — and its end is reported naming no task,
-    // which gives the take its turn back on the daemon. At that end the host is idle, and the
-    // text is sent plainly, starting the task's turn, whose report names the task.
-    test("a take accepted during a run starts no follow-up in that run: the run's report names no task, and the text starts the task's turn once the host is idle", async () => {
+    // no follow-up, which Oh My Pi would fold into it — and its end is reported naming no task and
+    // naming the take's number as held (`TaskTake.held`, read before the end hands the text on),
+    // which gives the take its turn back on the daemon, even where the daemon has lost its count of
+    // the session's turns. At that end the host is idle, and the text is sent plainly, starting the
+    // task's turn, whose report names the task and holds nothing.
+    test("a take accepted during a run starts no follow-up in that run: the run's report names no task and the text held, and the text starts the task's turn once the host is idle", async () => {
       const text = "Implement REPO-43 on its branch.";
       const tasks = taskStandIn();
       const value = tasks.give(text);
@@ -2395,9 +2397,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       const reports = daemonRequests(worker.requests)
         .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
         .map((request) => request.body as Record<string, unknown>);
-      expect(reports.map((report) => [report.sequence, report.task])).toEqual([
-        [1, undefined],
-        [2, value.number],
+      expect(reports.map((report) => [report.sequence, report.task, report.held])).toEqual([
+        [1, undefined, value.number],
+        [2, value.number, undefined],
       ]);
       expect(taken).toBe(1);
     });

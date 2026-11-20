@@ -608,13 +608,16 @@ type RequestExit struct {
 // the report that names the pending task's number is what finishes it (finishTask), and one that
 // names another number, or none, finishes nothing. ProviderError is the provider error the turn
 // ended in, nil for none, which keeps the task under its number and starts the ladder's wait
-// (providerErrored).
+// (providerErrored). Held is the number of the accepted take whose text the producer still held
+// unrun at this turn's end, 0 for none or a producer that does not say (claim.TurnOutcomeRequest):
+// this turn was not that take's, which the daemon reads where its own count of the process's
+// turns cannot say it (notTheTakesTurn, heldUnrun).
 //
-// Neither is fenced by generation. A report naming a generation the claim has left is not stale:
-// it is a turn of that generation, which belongs in its own place in the order the run is derived
-// in, and the secret the route authenticates is the current registration's either way. What is
-// fenced is a repeat: a report under a key the window already holds, from an attempt that was
-// applied, changes nothing more (turnOutcome).
+// None of them is fenced by generation. A report naming a generation the claim has left is not
+// stale: it is a turn of that generation, which belongs in its own place in the order the run is
+// derived in, and the secret the route authenticates is the current registration's either way.
+// What is fenced is a repeat: a report under a key the window already holds, from an attempt that
+// was applied, changes nothing more (turnOutcome).
 type RequestTurnOutcome struct {
 	Claim         claim.Token
 	Generation    uint64
@@ -623,6 +626,7 @@ type RequestTurnOutcome struct {
 	Message       string
 	Task          uint64
 	ProviderError *ProviderError
+	Held          uint64
 }
 
 // ProviderError is how a provider failed the turn a turn-outcome report is of: the status of the
@@ -1609,7 +1613,9 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // tells that turn from every other (notTheTakesTurn). While the count is not known, the turn is
 // given no sequence, since the count's ends are not the producer's; for a take the machine
 // accepted meanwhile its place among the ends counted is kept instead (takeAnchor.given), where
-// the report of the take's own turn can place the count (learnTurns).
+// the report of the take's own turn can place the count (learnTurns). A start that a report has
+// already said ran with the take's text held, one whose report came ahead of its start frame, is
+// given no take (heldUnrun): its line names no task, and the take awaits the start after it.
 func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateWorking
 	m.claim.LastTurnStart = m.deps.Clock.Now()
@@ -1632,12 +1638,19 @@ func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	case ahead.task != 0:
 		m.reportedAhead, task = aheadReport{}, ahead.task
 	case p != nil && p.awaitsTurn():
-		persist, task = m.startTakesTurn, p.Number
 		count.take = 0
-		if count.known {
+		switch {
+		case count.known:
+			persist, task = m.startTakesTurn, p.Number
 			count.take = running
-		} else if count.anchor.number == p.Number {
-			count.anchor.given = running
+		case count.anchor.number == p.Number && count.anchor.unrun(0) && m.onAnchoredConn():
+			m.log.Info(heldPassedOverLine, "task", p.Number)
+			count.anchor.pass(0)
+		default:
+			persist, task = m.startTakesTurn, p.Number
+			if count.anchor.number == p.Number {
+				count.anchor.given = running
+			}
 		}
 	}
 	// The start is logged before the write, never after it: the decision this line exists for is

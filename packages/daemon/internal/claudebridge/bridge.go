@@ -905,7 +905,14 @@ func (b *bridge) result(res resultLine) {
 	b.inRun, b.refusal, b.run = false, nil, taskRun{}
 	b.runEnded(task, refusal != nil)
 	b.emit(shimwire.AgentEnd{})
-	b.reports.turnEnded(task, refusal)
+	// A take accepted during this turn still has its text held here, to start a turn of its own
+	// once this one is over (idle, below): the report says so, which is the daemon's one certain
+	// sign that this turn was not that take's.
+	var held uint64
+	if b.held != nil {
+		held = b.held.number
+	}
+	b.reports.turnEnded(task, held, refusal)
 	b.idle()
 }
 

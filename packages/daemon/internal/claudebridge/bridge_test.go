@@ -2088,9 +2088,11 @@ func (r *rig) runFollowedByOneOfItsOwn(d *taskDaemon, inbox *inboxClient) {
 // A take the daemon accepts while Claude Code is in a turn starts nothing in it (the plan's
 // decision 9): the take, asked for between two turns, is answered `accepted` during the turn
 // Claude Code started by itself after it, which the daemon gave the take as the first to start
-// after its accept. The text is held, that turn is reported as no task's — which puts the take
-// back to awaiting its turn on the daemon —, and the text starts a turn of its own once Claude
-// Code is idle, whose report names the task.
+// after its accept. The text is held, that turn is reported as no task's and as holding the
+// take's text unrun (held) — which puts the take back to awaiting its turn on the daemon, also
+// where its count of the process's turns is not known —, and the text starts a turn of its own
+// once Claude Code is idle, whose report names the task and holds nothing. A report before the
+// take's answer came holds nothing either.
 func TestATakeAcceptedDuringARunStartsNothingInIt(t *testing.T) {
 	d := newTaskDaemon(t)
 	answered := make(chan struct{})
@@ -2115,13 +2117,16 @@ func TestATakeAcceptedDuringARunStartsNothingInIt(t *testing.T) {
 	r.quiet()
 	r.open()
 	r.expect("agent_end", nil)
-	if report := d.reportOf(2); report.Task != 0 {
-		t.Fatalf("the turn Claude Code started by itself was reported %+v, want a turn of no task", report)
+	if report := d.reportOf(2); report.Task != 0 || report.Held != testTask {
+		t.Fatalf("the turn Claude Code started by itself was reported %+v, want a turn of no task holding task %d", report, testTask)
+	}
+	if report := d.reportOf(1); report.Held != 0 {
+		t.Fatalf("the card's turn, before the take's answer, was reported %+v, want it holding nothing", report)
 	}
 	r.expect("agent_start", nil)
 	r.untilTurnEnds()
-	if report := d.reportOf(3); report.Task != testTask {
-		t.Fatalf("the turn after it was reported %+v, want the turn of task %d", report, testTask)
+	if report := d.reportOf(3); report.Task != testTask || report.Held != 0 {
+		t.Fatalf("the turn after it was reported %+v, want the turn of task %d holding nothing", report, testTask)
 	}
 	r.quiet()
 	if texts := r.userTexts(); !slices.Equal(texts, []string{"wait r1", backgroundTurn, "say the task"}) {

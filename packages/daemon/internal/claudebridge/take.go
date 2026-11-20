@@ -54,10 +54,12 @@ import (
 //     in a turn — one Claude Code started by itself after the daemon decided the take, or while a
 //     take sent again after a lost answer waited — has its text held until that turn ends. The
 //     daemon gave that turn to the take, as the first to start after its accept; its end is
-//     reported naming no task, which puts the take back to awaiting its turn on the daemon (the
-//     plan's decisions 8 and 9), and the held text then starts a turn of its own when Claude Code
-//     is idle, ahead of every queued delivery: the task's turn on both sides, whose report names
-//     the number;
+//     reported naming no task and naming the held take's number as held (turnoutcome.go,
+//     claim.TurnOutcomeRequest.Held), which puts the take back to awaiting its turn on the daemon
+//     (the plan's decisions 8 and 9) also where the daemon's count of the process's turns is not
+//     known, after a daemon restart; and the held text then starts a turn of its own when Claude
+//     Code is idle, ahead of every queued delivery: the task's turn on both sides, whose report
+//     names the number;
 //   - a held text has not reached Claude Code, so a newer value of its number — the daemon took
 //     the task back, or only wrote its value again — is a new offer (the plan's decision 9): the
 //     held text is let go (valueHanded), the take is made at that value once Claude Code is idle,

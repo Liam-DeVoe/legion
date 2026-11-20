@@ -1356,6 +1356,11 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   The second names a number no take of the claim holds, such as a late report of a task already finished or one from a process the claim has left: it finishes nothing, and a refused turn it reports counts toward `launch_failure_limit`.
   The third is a report the worker sent again after the daemon had applied it, as it does until it reads an answer.
   Nothing to do.
+- **`supervise: a turn's report names no task of the take whose turn it was given; the take awaits its turn again`** at Info, with the `task` and `by=`, is the daemon putting an accepted take back to wait for its own turn: the turn it gave the take, the first to start after the take, was a run of the worker's own.
+  `by=count` is the daemon's own count of the worker's turns saying so, and `by=held` the worker's report naming the take as `held`, its text still waiting when that turn ended, which is what puts a take back after a daemon restart under a live worker.
+  **`supervise: a turn started that the producer said ran with the accepted take's text held; the turn is no task's, and the take awaits its turn`** is the same word reaching the daemon before that turn's start.
+  **`supervise: a turn's report says the accepted take's text was held through it, but a turn may have started after it; the take keeps its turn`** is a `held` report that came after a later turn may have started, which may be the take's own; that turn's own report then finishes the task.
+  Nothing to do: R5's second wait bounds a take put back whose turn does not start.
 - **`supervise: a turn this daemon never saw begin has ended`** at Info is the end of a turn of a claim the daemon holds ready or idle: the agent's own turn, whose start the daemon did not see, is over.
   A take that turn refused is offered again, and the end resets the prompt budgets as every turn's end does.
   Nothing to do.

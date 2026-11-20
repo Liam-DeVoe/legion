@@ -567,6 +567,54 @@ test("a held text whose run's end finds the host not idle, a continuation follow
   expect(ran).toEqual([TEXT]);
 });
 
+// The run a held text waits through is reported as holding it (`held`), read at that run's end
+// before `runEnded` hands the text on: that is the daemon's one certain word that the run was not
+// the task's turn, also where the daemon has lost its count of the session's turns. A run that
+// ends before the take's answer came holds nothing, nor does the run the text starts, nor a run
+// after a newer revision of the number let the held text go; a continuation the held text waits
+// through holds it too.
+test("names the text it holds through a run at that run's end, and nothing once the text is handed or let go", async () => {
+  const { take, takes, ran, advance, host } = rig();
+  take.ready();
+  expect(take.held()).toBeUndefined();
+  const answer = Promise.withResolvers<LegionTake>();
+  takes.push({ late: answer.promise });
+  take.relayed(put(4, 12));
+  await advance(0);
+  take.runStarted();
+  expect(take.held()).toBeUndefined();
+  answer.resolve(ACCEPTED);
+  await advance(0);
+
+  expect(take.held()).toBe(4);
+  host.idle = false;
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(take.held()).toBe(4);
+  take.runStarted();
+  host.idle = true;
+  expect(take.held()).toBe(4);
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+  expect(take.held()).toBeUndefined();
+  take.runStarted();
+  expect(take.held()).toBeUndefined();
+  expect(take.runEnded(false)).toBe(4);
+  expect(take.held()).toBeUndefined();
+
+  const letGo = rig();
+  letGo.take.ready();
+  const late = Promise.withResolvers<LegionTake>();
+  letGo.takes.push({ late: late.promise });
+  letGo.take.relayed(put(5, 20));
+  await letGo.advance(0);
+  letGo.take.runStarted();
+  late.resolve(ACCEPTED);
+  await letGo.advance(0);
+  expect(letGo.take.held()).toBe(5);
+  letGo.take.relayed(put(5, 21));
+  expect(letGo.take.held()).toBeUndefined();
+});
+
 // The daemon answers a take of the number it accepted with the same text until that task
 // finishes, also once the task's turn has started: a newer revision of the same number, asked
 // before the turn and answered during it, is that same task, which is already running.

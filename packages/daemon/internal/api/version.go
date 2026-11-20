@@ -2520,13 +2520,17 @@ package api
 // answers `{task: {number, epoch, revision} | null, finished}`, the value the bucket holds and
 // the number of the last task the claim finished. The register answer carries the same two keys,
 // so a worker holds its value before its ready. `claims/turn-outcome` takes `task`, the number of
-// the take whose turn it reports, which finishes that task, and `providerError`
+// the take whose turn it reports, which finishes that task, `providerError`
 // (`{status, provider, model, message, retryable}`), which keeps the task under its number and
-// starts the wait before its value is written again. The three task routes refuse in the coded
-// shape (`{code, error}`), so a worker that sends a take or a seen report again on a 502, 503 or
-// 504 naming no code never reads a refusal of the daemon's own as an outage; and none of them
-// refuses a stale plugin with the stale-contract 409: a stale claim's take is refused with the
-// hold `stale-plugin`, and its read and its seen report are answered as any claim's. Nor does
+// starts the wait before its value is written again, and `held`, the number of the accepted take
+// whose text the producer still held unrun when the turn ended, which puts that take back to await
+// its own turn also where the daemon has lost its count of the process's turns (a daemon restarted
+// under it); each is optional, and a report without `held` is read as before. The three task
+// routes refuse in the coded shape (`{code, error}`), so a worker that sends a take or a seen
+// report again on a 502, 503 or 504 naming no code never reads a refusal of the daemon's own as an
+// outage; and none of them refuses a stale plugin with the stale-contract 409: a stale claim's take
+// is refused with the hold `stale-plugin`, and its read and its seen report are answered as any
+// claim's. Nor does
 // `claims/turn-outcome` refuse one: a report naming a take's number is the only thing that
 // finishes that task for a plugin at this contract or above it, so a stale claim's report is
 // applied, and the stale-plugin lane relaunches the claim behind the finish. A claim

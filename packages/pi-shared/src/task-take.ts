@@ -47,18 +47,19 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * end that finds the host not idle, a continuation it scheduled following, holds the text on in
  * the same way, to the end of that continuation. The daemon gave the run that was going, or the
  * one the setup started, to the take, as the first to start after its accept; that run's end is
- * reported naming no task, which puts the take back to awaiting its turn on the daemon (the plan's
- * decisions 8 and 9), and the run the held text starts is then the task's turn on both sides, its
- * end the report that names the number. The text is never sent as a follow-up: Oh My Pi folds a
- * follow-up sent during a run into that run (its agent loop reads the follow-up queue once the
- * run's last step has stopped, `getFollowUpMessages`, and goes on with no `agent_end` or
- * `agent_start` between), so the task would run inside a run whose end names no task, and a
- * follow-up's answer settles once the host has queued it, so a drop of it after that would not be
- * seen (plan review round 71). So every handing of the text settles at the text's own turn or at
- * its drop. A setup the host gives up with no run (an interrupt while it sets the prompt up) ends
- * no run, so the text stays held until the daemon writes the number's value again, which lets the
- * held text go (`hold`): R5's second wait, which charges and takes back an accepted take whose
- * turn has not started within its bound, makes that write.
+ * reported naming no task and naming the take's number as held (`held`), which puts the take back
+ * to awaiting its turn on the daemon (the plan's decisions 8 and 9), also where the daemon's count
+ * of the session's turns is not known; and the run the held text starts is then the task's turn on
+ * both sides, its end the report that names the number. The text is never sent as a follow-up:
+ * Oh My Pi folds a follow-up sent during a run into that run (its agent loop reads the follow-up
+ * queue once the run's last step has stopped, `getFollowUpMessages`, and goes on with no
+ * `agent_end` or `agent_start` between), so the task would run inside a run whose end names no
+ * task, and a follow-up's answer settles once the host has queued it, so a drop of it after that
+ * would not be seen (plan review round 71). So every handing of the text settles at the text's own
+ * turn or at its drop. A setup the host gives up with no run (an interrupt while it sets the prompt
+ * up) ends no run, so the text stays held until the daemon writes the number's value again, which
+ * lets the held text go (`hold`): R5's second wait, which charges and takes back an accepted take
+ * whose turn has not started within its bound, makes that write.
  *
  * An accepted number's text reaches the host when the take hands it over (`run`), and from then
  * on a newer revision of that number changes nothing: the daemon answers its take with the same
@@ -147,6 +148,16 @@ export interface TaskTake {
   readonly awaitRead: () => () => void;
   /** A run of the claim's session started (its `agent_start`). */
   readonly runStarted: () => void;
+  /**
+   * The number of the accepted take whose text this take holds unrun, for the end of the run
+   * going (or of the one the host was setting up when the answer came), and undefined for none:
+   * read at a run's end before `runEnded`, which hands the text on, it says the run ending was not
+   * that task's turn. The run's report names it as `held` (`packages/pi-legion/src/turn-outcome.ts`),
+   * which tells the daemon so for certain, even where it has lost its count of the session's turns
+   * (a daemon restarted under the process), and puts the take back to await its own turn there.
+   * A text handed to the host, or let go at a newer revision of its number, is held no more.
+   */
+  readonly held: () => number | undefined;
   /**
    * That run ended (its `agent_end`): the number of the task whose turn it was, which the turn's
    * report names, or undefined for a run of no task. `providerError` is whether that report
@@ -481,10 +492,11 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       // task's turn. A text still held waits for the end of a run that was going when it was
       // accepted, or that the host was setting up then (`hand`), so a run that starts before that
       // end is not its turn: the daemon counts that run as the take's, and its end, reported
-      // naming no task, puts the take back.
+      // naming no task and the text held (`held`), puts the take back.
       if (accepted.kind === "handed") accepted = { kind: "running", number: accepted.number };
       settle();
     },
+    held: () => (closed || accepted.kind !== "held" ? undefined : accepted.number),
     runEnded: (providerError) => {
       if (closed) return undefined;
       busy = false;

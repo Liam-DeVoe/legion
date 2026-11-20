@@ -928,6 +928,8 @@ export default function legionExtension(pi: PiApi): void {
   // finished from here on; a take the end of the run allows is asked at once, and a text the take
   // held for the end of this run is sent now, to start the task's own turn, where the host is
   // idle, and held again for the end of the run the host goes on with where it is not (`hand`).
+  // That text is read first (`TaskTake.held`), before the end hands it on, and the report names
+  // it as held: this run was not that task's turn, which the daemon then knows for certain.
   // The report's answer settles that mark: a 2xx finished the number in the record, so it stays,
   // and a 4xx refusal of a report that would have finished it applied nothing, so the take holds
   // the number finished no longer (`reportRefused`), and takes a newer revision of it as owed.
@@ -935,13 +937,15 @@ export default function legionExtension(pi: PiApi): void {
     const sessionID = context.sessionManager.getSessionId();
     let take: TaskTake | undefined;
     let task: number | undefined;
+    let held: number | undefined;
     let providerError = false;
     if (!subagentEvent(context)) {
       providerError = reportsProviderError(event);
       take = sessionTake(sessionID);
+      held = take?.held();
       task = take?.runEnded(providerError);
     }
-    const answer = await turnOutcomes.report(sessionID, event, task);
+    const answer = await turnOutcomes.report(sessionID, event, task, held);
     if (answer === "refused" && task !== undefined && !providerError) take?.reportRefused(task);
   });
 

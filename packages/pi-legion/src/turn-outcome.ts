@@ -37,7 +37,11 @@ import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types"
  * provider and model it went to, and the provider's message, with which the daemon keeps the task
  * under its number and writes its value again after a wait instead of finishing it
  * (dispatch://INFRA-2811 R2). The daemon-launched controller's turns are reported the same way,
- * its start task's naming that task's number.
+ * its start task's naming that task's number. A turn that ended while the claim's take still held
+ * an accepted take's text unrun — the take was answered during that turn, which the daemon gave
+ * it as the first to start after its accept — names that take's number as `held`
+ * (`TaskTake.held`): the turn was not the task's, which the daemon reads as certain and puts the
+ * take back to await its own turn by, even where it has lost its count of this session's turns.
  *
  * Because only the report finishes the task, a report is sent until the daemon answers it
  * (`sendUntilAnswered`, the policy a take is sent by): any failure that carries no HTTP status,
@@ -100,16 +104,20 @@ export type TurnReportAnswer = "recorded" | "refused";
 export interface TurnOutcomeReporter {
   /**
    * Reports the turn that `agent_end` just ended, for the claim the session holds; `task` is the
-   * number of the task whose turn it was, undefined for a turn of no task. Resolves how the
-   * daemon answered (`TurnReportAnswer`) once it answered or refused, and undefined for a session
-   * that holds no claim, a session that ended first, and a failure that is neither a 2xx nor a
-   * 4xx. Never rejects: Oh My Pi does not await an `agent_end` handler, so a rejection here would
-   * be an unhandled one, and nothing of the turn waits on the report either way.
+   * number of the task whose turn it was, undefined for a turn of no task, and `held` the number
+   * of the accepted take whose text the session's take held unrun through that turn
+   * (`TaskTake.held`), undefined for none, which the report names as `held` so the daemon knows
+   * for certain the turn was not that task's. Resolves how the daemon answered
+   * (`TurnReportAnswer`) once it answered or refused, and undefined for a session that holds no
+   * claim, a session that ended first, and a failure that is neither a 2xx nor a 4xx. Never
+   * rejects: Oh My Pi does not await an `agent_end` handler, so a rejection here would be an
+   * unhandled one, and nothing of the turn waits on the report either way.
    */
   readonly report: (
     sessionID: string,
     event: AgentEndEvent,
-    task?: number
+    task?: number,
+    held?: number
   ) => Promise<TurnReportAnswer | undefined>;
   /** The session ended (`session_shutdown`): every report of it still being sent stops. */
   readonly sessionEnded: (sessionID: string) => void;
@@ -169,7 +177,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
   const stops = new Map<string, AbortController>();
 
   return {
-    report: async (sessionID, event, task) => {
+    report: async (sessionID, event, task, held) => {
       const claim = deps.claim(sessionID);
       if (claim === undefined) return undefined;
       const { caller } = claim;
@@ -191,6 +199,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         outcome: refusal === undefined ? ("clean" as const) : ("refused" as const),
         ...(refusal === undefined ? {} : { message: refusal }),
         ...(task === undefined ? {} : { task }),
+        ...(held === undefined ? {} : { held }),
         ...(refusal === undefined || last === undefined
           ? {}
           : { providerError: providerError(last, refusal) }),
@@ -206,6 +215,7 @@ export function createTurnOutcomeReporter(deps: TurnOutcomeReporterDeps): TurnOu
         sequence: mine,
         outcome: request.outcome,
         ...(task === undefined ? {} : { task }),
+        ...(held === undefined ? {} : { held }),
       };
       try {
         const outcome = await sendUntilAnswered(

@@ -1576,6 +1576,17 @@ test("every request the plugin sends parses and names its required fields", () =
         },
       },
     ],
+    [
+      "turn outcome of no task, a take's text held through it",
+      LegionTurnOutcomeRequest,
+      {
+        bootToken: "boot-208",
+        generation: 5,
+        sequence: 3,
+        outcome: "clean",
+        held: 4,
+      },
+    ],
   ];
 
   for (const [name, schema, request] of requests) {
@@ -1588,6 +1599,23 @@ test("every request the plugin sends parses and names its required fields", () =
       `${name} refuses a missing required field`
     ).toBeFalse();
   }
+});
+
+// `held` names a take by its number, which counts from 1, and is optional: a report without it is
+// the report every producer sent before it, and one naming no number held is refused.
+test("a turn outcome's held names a task number, and a report may leave it out", () => {
+  const report = {
+    claimToken: "legion-omp-LEGION-208-tester",
+    sessionId: "ses_tester_208",
+    secret: "sec-2",
+    generation: 5,
+    sequence: 3,
+    outcome: "clean",
+  } as const;
+  expect(LegionTurnOutcomeRequest.safeParse(report).success).toBeTrue();
+  expect(LegionTurnOutcomeRequest.safeParse({ ...report, held: 4 }).success).toBeTrue();
+  expect(LegionTurnOutcomeRequest.safeParse({ ...report, held: 0 }).success).toBeFalse();
+  expect(LegionTurnOutcomeRequest.safeParse({ ...report, held: "4" }).success).toBeFalse();
 });
 
 test("an escalation rejects empty required fields", () => {

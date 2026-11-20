@@ -130,6 +130,12 @@ func TestWireMemberNames(t *testing.T) {
 			want:  `{"bootToken":"boot-1","generation":2,"sequence":3,"outcome":"clean"}`,
 		},
 		{
+			name: "turn outcome of no task, a take's text held through it",
+			value: TurnOutcomeRequest{BootCaller: BootCaller{BootToken: "boot-1"}, Generation: 2, Sequence: 3, Outcome: TurnClean,
+				Held: 4},
+			want: `{"bootToken":"boot-1","generation":2,"sequence":3,"outcome":"clean","held":4}`,
+		},
+		{
 			name: "ready request",
 			value: ReadyRequest{
 				ClaimToken: "legion-omp-LEGION-208-tester",
