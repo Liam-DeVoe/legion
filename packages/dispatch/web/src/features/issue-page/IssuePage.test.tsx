@@ -46,11 +46,13 @@ function aliceOnCore1(): QueryClient {
   return client;
 }
 
-/** The reads the new page makes as it draws its tree (`useIssueTree.ts`), each answered empty.
- *  The row is about when the hold ends, not about what the tree holds, and a read nothing
- *  answered fails the file (`__tests__/setup.ts`). Each returns its spy, to restore. */
-function answerTreeReadsEmpty() {
+/** The reads the new page makes as it draws its tree (`useIssueTree.ts`) and its header (the
+ *  viewer's state, `useIssueDetail.ts`), each answered empty. The row is about when the hold
+ *  ends, not about what the page holds, and a read nothing answered fails the file
+ *  (`__tests__/setup.ts`). Each returns its spy, to restore. */
+function answerPageReadsEmpty() {
   return [
+    spyOn(api, "getMyState").mockResolvedValue({}),
     spyOn(api, "getIssueCoverage").mockResolvedValue({
       gaps: [],
       has_plan: false,
@@ -94,7 +96,7 @@ test("a landing on the new issue page ends the shell's hold on its extras when t
   holdUntilContentDraws();
   // The hold is on before the page renders, so the row cannot pass with no hold at all.
   expect(await holdWithin(0)).toBe("still on");
-  const reads = answerTreeReadsEmpty();
+  const reads = answerPageReadsEmpty();
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <QueryClientProvider client={aliceOnCore1()}>
