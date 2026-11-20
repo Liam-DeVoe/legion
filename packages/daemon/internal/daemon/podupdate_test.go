@@ -724,6 +724,13 @@ func (r *podUpdateRig) awaitReplacement(n int, what string) []fake.Call {
 // (roundGroup's mask) and leaves the replacement to the next sweep, so how busy a machine was at
 // that sweep changes nothing the check reads; podupdate_deciding_test.go runs the check with a
 // machine held there. That no replacement is made before is read once.
+//
+// Before that read, the tester sends the activity report a turn's end sends, naming nothing of
+// its own that runs, and does not answer: the round's early end also waits for a claim with a
+// process in the round's pod that has sent no report since its last turn started
+// (roundEnd.holding), and a tester with no report would hold the round by that wait alone. So
+// the read decides on the tester's answer and nothing else, and a round that took a claim with no
+// answer for one that answered (answered, waitingClaims) replaces the pod there and fails it.
 func TestPodUpdateReplacesThePodOnlyOnceEveryBlockingClaimHasAnswered(t *testing.T) {
 	replacesThePodOnceEveryBlockingClaimHasAnswered(t, nil)
 }
@@ -758,10 +765,11 @@ func replacesThePodOnceEveryBlockingClaimHasAnswered(t *testing.T, busy func(*po
 	}
 
 	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.reportsNothingRunning(claim.RoleTester)
 	rig.tick()
 
 	if calls := rig.replacements(); len(calls) != 0 {
-		t.Fatalf("ReplacePod called %d times while the tester had not answered", len(calls))
+		t.Fatalf("ReplacePod called %d times while the tester had not answered, its report naming nothing that runs", len(calls))
 	}
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateHead != "a1b2c3d" {
 		t.Errorf("the implementer's reported head = %q, want a1b2c3d", c.UpdateHead)
