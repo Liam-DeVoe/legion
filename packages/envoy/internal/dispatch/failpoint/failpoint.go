@@ -50,8 +50,8 @@ const (
 	// tuples a reply appends and the move of the rows of the people they reach.
 	UserThreads = "user-threads"
 	// AgentDismissalClear is the Go writer in a session's reply that clears its root's Agent
-	// dismissals (inboxwrite.Record, the clear of insertSessionReply's reply): between the delete
-	// of the user_agent_thread_dismissed rows and the retraction of each one's dismissed tuple.
+	// dismissals (inboxwrite.Record, the clear of insertSessionReply's reply): between the
+	// retraction of each user_agent_thread_dismissed row's dismissed tuple and the delete of the rows.
 	AgentDismissalClear = "agent-dismissal-clear"
 )
 

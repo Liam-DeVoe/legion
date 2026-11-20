@@ -276,6 +276,13 @@ var storeWriteCallSites = map[string]string{
 	// user_threads steps.
 	"inboxwrite/record.go#Queue":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	"inboxwrite/thread.go#queueKeepRow": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// The same writer's clear of the Agent dismissals a session's reply ends
+	// (queueAgentDismissalsClear): the root message `for key share`, then the retraction of each
+	// dismissed mark of that root through QueueMarksEnded, then the delete of the
+	// user_agent_thread_dismissed rows. No lock-step test follows these steps; api's
+	// TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply runs them, holding the root as the
+	// dismiss route takes it `for update`.
+	"inboxwrite/thread.go#queueAgentDismissalsClear": "api#TestADismissHoldingTheAgentRootGivesTheThreadBackOnTheReply",
 	// The same writer's record of a write an older build made (inboxwrite.RecordOlder), which the
 	// backfill runs for each such comment, message, ask, answer and decline in the batch that marks
 	// it, after its owner and item rows: participates_in, the user_threads rows of the people it

@@ -349,9 +349,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
 	ctx := context.Background()
-	// The direct message alice sends the message's session, which that session accepts, and the
+	// The direct message alice sends the message's session, which that session accepts, her
+	// one-off BTW to it, whose Agent row she dismisses before the session follows up, and the
 	// keyed comment whose repeat puts its mention back on a lane, with its body and its key.
-	var direct, replayed string
+	var direct, oneOff, replayed string
 	// The second comment mentioning the held session, whose first attempt a lane stands down from
 	// beside a Retry in flight; the Retry's answer, and what lets its held lookup through.
 	var overtaken string
@@ -601,7 +602,8 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	}, {
 		// The session's reply to that message, a message of the same issue's project.
 		Name: "api/message_delivery.go#insertSessionReply", Database: r.database,
-		Sites: []string{"api/message_delivery.go#insertSessionReply", "api/message_delivery.go#replyMessage"},
+		Sites: []string{"api/message_delivery.go#insertSessionReply", "api/message_delivery.go#replyMessage",
+			"inboxwrite/thread.go#queueAgentDismissalsClear"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/messages/"+r.message+"/reply", map[string]any{
 				"actor": sessionActor(messageSession), "attempt": 1, "body": "On it.",
@@ -618,6 +620,88 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				{graphstore.KindMessage, graphstore.TupleRepliesTo}:   {"reply"},
 				{graphstore.KindMessage, graphstore.TupleDeliveredTo}: {"person_delivery"},
 			}),
+	}, {
+		// The session's follow-up in alice's one-off BTW to it, after she dismissed that message's
+		// Agent row: the reply brings the row back, retracting her dismissed from the message and
+		// deleting her user_agent_thread_dismissed row (queueAgentDismissalsClear). The BTW, its
+		// delivery, the session's first reply, which gives her the row, and her dismissal of it are
+		// written before the drive. The direct message the session accepted as her turn is no Agent
+		// row (replies_agent.go's myAgentRootFilter), so the drive sends one of its own.
+		Name: "inboxwrite/thread.go#queueAgentDismissalsClear", Database: r.database,
+		Sites: []string{"inboxwrite/thread.go#queueAgentDismissalsClear", "api/message_delivery.go#insertSessionReply",
+			"api/message_delivery.go#replyMessage"},
+		Ready: func(t *testing.T) {
+			oneOff = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/agents/"+messageSession+"/messages",
+				map[string]any{"body": "By the way, the store takes the nodes.", "delivery": "btw"}, "alice", http.StatusCreated)).ID
+			r.awaitTrue(t, "one-off message "+oneOff+"'s attempt settling sent", `
+				select exists (select 1 from message_deliveries where message_id = $1::uuid and attempt = 1 and state = 'sent')
+			`, oneOff)
+			r.request(t, http.MethodPost, "/api/v1/messages/"+oneOff+"/reply?follow_up=true", map[string]any{
+				"actor": sessionActor(messageSession), "attempt": 1, "body": "Noted.",
+			}, "", http.StatusCreated)
+			inbox := decoded[struct {
+				Entries []struct {
+					Node struct {
+						Kind string `json:"kind"`
+						ID   string `json:"id"`
+					} `json:"node"`
+					Agent *struct {
+						Reply struct {
+							ID string `json:"id"`
+						} `json:"reply"`
+						UnreadReplyIDs []string `json:"unread_reply_ids"`
+					} `json:"agent"`
+				} `json:"entries"`
+			}](t, r.request(t, http.MethodGet, "/api/v1/me/inbox?state=inbox", nil, "alice", http.StatusOK))
+			for _, entry := range inbox.Entries {
+				if entry.Node.Kind != graphstore.KindMessage || entry.Node.ID != oneOff || entry.Agent == nil {
+					continue
+				}
+				r.request(t, http.MethodPost, "/api/v1/me/inbox/dismiss", map[string]any{
+					"threads": []string{"agent:" + oneOff},
+					"seen_replies": map[string]any{"agent:" + oneOff: map[string]any{
+						"newest_reply": entry.Agent.Reply.ID, "unread_replies": entry.Agent.UnreadReplyIDs,
+					}},
+				}, "alice", http.StatusOK)
+				r.awaitTrue(t, "alice's dismissal of her one-off message to "+messageSession, `
+					select exists (select 1 from user_agent_thread_dismissed where login = 'alice' and message_id = $1::uuid)
+				`, oneOff)
+				return
+			}
+			var held []string
+			for _, entry := range inbox.Entries {
+				held = append(held, fmt.Sprintf("%s:%s (agent row %v)", entry.Node.Kind, entry.Node.ID, entry.Agent != nil))
+			}
+			t.Fatalf("alice's inbox holds no Agent row of her one-off message %s to %s; it holds %v", oneOff, messageSession, held)
+		},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPost, "/api/v1/messages/"+oneOff+"/reply?follow_up=true", map[string]any{
+				"actor": sessionActor(messageSession), "attempt": 1, "body": "One more thing.",
+			}, "", http.StatusCreated)
+			r.awaitTrue(t, "the follow-up clearing alice's dismissal", `
+				select not exists (select 1 from user_agent_thread_dismissed where message_id = $1::uuid)
+			`, oneOff)
+		},
+		// The follow-up, a message between alice and the session on no project: its node, author,
+		// target and parent, its body block, which names the message's parties as the message does,
+		// the delivered_to alice, who started the conversation, and the session's part in it; and
+		// the retraction of alice's dismissed, which the term dismissal counts beside the dismissal
+		// it ends.
+		Counts: merged(sessionPartCounted, map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.AttributeVisibility}:     {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeState}:          {"body_block"},
+			{refs.BlockNodeKind, graphstore.AttributeParties}:        {"body_block"},
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:             {"body_block"},
+			{graphstore.KindMessage, graphstore.AttributeVisibility}: {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeState}:      {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.AttributeParties}:    {graphstore.KindMessage},
+			{graphstore.KindMessage, graphstore.TupleAuthoredBy}:     {"message_relation"},
+			{graphstore.KindMessage, graphstore.TupleAddressedTo}:    {"message_pointer"},
+			{graphstore.KindMessage, graphstore.TuplePartOf}:         {"reply"},
+			{graphstore.KindMessage, graphstore.TupleRepliesTo}:      {"reply"},
+			{graphstore.KindMessage, graphstore.TupleDeliveredTo}:    {"person_delivery"},
+			{graphstore.KindPerson, graphstore.TupleDismissed}:       {"dismissal"},
+		}),
 	}, {
 		// A broadcast to the message's session: the copy it stores for that session, a message on
 		// no issue, between alice and the session, whose node names those parties.

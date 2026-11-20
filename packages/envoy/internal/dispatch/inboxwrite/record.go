@@ -217,8 +217,9 @@ func (w Write) keptLogin() (string, bool) {
 //     every writer of a read mark states it (dispatch://INFRA-1152 R6).
 //
 // A session's reply to a message takes, between steps 1 and 2, its thread root's Agent
-// dismissals: the root `for key share`, then the delete of the user_agent_thread_dismissed rows
-// naming it the plan read, with the retraction of each one's dismissed tuple, as the trigger
+// dismissals: the root `for key share`, then the retraction of the dismissed tuple of each person
+// whose user_agent_thread_dismissed row names it, then the delete of those rows, each statement
+// reading the rows as they stand once the root is held, as the trigger
 // user_agent_thread_dismissed_clear does for an older build's reply (migration 20261105093507).
 //
 // Steps 2 to 4 hold the lock rule of D4: the rows are locked before the delivered_to of the people
@@ -249,29 +250,30 @@ type Recording struct {
 	owed                 owed
 	// waiting is, for an ask's create, the person the ask waits on.
 	waiting string
-	// cleared is, for a session's reply to a message, the people whose Agent dismissal of its root
-	// the reply ends, and clears whether the reply takes that step at all.
-	clears  bool
-	cleared []string
+	// clears is, for a session's reply to a message, whether the reply ends the Agent dismissals of
+	// its root, which its write phase reads where it ends them.
+	clears bool
 	// delivered is, for a reply, each person in the thread's participant set but A, by login, and
 	// moved each of them who holds a row of the thread; starter is the person who started a direct
 	// conversation, whom a session's reply reaches beside them.
 	delivered, moved []string
 	starter          string
-	// failClear and failThreads are whether a test armed the failure between the Agent dismissals'
-	// delete and their retraction (failpoint.AgentDismissalClear), and between the deliveries and
-	// the move of the rows they reach (failpoint.UserThreads), decided as the record was planned.
+	// failClear and failThreads are whether a test armed the failure between the retraction of the
+	// Agent dismissals and the delete of their rows (failpoint.AgentDismissalClear), and between
+	// the deliveries and the move of the rows they reach (failpoint.UserThreads), decided as the
+	// record was planned.
 	failClear, failThreads bool
 }
 
 // PlanRecord plans w's record in the write's read phase, in tx, under the owner lock every writer
 // of w's thread takes first: the thread (threadOf), what an answer's catch-up owes (owedBy), the
 // person an ask's create reaches where the create did not read them (waitingOn), and for a reply
-// the thread's participants and rows (readMembers) and, for a session's reply to a message, its
-// root's Agent dismissals (readAgentDismissals). It reads and takes no row lock, so it holds no
-// transaction id: each read is of rows a writer of this thread changes only under that owner lock,
-// and the one that is not - a dismissal, which the dismiss route writes under the person's rows -
-// is read again where the write phase ends it (Recording.Queue).
+// the thread's participants and rows (readMembers). It reads and takes no row lock, so it holds no
+// transaction id: each read is of rows a writer of this thread changes only under that owner lock.
+// What the dismiss route writes under the person's rows and the root's lock instead - a dismissal -
+// is read in the write phase, by the statement that ends it (Recording.Queue): the Agent
+// dismissals a session's reply ends (queueAgentDismissalsClear) and the dismissed tuples of the
+// people a reply reaches (graphstore.QueueMarksEnded).
 func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
 	thread, err := threadOf(ctx, tx, w)
 	if err != nil {
@@ -296,12 +298,10 @@ func PlanRecord(ctx context.Context, tx pgx.Tx, w Write) (Recording, error) {
 	if w.Arm != Replies {
 		return r, nil
 	}
-	// A session's reply to a message brings its root back to everyone who dismissed it.
+	// A session's reply to a message brings its root back to everyone who dismissed it, which its
+	// write phase reads where it ends them (queueAgentDismissalsClear).
 	if w.NodeKind == graphstore.KindMessage && r.authorKind == graphstore.KindSession && thread.id != w.NodeID {
 		r.clears = true
-		if r.cleared, err = readAgentDismissals(ctx, tx, thread.id); err != nil {
-			return Recording{}, err
-		}
 		r.failClear = failpoint.Planned(ctx, failpoint.AgentDismissalClear)
 	}
 	members, err := readMembers(ctx, tx, thread)
@@ -401,12 +401,8 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 	if w.Arm == Replies {
 		// A session's reply to a message brings its root back to everyone who dismissed it.
 		if r.clears {
-			queueAgentDismissalsClear(b, thread.id, r.cleared)
-			failpoint.Queue(b, r.failClear)
-			if len(r.cleared) > 0 {
-				if err := graphstore.QueueFromPerson(b, w.At, dismissalsEnded(r.cleared, thread, w, event)); err != nil {
-					return fmt.Errorf("retract the dismissals of message %s: %w", thread.id, err)
-				}
+			if err := queueAgentDismissalsClear(b, thread.id, r.failClear, w, event); err != nil {
+				return err
 			}
 		}
 
@@ -439,7 +435,7 @@ func (r Recording) Queue(b *store.WriteBatch, event int64) error {
 		// 4. Each of their dismissals of T that stands ends, and each row of T those people hold
 		// moves.
 		if len(r.delivered) > 0 {
-			if err := graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, thread.kind, thread.id, r.delivered, w.At, w.Who, event); err != nil {
+			if err := graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, thread.kind, thread.id, graphstore.MarkedBy(r.delivered), w.At, w.Who, event); err != nil {
 				return fmt.Errorf("retract the dismissals of %s/%s: %w", thread.kind, thread.id, err)
 			}
 		}

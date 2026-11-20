@@ -1061,7 +1061,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// reply, a session's, reaches her in the message's thread and is ses_sized's part in it, the
 		// third participation, and the ask opened reaches the person it waits on.
 		"message_delivery": {tuples: 1, writes: 1}, "read_mark": {tuples: 1, writes: 2}, "clear": {tuples: 1, writes: 1},
-		"dismissal": {tuples: 1, writes: 1}, "snooze": {tuples: 1, writes: 1},
+		"dismissal": {tuples: 2, writes: 1}, "snooze": {tuples: 1, writes: 1},
 		"message": {tuples: 3, writes: 2}, "message_relation": {tuples: 2, writes: 2}, "message_pointer": {tuples: 1, writes: 1},
 		"reply": {tuples: 2, writes: 1},
 		// The mention is one tuple to its role and one to the session the role resolved to. The

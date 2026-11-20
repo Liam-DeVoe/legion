@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/failpoint"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -245,33 +246,26 @@ func queueKeepRow(b *store.WriteBatch, thread thread, w Write, login string, eve
 	return nil
 }
 
-// readAgentDismissals is the logins whose Agent dismissal of root, the message a session's reply
-// climbed to, stands, read in the write's read phase: the dismissals the clear of that reply ends
-// (queueAgentDismissalsClear).
-func readAgentDismissals(ctx context.Context, tx pgx.Tx, root string) ([]string, error) {
-	rows, err := tx.Query(ctx, `select login from user_agent_thread_dismissed where message_id = $1::uuid order by login`, root)
-	if err != nil {
-		return nil, fmt.Errorf("read the dismissals of message %s: %w", root, err)
-	}
-	cleared, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the dismissals of message %s: %w", root, err)
-	}
-	return cleared, nil
-}
-
-// queueAgentDismissalsClear queues the clear of migration 20261105093507 for the dismissals of
-// root the write's read phase found (readAgentDismissals), in two statements, as that trigger takes
-// it: the root `for key share`, which orders the clear against the dismiss route's `for update` of
-// the same root (inboxDismissLockAgentRoots, api/inbox_dismiss.go) whichever takes it first, then
-// the delete of those logins' rows. A dismissal that route commits once the read phase has read is
-// a later act than this reply, and stands: the delete names the logins whose dismissal ends, each
-// of whose dismissed tuple the write retracts (Record).
-func queueAgentDismissalsClear(b *store.WriteBatch, root string, logins []string) {
+// queueAgentDismissalsClear queues the clear of migration 20261105093507 for the Agent dismissals
+// of root, the message a session's reply climbed to, as that trigger takes it: the root `for key
+// share`, which orders the clear against the dismiss route's `for update` of the same root
+// (inboxDismissLockAgentRoots, api/inbox_dismiss.go) whichever takes it first; then the
+// retraction of the dismissed tuple of each person whose user_agent_thread_dismissed row names
+// the root, read by the statement that retracts it (graphstore.MarkedIn); then the failure a test
+// arms there (fail, failpoint.AgentDismissalClear); then the delete of every one of those rows.
+// Both statements after the lock read the rows as they stand once it is held, nothing read in the
+// write's read phase, so a dismissal the route committed before the reply's write phase - while
+// the reply waited for the root among them - ends with the reply, as the trigger ends it; and no
+// dismissal of the root can commit between the two, since the route marks one only under the
+// root's `for update`.
+func queueAgentDismissalsClear(b *store.WriteBatch, root string, fail bool, w Write, event int64) error {
 	b.Queue(fmt.Sprintf("take the root message %s", root), `select 1 from messages where id = $1::uuid for key share`, root)
-	if len(logins) == 0 {
-		return
+	dismissed := graphstore.MarkedIn(`select login from user_agent_thread_dismissed where message_id = $4::uuid`, root)
+	if err := graphstore.QueueMarksEnded(b, graphstore.TupleDismissed, graphstore.KindMessage, root, dismissed, w.At, w.Who, event); err != nil {
+		return fmt.Errorf("retract the dismissals of message %s: %w", root, err)
 	}
+	failpoint.Queue(b, fail)
 	b.Queue(fmt.Sprintf("clear the dismissals of message %s", root),
-		`delete from user_agent_thread_dismissed where message_id = $1::uuid and login = any($2::text[])`, root, logins)
+		`delete from user_agent_thread_dismissed where message_id = $1::uuid`, root)
+	return nil
 }

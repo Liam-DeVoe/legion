@@ -883,6 +883,12 @@ var indexPasses = map[string]string{
 	// mark its statement stored.
 	"inboxwrite/record.go#Queue":        "the write its caller stored and the event that recorded it, the person an ask it creates waits on, the thread's participates_in tuples, the rows of the thread the marker test passes, and the read mark its own upsert left its writer's row at",
 	"inboxwrite/thread.go#queueKeepRow": "the writer's own row of the thread, as its own upsert leaves it, and the read mark that row stands at",
+	// The clear of the Agent dismissals a session's reply ends, as migration 20261105093507's
+	// trigger ends them: it takes the root the reply climbed to `for key share`, then reads the
+	// people whose dismissal row names that root as the rows stand once it holds the root, and the
+	// dismissed marks of theirs into it the store holds, retracts those marks and deletes the rows.
+	// What it ends is what the reply's own write ends, so it states that write and mends nothing.
+	"inboxwrite/thread.go#queueAgentDismissalsClear": "the root message its caller's session reply climbed to, the people whose dismissal row names it once the root is held, and the dismissed marks of theirs into it the store holds",
 	// The move of the person open asks wait on: it locks the asks the write that changed who they
 	// wait on may have moved, and reads of each who it waits on now and, in the store, whom its arm
 	// stands to - each person whose delivery stands, or whose participation their own move of the

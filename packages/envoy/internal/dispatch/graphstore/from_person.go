@@ -102,43 +102,76 @@ func QueueFromPerson(b *store.WriteBatch, made time.Time, tuples []Tuple) error 
 	return nil
 }
 
-// QueueMarksEnded queues FromPerson's retraction of the mark of kind from each person of logins
+// Marked names the persons whose marks QueueMarksEnded ends: a list of logins its caller knows
+// (MarkedBy), or the logins a select reads as the statement runs (MarkedIn).
+type Marked struct {
+	logins []string
+	query  string
+	arg    any
+}
+
+// MarkedBy is the persons of logins, each read as its canonical login.
+func MarkedBy(logins []string) Marked {
+	return Marked{logins: logins}
+}
+
+// MarkedIn is the persons whose canonical logins query answers as the statement that ends their
+// marks runs: a select of one text column over one parameter, written $4, which takes arg. It is
+// for a write whose persons are the rows of a table another writer changes, read in the statement
+// that ends their marks rather than before the write phase, so a row that writer committed while
+// this write waited on a lock both take is read: a session's reply ends the Agent dismissals of its
+// thread's root that stand once it holds that root (inboxwrite's queueAgentDismissalsClear).
+func MarkedIn(query string, arg any) Marked {
+	return Marked{query: query, arg: arg}
+}
+
+// QueueMarksEnded queues FromPerson's retraction of the mark of kind from each person of people
 // into toKind/toID whose newest tuple asserts it as the statement runs, made by who at at under
 // event, and of no other: the standing of the mark is read by the statement that ends it (the way
 // CurrentOut reads a relation, CurrentTupleRead), not in Go before the write phase, so a write
 // whose earlier statements took the rows the mark's own writer locks first - a reply's lock of its
 // thread's user_threads rows, which the dismiss route takes too - ends the mark that writer
-// committed while it waited. Every person a standing mark names holds a node already, which
-// FromPerson wrote beside the mark, so the statement writes no node. A login past the store's
-// address bound states nothing, as FromPerson has it. event may be LatestEvent.
-func QueueMarksEnded(b *store.WriteBatch, kind, toKind, toID string, logins []string, at time.Time, who model.Actor, event int64) error {
+// committed while it waited; people read by the statement (MarkedIn) are read then too. Every
+// person a standing mark names holds a node already, which FromPerson wrote beside the mark, so
+// the statement writes no node. A login past the store's address bound states nothing, as
+// FromPerson has it. event may be LatestEvent.
+func QueueMarksEnded(b *store.WriteBatch, kind, toKind, toID string, people Marked, at time.Time, who model.Actor, event int64) error {
 	if !isMark(kind) || toKind == KindValue {
 		return fmt.Errorf("QueueMarksEnded retracts %s from a person to a node, not %s -> %s/%s",
 			strings.Join(markKinds[:], ", "), kind, toKind, toID)
 	}
-	people := make([]string, 0, len(logins))
-	for _, login := range logins {
-		if person := model.CanonicalLogin(login); person != "" && AddressFits(person) && !slices.Contains(people, person) {
-			people = append(people, person)
-		}
-	}
-	if len(people) == 0 || !AddressFits(toID) {
+	if !AddressFits(toID) {
 		return nil
+	}
+	persons, named, arg := `any($4::text[])`, "", any(nil)
+	if people.query != "" {
+		persons, named, arg = `any(array(`+people.query+`))`, "the persons its statement reads", people.arg
+	} else {
+		logins := make([]string, 0, len(people.logins))
+		for _, login := range people.logins {
+			if person := model.CanonicalLogin(login); person != "" && AddressFits(person) && !slices.Contains(logins, person) {
+				logins = append(logins, person)
+			}
+		}
+		if len(logins) == 0 {
+			return nil
+		}
+		named, arg = fmt.Sprintf("%d person", len(logins)), logins
 	}
 	writer, err := json.Marshal(who.Recorded())
 	if err != nil {
 		return fmt.Errorf("encode the writer of the %s marks ended: %w", kind, err)
 	}
-	b.Queue(fmt.Sprintf("end the %s marks of %d person on %s/%s", kind, len(people), toKind, toID), `
+	b.Queue(fmt.Sprintf("end the %s marks of %s on %s/%s", kind, named, toKind, toID), `
 		insert into graph_tuples (`+tupleWriteColumns+`)
 		select '`+KindPerson+`', standing.from_id, $1, $2, $3, $5::timestamptz, $6::jsonb, `+causeOf("$7::bigint")+`, null, false
 		from (
 			`+CurrentTupleRead(`t.from_id`, `t.from_id, t.asserted`,
-		`t.to_kind = $2 and t.to_id = $3 and t.kind = $1 and t.from_kind = '`+KindPerson+`' and t.from_id = any($4::text[])`)+`
+		`t.to_kind = $2 and t.to_id = $3 and t.kind = $1 and t.from_kind = '`+KindPerson+`' and t.from_id = `+persons)+`
 		) standing
 		where standing.asserted
 		order by standing.from_id`+relationRepeatKey,
-		kind, toKind, toID, people, at, writer, event)
+		kind, toKind, toID, arg, at, writer, event)
 	return nil
 }
 

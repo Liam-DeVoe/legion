@@ -344,8 +344,14 @@ func storeKinds(messagesNamed string) []StoreKind {
 		Driver: "user_agent_state.cleared_before in the window: a cleared",
 		count:  `(select count(*) from user_agent_state where cleared_before > ` + sizingWindow + `)`,
 	}, {
-		Name: "dismissal", MovedBy: movedWithInbox, Tuples: 1,
-		Driver: "user_agent_thread_dismissed.dismissed_at and user_threads.dismissed_at in the window: a dismissed",
+		// A dismissal ends when a later write brings its thread back: a write to a Reply thread
+		// retracts the dismissed of its participants (inboxwrite's Recording.Queue), and a session's
+		// reply to a direct conversation retracts the Agent dismissals of its root and deletes
+		// their rows (queueAgentDismissalsClear). So each dismissal is its dismissed and at most the
+		// retraction that ends it, which no row records once the clear has deleted it.
+		Name: "dismissal", MovedBy: movedWithInbox, Tuples: 2,
+		Driver: "user_agent_thread_dismissed.dismissed_at and user_threads.dismissed_at in the window: a dismissed," +
+			" and at most the retraction that ends it",
 		count: `((select count(*) from user_agent_thread_dismissed where dismissed_at > ` + sizingWindow + `)
 			+ (select count(*) from user_threads where dismissed_at > ` + sizingWindow + `))`,
 	}, {
