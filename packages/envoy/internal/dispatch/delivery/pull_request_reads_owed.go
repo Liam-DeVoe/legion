@@ -299,26 +299,32 @@ func linkedPullRequest(link string) (repo string, number int, ok bool) {
 }
 
 // OweLinkedPullRequestReads owes a read of GitHub for each pull request that a person or an agent
-// links to an issue by hand. It writes in tx, the transaction of the link write (api's
-// patchIssue). urls are the links that the write adds. This is R5 of the results lookup: Dispatch
-// reads the linked pull request from GitHub and stores its head, as for an event. No event carries
-// a link, so without the owe a pull request with no event and no result has no head row, and the
-// checks of the issue compare with nothing.
+// links to an issue by hand, where Dispatch holds no head of it. It writes in tx, the transaction
+// of the link write (api's patchIssue). urls are the links that the write adds. This is R5 of the
+// results lookup: Dispatch reads the linked pull request from GitHub and stores its head, as for
+// an event. No event carries a link, so without the owe a pull request with no event and no
+// result has no head row, and the checks of the issue compare with nothing.
 //
 // Each URL of a pull request owes the read (linkedPullRequest), in any repository: the read needs
 // only that GitHub can read the repository, not that Dispatch maps it. Each other link owes
 // nothing. Where GitHub does not let the App read the repository, the read stays owed until a
 // read succeeds (R4), as a refusal after its first read (recordOwedReadOutcome).
 //
-// A link owes the read also where a head row of the pull request is stored. A link says nothing
-// of that head, so its owe does not make the stored head a head not read: a new row takes its
-// revision as linked_revision, and the readers by issue skip a row whose linked_revision is its
-// revision (owedReadJoin). A read of the row that fails or that GitHub refuses keeps its revision,
-// so it hides nothing either. Each other owe gives the row a new revision: an event's, a refusal's,
-// and that of a trigger of pull_request_heads. So the row hides the head from then on. A link over
-// a row that is owed already gives it a new revision and changes nothing else: its reason, its
-// refusal, and whether it hides the head stay. So no order of a link and another owe hides less
-// than the other owe alone, and a read that began before the later owe settles neither
+// A link owes no read where a head row of the pull request is stored (oweLinkedRead): a link says
+// nothing of the head, the row holds the head that a read of GitHub or an event gave, and the
+// statement ties the pull request to the linking issue from the stored texts at the next read
+// (R7), so a read would ask GitHub what Dispatch holds already. A pull request whose head moves
+// gets its event, or the reconcile's open arm, as every other does.
+//
+// Where no head row is stored, a new owe takes its revision as linked_revision, and the readers by
+// issue skip a row whose linked_revision is its revision where a results row is stored
+// (owedReadJoin): a head row that another writer stores before the owed read settles is no head
+// not read for the link's sake. A read of the row that fails or that GitHub refuses keeps its
+// revision, so it hides nothing either. Each other owe gives the row a new revision: an event's, a
+// refusal's, and that of a trigger of pull_request_heads. So the row hides the head from then on. A
+// link over a row that is owed already gives it a new revision and changes nothing else: its
+// reason, its refusal, and whether it hides the head stay. So no order of a link and another owe
+// hides less than the other owe alone, and a read that began before the later owe settles neither
 // (settleOwedRead).
 //
 // A new row is a failure, as for an event whose read failed. So the next reconcile pass reads it
@@ -348,10 +354,13 @@ func OweLinkedPullRequestReads(ctx context.Context, tx pgx.Tx, urls []string) er
 }
 
 // oweLinkedRead owes the read of pull request number of the repository given for a link by hand
-// (OweLinkedPullRequestReads), under the name and within the bound of owePullRequestRead. A new
-// row is a failure whose linked_revision is its revision. A row that is owed already takes a new
-// revision and the time of now, and keeps its reason, its refusal and its count of reads. It keeps
-// linked_revision equal to its revision only where a link alone owed the read before.
+// (OweLinkedPullRequestReads), under the name and within the bound of owePullRequestRead, where no
+// head row of that pull request is stored: a row whose repository, under its canonical name, is
+// the owed name in any letter case, and whose number is number. Where one is stored it writes
+// nothing. A new row is a failure whose linked_revision is its revision. A row that is owed
+// already takes a new revision and the time of now, and keeps its reason, its refusal and its
+// count of reads. It keeps linked_revision equal to its revision only where a link alone owed the
+// read before.
 func oweLinkedRead(ctx context.Context, tx pgx.Tx, given string, number int) error {
 	ctx, cancel := owedTableBound(ctx)
 	defer cancel()
@@ -359,6 +368,27 @@ func oweLinkedRead(ctx context.Context, tx pgx.Tx, given string, number int) err
 	if err != nil {
 		return err
 	}
+	var held bool
+	if err := tx.QueryRow(ctx, `
+		select exists (select 1 from pull_request_heads h
+			where h.number = $2 and lower(`+refs.CanonicalRepoSQL("h.repo")+`) = lower($1))
+	`, repoFull, number).Scan(&held); err != nil {
+		return fmt.Errorf("read whether the head of %s#%d is stored for a link: %w", repoFull, number, err)
+	}
+	if held {
+		return nil
+	}
+	return recordLinkedOwe(ctx, tx, repoFull, number)
+}
+
+// recordLinkedOwe writes the owe of a link by hand of pull request number of repoFull, the owed
+// name (oweLinkedRead), in tx. A new row is a failure whose linked_revision is its revision. A row
+// that is owed already takes a new revision and the time of now, and keeps its reason, its refusal
+// and its count of reads; it keeps linked_revision equal to its revision only where a link alone
+// owed the read before. oweLinkedRead writes it only where no head row is stored, so a head row
+// beside such a row is one that another writer stored after the link, whose read began before the
+// owe and whose settle therefore leaves it (settleOwedRead).
+func recordLinkedOwe(ctx context.Context, tx pgx.Tx, repoFull string, number int) error {
 	if _, err := tx.Exec(ctx, `
 		insert into pull_request_reads_owed (repo, number, reason, revision, linked_revision)
 		select $1, $2, $3::text, r.revision, r.revision

@@ -1,10 +1,12 @@
 package delivery
 
-// A link by hand owes a read of the pull request that it links, also where Dispatch stores the
-// head of that pull request (R5 of the results lookup). A link says nothing of the head, so that
-// owe hides no stored head from the readers by issue (owedReadJoin). Each other owe says that the
-// head can have moved, so it hides the head, whichever of the two owes comes first. A read that
-// began before the later owe settles neither.
+// A link by hand owes a read of the pull request that it links where Dispatch stores no head of
+// that pull request (R5 of the results lookup). Where a head is stored, the link owes nothing.
+// A head can still be stored beside a link's owe: a writer whose read began before the link owed
+// the read stores the head, and its settle at its own earlier revision leaves the link's owe. A
+// link says nothing of the head, so that owe hides no stored head from the readers by issue
+// (owedReadJoin). Each other owe says that the head can have moved, so it hides the head,
+// whichever of the two owes comes first. A read that began before the later owe settles neither.
 
 import (
 	"context"
@@ -34,6 +36,25 @@ func linkByHand(t *testing.T, ctx context.Context, pool *store.Pool, number int)
 	}
 }
 
+// linkOwedBeforeTheHeadWas leaves acme/widgets#number with the owe that a link by hand wrote while
+// no head row of it was stored, beside the head row that a writer whose read began before the owe
+// stored after it: the owe's own write (recordLinkedOwe), in a transaction of its own, as the link
+// write of that pull request's URL makes it when the head is not yet held.
+func linkOwedBeforeTheHeadWas(t *testing.T, ctx context.Context, pool *store.Pool, number int) {
+	t.Helper()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the link write: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := recordLinkedOwe(ctx, tx, "acme/widgets", number); err != nil {
+		t.Fatalf("owe the read of the link to #%d: %v", number, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the link write: %v", err)
+	}
+}
+
 // storeReadHead makes acme/widgets#number an open pull request of issue whose head row a read of
 // GitHub wrote at the head first. It answers GitHub's pull requests of acme/widgets and the client
 // that reads them.
@@ -56,10 +77,12 @@ func storeReadHead(t *testing.T, ctx context.Context, pool *store.Pool, number i
 
 // Each of three owes comes before or after the owe of a link of the same pull request, whose head
 // row a read of GitHub wrote: the owe of an event whose read failed, the owe of a read that GitHub
-// refused, and the owe of a write of the release before that changes the head. With the link's
-// owe alone, HeadsAttributedTo lists the stored head as known. After both owes, in either order,
-// it lists the head as not read, and a refusal keeps its word. A settle at the revision of the
-// first owe, the one a read that began between the two owes took, deletes nothing.
+// refused, and the owe of a write of the release before that changes the head. A link written
+// now owes nothing, since the head is held. The link's owe here is the one it wrote before the
+// head was stored (linkOwedBeforeTheHeadWas). With the link's owe alone, HeadsAttributedTo lists
+// the stored head as known. After both owes, in either order, it lists the head as not read, and a
+// refusal keeps its word. A settle at the revision of the first owe, the one a read that began
+// between the two owes took, deletes nothing.
 func TestALinksOwedReadHidesNoStoredHeadAndEachOtherOweHidesItInEitherOrder(t *testing.T) {
 	others := []struct {
 		name      string
@@ -102,11 +125,15 @@ func TestALinksOwedReadHidesNoStoredHeadAndEachOtherOweHidesItInEitherOrder(t *t
 				issue := seedHeadIssue(t, ctx, pool, number)
 				first := fakeSHA("a", number)
 				storeReadHead(t, ctx, pool, number, first)
+				linkByHand(t, ctx, pool, number)
+				if owed := owedCount(t, ctx, pool, "acme/widgets", number); owed != 0 {
+					t.Fatalf("after a link to #%d, whose head is held, %d reads of it are owed; want none", number, owed)
+				}
 				var before *int64
 				if linkFirst {
-					linkByHand(t, ctx, pool, number)
+					linkOwedBeforeTheHeadWas(t, ctx, pool, number)
 					if owedCount(t, ctx, pool, "acme/widgets", number) != 1 {
-						t.Fatalf("after the link to #%d, no read of it is owed; want one", number)
+						t.Fatalf("after the link's owe of #%d, no read of it is owed; want one", number)
 					}
 					wantAttributedHead(t, "after the link alone", attributedHeadOf(t, ctx, pool, issue, number),
 						AttributedHead{Number: number, HeadSHA: first, HeadKnown: true})
@@ -115,7 +142,7 @@ func TestALinksOwedReadHidesNoStoredHeadAndEachOtherOweHidesItInEitherOrder(t *t
 				} else {
 					other.owe(t, ctx, pool, number)
 					before = owedRevision(ctx, pool, "acme/widgets", number)
-					linkByHand(t, ctx, pool, number)
+					linkOwedBeforeTheHeadWas(t, ctx, pool, number)
 				}
 				if before == nil {
 					t.Fatalf("SETUP: no revision of the first owe of #%d", number)
@@ -141,11 +168,12 @@ func TestALinksOwedReadHidesNoStoredHeadAndEachOtherOweHidesItInEitherOrder(t *t
 	}
 }
 
-// A link owes a read of acme/widgets#779, whose head row a read of GitHub wrote. The reconcile's
-// read of it fails at the first pass, and GitHub refuses it at the second, as an installation that
-// loses the repository does. Neither says that the head moved, so HeadsAttributedTo lists the
-// stored head as known after each pass, and the read stays owed. When GitHub serves the pull
-// request again, the next pass reads it and settles the owe.
+// The owe that a link wrote before a read of GitHub stored the head of acme/widgets#779
+// (linkOwedBeforeTheHeadWas). The reconcile's read of it fails at the first pass, and GitHub
+// refuses it at the second, as an installation that loses the repository does. Neither says that
+// the head moved, so HeadsAttributedTo lists the stored head as known after each pass, and the
+// read stays owed. When GitHub serves the pull request again, the next pass reads it and settles
+// the owe.
 func TestAFailedOrRefusedReadOfALinksOweHidesNoStoredHead(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)
@@ -154,7 +182,7 @@ func TestAFailedOrRefusedReadOfALinksOweHidesNoStoredHead(t *testing.T) {
 	first := fakeSHA("a", number)
 	github, fake := storeReadHead(t, ctx, pool, number, first)
 	known := AttributedHead{Number: number, HeadSHA: first, HeadKnown: true}
-	linkByHand(t, ctx, pool, number)
+	linkOwedBeforeTheHeadWas(t, ctx, pool, number)
 	client := fake.newTestClient()
 	reconcile := NewReconcile(pool, client, events.NewBroker())
 

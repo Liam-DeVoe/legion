@@ -12,11 +12,13 @@ body: |-
     read, so such a tie reached a merged pull request late or never.
 
     A link by hand of a pull request (`PATCH /api/v1/issues/{key}` with `external_links`) owes a
-    read of that pull request, also in a repository that no project maps, and also where Dispatch
-    stores its head row. The next reconcile pass reads it from GitHub and stores its head.
-    Where GitHub refuses the read, it stays owed as a refusal until a read succeeds. The owe of a
-    link alone does not make a stored head a head not read, so the results route still compares
-    with that head; any other owe of that pull request does (new column
+    read of that pull request where Dispatch holds no head row of it, also in a repository that
+    no project maps. The next reconcile pass reads it from GitHub and stores its head. Where
+    GitHub refuses the read, it stays owed as a refusal until a read succeeds. A link to a pull
+    request whose head Dispatch holds asks GitHub nothing: the statement gives the linking issue
+    from the stored texts at the next read. Where another writer stores the head before the owed
+    read, the owe of a link alone does not make that head a head not read, so the results route
+    still compares with it; any other owe of that pull request does (new column
     `pull_request_reads_owed.linked_revision`, migration
     `20261119172039_pull_request_reads_owed_linked`). Before, such a pull request with no event
     and no result had no head, and the checks of its issue compared with nothing.

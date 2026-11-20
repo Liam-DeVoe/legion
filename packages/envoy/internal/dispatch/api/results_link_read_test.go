@@ -62,6 +62,66 @@ func TestALinkByHandStoresTheHeadOfThePullRequestItLinks(t *testing.T) {
 	}
 }
 
+// A link by hand asks GitHub for the pull request it links only where Dispatch holds no head of
+// that pull request (R5 of the results lookup). In the first case Dispatch holds no head of
+// acme/tools#12: the link owes a read, one pass reads #12 from GitHub one time and stores its
+// head, and the linking issue's check k1 compares with it. In the second case Dispatch holds that
+// head, from that read: the link moves to another issue, which owes no read, so the next pass asks
+// GitHub nothing about #12, and the new issue's check k1 compares with the held head at once (R7:
+// a new link reaches a stored pull request with no read of GitHub). The test fails where a link to
+// a held head owes a read, and where a link to a head Dispatch does not hold owes none.
+func TestALinkByHandAsksGitHubForAPullRequestOnlyWhereItsHeadIsNotHeld(t *testing.T) {
+	handler, database, served, fake := readThroughGitHub(t, "acme/tools")
+	first := issueInRepository(t, handler, "ACME", "acme/tools", "Linked first")
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
+		map[string]any{"project": "ACME", "title": "Linked next", "spec": "A spec\n"}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create the second issue of ACME: status=%d body=%s", created.Code, created.Body.String())
+	}
+	second := decodeBody[model.Issue](t, created)
+	uploadDocument(t, handler, "/api/v1/issues/"+first.Key, "verification.md", twoChecks)
+	uploadDocument(t, handler, "/api/v1/issues/"+second.Key, "verification.md", twoChecks)
+	fake.pullAnswers(func(repo, number string) string {
+		if repo != "acme/tools" || number != "12" {
+			return ""
+		}
+		return linkedOpenPull(repo, 12, headCommit)
+	})
+	link := []map[string]string{{"url": "https://github.com/acme/tools/pull/12"}}
+
+	t.Run("the_head_is_not_held", func(t *testing.T) {
+		patchIssue(t, handler, first.Key, map[string]any{"external_links": link})
+		if owed := owedReads(t, database); !slices.Equal(owed, []string{"acme/tools#12 failure"}) {
+			t.Fatalf("after a link to acme/tools#12, whose head Dispatch does not hold, the owed reads are %q; want the read of #12", owed)
+		}
+		onePass(t, database, served)
+		if reads := fake.pullReadsOf("acme/tools", 12); reads != 1 {
+			t.Fatalf("after the link, one pass read acme/tools#12 from GitHub %d times; want 1", reads)
+		}
+		if !comparedWithPull(t, readResults(t, handler, first.Key), "k1", 12) {
+			t.Fatalf("after the link and one pass, %s's check k1 does not compare with the head of acme/tools#12", first.Key)
+		}
+	})
+
+	t.Run("the_head_is_held", func(t *testing.T) {
+		patchIssue(t, handler, first.Key, map[string]any{"external_links": []map[string]string{}})
+		patchIssue(t, handler, second.Key, map[string]any{"external_links": link})
+		if owed := owedReads(t, database); len(owed) != 0 {
+			t.Fatalf("after a link to acme/tools#12, whose head Dispatch holds, the owed reads are %q; want none", owed)
+		}
+		if !comparedWithPull(t, readResults(t, handler, second.Key), "k1", 12) {
+			t.Fatalf("at once after the link, %s's check k1 does not compare with the held head of acme/tools#12", second.Key)
+		}
+		onePass(t, database, served)
+		if reads := fake.pullReadsOf("acme/tools", 12); reads != 1 {
+			t.Fatalf("after the link to the held head and one more pass, GitHub served acme/tools#12 %d times in all; want 1, the first case's read alone", reads)
+		}
+		if !comparedWithPull(t, readResults(t, handler, second.Key), "k1", 12) {
+			t.Fatalf("after the link and one pass, %s's check k1 does not compare with the head of acme/tools#12", second.Key)
+		}
+	})
+}
+
 // owedReads is each read that pull_request_reads_owed holds, as "<repo>#<number> <reason>", in
 // order.
 func owedReads(t *testing.T, database *store.Store) []string {
@@ -78,11 +138,12 @@ func owedReads(t *testing.T, database *store.Store) []string {
 	return owed
 }
 
-// A link by hand owes a read for each URL of a pull request that it adds: also in a repository
-// that no project maps and the App reads, and also where a head row of that pull request is stored
-// (R5 of the results lookup). GitHub serves a pull request at /issues/<n> as well as at /pull/<n>,
-// so the /issues/ link of #31 owes a read too, which tells whether #31 is a pull request. Three
-// links owe nothing, because none of them is the URL of a pull request:
+// A link by hand owes a read for each URL of a pull request that it adds and whose head Dispatch
+// does not hold: also in a repository that no project maps and the App reads (R5 of the results
+// lookup). A link to a pull request whose head row is stored owes nothing: Dispatch holds that
+// head already. GitHub serves a pull request at /issues/<n> as well as at /pull/<n>, so the
+// /issues/ link of #31 owes a read too, which tells whether #31 is a pull request. Three links owe
+// nothing, because none of them is the URL of a pull request:
 //
 //   - a page of a pull request;
 //   - a URL of another site;
@@ -109,9 +170,9 @@ func TestALinkByHandOwesAReadForEachURLOfAPullRequestAndForNoOtherURL(t *testing
 		{"url": "https://github.com/acme/tools/pull/36"},
 	}
 	patchIssue(t, handler, issue.Key, map[string]any{"external_links": append(slices.Clone(others), pulls...)})
-	want := []string{"acme/elsewhere#34 failure", "acme/tools#30 failure", "acme/tools#31 failure", "acme/tools#36 failure"}
+	want := []string{"acme/elsewhere#34 failure", "acme/tools#31 failure", "acme/tools#36 failure"}
 	if owed := owedReads(t, database); !slices.Equal(owed, want) {
-		t.Fatalf("after links to acme/elsewhere#34 (no project maps its repository), acme/tools#30 (its head row is stored) and acme/tools#36 (no row), the owed reads are %q; want %q", owed, want)
+		t.Fatalf("after links to acme/elsewhere#34 (no project maps its repository), acme/tools#30 (its head row is stored, so it owes nothing) and acme/tools#36 (no row), the owed reads are %q; want %q", owed, want)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `delete from pull_request_reads_owed`); err != nil {
 		t.Fatalf("settle the owed reads: %v", err)
