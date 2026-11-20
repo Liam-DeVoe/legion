@@ -8,9 +8,8 @@ import (
 
 // RepositoryTokenWithStatuses answers whether the token it hands out holds Commit statuses from
 // the permissions GitHub's mint named for that very token, and never from the installation
-// lookup: the two differ for as long as a token minted before a person changed the grant lives.
-// The answer is kept with the token, so a second call mints nothing and answers the same, and
-// RepositoryToken hands out the same token.
+// lookup, which is remembered apart from the token. The answer is kept with the token, so a second
+// call mints nothing and answers the same, and RepositoryToken hands out the same token.
 func TestRepositoryTokenWithStatusesReadsTheTokensOwnPermissions(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -19,7 +18,6 @@ func TestRepositoryTokenWithStatusesReadsTheTokensOwnPermissions(t *testing.T) {
 		want         bool
 	}{
 		{"the token holds statuses at read", "read", map[string]string{"contents": "read", "metadata": "read", "statuses": "read"}, true},
-		{"the token holds statuses at write", "write", map[string]string{"contents": "read", "metadata": "read", "statuses": "write"}, true},
 		{"the installation holds statuses and the token does not", "read", map[string]string{"contents": "read", "metadata": "read"}, false},
 		{"the token holds statuses and the installation lookup says none", "", map[string]string{"contents": "read", "metadata": "read", "statuses": "read"}, true},
 		{"the token names statuses at none", "read", map[string]string{"contents": "read", "metadata": "read", "statuses": "none"}, false},
@@ -55,8 +53,8 @@ func TestRepositoryTokenWithStatusesReadsTheTokensOwnPermissions(t *testing.T) {
 		})
 	}
 
-	// A person grants the App Commit statuses while a token minted before it lives: that token
-	// still holds none, and the token minted after it does.
+	// A token keeps what its own mint named until it is minted again: what a later mint would
+	// name changes nothing for the token in hand, and the token minted next answers from its own.
 	t.Run("a token minted after the grant holds it", func(t *testing.T) {
 		fake := &fakeGitHub{
 			t:                    t,

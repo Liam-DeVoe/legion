@@ -12,6 +12,8 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -96,6 +98,8 @@ type fakeGitHub struct {
 	// two can differ while a token minted before a grant changed lives.
 	installationStatuses string
 	tokenPermissions     map[string]string
+	// tokenBodies records the body of every token mint, in order.
+	tokenBodies []string
 	// appInstallations, when non-nil, backs GET /app/installations, paginated at 100 per page; a
 	// nil value answers an empty list. appInstallationsCalls counts every call made, and
 	// appInstallationsRateLimitOnCall (1-indexed, 0 means never) makes that numbered call answer a
@@ -140,6 +144,11 @@ func (f *fakeGitHub) handler() http.Handler {
 	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, r *http.Request) {
 		f.verifyAppJWT(r)
 		f.tokenMints++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			f.t.Errorf("read the access_tokens body: %v", err)
+		}
+		f.tokenBodies = append(f.tokenBodies, string(body))
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(map[string]any{
 			"token":       fmt.Sprintf("ghs_fake_%d_%d", f.installationID, f.tokenMints),
@@ -960,6 +969,92 @@ func TestTokenCachesUntilNearExpiry(t *testing.T) {
 	}
 	if fake.tokenMints != 2 {
 		t.Fatalf("token mints after expiry: got %d, want 2", fake.tokenMints)
+	}
+}
+
+// TestTokenAsksForReadsOnly: every mint posts the reads Dispatch makes, each at read, as the
+// access_tokens body, and a token GitHub answers holding more than that body asked for is
+// refused: no token is handed out, none is cached, and the refused one is credited to no
+// installation's scope.
+func TestTokenAsksForReadsOnly(t *testing.T) {
+	const asked = `{"permissions":{"actions":"read","checks":"read","contents":"read","issues":"read","metadata":"read","pull_requests":"read","statuses":"read"}}`
+	// GitHub's answer to that body: the token holds what it asked for.
+	reads := map[string]string{
+		"actions": "read", "checks": "read", "contents": "read", "issues": "read",
+		"metadata": "read", "pull_requests": "read", "statuses": "read",
+	}
+	widened := func(permission, access string) map[string]string {
+		answered := maps.Clone(reads)
+		answered[permission] = access
+		return answered
+	}
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name     string
+		answered map[string]string
+	}{
+		{"an answer holding the seven reads", reads},
+		{"an answer naming another permission at none, which holds nothing", widened("administration", "none")},
+	} {
+		t.Run("the mint posts the seven reads: "+tc.name, func(t *testing.T) {
+			fake := &fakeGitHub{t: t, installationID: 9, tokenExpiresAt: time.Now().Add(time.Hour), tokenPermissions: tc.answered}
+			client := newTestClient(t, fake)
+			token, err := client.Token(ctx, 9)
+			if err != nil || token == "" {
+				t.Fatalf("Token(9) = (%q, %v), want a token", token, err)
+			}
+			if len(fake.tokenBodies) != 1 || fake.tokenBodies[0] != asked {
+				t.Fatalf("the access_tokens bodies = %q, want one, exactly %s", fake.tokenBodies, asked)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name     string
+		answered map[string]string
+		extra    string
+	}{
+		{"a permission the body did not name", widened("administration", "read"), "administration: read"},
+		{"a permission the body did not name, at no access word", widened("administration", ""), "administration at an access GitHub does not give"},
+		{"a named permission at write", widened("statuses", "write"), "statuses: write"},
+		{"a named permission at a level GitHub does not give", widened("contents", "maintain"), "contents at an access GitHub does not give"},
+		// An answer that is not GitHub's can name anything, the token among it, and a refusal
+		// never quotes a word that is not GitHub's own.
+		{"a permission named by the token", widened("ghs_fake_9_1", "write"), "a permission whose name GitHub does not give"},
+		{"a permission named by a JWT", widened("eyJhbGciOiJSUzI1NiJ9.e30.c2ln", "read"), "a permission whose name GitHub does not give"},
+		{"a named permission at the token", widened("contents", "ghs_fake_9_1"), "contents at an access GitHub does not give"},
+		{
+			"the installation's whole grant, which a mint whose body was dropped gets",
+			map[string]string{
+				"actions": "read", "checks": "write", "contents": "write", "issues": "write", "metadata": "read",
+				"pull_requests": "write", "statuses": "write", "workflows": "write",
+			},
+			"checks: write",
+		},
+	} {
+		t.Run("refused: "+tc.name, func(t *testing.T) {
+			fake := &fakeGitHub{t: t, installationID: 9, tokenExpiresAt: time.Now().Add(time.Hour), tokenPermissions: tc.answered}
+			client := newTestClient(t, fake)
+			token, err := client.Token(ctx, 9)
+			if err == nil || token != "" || !strings.Contains(err.Error(), tc.extra) {
+				t.Fatalf("Token(9) = (%q, %v), want no token and a refusal naming %s", token, err, tc.extra)
+			}
+			if strings.Contains(err.Error(), "ghs_fake") || strings.Contains(err.Error(), "eyJ") {
+				t.Fatalf("the refusal %q quotes the token or a JWT", err)
+			}
+			if scope := client.TokenScope("ghs_fake_9_1"); scope != "" {
+				t.Fatalf("the refused token is credited to scope %q, want none", scope)
+			}
+			fake.tokenPermissions = reads
+			again, err := client.Token(ctx, 9)
+			if err != nil || again != "ghs_fake_9_2" || fake.tokenMints != 2 {
+				t.Fatalf("the next Token(9) = (%q, %v) after %d mints, want a second mint's token: the refused one is not cached", again, err, fake.tokenMints)
+			}
+			if len(fake.tokenBodies) != 2 || fake.tokenBodies[0] != asked || fake.tokenBodies[1] != asked {
+				t.Fatalf("the access_tokens bodies = %q, want two, each exactly %s", fake.tokenBodies, asked)
+			}
+		})
 	}
 }
 

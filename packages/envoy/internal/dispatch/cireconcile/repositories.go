@@ -53,7 +53,7 @@ type reconciled struct {
 	// as under the token's own scopes. It is built once with the repository, so the pages of a
 	// repository share the one slice however many queries the pass asks.
 	queryScopes []string
-	// statuses says the token holds Commit statuses at read or write, so the pass reads the
+	// statuses says the token holds Commit statuses at read, so the pass reads the
 	// commit statuses of this repository's heads: in the query (headsQueryWithStatuses), and over
 	// REST for a head the query could not answer whole (readStatuses). Where it is false the pass
 	// asks GitHub for no status at all, and reads the repository as it did before it read any.
@@ -108,9 +108,7 @@ func (r *Reconciler) resolve(ctx context.Context, row string, mapped bool, c *co
 	}
 	// Whether the pass reads this repository's commit statuses is decided by the permissions of
 	// the token it reads with, which GitHub's own answer to the token's mint names, rather than by
-	// the installation's: a token is kept for about an hour, so after a person accepts Commit
-	// statuses the installation says the App holds it for up to an hour before the token in hand
-	// does, and a status read with that token would be refused for every head at every pass
+	// the installation's permissions, which the client remembers apart from the token
 	// (githubapp.Client.RepositoryTokenWithStatuses). A grant taken away while a token lives is
 	// still refused, and that costs a head its statuses alone (refusedPulls, readStatuses).
 	token, statuses, err := r.GitHub.RepositoryTokenWithStatuses(ctx, owner, name)
