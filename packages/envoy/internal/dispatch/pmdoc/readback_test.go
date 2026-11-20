@@ -3,9 +3,13 @@ package pmdoc
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // A document a caller writes is stored as its rendering, so one whose rendering does not read back
@@ -30,6 +34,51 @@ func TestParseForWriteRefusesADocumentItsRenderingReadsBackOtherwise(t *testing.
 		if want == ErrRenderingRefused && !strings.Contains(err.Error(), "an empty list item followed by a blank line") {
 			t.Errorf("ParseForWrite(%q) = %v, want it to name the shape its rendering holds", markdown, err)
 		}
+	}
+}
+
+// A write refused for its stored text is logged, and the line names none of the document's text:
+// the writer is told what reads back otherwise, its own text quoted, while a log line is read by
+// whoever reads the server's logs, and a document can hold a person's address. A paragraph whose
+// stored text reads back holding other words is logged by its block id and its kind of
+// difference, and a text the parser refuses for an attribute's value by the refusal's class.
+func TestARefusedWriteIsLoggedWithNoTextOfTheDocument(t *testing.T) {
+	const address = "person-7@example.com"
+	logs := &logtest.Recorder{}
+	logtest.SetDefault(t, logs)
+	doc := &Node{Type: "doc", Children: []*Node{{
+		Type:     "paragraph",
+		Attrs:    Attrs{BlockIDAttr: "b1"},
+		Children: []*Node{{Type: "text", Text: "Registered by " + address + "."}},
+	}}}
+	misread, err := RefuseMisreadStored(nil, "", doc, "Registered by "+address+" twice.\n")
+	if err != nil || !errors.Is(misread.Refusal, ErrMisreadRendering) || !strings.Contains(misread.Refusal.Error(), address) || misread.Block != "b1" {
+		t.Fatalf("a paragraph stored as other words = %v, %v, block %q; want ErrMisreadRendering quoting the paragraph's text, in block b1", misread.Refusal, err, misread.Block)
+	}
+	refused, err := RefuseMisreadStored(nil, "", doc, ":::callout{kind=\""+address+"\"}\nRegistered.\n:::\n")
+	if err != nil || !errors.Is(refused.Refusal, ErrRenderingRefused) || !strings.Contains(refused.Refusal.Error(), address) {
+		t.Fatalf("a callout whose kind is an address = %v, %v; want ErrRenderingRefused quoting the kind", refused.Refusal, err)
+	}
+	lines := map[string]map[string]string{}
+	for _, record := range logs.Records() {
+		if strings.Contains(record.Message, address) {
+			t.Errorf("a log line's message holds the document's text: %q", record.Message)
+		}
+		attributes := map[string]string{}
+		record.Attrs(func(attribute slog.Attr) bool {
+			attributes[attribute.Key] = attribute.Value.String()
+			if strings.Contains(attribute.Value.String(), address) {
+				t.Errorf("the log line %q carries the document's text in %s: %q", record.Message, attribute.Key, attribute.Value.String())
+			}
+			return true
+		})
+		lines[record.Message] = attributes
+	}
+	if got, want := lines["pmdoc: refused a write whose markdown reads back otherwise"], map[string]string{"block": "b1", "difference": "paragraph text"}; !maps.Equal(got, want) {
+		t.Errorf("the misread's log line carries %v, want %v", got, want)
+	}
+	if got, want := lines["pmdoc: refused a write whose markdown cannot be read back"], map[string]string{"refusal": ErrUnknownElement.Error()}; !maps.Equal(got, want) {
+		t.Errorf("the refusal's log line carries %v, want %v", got, want)
 	}
 }
 

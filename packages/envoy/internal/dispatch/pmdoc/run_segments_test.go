@@ -55,8 +55,8 @@ func TestARunNoOneSpellingReadsBackIsWrittenInOneForEachSegment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Render(Parse(%q)) = %v", noOneSpelling, err)
 	}
-	if _, misread, refused, err := documentMisread(doc); misread != "" || refused != nil || err != nil {
-		t.Fatalf("Render(Parse(%q)) = %q, which reads back otherwise: %q, %v, %v", noOneSpelling, rendered, misread, refused, err)
+	if _, misread, refused, err := documentMisread(doc); misread.reason != "" || refused != nil || err != nil {
+		t.Fatalf("Render(Parse(%q)) = %q, which reads back otherwise: %q, %v, %v", noOneSpelling, rendered, misread.reason, refused, err)
 	}
 	if _, err := ParseForWrite(rendered, nil); err != nil {
 		t.Fatalf("an upload of Render(Parse(%q)) = %q is refused: %v", noOneSpelling, rendered, err)
@@ -83,8 +83,8 @@ func TestAnEditBesideARunWrittenBySegmentsKeepsEveryOtherBlocksBytes(t *testing.
 	if again, err := Render(doc); err != nil || again != markdown {
 		t.Fatalf("a second Render = %q, %v, want the first, %q", again, err, markdown)
 	}
-	if reading, refused, err := storedMisread(doc, markdown); reading.misread() != "" || refused != nil || err != nil {
-		t.Fatalf("%q reads back otherwise: %q, %v, %v", markdown, reading.misread(), refused, err)
+	if reading, refused, err := storedMisread(doc, markdown); reading.misread().reason != "" || refused != nil || err != nil {
+		t.Fatalf("%q reads back otherwise: %q, %v, %v", markdown, reading.misread().reason, refused, err)
 	}
 	edits := []struct {
 		name, markdown string
@@ -116,8 +116,8 @@ func TestAnEditBesideARunWrittenBySegmentsKeepsEveryOtherBlocksBytes(t *testing.
 				t.Errorf("%s: block %d, %q, and the blocks before it changed bytes: %q", edit.name, index, kept, spliced)
 			}
 		}
-		if reading, refused, err := storedMisread(next, spliced); reading.misread() != "" || refused != nil || err != nil {
-			t.Errorf("%s: %q reads back otherwise: %q, %v, %v", edit.name, spliced, reading.misread(), refused, err)
+		if reading, refused, err := storedMisread(next, spliced); reading.misread().reason != "" || refused != nil || err != nil {
+			t.Errorf("%s: %q reads back otherwise: %q, %v, %v", edit.name, spliced, reading.misread().reason, refused, err)
 		}
 	}
 }
@@ -147,7 +147,7 @@ func TestALargeRunNoOneSpellingReadsBackIsReadBackAFewTimesItsLength(t *testing.
 	if limit := 6 * len(rendered); read > limit {
 		t.Errorf("rendering a run of %d bytes read back %d bytes, want at most %d", len(rendered), read, limit)
 	}
-	if reading, refused, err := storedMisread(doc, rendered); reading.misread() != "" || refused != nil || err != nil {
-		t.Errorf("the run's rendering reads back otherwise: %q, %v, %v", reading.misread(), refused, err)
+	if reading, refused, err := storedMisread(doc, rendered); reading.misread().reason != "" || refused != nil || err != nil {
+		t.Errorf("the run's rendering reads back otherwise: %q, %v, %v", reading.misread().reason, refused, err)
 	}
 }

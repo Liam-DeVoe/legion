@@ -3,6 +3,7 @@ package docs
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -121,6 +122,15 @@ func producedSchemaError(err error) error {
 		return fmt.Errorf("%w: the write left it outside: %v", ErrDocSchema, outside.Cause)
 	}
 	return err
+}
+
+// LoggedError is err as a log line carries it (pmdoc.LoggedError), counting this package's own
+// wrappers of a schema refusal among refusals: ErrDocSchema and ErrInvalidMarkdown carry the
+// refusal's message in theirs, and ErrDocNewerContent its cause's. A refusal is logged by its
+// class alone, since its message quotes the document, which can hold a person's address; any other
+// error is logged as it is. The error a caller is answered with keeps the whole message.
+func LoggedError(err error) slog.Value {
+	return pmdoc.LoggedError(err, ErrDocSchema, ErrInvalidMarkdown, ErrDocNewerContent)
 }
 
 // ErrDocumentTooLarge is the refusal of a write that would leave a document larger than the server

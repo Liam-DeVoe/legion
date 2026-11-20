@@ -38,8 +38,8 @@ func TestTheWriterSpellsTreesNoEarlierSpellingReadsBack(t *testing.T) {
 			t.Errorf("Render(Parse(%q)) = %v", markdown, err)
 			continue
 		}
-		if _, misread, refused, err := documentMisread(doc); misread != "" || refused != nil || err != nil {
-			t.Errorf("Render(Parse(%q)) = %q, which reads back otherwise: %q, %v, %v", markdown, rendered, misread, refused, err)
+		if _, misread, refused, err := documentMisread(doc); misread.reason != "" || refused != nil || err != nil {
+			t.Errorf("Render(Parse(%q)) = %q, which reads back otherwise: %q, %v, %v", markdown, rendered, misread.reason, refused, err)
 			continue
 		}
 		if _, err := ParseForWrite(rendered, nil); err != nil {

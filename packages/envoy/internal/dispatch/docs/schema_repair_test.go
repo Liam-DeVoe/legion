@@ -3,15 +3,20 @@ package docs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 func newSchemaRepairService(database *store.Store) *Service {
@@ -254,5 +259,61 @@ func TestStoredRenderOnlySchemaViolationLoadsForRepair(t *testing.T) {
 	}
 	if _, _, err := service.TextWithBlocks(context.Background(), artifactID); !errors.Is(err, ErrDocOutsideSchema) {
 		t.Fatalf("read render-only violation: %v, want ErrDocOutsideSchema", err)
+	}
+}
+
+// A stored tree the validator refuses for an attribute's value - an ask answered at a time that
+// is a person's address, as a crafted client can store it - is refused to its reader with the
+// whole refusal, the value quoted, and the room that loads it logs the refusal by its class alone:
+// a log line is read by whoever reads the server's logs, which no person's address in a document
+// reaches.
+func TestAStoredRefusalOfAnAttributesValueIsLoggedWithoutTheValue(t *testing.T) {
+	const address = "person-7@example.com"
+	logs := &logtest.Recorder{}
+	logtest.SetDefault(t, logs)
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "")
+	doc := crdt.New()
+	fragment := doc.GetXmlFragment(fragmentName)
+	doc.Transact(func(transaction *crdt.Transaction) {
+		ask := crdt.NewYXmlElement("ask")
+		fragment.InsertElement(transaction, 0, ask)
+		ask.SetAttributeValue(transaction, "answered_at", address)
+		paragraph := crdt.NewYXmlElement("paragraph")
+		ask.InsertElement(transaction, 0, paragraph)
+		question := crdt.NewYXmlText()
+		paragraph.InsertText(transaction, 0, question)
+		question.Insert(transaction, 0, "Which one?", nil)
+	})
+	if _, err := NewPgVersioned(database).AppendUpdate(context.Background(), artifactID, crdt.EncodeStateAsUpdateV1(doc, nil)); err != nil {
+		t.Fatalf("store the ask answered at an address: %v", err)
+	}
+	service := newSchemaRepairService(database)
+	t.Cleanup(func() {
+		if err := service.Shutdown(context.Background()); err != nil {
+			t.Errorf("shutdown: %v", err)
+		}
+	})
+	if _, err := service.Text(context.Background(), artifactID); !errors.Is(err, ErrDocOutsideSchema) || !strings.Contains(err.Error(), address) {
+		t.Fatalf("read the ask answered at an address: %v, want ErrDocOutsideSchema quoting the value", err)
+	}
+	if err := service.warmLiveDocument(context.Background(), artifactID); err != nil {
+		t.Fatalf("load the ask answered at an address: %v", err)
+	}
+	const loaded = "dispatch: loaded document outside Proof schema; a replacement from markdown repairs it"
+	var lines []string
+	for _, record := range logs.Records() {
+		line := record.Message
+		record.Attrs(func(attribute slog.Attr) bool {
+			line += fmt.Sprintf(" %s=%q", attribute.Key, attribute.Value.String())
+			return true
+		})
+		lines = append(lines, line)
+		if strings.Contains(line, address) {
+			t.Errorf("a log line carries the document's attribute value: %s", line)
+		}
+	}
+	if want := fmt.Sprintf("%s room=%q error=%q", loaded, artifactID, ErrDocSchema.Error()); !strings.Contains(strings.Join(lines, "\n"), want) {
+		t.Errorf("the log holds no line %s:\n%s", want, strings.Join(lines, "\n"))
 	}
 }

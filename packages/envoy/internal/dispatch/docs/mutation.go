@@ -211,7 +211,7 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 		// The 503 this becomes is the only other trace of a room that stays failed, so the
 		// refusal names the room and the cause here too (see awaitRoomRecovery).
 		slog.Warn("dispatch: refuse a joined write on a failed document room",
-			"room", op.write.artifactID, "error", err)
+			"room", op.write.artifactID, "error", LoggedError(err))
 		return err
 	}
 	// The rendering is the document as the transaction now sees it, so a version it writes later
