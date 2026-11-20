@@ -581,8 +581,11 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
   };
 }
 
-/** The application's registry; `KeymapProvider` binds it to `window`. Unit tests build their own. */
-export const appKeymap = createKeymap({ strict: import.meta.env.DEV });
+/** The application's registry; `KeymapProvider` binds it to `window`. Unit tests build their own.
+ *  `import.meta.env` is read optionally because Playwright evaluates the e2e files under Node,
+ *  where it is undefined, and an e2e file that imports a constant of the issue page loads this
+ *  module through `readers-place.ts` (`e2e/issue-page-d.e2e.ts`'s `HEADER_SCROLLS_QUERY`). */
+export const appKeymap = createKeymap({ strict: import.meta.env?.DEV === true });
 
 /** Registers `bindings` under `scope` for the component's lifetime; closures stay current. */
 export function useKeymap(scope: KeymapScope, bindings: readonly KeyBinding[]): void {
