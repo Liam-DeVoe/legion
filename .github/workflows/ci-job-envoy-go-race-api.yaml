@@ -43,8 +43,9 @@ jobs:
     # go test as -timeout. The job's bound is its slowest time, 1,306 s (run 44687712471, job
     # 136126011060), against 1,270 s and 1,265 s in the pair (jobs 136026779922 and
     # 136039518473), 21.77 minutes, plus that -timeout plus 6: 21.77 + 39 + 6 = 66.77, so 67.
-    # The limit must fire before the runner cancels the job, so a hung test prints the dump that
-    # names it.
+    # Run 44790111577 at 85f6b018 (job 136476756266) read the package at 1,105.3 s and the job at
+    # 1,243 s, under those, so it raised neither. The limit must fire before the runner cancels
+    # the job, so a hung test prints the dump that names it.
     timeout-minutes: 67
     services:
       postgres:

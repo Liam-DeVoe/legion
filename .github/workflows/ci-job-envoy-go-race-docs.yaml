@@ -37,17 +37,18 @@ jobs:
     # which may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
     # open-items.md). The step's -timeout is the smallest whole minute at which its slowest
     # package's slowest reading takes at most half of it: internal/dispatch/docs, this job's one
-    # package, 1,609.7 s in run 44717243297 at 66058706 (job 136223826761), against 1,603.9 s
-    # and 1,590.7 s in the pair (run 44657322918, job 136026779859, and run 44657415021, job
-    # 136039518210); 1,609.7 / 30 = 53.66, so 54m, the 54m the pair's 1,603.9 / 30 = 53.46 gave.
-    # The job's bound is its slowest time, 1,688 s (run 44717243297, job 136223826761), against
-    # 1,681 s and 1,671 s in the pair (jobs 136026779859 and 136039518210), 28.13 minutes, plus
-    # that -timeout plus 6: 28.13 + 54 + 6 = 88.13, so 89, the 89 the pair's 28.02 + 54 + 6 =
-    # 88.02 gave. So neither dispatch run raised either limit; run 44687712471 at 56f4dabc (job
-    # 136126011928) read the package at 1,602.2 s and the job at 1,682 s. The limit must fire
-    # before the runner cancels the job, so a hung test prints the dump that names it. The pair
-    # and both dispatch runs since it ran this job on arm64 (ubuntu-24.04-arm); the pair at
-    # 4f1f4436 read the package at 1,353.2 s at most, on x64 (ubuntu-24.04).
+    # package, 1,613.4 s in run 44790111577 at 85f6b018 (job 136476756178), against 1,609.7 s in
+    # run 44717243297 at 66058706 (job 136223826761), 1,602.2 s in run 44687712471 at 56f4dabc
+    # (job 136126011928), and 1,603.9 s and 1,590.7 s in the pair (run 44657322918, job
+    # 136026779859, and run 44657415021, job 136039518210); 1,613.4 / 30 = 53.78, so 54m, the 54m
+    # the pair's 1,603.9 / 30 = 53.46 gave. The job's bound is its slowest time, 1,698 s (run
+    # 44790111577, job 136476756178), against 1,688 s and 1,682 s in those two runs and 1,681 s
+    # and 1,671 s in the pair (jobs 136026779859 and 136039518210), 28.30 minutes, plus that
+    # -timeout plus 6: 28.30 + 54 + 6 = 88.30, so 89, the 89 the pair's 28.02 + 54 + 6 = 88.02
+    # gave. So no dispatch run raised either limit. The limit must fire before the runner cancels
+    # the job, so a hung test prints the dump that names it. The pair and the three dispatch runs
+    # since it ran this job on arm64 (ubuntu-24.04-arm); the pair at 4f1f4436 read the package at
+    # 1,353.2 s at most, on x64 (ubuntu-24.04).
     timeout-minutes: 89
     services:
       postgres:

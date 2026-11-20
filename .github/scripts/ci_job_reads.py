@@ -1662,13 +1662,15 @@ class RaceJob(NamedTuple):
 # (dispatch://INFRA-1075, check 6224bb0e), and from the dispatch run at each later head, which
 # may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
 # open-items.md). Each -timeout is the smallest whole minute at which that call's slowest
-# package's slowest reading takes at most half of it: cmd/listener 812.3 s (run 44717243297 at
-# 66058706, job 136223826856), against 680.5 s and 686.0 s in the pair (jobs 136026780235 and
-# 136039518500), 812.3 / 30 = 27.08, so 28m; internal/dispatch/api 1,154.1 s (run 44687712471 at
-# 56f4dabc, job 136126011060), against 1,123.8 s and 1,118.6 s in the pair (jobs 136026779922
-# and 136039518473), 1,154.1 / 30 = 38.47, so 39m; and internal/dispatch/docs 1,609.7 s (run
-# 44717243297 at 66058706, job 136223826761), against 1,603.9 s and 1,590.7 s in the pair,
-# 1,609.7 / 30 = 53.66, so 54m. Each figure is read from that
+# package's slowest reading takes at most half of it: cmd/listener 825.0 s (run 44790111577 at
+# 85f6b018, job 136476756188), against 812.3 s in run 44717243297 at 66058706 (job
+# 136223826856), which raised it from the pair's 23m, and 680.5 s and 686.0 s in the pair (jobs
+# 136026780235 and 136039518500), 825.0 / 30 = 27.50, so 28m; internal/dispatch/api 1,154.1 s
+# (run 44687712471 at 56f4dabc, job 136126011060), against 1,123.8 s and 1,118.6 s in the pair
+# (jobs 136026779922 and 136039518473) and 1,105.3 s in run 44790111577 (job 136476756266),
+# 1,154.1 / 30 = 38.47, so 39m; and internal/dispatch/docs 1,613.4 s (run 44790111577, job
+# 136476756178), against 1,609.7 s in run 44717243297 (job 136223826761) and 1,603.9 s and
+# 1,590.7 s in the pair, 1,613.4 / 30 = 53.78, so 54m. Each figure is read from that
 # job's own `go test -json` artifact. envoy-go-race-api's step runs its package through
 # database-skips.sh (main's #4456), which takes that -timeout as its --timeout (RACE_API_SCRIPT).
 ENVOY_RACE_LANE = (
@@ -2480,15 +2482,16 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # to the last. The short calls follow it: the longest of them, natslive, took 73.0 s
 # and 65.6 s in that pair.
 #
-# -timeout 18m, by R6 from the pair at 8cfd2682 (the table on this job): this call's
-# slowest package on the slower run is cmd/agent-secrets, 522.8 s (run 44657322918,
-# job 136026779841), and 522.8 / 30 = 17.43, so 18m. The limit leaves 614.1 s above
-# internal/dispatch/pmdoc's 465.9 s on that run, over the 60 s of pmdoc's
-# perCallReportMargin, which is the floor a package that reads the test binary's
+# -timeout 19m, by R6 from the pair at 8cfd2682 and the dispatch runs since (the table on
+# this job): this call's slowest package's slowest reading is cmd/agent-secrets, 555.3 s
+# (run 44790111577 at 85f6b018, job 136476756402), against 522.8 s and 506.9 s in the
+# pair, and 555.3 / 30 = 18.51, so 19m. The limit leaves 652.5 s above
+# internal/dispatch/pmdoc's 487.5 s in that run, its slowest reading, over the 60 s of
+# pmdoc's perCallReportMargin, which is the floor a package that reads the test binary's
 # deadline sets for itself.
 lead="{UNIT_TEST_LEAD_TEXT}"
 rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
-printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip {UNIT_TEST_SKIP} -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
+printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip {UNIT_TEST_SKIP} -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
 unit=$!
 # The tests the race detector makes impossible, which the race job of each of these
 # packages therefore cannot make, so envoy-go keeps a plain run of them:

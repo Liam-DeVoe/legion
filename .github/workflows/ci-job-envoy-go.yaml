@@ -41,11 +41,13 @@ jobs:
     # envoy-go-race-api's --timeout and timeout-minutes, envoy-go-docs-finalizers' -timeout and
     # timeout-minutes, and envoy-go-checks' timeout-minutes. Run 44717243297 at 66058706 raised
     # five: envoy-go-race's -timeout and timeout-minutes, and again envoy-go-docs-finalizers'
-    # -timeout and timeout-minutes and envoy-go-checks' timeout-minutes. The comment on each gives
-    # the reading of the run that set it. Every other limit is the pair's, and the table below
-    # and the comment on each give the pair's reading. The pair ran envoy-go-checks on x64
-    # (ubuntu-24.04) and the other five jobs on arm64 (ubuntu-24.04-arm), where main's #4308
-    # moved them, as the pairs at 31649808 and ae055610 did; every pair before those ran on x64.
+    # -timeout and timeout-minutes and envoy-go-checks' timeout-minutes. Run 44790111577 at
+    # 85f6b018 raised two: this job's package list's -timeout and, with it, this job's
+    # timeout-minutes; every other limit holds against it. The comment on each limit, and the
+    # table below for this job's calls, give the reading that set it; every limit no dispatch run
+    # raised is the pair's. The pair ran envoy-go-checks on x64 (ubuntu-24.04) and the other five
+    # jobs on arm64 (ubuntu-24.04-arm), where main's #4308 moved them, as the pairs from d58c9ed8
+    # on did; the pairs through 4f1f4436 ran every lane job on x64.
     #
     # A call's -timeout is the smallest whole minute at which its slowest package, on the slower
     # run of the pair, takes at most half of it: that package's time divided by 30, rounded up.
@@ -59,7 +61,7 @@ jobs:
     # other job, so a new pair changes those lines and no others.
     #
     #   call                slowest package   reading    run          job           t / 30  limit
-    #   the package list    agent-secrets     522.8 s    44657322918  136026779841   17.43    18m
+    #   the package list    agent-secrets     555.3 s    44790111577  136476756402   18.51    19m
     #   race-impossible     docs              216.1 s    44657322918  136026779841    7.20     8m
     #   pgmigrate           pgmigrate         278.2 s    44657322918  136026779841    9.27    10m
     #   shutdown            cmd/dispatch       50.2 s    44657322918  136026779841    1.67     2m
@@ -80,9 +82,10 @@ jobs:
     #
     # Three calls run tests that read a margin off the test binary's own deadline, and each must
     # leave at least that margin above its slowest package's time, or those tests refuse the run
-    # rather than waiting in it. Each limit clears it: 18m leaves 614.1 s over
-    # internal/dispatch/pmdoc's 465.9 s in the package list, against the 60 s of pmdoc's
-    # perCallReportMargin (internal/dispatch/pmdoc/linear_test.go:1169); 8m leaves 263.9 s over
+    # rather than waiting in it. Each limit clears it: 19m leaves 652.5 s over
+    # internal/dispatch/pmdoc's 487.5 s in the package list (run 44790111577, its slowest
+    # reading), against the 60 s of pmdoc's perCallReportMargin
+    # (internal/dispatch/pmdoc/linear_test.go:1169); 8m leaves 263.9 s over
     # the documents package's 216.1 s in the race-impossible call, against the 30 s of its
     # roomWaitMargin (internal/dispatch/docs/settlement_credit_test.go:546); and 2m leaves 69.8 s
     # over cmd/dispatch's 50.2 s in the shutdown call, against the 30 s of horizontest.Drain
@@ -91,24 +94,29 @@ jobs:
     # being cut off by the package timeout. At 4 minutes the race-impossible call failed that
     # floor and said so itself, in both arms of run 42577832967: "the test binary's deadline
     # leaves 20.769s, not more than roomWaitMargin (30s): this looks like a misconfigured run;
-    # raise -timeout".
+    # raise -timeout". Run 44790111577 read the documents package in the race-impossible call at
+    # 236.1 s and cmd/dispatch in the shutdown call at 58.4 s; 8m and 2m leave 243.9 s and 61.6 s
+    # above those.
     #
-    # The job's own bound is its larger time in the pair, 1,328 s (run 44657322918, job
-    # 136026779841), 22.13 minutes, plus the largest -timeout of its go test calls, the package
-    # list's 18m, plus 6: 22.13 + 18 + 6 = 46.13, so 47. The skip count's step limit of 19
-    # minutes is not a -timeout, and it fires before the job's: that step took 339 s of the same
-    # job, so the job less that step plus 19 minutes is 989 + 1,140 = 2,129 s, 35.48 minutes.
+    # The job's own bound is its slowest time, 1,373 s (run 44790111577 at 85f6b018, job
+    # 136476756402), against 1,328 s and 1,278 s in the pair (jobs 136026779841 and
+    # 136039517737), 22.88 minutes, plus the largest -timeout of its go test calls, the package
+    # list's 19m, plus 6: 22.88 + 19 + 6 = 47.88, so 48; the pair's 1,328 s gives
+    # 22.13 + 19 + 6 = 47.13, 48 as well. The skip count's step limit of 19 minutes is not a
+    # -timeout, though it equals the package list's 19m, and it fires before the job's: that step
+    # took 346 s of that job, so the job less that step plus 19 minutes is 1,027 + 1,140 = 2,167 s,
+    # 36.12 minutes, under the job's 48.
     # The other steps after the unit step have limits of their own under that: the store-form
     # count runs under backend-count.sh's -timeout of 5 minutes, the skip counter's test under its
     # step limit of 15 minutes and the callout check under its own 6. Both attempts of the pair
     # missed the Go build cache, on arm64: in each the restore found no go-envoy-test entry for
     # ARM64. The bound takes their times all the same. An attempt on x64 that missed it took
     # 1,502 s (run 44097184245, job 134098415747) against warm x64 ones of 737 s and 765 s (runs
-    # 44078406008 and 44175873364), and the bound covers it at 53 %. The nine calls of the unit
+    # 44078406008 and 44175873364), and the bound covers it at 52 %. The nine calls of the unit
     # step run at the same time, so the step's own worst case is the longest of them rather than
     # their sum.
     # The API's claim model is not among them, running in envoy-go-claim-model.
-    timeout-minutes: 47
+    timeout-minutes: 48
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -368,11 +376,12 @@ jobs:
           # to the last. The short calls follow it: the longest of them, natslive, took 73.0 s
           # and 65.6 s in that pair.
           #
-          # -timeout 18m, by R6 from the pair at 8cfd2682 (the table on this job): this call's
-          # slowest package on the slower run is cmd/agent-secrets, 522.8 s (run 44657322918,
-          # job 136026779841), and 522.8 / 30 = 17.43, so 18m. The limit leaves 614.1 s above
-          # internal/dispatch/pmdoc's 465.9 s on that run, over the 60 s of pmdoc's
-          # perCallReportMargin, which is the floor a package that reads the test binary's
+          # -timeout 19m, by R6 from the pair at 8cfd2682 and the dispatch runs since (the table on
+          # this job): this call's slowest package's slowest reading is cmd/agent-secrets, 555.3 s
+          # (run 44790111577 at 85f6b018, job 136476756402), against 522.8 s and 506.9 s in the
+          # pair, and 555.3 / 30 = 18.51, so 19m. The limit leaves 652.5 s above
+          # internal/dispatch/pmdoc's 487.5 s in that run, its slowest reading, over the 60 s of
+          # pmdoc's perCallReportMargin, which is the floor a package that reads the test binary's
           # deadline sets for itself.
           lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
           github.com/sjawhar/envoy/cmd/dispatch-seed
@@ -380,7 +389,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/agent-secrets"
           rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of them:

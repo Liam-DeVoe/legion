@@ -62,9 +62,10 @@ jobs:
     # raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
     # open-items.md). The job's bound is its slowest time, 1,208 s in run 44717243297 at 66058706
     # (job 136223826114), against 830 s and 853 s in the pair (run 44657322918, job 136026780288,
-    # and run 44657415021, job 136039517954) and 988 s in run 44687712471 at 56f4dabc (job
-    # 136126010901), 20.13 minutes, plus the largest -timeout of its go test calls, the alone
-    # step's 2m, plus 6: 20.13 + 2 + 6 = 28.13, so 29. Its other go commands are builds, the
+    # and run 44657415021, job 136039517954), 988 s in run 44687712471 at 56f4dabc (job
+    # 136126010901) and 1,042 s in run 44790111577 at 85f6b018 (job 136476756211), 20.13
+    # minutes, plus the largest -timeout of its go test calls, the alone step's 2m, plus 6:
+    # 20.13 + 2 + 6 = 28.13, so 29. Its other go commands are builds, the
     # darwin vet and two `go run`s, which run no test binary and carry no -timeout. The step that
     # tests the API's wall-clock measurements alone is in this pair too, and its comment gives its
     # reading. The steps that grew, against run 44657415021: the daemon-release-gate.sh verdict

@@ -42,9 +42,10 @@ jobs:
     # 44717243297 at 66058706 (job 136223826640), whose job took 1,064 s, against 926.9 s in run
     # 44657415021 (job 136039518265) and 920.3 s in run 44657322918 (job 136026780616), the pair,
     # and 951.6 s in run 44687712471 at 56f4dabc (job 136126010942); 1,004.5 / 36 = 27.90, so 28m
-    # (1,004.5 s is 59.8 % of 28m and would be 62.0 % of 27m), and 28 + 6 = 34. Measure again
-    # before changing either: a package that has grown past 60 % of its deadline is a deadline to
-    # raise, not a flake to re-run.
+    # (1,004.5 s is 59.8 % of 28m and would be 62.0 % of 27m), and 28 + 6 = 34. Run 44790111577
+    # at 85f6b018 (job 136476756355) read the `ok` line at 914.3 s, whose job took 971 s, under
+    # those, so it raised neither. Measure again before changing either: a package that has grown
+    # past 60 % of its deadline is a deadline to raise, not a flake to re-run.
     timeout-minutes: 34
     services:
       postgres:
