@@ -277,7 +277,7 @@ test("an issue key and a project document each write their files; the document g
   expect(JSON.parse(read(path.join(document, "asks.json")))).toEqual([]);
 
   expect(run.stdout).toEqual([
-    `${issue}: title.txt, messages.md (5 entries), asks.json (2 asks), old-spec.md`,
+    `${issue}: title.txt, messages.md (5 entries, 0 deleted posts left out), asks.json (2 asks), old-spec.md`,
     `${document}: title.txt, messages.md (1 entries), asks.json (0 asks)`,
   ]);
 });
@@ -324,7 +324,7 @@ test("--agent-texts writes every message, comment and ask by a session in the wi
     },
   ]);
   expect(run.stdout).toEqual([
-    `${path.join(out, "agent-texts.json")}: 2 texts by sessions (1 messages, 1 comments, 0 asks) read from 2 issues`,
+    `${path.join(out, "agent-texts.json")}: 2 texts by sessions (1 messages, 1 comments, 0 asks) read from 2 issues, 0 deleted posts left out`,
   ]);
 
   const wider = io(world().fetch);
@@ -366,10 +366,11 @@ test("--agent-texts writes every message, comment and ask by a session in the wi
 });
 
 // Dispatch answers a deleted post with an empty body and an edited one with the words the last
-// edit put there. Each file gives the deleted line every read of the dispatch command prints in
-// place of the one, and the mark those reads print after the other's words, so neither reaches a
-// judge as an empty entry or as words with nothing to say they were replaced.
-test("a deleted post gives the deleted line and an edited one the edited mark, in messages.md and agent-texts.json", async () => {
+// edit put there. A deleted post is left out of both files, as label-comments.ts leaves a deleted
+// comment out, and stdout counts it: no entry stands for a post with nothing of it left, not even
+// its quote. An edited post's words carry the mark every read of the dispatch command prints after
+// them, so they never reach a judge as words with nothing to say they were replaced.
+test("a deleted post is left out of messages.md and agent-texts.json and counted, and an edited one carries the edited mark", async () => {
   const routes: Record<string, unknown> = {
     ...ROUTES,
     "/api/v1/issues": [{ key: "ACME-7", title: "Make the widget faster", status: "done" }],
@@ -410,22 +411,16 @@ test("a deleted post gives the deleted line and an edited one the edited mark, i
   const sources = io(world(routes).fetch);
   expect(await main(["--out", out, "ACME-7"], sources.io)).toBe(0);
   expect(sources.stderr).toEqual([]);
-  // The deleted comment keeps its quote, which is the spec's text and not the comment's.
   expect(read(path.join(out, "acme-7", "messages.md"))).toBe(
     [
-      "<!-- message 2026-10-16T10:00:00Z -->",
-      "Deleted by user alice@example.com at 2026-10-16T10:30:00Z",
-      "",
-      "<!-- comment 2026-10-16T11:00:00Z anchored -->",
-      "> The widget waits 5 s.",
-      "",
-      "Deleted by user bob@example.com at 2026-10-16T11:30:00Z",
-      "",
       "<!-- message 2026-10-16T14:00:00Z -->",
       "Thanks, twice. · edited 2026-10-16T14:30:00Z",
       "",
     ].join("\n")
   );
+  expect(sources.stdout).toEqual([
+    `${path.join(out, "acme-7")}: title.txt, messages.md (1 entries, 2 deleted posts left out), asks.json (0 asks), old-spec.md`,
+  ]);
 
   const texts = io(world(routes).fetch);
   expect(
@@ -446,20 +441,15 @@ test("a deleted post gives the deleted line and an edited one the edited mark, i
   expect(JSON.parse(read(path.join(out, "agent-texts.json")))).toEqual([
     {
       issue: "ACME-7",
-      id: "m2",
-      kind: "message",
-      body: "Deleted by session session-1 at 2026-10-16T12:30:00Z",
-      origin_session_title: null,
-      created_at: "2026-10-16T12:00:00Z",
-    },
-    {
-      issue: "ACME-7",
       id: "c2",
       kind: "comment",
       body: "Fixed in 2 s. · edited 2026-10-16T13:30:00Z",
       origin_session_title: null,
       created_at: "2026-10-16T13:00:00Z",
     },
+  ]);
+  expect(texts.stdout).toEqual([
+    `${path.join(out, "agent-texts.json")}: 1 texts by sessions (0 messages, 1 comments, 0 asks) read from 1 issues, 1 deleted posts left out`,
   ]);
 });
 

@@ -206,10 +206,11 @@ export function blockLines(
           ...(node.text === undefined ? [] : ["Text:", node.text]),
         ]
       : [
-          // The edit mark of a post that stands: of a deleted one, the delete is what a read says (`read.ts`).
+          // Dispatch answers no read of a deleted post's block (404, `itemBlockReferenceNode`), so
+          // the post a node read here is of stands, and its edit mark is the post's.
           `${withEditedMark(
             `${noun} ${blockID} of ${ref.item.kind} ${ref.item.id}${node.changed_version === undefined ? "" : ` (changed in revision ${node.changed_version})`}`,
-            node.deleted_at == null ? node.edited_at : undefined
+            node.edited_at
           )}:`,
           ...(node.text === undefined ? [] : [node.text]),
         ];

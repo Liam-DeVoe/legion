@@ -2217,7 +2217,7 @@ describe("DispatchClient's writes", () => {
         IDEMPOTENCY_ANSWER_NOT_KEPT,
         201,
         "Dispatch gives no copy of its answer, which was too large to keep or holds a comment " +
-          "or a message deleted since, or a document version name a delete replaced",
+          "or a message that was deleted, or a document version name a delete replaced",
       ],
       [
         refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the write landed and its answer was lost"),
@@ -2247,10 +2247,11 @@ describe("DispatchClient's writes", () => {
     }
   });
 
-  // A call that writes nothing (the markdown round trip, the related-item check) made nothing, so
-  // a replay of an answer Dispatch kept no copy of is no landing and names nothing to read back:
-  // the call is asked once more under a new key, which runs it afresh, and that ask's answer is
-  // the call's. A second such replay is thrown as an answer not kept, never asked a third time.
+  // A call that writes nothing (the markdown round trip, the related-item check, a result's dry
+  // run) made nothing, so a replay of an answer Dispatch kept no copy of is no landing and names
+  // nothing to read back: the call is asked once more under a new key, which runs it afresh, and
+  // that ask's answer is the call's. A second such replay is thrown as an answer not kept, never
+  // asked a third time.
   test("a call that writes nothing whose answer Dispatch did not keep is asked once more under a new key", async () => {
     const notKept = () =>
       json({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" }, 200, {
@@ -2258,6 +2259,7 @@ describe("DispatchClient's writes", () => {
       });
     const unavailable = () => refusal(503, "UNAVAILABLE", "database unavailable");
     const checked = { outcome: "none", search: "meaning_and_keywords", related: [] };
+    const dryRun = { line: "- [x] k1 (implementer): pass at 1111111" };
     for (const [call, url, answer, result] of [
       [
         (dispatch: DispatchClient) => dispatch.markdownRoundTrip("# Notes\n"),
@@ -2270,6 +2272,19 @@ describe("DispatchClient's writes", () => {
         "http://dispatch.test/api/v1/projects/DSP/related",
         checked,
         checked,
+      ],
+      [
+        (dispatch: DispatchClient) =>
+          dispatch.dryRunResult("DSP-1", {
+            actor,
+            check: "k1",
+            role: "implementer",
+            verdict: "pass",
+            commit: "1111111111111111111111111111111111111111",
+          }),
+        "http://dispatch.test/api/v1/issues/DSP-1/results/dry-run",
+        dryRun,
+        dryRun,
       ],
     ] as const) {
       const answered = scripted([unavailable(), notKept(), json(answer)]);

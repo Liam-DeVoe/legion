@@ -858,7 +858,7 @@ test("a reply or a BTW answer Dispatch refused is said not posted, with Dispatch
       "reply:ATTEMPT_SETTLED: attempt 1 is settled",
     ])
     expect(session.warnings[1]).toBe(
-      "a BTW answer was not posted — ATTEMPT_SETTLED: attempt 1 is settled",
+      `a BTW answer to message ${MESSAGE} was not posted — ATTEMPT_SETTLED: attempt 1 is settled`,
     )
   } finally {
     await rm(session.directory, { recursive: true, force: true })

@@ -689,6 +689,13 @@ function editedAfter(current: string | null | undefined, at: string): string {
     : at;
 }
 
+/** A deleted comment's `anchor` as the delete left it: the quote emptied where the delete emptied
+ *  the comment's (`quoteCleared`), since an insert suggestion's quote is the text it put in the
+ *  document, the comment's own words; any other quote is the document's own text, and stays. */
+function deletedAnchor<A extends { readonly quote?: string }>(anchor: A, quoteCleared: boolean): A {
+  return quoteCleared ? { ...anchor, quote: "" } : anchor;
+}
+
 /** `block`, the block of its parent a reply names, as a read of the reply answers it once `post`
  *  is corrected; undefined for no block, or one of another post. A block of a deleted post is
  *  removed with no text, beside the delete's mark; one of an edited post carries the edit's time
@@ -724,7 +731,7 @@ function markedComment(
   const { body_tree: _tree, ...kept } = comment;
   return {
     ...kept,
-    anchor: quoteCleared && kept.anchor !== null ? { ...kept.anchor, quote: "" } : kept.anchor,
+    anchor: kept.anchor === null ? null : deletedAnchor(kept.anchor, quoteCleared),
     body: "",
     deleted_at: deletion.at,
     deleted_by: deletion.by,
@@ -885,9 +892,9 @@ function markedEvent(event: DispatchEvent, post: CorrectedPost): DispatchEvent |
   if ("suggestion" in event.payload) {
     const { body: _body, body_truncated: _cut, suggestion: _suggestion, ...kept } = event.payload;
     const anchor =
-      mark.quoteCleared && kept.anchor !== null && kept.anchor !== undefined
-        ? { ...kept.anchor, quote: "" }
-        : kept.anchor;
+      kept.anchor === null || kept.anchor === undefined
+        ? kept.anchor
+        : deletedAnchor(kept.anchor, mark.quoteCleared);
     return { ...event, payload: { ...kept, anchor, ...deleted }, trees } as DispatchEvent;
   }
   const { body: _text, body_truncated: _truncated, ...kept } = event.payload;
@@ -924,11 +931,12 @@ function markedThreadPage(
 
 /**
  * An Inbox thread row as `GET /api/v1/me/replies` answers it once `post` is corrected: a row whose
- * root is the post carries the edit's time, or the delete's mark with no subject, and one whose
- * latest reply is the post carries that reply's delete mark with no first line (`readMyReplyRows`
- * in `api/replies.go`). An ask's and a comment's thread take comment replies, a message's
- * message replies. Undefined for any other row, and for a reply's edit, which a row does not
- * mark.
+ * root is the post carries the edit's time, or the delete's mark with no subject and the anchor
+ * the delete left it (`deletedAnchor`), which the card prints the quote of (`ThreadQuote`), and
+ * one whose latest reply is the post carries that reply's delete mark with no first line
+ * (`readMyReplyRows` in `api/replies.go`, whose row carries the root comment's anchor). An ask's
+ * and a comment's thread take comment replies, a message's message replies. Undefined for any
+ * other row, and for a reply's edit, which a row does not mark.
  */
 function markedThreadRow(row: MyReplyRow, post: CorrectedPost): MyReplyRow | undefined {
   const replyKind = row.kind === "message" || row.kind === "agent" ? "message" : "comment";
@@ -940,11 +948,14 @@ function markedThreadRow(row: MyReplyRow, post: CorrectedPost): MyReplyRow | und
   if (!root && !reply) {
     return undefined;
   }
-  const marks = deletionMarks(post.mark.deletion);
-  const { deleted_by: _rootBy, ...rowKept } = row;
+  const { deletion, quoteCleared } = post.mark;
+  const marks = deletionMarks(deletion);
+  const { anchor, deleted_by: _rootBy, ...rowKept } = row;
   const { deleted_by: _replyBy, ...replyKept } = row.reply;
+  const rootKept =
+    anchor === undefined ? rowKept : { ...rowKept, anchor: deletedAnchor(anchor, quoteCleared) };
   return {
-    ...(root ? { ...rowKept, ...marks, subject: "" } : row),
+    ...(root ? { ...rootKept, ...marks, subject: "" } : row),
     reply: reply ? { ...replyKept, ...marks, first_line: "" } : row.reply,
   };
 }

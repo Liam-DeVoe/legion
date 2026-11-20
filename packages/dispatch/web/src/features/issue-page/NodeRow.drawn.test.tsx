@@ -407,11 +407,11 @@ function wordsByMark(region: Element | null | undefined) {
   return marked;
 }
 
-// FixAudit3 F8 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-20 07:52Z: the
-// deleted line ("Deleted by …", "Deleted") and the edited mark (" · edited") a row draws are the
-// page's own words, so each carries the page-chrome mark and is declared in `page-words.ts`, as
-// its rule says; the actor's name, and the time, stay its author's. That holds of the row's words
-// whole and folded, of its margin, of a parent line, and of a chip.
+// The architect's ruling of 2026-11-20 07:52Z on dispatch://INFRA-1523: the deleted line
+// ("Deleted by …", "Deleted") and the edited mark (" · edited") a row draws are the page's own
+// words, so each carries the page-chrome mark and is declared in `page-words.ts`, as its rule says;
+// the actor's name, and the time, stay its author's. That holds of the row's words whole and
+// folded, of its margin, of a parent line, and of a chip.
 test("a row's deleted line and edited mark are the page's own words, and the actor's name stays the author's", () => {
   const chrome = (region: Element | null | undefined) => {
     const { author, chrome: own, unmarked } = wordsByMark(region);

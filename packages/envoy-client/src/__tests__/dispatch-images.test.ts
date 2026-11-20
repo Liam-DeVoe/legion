@@ -509,7 +509,7 @@ describe("sending pictures", () => {
     const lost = {
       ANSWER_NOT_KEPT:
         "Dispatch gives no copy of its answer, which was too large to keep or holds a comment or " +
-        "a message deleted since, or a document version name a delete replaced",
+        "a message that was deleted, or a document version name a delete replaced",
       KEY_COMMITTED: "its answer was lost on the way back",
     };
     for (const [code, landing] of [
