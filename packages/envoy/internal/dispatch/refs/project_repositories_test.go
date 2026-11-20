@@ -4,6 +4,7 @@ import (
 	"context"
 	"maps"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -11,10 +12,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// projectRepositoriesWant is each project's answer over seedProjectRepositories' rows, sorted
-// byte-wise and each once.
+// projectRepositoriesWant is each project's answer over seedProjectRepositories' rows, lower-cased,
+// sorted byte-wise and each once.
 var projectRepositoriesWant = map[string][]string{
-	"PRIV":  {"acme/done", "acme/oldname", "acme/privdefault", "acme/pub", "acme/two"},
+	"PRIV":  {"acme/done", "acme/oldname", "acme/privdefault", "acme/pub", "acme/two", "acme/upper"},
 	"OTHER": {"acme/priv", "acme/two"},
 }
 
@@ -23,12 +24,14 @@ var projectRepositoriesWant = map[string][]string{
 // child of PRIV-1, so it resolves to its parent's acme/pub; PRIV-3 names none and is a child of
 // OTHER-2, which names acme/two, so only the parent chain gives PRIV acme/two, since no issue of
 // PRIV names it; PRIV-4 names none and is a root, so it resolves to PRIV's default,
-// acme/privdefault; PRIV-5 names acme/done and is done; and PRIV-6 names acme/oldname, which a
-// mapping of PRIV records as renamed to acme/newname. OTHER-1 names acme/priv. PRIV maps
-// acme/privmapped, which no issue names. The default, the rename and that mapping are stored as
-// this build stores them, in repo_projects. A parent in another project is a row only a direct
-// write makes (the API refuses one), as refs' other seeds hold one too (seedRepositoryIssues): it
-// is the one way the parent chain adds a repository that the project's own issues do not name.
+// acme/privdefault; PRIV-5 names acme/done and is done; PRIV-6 names acme/oldname, which a
+// mapping of PRIV records as renamed to acme/newname; and PRIV-7 names Acme/Upper, in capitals.
+// OTHER-1 names acme/priv. PRIV maps acme/privmapped, which no issue names. The default, the
+// rename and that mapping are stored as this build stores them, in repo_projects. A parent in
+// another project and a repository stored in capitals are rows only a direct write makes (the API
+// refuses the one, api/issue_parent.go, and lower-cases the other, api/issue_repo.go); refs' other
+// seeds hold such a parent too (seedRepositoryIssues). It is the one way the parent chain adds a
+// repository that the project's own issues do not name.
 func seedProjectRepositories(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
@@ -43,7 +46,8 @@ func seedProjectRepositories(t *testing.T) *store.Store {
 			('PRIV-3', 'PRIV', 3, 'Under OTHER-2', '{"kind":"user","id":"alice"}', 'c', 'OTHER-2', null, 'triage'),
 			('PRIV-4', 'PRIV', 4, 'Names none', '{"kind":"user","id":"alice"}', 'd', null, null, 'triage'),
 			('PRIV-5', 'PRIV', 5, 'Names acme/done', '{"kind":"user","id":"alice"}', 'e', null, 'acme/done', 'done'),
-			('PRIV-6', 'PRIV', 6, 'Names acme/oldname', '{"kind":"user","id":"alice"}', 'f', null, 'acme/oldname', 'triage');
+			('PRIV-6', 'PRIV', 6, 'Names acme/oldname', '{"kind":"user","id":"alice"}', 'f', null, 'acme/oldname', 'triage'),
+			('PRIV-7', 'PRIV', 7, 'Names Acme/Upper', '{"kind":"user","id":"alice"}', 'g', null, 'Acme/Upper', 'triage');
 		insert into repo_projects (repo, project, is_default, renamed_to, created_by) values
 			('acme/privdefault', 'PRIV', true, null, '{"kind":"user","id":"alice"}'),
 			('acme/oldname', 'PRIV', false, 'acme/newname', '{"kind":"user","id":"alice"}'),
@@ -54,17 +58,20 @@ func seedProjectRepositories(t *testing.T) *store.Store {
 	return database
 }
 
-// TestAProjectsRepositoriesAreWhereItsIssuesResolve (K-E5): a project's answer is the repository
-// each of its issues resolves to, open or done: its own, its parent's, or its project's default,
-// as the issue or the default stores it, sorted and each once. PRIV's answer holds acme/pub
-// (PRIV-1's own, and PRIV-2's through its parent), acme/two (PRIV-3's, only through its parent
-// OTHER-2), acme/privdefault (PRIV-4's default), acme/done (the done PRIV-5's) and acme/oldname
-// (PRIV-6's, as stored: the answer reads no rename from repo_projects, so acme/newname, the name a
-// mapping records for it, is in no answer). OTHER-1's acme/priv adds nothing to PRIV's answer, and
-// acme/privmapped, which PRIV maps and no issue names, is in no answer. Controls: the statement
-// without its parent-chain step resolves PRIV-3 to PRIV's default, misses acme/two, and the test
-// fails naming it; the statement reading renames answers acme/newname in place of acme/oldname,
-// and the test fails naming both.
+// TestAProjectsRepositoriesAreWhereItsIssuesResolve: Dispatch's repository answer (GET
+// /api/v1/access/projects/{key}/repositories, ProjectRepositories) is the repository each of a
+// project's issues resolves to, open or done: its own, its parent's, or its project's default,
+// lower-cased, sorted and each once. PRIV's answer holds acme/pub (PRIV-1's own, and PRIV-2's
+// through its parent), acme/two (PRIV-3's, only through its parent OTHER-2), acme/privdefault
+// (PRIV-4's default), acme/done (the done PRIV-5's), acme/oldname (PRIV-6's, as its issue names
+// it: the rule reads no rename from repo_projects, so acme/newname, the name a mapping records for
+// it, is in no answer) and acme/upper (PRIV-7's Acme/Upper, lower-cased). OTHER-1's acme/priv adds
+// nothing to PRIV's answer, and acme/privmapped, which PRIV maps and no issue names, is in no
+// answer. Controls, each on ProjectRepositoriesSQL, the one rule the answer reads: without its
+// parent-chain step PRIV-3 resolves to PRIV's default, the answer misses acme/two, and the test
+// fails naming it; reading renames (CanonicalRepoSQL) answers acme/newname in place of
+// acme/oldname, and the test fails naming both; without lower() the answer holds Acme/Upper in
+// place of acme/upper, and the test fails naming both.
 func TestAProjectsRepositoriesAreWhereItsIssuesResolve(t *testing.T) {
 	database := seedProjectRepositories(t)
 	for _, project := range []string{"PRIV", "OTHER"} {
@@ -92,15 +99,17 @@ func notIn(these, from []string) []string {
 }
 
 // fixtureIssue is one issue of the fixture as the one-issue read resolves it: its key, its
-// project and the repository IssueRepository answers, as stored.
+// project and the repository IssueRepository answers, lower-cased as the answer names it.
 type fixtureIssue struct {
 	key, project, resolved string
 }
 
 // resolveFixtureIssues reads every issue the database holds, whatever seeded it, and resolves
-// each through IssueRepository, the one-issue read of the same rule. An issue that resolves to
-// none fails the test, since every issue of the fixture resolves to one, and so does a database
-// that holds no issue: a walk over nothing would pass every check below it.
+// each through IssueRepository, the one-issue read of the same terms. IssueRepository answers a
+// name as the issue stores it and the repository answer names it lower-cased, so each is
+// lower-cased here. An issue that resolves to none fails the test, since every issue of the
+// fixture resolves to one, and so does a database that holds no issue: a walk over nothing would
+// pass every check below it.
 func resolveFixtureIssues(t *testing.T, database *store.Store) []fixtureIssue {
 	t.Helper()
 	ctx := context.Background()
@@ -130,28 +139,28 @@ func resolveFixtureIssues(t *testing.T, database *store.Store) []fixtureIssue {
 		if resolved == nil {
 			t.Fatalf("IssueRepository(%s) resolves to no repository, and every issue of the fixture resolves to one", issues[i].key)
 		}
-		issues[i].resolved = *resolved
+		issues[i].resolved = strings.ToLower(*resolved)
 	}
 	return issues
 }
 
-// TestEveryIssueResolvesIntoItsProjectsRepositories (K-E5): for every issue of the fixture, the
-// repository the one-issue read resolves it to (IssueRepository), as stored, is in its project's
-// answer, and the union of them over a project's issues, open and done, is that project's answer,
-// no more: no repository the project only maps. Control: answer a project from its open issues
-// alone, and PRIV-5's acme/done is missing from PRIV's answer, and the test fails naming it.
+// TestEveryIssueResolvesIntoItsProjectsRepositories: for every issue of the fixture, the
+// repository the one-issue read resolves it to (IssueRepository), lower-cased, is in its project's
+// repository answer, and the union of them over a project's issues, open and done, is that
+// project's answer, no more: no repository the project only maps. Control: answer a project from
+// its open issues alone, and PRIV-5's acme/done is missing from PRIV's answer, and the test fails
+// naming it.
 //
-// Its row "the GitHub proxy" holds the proxy's rule to the same resolution, on what the two reads
-// must agree on: for every fixture issue's repository, the projects that ProjectRepositoriesSQL,
-// the ownership the proxy's RepositoryClause reads, counts as its owners are exactly the projects
-// whose answer lists it; and a restricted member who sees only PRIV is shown exactly the
-// repositories in PRIV's answer, which is the spec's rule for a viewer that is not open (a
-// repository an issue the viewer sees resolves to). It compares no open viewer's view: the proxy
-// hides a repository that a private project the viewer cannot see shares with a project the
-// viewer sees, and that is the proxy's own rule, not this answer's. It compares each repository
-// by the name the issue stores, which the proxy, reading renames, also reads under the new name.
-// Control: the proxy's ownership read with each issue's own repository alone, no parent walk, and
-// PRIV no longer owns acme/two there, and the row fails naming it.
+// Its row "the GitHub proxy" holds the proxy's gate (RepositoryClause) to the answer, since both
+// read the one rule, ProjectRepositoriesSQL: for every fixture issue's repository, the projects
+// that rule counts as its owners, embedded as RepositoryClause embeds it, are exactly the
+// projects whose answer lists it; a restricted member who sees only PRIV is shown exactly the
+// repositories PRIV's answer lists; and alice, open and seeing OTHER, is shown exactly those that
+// OTHER's answer lists or PRIV's does not, PRIV being the one private project she does not see.
+// Those are the spec's rules for a viewer that is not open (a repository an issue the viewer sees
+// resolves to) and for an open one (that, or a repository no private project hidden from the
+// viewer owns). Control: drop repositorySeen's question for a project's default, and the member
+// is not shown acme/privdefault, which PRIV's answer lists; the row fails naming it.
 func TestEveryIssueResolvesIntoItsProjectsRepositories(t *testing.T) {
 	database := seedProjectRepositories(t)
 	issues := resolveFixtureIssues(t, database)
@@ -190,6 +199,7 @@ func TestEveryIssueResolvesIntoItsProjectsRepositories(t *testing.T) {
 		owners := projectOwners(t, database, "true", repositories)
 		projects := slices.Sorted(maps.Keys(answers))
 		member := model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}}
+		open := model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"OTHER"}, AnyPrivate: true}}
 		for _, issue := range issues {
 			listed := []string{}
 			for _, project := range projects {
@@ -205,6 +215,11 @@ func TestEveryIssueResolvesIntoItsProjectsRepositories(t *testing.T) {
 			if shown := repositoryPasses(t, database, member, issue.resolved); shown != inPRIV {
 				t.Errorf("the proxy shows %s, %s's repository, to a person who sees only PRIV: %t; PRIV's answer holds it: %t",
 					issue.resolved, issue.key, shown, inPRIV)
+			}
+			inOTHER := slices.Contains(answers["OTHER"], issue.resolved)
+			if shown := repositoryPasses(t, database, open, issue.resolved); shown != (inOTHER || !inPRIV) {
+				t.Errorf("the proxy shows %s, %s's repository, to an open viewer who sees OTHER: %t; OTHER's answer holds it: %t, and PRIV's, hidden from that viewer: %t",
+					issue.resolved, issue.key, shown, inOTHER, inPRIV)
 			}
 		}
 	})

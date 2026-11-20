@@ -4,10 +4,10 @@ body: |-
   /api/v1/access/projects/{key}/repositories`, which the secrets broker reads for the edge
   listener's GitHub relay: `{"project": "<KEY>", "repositories": ["<owner>/<name>", …]}`, the
   repository each issue of the project resolves to, open or done (its own, else its nearest
-  parent's, else the project's default), as the issue or the default stores it, each once and
-  sorted byte-wise, and `[]` when none resolves. It is computed from the issues alone
-  (`refs.ProjectRepositories`, by the terms every issue read resolves a repository with), so a
-  repository the project maps and no issue resolves to is not in it, and no rename is read. An
+  parent's, else the project's default), lower-cased, each once and sorted byte-wise, and `[]`
+  when none resolves. It is read from `refs.ProjectRepositories`, by the one rule of which
+  repositories a project owns (`refs.ProjectRepositoriesSQL`), which the GitHub proxy reads too:
+  a repository the project maps and no issue resolves to is not in it, and no rename is read. An
   unknown key is `404 PROJECT_NOT_FOUND`, and an issue whose parent chain is deeper than 32 links,
   or loops, is `503 REPOSITORIES_UNRESOLVED` naming that issue, never a shorter list. Only a
   service account `DISPATCH_ACCESS_ACCOUNTS` names reads it, as for the membership answer; every

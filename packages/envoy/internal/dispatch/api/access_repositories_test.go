@@ -37,8 +37,8 @@ func seedAnswerProject(t *testing.T, database *store.Store, key string, reposito
 	}
 }
 
-// TestTheRepositoryAnswerAdmitsOnlyTheAccessAccounts (K-E5): GET
-// /api/v1/access/projects/{key}/repositories is answered only to a service account
+// TestTheRepositoryAnswerAdmitsOnlyTheAccessAccounts: Dispatch's repository answer, GET
+// /api/v1/access/projects/{key}/repositories, is answered only to a service account
 // DISPATCH_ACCESS_ACCOUNTS names. A person's cookie, that person's personal token and an outside
 // agent's broker token naming the project are each 403 ACCESS_ACCOUNT_REQUIRED, as are a verified
 // service account the list does not name and the shared token; a caller with no credential is 401
@@ -120,15 +120,15 @@ func TestTheRepositoryAnswerAdmitsOnlyTheAccessAccounts(t *testing.T) {
 		http.StatusUnauthorized, "NO_IDENTITY", "a caller with no credential", "GET "+path)
 }
 
-// TestADeepChainIsUnresolvedNotShort (K-E5): a project one of whose issues sits 33 links below its
-// root, past the walk's 32 (refs.IssueDepthCap), answers 503 REPOSITORIES_UNRESOLVED naming that
-// issue, DEEP-34, and no repository: never the list of what the walk could resolve, since the
-// chain's unread ancestors may name a repository the list would leave out. The chain's root names
-// acme/deeproot and the project's default is acme/deepdefault. With DEEP-34 deleted, DEEP-33, 32
-// links below the root, resolves, and the answer is 200 with acme/deeproot alone, so the refusal is
-// the cap's own boundary and not a fixture that fails for every issue. Control: cut the chain at the
-// depth cap and answer what it holds, and DEEP-34 reads as the default, the answer is 200 and the
-// test fails.
+// TestADeepChainIsUnresolvedNotShort: the repository answer of a project one of whose issues sits
+// 33 links below its root, past the walk's 32 (refs.IssueDepthCap), is 503 REPOSITORIES_UNRESOLVED
+// naming that issue, DEEP-34, and no repository: never the list of what the walk could resolve,
+// since the chain's unread ancestors may name a repository the list would leave out. The chain's
+// root names acme/deeproot and the project's default is acme/deepdefault. With DEEP-34 deleted,
+// DEEP-33, 32 links below the root, resolves, and the answer is 200 with acme/deeproot alone, so
+// the refusal is the cap's own boundary and not a fixture that fails for every issue. Control:
+// drop refs.ProjectRepositories' refusal of the unresolved issue, and the answer is 200 with the
+// list of the others and the test fails.
 func TestADeepChainIsUnresolvedNotShort(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
@@ -165,7 +165,7 @@ func TestADeepChainIsUnresolvedNotShort(t *testing.T) {
 	}
 }
 
-// TestTheRepositoryAnswerIsSortedOnceAndNeverNull (K-E5): the answer is {project, repositories},
+// TestTheRepositoryAnswerIsSortedOnceAndNeverNull: the answer is {project, repositories},
 // the repositories sorted byte by byte, as Go's sort.Strings orders them, and each once, whatever
 // order the issues name them in and however many name one; a project none of whose issues resolves
 // to a repository answers repositories [], never null or left out; an unknown key is 404
