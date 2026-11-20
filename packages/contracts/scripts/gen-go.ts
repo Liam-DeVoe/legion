@@ -1063,7 +1063,9 @@ function renderDeadLetterReasons(envelope: Schema) {
       `envelope.schema.json's dead_letter enum is ${JSON.stringify(listed)}, want DEAD_LETTER_REASONS ${JSON.stringify(DEAD_LETTER_REASONS)}`
     );
   }
-  const constants = DEAD_LETTER_REASONS.map((reason) => [`DeadLetter${name(reason)}`, reason] as const);
+  const constants = DEAD_LETTER_REASONS.map(
+    (reason) => [`DeadLetter${name(reason)}`, reason] as const
+  );
   const wide = Math.max(...constants.map(([constant]) => constant.length));
   const lines = constants
     .map(([constant, reason]) => `\t${constant.padEnd(wide)} = ${JSON.stringify(reason)}`)
