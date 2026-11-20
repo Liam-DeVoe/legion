@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { heldPress } from "../../components/held-press";
+import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "../issue/badge-select";
@@ -20,9 +20,16 @@ import { useAskSnooze } from "./useAskSnooze";
  * `Snoozing…` and its refusal with it - so, exactly as `AssignToMe` does for the optimistic
  * assignment that can drop a row out of the assignee filter, it tells the Inbox while its write
  * is live and the Inbox keeps the row rendered until it settles. The fold is the feedback for a
- * snooze that lands; a snooze the
- * server refuses rolls the row back with the reason still attached to it. Un-snooze is held
- * while its write is out (`heldPress`).
+ * snooze that lands; a snooze the server refuses rolls the row back with the reason still
+ * attached to it. The Snooze select and Un-snooze are held from the press until the commit after
+ * their write's answer (`useHeldThroughAnswer`), the one in which the Inbox lets go of the row:
+ * the select by `aria-disabled`, with a pick then writing nothing, and Un-snooze by `heldPress`.
+ * The optimistic moment puts the row inside its window at once, where Un-snooze would be drawn in
+ * the select's place; the select stays drawn instead, held, with the return time before it, while
+ * its pick's write is out and through the commit after its answer. The pick is the reader's press,
+ * and the row's going after the answer is that press's doing (`causedByReader`) only while the
+ * control it landed on is still in the page and held: a select taken away at the pick would leave
+ * the row's fold to drop the focus onto the page.
  *
  * `label` names the row for assistive tech; the Inbox passes the issue key or the document.
  */
@@ -44,6 +51,9 @@ export function SnoozeControl({
   // The row held is the one the live snooze is of, which is this row's unless a host has drawn
   // the control for another ask since that press (`useAskSnooze`).
   useLiveRegistration(write.liveAskId, onLive);
+  const held = useHeldThroughAnswer(write.pending);
+  // A pick's write: a moment, where an un-snooze's is null.
+  const pickHeld = useHeldThroughAnswer(typeof write.pendingUntil === "string");
   // `basis-full` inside the header's wrapping row: a refusal is wider than the badge it
   // replaces, so it takes a line of its own rather than drawing over the issue key.
   const failure = write.failed ? (
@@ -67,22 +77,28 @@ export function SnoozeControl({
       ? "Un-snoozing…"
       : "Snoozing…";
 
-  if (snoozedUntil !== null) {
+  // The row's return time, which a snooze in flight already shows: it is the moment being saved.
+  const returnTime =
+    snoozedUntil === null ? null : (
+      <span className={`text-xs ${textMutedOnCanvas}`} data-inbox-snoozed-until={snoozedUntil}>
+        {isIndefinite(snoozedUntil) ? (
+          "Snoozed until you clear it"
+        ) : (
+          <>
+            Back <Timestamp at={snoozedUntil} />
+          </>
+        )}
+      </span>
+    );
+
+  if (snoozedUntil !== null && !pickHeld) {
     return (
       <>
-        <span className={`text-xs ${textMutedOnCanvas}`} data-inbox-snoozed-until={snoozedUntil}>
-          {isIndefinite(snoozedUntil) ? (
-            "Snoozed until you clear it"
-          ) : (
-            <>
-              Back <Timestamp at={snoozedUntil} />
-            </>
-          )}
-        </span>
+        {returnTime}
         <button
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
-          {...heldPress(write.pending, () => write.submit(null))}
+          {...heldPress(held, () => write.submit(null))}
           type="button"
         >
           {pendingLabel ?? "Un-snooze"}
@@ -94,15 +110,19 @@ export function SnoozeControl({
 
   return (
     <>
+      {returnTime}
       <span className={badgeSelectWrapper}>
         <span aria-hidden="true" className={`${badgeSelectBadge} ${badgeLow.bg} ${badgeLow.text}`}>
           {pendingLabel ?? "Snooze"}
         </span>
         <select
+          aria-disabled={held || undefined}
           aria-label={`Snooze ${label}`}
           className={badgeSelectOverlay}
           data-inbox-snooze=""
           onChange={(event) => {
+            // Held, a pick writes nothing, and the select, controlled at `""`, shows no pick.
+            if (held) return;
             const preset = SNOOZE_PRESETS.find((option) => option.id === event.target.value);
             if (preset !== undefined) write.submit(preset.until(new Date()));
           }}

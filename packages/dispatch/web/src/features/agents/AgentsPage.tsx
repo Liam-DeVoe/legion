@@ -33,6 +33,7 @@ import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle
 import { EmptyState } from "../../components/EmptyState";
 import { filterChips } from "../../components/filter-chips";
 import { useFocusPlace } from "../../components/focus-place";
+import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
 import { PanelTrigger } from "../../components/PanelTrigger";
@@ -732,14 +733,17 @@ function AgentRow({
             )}
           </span>
           {unreadReplies === 0 ? null : (
-            // Opening the conversation is what reads it, so the badge opens it.
+            // Opening the conversation is what reads it, so the badge opens it. It is held while
+            // the row is open, where its press, which only opens the row, does nothing: held, it
+            // keeps the press live until the conversation has read the replies and the pill goes,
+            // so the page's rescue hands the focus on from it (`causedByReader`).
             <button
               // The pill's own words first, so the name contains the visible text and a voice
               // user can press what they read (WCAG 2.5.3, axe's
               // `label-content-name-mismatch`); the session's name says whose replies they are.
               aria-label={`${unreadRepliesLabel(unreadReplies)} from ${label}`}
               className="inline-flex min-h-11 items-center rounded-full md:min-h-8"
-              onClick={() => onExpand(true)}
+              {...heldPress(expanded, () => onExpand(true))}
               title={`Replies from ${label} you have not read`}
               type="button"
             >

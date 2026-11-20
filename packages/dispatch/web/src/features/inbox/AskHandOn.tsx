@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useContext, useEffect, useState } from "react";
+import { type ReactNode, useContext, useState } from "react";
 
 import { usersQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
+import { useHeldThroughAnswer } from "../../components/held-press";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
@@ -77,20 +78,11 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
   // drawn the card for another ask since that press (`useAskHandOn`).
   useLiveRegistration(write.liveAskId, onLive);
   // The trigger is held (`aria-disabled`, which keeps the focus on it) from the pick until the
-  // commit after the write's answer: the one in which the list lets go of the row (the release
-  // above) and, where the hand-on takes the ask out of the reader's list, takes the row and this
-  // card away. The hold and that release are both let go by the effects the answer's commit runs,
-  // so they land in one commit, and the page's rescue reads the row's going as the pick's doing
-  // (`causedByReader`): the focus goes to the control now at the row's place. A refusal lets go of
-  // the trigger the commit after its answer, with Retry beside it. While held, the list does not
-  // open.
-  const [answering, setAnswering] = useState(false);
-  useEffect(() => {
-    if (!write.pending) return;
-    setAnswering(true);
-    return () => setAnswering(false);
-  }, [write.pending]);
-  const held = write.pending || answering;
+  // commit after the write's answer (`useHeldThroughAnswer`): the one in which the list lets go of
+  // the row (the release above) and, where the hand-on takes the ask out of the reader's list,
+  // takes the row and this card away. A refusal lets go of the trigger the commit after its
+  // answer, with Retry beside it. While held, the list does not open.
+  const held = useHeldThroughAnswer(write.pending);
   const waitingOn = askWaitingOnPerson(ask) ?? "";
   // The people are listed only while the list stands open, which is after the reader reached for
   // the control and they were asked for: the query keeps its people for the session, so a card

@@ -1,5 +1,5 @@
 import { type ReactNode, useState } from "react";
-import { heldPress } from "../../components/held-press";
+import { heldPress, useHeldThroughAnswer } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   secondaryButtonBorder,
@@ -15,7 +15,9 @@ import { useLiveRegistration } from "../writes/useKeyedWrite";
  *  the row stops matching while the save is in flight, so the control tells the Inbox when its
  *  write is live (pending or failed) and the Inbox keeps the row listed until then: `Assigning…`,
  *  and on refusal the server's reason with Retry, are shown by this same instance rather than
- *  lost to a remount. The button is held while its write is out (`heldPress`).
+ *  lost to a remount. The button is held (`heldPress`) from the press until the commit after its
+ *  write's answer (`useHeldThroughAnswer`), the one in which the Inbox lets go of the row and,
+ *  once the issue is the viewer's, takes this button away.
  *
  *  Its own module rather than `Inbox.tsx`'s, because the Inbox's reading pane draws it too
  *  (`ReadingPaneHead`): the Inbox mounts the pane, so a control the pane's head imports from the
@@ -43,12 +45,13 @@ export function AssignToMe({
   // row it was pressed on (`useIssueAssignee`), so the control keeps that row's ask itself.
   const [pressedOn, setPressedOn] = useState<string | undefined>(undefined);
   useLiveRegistration(write.pending || write.failed ? pressedOn : undefined, onLive);
+  const held = useHeldThroughAnswer(write.pending);
   return (
     <>
       <button
         aria-label={`Assign ${issueKey} to me`}
         className={`min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
-        {...heldPress(write.pending, () => {
+        {...heldPress(held, () => {
           setPressedOn(askId);
           write.submit(viewer);
         })}

@@ -2017,6 +2017,70 @@ test("an agent's unread reply shows on its row and in the navigation until its c
   }
 });
 
+// The New replies pill only opens its row, so it is held while the row is open (`heldPress`),
+// where a press of it does nothing. Held, it keeps the reader's press live until the opened
+// conversation has stored its read mark and the pill goes (`causedByReader`): the mark is out
+// across two of the page's rescue checks here, as a server slower than a frame keeps it, and the
+// rescue still hands the focus to the control now at the pill's place rather than to the page.
+test("the New replies pill is held while its row is open, a press on it then changes nothing, and its going leaves the focus in the row", async () => {
+  const user = userEvent.setup();
+  const page = renderAgents({
+    agentState: { "planner-session": { unread_replies: 1 } },
+    messages: [
+      exchange("m1", "Where is the dashboard?", "2026-09-14T01:00:00Z", {
+        body: "At /dash.",
+        createdAt: "2026-09-14T01:05:00Z",
+      }),
+    ],
+  });
+  const stored = page.putAgentState.getMockImplementation();
+  const mark = Promise.withResolvers<void>();
+  page.putAgentState.mockImplementation(async (session, input, bounds) => {
+    await mark.promise;
+    if (stored === undefined) throw new Error("the agent-state write has no answer");
+    return stored(session, input, bounds);
+  });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    const toggle = planner.querySelector("[data-agent-toggle]");
+    const pill = await within(planner).findByRole("button", { name: "New reply 1 from Planner" });
+    expect(pill).not.toHaveAttribute("aria-disabled");
+    act(() => pill.focus());
+    await user.keyboard("{Enter}");
+    await expect(within(planner).findByText("At /dash.")).resolves.toBeTruthy();
+    await waitFor(() => expect(page.putAgentState).toHaveBeenCalledTimes(1));
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(pill).toHaveAttribute("aria-disabled", "true");
+
+    // Pressed again while the row is open, it keeps the focus and the row stays as it is.
+    await user.keyboard("{Enter}");
+    expect(pill).toHaveFocus();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(planner).getByText("At /dash.")).toBeTruthy();
+    expect(page.putAgentState).toHaveBeenCalledTimes(1);
+
+    await afterRescue();
+    await afterRescue();
+    await act(async () => {
+      mark.resolve();
+      await mark.promise;
+    });
+    await waitFor(() => expect(pill).not.toBeInTheDocument());
+    await afterRescue();
+
+    // The control now at the pill's place in the row: its Needs you pill.
+    expect(planner.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toHaveAttribute(
+      "title",
+      "Open asks from Planner waiting on your answer"
+    );
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 // The count sums every session that answered the viewer, and a session often answers and then
 // exits. A reply from a session no longer in the live list still has a row, whose name links to
 // its live view where the reply is read, so the badge is always one the viewer can clear.
