@@ -655,8 +655,8 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 // issueReferenceMembers is the issue key names and its reference closure as GET
 // /api/v1/issues/{key}/references answers it: each document in the closure with its depth and the
 // node it was reached via, every version of each or with latestOnly its latest alone, and whether
-// the closure was cut at its bound (/api/v2 reads its own, issueReferenceMembersV2). A key no issue
-// carries answers loadIssue's refusal.
+// the closure was cut at its depth bound (/api/v2 reads its own, issueReferenceMembersV2). A key
+// no issue carries answers loadIssue's refusal.
 func (s *server) issueReferenceMembers(
 	ctx context.Context, key string, latestOnly bool,
 ) (model.Issue, []model.ReferenceMember, bool, error) {

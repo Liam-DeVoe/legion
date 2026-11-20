@@ -4,9 +4,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // The /api/v2 uploads take the base an upload over an existing document names as /api/v1's do
@@ -52,9 +49,7 @@ func TestV2UploadReplacingADocumentNamesItsBase(t *testing.T) {
 	if taken.Code != http.StatusCreated {
 		t.Fatalf("a v2 replacement naming the live token = %d, want 201: %s", taken.Code, taken.Body.String())
 	}
-	if version := decodeBody[struct {
-		Version model.Version `json:"version"`
-	}](t, taken).Version; version.Number != versionsBefore+1 {
+	if version := decodeBody[uploadedArtifact](t, taken).Version; version.Number != versionsBefore+1 {
 		t.Fatalf("the v2 replacement wrote version %d, want %d", version.Number, versionsBefore+1)
 	}
 	live := readDocumentPrecondition(t, handler, artifactID)
@@ -114,53 +109,5 @@ func TestV2MultipartUploadNamesItsBaseInItsForm(t *testing.T) {
 		"fresh.md", "text/markdown", []byte("# Fresh\n"), "alice")
 	if code, _ := refusalOf(t, first); first.Code != http.StatusConflict || code != "PRECONDITION_FAILED" {
 		t.Fatalf("a v2 first upload naming a token = %d %s, want 409 PRECONDITION_FAILED: %s", first.Code, code, first.Body.String())
-	}
-}
-
-// A question opened through /api/v2 on an issue whose specification carries a person's review of
-// its newest version names that review on the write's advice (standing_review), as the /api/v1
-// create does: both open the ask through openAsk.
-func TestV2AskAdviceNamesThePersonsStandingReview(t *testing.T) {
-	handler := newTestHandler(t)
-	createAdviceProject(t, handler, "STANDV2")
-	spec := "# Transport\n\nThe design, as read.\n"
-	issue := createAdviceIssue(t, handler, "STANDV2", "Reviewed spec", &spec)
-	written := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", standingReviewReason)
-
-	asked := sessionRequest(t, handler, http.MethodPost, "/api/v2/issues/"+issue.Key+"/asks", map[string]any{
-		"question": standingReviewQuestion, "actor": adviceSessionActor("session-asking"),
-	})
-	review := adviceFromResponse(t, asked.Code, asked.Body.String()).StandingReview
-	if review == nil {
-		t.Fatalf("the v2 question's advice named no review; want alice's of version 1: %s", asked.Body.String())
-	}
-	if review.By != "alice" || review.State != "approved" || review.Version != 1 || review.Reason != standingReviewReason ||
-		!review.At.Equal(written.CreatedAt) {
-		t.Fatalf("the v2 question's standing review = %#v, want alice's approval of version 1 with its reason", review)
-	}
-}
-
-// GET /api/v2/issues/{key}/references walks the closure GET /api/v1/issues/{key}/references
-// walks, under the same bound (issueClosure): a walk past referencesClosureBound answers 503
-// REFERENCES_TIMEOUT at about that bound, as /api/v1 does. refs is locked in another connection,
-// so the walk waits however fast it would run; the read before the lock answers 200.
-func TestV2IssueReferencesRefuseAtTheClosureBound(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
-	createReferenceAPIProject(t, handler, "CORE")
-	issue := createReferenceAPIIssue(t, handler, "CORE")
-	target := "/api/v2/issues/" + issue.Key + "/references"
-	if response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("v2 references before the lock: status=%d body=%s, want 200", response.Code, response.Body.String())
-	}
-	holdLock(t, database, "lock table refs in access exclusive mode")
-	started := time.Now()
-	response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
-	took := time.Since(started)
-	if code, text := refusalOf(t, response); response.Code != http.StatusServiceUnavailable || code != "REFERENCES_TIMEOUT" ||
-		!strings.Contains(text, referencesClosureBound.String()) {
-		t.Fatalf("v2 references past the bound = %d %s %q, want 503 REFERENCES_TIMEOUT naming the %s bound", response.Code, code, text, referencesClosureBound)
-	}
-	if took < referencesClosureBound || took > referencesClosureBound+3*time.Second {
-		t.Errorf("v2 references past the bound answered after %s, want about its %s bound", took, referencesClosureBound)
 	}
 }

@@ -555,11 +555,12 @@ func (s *server) writeUploadDocumentError(w http.ResponseWriter, r *http.Request
 
 // writeUploadNoTokenError refuses an upload that names a token where the document has none for
 // it to name, with no live token beside it: a first upload under a name the owner holds nothing
-// under names a version that is not there, and a repair's live tree renders no markdown and has
-// no token at all. Neither reader can be sent to `dispatch doc-read` for a current token,
-// because nothing can print one, so both are told to send the upload again naming none, which
-// is taken: it creates the document the owner holds nothing under, and replaces the repaired
-// one whole.
+// under names a version that is not there, a file the upload would make its role's document
+// holds no tree, and a repair's live tree renders no markdown and has no token at all. None of
+// these readers can be sent to `dispatch doc-read` for a current token, because nothing can print
+// one, so each is told to send the upload again naming none, which is taken: it creates the
+// document the owner holds nothing under, converts the file into its role's document, and
+// replaces the repaired one whole.
 func (s *server) writeUploadNoTokenError(w http.ResponseWriter, r *http.Request, name string) {
 	s.writeHandlerError(w, r, errorf(apicode.PreconditionFailed,
 		"%q has no token for an upload to name: send it again naming no token", name))

@@ -10,7 +10,7 @@ package api
 // write of one, the rating of a retro's run and the plan of a run #4488 added, and the dry run of a
 // result #4517 added. Every route runs the work its /api/v1 route runs (readIssueListing,
 // createIssueFrom, readIssueParts, patchIssueAs, claimIssueAs, releaseIssueClaimAs,
-// issueCollaboratorsOf, issueCoverage, issueDecisionsOf, writeDecisionKeep, refs.Closure,
+// issueCollaboratorsOf, issueCoverage, issueDecisionsOf, writeDecisionKeep, issueClosure,
 // readIssueChecks, recordCheckResultFrom, dryRunCheckResultFrom, retractCheckResultAs, subscribersOf,
 // unsubscribeSession, issueStepTasks, putIssueStepFrom, putIssueStepRatingFrom, putIssuePlanFrom),
 // each path object checked first and answered with its own 404, and a {session_id} keeps the answer

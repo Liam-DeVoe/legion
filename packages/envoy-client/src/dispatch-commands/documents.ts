@@ -633,6 +633,7 @@ const STORED_KIND_WORDS: Readonly<Record<Artifact["kind"], string>> = {
   file: "a file",
   image: "a picture",
 };
+
 /** `dispatch artifact`: upload a document, a picture or a file to an issue or a project. */
 export async function artifactCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, documentOwner, issue } = context;

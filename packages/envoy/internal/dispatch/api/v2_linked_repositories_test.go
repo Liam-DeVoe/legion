@@ -147,16 +147,14 @@ func TestV2RefusesAResultWhoseLinkedReadDidNotAnswer(t *testing.T) {
 				t.Errorf("the dry run refused %s %q and the record %s %q, want both GITHUB_UNREADABLE (in one sentence: %t)",
 					dryCode, dryText, code, text, row.sameWords)
 			}
-			if !strings.Contains(dryText, "acme/tools") || !strings.Contains(dryText, "record the result again") {
-				t.Errorf("the dry run's refusal reads %q, want it to name acme/tools and say to record the result again", dryText)
-			}
-			if !strings.Contains(text, "acme/tools") || !strings.Contains(text, "record the result again") {
-				t.Errorf("the refusal reads %q, want it to name acme/tools and say to record the result again", text)
-			}
 			for _, answer := range []struct {
 				name     string
 				response *httptest.ResponseRecorder
-			}{{"dry run", dry}, {"record", recorded}} {
+				text     string
+			}{{"dry run", dry, dryText}, {"record", recorded, text}} {
+				if !strings.Contains(answer.text, "acme/tools") || !strings.Contains(answer.text, "record the result again") {
+					t.Errorf("the /api/v2 %s's refusal reads %q, want it to name acme/tools and say to record the result again", answer.name, answer.text)
+				}
 				if header := answer.response.Header().Get("Retry-After"); header != row.retryAfter {
 					t.Errorf("the /api/v2 %s carries Retry-After %q, want %q", answer.name, header, row.retryAfter)
 				}
@@ -181,11 +179,7 @@ func TestV2RepositoryPathsAreHeldToTheNamesGitHubAllows(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprint(w, `{"message":"Not Found"}`)
 	})
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "CORE", "name": "Core",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
-	}
+	createTestProject(t, handler, "CORE")
 	refused := func(what string, response *httptest.ResponseRecorder) {
 		t.Helper()
 		if code, _ := refusalOf(t, response); response.Code != http.StatusBadRequest || code != "INVALID_REPO_PROJECT" {
@@ -230,11 +224,7 @@ func TestV2RepositoryPathsAreHeldToTheNamesGitHubAllows(t *testing.T) {
 // nothing; and that of `acme/x` removes `acme/x`.
 func TestV2RepositoryDeleteRemovesOnlyTheMappingItsPathSpells(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
-		"key": "CORE", "name": "Core",
-	}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
-	}
+	createTestProject(t, handler, "CORE")
 	for _, path := range []string{"acme/x.git.git", "acme/x"} {
 		if response := dispatchRequest(t, handler, http.MethodPut, "/api/v2/repositories/"+path,
 			map[string]string{"project": "CORE"}, "alice"); response.Code != http.StatusOK {

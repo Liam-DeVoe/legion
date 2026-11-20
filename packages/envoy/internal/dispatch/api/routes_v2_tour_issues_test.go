@@ -39,6 +39,13 @@ func issuesTourSteps() []tourStep {
 			return tourRequest{Path: map[string]string{"key": issue.Key}, Query: query, As: alice}
 		}
 	}
+	// recordsResult is the request of the result record and its dry run: k1 passing at the head
+	// commit, on an issue whose Verification document holds tourChecks.
+	recordsResult := func(t *testing.T, tour *routeTour) tourRequest {
+		issue := tour.issue(t)
+		tour.issueDocument(t, issue.Key, "verification.md", tourChecks)
+		return tourRequest{Path: map[string]string{"key": issue.Key}, Body: resultBody("k1", "pass", headCommit, nil), As: alice}
+	}
 	return []tourStep{
 		{
 			Method: http.MethodGet, Pattern: "/issues", Status: http.StatusOK,
@@ -205,21 +212,11 @@ func issuesTourSteps() []tourStep {
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/results", Status: http.StatusCreated,
-			Setup: func(t *testing.T, tour *routeTour) tourRequest {
-				issue := tour.issue(t)
-				tour.issueDocument(t, issue.Key, "verification.md", tourChecks)
-				return tourRequest{Path: map[string]string{"key": issue.Key}, Body: resultBody("k1", "pass", headCommit, nil), As: alice}
-			},
-			Missing: issueMissing,
+			Setup: recordsResult, Missing: issueMissing,
 		},
 		{
 			Method: http.MethodPost, Pattern: "/issues/{key}/results/dry-run", Status: http.StatusOK,
-			Setup: func(t *testing.T, tour *routeTour) tourRequest {
-				issue := tour.issue(t)
-				tour.issueDocument(t, issue.Key, "verification.md", tourChecks)
-				return tourRequest{Path: map[string]string{"key": issue.Key}, Body: resultBody("k1", "pass", headCommit, nil), As: alice}
-			},
-			Missing: issueMissing,
+			Setup: recordsResult, Missing: issueMissing,
 		},
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/subscribers", Status: http.StatusOK,

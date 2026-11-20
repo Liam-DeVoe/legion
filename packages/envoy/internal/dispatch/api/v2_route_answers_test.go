@@ -49,8 +49,7 @@ func TestTheCredentialStateAnswersItsOwnRecordAlone(t *testing.T) {
 // (#4452): a person's pod login, the login of a pod whose Kubernetes account the broker's
 // BROKER_POD_OPERATORS maps to a person, names that person, and every other login, a service's
 // among them, answers person null. The page reads the broker's rows into its own type before it
-// slices them, so a member that type lacked would never reach the Machine logins section, which
-// reads a pod login as the viewer's own by its person.
+// slices them, so a member that type lacked would never reach a client of /api/v2.
 func TestAPersonsPodLoginNamesItsPersonOnV2(t *testing.T) {
 	tour := newRouteTour(t)
 	route := tour.requireMounted(t, http.MethodGet, "/machine-logins")

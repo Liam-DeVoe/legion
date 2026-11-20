@@ -34,7 +34,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
-	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/workflowstore"
 )
 
@@ -1022,30 +1021,29 @@ func (s *server) listRepositoriesV2(w http.ResponseWriter, r *http.Request) {
 // under the path's own spelling (deletedRepoProjectSpelling), the mapping held to exist first,
 // where /api/v1 answers 204 for one that does not, or 400 INVALID_ISSUE_REF for a spelling no
 // issue reference takes (dispatch://INFRA-4071/spec R7): a spelling no mapping is stored under,
-// such as acme/x.git where acme/x is, names no mapping. A spelling the database cannot hold, one
-// with a NUL or a byte that is no UTF-8, is no stored mapping's either, so it is not asked about.
+// such as acme/x.git where acme/x is, names no mapping. The same 404 answers a DELETE that finds
+// the mapping gone once it holds the write lock, as the second of two DELETEs of one mapping at
+// once does.
 func (s *server) deleteRepositoryV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
 	spelled := deletedRepoProjectSpelling(r)
+	unmapped := errorf(apicode.RepositoryNotFound, "no mapping names the repository %s", spelled)
 	held := false
-	if text.Storable(spelled) {
-		if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from repo_projects where repo = $1)`, spelled).Scan(&held); err != nil {
-			s.writeHandlerError(w, r, fmt.Errorf("read whether the repository is mapped: %w", err))
-			return
-		}
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), `select exists (select 1 from repo_projects where repo = $1)`, spelled).Scan(&held); err != nil {
+		s.writeHandlerError(w, r, fmt.Errorf("read whether the repository is mapped: %w", err))
+		return
 	}
 	if !held {
-		writeError(w, r, apicode.RepositoryNotFound,
-			fmt.Sprintf("no mapping names the repository %s/%s", r.PathValue("owner"), r.PathValue("repo")))
+		s.writeHandlerError(w, r, unmapped)
 		return
 	}
 	actor, ok := s.requireActor(w, r, v2Body[actorInput](r).Actor)
 	if !ok {
 		return
 	}
-	s.deleteRepoProjectAs(w, r, actor, spelled, nil)
+	s.deleteRepoProjectAs(w, r, actor, spelled, unmapped)
 }
 
 // putRepositoryV2 answers PUT /api/v2/repositories/{owner}/{repo}: the mapping PUT
