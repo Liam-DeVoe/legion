@@ -957,6 +957,15 @@ export interface LegionPaneOptions {
   };
   /** The one word the gateway answers the run-end self-check with; `PROCEEDING` by default. */
   readonly selfCheck?: string;
+  /** Gets each RPC frame omp prints, in order, in every life of the pane, for a case that waits on
+   * a frame of its own (a model change, a run's end that the host marks as not terminal). */
+  readonly onFrame?: (frame: object) => void;
+  /**
+   * Runs in the first life once every prompt's run has settled, before that life ends, with its
+   * RPC: a case that starts a run some other way than a prompt (an Envoy card, a background job's
+   * result) or that sends a prompt whose run the host does not settle as terminal does it here.
+   */
+  readonly whileUp?: (rpc: Rpc) => Promise<void>;
 }
 
 /** What a pane has done so far, for `LegionPaneOptions.settledWhen`: the stand-in's records. */
@@ -1125,7 +1134,11 @@ export async function runLegionPane(
    * end starts, come after that frame instead, so a case whose run goes on past it names the fact
    * its run ends on (`settledWhen`).
    */
-  const live = async (prompts: readonly string[], args: readonly string[]): Promise<void> => {
+  const live = async (
+    prompts: readonly string[],
+    args: readonly string[],
+    whileUp?: (rpc: Rpc) => Promise<void>
+  ): Promise<void> => {
     let runEnded = Promise.withResolvers<void>();
     /** How many turns the gateway had taken when the host last ended a run. */
     let endedAtTurns = -1;
@@ -1163,6 +1176,7 @@ export async function runLegionPane(
           ...options.env,
         },
         onFrame: (frame) => {
+          options.onFrame?.(frame);
           if (
             "type" in frame &&
             frame.type === "agent_end" &&
@@ -1203,10 +1217,11 @@ export async function runLegionPane(
         if (settle.quiet !== undefined) await span(settle.quiet.ms, settle.quiet.why);
       }
     }
+    if (whileUp !== undefined) await Promise.race([whileUp(rpc), rpc.closed]);
     await rpc.end();
   };
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
-  await live(prompts, []);
+  await live(prompts, [], options.whileUp);
 
   /** Every entry of `customType` in the pane's transcripts, oldest life first, each as written. */
   const customEntries = async (customType: string): Promise<object[]> => {

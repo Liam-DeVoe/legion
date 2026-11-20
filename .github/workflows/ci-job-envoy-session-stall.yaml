@@ -38,8 +38,10 @@ jobs:
     # 360 s - which is 1709 s; and the broker credential step main's #4140 added, 56 s at its
     # longest over its 57 green runs up to 2026-11-19, plus both its guards, as
     # ci-job-pi-legion.yaml counts a hook's guard beside its command's: the step's --timeout, 60 s,
-    # and its file's beforeAll's own, BUILD_GUARD_MS, 300 s: 2125 s, or 36 minutes.
-    timeout-minutes: 36
+    # and its file's beforeAll's own, BUILD_GUARD_MS, 300 s: 2125 s; and the comment-mention step
+    # main's #4426 added, 16 s at its longest over its 7 green merge-group runs up to 2026-11-20
+    # (44709419415 to 44735067614), plus its guard, 120 s: 2261 s, or 38 minutes.
+    timeout-minutes: 38
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -145,6 +147,15 @@ jobs:
       # row took 1,607.89 ms read again at the round-3 class-search tree (builds Job d2-c9-ec, two runs, 2026-11-19).
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/moved-approval-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
+      # target, which is what lets an agent write to the owner of a subject and leave the retry
+      # to Dispatch. Guard 120000 ms, the other two live suites' own: its beforeAll builds and
+      # starts the same server (startDispatchStack), and the whole step took at most 16 s over its
+      # 7 green merge-group runs up to 2026-11-20 (44709419415 to 44735067614); no reading of it
+      # under load yet.
+      - name: Comment mention of the real CLI against a real Dispatch
+        run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/comment-mention.live.test.ts
         working-directory: packages/envoy-client
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

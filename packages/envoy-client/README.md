@@ -17,7 +17,7 @@ the guard of the command that runs it, with a failure that names what it waited 
 read a row's own number. One hook does: `nats-credential.test.ts`'s `beforeAll`, one Go build of
 natsd and calloutd with no shared wait in it, keeps `BUILD_GUARD_MS` (300000 ms), the measured
 process run `docs/testing.md` lets a hook guard itself. The second command runs the files whose
-rows take far longer than the rest: `nats-stall.test.ts`, `nats-auth.test.ts`, the two
+rows take far longer than the rest: `nats-stall.test.ts`, `nats-auth.test.ts`, the three
 `*.live.test.ts` suites, `dispatch-askgate.test.ts`, `dispatch-who-waits.test.ts`,
 `askgate-record.test.ts`, `broker-credential-signins.test.ts`, `dispatch-write-outcomes.test.ts`
 and `nats-credential.test.ts`; the first runs every other file. The guards are 30000 and
