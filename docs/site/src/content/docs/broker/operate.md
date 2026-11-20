@@ -685,7 +685,9 @@ gives the recovery when one was: for Dispatch's database alone, a reset that end
 browser sessions, personal tokens and credentials at the broker, then lifts a refusal at the broker
 only for the account the Workspace directory names as an address's holder; for the broker's
 database alone, telling the broker again every revocation Dispatch settled at or after the broker's
-backup less an hour, which nothing else finds — the broker holds those replaced accounts'
+backup less an hour, and no earlier than the last reset's moment where a reset ran (the block reads
+that moment itself, since the reset settled the revocations it chose not to pay), which nothing else
+finds — the broker holds those replaced accounts'
 credentials live again, and Dispatch, which settled each, owes nothing and raises no alarm. If the
 broker's backup predates a reset, read the reset's moment with `select
 to_timestamp(generation / 1000000.0) from session_generation_floors where login = '*'`; when it is

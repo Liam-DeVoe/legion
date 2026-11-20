@@ -161,6 +161,10 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 		"DISPATCH_SIGNIN_CLIENT_SECRET": "client-secret",
 		"DISPATCH_SIGNIN_GROUP":         "dispatch-members",
 		"DISPATCH_OUTSIDE_ORIGIN":       "https://outside.example",
+
+		// Outside sign-in's own two settings, which only the Google sign-in rule reads.
+		"DISPATCH_SIGNIN_OUTSIDE":           "1",
+		"DISPATCH_SIGNIN_WORKSPACE_DOMAINS": "example.org",
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{name: value}))); err == nil ||
 			!strings.Contains(err.Error(), name+" must be unset under DISPATCH_IDENTITY=iap") {

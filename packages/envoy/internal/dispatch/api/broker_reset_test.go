@@ -576,6 +576,54 @@ func TestTheResetDirectoryBlockReportsEveryUnusableStatus(t *testing.T) {
 	}
 }
 
+// TestTheResetDirectoryBlockFailsWhenTheBrokerRefusesAClear: the directory names the refused
+// account as the address's holder, and the broker's database refuses the clear. The block must
+// name the address NOT CLEARED and fail, since that holder stays refused, rather than end in
+// success.
+//
+// Control in the runbook: the clear's psql without its failure arm lets the block exit 0.
+func TestTheResetDirectoryBlockFailsWhenTheBrokerRefusesAClear(t *testing.T) {
+	r := newRecoveryRig(t)
+	const email = "clear-refused@example.com"
+	r.revoke(t, email, "refused-holder", "other-account", 1)
+	for _, statement := range []string{
+		`create function refuse_this_tests_clear() returns trigger language plpgsql as $$ begin raise exception 'this test refuses the clear'; end $$`,
+		`create trigger refuse_this_tests_clear before delete on replaced_person_subjects for each row execute function refuse_this_tests_clear()`,
+	} {
+		if _, err := r.rig.Store.Pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("make the broker's database refuse the clear: %v", err)
+		}
+	}
+	output, err := r.clearHoldersRefusals(t, map[string]directoryAnswer{
+		email: {User: directoryUser{ID: "refused-holder", PrimaryEmail: email}},
+	})
+	if err == nil {
+		t.Fatalf("the directory block answered success:\n%s\nwant failure after the broker refused its clear", output)
+	}
+	if want := "NOT CLEARED " + email; !strings.Contains(output, want) {
+		t.Errorf("the directory block printed:\n%s\nwant %q", output, want)
+	}
+	if !r.refused(t, email, "refused-holder") {
+		t.Error("the broker does not refuse the holder after its refused clear; want the refusal left")
+	}
+}
+
+// TestTheResetCountsItsHourFromTheStopOfEveryDispatchProcess: step 1 settles every owed broker
+// revocation, the ones restored Dispatch recorded after the restore included, so the replaced
+// account's pre-move Google ID token is what step 2 must outwait. Every move Dispatch recorded comes
+// before the last process stopped, so the hour counts from that stop, not from the loss.
+//
+// Control: the earlier rule, counted from the loss.
+func TestTheResetCountsItsHourFromTheStopOfEveryDispatchProcess(t *testing.T) {
+	runbook := strings.Join(runbookLines(t), "\n")
+	if want := "Start step 2 no sooner than one hour after the last Dispatch process\nstopped."; !strings.Contains(runbook, want) {
+		t.Errorf("the reset does not count its hour from the stop: the runbook is missing %q", want)
+	}
+	if stale := "one hour after the database was lost"; strings.Contains(runbook, stale) {
+		t.Errorf("the reset still counts its hour from the loss: the runbook holds %q", stale)
+	}
+}
+
 // TestTheResetCredentialsPageLoopGivesBrokerRunNoStdin runs the page-session loop itself. Its
 // broker_run stand-in reads stdin, as kubectl run -i, docker run -i or ssh can. With stdin from
 // /dev/null it ends every listed login; without the redirect its first run consumes the remaining
