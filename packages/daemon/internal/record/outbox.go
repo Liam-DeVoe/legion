@@ -1673,10 +1673,14 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 //
 // The ask names the pull request, the head, the base and the phase the issue stays in, gives why
 // the daemon acted, and tells the implementer to merge the base forward in the issue workspace,
-// the one workspace every role of the issue shares, as the worker skill's conflicts reference
-// says, after the working-copy check of its foreign-path reference, and to push the issue branch,
-// with no handoff and no completion for the merge. In implementing it also says that the
-// implementer's own assignment and its completion stand: the act starts no phase entry there.
+// the one workspace every role of the issue shares, after the working-copy check of the worker
+// skill's foreign-path reference, and to push the issue branch, with no handoff and no completion
+// for the merge. It names the merge itself: `legion merge` of the issue branch and the pull
+// request's base, whose merge holds git's merge, and no step of the worker skill's conflicts
+// reference, which a skill older than the daemon gives as a `jj new` that jj can get wrong
+// (jj-vcs/jj#6369). A role whose `legion` has no `merge` command gets exit 2 from it, so the ask
+// itself says to make no merge then and to tell the architect. In implementing it also says that
+// the implementer's own assignment and its completion stand: the act starts no phase entry there.
 //
 // The hold gives why the daemon acted, and tells the worker that the implementer is asked to merge
 // the head forward in the workspace they share and that the issue stays in its phase, to stop
@@ -1686,9 +1690,10 @@ func mergeForwardReason(why ConflictWhy, base string) string {
 // it recorded at the old head stays a result of the old head.
 //
 // The landed names both heads and how to read what changed: `git diff` from the old head to the
-// new, and, for a merge of the base, `git show --remerge-diff` for how the merge resolved the
-// conflict and `git diff --stat` against the merge's first parent for the files the base brought
-// in. Then the worker goes on at the new head. To the merger in merging it also says to merge the
+// new, and, for a merge of the base, `git diff` from git's own merge of the merge's two parents
+// (`git merge-tree --write-tree`) to the merge for how the merge resolved the conflict, and
+// `git diff --stat` against the merge's first parent for the files the base brought in. Then the
+// worker goes on at the new head. To the merger in merging it also says to merge the
 // pull request or put it in the merge queue at the new head only once the reviewer's approval of
 // that head is on the pull request: in merging the landing asks the reviewer for that review, and
 // the merger's task says the same (workflow's task). The review names both heads and the phase,
@@ -1709,9 +1714,11 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 			" The issue stays in %s. %s"+
 			" Merge %s forward in the issue workspace, $LEGION_WORKSPACE. Every role of the issue shares that one workspace."+
 			" First do the working-copy check of skill://legion-worker/references/foreign-path.md."+
-			" Then merge as skill://legion-worker/references/conflicts-and-rewrites.md says, and push the issue branch."+
+			" Then merge with `legion merge -R \"$LEGION_WORKSPACE\" -m \"<message>\" legion/%s \"${base}@origin\"`, where `base=$(gh pr view %d -R %s --json baseRefName -q '.baseRefName | @json')`, and do the next step its output names."+
+			" If it exits 2 with `unknown command \"merge\"`, your legion has no merge command: make no merge, also where a skill names `jj new`, and tell the architect."+
+			" Push the issue branch."+
 			" Write no handoff and make no completion for this merge.%s",
-			issue, pull, p.Head, p.Base, p.Phase, mergeForwardReason(p.Why, p.Base), p.Base, own)
+			issue, pull, p.Head, p.Base, p.Phase, mergeForwardReason(p.Why, p.Base), p.Base, issue, p.PullRequest, repo, own)
 	case MergeForwardHold:
 		merger := ""
 		if p.Role == claim.RoleMerger {
@@ -1750,12 +1757,13 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 
 // readMerge is how the landed and the review tell their role to read what a landed merge forward
 // changed (Message): `git diff` from the old head to the new, and, for a merge of the base,
-// `git show --remerge-diff` and `git diff --stat` against the merge's first parent.
+// `git diff` from git's own merge of the merge's two parents (`git merge-tree --write-tree`) to
+// the merge, and `git diff --stat` against the merge's first parent.
 func (p MergeForwardMessage) readMerge() string {
 	return fmt.Sprintf("run `git diff %s %s`."+
-		" For a merge of the base, `git show --remerge-diff %s` shows how the merge resolved the conflict,"+
+		" For a merge of the base, `git diff \"$(git merge-tree --write-tree %s^1 %s^2 | head -n 1)\" %s` shows how the merge resolved the conflict, against git's own merge of its parents,"+
 		" and `git diff --stat %s^1 %s` lists the files the base brought in.",
-		p.Head, p.Landed, p.Landed, p.Landed, p.Landed)
+		p.Head, p.Landed, p.Landed, p.Landed, p.Landed, p.Landed, p.Landed)
 }
 
 // retryBackoffDoublings is how many times a row's backoff doubles before it stops at

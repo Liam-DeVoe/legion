@@ -30,7 +30,7 @@ After every push that answers a review, and before you complete, answer and reso
 
 ## Forward merges
 
-For the forward-merge procedure, and the merge-forward message the daemon sends you, follow `skill://legion-worker/references/conflicts-and-rewrites.md`, then push the merge as the daemon part below says — it is a genuine fast-forward and a code push like any other.
+Make every merge with `legion merge`, as the daemon part below says. No skill step makes the merge. For the rest of the forward-merge procedure, and the merge-forward message the daemon sends you, follow `skill://legion-worker/references/conflicts-and-rewrites.md`, then push the merge as the daemon part below says — it is a genuine fast-forward and a code push like any other.
 
 ## Workspace restrictions
 
@@ -39,8 +39,10 @@ When it prints `true`, run `jj -R "$LEGION_WORKSPACE" new @-`; otherwise `@` hol
 resumed edits, so run `jj -R "$LEGION_WORKSPACE" new`. Never `jj describe` or `jj split` the
 working-copy commit you found at the turn's start. Do not replace another phase's
 commit. Create reviewable commits only with
-`jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`. Before a push, read every commit ahead
-of the base, `jj -R "$LEGION_WORKSPACE" log -r '<base branch>@origin..@'` as
+`jj -R "$LEGION_WORKSPACE" split -m "<message>" <paths…>`, except the resolution of a merge's
+conflicts, which goes into the merge with the `jj squash` the daemon part below names. Before a
+push, read every commit ahead of the base,
+`jj -R "$LEGION_WORKSPACE" log -r '<base branch>@origin..@'` as
 `skill://legion-worker/references/default-branch-check.md` lists them, since a branch can hold
 more than five commits; push only the existing issue branch, as the daemon part below says.
 

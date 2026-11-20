@@ -636,7 +636,7 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/implementer.md", gitsMergeReading},
 		{"core/reviewer.md", gitsMergeReading},
 		{"core/tester.md", gitsMergeReading},
-		{"implementer.md", "Make every merge with `legion merge`, as the daemon part below says; no skill step makes the merge"},
+		{"implementer.md", "Make every merge with `legion merge`, as the daemon part below says. No skill step makes the merge"},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
