@@ -722,9 +722,11 @@ func ompSessionOf(spec runtime.SpawnSpec) (ompInputs, error) {
 // (sessionIDFault), such as one an argument parser would take for a flag. relaunch asks it once
 // the pod it keeps is known and before anything of the pod is touched, so the refusal reaches the
 // supervisor as the launch's own. A launch that trades nothing resumes by the file as before and
-// is refused nothing.
+// is refused nothing, and neither is one that resumes a claim's session recorded with no file
+// (spec.ResumeSession): agentArgv passes that id as the one word `--resume=<id>`, which carries
+// any id a two-word `--resume <id>` cannot, one that begins with `-` included.
 func (l launch) ompResumeRefusal() error {
-	if !l.omp.resume {
+	if !l.omp.resume || l.spec.ResumeSession != "" {
 		return nil
 	}
 	if l.omp.session == "" {
