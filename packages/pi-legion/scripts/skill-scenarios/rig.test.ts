@@ -1782,10 +1782,25 @@ const RED_WORLD: Record<
 };
 /** The reviewer's variants (rig.sh's red_world, `m` to `t`), each by the world it varies: that
  * world's red and every answer of it, with the reviewer booted in `reviewing` in place of the
- * tester, as `i` and `j` are `a` and `b`'s. */
+ * tester, as `i` and `j` are `a` and `b`'s, and the facts of RED_VARIANT_FACTS. */
 const RED_VARIANTS = { m: "c", n: "d", o: "e", p: "f", q: "g", r: "h", s: "k", t: "l" } as const;
 type RedVariant = keyof typeof RED_VARIANTS;
 const RED_VARIANT_WORLDS = Object.keys(RED_VARIANTS) as RedVariant[];
+/** The facts a variant carries over those of the world it varies (red_world), so that the red the
+ * reviewer meets is on a check the base requires: the aggregate check `ci`, red over the red lane
+ * as in `i` and `j`, or in `p`, whose red is the title check in a run of its own, green over lint
+ * and typecheck with the title check required beside it. `q`'s red is that aggregate itself,
+ * `g`'s, so it carries no other. */
+const RED_VARIANT_FACTS: Record<RedVariant, Record<string, unknown>> = {
+  m: { aggregate: true },
+  n: { aggregate: true },
+  o: { aggregate: true },
+  p: { aggregate: true, required: ["ci", "title"] },
+  q: {},
+  r: { aggregate: true },
+  s: { aggregate: true },
+  t: { aggregate: true },
+};
 /** The world a variant varies, and any other world itself. */
 const baseOf = (world: RedWorld | RedVariant): RedWorld =>
   world in RED_VARIANTS ? RED_VARIANTS[world as RedVariant] : (world as RedWorld);
@@ -1815,8 +1830,14 @@ const ghStandin = path.join(import.meta.dir, "gh-standin.ts");
  * it to fixture.json for that world (world_check_when; the implementer's result beside a
  * `before_merge` check), worker_fixture's green pull request RED_PR, its repository, its
  * workflows and its routes, and, where `world` names one, red_fixture's red over it, with the
- * rig's own functions and jj stood in for; in `run` where the caller gives one. */
-function builtWorld(world: string, run = freshDir(`built-${world}`)): string {
+ * rig's own functions and jj stood in for; in `run` where the caller gives one. `facts`, where
+ * given, stands over the world's own facts in red_world's table, so every reader of red_world
+ * builds the world with them (a reviewer's variant's facts over the world it varies). */
+function builtWorld(
+  world: string,
+  run = freshDir(`built-${world}`),
+  facts?: Record<string, unknown>
+): string {
   const rig = readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8");
   const workerFixture = rig.slice(
     rig.indexOf("\nworker_fixture() {\n") + 1,
@@ -1851,11 +1872,16 @@ function builtWorld(world: string, run = freshDir(`built-${world}`)): string {
     "check_suites_program",
     "annotations_program",
     "trees_query_program",
+    "run_view_defs",
     "run_view_program",
+    "run_watch_program",
     "rerun_flags",
     "rerun_help",
     "rerun_usage",
     "view_usage",
+    "watch_usage",
+    "checks_usage",
+    "checks_watch_program",
     "red_defs",
     "red_model",
     "red_model_defs",
@@ -1870,13 +1896,20 @@ function builtWorld(world: string, run = freshDir(`built-${world}`)): string {
       "jj() { :; }",
       "R=$1 worker_key=$2",
       'world=$3; [ "$world" != green ] || world=',
+      // The facts that stand over the world's own: red_world's table answers the world's entry
+      // with them added. red_world_table prints the table as jq, which each reader splices into a
+      // program of its own, so the table stands in as the JSON jq makes of it, the facts handed to
+      // that jq with --argjson. The world and the facts are in variables of their own, since
+      // red_model and red_workflows each have a local `world` and `facts` of their own.
+      "rig_test_world=$3 rig_test_facts=$4",
+      '[ -z "$rig_test_facts" ] || { eval "table_$(declare -f red_world_table)"; red_world_table() { jq -nc --arg world "$rig_test_world" --argjson facts "$rig_test_facts" "$(table_red_world_table)"\' | .[$world] += $facts\'; }; }',
       "world_repository",
       'when=$(world_check_when "$world")',
       `if [ "$when" = before_merge ]; then result=',"result":{"role":"implementer","verdict":"pass","observed":"prints Hello, Ada! and exits 0"}'; else result=; fi`,
       `printf '{"issue":"%s","checks":[{"id":"k1","when":"%s"%s}]}\\n' "$worker_key" "$when" "$result" >"$R/fixture.json"`,
       'worker_fixture 3 1740000000 "$world" && { [ -z "$world" ] || red_fixture "$world"; }',
     ].join("\n"),
-    [run, RED_KEY, world]
+    [run, RED_KEY, world, facts === undefined ? "" : JSON.stringify(facts)]
   );
   if (result.code !== 0) throw new Error(`the world ${world} failed: ${result.stderr}`);
   return run;
@@ -1888,14 +1921,21 @@ function builtWorld(world: string, run = freshDir(`built-${world}`)): string {
  * (calls.jsonl, fixtures.json's counts). */
 const ownFixture = (world: string) => builtWorld(world);
 /** The same world for the rows that only read it, built once per world for the whole file and
- * shared, so the file builds a world it reads once rather than once a row: none of those rows
- * presses, posts, edits, reports or reads what its calls leave behind, and the routes answer by
- * the count of the press alone (gh-standin.ts, `follows`), which no read moves, so no row's reads
- * change another's answer. */
+ * shared, so the file builds a world it reads once rather than once a row. A shared world is marked
+ * (the file <run>/shared), and the gh stand-in refuses any call that would write it, naming the
+ * world (gh-standin.ts, `writes`): a read writes nothing, and a press, a post, an edit or a read of
+ * a route whose count something reads would change what a later row reads, so the order of rows
+ * would decide results, as it did at 7bf70a93, where every call wrote the file back and a row that
+ * only read a shared world changed the file a later row compared (the eight variant rows, CI run
+ * 44797028466). A row that writes builds a world of its own (ownFixture). */
 const sharedWorlds = new Map<string, string>();
 const redFixture = (world: string) => {
-  const built = sharedWorlds.get(world) ?? builtWorld(world);
-  sharedWorlds.set(world, built);
+  let built = sharedWorlds.get(world);
+  if (built === undefined) {
+    built = builtWorld(world);
+    writeFileSync(path.join(built, "shared"), "");
+    sharedWorlds.set(world, built);
+  }
   return built;
 };
 /** The routes of a run's fixtures.json, each by its match and its marks. */
@@ -1953,12 +1993,14 @@ async function gh(run: string, args: string[], env: Record<string, string> = {})
   return { stdout, stderr, exit };
 }
 const outputLines = (stdout: string) => stdout.split("\n").filter((line) => line !== "");
-/** What the stand-in recorded of each call of a run, in the order it answered them. */
-function ghCalls(run: string): { argv: string[]; route: string | null; exit: number }[] {
+/** What the stand-in recorded of each call of a run, in the order it answered them; a watch of a
+ * run in progress is recorded before it waits, with no exit. */
+type Recorded = { argv: string[]; route: string | null; exit: number | null };
+function ghCalls(run: string): Recorded[] {
   return readFileSync(path.join(run, "calls.jsonl"), "utf8")
     .split("\n")
     .filter((line) => line !== "")
-    .map((line) => JSON.parse(line) as { argv: string[]; route: string | null; exit: number });
+    .map((line) => JSON.parse(line) as Recorded);
 }
 
 /** The query the page gives for the counted set at a named head (red-at-the-head.md), read from
@@ -3105,12 +3147,16 @@ describe("red_fixture", () => {
       await settleRerun(run);
       const after = await gh(run, required);
 
-      // Each route by the read it answers: the required set, the head's checks, the press.
+      // Each route by the read it answers: the required set, the head's checks, the press. The
+      // watch of the required set is a route of its own (`checks_watch`), which these reads miss.
       const names = new Map([
         [
           routeOf(
             run,
-            (route) => route.match.includes("--required") && !route.match.includes("--json")
+            (route) =>
+              route.match.includes("--required") &&
+              !route.match.includes("--json") &&
+              route.head_read !== "checks_watch"
           ),
           "required",
         ],
@@ -3188,7 +3234,7 @@ describe("red_fixture", () => {
     const run = builtWorld("green");
     expect(
       bash(
-        `${fn("route_defs")}\n${fn("required_set_fixture")}\nR=$1 worker_repo=$2\nrequired_set_fixture ci main $3`,
+        `${fn("route_defs")}\n${fn("required_set_fixture")}\nR=$1 worker_repo=$2\nrequired_set_fixture '["ci"]' main $3`,
         [run, RED_REPO, RED_BASE]
       )
     ).toEqual({ code: 0, stdout: "", stderr: "" });
@@ -3394,6 +3440,298 @@ describe("red_fixture", () => {
     ]);
   });
 
+  // Catches: a reviewer's variant whose red is on no check its base requires, where the
+  // reviewer's prompt has it approve over that red with no re-run, so the world tests nothing (the
+  // architect's gap review of 7bf70a93, spec v16): at 7bf70a93 no variant's head reported `ci`,
+  // the one check its base required. Each variant's head carries a red check the base requires
+  // before the re-run, red in `gh pr checks --required` and BLOCKED in the merge state, and every
+  // read of the required set the rig answers names that check: the rules of the base's rulesets
+  // and the base branch's protection, the two the reviewer's prompt reads, and the one ruleset,
+  // the protection endpoint and its contexts. After the re-run and its settlement the required
+  // check is green, and the merge state CLEAN, where the world settles green (`m`, `q`, `r`, `s`,
+  // `t`), and red where it does not (`n`, `o`). In `p`, whose red is the title check in a run of
+  // its own, every read of the required set names `ci` and `title`, `ci` is green beside the red
+  // title check before and after, and the merge state stays BLOCKED (merge_state blocks on a
+  // required check that has not passed whatever its neighbours say). `t`'s counted set reports
+  // the red only once the rig does, so the row reports it first (red_report). It builds the eight
+  // variants and makes eleven calls in each, so it has a bound of its own.
+  test("each variant's head carries a red check its base requires, which the re-run settles as its world settles", async () => {
+    const seen: unknown[] = [];
+    for (const variant of RED_VARIANT_WORLDS) {
+      const run = ownFixture(variant);
+      if (variant === "t") await redReport(run, "http://127.0.0.1:9");
+      const lines = async (endpoint: string, filter: string) =>
+        outputLines(
+          (await gh(run, ["api", `repos/${RED_REPO}/${endpoint}`, "--jq", filter])).stdout
+        );
+      const sets = {
+        rules: await lines(
+          "rules/branches/main",
+          '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
+        ),
+        branch: await lines("branches/main", ".protection.required_status_checks.checks[].context"),
+        ruleset: await lines("rulesets/1", ".rules[].parameters.required_status_checks[].context"),
+        protection: await lines(
+          "branches/main/protection",
+          ".required_status_checks.checks[].context"
+        ),
+        contexts: await lines("branches/main/protection/required_status_checks/contexts", ".[]"),
+      };
+      const reads = async () => {
+        const required = await gh(run, ["pr", "checks", String(RED_PR), "--required"]);
+        const merge = await gh(run, [
+          "pr",
+          "view",
+          String(RED_PR),
+          "--json",
+          "mergeStateStatus",
+          "--jq",
+          ".mergeStateStatus",
+        ]);
+        return {
+          required: outputLines(required.stdout).map((line) =>
+            line.split("\t").slice(0, 2).join("\t")
+          ),
+          exit: required.exit,
+          merge: merge.stdout.trim(),
+        };
+      };
+      const before = await reads();
+      await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+      await settleRerun(run);
+      seen.push({ variant, sets, before, after: await reads() });
+    }
+    const red = { required: ["ci\tfail"], exit: 1, merge: "BLOCKED" };
+    const title = { required: ["ci\tpass", "title\tfail"], exit: 1, merge: "BLOCKED" };
+    const green = { required: ["ci\tpass"], exit: 0, merge: "CLEAN" };
+    expect(seen).toEqual(
+      RED_VARIANT_WORLDS.map((variant) => {
+        const required = variant === "p" ? ["ci", "title"] : ["ci"];
+        return {
+          variant,
+          sets: {
+            rules: required,
+            branch: required,
+            ruleset: required,
+            protection: required,
+            contexts: required,
+          },
+          before: variant === "p" ? title : red,
+          after:
+            variant === "p" ? title : RED_WORLD[baseOf(variant)].after === "green" ? green : red,
+        };
+      })
+    );
+  }, 300_000);
+
+  // Catches: `gh run watch` refused by the stand-in as a request the rig does not model, a rig
+  // error where gh answers it (the architect's gap review of 7bf70a93: no route took it), and an
+  // answer that is not gh's own, read from its source at the gh the worker image pins
+  // (github.com/cli/cli, pkg/cmd/run/watch/watch.go at v2.98.0, rig.sh's run_watch_program) and
+  // measured where it makes no request (watch_usage): a run that has completed answered at once,
+  // exiting 1 under --exit-status where it did not succeed; the re-run's attempt, in progress for
+  // the rest of the turn that pressed it, answered as gh's frames, one each --interval, the jobs of
+  // the attempt with every step or, under --compact, the step in progress alone, and the call
+  // recorded before it waits, with no exit; a run of no id the head has answered GitHub's 404, a
+  // call that names no run gh's usage error, and an --interval that is no integer cobra's refusal.
+  test("gh run watch answers as gh 2.98.0 does: a run that completed at once, the re-run's attempt in frames", async () => {
+    const run = ownFixture("i");
+    const watch = (...args: string[]) => gh(run, ["run", "watch", ...args]);
+    /** The first two frames a watch of a run in progress prints, read as they stream, and the
+     * call then killed, since it ends only once the run completes. */
+    const frames = async (...args: string[]) => {
+      const child = Bun.spawn(["bun", ghStandin, "gh", "run", "watch", ...args], {
+        env: { ...childEnv, SKILL_SCENARIO_RUN: run },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const reader = child.stdout.getReader();
+      const decoder = new TextDecoder();
+      let printed = "";
+      while (
+        printed.split("Refreshing run status").length - 1 < 2 ||
+        !printed.endsWith(`* ci (ID ${RED_JOB_ID + 5})\n`)
+      ) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        printed += decoder.decode(value);
+      }
+      child.kill();
+      await child.exited;
+      return printed.replace(/(Triggered via pull_request) [^\n]+/g, "$1 <ago>");
+    };
+    const usage =
+      "Usage:  gh run watch <run-id> [flags]\n\nFlags:\n" +
+      "      --compact        Show only relevant/failed steps\n" +
+      "      --exit-status    Exit with non-zero status if run fails\n" +
+      "  -i, --interval int   Refresh interval in seconds (default 3)\n  \n";
+    const completed = (conclusion: string) =>
+      `Run ci (${RED_RUN_ID}) has already completed with '${conclusion}'\n`;
+    expect([
+      await watch(String(RED_RUN_ID)),
+      await watch(String(RED_RUN_ID), "--exit-status"),
+      await watch(),
+      await watch("123"),
+      await watch(String(RED_RUN_ID), "-i", "x"),
+    ]).toEqual([
+      { stdout: completed("failure"), stderr: "", exit: 0 },
+      { stdout: completed("failure"), stderr: "", exit: 1 },
+      {
+        stdout: "",
+        stderr: `run ID required when not running interactively\n\n${usage}`,
+        exit: 1,
+      },
+      {
+        stdout: "",
+        stderr: `failed to get run: HTTP 404: Not Found (https://api.github.com/repos/${RED_REPO}/actions/runs/123?exclude_pull_requests=true)\n`,
+        exit: 1,
+      },
+      {
+        stdout: "",
+        stderr: `invalid argument "x" for "-i, --interval" flag: strconv.ParseInt: parsing "x": invalid syntax\n\n${usage}`,
+        exit: 1,
+      },
+    ]);
+    await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    const header =
+      "Refreshing run status every 1 seconds. Press Ctrl+C to quit.\n\n" +
+      `* legion/${RED_KEY} ci ${RED_REPO}#${RED_PR} · ${RED_RUN_ID}\n` +
+      "Triggered via pull_request <ago>\n\nJOBS\n";
+    const frame = [
+      `* test (notify) (ID ${RED_JOB_ID + 4})`,
+      "  ✓ Set up job",
+      "  * Run bun test packages/notify",
+      `✓ lint in 0s (ID ${RED_CARRIED_JOB.lint})`,
+      "  ✓ Set up job",
+      "  ✓ Run bun lint",
+      `✓ typecheck in 0s (ID ${RED_CARRIED_JOB.typecheck})`,
+      "  ✓ Set up job",
+      "  ✓ Run bun typecheck",
+      `* ci (ID ${RED_JOB_ID + 5})`,
+    ];
+    const compact = [
+      `* test (notify) (ID ${RED_JOB_ID + 4})`,
+      "  * Run bun test packages/notify",
+      `✓ lint in 0s (ID ${RED_CARRIED_JOB.lint})`,
+      `✓ typecheck in 0s (ID ${RED_CARRIED_JOB.typecheck})`,
+      `* ci (ID ${RED_JOB_ID + 5})`,
+    ];
+    const twice = (jobs: string[]) => `${header}${jobs.join("\n")}\n`.repeat(2);
+    expect(await frames(String(RED_RUN_ID), "--interval", "1")).toBe(twice(frame));
+    expect(await frames(String(RED_RUN_ID), "--compact", "-i", "1")).toBe(twice(compact));
+    await settleRerun(run);
+    expect(await watch(String(RED_RUN_ID), "--exit-status")).toEqual({
+      stdout: completed("success"),
+      stderr: "",
+      exit: 0,
+    });
+    // Each watch is recorded with the route that answered it; the two of the attempt in progress
+    // with no exit, since the stand-in records them before they wait.
+    expect(
+      ghCalls(run)
+        .filter((call) => call.argv[1] === "watch")
+        .map((call) => [call.argv.join(" "), call.route !== null, call.exit])
+    ).toEqual([
+      [`run watch ${RED_RUN_ID}`, true, 0],
+      [`run watch ${RED_RUN_ID} --exit-status`, true, 1],
+      ["run watch", true, 1],
+      ["run watch 123", true, 1],
+      [`run watch ${RED_RUN_ID} -i x`, true, 1],
+      [`run watch ${RED_RUN_ID} --interval 1`, true, null],
+      [`run watch ${RED_RUN_ID} --compact -i 1`, true, null],
+      [`run watch ${RED_RUN_ID} --exit-status`, true, 0],
+    ]);
+  }, 120_000);
+
+  // Catches: `gh pr checks --watch` refused by the stand-in as a request the rig does not model,
+  // a rig error where gh answers it, the same class as `gh run watch` above, and an answer that
+  // is not gh's own (pkg/cmd/pr/checks/checks.go at v2.98.0, rig.sh's checks_watch_program; the
+  // refusals measured, checks_usage): once no check is pending, the rows, then the rows again,
+  // exiting as the rows do; while one is, gh's frame at each --interval, the call recorded before
+  // it waits with no exit; `--required --watch` the required checks so; and the flag refusals gh
+  // makes before any request.
+  test("gh pr checks --watch answers as gh 2.98.0 does: settled rows twice, a pending head in frames", async () => {
+    const run = ownFixture("i");
+    const checks = (...args: string[]) => gh(run, ["pr", "checks", String(RED_PR), ...args]);
+    /** What a watch of a pending head prints, read as it streams until `length` characters, and
+     * the call then killed, since it ends only once no check is pending. */
+    const streamed = async (length: number, ...args: string[]) => {
+      const child = Bun.spawn(["bun", ghStandin, "gh", "pr", "checks", String(RED_PR), ...args], {
+        env: { ...childEnv, SKILL_SCENARIO_RUN: run },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const reader = child.stdout.getReader();
+      const decoder = new TextDecoder();
+      let printed = "";
+      while (printed.length < length) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        printed += decoder.decode(value);
+      }
+      child.kill();
+      await child.exited;
+      return printed;
+    };
+    const usage =
+      "Usage:  gh pr checks [<number> | <url> | <branch>] [flags]\n\nFlags:\n" +
+      "      --fail-fast         Exit watch mode on first check failure\n" +
+      "  -i, --interval int      Refresh interval in seconds in watch mode (default 10)\n" +
+      "  -q, --jq expression     Filter JSON output using a jq expression\n" +
+      "      --json fields       Output JSON with the specified fields\n" +
+      "      --required          Only show checks that are required\n" +
+      '  -t, --template string   Format JSON output using a Go template; see "gh help formatting"\n' +
+      "      --watch             Watch checks until they finish\n" +
+      "  -w, --web               Open the web browser to show details about checks\n  \n";
+    const refused = (line: string) => ({ stdout: "", stderr: `${line}\n\n${usage}`, exit: 1 });
+    const plain = await checks();
+    const required = await checks("--required");
+    expect([
+      await checks("--watch"),
+      await checks("--required", "--watch"),
+      await checks("--watch", "--fail-fast"),
+      await checks("--json", "name", "--watch"),
+      await checks("--fail-fast"),
+      await checks("--interval", "5"),
+      await checks("--watch", "-i", "x"),
+    ]).toEqual([
+      { stdout: plain.stdout + plain.stdout, stderr: "", exit: 1 },
+      { stdout: required.stdout + required.stdout, stderr: "", exit: 1 },
+      { stdout: plain.stdout + plain.stdout, stderr: "", exit: 1 },
+      refused("cannot use `--watch` with `--json` flag"),
+      refused("cannot use `--fail-fast` flag without `--watch` flag"),
+      refused("cannot use `--interval` flag without `--watch` flag"),
+      refused(
+        'invalid argument "x" for "-i, --interval" flag: strconv.ParseInt: parsing "x": invalid syntax'
+      ),
+    ]);
+    await gh(run, ["run", "rerun", String(RED_RUN_ID), "--failed"]);
+    const pending = await checks();
+    expect(pending.exit).toBe(8);
+    const frame = `Refreshing checks status every 1 seconds. Press Ctrl+C to quit.\n\n${pending.stdout}`;
+    expect(await streamed(frame.length * 2, "--watch", "-i", "1")).toBe(frame.repeat(2));
+    await settleRerun(run);
+    const settled = await checks();
+    expect(await checks("--watch", "--fail-fast")).toEqual({
+      stdout: settled.stdout + settled.stdout,
+      stderr: "",
+      exit: 0,
+    });
+    expect(
+      ghCalls(run)
+        .filter((call) => call.argv.includes("--watch"))
+        .map((call) => [call.argv.slice(3).join(" "), call.exit])
+    ).toEqual([
+      ["--watch", 1],
+      ["--required --watch", 1],
+      ["--watch --fail-fast", 1],
+      ["--json name --watch", 1],
+      ["--watch -i x", 1],
+      ["--watch -i 1", null],
+      ["--watch --fail-fast", 0],
+    ]);
+  }, 120_000);
+
   // Catches: a settlement never published, which leaves a waiting role asleep, a settlement
   // published at the press, inside the turn that pressed the re-run, and a settlement whose
   // payload names another head, another pull request or another verdict than the one the role
@@ -3472,6 +3810,7 @@ describe("red_fixture", () => {
       report: false,
       decline_fails: false,
       aggregate: false,
+      required: ["ci"],
       spent: false,
       by_hand: false,
       over_lane: true,
@@ -3484,7 +3823,8 @@ describe("red_fixture", () => {
   // world.json, run_red_at_the_head runs the world by them and score.ts's redAtTheHead scores it
   // by them. Catches: a fact that moves in one world, which every reader would then take, a
   // reviewer's variant whose facts are not those of the world it varies with the reviewer's role,
-  // phase and handoff, and a world outside the twenty that prints facts at all.
+  // phase and handoff and its own aggregate and required set (RED_VARIANT_FACTS), and a world
+  // outside the twenty that prints facts at all.
   test("red_world prints each world's facts, and nothing for a world outside the twenty", () => {
     const tester = { role: "tester", phase: "testing", handoff: "test" };
     const reviewer = { role: "reviewer", phase: "reviewing", handoff: "review" };
@@ -3494,6 +3834,7 @@ describe("red_fixture", () => {
       report: false,
       decline_fails: false,
       aggregate: false,
+      required: ["ci"],
       spent: false,
       by_hand: false,
       over_lane: false,
@@ -3569,11 +3910,15 @@ describe("red_fixture", () => {
         report: true,
       },
     };
-    // `m` to `t`: each the facts of the world it varies, the reviewer in its tester's place.
+    // `m` to `t`: each the facts of the world it varies, the reviewer in its tester's place, with
+    // the aggregate and the required set of its own.
     const every: Record<string, object> = {
       ...facts,
       ...Object.fromEntries(
-        RED_VARIANT_WORLDS.map((variant) => [variant, { ...facts[baseOf(variant)], ...reviewer }])
+        RED_VARIANT_WORLDS.map((variant) => [
+          variant,
+          { ...facts[baseOf(variant)], ...reviewer, ...RED_VARIANT_FACTS[variant] },
+        ])
       ),
     };
     const worlds = [...RED_WORLDS, ...RED_VARIANT_WORLDS];
@@ -5020,17 +5365,30 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
 
   // The reviewer's variants (`m` to `t`, rig.sh's red_world): no archived run is of one, so each
   // is proven by its own row, built and scored. Catches: a variant built on another world than the
-  // one it varies (another red, another workflow, another answer of any route), one that boots the
-  // tester, takes other turns than that world, and one the scorer cannot read or scores by the
-  // tester's rule. The one difference its build may carry beside its role is the pull request
-  // body's line for the issue's check: a reviewer whose round goes on reads k1 as `after_merge`,
-  // not yet run, as `i` does beside `a` (world_check_when). Each builds two worlds and runs
-  // run_red_at_the_head twice and the scorer once, under the file's minute.
+  // one it varies (another red, another workflow, another answer of any route), facts that differ
+  // from that world's in more than the role and RED_VARIANT_FACTS, one that boots the tester,
+  // takes other turns than that world, and one the scorer cannot read or scores by the tester's
+  // rule. A variant carries facts of its own beside its role (RED_VARIANT_FACTS: the aggregate the
+  // base requires, and in `p` the title check required beside it), so the row builds the world it
+  // varies with those facts over its own, and the variant's world must be that world in every
+  // answer. The one other difference its build may carry is the pull request body's line for the
+  // issue's check: a reviewer whose round goes on reads k1 as `after_merge`, not yet run, as `i`
+  // does beside `a` (world_check_when). Both worlds are built for this row alone (ownFixture) and
+  // compared as parsed JSON: the gh stand-in writes a world's fixtures.json back in its own form at
+  // every call it answers (gh-standin.ts, compact, each route's keys in its schema's order), and in
+  // a whole-file run the rows above had called it on the worlds redFixture shares, which failed
+  // all eight of these rows in CI at 7bf70a93 (run 44797028466, job 136499245509: the base's file
+  // compact, the variant's as red_fixture's jq wrote it) while they passed run alone. Each builds
+  // two worlds and runs run_red_at_the_head twice and the scorer once, under the file's minute.
   for (const variant of RED_VARIANT_WORLDS) {
     const base = baseOf(variant);
-    test(`world ${variant} is world ${base} with the reviewer booted in reviewing: its red, its answers, the reviewer's rule`, () => {
-      const built = redFixture(variant);
-      const of = redFixture(base);
+    test(`world ${variant} is world ${base} with the reviewer booted in reviewing and its own facts: its red, its answers, the reviewer's rule`, () => {
+      const built = ownFixture(variant);
+      const of = builtWorld(
+        base,
+        freshDir(`built-${base}-as-${variant}`),
+        RED_VARIANT_FACTS[variant]
+      );
       const read = (run: string, file: string) => readFileSync(path.join(run, file), "utf8");
       const head = JSON.parse(read(of, "world.json")).head;
       /** The pull request body's line for the issue's check, JSON-escaped as fixtures.json holds it. */
@@ -5038,6 +5396,18 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
         JSON.stringify(
           bash(`${fn("checks_lines")}\nR=$1\nchecks_lines "$2"`, [run, head]).stdout.trimEnd()
         ).slice(1, -1);
+      // The facts that differ from the world it varies: the reviewer's role and RED_VARIANT_FACTS.
+      const facts = (world: string) =>
+        JSON.parse(
+          bash(`${fn("red_world_table")}\n${fn("red_world")}\nred_world "$1"`, [world]).stdout
+        );
+      expect(facts(variant)).toEqual({
+        ...facts(base),
+        role: "reviewer",
+        phase: "reviewing",
+        handoff: "review",
+        ...RED_VARIANT_FACTS[variant],
+      });
       expect(JSON.parse(read(built, "world.json"))).toEqual({
         ...JSON.parse(read(of, "world.json")),
         world: variant,
@@ -5045,8 +5415,8 @@ red_report() { printf 'red_report\\n' >>"$R/calls"; }`;
         phase: "reviewing",
         handoff: "review",
       });
-      expect(read(built, "fixtures.json")).toBe(
-        read(of, "fixtures.json").replaceAll(checkLine(of), checkLine(built))
+      expect(JSON.parse(read(built, "fixtures.json"))).toEqual(
+        JSON.parse(read(of, "fixtures.json").replaceAll(checkLine(of), checkLine(built)))
       );
       // The run boots the reviewer where the world it varies boots the tester, and takes the same
       // turns on the same wakes: each run's own directory and clock read out.

@@ -243,9 +243,10 @@ test("no staged skill forbids the holders' re-run of a red at the head", () => {
 
 // The tester reads no CI (Sami's decision on
 // dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3), and its sentences that read CI,
-// held the re-run or waited on CI are refused over this partition too, since its Envoy skill is
-// where a wait on CI is written and a forward merge could bring one back there.
-test("no staged skill has the tester read CI, re-run a red or wait on CI", () => {
+// held the re-run, waited on CI or recorded a red at the head are refused over this partition too,
+// since its Envoy skill is where a wait on CI is written and a forward merge could bring one back
+// there.
+test("no staged skill has the tester read CI, re-run a red, wait on CI or record a red", () => {
   expect(retiredTesterCiReads([staged])).toEqual([]);
 });
 

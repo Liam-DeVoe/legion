@@ -88,9 +88,10 @@ test("no staged skill, daemon prompt or docs page forbids the holders' re-run of
 // The tester reads no CI (Sami's decision on
 // dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3: "let CI do its job, your job is
 // to boot and run the app's real workflows like a user would"), so its sentences that read CI,
-// held the re-run or waited on CI were taken out of the tester's prompt part, this partition's
-// skills and the docs pages at once, and are refused over the same roots for the same reason.
-test("no staged skill, daemon prompt or docs page has the tester read CI, re-run a red or wait on CI", () => {
+// held the re-run, waited on CI or recorded a red at the head were taken out of the tester's prompt
+// part, this partition's skills and the docs pages at once, and are refused over the same roots for
+// the same reason.
+test("no staged skill, daemon prompt or docs page has the tester read CI, re-run a red, wait on CI or record a red", () => {
   expect(retiredTesterCiReads([staged, promptsRoot, docsSiteRoot])).toEqual([]);
 });
 
@@ -149,6 +150,22 @@ test("the docs page gives both reads of --required at ed157dc9", () => {
   expect(docs).toContain(
     "read while `ci-ok` had not yet reported, it printed 1 row where the rollup held 46, and once CI settled the same read gives 2 of 48"
   );
+});
+
+// The red-at-the-head page reads the counted set "Never with `--required`" (pinned in
+// @legion/pi-shared's redAtTheHeadFaults, the architect's gap review of 2026-11-20, item 7), and
+// the docs page copies that fact in its own words: the read is made without the flag, what the flag
+// prints, what it leaves out, and what it answers on a base that requires nothing. Each sentence is
+// pinned whole and literally, as the page's are, and the lost ones are listed together.
+test("the docs page reads the counted set without --required, and says what --required leaves out", () => {
+  const docs = readFileSync(CHECKS_AND_RERUNS, "utf8").replace(/\s+/g, " ");
+  expect(
+    [
+      "Without `--required`. With it, `gh` prints only the checks the base requires:",
+      "So no lane under the aggregate `ci-ok` and no check the base does not require is in it.",
+      "On a base that requires nothing, `--required` prints that no required checks are reported and exits 1",
+    ].filter((sentence) => !docs.includes(sentence))
+  ).toEqual([]);
 });
 
 test("the docs page gives both reads of the commit endpoint at 9b728582", () => {

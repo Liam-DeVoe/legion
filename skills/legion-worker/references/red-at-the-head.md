@@ -83,8 +83,9 @@ Four readings decide it:
 3. A failing test is the change's when its own package is one the pull request changes: the Go
    package for a Go test, the directory of the test file for a Bun or a Playwright suite. A run of
    that test in the role's own pod does not move it: a test that passes locally is still the
-   change's when this reading says so, and the round fails on it with no re-run, since a re-run
-   spent on a red the change made is the same lap this page exists to save, paid the other way.
+   change's when this reading says so, and it gets no re-run: the reviewer requests changes on it,
+   and the implementer fixes the code. A re-run spent on a red the change made is the same lap this
+   page exists to save, paid the other way.
 4. A failure in no test is the change's only when the failing step reads a file the pull request
    changes. Such a file is the workflow file that job runs, the manifest or the lock file the step
    installs from, or the Dockerfile it builds.
@@ -166,8 +167,10 @@ is waited for, as *The act and the wait* says.
 A `gh run rerun <run-id> --failed` call pressed while a check of the counted set, resolved to its
 lane, is `failure` spends the head's re-run, whatever else that call clears.
 
-When the re-run is spent, the role re-runs nothing. It fails the round, or it requests changes,
-names the check, and says the head's one re-run is spent.
+When the re-run is spent, the role re-runs nothing. The reviewer requests changes, names the
+check, and says the head's one re-run is spent. The implementer records the red, tells the
+architect, and completes its phase, and its record and its message to the architect name the
+check and say the head's one re-run is spent; the reviewer judges the red in its round.
 
 **An empty counted set.** A rollup of `null`, which `gh pr checks` prints as no checks reported,
 read first in a turn, is waited on like any other absence, as *The act and the wait* says. A
@@ -224,7 +227,9 @@ The settlement wakes the role in that session, and one read of the head's checks
 
 - Green: the round goes on, and the role records that it re-ran, with the run and the attempt.
   Before it completes its phase, it runs the three steps of *What becomes of the record* below.
-- Red again: the round fails, or the reviewer requests changes, and the check is named.
+- Red again: the reviewer requests changes and names the check. The implementer records the red,
+  tells the architect, and completes its phase, naming the check; the reviewer judges the red in
+  its round.
 - Where no run at the head holds the failing check, the role re-runs nothing and tells the
   architect.
 
@@ -236,8 +241,8 @@ red is the change's* says, and most clear there. This section takes over in two 
 came back red at a step that ran **before any test of the change** — a setup or install step, a
 toolchain, a runner, a registry — or the lane's own output already shows the defect is in a file
 another tree owns. A failing test is never the second case, whatever package holds it: one that is
-not the change's takes the one re-run on its first red, and on its second red it is the round's
-failure, as *Red again* above says, never an external cause.
+not the change's takes the one re-run on its first red, and on its second red it is handled as
+*Red again* above says, never as an external cause.
 
 In both cases a further run of the lane meets the same defect, so no re-run ends it. The role
 records the external cause in the same record this page already asks for — the lane, the error,
@@ -278,7 +283,8 @@ could not be read.
 
 After a green re-run of a failing test, and before it completes its phase, the role runs these
 three commands in this order. A red cleared and never written up is a flaky test nobody fixes,
-which is the cost this page is paid to stop. A re-run that comes back red is the round's failure and owes no occurrence.
+which is the cost this page is paid to stop. A re-run that comes back red is handled as
+*Red again* above says and owes no occurrence.
 
 1. `dispatch search --query '<the failing test's full name>'`, which finds the issue that tracks
    that test. An issue a record of an earlier red already cites is read again before it is cited

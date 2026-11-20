@@ -358,7 +358,9 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
   [
     'red-at-the-head.md\'s "Where no run at the head holds the failing check, the role re-runs nothing"',
     [
-      "- Red again: the round fails, or the reviewer requests changes, and the check is named.",
+      "- Red again: the reviewer requests changes and names the check. The implementer records the red,",
+      "  tells the architect, and completes its phase, naming the check; the reviewer judges the red in",
+      "  its round.",
       "- Where no run at the head holds the failing check, the role re-runs",
       "  nothing and tells the architect.",
     ],
@@ -367,8 +369,8 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     'red-at-the-head.md\'s "When the re-run is spent, the role re-runs nothing."',
     [
       "When the re-run is spent, the role",
-      "re-runs nothing. It fails the round, or it requests changes,",
-      "and it names the check.",
+      "re-runs nothing. The reviewer requests changes, names the",
+      "check, and says the head's one re-run is spent.",
     ],
   ],
   [
@@ -513,11 +515,12 @@ const kept: readonly (readonly [source: string, page: readonly string[]])[] = [
     ],
   ],
   [
-    'implementer.md\'s "never wait for CI, except for the one re-run"',
+    'implementer.md\'s "never wait for CI, except for the waits"',
     [
-      "Push, then complete: never wait for CI, except for the one re-run of a red the change did not",
-      "make, which you wait for as `skill://legion-worker/references/red-at-the-head.md` says. Never",
-      "wait for, watch or poll the pull request's remote CI — no `gh run watch`, no `gh pr checks --watch`.",
+      "Push, then complete: never wait for CI, except for the waits",
+      "`skill://legion-worker/references/red-at-the-head.md` gives for a red you act on. Outside those",
+      "waits, each of which a wake ends as that page says, never wait for, watch or poll the pull",
+      "request's remote CI — no `gh run watch`, no `gh pr checks --watch`.",
     ],
   ],
   [
@@ -726,6 +729,51 @@ const retiredTesterReads: readonly (readonly [
     ],
     1,
   ],
+  [
+    'red-at-the-head.md\'s "--phase <implement|test|review>" before the `gh run rerun` call, as 0d572aa7 had it',
+    [
+      "The record is a handoff record of the role's own phase, written with",
+      "`dispatch handoff-write --issue <issue> --phase <implement|test|review> --body-file <file>` before the",
+      "`gh run rerun` call, never after it.",
+    ],
+    2,
+  ],
+  [
+    "a `test` handoff carrying `redAtTheHead`",
+    [
+      "A red at the head that the change did not make is written down before anything else. The",
+      "tester writes the failure down in a `test`",
+      "handoff whose `redAtTheHead` names all eight facts.",
+    ],
+    2,
+  ],
+  [
+    "`redAtTheHead` in a `--phase test` record",
+    [
+      "Record the red before anything else.",
+      "Its `redAtTheHead` list goes in the record you write with",
+      "`dispatch handoff-write --issue <issue> --phase test`.",
+    ],
+    2,
+  ],
+  [
+    '"the tester records the red"',
+    [
+      "A red at the head that the change did not make is the reviewer's to re-run once.",
+      "The tester",
+      "records the red in its handoff and goes on with its round.",
+    ],
+    2,
+  ],
+  [
+    "the tester's `redAtTheHead`",
+    [
+      "The reviewer names the red in its review body.",
+      "The tester's `redAtTheHead` entry names",
+      "the same eight facts.",
+    ],
+    2,
+  ],
 ];
 
 test.each(retiredTesterReads)("%s is reported at the line it starts on", (_source, page, line) => {
@@ -805,6 +853,57 @@ const keptBesideTesterReads: readonly (readonly [source: string, page: readonly 
     [
       "- After a forward merge, the tester reruns each check the merge can reach and records each other",
       "  check with no `ci_check` at the new head unrun.",
+    ],
+  ],
+  [
+    "red-at-the-head.md's record before the press, `--phase <implement|review>`",
+    [
+      "The record is a handoff record of the role's own phase, written with",
+      "`dispatch handoff-write --issue <issue> --phase <implement|review> --body-file <file>` before the",
+      "`gh run rerun` call, never after it. Its body carries the field `redAtTheHead`, a list with one",
+      "entry per red, each entry naming all eight facts above.",
+    ],
+  ],
+  [
+    'red-at-the-head.md\'s "names the red in its `redAtTheHead` record and its review body"',
+    [
+      "  as `skill://legion-worker/references/merge-gate.md` says. It approves over such a red the change",
+      "  did not make and names the red in its `redAtTheHead` record and its review body, and nowhere else:",
+      "  with no re-run, nothing shows the test fails at random, so the red is no occurrence for the",
+      "  census.",
+    ],
+  ],
+  [
+    "the worker skill's handoff read, `--phase <plan|implement|test|review>`",
+    [
+      "1. Read the issue. Then read each earlier phase's handoff (`dispatch handoff-read --issue <issue>",
+      "   --phase <plan|implement|test|review>`). A record beats your memory.",
+    ],
+  ],
+  [
+    "the implementer's role part's `--phase test --version <n>`",
+    [
+      "Read the earlier handoffs too, and, for the round that sent the work back, the `test` or `review`",
+      "handoff your task's `Handoff:` line names, at its version, with the command that line quotes",
+      "(`--phase test --version <n>` or `--phase review --version <n>`).",
+    ],
+  ],
+  [
+    'tester.md\'s `test` handoff, its `phase: "test"` and its `failures`',
+    [
+      "Every testing round records a `test` handoff on the Dispatch issue: a JSON object with",
+      '`schemaVersion: 1`, `phase: "test"`, `implementerProof`, and `failures` (each `{check, evidence}`).',
+    ],
+  ],
+  [
+    "a `test` handoff that carries no `redAtTheHead`",
+    ["The tester reads no CI, so its `test` handoff carries no", "`redAtTheHead`."],
+  ],
+  [
+    'the tester\'s red test, "The tester writes the red test that pins each defect"',
+    [
+      "The tester tries to break the changed surface. The tester writes the red",
+      "test that pins each defect it finds, and the resumed implementer makes it pass.",
     ],
   ],
 ];

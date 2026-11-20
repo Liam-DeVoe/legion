@@ -16,7 +16,8 @@ interface Call {
   /** The call as the routes read it, where the stand-in resolved one. */
   request?: string;
   route: string | null;
-  exit: number;
+  /** The status the call exited with; null for a `watch` reply, recorded before it waits. */
+  exit: number | null;
   unmodeled?: true;
   published?: { status: number; body: string } | { error: string };
 }
@@ -641,6 +642,131 @@ test("the re-run and the failed-log read are each recorded with the route that a
     { argv: "run view 17420 --log-failed", route: "^gh run view \\d+ --log-failed", exit: 0 },
   ]);
 });
+
+// Catches: a `gh run watch` of a run in progress answered once and ended, where gh 2.98.0 prints
+// a frame each time it reads the run, every --interval seconds, and ends only once the run has
+// completed (pkg/cmd/run/watch/watch.go), which no call in the rig outlives; a watch recorded only
+// when it ends, which a call the role's tool kills never does, so the scorer would never see it;
+// and an interval gh would print its frames with no pause at, which the rig does not model.
+test("a watch reply prints its frame again at each interval until the call is killed, recorded with no exit", async () => {
+  const match = "^gh run watch 7(?=\\s|$)";
+  const { env, gh, calls } = world([{ match, stdout: "* run 7\n", watch: true }]);
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !/^(?:DISPATCH|ENVOY|NATS)_/.test(name))
+  );
+  const child = Bun.spawn(["bun", standin, "gh", "run", "watch", "7", "--interval", "1"], {
+    env: { ...inherited, ...env },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const reader = child.stdout.getReader();
+  const decoder = new TextDecoder();
+  let printed = "";
+  const first = { at: 0, calls: [] as Call[] };
+  while (printed.split("* run 7\n").length - 1 < 2) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    printed += decoder.decode(value);
+    if (first.at === 0) first.at = performance.now();
+    if (first.calls.length === 0) first.calls = calls();
+  }
+  const between = performance.now() - first.at;
+  child.kill();
+  await child.exited;
+  expect(printed).toBe("* run 7\n* run 7\n");
+  // The frames stand an interval apart, and the call was recorded, with no exit, by the time the
+  // first frame was printed.
+  expect(between).toBeGreaterThanOrEqual(900);
+  expect(
+    first.calls.map((call) => ({ argv: call.argv.join(" "), route: call.route, exit: call.exit }))
+  ).toEqual([{ argv: "run watch 7 --interval 1", route: match, exit: null }]);
+  const busy = await gh("run", "watch", "7", "--interval", "0");
+  expect([busy.stderr.startsWith("rig: request not modeled: gh "), busy.exit]).toEqual([true, 1]);
+}, 30_000);
+
+// Catches: `gh pr checks --watch` with gh's `gh run watch` interval, where gh 2.98.0 reads the
+// checks every 10 seconds unless --interval names another (pkg/cmd/pr/checks/checks.go:21), and
+// its --interval, --fail-fast and --watch refused as flags the rig does not model.
+test("a watch of the checks prints its frame every 10 seconds unless --interval names another", async () => {
+  const match = "^gh pr checks 1(?=\\s|$)(?=.*\\s--watch(?:\\s|$))";
+  const { env, calls } = world([{ match, stdout: "* checks\n", watch: true }]);
+  const inherited = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !/^(?:DISPATCH|ENVOY|NATS)_/.test(name))
+  );
+  /** What the watch printed in `ms` milliseconds after its first frame. */
+  const printedIn = async (ms: number, ...args: string[]) => {
+    const child = Bun.spawn(["bun", standin, "gh", "pr", "checks", "1", ...args], {
+      env: { ...inherited, ...env },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    let printed = decoder.decode((await reader.read()).value);
+    const until = performance.now() + ms;
+    const more = (async () => {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) return;
+        printed += decoder.decode(value);
+      }
+    })();
+    // The watch is a child process on the real clock, so its interval is waited out, not faked.
+    await Bun.sleep(Math.max(0, until - performance.now()));
+    child.kill();
+    await Promise.all([child.exited, more]);
+    return printed;
+  };
+  expect(await printedIn(2500, "--watch")).toBe("* checks\n");
+  expect(await printedIn(1500, "--watch", "--fail-fast", "-i", "1")).toBe("* checks\n* checks\n");
+  expect(calls().map((call) => [call.argv.join(" "), call.exit])).toEqual([
+    ["pr checks 1 --watch", null],
+    ["pr checks 1 --watch --fail-fast -i 1", null],
+  ]);
+}, 30_000);
+
+// Catches: a read that writes fixtures.json back, which changes what a later reader of the world
+// reads, so the order of two readers decides what each reads (at 7bf70a93 every call wrote the
+// file back, in the stand-in's own form, with the route's count moved: the eight variant rows of
+// rig.test.ts failed in a whole-file run for it, CI run 44797028466). Two readers of one world in
+// both orders: a `gh pr view` of a head that follows the re-run, and a row's read of the file
+// itself; each reads the same in either order.
+test("two readers of one world read the same in either order: a read writes nothing back", async () => {
+  const { gh, run } = world([
+    { match: "^gh run rerun 7 --failed", replies: [{ stdout: RERUN }] },
+    { match: "^gh pr view 1", follows: "^gh run rerun 7 --failed", replies: [RED, GREEN] },
+  ]);
+  const file = () => readFileSync(path.join(run, "fixtures.json"), "utf8");
+  const view = async () => {
+    const read = await gh("pr", "view", "1");
+    return [read.stdout, read.exit];
+  };
+  const fileFirst = { file: file(), view: await view() };
+  const viewFirst = { view: await view(), file: file() };
+  expect(viewFirst).toEqual(fileFirst);
+}, 30_000);
+
+// Catches: a call that would write a world rows share, written in silence, so a later row reads a
+// world the order of rows made: the stand-in refuses it, naming the world and the call, and writes
+// nothing, while a read of the same world is answered as ever.
+test("a call that would write a shared world is refused by name, and a read of it is answered", async () => {
+  const { gh, run, recorded } = world([
+    { match: "^gh run rerun 7 --failed", replies: [{ stdout: RERUN }] },
+    { match: "^gh pr view 1", follows: "^gh run rerun 7 --failed", replies: [RED, GREEN] },
+  ]);
+  writeFileSync(path.join(run, "shared"), "");
+  const before = readFileSync(path.join(run, "fixtures.json"), "utf8");
+  const read = await gh("pr", "view", "1");
+  const press = await gh("run", "rerun", "7", "--failed");
+  expect([read.stdout, read.exit]).toEqual([`${RED.stdout}\n`, 1]);
+  expect(press).toEqual({
+    stdout: "",
+    stderr: `gh-standin: ${run} is a world rows share, and gh run rerun 7 --failed would write it: run this call in a world of its own (rig.test.ts's ownFixture)\n`,
+    exit: 2,
+  });
+  expect(readFileSync(path.join(run, "fixtures.json"), "utf8")).toBe(before);
+  expect(recorded()).toBe(true);
+}, 30_000);
 
 // Catches: a refusal that names a fixed ref, or none, where GitHub names the one the call asked
 // for, so a role that read a commit by a wrong name (`null`, a branch nobody made) cannot tell

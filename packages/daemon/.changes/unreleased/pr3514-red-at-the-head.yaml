@@ -6,7 +6,8 @@ body: |-
   a red check the change did not make, at the head of its pull request, after it records the
   failure; the architect's prompt keeps the decision and gives the re-run to the reviewer in
   `reviewing` or the implementer while it holds `implementing`, and the implementer's acts on a
-  red only while it holds `implementing` and waits on CI for nothing but that one re-run. The
+  red only while it holds `implementing` and waits on CI for nothing but the waits
+  `skill://legion-worker/references/red-at-the-head.md` gives for a red it acts on. The
   merger's prompt queues a `failed_checks` ejection at an unchanged head once more, after it
   records it, and sends the work back only on the second such removal. The reviewer's prompt
   reads the head's checks as GitHub counts them for the pull request, never every check run at

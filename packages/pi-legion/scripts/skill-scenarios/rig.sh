@@ -120,7 +120,10 @@
 #                   counted set does not hold; `l` `a` with a counted set that has not reported the
 #                   check when the role first reads it; and `m` to `t`, `c`, `d`, `e`, `f`, `g`,
 #                   `h`, `k` and `l` in that order with the reviewer in place of the tester, each
-#                   the same red with the same answers. The world is in the run's name,
+#                   the same red and, as in `i` and `j`, the aggregate check
+#                   the base requires beside it (`q`'s red is that check itself), red over the
+#                   lane, or in `p`, whose red is the title check the base requires beside it,
+#                   green over the other lanes. The world is in the run's name,
 #                   trial-<world>-<label>-<n> (run_prefix), so each world's batch keeps its own
 #                   runs. Each world's facts, among them its role, its phase and its turns, are
 #                   written once (red_world), and red_fixture writes them and the world to
@@ -1977,9 +1980,10 @@ EOF
 # line 49, which reads it through PullRequestForRun; measured
 # `* legion/INFRA-1303 CI cybermonklabs/legion#3514 · 44586483868` on 2026-11-19). A run, a job or
 # a step not yet completed is marked `*` and a job not yet completed has no time (measured on that
-# same run while it ran).
-run_view_program() {
-  program_defs
+# same run while it ran). run_view_defs prints what the programs of `gh run view` and `gh run
+# watch` share, which renders a run and a job alike (shared.RenderRunHeader and
+# shared.RenderJobs, pkg/cmd/run/shared/presentation.go at v2.98.0).
+run_view_defs() {
   cat <<'EOF'
 def ago($t): ($now - ($t | fromdate)) as $s | (($s / 3600) | floor) as $h
   | def about($n; $unit): "about \($n) \($unit)\(if $n == 1 then "" else "s" end) ago";
@@ -2003,6 +2007,12 @@ def line($steps): mark + " " + .name + (if .status == "completed" then " in " + 
   + " (ID " + (.id | tostring)
   + ")" + (if $steps then .steps | map("\n  " + mark + " " + .name) | join("")
            else "" end);
+EOF
+}
+run_view_program() {
+  program_defs
+  run_view_defs
+  cat <<'EOF'
 if has("job") then
   (.run | heading) + (.job | line(true)) + "\n\n"
   + (if .job.conclusion == "failure"
@@ -2017,6 +2027,47 @@ else
      then "To see what failed, try: gh run view \(.run.id) --log-failed"
      else "For more information about a job, try: gh run view --job=<job-id>" end)
   + "\nView this run on GitHub: " + .run.html_url
+end
+EOF
+}
+
+# The text gh 2.98.0 prints for `gh run watch <run>` to no terminal, read from gh's own source at
+# v2.98.0 (github.com/cli/cli, pkg/cmd/run/watch/watch.go, with pkg/cmd/run/shared/shared.go and
+# presentation.go), over {run} or {run, jobs}, the run as GetRun reads it and the jobs of its
+# latest attempt as GetJobs reads them:
+#   - a run that has completed: `Run <workflow> (<id>) has already completed with '<conclusion>'`
+#     (watch.go:139-145; GetRun names the run by its workflow, shared.go:592-596); the route exits
+#     1 where the call names --exit-status and the run did not succeed, gh's SilentError, which
+#     prints nothing more (watch.go:141-143, internal/ghcmd/cmd.go:199-200)
+#   - a run that has not: the frame gh prints each time it reads the run (watch.go:162-187 and
+#     renderRun, watch.go:215-283): `Refreshing run status every <interval> seconds. Press Ctrl+C
+#     to quit.`, a blank line, the run's header as gh run view prints it but for the blank lines
+#     around it (presentation.go:10-26), a blank line, `JOBS`, and each job of the attempt with
+#     every step (RenderJobs with verbose, watch.go:268), or with --compact its failed steps and
+#     the step in progress alone (RenderJobsCompact, watch.go:266); no job of an attempt in
+#     progress has failed in any world, so no frame carries gh's ANNOTATIONS (watch.go:270-279). The
+#     route marks that reply `watch`, and the stand-in prints the frame again at each interval
+#     (gh-standin.ts), as gh reads the run again, for as long as the call runs: the run cannot
+#     complete while it does, since the rig settles a re-run only once the turn that pressed it
+#     has ended
+run_watch_program() {
+  program_defs
+  run_view_defs
+  cat <<'EOF'
+def failed: .conclusion == "failure" or .conclusion == "action_required"
+  or .conclusion == "startup_failure" or .conclusion == "timed_out";
+def step_line: "\n  " + mark + " " + .name;
+def compact: line(false)
+  + (if .status == "completed" and .conclusion == "success" then ""
+     else ([.steps[] | select(failed) | step_line] | join(""))
+       + ([.steps[] | select(.status == "in_progress")] | last // null
+          | if . == null then "" else step_line end) end);
+if .run.status == "completed"
+then "Run \(.run.name) (\(.run.id)) has already completed with '\(.run.conclusion)'"
+else (opt("--interval") // "3" | tonumber) as $every
+  | (if opt("--compact") == true then .jobs | map(compact) else .jobs | map(line(true)) end) as $jobs
+  | "Refreshing run status every \($every) seconds. Press Ctrl+C to quit.\n\n"
+    + (.run | heading | ltrimstr("\n") | rtrimstr("\n\n")) + "\n\nJOBS\n" + ($jobs | join("\n")) + "\n"
 end
 EOF
 }
@@ -2094,6 +2145,60 @@ Flags:
   -v, --verbose           Show job steps
   -w, --web               Open run in the browser
   
+EOF
+}
+
+# The usage gh 2.98.0 prints under a usage error of `gh run watch` to no terminal (measured with
+# the gh of the worker image, 2026-11-20, `gh run watch -R example/widgets` and `gh run watch 1 -i
+# x -R example/widgets`, no request made): under `run ID required when not running interactively`
+# for a call that names no run (watch.go:73-77), and under cobra's refusal of an --interval that
+# is no integer (watch.go:90). A route puts the error's own line and a blank line ahead of it.
+watch_usage() {
+  cat <<'EOF'
+Usage:  gh run watch <run-id> [flags]
+
+Flags:
+      --compact        Show only relevant/failed steps
+      --exit-status    Exit with non-zero status if run fails
+  -i, --interval int   Refresh interval in seconds (default 3)
+  
+EOF
+}
+
+# The usage gh 2.98.0 prints under a usage error of `gh pr checks` to no terminal (measured with
+# the gh of the worker image, 2026-11-20, `gh pr checks 1 -R example/widgets` with `--json name
+# --watch`, `--fail-fast`, `--interval 5` and `--watch -i x`, no request made), under the error's
+# own line and a blank line (checks.go:80-101).
+checks_usage() {
+  cat <<'EOF'
+Usage:  gh pr checks [<number> | <url> | <branch>] [flags]
+
+Flags:
+      --fail-fast         Exit watch mode on first check failure
+  -i, --interval int      Refresh interval in seconds in watch mode (default 10)
+  -q, --jq expression     Filter JSON output using a jq expression
+      --json fields       Output JSON with the specified fields
+      --required          Only show checks that are required
+  -t, --template string   Format JSON output using a Go template; see "gh help formatting"
+      --watch             Watch checks until they finish
+  -w, --web               Open the web browser to show details about checks
+  
+EOF
+}
+
+# The text gh 2.98.0 prints for `gh pr checks --watch` to no terminal, read from gh's own source
+# at v2.98.0 (github.com/cli/cli, pkg/cmd/pr/checks/checks.go:204-246 and output.go:69-92), over
+# {rows, pending}, the rows `gh pr checks` prints in a state of the head and whether a check of it
+# is pending: while one is, the frame gh prints each time it reads the checks (the summary prints
+# nothing to no terminal); once none is, the rows, then the rows again as its final table; and
+# nothing where the base requires no check the call reads ({none}, whose error the route prints).
+checks_watch_program() {
+  program_defs
+  cat <<'EOF'
+(opt("--interval") // "10" | tonumber) as $every
+| if .none then ""
+  elif .pending then "Refreshing checks status every \($every) seconds. Press Ctrl+C to quit.\n\n" + .rows + "\n"
+  else .rows + "\n" + .rows end
 EOF
 }
 
@@ -2560,8 +2665,10 @@ $checks
       # The rows gh 2.98.0 prints to no terminal (output.go:56-61, requests.log line 53; measured on
       # #3514, ip-prchecks, line 33): the check, its bucket, its elapsed time, `0` where it started
       # and completed in the same second, as every check of the world does, its link, and its
-      # description, empty, after a tab.
-      {match:("^gh pr checks " + $n + "(?=\\s|$)(?!.*\\s--(?:json|jq)\\s)"), head_read:"checks",
+      # description, empty, after a tab. A watch of the checks (--watch, and the --fail-fast and
+      # --interval of one) is no plain read: red_fixture models it where the head is red, and in
+      # this world, which models none, it is refused as unmodeled.
+      {match:("^gh pr checks " + $n + "(?=\\s|$)(?!.*\\s--(?:json|jq)\\s)(?!.*\\s--(?:watch|fail-fast|interval)(?:\\s|$))"), head_read:"checks",
        stdout:($checks | map(.name + "\tpass\t0\t" + .link + "\t") | join("\n"))},
       {match:"^gh pr list(?: --|$)", stdout:$pr, program:$pr_list},
       {match:("^gh pr diff " + $n + "(?=.*\\s--name-only(?:\\s|$))"), stdout:($files | map(.filename) | join("\n"))},
@@ -2835,7 +2942,8 @@ run_tester_proof() {
 #                 tester in `a` to `h`, `k` and `l`. The tester reads no CI and presses nothing:
 #                 its worlds keep their red for it to leave alone (score.ts's redAtTheHead), and
 #                 `m` to `t` are `c`, `d`, `e`, `f`, `g`, `h`, `k` and `l` with the reviewer, each
-#                 world's facts but its role its base's, as `i` and `j` are `a` and `b`'s
+#                 world's facts but its role, its aggregate and its required set its base's, as
+#                 `i` and `j` are `a` and `b`'s (`aggregate` and `required` below)
 #   phase         that role's phase, as the daemon's task names it (testing or reviewing)
 #   handoff       the phase of the handoff record that role writes, test or review (phase.Handoff,
 #                 packages/daemon/internal/phase/phase.go)
@@ -2864,42 +2972,52 @@ run_tester_proof() {
 #                 and reports it only when the rig does, between the two turns (red_report): `l`
 #   decline_fails whether a round the role ended before its re-run fails the world: `k`, whose
 #                 commit endpoint answers a by-hand failure that reads as the re-run already spent
-#   aggregate     whether the head carries, beside the failing lane and in the same run, the
-#                 aggregate check `ci` the base requires, red over the lane and settled with it:
-#                 `i` and `j`
+#   aggregate     whether the head carries the aggregate check `ci` the base requires, a job of the
+#                 `ci` run that needs each lane of that run: red over the failing lane and settled
+#                 with it where the red is one of those lanes, `i`, `j`, `m`, `n`, `o`, `r`, `s`
+#                 and `t`; green over lint and typecheck in `p`, whose red, the title check, runs in
+#                 a run of its own, which no job of the `ci` run can need. `i` and `j` carry it over
+#                 `a` and `b`'s lane, and `m` to `t` over their base's, so the red the reviewer
+#                 meets is on a check the base requires, as on cybermonklabs/legion, whose base
+#                 requires the aggregate `ci-ok` over its test lanes; `q`'s red is `g`'s, itself
+#                 that aggregate (`over_lane`), so it needs none beside it. The tester's worlds
+#                 carry none: the tester reads no CI, so no world of its needs the red required
+#   required      the checks the base requires, which every read of its required set names
+#                 (red_fixture's `--required` read, required_set_fixture): `ci`, and in `p` the
+#                 title check too, as `pr-title` is required beside `ci-ok` on cybermonklabs/legion
 #   spent         whether the head's one re-run is already spent: the head's runs carry a second
 #                 attempt of the e2e run somebody already pressed, and the commit endpoint carries
-#                 the superseded e2e failure and its passing re-run: `e`
+#                 the superseded e2e failure and its passing re-run: `e` and `o`
 #   by_hand       whether the commit endpoint carries, beside the counted failure, a by-hand
 #                 `workflow_dispatch` run's failure of the same check name, which no counted set
-#                 and none of the head's `pull_request` runs hold: `k`
+#                 and none of the head's `pull_request` runs hold: `k` and `s`
 #   over_lane     whether the world's red check is itself the aggregate over a failing lane, the
-#                 job `job` names, whose own check run is red beside it: `g`. With `aggregate`
-#                 (`i` and `j`, the red lane under the aggregate) it marks the worlds whose red
-#                 is one aggregate over one lane, which the scorer's check fact reads
+#                 job `job` names, whose own check run is red beside it: `g` and `q`. With
+#                 `aggregate` over the red lane (the red lane under the aggregate) it marks the
+#                 worlds whose red is one aggregate over one lane, which the scorer's check fact reads
 red_world_table() {
   printf '%s\n' '
     {
-      a: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
-      b: {after:"red",   role:"tester",   rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
-      c: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
-      d: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
-      e: {after:"red",   role:"tester",   rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false, aggregate:false, spent:true,  by_hand:false, over_lane:false, log_gone:false},
-      f: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
-      g: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:true, log_gone:false},
-      h: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:true},
-      i: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:true,  spent:false, by_hand:false, over_lane:false, log_gone:false},
-      j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:true,  spent:false, by_hand:false, over_lane:false, log_gone:false},
-      k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:false, spent:false, by_hand:true,  over_lane:false, log_gone:false},
-      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
-      m: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
-      n: {after:"red",   role:"reviewer", rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
-      o: {after:"red",   role:"reviewer", rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false, aggregate:false, spent:true,  by_hand:false, over_lane:false, log_gone:false},
-      p: {after:"red",   role:"reviewer", rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false},
-      q: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:true, log_gone:false},
-      r: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:true},
-      s: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:false, spent:false, by_hand:true,  over_lane:false, log_gone:false},
-      t: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false, spent:false, by_hand:false, over_lane:false, log_gone:false}
+      a: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false},
+      b: {after:"red",   role:"tester",   rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:false, required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false},
+      c: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false},
+      d: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false},
+      e: {after:"red",   role:"tester",   rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false, aggregate:false, required:["ci"],         spent:true,  by_hand:false, over_lane:false, log_gone:false},
+      f: {after:"red",   role:"tester",   rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:false, required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false},
+      g: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, required:["ci"],         spent:false, by_hand:false, over_lane:true,  log_gone:false},
+      h: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:false, required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:true},
+      i: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:true,  required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false},
+      j: {after:"red",   role:"reviewer", rerun:true,  round:"fails-naming-check", disposal:false, report:false, decline_fails:false, aggregate:true,  required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false},
+      k: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:false, required:["ci"],         spent:false, by_hand:true,  over_lane:false, log_gone:false},
+      l: {after:"green", role:"tester",   rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:false, required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false},
+      m: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:true,  required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false},
+      n: {after:"red",   role:"reviewer", rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:true,  required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false},
+      o: {after:"red",   role:"reviewer", rerun:false, round:"fails-spent",        disposal:false, report:false, decline_fails:false, aggregate:true,  required:["ci"],         spent:true,  by_hand:false, over_lane:false, log_gone:false},
+      p: {after:"red",   role:"reviewer", rerun:false, round:"fails",              disposal:false, report:false, decline_fails:false, aggregate:true,  required:["ci", "title"], spent:false, by_hand:false, over_lane:false, log_gone:false},
+      q: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:false, aggregate:false, required:["ci"],         spent:false, by_hand:false, over_lane:true,  log_gone:false},
+      r: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:false, report:false, decline_fails:false, aggregate:true,  required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:true},
+      s: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:false, decline_fails:true,  aggregate:true,  required:["ci"],         spent:false, by_hand:true,  over_lane:false, log_gone:false},
+      t: {after:"green", role:"reviewer", rerun:true,  round:"goes-on",            disposal:true,  report:true,  decline_fails:false, aggregate:true,  required:["ci"],         spent:false, by_hand:false, over_lane:false, log_gone:false}
     }'
 }
 red_world() {
@@ -2977,14 +3095,18 @@ red_workflows() {
         | ($lane + {log:($lane | lane_log), run_name:($lane.run_name // "ci"), log_gone:$facts.log_gone})
           as $lane
         | job($lane.job; [$lane.step]; $lane.log) as $red
-        # The aggregate `ci` over the lanes of the run of the red (worlds `g`, `i` and `j`): it
-        # needs each of them, and its failing line counts the lanes that failed among them.
+        # The aggregate `ci` over the lanes of the `ci` run (worlds `g` and `q`, whose red it is,
+        # and the worlds that carry it beside the red, `aggregate`): it needs each of them, and its
+        # failing line counts the lanes that failed among them. In `p` the red runs in the title
+        # check'"'"'s own run, so the aggregate needs lint and typecheck alone and passes, with no
+        # failing line.
+        | ((if $lane.run_name == "ci" then [$red] else [] end) + $ci) as $ci_lanes
         | (if $facts.aggregate or $facts.over_lane
-           then ([$red] + $ci) as $lanes
-             | [job("ci"; [{name:"Check the lanes",
+           then [job("ci"; [{name:"Check the lanes",
                             run:"test \"${{ !contains(needs.*.result, \u0027failure\u0027) }}\" = true"}];
-                    "1 of \($lanes | length) lanes failed: \($red.name).")
-                + {needs:($lanes | map(.id))}]
+                    (if $lane.run_name == "ci" then "1 of \($ci_lanes | length) lanes failed: \($red.name)."
+                     else null end))
+                + {needs:($ci_lanes | map(.id))}]
            else [] end) as $aggregate
         | {lane:$lane,
            workflows:([{name:"ci", file:"ci.yaml",
@@ -3057,20 +3179,24 @@ workflow_defs() {
 # another check is red, CLEAN when none is red; the world's protection requires no review, so
 # checks alone decide it (merge_state below). Per world, from its facts: the heads of `a` to `f`,
 # `h`, `k` and `l` report no `ci`, the one check their base requires, so each reads BLOCKED before
-# and after the re-run; `g` and `i` read BLOCKED while `ci` is red and CLEAN once the re-run
-# settles it and every lane green; `j` stays BLOCKED, its `ci` red again on the re-run; and no
-# world reads UNSTABLE, since none has `ci` green beside a red lane. The base
-# requires the one aggregate check `ci`, and every read of its required set says so:
-# `gh pr checks --required` answers the checks the base requires alone, as GitHub does, and the
-# rules of the base's rulesets and its branch protection, the two reads the reviewer's prompt
-# gives for that set, each name `ci` in the shape GitHub answers them in, as do the protection
-# endpoint of the branch, its required status checks and their contexts, and the repository's
-# rulesets and its one ruleset (required_set_fixture, which red_fixture runs last, so those seven
-# reads go ahead of every other route). The heads of worlds `g`, `i` and `j` report `ci`, and at
-# every other head the `--required` read answers gh's `no required checks reported on the
-# '<branch>' branch` and exits 1. In a world that stays red both answers are red, and nothing of it
-# moves; in a world that presses no re-run (`d`, `e`, `f`) the head reads red for the whole run.
-# World `l`'s counted reads answer one more state first, reporting no red at all, and
+# and after the re-run; `g`, `i` and `m`, `q`, `r`, `s` and `t` read BLOCKED while `ci` is red and
+# CLEAN once the re-run settles it and every lane green; `j` stays BLOCKED, its `ci` red again on
+# the re-run, and so do `n` and `o`, which press no re-run; `p`, whose base requires `ci` and the
+# title check, reads BLOCKED for the whole run, its `ci` green beside its red title check, since
+# merge_state blocks on any required check that has not passed; and no world reads UNSTABLE,
+# since none has every required check green beside a red lane. The base requires the aggregate
+# check `ci`, and in `p` the title check too (red_world's `required`), and every read of its
+# required set says so: `gh pr checks --required` answers the checks the base requires alone, as
+# GitHub does, and the rules of the base's rulesets and its branch protection, the two reads the
+# reviewer's prompt gives for that set, each name that set in the shape GitHub answers them in, as
+# do the protection endpoint of the branch, its required status checks and their contexts, and the
+# repository's rulesets and its one ruleset (required_set_fixture, which red_fixture runs last, so
+# those seven reads go ahead of every other route). The heads of worlds `g`, `i`, `j` and `m` to
+# `t` report `ci`, and at every other head the `--required` read answers gh's `no required checks
+# reported on the '<branch>' branch` and exits 1. In a world that stays red both answers are red,
+# and nothing of it moves; in a world that presses no re-run (`d`, `e`, `f`, `n`, `o`, `p`) the
+# head reads red for the whole run. The counted reads of `l` and `t` answer one more state first,
+# reporting neither the red nor the aggregate over it, and
 # each route that answers them carries the mark `unreported`: red_report drops that first state of
 # each marked route between the two turns, which is the rig reporting the check. A read of
 # another commit's check runs or status takes the routes other_commit_routes wrote ahead of the
@@ -3113,8 +3239,12 @@ workflow_defs() {
 #      the commit endpoint already holds its failing run: the role waits for the pull request's
 #      checks event, and the rig reports the check between the two turns (red_report)
 #   m to t  c, d, e, f, g, h, k and l, in that order, with the reviewer in place of the tester:
-#      each the same red, answered as its base world answers it (red_workflows, red_model), so the
-#      merge state of each reads as its base's does
+#      each the same red, answered as its base world answers it (red_workflows, red_model), and,
+#      but in q, i's aggregate ci beside it, so the red the reviewer meets is on a check the base
+#      requires: red over the red lane in m, n, o, r, s and t and settled with it, as in i and j;
+#      in p, whose red title check runs in a run of its own, green over lint and typecheck, with
+#      the title check required beside it, as pr-title is beside ci-ok on cybermonklabs/legion.
+#      q's red is g's, ci itself, so it carries no other. Each reads the merge state above
 # red_fixture runs the parts below in order: red_model prints the model of the world's red,
 # run_routes the routes of the head's runs, jobs and check runs from it, the jq here rewrites the
 # reads of the head worker_fixture marked, and required_set_fixture puts the reads of the base's
@@ -3126,7 +3256,8 @@ red_fixture() {
   red_model "$world" >"$model" || fail "red_fixture: no model of world '$world'"
   run_routes "$model" >"$routes" || fail "red_fixture: no routes of world '$world'"
   jq --slurpfile model "$model" --slurpfile routes "$routes" \
-    --arg check_suites "$(check_suites_program)" "$(red_model_defs)$(route_defs)"'
+    --arg check_suites "$(check_suites_program)" --arg checks_watch "$(checks_watch_program)" \
+    --arg checks_usage "$(checks_usage)" "$(red_model_defs)$(route_defs)"'
     $routes[0] as $new
     # The reads of the head worker_fixture marks `head_read` answer the red where they stand, and
     # what the head settles at once the re-run is pressed: the pull request (its rollup and its
@@ -3158,20 +3289,57 @@ red_fixture() {
               | .follows = $rerun | del(.stdout))
         # `gh pr checks --required` answers the checks the base requires and no other, as GitHub
         # does, from a route of its own ahead of the one that answers every check. The base
-        # requires the one aggregate check `ci` ($required), which the heads of worlds `g`, `i`
-        # and `j` report: every other head reports no check the base requires, which gh answers on
+        # requires the aggregate check `ci`, and in `p` the title check too (requires), which the
+        # heads of worlds `g`, `i`, `j` and `m` to `t` report: every other head reports no check
+        # the base requires, which gh answers on
         # stderr, exiting 1 (\u0027 is the quote gh puts around the branch: this program is in
         # single quotes), with --json too, since gh reads the checks before it prints any
         # (checks.go:183-190 and 306-308 at v2.98.0, requests.log line 51). The rows exit as gh
         # exits on them (checks_exit), and --json exits 0 whatever the checks say
         # (checks.go:189-190).
+        # `gh pr checks --watch` (pkg/cmd/pr/checks/checks.go at v2.98.0, read from the source of
+        # gh at the gh the worker image pins): to no terminal, while a check it reads is pending, a
+        # frame each --interval (10 by default), `Refreshing checks status every <n> seconds. Press
+        # Ctrl+C to quit.`, a blank line and the rows (checks.go:205-216, `watch`, gh-standin.ts);
+        # once none is pending the rows, then the rows again as its final table, exiting as the
+        # rows do (checks.go:218-251). --fail-fast ends the watch on a failed check while one is
+        # pending, which no state of any world holds (a pending state is the re-run attempt, with
+        # nothing failed), so it answers as --watch does. --required and --watch together read the
+        # required checks so; with no required check gh refuses before it watches (checks.go:306-308).
+        # gh refuses a watch with --json, --fail-fast or --interval without --watch, and an
+        # --interval that is no integer, before any request (checks.go:80-101 and cobra; measured,
+        # checks_usage); those routes stand ahead of the --json route, which every --json call takes.
+        # A watch reads the counted set as `gh pr checks` does, so its routes carry the mark of a
+        # read of the head (`checks_watch`), and in world `l` the mark red_report trims (counted).
         elif .head_read == "checks" or .head_read == "checks_json"
         then ((.head_read == "checks_json") as $json
               | def answer($checks):
                   if $json then {stdout:($checks | map(check_json))}
                   else {stdout:rows($checks), exit:checks_exit($checks)} end;
+                def none_required: {stdout:{none:true}, stderr:("no required checks reported on the \u0027"
+                                    + $branch + "\u0027 branch\n"), exit:1};
+                def watch_answer($checks): {stdout:{rows:rows($checks), pending:((pending($checks) | length) > 0)}}
+                  + (if (pending($checks) | length) > 0 then {watch:true} else {exit:checks_exit($checks)} end);
+                def refused($match; $line): {match:$match, stderr:($line + "\n\n" + $checks_usage + "\n"), exit:1};
+                ("^gh pr checks " + ($pr|tostring) + "(?=\\s|$)(?!.*\\s--(?:json|jq)\\s)(?=.*\\s--watch(?:\\s|$))")
+                as $watching
+              | if $json
+                then refused("^gh pr checks(?=.*\\s--interval (?<value>(?![+-]?[0-9]+(?:\\s|$))(?!0[xXoObB])\\S+)(?:\\s|$))";
+                             "invalid argument \"$<value>\" for \"-i, --interval\" flag: strconv.ParseInt: parsing \"$<value>\": invalid syntax"),
+                     refused("^gh pr checks(?=.*\\s--json\\s)(?=.*\\s--watch(?:\\s|$))";
+                             "cannot use `--watch` with `--json` flag"),
+                     refused("^gh pr checks(?=.*\\s--fail-fast(?:\\s|$))(?!.*\\s--watch(?:\\s|$))";
+                             "cannot use `--fail-fast` flag without `--watch` flag"),
+                     refused("^gh pr checks(?=.*\\s--interval\\s)(?!.*\\s--watch(?:\\s|$))";
+                             "cannot use `--interval` flag without `--watch` flag")
+                else ({match:($watching + "(?=.*\\s--required(?:\\s|$))"), follows:$rerun,
+                       head_read:"checks_watch", program:$checks_watch}
+                      + counted(map(select(requires)) | if . == [] then none_required else watch_answer(.) end)),
+                     ({match:$watching, follows:$rerun, head_read:"checks_watch", program:$checks_watch}
+                      + counted(watch_answer(.)))
+                end,
               ({match:(.match + "(?=.*\\s--required(?:\\s|$))"), follows:$rerun}
-               + counted(map(select(.name == $required))
+               + counted(map(select(requires))
                  | if . == []
                    then {stderr:("no required checks reported on the \u0027" + $branch
                                  + "\u0027 branch\n"), exit:1}
@@ -3217,15 +3385,17 @@ red_fixture() {
   jq 'del(.reported, .settlement)' "$R/fixtures.red.json" >"$R/fixtures.json"
   rm -f "$R/fixtures.red.json"
   # The reads of the base's required set, which read nothing of the world but the repository and
-  # the base, go ahead of every route the jq above wrote, on the check the base requires.
-  IFS=$'\t' read -r required base base_sha < <(jq -r '[.required, .base, .base_sha] | @tsv' "$model")
+  # the base, go ahead of every route the jq above wrote, on the checks the base requires (the
+  # world's `required`, red_world).
+  IFS=$'\t' read -r required base base_sha < <(jq -r '[(.facts.required | tojson), .base, .base_sha] | @tsv' "$model")
   required_set_fixture "$required" "$base" "$base_sha"
   # The world the scorer reads, beside worker_fixture's: the red check, the run and job that carry
   # it, the failing line the world's log read answers (`log`, empty where that read answers an
   # error), where the red is a test, that test's full name (`test`, empty where it is none), the
   # check paired with the red where the head carries an aggregate over a lane (`partner`: the
-  # aggregate beside the red lane in `i` and `j`, the lane under the red aggregate in `g`; no
-  # partner in any other world), and the world's facts (red_world). score.ts's redAtTheHead judges
+  # aggregate beside the red lane in `i`, `j`, `m`, `n`, `o`, `r`, `s` and `t`, the lane under the
+  # red aggregate in `g` and `q`; no partner in any other world, `p`'s green aggregate included),
+  # and the world's facts (red_world). score.ts's redAtTheHead judges
   # the role's record against `log` and its `dispatch search` against `test`, so that neither rests
   # on how the role printed its own log read, and a record's check against `check` and `partner`.
   jq --slurpfile model "$model" '$model[0] as $m
@@ -3239,7 +3409,7 @@ red_fixture() {
 
 # red_defs prints what red_model, run_routes and red_fixture's rewrite share, as a jq prefix over
 # the facts of the red, which the program that takes it has bound ($repo, $pr, $head, $partner,
-# $run_id, $required): the repository's API, whether the red has a partner, the latest attempt of
+# $run_id, $facts): the repository's API, whether the red has a partner, the latest attempt of
 # each job of a run, a check suite's id, the counted set's verdicts and merge state, the
 # settlement the re-run publishes, and a run and a job in the shape gh answers them. It ends in
 # definitions, so the program that takes it goes on with its own.
@@ -3317,8 +3487,8 @@ red_defs() {
     # of each name. The link each carries is the details_url of the check run, the page of the job
     # that ran it, which is the link GitHub gives a check run of GitHub Actions and the one
     # `gh pr checks` prints. The merge state of the pull request follows from them and from the
-    # check the base requires. A check run not yet completed (the attempt the re-run made, in the
-    # turn that pressed it) is neither failing nor passing: it is pending.
+    # checks the base requires (requires). A check run not yet completed (the attempt the re-run
+    # made, in the turn that pressed it) is neither failing nor passing: it is pending.
     def failing($checks): $checks | map(select(.conclusion == "failure") | .name) | sort;
     def passing($checks): $checks | map(select(.conclusion == "success") | .name) | sort;
     def pending($checks): $checks | map(select(.status != "completed") | .name) | sort;
@@ -3345,8 +3515,14 @@ red_defs() {
     # measured on #3514, ip-prchecks, line 33).
     def checks_exit($checks): if (failing($checks) | length) > 0 then 1
       elif (pending($checks) | length) > 0 then 8 else 0 end;
-    def merge_state($checks): ($checks | map(select(.name == $required))) as $requires
-      | if ($requires | length) == 0 or any($requires[]; .conclusion != "success") then "BLOCKED"
+    # Whether a check is one the base requires (the world'"'"'s `required`, red_world): `ci`, and in
+    # `p` the title check too.
+    def requires: .name as $name | any($facts.required[]; . == $name);
+    # BLOCKED while a check the base requires is missing or has not passed, whatever the others
+    # say, so a red required check beside a green one blocks as a missing one does (`p`).
+    def merge_state($checks): ($checks | map(select(requires))) as $requires
+      | if any($facts.required[]; . as $name | all($requires[]; .name != $name))
+           or any($requires[]; .conclusion != "success") then "BLOCKED"
         elif any($checks[]; .conclusion == "failure") then "UNSTABLE" else "CLEAN" end;
     def run_url: "https://github.com/" + $repo + "/actions/runs/" + ($run_id|tostring);
     # The settlement as the Envoy listener renders one (packages/envoy/internal/cistore/render.go),
@@ -3413,8 +3589,9 @@ red_model() {
   # The red itself and the workflows of the world, from red_workflows, the model worker_fixture
   # committed the workflow files from: the red's check, its job, its test (empty where the red is
   # no test), its step, its failing line, the workflow its run belongs to (`ci`, but the title
-  # check's own in `f`), whether its attempt-1 log is past retention (world `h`), and the line of
-  # the aggregate over the lanes (`g`, `i` and `j`; empty in the other worlds). The worlds' red is
+  # check's own in `f` and `p`), whether its attempt-1 log is past retention (worlds `h` and `r`),
+  # and the line of the aggregate over the red lane (`g`, `i`, `j` and every variant but `p`; empty
+  # in the other worlds, `p`'s green aggregate among them). The worlds' red is
   # a's, the failing test of packages/notify, but where red_workflows names another.
   workflows=$(red_workflows "$world" "$title") || fail "red_fixture: no workflows of world '$world'"
   IFS=$'\x1f' read -r check job test_name step log run_name log_gone lanes < <(jq -r "$(workflow_defs)"'
@@ -3422,16 +3599,20 @@ red_model() {
     | [$l.check, $l.job, $l.test_name, ($l.step | step_name), $l.log, $l.run_name,
        ($l.log_gone | tostring), ([.workflows[].jobs[] | select(.needs != null) | .log] | first // "")]
     | join("\u001f")' <<<"$workflows")
-  # The check the base requires: the one aggregate check `ci`, which every read of the required set
-  # of the base answers, `gh pr checks --required` (the jq below) and the rules of its rulesets and
-  # its branch protection (required_set_fixture), so the base reads the same through each of them.
+  # The aggregate check `ci` the base requires (beside the title check in `p`, red_world's
+  # `required`), the job of the `ci` run that needs its lanes (red_workflows), where a world
+  # carries it. Every read of the required set of the base answers the world's `required`, `gh pr
+  # checks --required` (red_fixture's jq) and the rules of its rulesets and its branch protection
+  # (required_set_fixture), so the base reads the same through each of them.
   required=ci
   # The check paired with the red where the head carries an aggregate over a lane: the aggregate
-  # `ci` beside the red lane (`aggregate`, worlds `i` and `j`), or the red lane under the red
-  # aggregate (`over_lane`, world `g`). Each is a job of the run of the red and a check run of
-  # its own, as every job of a run is on GitHub; every other world has none.
+  # `ci` beside the red lane (`aggregate` where the red runs in the `ci` run, worlds `i`, `j`, `m`,
+  # `n`, `o`, `r`, `s` and `t`), or the red lane under the red aggregate (`over_lane`, worlds `g`
+  # and `q`). Each is a job of the run of the red and a check run of its own, as every job of a run
+  # is on GitHub; every other world has none, `p` among them: its aggregate is green over lint and
+  # typecheck in the `ci` run, its red in the title check's own run.
   partner=''
-  if jq -e .aggregate <<<"$facts" >/dev/null; then
+  if jq -e .aggregate <<<"$facts" >/dev/null && [ "$run_name" = ci ]; then
     partner=$required
   elif jq -e .over_lane <<<"$facts" >/dev/null; then
     partner=$job
@@ -3530,9 +3711,11 @@ red_model() {
         ($run_id + 1 | tostring):"ci"}) as $workflow_name_of
     # The jobs of the head, each the job of one check run (its check_run_url), each with an id of
     # its own. The run of the red holds the failing lane and, beside it, lint and typecheck (in `f`
-    # those two are the jobs of the `ci` run, the title check running in a run of its own) and,
-    # where the head carries an aggregate over the lane, the aggregate `ci` job that needs the
-    # lanes. The spent e2e run of `e` holds its two attempts, and the by-hand run of `k` its one
+    # and `p` those two are the jobs of the `ci` run, the title check running in a run of its own)
+    # and, where the head carries an aggregate over the lane, the aggregate `ci` job that needs the
+    # lanes; the `ci` run of `p` holds the aggregate over lint and typecheck, green ($green_aggregate),
+    # with the id the aggregate has where it is red. The spent e2e run of `e` holds its two
+    # attempts, and the by-hand run of `k` its one
     # job. A job carries the node id of its check run (measured: the two share it), runs on a
     # hosted runner of the label cybermonklabs/legion runs its CI on (measured, ubuntu-24.04),
     # whose id the world does not hold: it is made from the job id in the range GitHub gives
@@ -3573,8 +3756,11 @@ red_model() {
       def queued_job: .status = "queued" | .conclusion = null | .started_at = .created_at
         | .completed_at = null | .steps = [] | .runner_id = null | .runner_name = null
         | .runner_group_id = null | .runner_group_name = null;
-      [job($job_id + 1; $ci_run; 1; "lint"; "success"; $t0; $red_id - 2),
-       job($job_id + 2; $ci_run; 1; "typecheck"; "success"; $t0; $red_id - 1)]
+      ($facts.aggregate and ($paired | not)) as $green_aggregate
+    | ([job($job_id + 1; $ci_run; 1; "lint"; "success"; $t0; $red_id - 2),
+        job($job_id + 2; $ci_run; 1; "typecheck"; "success"; $t0; $red_id - 1)]
+       + (if $green_aggregate then [job($job_id + 3; $ci_run; 1; $required; "success"; $t0; $red_id + 3)]
+          else [] end))
       as $ci_jobs
     | ([job($job_id; $run_id; 1; $job; "failure"; $t0; $lane_check)]
        + (if $run_name == "ci" then $ci_jobs else [] end)
@@ -3693,14 +3879,18 @@ red_model() {
     | (if $facts.spent then [entry($red_id - 4; "e2e"; "failure"; $t0), entry($red_id - 3; "e2e"; "success"; $t0)]
        else [] end) as $earlier
     # The check paired with the red ($partner): the aggregate `ci` the base requires, red over the
-    # failing lane (`i`, `j`), the shape of the base of cybermonklabs/legion itself, which
-    # requires the aggregate `ci-ok` over its test lanes; or, in `g`, the failing lane under the
-    # red aggregate. Its id comes after the by-hand run of `k`, so no two checks share one.
+    # failing lane (`i`, `j`, `m`, `n`, `o`, `r`, `s`, `t`), the shape of the base of
+    # cybermonklabs/legion itself, which requires the aggregate `ci-ok` over its test lanes; or, in
+    # `g` and `q`, the failing lane under the red aggregate. Its id comes after the by-hand run of
+    # `k`, so no two checks share one. The aggregate of `p`, green over lint and typecheck, takes
+    # that id, and the re-run there, of the run of the title check alone, never re-runs it.
     | (if $paired then [entry($red_id + 3; $partner; "failure"; $t0)] else [] end) as $partners
     | ([entry($red_id - 2; "lint"; "success"; $t0), entry($red_id - 1; "typecheck"; "success"; $t0)]
        + $earlier
        + [entry($red_id; $check; "failure"; $t0)]
-       + $partners | map(linked)) as $red_checks
+       + $partners
+       + (if $green_aggregate then [entry($red_id + 3; $required; "success"; $t0)] else [] end)
+       | map(linked)) as $red_checks
     # The attempt the re-run makes of each check it re-runs, which `filter=all` lists beside the
     # attempt it replaces: a pass where the world settles green, the same failure where it stays
     # red. It re-runs the red and its partner, the failed jobs of the one run of the red; the check
@@ -3735,12 +3925,13 @@ red_model() {
     # What the counted set answers, in order: the state the role first reads, the state while the
     # re-run it pressed runs (the rest of the turn that pressed it), and the state the head settles
     # at once that turn has ended and the rig settles the re-run (rerun_settle). A counted set that
-    # has not reported the red when the role first reads it (`report` among the facts, world `l`)
-    # answers one more first, with no red: red_report drops it between the turns, which is the rig
-    # reporting the check. counted(reply) (red_model_defs) is the replies of a route that answers
-    # the counted set, one per state, and in such a world the mark red_report trims that route by,
-    # `unreported`.
-    | ((if $facts.report then [($shown | map(select(.name != $check)))] else [] end)
+    # has not reported the red when the role first reads it (`report` among the facts, worlds `l`
+    # and `t`) answers one more first, with no red: neither the red lane nor, in `t`, the aggregate
+    # over it, which needs the lane and cannot report before it. red_report drops it between the
+    # turns, which is the rig reporting the check. counted(reply) (red_model_defs) is the replies
+    # of a route that answers the counted set, one per state, and in such a world the mark
+    # red_report trims that route by, `unreported`.
+    | ((if $facts.report then [($shown | map(select(.name != $check and .name != $partner)))] else [] end)
        + [$shown, $running_latest, $latest]) as $counted
     | {world:$world, head:$head, pr:$pr, repo:$repo, branch:$branch, base:$base,
        base_sha:$base_sha, check:$check, job:$job, test_name:$test_name, world_log:$world_log,
@@ -3837,6 +4028,14 @@ red_model_defs() {
       def view_job($id): "^gh run view(?: \\d+)?(?=.*\\s--job " + $id + "(?:\\s|$))";
       def logs: "(?=.*\\s--log(?:-failed)?(?:\\s|$))(?!.*\\s--json\\s)";
       def plain: "(?!.*\\s--(?:log|log-failed|json)(?:\\s|$))";
+      # A `gh run watch` that names its run, and what it answers in a state of the head: a run
+      # that has completed at once, exiting 1 under --exit-status ($exit_status) where it did not
+      # succeed, and a run that has not as the frames gh prints while it waits on it (`watch`,
+      # gh-standin.ts), over the jobs of its latest attempt (run_watch_program).
+      def watching($id): "^gh run watch " + ($id|tostring) + "(?=\\s|$)";
+      def watch_reply($exit_status): if .run.status == "completed"
+        then {stdout:{run:.run}} + (if $exit_status and .run.conclusion != "success" then {exit:1} else {} end)
+        else {stdout:{run:.run, jobs:latest}, watch:true} end;
     # The log a run or a job prints, as gh does, a line per log line, `<job>\t<step>\t<line>`: the
     # failing line of the world in the failing step of each failed job, and no line of a job that
     # passed, which is all the log the world holds. Each log line carries the time GitHub stamps
@@ -3895,6 +4094,7 @@ red_model_defs() {
 run_routes() {
   jq -n --slurpfile model "$1" \
     --arg rerun_help "$(rerun_help)" --arg rerun_usage "$(rerun_usage)" --arg view_usage "$(view_usage)" \
+    --arg watch_usage "$(watch_usage)" --arg run_watch_program "$(run_watch_program)" \
     --arg run_view_program "$(run_view_program)" --arg run_list "$(run_list_program)" \
     --arg runs_query "$(runs_query_program)" --arg jobs_query "$(jobs_program)" \
     --arg attempt_jobs "$(attempt_jobs_program)" --arg run_program "$(run_program)" \
@@ -3987,6 +4187,30 @@ run_routes() {
                     latest as $jobs | {stdout:(.run | gh_run($jobs))}),
           (run_route(view($w.id) + plain; $w; {stdout:{run:.run, jobs:latest}})
            + {program:$run_view_program})),
+       # `gh run watch`, as gh 2.98.0 answers it, read from the source of gh at the gh the worker
+       # image pins (packages/daemon/docker/worker.Dockerfile, GH_TOOL=gh@2.98.0; github.com/cli/cli,
+       # pkg/cmd/run/watch/watch.go at v2.98.0): an --interval that is no integer is refused first,
+       # as cobra refuses a flag before the command runs (measured, watch_usage); a run of the head
+       # is answered in each state of the head (run_watch_program): one that has completed at once,
+       # exiting 1 under --exit-status where it did not succeed, and the attempt the re-run made,
+       # in progress for the rest of the turn that pressed it, as the frames gh prints while it
+       # waits (`watch`); a run of any other id is the 404 of GitHub as gh prints it, from the
+       # GetRun gh run view makes too (watch.go:132-136); and a call that names no run is the usage
+       # error of gh
+       # where no terminal is there to pick one (watch.go:73-77, measured). Before these routes no
+       # route took `gh run watch`, and the stand-in refused it as unmodeled, a rig error.
+       {match:"^gh run watch(?=.*\\s--interval (?<value>(?![+-]?[0-9]+(?:\\s|$))(?!0[xXoObB])\\S+)(?:\\s|$))",
+        stderr:("invalid argument \"$<value>\" for \"-i, --interval\" flag: strconv.ParseInt: parsing \"$<value>\": invalid syntax\n\n"
+                + $watch_usage + "\n"),
+        exit:1},
+       ($runs[] | . as $w
+        | (run_route(watching($w.id) + "(?=.*\\s--exit-status(?:\\s|$))"; $w; watch_reply(true))
+           + {program:$run_watch_program}),
+          (run_route(watching($w.id); $w; watch_reply(false)) + {program:$run_watch_program})),
+       ({match:("^gh run watch (?!" + ids($run_ids) + "(?:\\s|$))(?<run>\\d+)(?=\\s|$)")}
+        + no_run($repo; "$<run>")),
+       {match:"^gh run watch(?=\\s--|$)",
+        stderr:("run ID required when not running interactively\n\n" + $watch_usage + "\n"), exit:1},
        # A workflow name no workflow of the world holds, in any case, is refused as gh refuses it
        # (pkg/cmd/workflow/shared/shared.go:224-226 at v2.98.0, requests.log line 57); the program
        # reads a file or an id.
@@ -4081,10 +4305,13 @@ run_routes() {
         + {program:$runs_query})]'
 }
 
-# required_set_fixture CHECK BASE BASE_SHA puts the reads of the required set of the base branch BASE
-# ahead of every route of $R/fixtures.json, each answering that BASE requires CHECK alone, as
-# red_fixture's `gh pr checks --required` route answers it (red_fixture binds the one CHECK both
-# take): the rules GitHub applies to the base, through its rulesets (`rules/branches/<base>`),
+# required_set_fixture CHECKS BASE BASE_SHA puts the reads of the required set of the base branch
+# BASE ahead of every route of $R/fixtures.json, each answering that BASE requires the checks of the
+# JSON list CHECKS and no other, in that order, as red_fixture's `gh pr checks --required` route
+# answers it (red_fixture hands both the world's `required`, red_world: `["ci"]`, and `["ci",
+# "title"]` in `p`; a ruleset of two checks names both, `Require ci and title`, and one rule holds
+# both, as one ruleset's rule lists every check it requires): the rules GitHub applies to the
+# base, through its rulesets (`rules/branches/<base>`),
 # which the prompt of the reviewer reads (packages/daemon/internal/prompts/go/reviewer.md, "CI is
 # yours to read"); the rulesets of the repository, their list and the one ruleset, which applies
 # to the default branch and holds that same rule; the base branch, read for its protection, which
@@ -4105,19 +4332,19 @@ run_routes() {
 # route never takes the `/protection` below it, nor the rulesets list the one ruleset, and the
 # rules path has its `rules/` between the repository and `branches/`.
 required_set_fixture() {
-  jq --arg repo "$worker_repo" --arg required "$1" --arg base "$2" --arg base_sha "$3" \
+  jq --arg repo "$worker_repo" --argjson required "$1" --arg base "$2" --arg base_sha "$3" \
     "$(route_defs)"'
     ("https://api.github.com/repos/" + $repo) as $api
     | ($api + "/branches/" + $base + "/protection") as $protection_url
-    | {contexts:[$required], checks:[{context:$required, app_id:null}]} as $status_checks
+    | {contexts:$required, checks:($required | map({context:., app_id:null}))} as $status_checks
     | ({url:($protection_url + "/required_status_checks"), strict:false,
         contexts_url:($protection_url + "/required_status_checks/contexts")} + $status_checks)
       as $required_status_checks
-    | {id:1, name:("Require " + $required), target:"branch", source_type:"Repository",
+    | {id:1, name:("Require " + ($required | join(" and "))), target:"branch", source_type:"Repository",
        source:$repo, enforcement:"active"} as $ruleset
     | {type:"required_status_checks",
        parameters:{strict_required_status_checks_policy:false,
-                   required_status_checks:[{context:$required}]}} as $rule
+                   required_status_checks:($required | map({context:.}))}} as $rule
     | ("branches/" + ($base | literal)) as $branch
     | [{match:api("rules/" + $branch),
         stdout:[$rule + {ruleset_source_type:$ruleset.source_type, ruleset_source:$ruleset.source,
@@ -4138,7 +4365,7 @@ required_set_fixture() {
         stdout:{url:$protection_url, required_status_checks:$required_status_checks,
                 enforce_admins:{url:($protection_url + "/enforce_admins"), enabled:false}}},
        {match:api($branch + "/protection/required_status_checks"), stdout:$required_status_checks},
-       {match:api($branch + "/protection/required_status_checks/contexts"), stdout:[$required]}]
+       {match:api($branch + "/protection/required_status_checks/contexts"), stdout:$required}]
       as $required_set
     | .routes = $required_set + .routes' \
     "$R/fixtures.json" >"$R/fixtures.required.json"

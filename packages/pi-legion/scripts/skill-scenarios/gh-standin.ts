@@ -77,6 +77,14 @@
 //   it reaches every reply.
 //   `spends` is how many matching calls the route answers. After that many it matches nothing, and
 //   the call falls through to the next route whose pattern matches it, or to the refusal.
+//   A reply marked `watch` is a run `gh run watch` waits on, a run in progress: gh prints a frame
+//   of it each time it reads the run, every --interval seconds (3 where the call names none), and
+//   ends only once the run has completed (pkg/cmd/run/watch/watch.go at v2.98.0). In the rig the
+//   run cannot complete while the call runs, since rig.sh settles a re-run only once the turn that
+//   pressed it has ended and that turn waits on this call. So the stand-in prints the reply's
+//   answer, records the call with no exit status (`exit: null`), and prints the answer again at
+//   each interval until the call is killed. An interval that is not a positive whole number is
+//   not modeled.
 // A route's answer can name what the call asked for: `$<name>` in its stdout or its stderr is the
 // text the route's named group `name` matched in the request, so one route answers the combined
 // status of each full commit sha the rig does not know with the sha the call gave, as GitHub
@@ -93,7 +101,9 @@
 // unmodeled.
 // The stand-in is a fresh process per call, so the count of calls a route has answered outlives it
 // in fixtures.json, as the route's `answered`, written back with the body keep's own
-// read-modify-write on every call a route answers. Each call holds an exclusive flock(2) on
+// read-modify-write on every call whose count something reads or that sends something to keep; a
+// read nothing counts writes nothing (`writes`, below), and a world rig.test.ts's rows share (the
+// file <run>/shared) refuses any call that would write it. Each call holds an exclusive flock(2) on
 // <run>/fixtures.lock from its read of fixtures.json to that write, so no two `gh` processes of
 // one turn answer from the same read: two calls of one route take a reply each and count twice,
 // and a call beside the re-run never writes back the re-run's count as it stood before the
@@ -132,6 +142,7 @@
 import {
   appendFileSync,
   closeSync,
+  existsSync,
   openSync,
   readFileSync,
   renameSync,
@@ -155,12 +166,13 @@ import {
 /** One answer: what a route serves a call, and what each entry of a route's `replies` serves. A
  * reply marked `unmodeled` is a state of the world the rig cannot state truthfully, such as the
  * comments a role posted, which the stand-in does not keep: the call is refused as one no route
- * models, and recorded so. */
+ * models, and recorded so. A reply marked `watch` is a run `gh run watch` waits on (the header). */
 const Reply = z.object({
   stdout: z.unknown().optional(),
   stderr: z.string().optional(),
   exit: z.number().optional(),
   unmodeled: z.boolean().optional(),
+  watch: z.boolean().optional(),
   /** An answer GitHub gave, as measured: the name of its files under github-answers/. */
   github: z.string().optional(),
   /** The match group whose text stands for the commit the measured answer names. */
@@ -262,7 +274,14 @@ const FLAGS: Record<string, Record<string, Flag>> = {
     ...flag("--slurp", false),
   ]),
   "pr view": Object.fromEntries([...REPO, ...JSON_OUT]),
-  "pr checks": Object.fromEntries([...REPO, ...JSON_OUT, ...flag("--required", false)]),
+  "pr checks": Object.fromEntries([
+    ...REPO,
+    ...JSON_OUT,
+    ...flag("--required", false),
+    ...flag("--watch", false),
+    ...flag("--fail-fast", false),
+    ...flag("--interval", true, "-i"),
+  ]),
   "pr diff": Object.fromEntries([...REPO, ...flag("--name-only", false)]),
   "pr list": Object.fromEntries([
     ...REPO,
@@ -307,6 +326,12 @@ const FLAGS: Record<string, Record<string, Flag>> = {
     ...flag("--failed", false),
     ...flag("--debug", false, "-d"),
     ...flag("--help", false, "-h"),
+  ]),
+  "run watch": Object.fromEntries([
+    ...REPO,
+    ...flag("--exit-status", false),
+    ...flag("--compact", false),
+    ...flag("--interval", true, "-i"),
   ]),
   "repo view": Object.fromEntries([...JSON_OUT]),
   "auth status": {},
@@ -591,13 +616,18 @@ let kept: string | undefined;
 /** What became of the settlement a route publishes, where it names one. */
 type Published = { status: number; body: string } | { error: string };
 let published: Published | undefined;
-/** Records the call with the status it exits with, then exits; `unmodeled` marks a request the
- * rig does not model, which the scorer takes for a rig error. */
-function exit(status: number, unmodeled: boolean): never {
+/** Records the call with the status it exits with, or with none (`null`) for a call that waits
+ * until it is killed (a `watch` reply), so the record is written however the call ends;
+ * `unmodeled` marks a request the rig does not model, which the scorer takes for a rig error. */
+function record(status: number | null, unmodeled: boolean) {
   appendFileSync(
     `${run}/calls.jsonl`,
     `${JSON.stringify({ at, as, argv: args, request, files, stdin, route: route?.match ?? null, ...(unmodeled ? { unmodeled: true } : {}), body: kept, published, exit: status })}\n`
   );
+}
+/** Records the call with the status it exits with, then exits. */
+function exit(status: number, unmodeled: boolean): never {
+  record(status, unmodeled);
   process.exit(status);
 }
 /** Refuses this call as a request the rig does not model, releasing the fixtures lock where it is
@@ -1006,6 +1036,13 @@ if (matched.issue_comment !== undefined) {
   }
 }
 const answer: z.infer<typeof Reply> = commentAnswer ?? changeAnswer ?? read ?? sequenced;
+/** The seconds between the frames of a `watch` reply: the call's --interval, else gh's default for
+ * the command, 3 for `gh run watch` (pkg/cmd/run/watch/watch.go:21) and 10 for `gh pr checks
+ * --watch` (pkg/cmd/pr/checks/checks.go:21), at v2.98.0. One that is not a positive whole number
+ * (gh would print its frames with no pause between them, or refuse it) is a state the rig does not
+ * model. */
+const interval = Number(flagValue("--interval") ?? (command === "pr checks" ? "10" : "3"));
+if (answer.watch === true && !(Number.isInteger(interval) && interval > 0)) refuse();
 /** The time GitHub stamps on what this call sends, to the second. */
 const sentAt = at.replace(/\.\d+Z$/, "Z");
 /** The review this call sends through a route that keeps one (review-keep.ts). */
@@ -1219,34 +1256,79 @@ const edited = fixtures.routes.map((candidate) => ({
             : { ...candidate.settled, stdout: withBody(candidate.settled.stdout, edit) },
       }),
 }));
-// The rename is what makes the write atomic: the temporary file is a sibling, in the run
-// directory, so the rename is within one filesystem.
-const temporary = `${run}/fixtures.${process.pid}.json`;
-writeFileSync(
-  temporary,
-  JSON.stringify({
-    ...fixtures,
-    routes: edited,
-    ...(sent === undefined
-      ? {}
-      : {
-          reviews: [...keptReviews.reviews, sent.review],
-          review_comments: [...keptReviews.comments, ...sent.comments],
-        }),
-    ...(changedOne === undefined
-      ? {}
-      : {
-          reviews: keptReviews.reviews.map((review) =>
-            review.id === changedOne.id ? changedOne : review
-          ),
-          ...(matched.review_edit === "update"
-            ? { review_edits: [...(keptReviews.edited ?? []), changedOne.id] }
-            : {}),
-        }),
-    ...(comments === undefined ? {} : { issue_comments: comments }),
-  })
-);
-renameSync(temporary, `${run}/fixtures.json`);
+/** Whether this call changes what a later call or reader sees, and so writes fixtures.json: it
+ * sends something the stand-in keeps (a body, a review, a change of one, a comment), or it moves a
+ * count something reads — the count of a route that serves its own replies in turn or spends
+ * itself, of a route another route names (its `follows`, its `counts_as`, its `comments`, or the
+ * `until` of a GraphQL keep in its answer), or of the route it counts as. Any other call is a read
+ * that leaves the file as it found it: before this every call wrote the file back, in the
+ * stand-in's own form, so a row that only read a world rows share still changed what a later row
+ * read of it. The names are read from those fields alone, never from the file's text: two routes
+ * may share a match (world h's attempt-1 log read stands ahead of the log read of every attempt,
+ * with the same match), and a match that appears twice in the file is no route that names it. */
+const namedRoutes = new Set<string>();
+const namesOfKeeps = (value: unknown): void => {
+  if (Array.isArray(value)) for (const item of value) namesOfKeeps(item);
+  else if (typeof value === "object" && value !== null) {
+    const marker = value as Record<string, unknown>;
+    if ("$keep" in marker && typeof marker.until === "string") namedRoutes.add(marker.until);
+    for (const item of Object.values(marker)) namesOfKeeps(item);
+  }
+};
+for (const candidate of fixtures.routes) {
+  for (const name of [candidate.follows, candidate.counts_as, candidate.comments])
+    if (name !== undefined) namedRoutes.add(name);
+  namesOfKeeps([candidate.stdout, candidate.replies, candidate.settled]);
+}
+const writes =
+  edit !== undefined ||
+  sent !== undefined ||
+  changedOne !== undefined ||
+  comments !== undefined ||
+  (matched.replies !== undefined && matched.follows === undefined) ||
+  matched.spends !== undefined ||
+  matched.counts_as !== undefined ||
+  namedRoutes.has(matched.match);
+// A world rows share (rig.test.ts's redFixture marks it with the file `shared`) takes no write: a
+// call that moves it would change what every later row reads, so the order of rows would decide
+// their results. The call is refused, naming the world, before it writes anything.
+if (writes && existsSync(`${run}/shared`)) {
+  closeSync(lock);
+  console.error(
+    `gh-standin: ${run} is a world rows share, and gh ${args.join(" ")} would write it: run this call in a world of its own (rig.test.ts's ownFixture)`
+  );
+  process.exit(2);
+}
+if (writes) {
+  // The rename is what makes the write atomic: the temporary file is a sibling, in the run
+  // directory, so the rename is within one filesystem.
+  const temporary = `${run}/fixtures.${process.pid}.json`;
+  writeFileSync(
+    temporary,
+    JSON.stringify({
+      ...fixtures,
+      routes: edited,
+      ...(sent === undefined
+        ? {}
+        : {
+            reviews: [...keptReviews.reviews, sent.review],
+            review_comments: [...keptReviews.comments, ...sent.comments],
+          }),
+      ...(changedOne === undefined
+        ? {}
+        : {
+            reviews: keptReviews.reviews.map((review) =>
+              review.id === changedOne.id ? changedOne : review
+            ),
+            ...(matched.review_edit === "update"
+              ? { review_edits: [...(keptReviews.edited ?? []), changedOne.id] }
+              : {}),
+          }),
+      ...(comments === undefined ? {} : { issue_comments: comments }),
+    })
+  );
+  renameSync(temporary, `${run}/fixtures.json`);
+}
 closeSync(lock);
 lock = undefined;
 if (edit !== undefined) kept = edit;
@@ -1278,10 +1360,17 @@ if (filter !== undefined && status === 0) {
 // `gh api` prints the body GitHub sent as it stands, with no newline after it, whether the request
 // succeeded or not, and a `--jq` filter's output as jq ends it (measured); every other command ends
 // what it prints with a newline.
-if (text !== "")
-  process.stdout.write(
-    (command === "api" && !filtered) || text.endsWith("\n") ? text : `${text}\n`
-  );
+const shown = (command === "api" && !filtered) || text.endsWith("\n") ? text : `${text}\n`;
+// A run `gh run watch` waits on (the header) is recorded before its first frame, with no exit,
+// since the call ends only when it is killed.
+if (answer.watch === true) record(null, false);
+if (text !== "") process.stdout.write(shown);
 if (stderr) process.stderr.write(stderr);
 if (matched.publish !== undefined) published = await publish(matched.publish);
+// Then its frame again at each interval, as gh prints one each time it reads the run.
+if (answer.watch === true)
+  for (;;) {
+    await Bun.sleep(interval * 1000);
+    process.stdout.write(shown);
+  }
 exit(status, false);

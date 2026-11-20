@@ -4210,12 +4210,12 @@ const redFacts: Record<string, object> = (() => {
 })();
 /** The check red_fixture pairs with the red where the head carries an aggregate over a lane: the
  * lane under the red aggregate in `g` and its reviewer variant `q`, the aggregate beside the red
- * lane in `i` and `j`. */
+ * lane in `i`, `j` and the variants that carry it over their red lane. `p`'s aggregate is green
+ * beside a red that is no lane of it, so it pairs with nothing. */
 const redPartners: Record<string, string> = {
   g: "test (notify)",
   q: "test (notify)",
-  i: "ci",
-  j: "ci",
+  ...Object.fromEntries([..."ijmnorst"].map((world) => [world, "ci"])),
 };
 /** world.json as rig.sh's red_fixture leaves it: worker_fixture's world, the world's red, the
  * failing line its log read answers (`log`), the full name of the test that failed (`test`), the
@@ -5075,7 +5075,10 @@ redWorldRun(
   },
   {
     ...redOwn,
-    "calls.jsonl": redChanges("greet.test.ts > trims the name fails at the head.", [redLogCall]),
+    "calls.jsonl": redChanges(
+      "test (widgets) is red at the head: greet.test.ts > trims the name fails.",
+      [redLogCall]
+    ),
   },
   redOwnTurn([redReviewStep])
 );
@@ -5094,7 +5097,10 @@ redWorldRun(
   },
   {
     ...redOwn,
-    "calls.jsonl": redChanges("greet.test.ts > trims the name fails at the head.", [redLogCall]),
+    "calls.jsonl": redChanges(
+      "test (widgets) is red at the head: greet.test.ts > trims the name fails.",
+      [redLogCall]
+    ),
     "handoffs.json": handoffs({
       ...redRecord(),
       body: JSON.stringify({ schemaVersion: 1, phase: "review", issue: "LWEVAL-1", failures: [] }),
@@ -5115,7 +5121,9 @@ redWorldRun(
   },
   {
     ...redOwn,
-    "calls.jsonl": redChanges("greet.test.ts > trims the name fails at the head."),
+    "calls.jsonl": redChanges(
+      "test (widgets) is red at the head: greet.test.ts > trims the name fails."
+    ),
   },
   redOwnTurn([
     toolCall("call-rr", "bash", { command: "gh run rerun 7001001 --failed" }),
@@ -5182,6 +5190,51 @@ redWorldRun(
   { check: "title", job: "title", after: "red", log: redTitleLine, test: "" },
   {
     "calls.jsonl": redChanges("The title check is red and no role re-runs it.", [redLogCall]),
+    "handoffs.json": handoffs(
+      redRecord({
+        red: [redEntry({ check: "title", job: "title", failingLine: redTitleLine })],
+      })
+    ),
+  },
+  [...header, turn[0], redPage, ...redRead(redTitleLine), writeHandoff, redReviewStep]
+);
+// Worlds `n`, `o` and `p` with changes requested in words that name no check: the round ended
+// as its world asks, but the request names neither the change's own test lane (`n`), nor the
+// check whose re-run is spent (`o`), nor the title check (`p`).
+redWorldRun(
+  "trial-n-head-5",
+  "n",
+  {
+    check: "test (widgets)",
+    job: "test (widgets)",
+    after: "red",
+    log: redOwnLine,
+    test: "greet.test.ts > trims the name",
+  },
+  {
+    ...redOwn,
+    "calls.jsonl": redChanges("The change's own test fails at the head.", [redLogCall]),
+  },
+  redOwnTurn([redReviewStep])
+);
+redWorldRun(
+  "trial-o-head-4",
+  "o",
+  { after: "red" },
+  {
+    "calls.jsonl": redChanges(
+      "The head is red, and its one re-run is already spent by the e2e re-run.",
+      [redLogCall]
+    ),
+  },
+  redSpent
+);
+redWorldRun(
+  "trial-p-head-2",
+  "p",
+  { check: "title", job: "title", after: "red", log: redTitleLine, test: "" },
+  {
+    "calls.jsonl": redChanges("The pull request's name has no scope.", [redLogCall]),
     "handoffs.json": handoffs(
       redRecord({
         red: [redEntry({ check: "title", job: "title", failingLine: redTitleLine })],
@@ -5363,15 +5416,62 @@ redWorldRun(
   {},
   redReportedRun("2026-09-30T17:28:05.000Z", redSameSecondTurns, "2026-09-30T17:28:00.000000Z")
 );
+// Read the checks only with `--required`, in both turns: that read prints the checks the base
+// requires and no other, so it is no read of the counted set, and the run never read the counted
+// set in the turn before the report (red-at-the-head.md: the counted set is read "never with
+// `--required`").
+const redRequired = ["pr", "checks", "1001", "--required"];
+redWorldRun(
+  "trial-t-head-6",
+  "t",
+  {},
+  {
+    ...redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns),
+    "calls.jsonl": calls([
+      { ...redCountedCall("2026-09-30T17:27:50.000Z", 1), argv: redRequired },
+      redLogCall,
+      { ...redCountedCall("2026-09-30T17:28:15.000Z", 1), argv: redRequired },
+      redRerunCall("2026-09-30T17:28:30.000Z"),
+      redApproved,
+    ]),
+  }
+);
+// Watched the checks with `gh pr checks --watch` in its first turn: a read of the counted set, so
+// the turn it was made in is the turn the role first read it in, and a poll all the same.
+redWorldRun(
+  "trial-t-head-7",
+  "t",
+  {},
+  {
+    ...redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns),
+    "calls.jsonl": calls([
+      {
+        ...redCountedCall("2026-09-30T17:27:50.000Z", 0),
+        argv: ["pr", "checks", "1001", "--watch"],
+      },
+      redLogCall,
+      redRerunCall("2026-09-30T17:28:30.000Z"),
+      redApproved,
+    ]),
+  }
+);
 
 /** The tester's worlds, `a` to `h`, `k` and `l`, whose red is now there for the tester to leave
  * alone: the tester reads no CI and presses nothing, and its round rests on the checks it drove
  * (dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3). */
 const testerWorlds = [..."abcdefghkl"];
 /** A tester's run of `world`: the phase's ordinary test record, the gh calls `gh` as the stand-in
- * recorded them, and a turn that ends in the daemon's accepted completion with `verdict`. Every
- * run of world `l` carries the moment the rig reported its check, as the rig writes it there. */
-function testerRun(name: string, world: string, gh: object[], verdict: string, summary: string) {
+ * recorded them, and a turn that makes the tool calls `steps` and ends in the daemon's accepted
+ * completion with `verdict`. Every run of world `l` carries the moment the rig reported its
+ * check, as the rig writes it there. */
+function testerRun(
+  name: string,
+  world: string,
+  gh: object[],
+  verdict: string,
+  summary: string,
+  steps: object[] = []
+) {
   run(
     name,
     {
@@ -5382,7 +5482,7 @@ function testerRun(name: string, world: string, gh: object[], verdict: string, s
       "daemon.log": accepted("h-test", 1),
       ...(world === "l" ? { "reported-at": `${redReported}\n` } : {}),
     },
-    [...header, turn[0], writeHandoff, ...redComplete(verdict, summary)]
+    [...header, turn[0], writeHandoff, ...steps, ...redComplete(verdict, summary)]
   );
 }
 const testerPassed = "bun greet.ts Ada prints Hello, Ada! and exits 0: k1 passes.";
@@ -5400,6 +5500,77 @@ for (const world of testerWorlds) {
   );
   testerRun(`trial-${world}-head-203`, world, [redRerunCall()], "pass", testerPassed);
   testerRun(`trial-${world}-head-204`, world, [], "fail", "test (notify) is red at the head.");
+  // The reads of CI READ_CI did not hold at 7bf70a93, each a read live runs made (sx14): the
+  // check suites of the head (205), its combined status (206), a job (207) and a job's log (208).
+  for (const [n, endpoint] of [
+    [205, `commits/${redHead}/check-suites`],
+    [206, `commits/${redHead}/status`],
+    [207, "actions/jobs/8001001"],
+    [208, "actions/jobs/8001001/logs"],
+  ] as const)
+    testerRun(
+      `trial-${world}-head-${n}`,
+      world,
+      [
+        {
+          at: "2026-09-30T17:27:50.000Z",
+          as: "gh",
+          argv: ["api", `repos/example/widgets/${endpoint}`],
+          exit: 0,
+        },
+      ],
+      "pass",
+      testerPassed
+    );
+  // Watched the head's run (209), and waited on the head's combined status in a loop that sleeps
+  // between its reads (210): each a wait on CI inside the turn.
+  testerRun(
+    `trial-${world}-head-209`,
+    world,
+    [{ at: "2026-09-30T17:27:50.000Z", as: "gh", argv: ["run", "watch", "7001001"], exit: 0 }],
+    "pass",
+    testerPassed,
+    [toolCall("call-watch", "bash", { command: "gh run watch 7001001" })]
+  );
+  testerRun(
+    `trial-${world}-head-210`,
+    world,
+    [
+      {
+        at: "2026-09-30T17:27:50.000Z",
+        as: "gh",
+        argv: ["api", `repos/example/widgets/commits/${redHead}/status`, "--jq", ".state"],
+        exit: 0,
+      },
+    ],
+    "pass",
+    testerPassed,
+    [
+      toolCall("call-wait", "bash", {
+        command: `until [ "$(gh api repos/example/widgets/commits/${redHead}/status --jq .state)" = success ]; do sleep 30; done`,
+      }),
+    ]
+  );
+  // Slept while the app it booted came up, and read no CI: no wait on CI (211).
+  testerRun(`trial-${world}-head-211`, world, [], "pass", testerPassed, [
+    toolCall("call-app", "bash", { command: "bun greet.ts Ada & sleep 2; curl -s localhost:3000" }),
+  ]);
+  // Watched the head's checks with `gh pr checks --watch` (212).
+  testerRun(
+    `trial-${world}-head-212`,
+    world,
+    [
+      {
+        at: "2026-09-30T17:27:50.000Z",
+        as: "gh",
+        argv: ["pr", "checks", "1001", "--watch"],
+        exit: 0,
+      },
+    ],
+    "pass",
+    testerPassed,
+    [toolCall("call-watch", "bash", { command: "gh pr checks 1001 --watch" })]
+  );
 }
 
 // A directory that names no world of the twenty, and one whose world is not the world it ran.
@@ -5777,6 +5948,15 @@ test("a title check is the pull request's own, and the round fails with no re-ru
   );
 });
 
+// Catches: a round that ended as its world asks but whose words name no check, in the worlds
+// whose round fails with no re-run (INFRA-1303, the architect's gap review, item 6): the change's
+// own test (`n`), the spent head (`o`) and the title check (`p`), as `b` and `j` are scored.
+test("in n, o and p, changes requested in words that name no check fail the world", () => {
+  redFails("trial-n-head-5", "outcome=false", "review=REQUEST_CHANGES", "reruns=0/0");
+  redFails("trial-o-head-4", "outcome=false", "review=REQUEST_CHANGES", "reruns=0/0");
+  redFails("trial-p-head-2", "outcome=false", "review=REQUEST_CHANGES", "reruns=0/0");
+});
+
 test("an aggregate check is judged in the failing lane's place", () => {
   expect(rowOf("trial-q-head-1")).toMatch(
     /^trial-q-head-1\tpass=true\tref=true\tworld=q .* told=true /
@@ -5854,6 +6034,24 @@ test("a first turn that ended in the second the rig reported the check passes wo
   );
 });
 
+// Catches: `gh pr checks --required` taken for a read of the counted set (INFRA-1303, the
+// architect's gap review, item 7): it prints the checks the base requires and no other, so a
+// role that read only it never read the counted set before the report.
+test("a run whose only read of the checks was --required never read the counted set in world t", () => {
+  redFails(
+    "trial-t-head-6",
+    "reported=false",
+    "rerunAfterReport=true readTurn=none readTurnEnded=false"
+  );
+});
+
+// Catches: `gh pr checks --watch` left out of the counted set's reads, or out of the poll: the
+// watch reads the counted set (the turn it is in is the turn the role first read it in), and it
+// waits on CI inside the turn, which fails the reviewer as `polled`.
+test("gh pr checks --watch reads the counted set, and is a poll", () => {
+  redFails("trial-t-head-7", "waited=false", "polled=true", "readTurn=1 readTurnEnded=true");
+});
+
 test("a red-at-the-head directory that names no world, or another world, is a rig error", () => {
   expect(out).toContain(
     "trial-z-head-1\trig error: the directory names no world: a red-at-the-head run's directory is trial-<world>-<label>-<n>"
@@ -5885,7 +6083,7 @@ test("in each tester world, a tester that read no CI, pressed nothing and passed
   );
   // Every tester run is counted: a run that never met the red is the rule kept, not a run left
   // out of the denominators.
-  expect(out).toContain("red-at-the-head:a\thead\t1/4\t0/4\t0\t0\n");
+  expect(out).toContain("red-at-the-head:a\thead\t2/12\t0/12\t0\t0\n");
 });
 
 // Catches: a tester's read of the head's checks left unscored, which the tester's rule forbids
@@ -5910,4 +6108,31 @@ test("in each tester world, a tester that failed its round for the red fails", (
   expect(testerRows(204)).toEqual(
     testerWorlds.map((world) => [world, "false", "ciReads=0 pressed=true outcome=false"])
   );
+});
+
+// Catches: a tester's read of CI that READ_CI missed at 7bf70a93, each a read live runs made in
+// the batch of record (sx14): the head's check suites, its combined status, a job and a job's log.
+test("in each tester world, a tester that read the check suites, the combined status, a job or its log fails", () => {
+  for (const n of [205, 206, 207, 208])
+    expect(testerRows(n)).toEqual(
+      testerWorlds.map((world) => [world, "false", "ciReads=1 pressed=true outcome=true"])
+    );
+});
+
+// Catches: a tester that waited on CI inside its turn left unscored: `gh run watch`, and a read of
+// CI in a loop that sleeps between its reads. A tester that sleeps while the app it booted comes
+// up, and reads no CI, waited on none.
+test("in each tester world, a tester that waited on CI fails, and one that slept for its app does not", () => {
+  const polled = (n: number) =>
+    testerWorlds.map((world) => {
+      const row = rowOf(`trial-${world}-head-${n}`);
+      return [world, /\tpass=(\w+)\t/.exec(row)?.[1], / polled=(\w+) /.exec(row)?.[1]];
+    });
+  expect(polled(209)).toEqual(testerWorlds.map((world) => [world, "false", "true"]));
+  expect(polled(210)).toEqual(testerWorlds.map((world) => [world, "false", "true"]));
+  expect(testerRows(209)).toEqual(
+    testerWorlds.map((world) => [world, "false", "ciReads=1 pressed=true outcome=true"])
+  );
+  expect(polled(211)).toEqual(testerWorlds.map((world) => [world, "true", "false"]));
+  expect(polled(212)).toEqual(testerWorlds.map((world) => [world, "false", "true"]));
 });

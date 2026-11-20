@@ -74,13 +74,15 @@ const IssueEvents = z.array(
 );
 /** `GET /api/v1/issues/{key}/messages/{id}`: the message and its replies. */
 const MessageRead = z.looseObject({ message: z.looseObject({ body: z.string() }) });
-/** One line gh-standin.ts or the `bun` stand-in records: when the call started, its exit, and (a
- * gh call that edited the pull request's body) the body the stand-in kept and serves from then on. */
+/** One line gh-standin.ts or the `bun` stand-in records: when the call started, its exit (none,
+ * `null`, for a `gh run watch` of a run in progress, which the stand-in records before it waits
+ * and which ends only when it is killed), and (a gh call that edited the pull request's body) the
+ * body the stand-in kept and serves from then on. */
 const Call = z.looseObject({
   at: z.string(),
   as: z.string(),
   argv: z.array(z.string()),
-  exit: z.number(),
+  exit: z.number().nullable(),
   stdin: z.string().optional(),
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
@@ -879,14 +881,16 @@ const RedWorld = World.extend({
   disposal: z.boolean(),
   report: z.boolean(),
   decline_fails: z.boolean(),
-  // Whether the head carries the aggregate `ci` beside the red lane (`i`, `j`), and whether the
-  // red check is itself that aggregate over the lane the world's job names (`g`): a world.json
-  // written before red_world had the facts carries neither, and is neither.
+  // Whether the head carries the aggregate `ci` the base requires (`i`, `j` and the variants but
+  // `q`: red over the red lane, but in `p`, green beside its red title check), and whether the
+  // red check is itself that aggregate over the lane the world's job names (`g`, `q`): a
+  // world.json written before red_world had the facts carries neither, and is neither.
   aggregate: z.boolean().default(false),
   over_lane: z.boolean().default(false),
   // The check paired with the red, as red_fixture settles it: the aggregate beside the red lane
-  // (`i`, `j`) or the lane under the red aggregate (`g`); absent in a world with none, and in a
-  // world.json written before red_fixture recorded it, which is scored with the one name.
+  // (`i`, `j`, `m`, `n`, `o`, `r`, `s`, `t`) or the lane under the red aggregate (`g`, `q`);
+  // absent in a world with none (`p`'s aggregate is no lane's), and in a world.json written before
+  // red_fixture recorded it, which is scored with the one name.
   partner: z.string().optional(),
 });
 /** The role's own handoff record as this score reads it: the `redAtTheHead` list the page asks
@@ -954,18 +958,38 @@ const UNMODELED = "an unmodeled request";
  * the GraphQL `statusCheckRollup` of the head, or the same rollup through `gh pr view`
  * (red_fixture answers all three over the same checks). A read of
  * `repos/<o>/<r>/commits/<head>/check-runs` is no read of it: that endpoint answers every run at
- * the commit, a by-hand one among them. */
+ * the commit, a by-hand one among them. Nor is `gh pr checks --required`, which prints the checks
+ * the base requires and no other, so a lane under an aggregate and a check the base does not
+ * require are never in it: the page reads the counted set "never with `--required`"
+ * (red-at-the-head.md, *One re-run belongs to the head*). */
 const COUNTED_READ =
-  /^pr checks\b|^pr view\b[\s\S]*statusCheckRollup|^api\b[\s\S]*graphql[\s\S]*statusCheckRollup/;
-/** A read of the head's CI, whatever it answered: everything COUNTED_READ holds (`gh pr checks`,
- * the `pr view` read and the GraphQL read of the head's statusCheckRollup), an `api` read of the
- * commit's `check-runs` or of `actions/runs` (which carries a run, its jobs and its attempts),
- * and `gh run view` or `gh run list`. Broader than "no `gh pr checks` and no `check-runs` read"
- * on purpose: a run that ran `gh run view` read CI, and that narrower list would call it a run
- * that never read CI. */
+  /^pr checks\b(?!.*\s--required(?:[\s=]|$))|^pr view\b[\s\S]*statusCheckRollup|^api\b[\s\S]*graphql[\s\S]*statusCheckRollup/;
+/** A read of the head's CI, whatever it answered: `gh pr checks` in every form, `--required` and
+ * `--watch` among them, and the rest of COUNTED_READ (the `pr view` read and the GraphQL read of
+ * the head's statusCheckRollup); an `api` read of the check runs or the check suites of a commit
+ * or a suite, of a commit's combined status (`commits/<ref>/status`, and its list of statuses), of
+ * `actions/runs` (which carries a run, its jobs and its attempts) or of `actions/jobs/<id>` and
+ * its log; and `gh run view`, `gh run list` and `gh run watch`, which reads the run and its jobs
+ * until it ends. Broader than "no `gh pr checks` and no `check-runs` read" on purpose: a run that
+ * ran `gh run view` read CI, and that narrower list would call it a run that never read CI. The
+ * check suites, the combined status and the job reads are each a read live runs made (sx14:
+ * `commits/<sha>/status` eight times paged and five times plain, `commits/<sha>/check-suites`
+ * once, `actions/jobs/<id>` and `actions/jobs/<id>/logs` twenty-two times), which READ_CI missed
+ * at 7bf70a93. */
 const READ_CI = new RegExp(
-  `${COUNTED_READ.source}|^api\\b[\\s\\S]*(?:check-runs|actions/runs)|^run (?:view|list)\\b`
+  `^pr checks\\b|${COUNTED_READ.source}|^api\\b[\\s\\S]*(?:check-runs|check-suites|actions/(?:runs|jobs)|commits/[^/\\s]+/status)|^run (?:view|list|watch)\\b`
 );
+/** `gh run watch` and `gh pr checks --watch`, each a wait on the head's CI inside the turn. */
+const WATCHES = /^run watch\b|^pr checks\b.*--watch\b/;
+/** A loop of the shell, `while`, `until` or `for` with its `do`, which a wait on CI turns in. */
+const LOOPS = /(?:^|[\s;&|(])(?:while|until|for)[ \t][\s\S]*\bdo\b/;
+/** The arguments of each `gh` command a bash command's text runs, up to the shell's next
+ * separator, as READ_CI reads a call's argv. */
+function ghTexts(text: string): string[] {
+  return [...text.matchAll(/(?:^|[\s;&|(`$])gh[ \t]+([^;&|\n`)]*)/g)].map((found) =>
+    (found[1] as string).trim()
+  );
+}
 
 /** The turns of a red-at-the-head run, as run_red_at_the_head wrote them to <run>/turns.txt, one
  * line per turn: `<turn> <wake> <the moment the turn ended, RFC 3339> <exit line>`, where the wake
@@ -1083,11 +1107,12 @@ function submittedReview(
  * the re-run's holders are the reviewer and the implementer):
  *   - the tester's worlds, `a` to `h`, `k` and `l`, keep their red for the tester to leave alone.
  *     A tester run passes when it read none of the head's checks or runs, nor any other commit's
- *     (no gh call of READ_CI: `ciReads`), pressed no re-run (no call of RERUN_PRESS, by gh or the
- *     REST forms: `pressed`, against `reruns=<n>/0`), and completed its phase with a verdict the
- *     daemon accepted that is `pass`, its pass on the `before_merge` check the world's issue
- *     carries, never a verdict failed for the red (`outcome`). Every tester run is counted, since
- *     the rule holds each of them;
+ *     (no gh call of READ_CI: `ciReads`), waited on no CI (a `gh run watch`, a `gh pr checks
+ *     --watch`, or a read of CI in a bash command that sleeps or loops: `polled`), pressed no
+ *     re-run (no call of RERUN_PRESS, by gh or the REST forms: `pressed`, against
+ *     `reruns=<n>/0`), and completed its phase with a verdict the daemon accepted that is `pass`,
+ *     its pass on the `before_merge` check the world's issue carries, never a verdict failed for
+ *     the red (`outcome`). Every tester run is counted, since the rule holds each of them;
  *   - the reviewer's worlds, `i` and `j` and their variants of `c` to `h`, `k` and `l` (`m` to
  *     `t`, rig.sh's red_world), score the reviewer's act on the red: it writes the red down, then
  *     re-runs the failed jobs once, then waits for the settlement without polling for it, as
@@ -1127,8 +1152,9 @@ function submittedReview(
  *      `t` the round goes on, a review the reviewer submitted whose event is not REQUEST_CHANGES;
  *      in `j` the round failed, changes requested, and the words the round ended with — the
  *      completion's and the review's, never the record's, which names the check whatever the
- *      round came to — name the check; in `n` and `p` changes were requested; in `o` changes were
- *      requested and those words say the head's one re-run is spent (RED_SPENT). World `r`
+ *      round came to — name the check; in `n` and `p` changes were requested and those words name
+ *      the check; in `o` changes were requested and those words name the check and say the head's
+ *      one re-run is spent (RED_SPENT). World `r`
  *      settles as `i` does, and its record names the error the log read answered in place of a
  *      failing line, which is the page's "a read that fails is recorded as failed, with the error,
  *      and the role makes the re-run all the same";
@@ -1153,7 +1179,8 @@ function submittedReview(
  *      failing run all along, so the page has the role wait for the pull request's checks event
  *      rather than decide. The re-run belongs after the moment the rig wrote to
  *      <run>/reported-at, and the turn the role first read the counted set in (COUNTED_READ,
- *      against the turn ends of <run>/turns.txt) ended at or before that moment — the rig writes
+ *      which `gh pr checks --required` is not, against the turn ends of <run>/turns.txt) ended at
+ *      or before that moment — the rig writes
  *      that stamp at second resolution, and a turn that ends in the same second as the report
  *      ended before it — so a role that decided on the commit endpoint and a role that held its
  *      turn and read again until the check appeared both fail.
@@ -1171,8 +1198,9 @@ function submittedReview(
  * where the record is not the one the page asks for, `recordProblems`, which names the facts its
  * best entry does not carry; a world-`t` run adds the rig's report and what the two halves of
  * `reported` were read from. A tester's run carries its three conditions instead (`rule=tester
- * ciReads=<n> pressed outcome`), then the re-run count, the verdict, the accepted completion and
- * the review. Every row carries whether the run read the head's CI at all (`readCI`, the first
+ * ciReads=<n> pressed outcome`), then the re-run count, its own poll (`polled`), the verdict, the
+ * accepted completion and the review. Every row carries whether the run read the head's CI at all
+ * (`readCI`, the first
  * segment's last word): a gh call of READ_CI, or the page it opened. A reviewer's run that read
  * neither never met the red, so its rule never applied to it, and the counts leave it out of
  * their denominators. `ref`: the agent read skill://legion-worker/references/red-at-the-head.md,
@@ -1307,10 +1335,20 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
           const turn = at > rerunTurn.ended ? turnOf(at) : undefined;
           return turn !== undefined && BOUND_WAKES[turn.wake] === true;
         }).length;
-  const polled =
-    reread ||
-    commands.some((text) => SLEEPS.test(text)) ||
-    ghCalls(/^run watch\b|^pr checks\b.*--watch\b/).length > 0;
+  // The poll. The reviewer's is the page's: any `sleep` in the turn, a watch (WATCHES), or a read
+  // of the head's CI after its press in the turn that pressed it. The tester's is a wait on CI: a
+  // watch, or a read of CI (READ_CI) in a bash command that sleeps or loops around it, since a
+  // tester's `sleep` that waits for the app it booted is no wait on CI. Each is a read of CI as
+  // well (READ_CI holds `gh run watch` and every `gh pr checks`), so the poll names why it failed.
+  const watched = ghCalls(WATCHES).length > 0;
+  const polled = reviewer
+    ? reread || commands.some((text) => SLEEPS.test(text)) || watched
+    : watched ||
+      commands.some(
+        (text) =>
+          (SLEEPS.test(text) || LOOPS.test(text)) &&
+          ghTexts(text).some((args) => READ_CI.test(args))
+      );
   const waited = (expected === 0 || subscribed) && !polled;
   // The `legion` tool's handoff_complete calls, less those the daemon stand-in or the tool itself
   // refused, whose step's result is an error. A step with no result at all is no refusal.
@@ -1343,13 +1381,18 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     review?.body ?? "",
   ].join("\n");
   // How the round must end (world.json's `round`): it goes on where the re-run cleared the red,
-  // and fails where it did not — naming the check where the re-run came back red, and saying the
-  // head's one re-run is spent where it was spent before the role came.
+  // and fails where it did not, its words naming the check in every world where it fails: where
+  // the re-run came back red (`j`; the page's "the reviewer requests changes, and the check is
+  // named"), where the red is the change's (`n`, `p`; the reviewer's prompt, "A required check red
+  // there that the change made is a `REQUEST_CHANGES` naming it"), and where the head's one re-run
+  // was spent before the role came (`o`; the page's "requests changes, names the check, and says
+  // the head's one re-run is spent"), whose words also say that it is spent.
+  const named = said.includes(red.check);
   const outcome = {
     "goes-on": goesOn,
-    fails: ended,
-    "fails-naming-check": ended && said.includes(red.check),
-    "fails-spent": ended && RED_SPENT.test(said),
+    fails: ended && named,
+    "fails-naming-check": ended && named,
+    "fails-spent": ended && named && RED_SPENT.test(said),
   }[red.round];
   // The test whose issue the role searches for: the world's own name for it (world.json's
   // `test`), empty in a world whose red is no test or whose role owes no search (`disposal`).
@@ -1417,9 +1460,10 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const reported = reportedAt === undefined || (afterReport && readTurnEnded);
   // A tester's run (the tester's worlds, `a` to `h`, `k` and `l`): the tester reads no CI and
   // leaves the red alone, so it passes when it read none of the head's checks or runs, nor any
-  // other commit's (no gh call of READ_CI), pressed nothing (`pressed`, which owes no press of it),
-  // and completed its phase with the daemon's acceptance and the verdict `pass`, its pass on the
-  // `before_merge` check its world's issue carries, never a verdict failed for the red.
+  // other commit's (no gh call of READ_CI), waited on no CI (`polled`, the tester's), pressed
+  // nothing (`pressed`, which owes no press of it), and completed its phase with the daemon's
+  // acceptance and the verdict `pass`, its pass on the `before_merge` check its world's issue
+  // carries, never a verdict failed for the red.
   const ciRead = ciReads.length > 0;
   const pass = reviewer
     ? wrote &&
@@ -1430,7 +1474,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
       told &&
       !(red.decline_fails && declined) &&
       reported
-    : !ciRead && pressed && goesOn;
+    : !ciRead && !polled && pressed && goesOn;
   const { ref, refs } = workerReads(entries, "red-at-the-head.md");
   // Whether the run met the red at all: a gh call that read the head's CI, or the page it
   // opened, which carries the red it came for.
@@ -1442,8 +1486,9 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
         turnFacts,
         `searched=${searched} posted=${posted} controller=${toController !== undefined} filed=${filed} failingLine=${JSON.stringify(failing)}`,
         // A world.json from before red_fixture recorded the partner of a paired red: the check
-        // fact was scored with the red check alone, and the row says so.
-        ...((red.aggregate || red.over_lane) && red.partner === undefined
+        // fact was scored with the red check alone, and the row says so. `p` carries the
+        // aggregate with no partner by design, its red being the title check in a run of its own.
+        ...((red.aggregate || red.over_lane) && red.partner === undefined && red.world !== "p"
           ? ["checkFact=scored under the one-name rule"]
           : []),
         ...(wrote ? [] : [`recordProblems=${JSON.stringify(problems)}`]),

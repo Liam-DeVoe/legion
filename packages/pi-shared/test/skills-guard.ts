@@ -696,21 +696,40 @@ const THE_TESTER_WAITS_ON_CI =
  */
 const CI_CHECK_IN_THE_TESTERS_FAILURES = /\bci_check`?\s+check\s+goes\s+in\s+`?failures\b/i;
 
-/** The tester's five retired shapes, in the order they are written above. */
+/**
+ * The tester's record of a red at the head. Three shapes: `dispatch handoff-write`'s phase list
+ * holding `test` in the sentence of the re-run or its record, the page's "written with `dispatch
+ * handoff-write --issue <issue> --phase <implement|test|review> --body-file <file>` before the `gh
+ * run rerun` call" until 0ac2891a; a `test` handoff or record, `--phase test` or `phase: "test"` in
+ * one sentence with `redAtTheHead`, in either order; and the tester as the subject that records
+ * the red, "the tester records the red" or "the tester's `redAtTheHead`". The tester reads no CI,
+ * so no red at the head is in its record, and a text that puts one there brings back the read the
+ * record is made from. The records that stay pass: the page's `--phase <implement|review>` before
+ * the `gh run rerun` call, the reviewer's "names the red in its `redAtTheHead` record and its review
+ * body", the handoff reads' `--phase <plan|implement|test|review>` (the worker skill) and
+ * `--phase test --version <n>` (the implementer's role part), the tester's own `test` handoff and
+ * its `failures`, which name no `redAtTheHead`, a sentence that says the tester's record carries no
+ * `redAtTheHead`, and "The tester writes the red test for a way no test would catch".
+ */
+const THE_TESTER_RECORDS_A_RED =
+  /\bhandoff-write\b[^.]{0,60}?--phase\s+<[a-z|]*\btest\b[a-z|]*>(?=[^.]*?\b(?:re-?run|redAtTheHead)\b)|(?:\btest`?\s+(?:handoff|record)\b|--phase\s+test\b|\bphase:\s*"test")(?=[^.]*?(?<!\b(?:no|never|not)\s+`?)\bredAtTheHead\b)|(?<!\b(?:no|never|not)\s+`?)\bredAtTheHead\b(?=[^.]*?(?:\btest`?\s+(?:handoff|record)\b|--phase\s+test\b|\bphase:\s*"test"))|\bthe\s+tester\s+(?:records?|writes?(?:\s+down)?|notes?|names?)\s+(?:the|a|each|that|this)\s+red\b(?!\s+tests?\b)|\bthe\s+tester's\s+`?redAtTheHead\b/i;
+
+/** The tester's six retired shapes, in the order they are written above. */
 const RETIRED_TESTER_CI_READS = [
   TESTER_READS_THE_STATIC_LANES,
   HEADS_CHECKS_BEFORE_ANY_VERDICT,
   THE_TESTER_HOLDS_THE_RERUN,
   THE_TESTER_WAITS_ON_CI,
   CI_CHECK_IN_THE_TESTERS_FAILURES,
+  THE_TESTER_RECORDS_A_RED,
 ];
 
 /**
  * Every place in the Markdown files under `roots` that still tells the tester to read CI, gives it
- * the re-run of a red at the head, has it wait on CI, or has it judge a check CI proves, each as
- * one `<file>:<line>`. The sentences were deleted from skill files, daemon prompt parts and docs
- * pages at once, and a forward merge keeps both sides of a deletion in silence, so this rule too is
- * written over whole partitions.
+ * the re-run of a red at the head, has it wait on CI, has it judge a check CI proves, or has it
+ * record a red at the head, each as one `<file>:<line>`. The sentences were deleted from skill
+ * files, daemon prompt parts and docs pages at once, and a forward merge keeps both sides of a
+ * deletion in silence, so this rule too is written over whole partitions.
  */
 export function retiredTesterCiReads(roots: readonly string[]): string[] {
   return retiredRuleHits(roots, RETIRED_TESTER_CI_READS);
@@ -951,6 +970,18 @@ const UNREPORTED_IS_NOT_ABSENT =
   "A check the counted set does not list while a run at the head holds its failed job is unreported, not absent: it gets no re-run and is waited for, as *The act and the wait* says.";
 
 /**
+ * The sentence of `## One re-run belongs to the head` that keeps `--required` off the counted set,
+ * pinned whole and literally (the architect's gap review of 2026-11-20, item 7). `gh pr checks
+ * --required` prints the checks the base requires and no other (the docs page
+ * checks-and-re-runs.md, measured at `ed157dc9`), so a role that lost this sentence and read the
+ * counted set with it sees no lane under `ci-ok` and no check the base does not require, and on a
+ * base that requires nothing takes its exit 1 for a failed read. The scorer reads such a read as no
+ * read of the counted set (score.ts, COUNTED_READ).
+ */
+const COUNTED_SET_IS_NEVER_REQUIRED =
+  "Never with `--required`, which prints the checks the base requires and no other, so a lane under an aggregate such as `ci-ok` and a check the base does not require are never in it, and on a base that requires nothing it prints that no required checks are reported and exits 1.";
+
+/**
  * The exit statuses of the ancestry read, pinned literally. The sentence read "1 is not carried
  * and anything else is cannot compare" until INFRA-1303's review round 3, so exit 0, carried, fell
  * under "cannot compare" and a role following it never concluded the base carries the fix.
@@ -1020,7 +1051,9 @@ const UNREAD_LOG_NAMES_THE_JOB =
  *   record* before the phase completes. Two runs approved after green and posted nothing.
  * - `A_FAILING_TEST_IS_NO_EXTERNAL_CAUSE`: a failing test of a package the change does not touch
  *   takes the one re-run like any other red the change did not make. Two runs read such a test's
- *   first red as another tree's defect and requested changes with no re-run.
+ *   first red as another tree's defect and requested changes with no re-run. Its second red read
+ *   "it is the round's failure" until the architect's gap review of 2026-11-20 (item 3), a
+ *   tester's act that no holder of the re-run has; it is handled as *Red again* says.
  */
 const RECORD_BEFORE_THE_PRESS =
   "It writes the failure down in a handoff record of its own phase (`dispatch handoff-write`) before the `gh run rerun` call that re-runs the failed jobs once.";
@@ -1037,7 +1070,22 @@ const NO_SETTLEMENT_IS_BOUNDED =
 const GREEN_RUNS_THE_DISPOSAL =
   "Green: the round goes on, and the role records that it re-ran, with the run and the attempt. Before it completes its phase, it runs the three steps of *What becomes of the record* below.";
 const A_FAILING_TEST_IS_NO_EXTERNAL_CAUSE =
-  "A failing test is never the second case, whatever package holds it: one that is not the change's takes the one re-run on its first red, and on its second red it is the round's failure, as *Red again* above says, never an external cause.";
+  "A failing test is never the second case, whatever package holds it: one that is not the change's takes the one re-run on its first red, and on its second red it is handled as *Red again* above says, never as an external cause.";
+
+/**
+ * The page's retired "fails the round" (the architect's gap review of 2026-11-20, item 3): "It
+ * fails the round, or it requests changes" on a spent re-run, "Red again: the round fails, or the
+ * reviewer requests changes", "the round fails on it with no re-run" on a red the change made, and
+ * "it is the round's failure" on a second red. Failing the round was the tester's verdict, and the
+ * tester holds no re-run: on such a red the reviewer requests changes, and the implementer records
+ * the red, tells the architect, and completes its phase, and the reviewer judges the red in its
+ * round. The class is the verb and the noun both ways, `fails the round`, `the round fails`, `a
+ * failed round` and `the round's failure`, whatever the tense or the determiner. The sentences
+ * that replaced them name each holder's act, and the page's "the round goes on", "ends no round on
+ * it" and "does not end its round" hold no failure, so each passes.
+ */
+const THE_ROUND_FAILS_ON_A_RED =
+  /\b(?:fails?|failed|failing)\s+(?:the|its|a|this)\s+round\b|\b(?:the|its|a|this)\s+round\s+(?:fails|failed)\b|\bfailed\s+round\b|\bround's\s+failure\b/i;
 
 /**
  * The three pointers to the page, each pinned whole and literally: the worker skill's own
@@ -1075,9 +1123,9 @@ const TESTER_LETS_CI_DO_ITS_JOB =
  * What the four files INFRA-1303 wrote or changed get wrong about a red at the head: the worker
  * skill (`WORKER_SKILL`), the page that holds the rule (`RED_AT_THE_HEAD`), the merge gate
  * (`MERGE_GATE`) and the pull-request body reference (`PR_BODY`), each read by its caller. These
- * pins alone hold the change's positive half; the prohibitions it retired are refused across
- * whole partitions by `retiredRerunProhibitions` and `retiredTesterCiReads`, so nothing here
- * carries a retired claim of its own.
+ * pins hold the change's positive half; the prohibitions it retired are refused across whole
+ * partitions by `retiredRerunProhibitions` and `retiredTesterCiReads`, so the one retired claim
+ * here is the page's own, `THE_ROUND_FAILS_ON_A_RED`, a wording only the page carried.
  */
 export function redAtTheHeadFaults(pages: {
   workerSkill: string;
@@ -1153,6 +1201,11 @@ export function redAtTheHeadFaults(pages: {
             "a reviewer that takes an unreported check for an absent one re-runs a failed job the counted set does not report",
         },
         {
+          sentence: COUNTED_SET_IS_NEVER_REQUIRED,
+          because:
+            "a role that reads the counted set with `--required` sees no lane under `ci-ok` and no check the base does not require, and takes a base that requires nothing for a failed read",
+        },
+        {
           sentence: RECORD_BEFORE_THE_PRESS,
           because:
             "a role that reads the record as a note presses the re-run before Dispatch holds the failure",
@@ -1193,6 +1246,15 @@ export function redAtTheHeadFaults(pages: {
             "a role that finds a failing test in another tree's package skips the one re-run",
         },
       ]
+    ),
+    ...retiredClaimFaults(
+      "skills/legion-worker/references/red-at-the-head.md",
+      pages.redAtTheHead,
+      {
+        claim: THE_ROUND_FAILS_ON_A_RED,
+        because:
+          "failing the round was the tester's verdict, and no holder of the re-run has it: the reviewer requests changes, and the implementer records the red, tells the architect, and completes its phase, and the reviewer judges the red in its round",
+      }
     ),
     ...missingSentenceFaults("skills/legion-worker/references/merge-gate.md", pages.mergeGate, [
       {

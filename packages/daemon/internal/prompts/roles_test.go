@@ -662,12 +662,15 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// whose red it is.
 		{"go/worker-common.md", "after it records the failure in a handoff record of its own phase with `dispatch handoff-write`"},
 		{"go/implementer.md", "(*Which red is the change's* in `skill://legion-worker/references/red-at-the-head.md` decides which of the two it is, and a pass in your own pod does not move that)"},
-		// The implementer's overlay forbids every wait on CI but the one the red-at-the-head page gives
-		// it, its own re-run of a red the change did not make; its "Push, then complete: never wait for
-		// CI" said no wait at all while the page had it wait for that re-run (the architect,
-		// 2026-11-20).
-		{"go/implementer.md", "Push, then complete: never wait for CI, except for the one re-run of a red the change did not make, which you wait for as `skill://legion-worker/references/red-at-the-head.md` says."},
-		{"go/implementer.md", "Outside that one re-run, which its settlement's wake ends, never wait for, watch or poll the pull request's remote CI"},
+		// The implementer's overlay forbids every wait on CI but the ones the red-at-the-head page
+		// gives it for a red it acts on: the wait for the counted set to report that red, the wait on
+		// a null rollup read first, and the wait on its own re-run of a red the change did not make.
+		// Its "Push, then complete: never wait for CI" said no wait at all while the page had it wait
+		// for that re-run (the architect, 2026-11-20), and its exception then named the one re-run
+		// alone while the page had it wait before it pressed as well (the architect's gap review of
+		// 2026-11-20, item 2).
+		{"go/implementer.md", "Push, then complete: never wait for CI, except for the waits `skill://legion-worker/references/red-at-the-head.md` gives for a red you act on."},
+		{"go/implementer.md", "Outside those waits, each of which a wake ends as that page says, never wait for, watch or poll the pull request's remote CI"},
 		// The worker part names the two roles that hold the re-run and the three that press none. It
 		// is composed into the merger's prompt too, and the forward merge of main's guide cut
 		// (5748720cd9) took main's line, which named no role and so gave the merger the re-run
