@@ -1,4 +1,4 @@
--- The candidate sessions of INFRA-4676's R2: for a skill, the paths of the sessions with a read of
+-- The candidate sessions of R2: for a skill, the paths of the sessions with a read of
 -- a given copy in the window, and no text. count.sql's rows already name, per (skill, copy, kind),
 -- every file with a read in the window by its hash (`md5(path)` cut to 16 hex characters); the
 -- caller takes the hashes of the rows of the skill whose copy maps to the cut repository's copy

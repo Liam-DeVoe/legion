@@ -1,5 +1,5 @@
 SET LOCAL statement_timeout = '15min';
--- The skill read count of INFRA-4676 (R1) for one session store and one UTC day (or hour) of file
+-- The skill read count (R1) for one session store and one UTC day (or hour) of file
 -- mtime. `countsql.ts --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>]`
 -- prints it with every placeholder filled; that text goes into the store's read command unchanged.
 --

@@ -1,5 +1,5 @@
 /**
- * The readers of INFRA-4676 (plan, R5 `readers.ts`), and the one way each prompt of `prompts/`
+ * The runner's readers (the plan's R5 `readers.ts`), and the one way each prompt of `prompts/`
  * reaches the model, which judge.ts takes too.
  *
  * A prompt file, `prompts/<name>.md`, is a header and a text. The header, between two `---` lines,
@@ -34,7 +34,7 @@
  * - `audit` (R2): a case's line, the messages before its step as the judge reads them, and its
  *   real step, never its criterion; whether the step follows the line, breaks it, or is not a
  *   step the line governs, with a reason. The case builder keeps a case only when it follows.
- * - `map` (R3): a skill's base and cut texts and the INFRA-2111 audit of the cut, if any; each rule
+ * - `map` (R3): a skill's base and cut texts and the rule-by-rule audit of the cut, if any; each rule
  *   of the base text with its line in the cut text or why it is gone, called kept, narrowed,
  *   widened or lost, with the audit's words where the audit answers it.
  * - `attack` (R3): a skill's cut text; each vague phrase, undefined term, rule nobody can check and
@@ -519,7 +519,7 @@ export const MapInput = z.strictObject({
   base: z.array(File).min(1),
   /** Empty when the cut deleted the skill. */
   cut: z.array(File),
-  /** The INFRA-2111 audit's text for this skill, or null when it has none. */
+  /** The rule-by-rule audit's text for this skill, or null when it has none. */
   audit: z.string().min(1).nullable(),
 });
 export type MapInput = z.infer<typeof MapInput>;

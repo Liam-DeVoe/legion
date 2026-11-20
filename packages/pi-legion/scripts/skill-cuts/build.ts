@@ -1,5 +1,5 @@
 /**
- * The builders of INFRA-4676's inputs (plan, R2 "Candidates" and "Cases", "The case context", and
+ * The builders of the runner's inputs (the plan's R2 "Candidates" and "Cases", "The case context", and
  * R6's load test): `build-cases` turns real sessions into the case file the `behaviour` commands
  * read (cases.ts), and `build-tasks` writes the tasks file the load test reads (load.ts).
  * `main(argv, io)` runs either; `argv` starts with the command's name, so cli.ts can pass its own

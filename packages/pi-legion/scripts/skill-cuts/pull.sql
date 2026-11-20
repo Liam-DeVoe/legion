@@ -1,4 +1,4 @@
--- The transcript pull of INFRA-4676 (R2's cases): one session file's bytes, by its path, one row
+-- The transcript pull of R2's cases: one session file's bytes, by its path, one row
 -- per stored piece, at most 64 rows per call, so one call's output stays small. `pullSql` of
 -- countsql.ts fills it; psql-rows.ts's `pullText` joins the rows of every call into the file's
 -- text.

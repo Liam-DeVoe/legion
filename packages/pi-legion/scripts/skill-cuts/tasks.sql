@@ -1,5 +1,5 @@
 SET LOCAL statement_timeout = '15min';
--- The task query of INFRA-4676 (R6's load-test tasks): the first user message of each session
+-- The task query of R6's load-test tasks: the first user message of each session
 -- whose first user message holds one of a list of terms. `tasksSql` of countsql.ts fills it.
 --
 -- Placeholders, each written in the query as its name inside double braces and filled with one
