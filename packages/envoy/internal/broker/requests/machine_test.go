@@ -925,6 +925,38 @@ func TestCreateDoesNotReuseAnExpiredOrRevokedGrant(t *testing.T) {
 	}
 }
 
+// TestAGrantMadeAfterTheEndPassWaitsForTheNextRequest: Create checks the live grants of the asked
+// names once (endMatchingLiveGrants) and reuses only a grant that check saw. A grant made for the
+// same names after that check, by a request that raced this one, is not handed back: this request
+// asks again. The next request's check sees the grant, and that request is granted it.
+func TestAGrantMadeAfterTheEndPassWaitsForTheNextRequest(t *testing.T) {
+	m, enr, key, _ := newFixture(t)
+	ctx := context.Background()
+	names := []string{"AUTO_TOKEN"}
+	row, err := m.enrollment(ctx, enr)
+	if err != nil {
+		t.Fatalf("enrollment: %v", err)
+	}
+	set := m.Policy.Get()
+	checked, err := m.endMatchingLiveGrants(ctx, row, names, set)
+	if err != nil || len(checked) != 0 {
+		t.Fatalf("endMatchingLiveGrants before any grant = %+v, %v; want no live grant", checked, err)
+	}
+
+	raced, err := m.Create(ctx, enr, signRequest(t, m, key, "the racing request", "AUTO_TOKEN"), "", nil)
+	if err != nil || raced.GrantID == nil {
+		t.Fatalf("Create(the racing request) = %+v, %v; want an automatic grant", raced, err)
+	}
+	if got, ok, err := m.reuseLiveGrant(ctx, row, names, defaultLifetime(set, names, nil), checked); err != nil || ok {
+		t.Fatalf("reuseLiveGrant with the check made before the grant = %+v, %t, %v; want no grant handed back", got, ok, err)
+	}
+
+	next, err := m.Create(ctx, enr, signRequest(t, m, key, "the next request", "AUTO_TOKEN"), "", nil)
+	if err != nil || next.State != "granted" || next.GrantID == nil || *next.GrantID != *raced.GrantID {
+		t.Fatalf("Create(the next request) = %+v, %v; want the racing request's grant %s", next, err, *raced.GrantID)
+	}
+}
+
 // TestValuesHoldsNoPooledConnectionWhileReadingSecrets pins that Values reads a grant's names into
 // memory before fetching the first value, so no cursor (and its pooled connection) stays open
 // across a Secrets Manager read.
