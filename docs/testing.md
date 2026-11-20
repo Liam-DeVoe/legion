@@ -398,13 +398,16 @@ plain step still ran it, it took at most 625 s there over the 49 green main `tes
 125688799071). Under `-race` it took up
 to 570 s over the 51 green `test` jobs of 2026-11-02 and 2026-11-03 that sjawhar/legion#2709
 measured, on main and on pull requests, and ran go test's own ten minutes out on main at
-job 125691048644 of run 41562777668; the race step gives it 30 minutes. On a busy machine it
-takes longer still (908 s under `-race` on a shared devbox), so a command that runs the whole
-package, alone or in a pattern that includes it, passes `-timeout 30m`:
+job 125691048644 of run 41562777668; on a busy machine it took longer still (908 s under
+`-race` on a shared devbox). With the project release's tests it took 1,766.673 s in the race
+step at d8582528 (job 136067045968) and 1,731.355 s at b9eddd39 (job 136272918493), within 10%
+of 30 minutes, so the race step gives it 33 minutes, the larger plus 10% rounded up, and a
+command that runs the whole package, alone or in a pattern that includes it, passes
+`-timeout 33m`:
 
 ```sh
 cd packages/daemon
-go test -race -timeout 30m ./internal/daemon/
+go test -race -timeout 33m ./internal/daemon/
 ```
 
 A Legion issue pod does not run that whole package either: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.

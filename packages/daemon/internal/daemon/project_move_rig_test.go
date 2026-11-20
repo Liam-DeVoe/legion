@@ -166,10 +166,13 @@ func (r *idleWakeRig) releaseArgs(flags ...string) []string {
 	return slices.Concat([]string{"project", "release"}, r.operatorFlags(), flags, []string{"--json"})
 }
 
-// projectRelease runs `legion project release … --json` with the extra flags given, and answers
-// the run and the release it printed.
+// projectRelease runs `legion project release … --json` with the extra flags given, once every
+// role whose report the release reads has reported since its last turn
+// (awaitReportsSinceLastTurn), and answers the run and the release it printed. A dry run waits as
+// well, since it names each pod a release would ask by the same reports.
 func (r *idleWakeRig) projectRelease(binary string, flags ...string) (idleRigCommand, api.ProjectReleaseResponse) {
 	r.t.Helper()
+	r.awaitReportsSinceLastTurn()
 	ran := r.legion(binary, r.releaseArgs(flags...)...)
 	var release api.ProjectReleaseResponse
 	if err := json.Unmarshal([]byte(ran.stdout), &release); err != nil {

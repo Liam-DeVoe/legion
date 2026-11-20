@@ -225,6 +225,17 @@ func (a *idleRigAgents) setPlan(pod, role string, plan idleRigPlan) {
 	a.plans[idleRigKey(pod, role)] = plan
 }
 
+// planOf is the plan the role's process reads now (servePlan): its own, or the rig's where the
+// role has none.
+func (a *idleRigAgents) planOf(pod, role string) idleRigPlan {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if plan, ok := a.plans[idleRigKey(pod, role)]; ok {
+		return plan
+	}
+	return a.plan
+}
+
 // setWorkspaces is how the service finds the workspace of a running pod for the pod's role
 // processes.
 func (a *idleRigAgents) setWorkspaces(lookup func(pod string) (idleRigWorkspaceAnswer, bool)) {
@@ -397,13 +408,7 @@ func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *idleRigAgents) servePlan(w http.ResponseWriter, r *http.Request) {
-	a.mu.Lock()
-	plan, ok := a.plans[idleRigKey(r.URL.Query().Get("pod"), r.URL.Query().Get("role"))]
-	if !ok {
-		plan = a.plan
-	}
-	a.mu.Unlock()
-	writeIdleRigJSON(w, plan)
+	writeIdleRigJSON(w, a.planOf(r.URL.Query().Get("pod"), r.URL.Query().Get("role")))
 }
 
 func writeIdleRigJSON(w http.ResponseWriter, body any) {

@@ -156,11 +156,11 @@ func TestAProjectReleaseIsRefusedWhileAPauseHoldsTheProject(t *testing.T) {
 // releaseRecord is a project release's store with the release's own record in memory: the start
 // records release 1 with the stop set it is given and answers takenOver as the idle releases it
 // took over, the finish hands its result to finished, and the claims are the ones the machines
-// store (claims), after claimsFails reads of them that fail. finishFails is how many finish writes
-// it refuses before it takes one, and with loseFinishAnswer the write it takes answers an error all
-// the same, as one whose answer the connection lost; once a write was taken, every later one is
-// refused as the store refuses a write of a finished release. finishes counts the writes asked,
-// and reads the reads of the claims.
+// store (claims), after claimsFails reads of them that fail, each with claimsErr where it is set.
+// finishFails is how many finish writes it refuses before it takes one, and with loseFinishAnswer
+// the write it takes answers an error all the same, as one whose answer the connection lost; once
+// a write was taken, every later one is refused as the store refuses a write of a finished
+// release. finishes counts the writes asked, and reads the reads of the claims.
 type releaseRecord struct {
 	stop             []store.ProjectReleaseClaim
 	takenOver        []store.TakenOverIdleRelease
@@ -169,6 +169,7 @@ type releaseRecord struct {
 	finishFails      int
 	loseFinishAnswer bool
 	claimsFails      int
+	claimsErr        error
 
 	mu       sync.Mutex
 	finishes int
@@ -233,6 +234,9 @@ func (s *releaseRecord) Claims(context.Context) ([]supervise.Claim, error) {
 	refused := s.reads <= s.claimsFails
 	s.mu.Unlock()
 	if refused {
+		if s.claimsErr != nil {
+			return nil, s.claimsErr
+		}
 		return nil, errors.New("the store refused the read of the claims")
 	}
 	s.claims.mu.Lock()
@@ -265,14 +269,18 @@ func (s *releaseRecord) claimReads() int {
 // releasePods is a runtime's part of a project release over the Sandboxes it lists: each issue
 // pod's delete asks its authorize and records the issue it deleted, each other Sandbox's delete
 // records its name, and each release of the controller's claim records the claim and answers
-// releaseErr. The runtime's store lists the Sandboxes after storeListFails lists of it that fail,
-// and the API server lists the same Sandboxes as its store after listFails lists of it that fail;
-// storeLists and lists count the lists asked of each.
+// releaseErr; with deleteErr set, each delete of either kind is refused with it, once an issue
+// pod's authorize said yes. The runtime's store lists the Sandboxes after storeListFails lists of
+// it that fail, each with storeListErr where it is set, and the API server lists the same
+// Sandboxes as its store after listFails lists of it that fail; storeLists and lists count the
+// lists asked of each.
 type releasePods struct {
 	sandboxes      []runtime.ProjectSandbox
 	storeListFails int
 	listFails      int
 	releaseErr     error
+	deleteErr      error
+	storeListErr   error
 
 	mu         sync.Mutex
 	deleted    []string
@@ -288,6 +296,9 @@ func (p *releasePods) SuspendIssue(ctx context.Context, issue, _ string, authori
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.deleteErr != nil {
+		return p.deleteErr
+	}
 	p.deleted = append(p.deleted, issue)
 	return nil
 }
@@ -297,6 +308,9 @@ func (p *releasePods) ProjectSandboxes(context.Context) ([]runtime.ProjectSandbo
 	defer p.mu.Unlock()
 	p.storeLists++
 	if p.storeLists <= p.storeListFails {
+		if p.storeListErr != nil {
+			return nil, p.storeListErr
+		}
 		return nil, errors.New("the Sandbox store may be stale: its watch has failed")
 	}
 	return p.sandboxes, nil
@@ -319,6 +333,9 @@ func (*releasePods) ReadUnpushed(context.Context, string, claim.Role) (runtime.U
 func (p *releasePods) DeleteProjectSandbox(_ context.Context, name string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.deleteErr != nil {
+		return p.deleteErr
+	}
 	p.removed = append(p.removed, name)
 	return nil
 }
@@ -648,4 +665,82 @@ func TestProjectReleaseWritesItsFinishAgainAfterAWriteThatFailed(t *testing.T) {
 			t.Fatalf("the finish was written %d times, want twice: the one whose answer was lost and the one refused as finished", writes)
 		}
 	})
+}
+
+// releaseFarSideError is a far side's error text as a Kubernetes client writes one: the request's
+// URL quoted, with a userinfo and a query, then the far side's words, a NUL among them.
+const releaseFarSideError = `Delete "https://user:secret@api.example/apis?labelSelector=x&token=y": the server refused` +
+	"\x00" + ` the request`
+
+// releaseFarSideKept is releaseFarSideError as the store keeps a far side's error text
+// (storetext.FarSideError): the URL without its userinfo and its query, the NUL as U+FFFD, and
+// every other word as written.
+const releaseFarSideKept = `Delete "https://api.example/apis": the server refused` + "\uFFFD" + ` the request`
+
+// cybermonklabs/legion#4463: every far side's error text the daemon stores, serves or logs is kept
+// as storetext.FarSideError keeps it, valid text with no URL userinfo or query, and the release's
+// result is stored (project_releases.result) and served (its GET, the state's projectRelease). So
+// each path by which an error's text enters the result keeps it that way: the reason of an issue
+// pod the release left because the runtime refused its delete (leave), the reason of a repository
+// cache whose delete the runtime refused (takeOthers), the detail of a claim's line when the claims
+// could not be read at the end (writeClaims), and the release's failure when the project's
+// Sandboxes could not be listed (fail).
+func TestProjectReleaseKeepsAFarSidesErrorTextAsTheStoreKeepsIt(t *testing.T) {
+	refused := errors.New(releaseFarSideError)
+	for _, tc := range []struct {
+		name string
+		// text runs the release and answers the text of its result that took the error's.
+		text func(t *testing.T) string
+	}{
+		{"the reason of an issue pod whose delete the runtime refused", func(t *testing.T) string {
+			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+			token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+			// A retired claim holds no process: its pod is deleted unread, once its stop settled at
+			// once.
+			if _, _, err := sup.Create(context.Background(), supervise.Claim{Token: token, Project: "legion", Tree: "LEGION-208",
+				Issue: "LEGION-208", Role: claim.RoleImplementer, Session: "ses_implementer", State: supervise.StateRetired}, ""); err != nil {
+				t.Fatal(err)
+			}
+			records := &releaseRecord{claims: sup.deps.Store.(*outboxClaimStore), finished: make(chan json.RawMessage, 1),
+				stop: []store.ProjectReleaseClaim{{Token: token, Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleImplementer,
+					Session: "ses_implementer", State: supervise.StateWorking}}}
+			pods := &releasePods{sandboxes: []runtime.ProjectSandbox{{Name: "legion-legion-legion-208", Kind: runtime.ProjectSandboxIssue,
+				Issue: "LEGION-208", Tree: "LEGION-208", PodUID: "uid-208", ConfiguredImage: true}}, deleteErr: refused}
+			line := releaseLine(t, api.ProjectReleaseResponse{Result: runRelease(t, records, sup, pods)}, "legion-legion-legion-208")
+			if line.Outcome != api.ReleaseLeft {
+				t.Errorf("the pod's line is %+v, want it left for its refused delete", line)
+			}
+			return line.Reason
+		}},
+		{"the reason of a repository cache whose delete the runtime refused", func(t *testing.T) string {
+			pods := controllerPods()
+			pods.deleteErr = refused
+			line := releaseLine(t, releaseTheController(t, &releaseRecord{}, pods), releaseCache)
+			if line.Outcome != api.ReleaseLeft {
+				t.Errorf("the cache's line is %+v, want it left for its refused delete", line)
+			}
+			return line.Reason
+		}},
+		{"the detail of a claim's line when the claims could not be read at the end", func(t *testing.T) string {
+			release := releaseTheController(t, &releaseRecord{claimsFails: projectReleaseTries, claimsErr: refused}, controllerPods())
+			return releaseClaimLine(t, release, claim.ControllerToken("legion")).Detail
+		}},
+		{"the release's failure when the project's Sandboxes could not be listed", func(t *testing.T) string {
+			pods := controllerPods()
+			pods.storeListFails, pods.storeListErr = projectReleaseTries, refused
+			return releaseTheController(t, &releaseRecord{}, pods).Result.Failure
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			text := tc.text(t)
+			for _, leaked := range []string{"secret", "token=y", "\x00"} {
+				if strings.Contains(text, leaked) {
+					t.Errorf("the text %q holds %q, which no far side's error text the store keeps holds", text, leaked)
+				}
+			}
+			if !strings.Contains(text, releaseFarSideKept) {
+				t.Errorf("the text %q lacks the rest of the far side's error, %q", text, releaseFarSideKept)
+			}
+		})
+	}
 }

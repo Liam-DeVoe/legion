@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -43,7 +44,9 @@ func (r *projectReleaser) readAll(ctx context.Context, run *releaseRun, pods []*
 }
 
 // read reads issue's workspace through one running role's shim, the first by token. A pod where
-// no role process runs now is unread; a shim that refused, and a read that failed, are a refusal.
+// no role process runs now is unread; a shim that refused, and a read that failed, are a refusal,
+// whose text is the error's as the store keeps a far side's error text (storetext.FarSideError):
+// a runtime's error names the request's URL, with its query.
 func (r *projectReleaser) read(ctx context.Context, issue string) releaseRead {
 	running := runningClaims(r.issueViews(issue))
 	if len(running) == 0 {
@@ -51,7 +54,7 @@ func (r *projectReleaser) read(ctx context.Context, issue string) releaseRead {
 	}
 	work, err := r.pods.ReadUnpushed(ctx, issue, running[0].Role)
 	if err != nil {
-		return releaseRead{read: true, refusal: err.Error()}
+		return releaseRead{read: true, refusal: storetext.FarSideError(err.Error())}
 	}
 	return releaseRead{read: true, work: work}
 }
@@ -502,8 +505,11 @@ func deletedOutcome(read releaseRead) api.ReleaseOutcome {
 // operator, so no boot starts any of them (R6, R8), and every claim of the pod is taken out of its
 // update round (hold). The release waits for each hold to be stored before it finishes, and a
 // refusal of one is written on that claim's line. The line gives why as its first reason, and after
-// it each round the release could not end.
+// it each round the release could not end. Why can carry a far side's error text — a delete the
+// runtime refused, an ask the store did not take, a stop a machine refused — so it is kept as the
+// store keeps such a text (storetext.FarSideError), in the line, the hold's reason and the log.
 func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *releasePod, why string) {
+	why = storetext.FarSideError(why)
 	held := releaseStopTokens(pod.stop)
 	var others []claim.Token
 	for _, v := range r.issueViews(pod.sandbox.Issue) {
@@ -532,7 +538,8 @@ func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *relea
 // release is stopping. A claim of others that records no round has nothing done to it. Each
 // claim's requests run on a goroutine of its own, under a store mark of its own, and hold returns
 // once each was answered, with a sentence for each round it could not end, which the caller
-// writes on the Sandbox's line.
+// writes on the Sandbox's line: the sentence keeps the round end's error as the store keeps a far
+// side's error text (storetext.FarSideError).
 func (r *projectReleaser) hold(ctx context.Context, run *releaseRun, held, others []claim.Token, reason string) []string {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -560,7 +567,8 @@ func (r *projectReleaser) hold(ctx context.Context, run *releaseRun, held, other
 					r.log.Warn("project release: take a claim of a Sandbox it leaves out of its update round",
 						"release", run.id, "claim", token, "round", round, "error", err)
 					mu.Lock()
-					unended = append(unended, fmt.Sprintf("%s is still in pod update round %s, which the release could not end: %v", token, round, err))
+					unended = append(unended, fmt.Sprintf("%s is still in pod update round %s, which the release could not end: %s",
+						token, round, storetext.FarSideError(err.Error())))
 					mu.Unlock()
 				}
 			}

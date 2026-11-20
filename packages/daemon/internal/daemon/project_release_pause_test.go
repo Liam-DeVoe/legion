@@ -270,6 +270,7 @@ func TestAPauseIsRefusedWhileAReleaseRuns(t *testing.T) {
 	rig.launchAll()
 	waiting := rig.issue("waiting")
 
+	rig.awaitReportsSinceLastTurn()
 	args := rig.releaseArgs("--bound", "40s")
 	done := make(chan idleRigCommand, 1)
 	go func() { done <- legionRun(legion, args...) }()

@@ -73,6 +73,9 @@ func TestProjectReleaseAsksARoleThatReportsBackgroundWork(t *testing.T) {
 			check, issue.pod, line.Outcome, dryAsked[issue.pod])
 	}
 
+	// Every rig release waits first for the reports it reads; each report above postdates its
+	// role's last turn, so here the wait passes at once.
+	rig.awaitReportsSinceLastTurn()
 	args := rig.releaseArgs("--bound", "90s")
 	done := make(chan idleRigCommand, 1)
 	go func() { done <- legionRun(legion, args...) }()

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -718,7 +719,9 @@ func byViewToken(a, b supervise.ClaimView) int {
 // fence finds written since it was decided, leaves that Sandbox, named with the refusal, as does a
 // Sandbox of a kind the release does not know. A controller's pod left — its claim not stored
 // suspended in time, or its delete refused — has the controller's claim held for an operator, as a
-// left issue pod's claims are (hold), so no boot starts the controller while its pod stands.
+// left issue pod's claims are (hold), so no boot starts the controller while its pod stands. A
+// left Sandbox's reason, the hold's and the log's, is the error's text as the store keeps a far
+// side's (storetext.FarSideError): a runtime's error names the request's URL, with its query.
 func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, others []int) {
 	var controllers []claim.Token
 	for _, c := range run.stop {
@@ -740,26 +743,30 @@ func (r *projectReleaser) takeOthers(ctx context.Context, run *releaseRun, other
 			} else {
 				err = r.pods.ReleaseProjectController(ctx, controller)
 			}
-			if err != nil {
-				if unended := r.hold(ctx, run, controllers, nil, "the project release leaves the controller's pod: "+err.Error()); len(unended) > 0 {
-					err = fmt.Errorf("%w"+reasonSeparator+"%s", err, strings.Join(unended, reasonSeparator))
-				}
-			}
 		case runtime.ProjectSandboxCache, runtime.ProjectSandboxProbe:
 			err = r.pods.DeleteProjectSandbox(ctx, line.Name)
 		default:
 			err = errors.New(releaseUnknownKind)
 		}
+		var reason string
+		if err != nil {
+			reason = storetext.FarSideError(err.Error())
+			if line.Kind == runtime.ProjectSandboxController {
+				if unended := r.hold(ctx, run, controllers, nil, "the project release leaves the controller's pod: "+reason); len(unended) > 0 {
+					reason = strings.Join(append([]string{reason}, unended...), reasonSeparator)
+				}
+			}
+		}
 		run.mu.Lock()
 		at := &run.result.Sandboxes[i]
 		if err != nil {
-			at.Outcome, at.Reason = api.ReleaseLeft, err.Error()
+			at.Outcome, at.Reason = api.ReleaseLeft, reason
 		} else {
 			at.Outcome = api.ReleaseDeleted
 		}
 		run.mu.Unlock()
 		if err != nil {
-			r.log.Warn("project release: left a Sandbox", "release", run.id, "sandbox", line.Name, "kind", line.Kind, "reason", err)
+			r.log.Warn("project release: left a Sandbox", "release", run.id, "sandbox", line.Name, "kind", line.Kind, "reason", reason)
 		} else {
 			r.log.Info("project release: deleted a Sandbox", "release", run.id, "sandbox", line.Name, "kind", line.Kind)
 		}
@@ -838,7 +845,10 @@ func (r *projectReleaser) writeFinish(ctx context.Context, run *releaseRun, resu
 // stored suspended in time. A read of the store that fails is made again, retry later, up to
 // projectReleaseTries reads in all (tryBounded), since one that failed would leave every line's
 // end unwritten for the whole release; a store that cannot be read at any of them leaves each
-// line's end unwritten, saying so, rather than naming one the release did not read.
+// line's end unwritten, saying so, rather than naming one the release did not read. A line's
+// detail is written in one place, as the store keeps a far side's error text
+// (storetext.FarSideError): it carries a machine's refusal of the stop, the store's answer to a
+// read of the claim, or the read of the claims that failed here.
 func (r *projectReleaser) writeClaims(ctx context.Context, run *releaseRun, pending map[claim.Token]string) {
 	var claims []supervise.Claim
 	err := r.tryBounded(ctx, r.retry, "project release: read the claims it stopped; reading them again", func() error {
@@ -857,15 +867,18 @@ func (r *projectReleaser) writeClaims(ctx context.Context, run *releaseRun, pend
 	defer run.mu.Unlock()
 	for i := range run.result.Claims {
 		line := &run.result.Claims[i]
-		if why, ok := run.detail[line.Token]; ok {
-			line.Detail = why
-		}
+		detail, explained := run.detail[line.Token]
 		if why, ok := pending[line.Token]; ok {
-			line.Detail = why
+			detail, explained = why, true
+		}
+		if err != nil {
+			detail, explained = "how it stands is not known: the release could not read the claims at its end: "+err.Error(), true
+		}
+		if explained {
+			line.Detail = storetext.FarSideError(detail)
 		}
 		if err != nil {
 			line.Ended, line.BootStarts = "", false
-			line.Detail = "how it stands is not known: the release could not read the claims at its end: " + err.Error()
 			continue
 		}
 		c, ok := stored[line.Token]
@@ -879,8 +892,11 @@ func (r *projectReleaser) writeClaims(ctx context.Context, run *releaseRun, pend
 }
 
 // fail records a release that could not go on with what stopped it, and finishes it: nothing more
-// of it acts, and the boot ends it as it ends any release.
+// of it acts, and the boot ends it as it ends any release. Why can carry a far side's error text,
+// such as a list of the project's Sandboxes the API server refused, so it is logged and kept as
+// the store keeps such a text (storetext.FarSideError).
 func (r *projectReleaser) fail(ctx context.Context, run *releaseRun, why string) {
+	why = storetext.FarSideError(why)
 	r.log.Error("project release: stopped short of its acts", "release", run.id, "reason", why)
 	run.mu.Lock()
 	run.result.Failure = why

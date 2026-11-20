@@ -9,12 +9,15 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -30,10 +33,12 @@ import (
 // bound, then the stops, the deletes and the pods going in the rig's Kubernetes API.
 const idleRigProjectReleaseWait = 3 * time.Minute
 
-// startRelease starts the project release with bound over the operator's route and answers the
-// record the daemon answered it with, 202.
+// startRelease starts the project release with bound over the operator's route, once every role
+// whose report the release reads has reported since its last turn (awaitReportsSinceLastTurn),
+// and answers the record the daemon answered it with, 202.
 func (r *idleWakeRig) startRelease(bound string) api.ProjectReleaseResponse {
 	r.t.Helper()
+	r.awaitReportsSinceLastTurn()
 	status, body := r.api.request(http.MethodPost, api.ProjectReleaseRoute, api.ProjectReleaseRequest{Bound: bound}, true)
 	if status != http.StatusAccepted {
 		r.t.Fatalf("POST %s = %d, want 202; body %s", api.ProjectReleaseRoute, status, body)
@@ -43,6 +48,81 @@ func (r *idleWakeRig) startRelease(bound string) api.ProjectReleaseResponse {
 		r.t.Fatalf("decode the release's record %s: %v", body, err)
 	}
 	return started
+}
+
+// awaitReportsSinceLastTurn waits until each role whose activity report a project release reads
+// has sent one since its last turn started, which every rig path that starts a release waits for
+// first. Since dispatch://INFRA-3583 spec v21's R6 the release asks a read pod a role of which has
+// sent no report since its last turn (projectReleaser.asks and background, where
+// claim.ReadSessionWork answers claim.WorkUnreported), as it asks a pod with unpushed work. The
+// rig's role process reports at a turn's end and 250 ms and a second after it
+// (idleRigRoleProcess.prompted), so a release started right after a turn, or while a daemon slow
+// under the race detector has yet to stamp the turn's start, can ask a pod its test means to be
+// asked nothing, and leave it when the bound gives its roles no time to answer.
+//
+// It reads the claims the release reads: of each issue whose pod the release reads, one a role
+// process of which runs and has said it is ready (runningClaims), each claim that records a process
+// and is not gone (background). The last turn's start is the daemon's own view of the claim, the
+// operator's listing, which serves a supervised claim as its machine holds it; the report is the
+// claim row's at the launch that view names, as the release reads it (store.Store.ClaimActivity),
+// since the activity route writes the store alone. A role whose plan keeps it in a turn
+// (idleRigPlan.StayInTurn) is passed over: it sends no report until the plan ends that turn, and
+// the release asks its pod for the turn whatever its report says (asks, inTurn).
+func (r *idleWakeRig) awaitReportsSinceLastTurn() {
+	r.t.Helper()
+	var unreported []claim.Token
+	defer func() {
+		if r.t.Failed() {
+			r.t.Logf("the claims a project release reads that have sent no activity report since their last turn started: %v", unreported)
+		}
+	}()
+	idleRigEventually(r.t, idleRigRecordWait, "an activity report since its last turn started from each role of a pod a project release reads", func() bool {
+		claims := r.api.claims()
+		read := map[string]bool{}
+		for _, c := range claims {
+			if c.Issue != "" && c.Locator != nil && supervise.SaidReady(supervise.ClaimState(c.State)) {
+				read[c.Issue] = true
+			}
+		}
+		unreported = unreported[:0]
+		for _, c := range claims {
+			if !read[c.Issue] || c.Locator == nil || supervise.IsGone(supervise.ClaimState(c.State)) ||
+				r.agents.planOf(c.Issue, string(c.Role)).StayInTurn {
+				continue
+			}
+			var lastTurn time.Time
+			if c.LastTurnStart != nil {
+				lastTurn = *c.LastTurnStart
+			}
+			reportedAt, background := r.activityReport(c.Token, c.Generation)
+			if claim.ReadSessionWork(reportedAt, lastTurn, background) == claim.WorkUnreported {
+				unreported = append(unreported, c.Token)
+			}
+		}
+		return len(unreported) == 0
+	})
+}
+
+// activityReport is when the claim row's activity report of token's launch generation was read,
+// and whether it named background work running: the columns store.Store.ClaimActivity reads, the
+// zero time where that launch has reported nothing.
+func (r *idleWakeRig) activityReport(token claim.Token, generation uint64) (time.Time, bool) {
+	r.t.Helper()
+	var at *time.Time
+	var background bool
+	err := r.pool.QueryRow(context.Background(),
+		`select activity_at, activity_background from claims where token = $1 and generation = $2`,
+		string(token), int64(generation)).Scan(&at, &background)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false
+	}
+	if err != nil {
+		r.t.Fatalf("read the activity report of %s at generation %d: %v", token, generation, err)
+	}
+	if at == nil {
+		return time.Time{}, false
+	}
+	return *at, background
 }
 
 // readRelease is the release's GET as the daemon served it, decoded and raw.
