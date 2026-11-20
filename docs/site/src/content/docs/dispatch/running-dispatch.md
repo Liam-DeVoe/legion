@@ -441,19 +441,34 @@ address finds: a replacement the broker never applied, because it was still owed
 database was lost, leaves the broker's record of the address where it was; an address first
 signed in after the backup has no row to compare; and a refusal at the broker can be the stale
 side as well as Dispatch's row. The reset ends all of it, and costs every person one sign-in and
-every agent a new personal token. Four steps, in order:
+every agent a new personal token. Five steps, in order:
 
-1. End every browser session and revoke every personal token, on Dispatch's database.
-2. End every person's credential at the broker.
+1. End every browser session and revoke every personal token, on Dispatch's database. This records
+   the reset's start.
+2. End every person's credential at the broker, at once.
 3. Clear a refusal at the broker only where the Workspace directory names the refused account as
    the address's holder.
-4. Start Dispatch again.
+4. No sooner than an hour and ten minutes after step 1, end every person's credential at the broker
+   again, then close the reset, which records its end.
+5. Start Dispatch again.
 
 Stop every Dispatch process before the first step (scale its Deployment to zero), as the move
 between the pool and a domain below does, so no sign-in and no token mint runs while the steps
-do; the broker keeps serving. Start step 2 no sooner than one hour after the database was lost:
-the broker can still trade a Google ID token it accepted before the address moved during that
-hour, and restored Dispatch can still record that old account until the reset's steps finish.
+do; the broker keeps serving. Keep every process stopped until the reset is closed, and tell
+people not to sign in at the broker (`agent-secrets login`, the approval page) until step 5: the
+broker serves a sign-in without asking Dispatch. Step 1 settles every owed broker revocation, the
+ones restored Dispatch recorded after the restore included, so the broker never refuses the
+accounts they name, and step 2 ends at once whatever those accounts hold at the broker. A refusal
+would also have stopped a Google ID token issued to such an account before its address moved,
+which lives at most an hour, and the broker can still trade one during that hour. Every move
+Dispatch recorded comes before step 1, an operator's block run after the stop included, so an hour
+after step 1 every such token has expired. The ten minutes more cover the broker's clock, which
+checks each token's expiry and stamps each credential, against Dispatch's database's, which stamps
+the reset's start; widen them where the two clocks are further apart. Step 4 then ends whatever
+such a token traded, and the close refuses until that wait has passed and its own read of the
+broker finds no person credential live that was made before the wait ended. One made after it can
+only be the address holder's, so the close leaves it, and a person who signed in early keeps
+Dispatch down no longer.
 
 **End every browser session and revoke every personal token.** A cookie carries its address and a
 generation, and Dispatch admits it while the generation is its address's in `user_sessions`, so
@@ -465,12 +480,14 @@ and floor Dispatch holds plus one. It writes that number first as the deployment
 made later starts, so an address the restored database has never seen also starts above every
 cookie of the lost history; then it raises the rows, revokes every personal token, and settles
 every restored broker revocation, each of which the credentials and directory steps cover instead
-of letting the first pass after the reset apply it at the broker. A restored database may have
-brought each token back from an account that no longer holds its address. The time term is what
-keeps a second restore from undoing the first reset: restored to before it, the database loses both
-the floor and the raised rows, and the cookies issued under the first reset's number would match a
-raise to that same number again; a reset run later takes a later time, so its number is above the
-first one's, as long as the database's clock has not been
+of letting the first pass after the reset apply it at the broker. Last it records the reset's start
+(`deployment_resets`, migration `20261120144819`) with the transaction's own `now()`, the very
+`done_at` of every revocation it settles, which the recovery after a broker restored alone reads
+(below). A restored database may have brought each token back from an account that no longer holds
+its address. The time term is what keeps a second restore from undoing the first reset: restored
+to before it, the database loses both the floor and the raised rows, and the cookies issued under
+the first reset's number would match a raise to that same number again; a reset run later takes a
+later time, so its number is above the first one's, as long as the database's clock has not been
 set back by more than the time between the two. The broker's term keeps the number at or above
 every generation the broker recorded, so it refuses no approve `APPROVER_REPLACED` for it. The
 number is about 1.8 × 10¹⁵, inside a JSON number's exact range. The block reads the broker's
@@ -491,13 +508,15 @@ insert into session_generation_floors (login, generation) select '*', generation
 update user_sessions set generation = r.generation from reset_generation r where user_sessions.generation < r.generation;
 update agent_tokens set revoked_at = now() where revoked_at is null;
 update broker_revocations set done_at = now() where done_at is null;
+insert into deployment_resets (mark) values ('start');
 select generation from reset_generation;
 commit;
 SQL
 )
 ```
 
-It prints the number it raised to. Run again, it raises again, past the first number.
+It prints the number it raised to. Run again, it raises again, past the first number, and records
+a later start.
 
 **End every person's credential at the broker.** The broker serves a person's sign-in on a
 machine, a machine login a person approved and an approval-page session without asking Dispatch,
@@ -550,7 +569,8 @@ Only `no person credential is live at the broker` means done. `STILL LIVE` lists
 machine login by id and person, and each login with a page session, that no call ended; the lines
 above give the broker's answer for each: for `ACCOUNT_TOKEN_EXPIRED` mint another token, for any
 other answer fix what it names, and run the block again. `UNKNOWN` says nothing about the broker:
-run it again once `$BROKER_PSQL_URL` connects.
+run it again once `$BROKER_PSQL_URL` connects. Run the block right after step 1, and again for step
+4, no sooner than an hour and ten minutes after step 1.
 
 **Clear a refusal only for the directory's holder.** The broker refuses each account a
 revocation named, under each address, and a restored Dispatch cannot tell which of those refusals
@@ -595,7 +615,7 @@ while read -r person; do
   id=$(printf '%s' "$answer" | jq -r '.id') && email=$(printf '%s' "$answer" | jq -r '.primaryEmail' | tr '[:upper:]' '[:lower:]') || { echo "UNKNOWN $person: the directory's 200 answer did not parse"; unknown=1; continue; }
   if [ "$email" != "$person" ]; then echo "NO ACCOUNT $person: the directory names $email"; continue; fi
   echo "HOLDER $person $id"
-  psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person="$person" -v issuer='https://accounts.google.com' -v subject="$id" <<'SQL'
+  psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -v person="$person" -v issuer='https://accounts.google.com' -v subject="$id" <<'SQL' || { echo "NOT CLEARED $person: the broker database refused the clear"; unknown=1; }
 begin;
 select set_config('broker.replaced_subject_delete', jsonb_build_array(pg_current_xact_id()::text, :'person', :'issuer', :'subject')::text, true);
 delete from replaced_person_subjects where person = :'person' and issuer = :'issuer' and subject = :'subject';
@@ -608,20 +628,65 @@ done <<< "$people"
 
 `HOLDER` names each address whose holder the directory gave; the delete after it deletes nothing
 where the broker did not refuse that account. `NO ACCOUNT` leaves the address's refusals as they
-are. `UNKNOWN` leaves every refusal alone and makes the block fail, so correct the directory read
-and run the block again. For an address the directory answered `404` for, the holder is whoever
-signs in to Dispatch as that address once it is back: Google gives an ID token for an address to
-the account that holds it alone. Once that person has signed in, read the account the address
-records (`select sub from people where email = '<address>'`); if the broker refuses that `sub` at
-the address, clear it with the broker clear above.
+are. `UNKNOWN` leaves every refusal alone and makes the block fail, and so does `NOT CLEARED`, a
+clear the broker's database refused, which leaves that holder refused: correct the read or the
+database and run the block again. For an address the directory answered `404` for, the holder is
+whoever signs in to Dispatch as that address once it is back: Google gives an ID token for an
+address to the account that holds it alone. Once that person has signed in, read the account the
+address records (`select sub from people where email = '<address>'`); if the broker refuses that
+`sub` at the address, clear it with the broker clear above.
 
-**Start Dispatch again.** A sign-in by an account other than the one
-the restored `people` row records is a replacement Dispatch records as any other: it ends the
-recorded account's sessions, revokes its tokens, and owes the broker its revocation, at the raised
-generation, which the broker applies. The directory's holder can sign in and approve; an account
-the broker refuses that the directory did not name stays refused.
+**End every person's credential at the broker again, and close the reset.** No sooner than an hour
+and ten minutes after step 1, run **End every person's credential at the broker** again, until it
+prints `no person credential is live at the broker`, then close the reset. The close first reads
+Dispatch's database for the open reset, the newest mark by `id`, which must be a start, and its
+wait, and it reads the broker only once the wait has passed, so no read made inside the wait can
+stand for a close recorded after it. It then reads the broker's database with the credentials
+block's own three lists, less what was made after the wait ended, which only an address's holder
+can make, and records the reset's end only when none is live. It prints `NOT CLOSED` when no reset
+is open or the wait has not passed, `STILL LIVE` with each credential it found, and `UNKNOWN` when
+a database cannot be read, and changes nothing for any of them:
 
-Only after step 4 has started Dispatch, each machine logs in again (`agent-secrets machine login`,
+```sh
+(
+set -o pipefail
+cutoff=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -qAt <<'SQL'
+select case when m.mark is distinct from 'start' then 'none' when now() < m.at + interval '1 hour 10 minutes' then 'early' else to_char((m.at + interval '1 hour 10 minutes') at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') end from (select 1) one left join lateral (select mark, at from deployment_resets order by id desc limit 1) m on true;
+SQL
+) || { echo "UNKNOWN: Dispatch's database could not be read or written, so the reset is not closed"; exit 1; }
+case "$cutoff" in
+none) echo 'NOT CLOSED: no reset is open, as the newest mark is not a start; run step 1 first'; exit 1 ;;
+early) echo 'NOT CLOSED: an hour and ten minutes have not passed since step 1; run the credentials block again once they have, then this one'; exit 1 ;;
+[0-9][0-9][0-9][0-9]-*Z) ;;
+*) echo "UNKNOWN: Dispatch's database answered '$cutoff' for the reset's wait, so the reset is not closed"; exit 1 ;;
+esac
+signins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select id, person from person_signins where revoked_at is null and created_at < '$cutoff' order by id"; }
+logins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select c.id, r.approver from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null and c.created_at < '$cutoff' order by c.id"; }
+pages() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -c "select distinct login from browser_sessions where expires_at > now() and created_at < '$cutoff' order by login"; }
+left=$( { signins && logins && pages; } ) || { echo 'UNKNOWN: the broker database could not be read, so the reset is not closed'; exit 1; }
+if [ -n "$left" ]; then printf 'STILL LIVE, so the reset is not closed: run the credentials block again, then this one\n%s\n' "$left"; exit 1; fi
+ended=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -qAt <<'SQL'
+insert into deployment_resets (mark) select 'end' from (select mark, at from deployment_resets order by id desc limit 1) m where m.mark = 'start' and now() >= m.at + interval '1 hour 10 minutes' returning at;
+SQL
+) || { echo "UNKNOWN: Dispatch's database could not be read or written, so the reset is not closed"; exit 1; }
+[ -n "$ended" ] || { echo 'NOT CLOSED: step 1 ran again since this close read the wait; run the credentials block again once its wait has passed, then this one'; exit 1; }
+echo "the reset ended at $ended"
+)
+```
+
+Only `the reset ended at <moment>` means done; for `STILL LIVE`, run the credentials block again
+and then the close. A person who signed in at the broker during the wait is among what it lists,
+and signs in again once Dispatch is back, as every person does. The database holds every end to
+the same rule: `deployment_resets` takes an end only when the newest mark, by `id`, is a start an
+hour and ten minutes old.
+
+**Start Dispatch again**, once the close has printed `the reset ended at`. A sign-in by an account
+other than the one the restored `people` row records is a replacement Dispatch records as any
+other: it ends the recorded account's sessions, revokes its tokens, and owes the broker its
+revocation, at the raised generation, which the broker applies. The directory's holder can sign
+in and approve; an account the broker refuses that the directory did not name stays refused.
+
+Only after step 5 has started Dispatch, each machine logs in again (`agent-secrets machine login`,
 approved by its person) and each person signs in again on the approval page and with
 `agent-secrets login`. Mint every agent a new personal token too, including the Legion daemon's
 token in its `dispatch_token_file`.
@@ -629,8 +694,9 @@ token in its `dispatch_token_file`.
 `api.TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal` runs these blocks from this
 page against Dispatch's database and a real broker's, over the histories a lone restore leaves:
 a replacement the broker never applied, an address recorded with no account, and a take-back the
-lost database still owed. `store.TestTheResetEndsEveryCookieAndToken` runs the first block alone,
-over a second restore from before a first reset.
+lost database still owed. `api.TestTheResetClosesOnlyAnHourAfterItsStartOnACleanRead` runs the
+credentials block's two runs and the close. `store.TestTheResetEndsEveryCookieAndToken` runs the
+first block alone, over a second restore from before a first reset.
 
 The other way round, when it is **the broker's database that was restored alone**, nothing above
 finds it: every revocation Dispatch paid before the restore is settled at Dispatch, so the loop
@@ -641,27 +707,32 @@ without asking Dispatch. Dispatch refuses them itself from the replacing commit
 (`brokerAccountReplaced`), so this is about the broker's own secrets.
 
 So tell the broker again every revocation Dispatch settled at or after the moment the broker's
-backup was taken, less an hour. The hour is a margin, and the comparison needs one: the moment
-comes from the backup's own record, on another server's clock and often rounded to the minute or
-written as the backup's end rather than its snapshot point, while `done_at` is Dispatch's
-database's `now()`. A revocation the broker applied just after the snapshot, settled at Dispatch
-a few seconds before the moment as written, would otherwise be left out, and that account keeps
-its credentials at the broker with no gauge showing it. A revocation the restored broker still
-holds is told again too, and that is no free call: the block records it again at the address's
-session generation now and names the account `people` records now as the holder, so the broker
-applies it as a replacement at that generation. It ends again whatever the replaced account
-holds, which a restored broker may have brought back; it raises the generation the broker
-recorded for the address to Dispatch's, where it was lower; and, since a revoke names the holder,
-it lifts any refusal of the address's account now. So the margin only has to cover the skew, and
-an hour covers a rounded moment too; widen it where the two clocks are further apart than that, or
-where the backup's moment is less exact.
+backup was taken, less an hour, and after the last reset's start where a reset ran: the block reads
+that start from `deployment_resets`, the newest start by `id`, never by its moment, since the table
+exists because a clock can be set back between two resets. The reset settled the revocations
+restored Dispatch owed without paying them, each with that start's very moment as its `done_at`,
+and its credentials and directory blocks stand in for them; told again, such a revocation names as
+holder the account the restored `people` row records, so it would refuse again at the broker a
+directory's holder the reset cleared, and end that holder's new broker sign-in at Dispatch's first
+pass. The hour is a margin, and the comparison needs one: the moment comes from the backup's own
+record, on another server's clock and often rounded to the minute or written as the backup's end
+rather than its snapshot point, while `done_at` is Dispatch's database's `now()`. A revocation the
+broker applied just after the snapshot, settled at Dispatch a few seconds before the moment as
+written, would otherwise be left out, and that account keeps its credentials at the broker with no
+gauge showing it. A revocation the restored broker still holds is told again too, and that is no
+free call: the block records it again at the address's session generation now and names the
+account `people` records now as the holder, so the broker applies it as a replacement at that
+generation. It ends again whatever the replaced account holds, which a restored broker may have
+brought back; it raises the generation the broker recorded for the address to Dispatch's, where it
+was lower; and, since a revoke names the holder, it lifts any refusal of the address's account now.
+So the margin only has to cover the skew, and an hour covers a rounded moment too; widen it where
+the two clocks are further apart than that, or where the backup's moment is less exact.
 
 A broker database **made again**, rather than restored, has no such moment: it has forgotten every
 refusal and every replacement. Give the block `-infinity`, so it records again every revocation
-Dispatch has ever settled, and the loop tells the broker each. If the deployment floor row `*`
-exists, a reset ran before this broker was made again; after the record-again block, run those same
-credentials and directory blocks again before starting Dispatch. The broker made again has no
-backup moment to compare, so the floor's existence is the instruction.
+Dispatch has settled since the last reset's start, or ever where none ran, and the loop tells the
+broker each. Then read whether the reset's blocks run again (below), with `-infinity` for the
+backup's moment: they do whenever a reset ran before this broker was made again.
 
 The block records each again at its next generation, naming the account the address records now
 as its holder and the address's session generation, exactly as the record-again block above does
@@ -674,34 +745,78 @@ of it and the database's own check, which would refuse the whole statement with 
 ```sh
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v backup='<the moment the broker''s backup was taken>' <<'SQL'
 begin;
-select u.generation from user_sessions u where u.login in (select r.email from broker_revocations r where r.done_at >= :'backup'::timestamptz - interval '1 hour') order by u.login for update;
-update broker_revocations set generation = generation + 1, holder_subject = (select sub from people where people.email = broker_revocations.email), session_generation = (select generation from user_sessions where user_sessions.login = broker_revocations.email), done_at = null, recorded_at = clock_timestamp() where done_at >= :'backup'::timestamptz - interval '1 hour' and (select sub from people where people.email = broker_revocations.email) is not null and (select sub from people where people.email = broker_revocations.email) <> broker_revocations.subject;
+select u.generation from user_sessions u where u.login in (select r.email from broker_revocations r where r.done_at >= :'backup'::timestamptz - interval '1 hour' and r.done_at > coalesce((select d.at from deployment_resets d where d.mark = 'start' order by d.id desc limit 1), '-infinity'::timestamptz)) order by u.login for update;
+update broker_revocations set generation = generation + 1, holder_subject = (select sub from people where people.email = broker_revocations.email), session_generation = (select generation from user_sessions where user_sessions.login = broker_revocations.email), done_at = null, recorded_at = clock_timestamp() where done_at >= :'backup'::timestamptz - interval '1 hour' and done_at > coalesce((select d.at from deployment_resets d where d.mark = 'start' order by d.id desc limit 1), '-infinity'::timestamptz) and (select sub from people where people.email = broker_revocations.email) is not null and (select sub from people where people.email = broker_revocations.email) <> broker_revocations.subject;
 commit;
 SQL
 ```
 
 The loop then pays each, and the broker ends those accounts' credentials and refuses them again
 (`api.TestABrokerRestoredAloneIsRecoveredByTellingItAgainWhatWasSettledSince` runs this block
-against a real broker restored behind Dispatch, a take-back among its addresses). It recovers
-nothing the broker's backup already holds. A revocation still owed when the broker comes back,
-one Dispatch recorded while it was down, is the loop's own and is paid as any other. A
-revocation an operator settled by hand with `clear-broker-revocation` is recorded again too, which
-is right — the broker was never told — unless the account it names holds the address again, which
-the statement leaves out.
+against a real broker restored behind Dispatch, a take-back among its addresses, and
+`api.TestABrokerRestoredBeforeTheResetLeavesTheDirectorysHolderCleared` runs it after a reset).
+It recovers nothing the broker's backup already holds. A revocation still owed when the broker
+comes back, one Dispatch recorded while it was down, is the loop's own and is paid as any other. A
+revocation an operator settled by hand with `clear-broker-revocation` after the last reset's start
+is recorded again too, which is right — the broker was never told — unless the account it names
+holds the address again, which the statement leaves out; one settled before that start is the
+reset's, whose blocks stand in for it.
 
-A broker backup can also predate a reset that ended every person credential at the broker. Read the
-reset's moment from Dispatch's deployment floor:
+A broker backup can also predate the end of a reset that ended every person credential at the
+broker, and bring back what the reset ended, which no revocation names. After the record-again
+block, ask Dispatch's database whether it may, with the backup's moment (`-infinity` for a broker
+made again):
 
 ```sh
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -At -c "select to_timestamp(generation / 1000000.0) from session_generation_floors where login = '*'"
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -At -v backup='<the moment the broker''s backup was taken>' <<'SQL'
+select case when not exists (select 1 from deployment_resets) then 'no reset ran' when :'backup'::timestamptz - interval '1 hour' < coalesce((select e.at from deployment_resets e where e.mark = 'end' and e.id > (select s.id from deployment_resets s where s.mark = 'start' order by s.id desc limit 1) order by e.id desc limit 1), 'infinity'::timestamptz) then 'run the reset''s blocks again' else 'the backup holds the last reset' end;
+SQL
 ```
 
-The time term of the reset writes that moment, unless Dispatch's clock moved backwards before the
-reset; compare it with the broker's backup moment. When the floor is later, the broker restore has
-revived credentials the reset ended that no revocation names. After the record-again block above
-and before starting Dispatch, run **End every person's credential at the broker** and **Clear a
-refusal only for the directory's holder** again. The first ends every restored person credential;
-the second restores the directory's decision about any refusal the backup brought back.
+For `run the reset's blocks again`, run **End every person's credential at the broker** and
+**Clear a refusal only for the directory's holder** again, after the record-again block and before
+starting Dispatch. The first ends every restored person credential; the second restores the
+directory's decision about any refusal the backup brought back. The read compares the backup with
+the last reset's end, the end that follows its start by `id`, and not with its start, since the
+reset's broker steps run until its close, an hour or more after its start; a reset that was never
+closed counts as one still running, whatever the backup's moment. It takes the same hour's margin
+as record-again, since the backup's moment can be written that much after its snapshot.
+`api.TestABrokerBackupWrittenWithinTheHourAfterTheResetRepeatsItsBlocks`,
+`api.TestABrokerBackupTakenDuringTheResetRepeatsItsBlocks` and
+`api.TestABrokerBackupAfterAnUnclosedResetRepeatsItsBlocks` run it over a backup on each side and
+an unclosed reset, and `api.TestTheResetsBoundsFollowTheMarksOrderNotTheirClock` over a clock set
+back between two resets. Where the last reset is still open, Dispatch is still stopped: finish that
+reset, steps 4 and 5, rather than starting Dispatch at the end of this recovery.
+
+A broker backup can also predate a move from the Cognito pool to a domain, and bring back the
+pool-era machine logins that move's sweep ended (below), which no revocation names either. If the
+deployment ever moved from the pool to a domain, run the sweep block of that move again after the
+record-again block and before starting Dispatch. It ends every machine login that records no
+approving account: the pool's, and any that a Dispatch older than this change approved, since its
+approve named no account either. Each such machine logs in again, approved by its person
+(`api.TestABrokerRestoredFromBeforeThePoolSweepIsSweptAgain`).
+
+A refusal an operator lifted by hand with the broker clear above comes back with the restore too,
+and nothing records it: the clear writes no row, and no revocation of Dispatch names it. Each such
+refusal is of the account Dispatch records for its address now, so find them by comparing each
+address's `people.sub` with the accounts the broker refuses there. The block prints
+`REFUSES ITS HOLDER <address> <sub>` for each, or that there is none, and `UNKNOWN` when a database
+cannot be read:
+
+```sh
+(
+set -o pipefail
+recorded=$(psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select email, sub from people where sub is not null order by 1, 2") || { echo "UNKNOWN: Dispatch's database could not be read, so no refusal was compared"; exit 1; }
+refused=$(psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -F ' ' -c "select person, subject from replaced_person_subjects where issuer = 'https://accounts.google.com' order by 1, 2") || { echo 'UNKNOWN: the broker database could not be read, so no refusal was compared'; exit 1; }
+held=$(comm -12 <(printf '%s\n' "$recorded" | LC_ALL=C sort) <(printf '%s\n' "$refused" | LC_ALL=C sort) | sed '/^$/d')
+if [ -z "$held" ]; then echo 'the broker refuses no account Dispatch records'; exit 0; fi
+while read -r person sub; do echo "REFUSES ITS HOLDER $person $sub"; done <<< "$held"
+)
+```
+
+For each `REFUSES ITS HOLDER` line, check the address in the Workspace directory as the directory
+block does, then clear that refusal with the broker clear above, before starting Dispatch
+(`api.TestTheRefusalsOfAnAddressesRecordedAccountAreFound`).
 
 A revocation an earlier head of this branch recorded holds no session generation, and the broker
 refuses a revoke without one (`400 SESSION_GENERATION_REQUIRED`), so the loop's ERROR line for it
@@ -1176,7 +1291,9 @@ them the pull requests whose issue they see and the deploys that shipped them, w
 no setup form and no session-groups editor. The Priorities, Pipeline, broadcasts and
 machine-login pages answer **Page not found**, and Settings shows no Groups and no Delivery
 timeline. The API refuses them, and every token they make, every read of the whole deployment,
-`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`.
+`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`, except that they
+revoke their own credential grants and end their own sign-ins, as a full member does: the secrets
+broker decides whose each one is.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
 a token that lists no project read the private project as missing. A person who sees the project
@@ -1202,10 +1319,11 @@ this order:
    holds, and one who sees it but does not own it is `403 PROJECT_OWNER_REQUIRED`.
 3. A key the list does not name is `409 PRIVATE_PROJECT_NOT_PROVISIONED`.
 4. A store that cannot hold the project private yet is `409 PRIVATE_PROJECTS_INCOMPLETE`, naming
-   the command that repairs it: `envoy-dispatch backfill-graph-store` while a row of the project
-   has no node naming its project, `envoy-dispatch backfill-session-projects` until the sessions'
-   projects are filled, and `envoy-dispatch scrub-access-events` until the stored access events
-   are scrubbed.
+   what repairs it: each row of the project that has no node naming its project, with the cure
+   the project census prints for it (`envoy-dispatch backfill-graph-store`, or none for a node
+   that names another project, which a person compares with its row),
+   `envoy-dispatch backfill-session-projects` until the sessions' projects are filled, and
+   `envoy-dispatch scrub-access-events` until the stored access events are scrubbed.
 5. Last, in the same transaction, Dispatch writes the project's key in the hub's
    `envoy_private_projects` bucket, the record by which Envoy's listeners are to hold the
    project's messages back from a token that does not list it. When the hub refuses that write,
@@ -1233,9 +1351,9 @@ envoy-dispatch project-visibility <KEY> public
 So to take a key off the list, make the project public first, and only then remove its key. At
 start Dispatch also logs, at INFO, the listed keys no private project holds yet. With a list, each
 server logs an ERROR line as it starts, and then once an hour, while the store cannot hold a
-private project for one of the reasons of step 4, naming the reason and the command that repairs
-it. Every response carries `Dispatch-Private-Projects: 1`
-while the list names a project or the database holds a private one, and
+private project for one of the reasons of step 4, naming the reason and what repairs it. Every
+response carries `Dispatch-Private-Projects: 1` while the list names a project, the database holds
+a private one, or the server's last read of the database's private projects failed, and
 `Dispatch-Private-Projects: 0` otherwise.
 
 ## Health check
