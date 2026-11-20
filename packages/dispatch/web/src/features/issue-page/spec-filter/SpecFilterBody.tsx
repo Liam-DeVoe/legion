@@ -54,7 +54,6 @@ import { useTakeOutlineRequest } from "../outline-request";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "../page-structure";
 import {
-  ANSWER_LINES,
   authorKind,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
@@ -62,6 +61,7 @@ import {
   NODE_TYPE_NAMES,
   nodeStateWord,
   SPEC_WORDS,
+  STATE_LINES,
   sentenceCase,
   VERIFICATION_WORDS,
 } from "../page-words";
@@ -204,20 +204,33 @@ export function SpecFilterBody({
   // What decided each statement comes from the decisions read and the asks read: until both are
   // held a run whose cell draws no decision may yet have one, so nothing says that none did.
   const decidedHeld = decisionsHeld && asksHeld;
-  // Each line of the reads that failed with nothing held, in the page's words: the coverage's and
-  // the spec's blocks' as the statements', the results' and the Verification document's blocks'
-  // as the results', which leave every statement unmarked alike, then the decisions' and the
-  // asks'. A line's Retry asks again the reads of that line that failed, and no other, and none
-  // of them while it is read again already.
+  // Each line of the reads that failed with nothing held, in the page's words for a read that
+  // stands failed (`STATE_LINES`), under the key it is drawn by: the coverage's and the spec's
+  // blocks' as the statements', the results' and the Verification document's blocks' as the
+  // results', which leave every statement unmarked alike, then the decisions' and the asks', in
+  // the outline's words for those two reads. A line's Retry asks again the reads of that line that
+  // failed, and no other, and none of them while it is read again already.
   const unreadable = (
     [
-      { failed: [coverageRead, specBlocksRead], line: "statements_unreadable" },
-      { failed: [resultsRead, checksRead], line: "results_unreadable" },
-      { failed: [decisionsRead], line: "decisions_unreadable" },
-      { failed: [asksRead], line: "answers_unreadable" },
+      {
+        failed: [coverageRead, specBlocksRead],
+        line: "statements",
+        message: STATE_LINES.statements_unreadable,
+      },
+      {
+        failed: [resultsRead, checksRead],
+        line: "results",
+        message: STATE_LINES.spec_results_unreadable,
+      },
+      {
+        failed: [decisionsRead],
+        line: "decisions",
+        message: STATE_LINES.issue_decisions_unreadable,
+      },
+      { failed: [asksRead], line: "asks", message: STATE_LINES.asks_unreadable },
     ] as const
   )
-    .map(({ failed, line }) => ({ failed: failed.filter(failedWithNothing), line }))
+    .map((group) => ({ ...group, failed: group.failed.filter(failedWithNothing) }))
     .filter(({ failed }) => failed.length > 0);
   // How a reference a plain line cites is named - in the three sentences, a quote, a question,
   // a group's heading - read once over the whole tree (`referenceStandIns`), and how this issue
@@ -455,10 +468,10 @@ export function SpecFilterBody({
           focus left on nothing to a line's Retry where the view draws no row, and moves it on to
           the next line, the tab-stop row or the tree as a line that held it leaves
           (`slots/stage.tsx`). */}
-      {unreadable.map(({ failed, line }) => (
+      {unreadable.map(({ failed, line, message }) => (
         <FailedReadLine
           key={line}
-          message={ANSWER_LINES[line]}
+          message={message}
           onRetry={() => {
             for (const read of failed) if (!read.isFetching) void read.refetch();
           }}

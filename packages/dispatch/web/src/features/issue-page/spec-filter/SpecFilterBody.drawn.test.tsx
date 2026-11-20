@@ -41,12 +41,12 @@ import { TWO_THREADS } from "../outline-fixtures";
 import { OutlineRequestProvider } from "../outline-request";
 import { AUTHOR_TEXT_ATTRIBUTE, KEY_REPORTS } from "../page-structure";
 import {
-  ANSWER_LINES,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
   GAP_WORDS,
   NODE_TYPE_NAMES,
   SPEC_WORDS,
+  STATE_LINES,
   VERIFICATION_WORDS,
 } from "../page-words";
 import { presetView } from "../presets";
@@ -521,7 +521,7 @@ test("the column says no decision shaped a statement only once the decisions are
   const failed = drawBody(issueTree([statement("r1")]), [], { decisions: "failed" });
   try {
     await waitFor(() =>
-      expect(failed.view.container.textContent).toContain(ANSWER_LINES.decisions_unreadable)
+      expect(failed.view.container.textContent).toContain(STATE_LINES.issue_decisions_unreadable)
     );
     expect(textsOf(failed.view, "[data-spec-nothing]")).toEqual([]);
   } finally {
@@ -538,8 +538,7 @@ test("the column says no decision shaped a statement only once the asks are read
   for (const asks of ["out", "failed"] as const) {
     const { read, view } = drawBody(issueTree([statement("r1")]), [], { asks });
     try {
-      if (asks === "failed")
-        await waitFor(() => alertSaying(view, ANSWER_LINES.answers_unreadable));
+      if (asks === "failed") await waitFor(() => alertSaying(view, STATE_LINES.asks_unreadable));
       expect(
         textsOf(view, "[data-spec-nothing]"),
         `the column says no decision shaped r1 while the asks read is ${asks}`
@@ -1362,7 +1361,7 @@ test("an issue says it has no statements only once they are read, and a failed r
   const user = userEvent.setup();
   const { read, view } = drawBody(issueTree([]), [], { coverage: "failed" });
   try {
-    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    const alert = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
     expect(view.container.querySelector("[data-spec-empty]")).toBeNull();
     read.coverage.mockResolvedValue(coverageRead([]));
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
@@ -1371,7 +1370,7 @@ test("an issue says it has no statements only once they are read, and a failed r
         EMPTY_STATE_LINES.spec
       )
     );
-    expect(view.container.textContent).not.toContain(ANSWER_LINES.statements_unreadable);
+    expect(view.container.textContent).not.toContain(STATE_LINES.statements_unreadable);
   } finally {
     view.unmount();
     read.mockRestore();
@@ -1398,7 +1397,7 @@ test("a statement carries no mark until its results and coverage are read, and f
   const user = userEvent.setup();
   const { read, view } = drawBody(tree, [], { checks: [passed], results: "failed" });
   try {
-    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.results_unreadable));
+    const alert = await waitFor(() => alertSaying(view, STATE_LINES.spec_results_unreadable));
     expect(rowOf(view, "spec#b-r1").hasAttribute("data-spec-mark")).toBe(false);
     read.results.mockResolvedValue(resultsOf([passed]));
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
@@ -1475,8 +1474,8 @@ test("a read that fails again over the answer the page holds keeps every mark an
       rowOf(view, "spec#b-r1").getAttribute("data-spec-mark"),
       "a failed read again over the held results drops the statement's mark"
     ).toBe("met");
-    expect(view.container.textContent).not.toContain(ANSWER_LINES.results_unreadable);
-    expect(view.container.textContent).not.toContain(ANSWER_LINES.statements_unreadable);
+    expect(view.container.textContent).not.toContain(STATE_LINES.spec_results_unreadable);
+    expect(view.container.textContent).not.toContain(STATE_LINES.statements_unreadable);
   } finally {
     view.unmount();
     read.mockRestore();
@@ -1506,7 +1505,7 @@ test("a read that fails again over the statements and decisions the page holds k
       empty.view.container.querySelector("[data-spec-empty]")?.textContent,
       "a failed read again over the held coverage takes the empty line away"
     ).toBe(EMPTY_STATE_LINES.spec);
-    expect(empty.view.container.textContent).not.toContain(ANSWER_LINES.statements_unreadable);
+    expect(empty.view.container.textContent).not.toContain(STATE_LINES.statements_unreadable);
   } finally {
     empty.view.unmount();
     empty.read.mockRestore();
@@ -1523,7 +1522,7 @@ test("a read that fails again over the statements and decisions the page holds k
       view.container.querySelector("[data-spec-nothing]"),
       "a failed read again over the held decisions takes the cell's words away"
     ).not.toBeNull();
-    expect(view.container.textContent).not.toContain(ANSWER_LINES.decisions_unreadable);
+    expect(view.container.textContent).not.toContain(STATE_LINES.issue_decisions_unreadable);
   } finally {
     view.unmount();
     read.mockRestore();
@@ -1538,14 +1537,14 @@ test("Retry over a failed read of the Verification document's blocks reads them 
   const tree = issueTree([statement("r1", { children: [checkNode(passed)] })]);
   const { read, view } = drawBody(tree, [], { checks: [passed], verification: "failed" });
   try {
-    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.results_unreadable));
+    const alert = await waitFor(() => alertSaying(view, STATE_LINES.spec_results_unreadable));
     expect(rowOf(view, "spec#b-r1").hasAttribute("data-spec-mark")).toBe(false);
     read.blocks.mockResolvedValue([]);
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
     await waitFor(() =>
       expect(rowOf(view, "spec#b-r1").getAttribute("data-spec-mark")).toBe("met")
     );
-    expect(view.container.textContent).not.toContain(ANSWER_LINES.results_unreadable);
+    expect(view.container.textContent).not.toContain(STATE_LINES.spec_results_unreadable);
   } finally {
     view.unmount();
     read.mockRestore();
@@ -1778,7 +1777,7 @@ test("a refused decisions read says so in its own line, and its Retry asks that 
     decisions: "failed",
   });
   try {
-    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.decisions_unreadable));
+    const alert = await waitFor(() => alertSaying(view, STATE_LINES.issue_decisions_unreadable));
     expect(view.container.querySelectorAll('[role="alert"]')).toHaveLength(1);
     expect(view.container.querySelector("[data-spec-cell][data-decision-id]")).toBeNull();
     read.decisions.mockResolvedValue(decisionsRead(made));
@@ -1824,7 +1823,7 @@ test("a person's decision is drawn as nothing while the asks read is out, and a 
   }
   const refused = drawBody(tree, made, { asks: "failed" });
   try {
-    await waitFor(() => alertSaying(refused.view, ANSWER_LINES.answers_unreadable));
+    await waitFor(() => alertSaying(refused.view, STATE_LINES.asks_unreadable));
     expect(refused.view.container.textContent).not.toContain(SPEC_WORDS.said_agent);
   } finally {
     refused.view.unmount();
@@ -1855,8 +1854,7 @@ test("w on a statement whose person's decision waits on the asks read reports no
   for (const asks of ["out", "failed"] as const) {
     const { read, view } = drawBody(tree, made, { asks });
     try {
-      if (asks === "failed")
-        await waitFor(() => alertSaying(view, ANSWER_LINES.answers_unreadable));
+      if (asks === "failed") await waitFor(() => alertSaying(view, STATE_LINES.asks_unreadable));
       for (const id of ["r1", "r2"]) {
         const row = rowOf(view, `spec#b-${id}`);
         act(() => row.focus());
@@ -1882,7 +1880,7 @@ test("w on a statement says nothing of a missing decision while the decisions re
     const { read, view } = drawBody(issueTree([statement("r1")]), [], { decisions });
     try {
       if (decisions === "failed")
-        await waitFor(() => alertSaying(view, ANSWER_LINES.decisions_unreadable));
+        await waitFor(() => alertSaying(view, STATE_LINES.issue_decisions_unreadable));
       const row = rowOf(view, "spec#b-r1");
       act(() => row.focus());
       await user.keyboard("w");
@@ -1960,7 +1958,7 @@ test("q and w still say where they could not go while the results read is out or
     const { read, view } = drawBody(tree, [], { named: ["comment-1"], results });
     try {
       if (results === "failed")
-        await waitFor(() => alertSaying(view, ANSWER_LINES.results_unreadable));
+        await waitFor(() => alertSaying(view, STATE_LINES.spec_results_unreadable));
       const statementRow = rowOf(view, "spec#b-r1");
       const other = rowOf(view, "comment-1");
       for (const [row, key, said] of [
@@ -2097,7 +2095,7 @@ test("a statement carries its mark while the asks read is out", () => {
 test("a refused read of the spec's blocks says the statements could not be read, and the sentences say nothing", async () => {
   const { read, view } = drawBody(issueTree([]), [], { blocks: "failed" });
   try {
-    await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
     expect(view.container.textContent).not.toContain(EMPTY_STATE_LINES.spec_summary);
     expect(view.container.querySelector("[data-spec-empty]")).toBeNull();
   } finally {
@@ -2120,7 +2118,7 @@ test("with rows drawn over a refused read the first row holds the focus, and tak
   elsewhere.focus();
   const kept = drawBody(tree, [], { coverage: "failed", stage: true });
   try {
-    await waitFor(() => alertSaying(kept.view, ANSWER_LINES.statements_unreadable));
+    await waitFor(() => alertSaying(kept.view, STATE_LINES.statements_unreadable));
     expect(document.activeElement, "a Retry took the focus from elsewhere").toBe(elsewhere);
   } finally {
     kept.view.unmount();
@@ -2129,7 +2127,7 @@ test("with rows drawn over a refused read the first row holds the focus, and tak
   }
   const { read, view } = drawBody(tree, [], { coverage: "failed", stage: true });
   try {
-    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    const alert = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
     const retry = within(alert).getByRole("button", { name: "Retry" });
     await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r1")));
     act(() => retry.focus());
@@ -2296,7 +2294,7 @@ test("a Retry that brings in a view with no row leaves the focus on the tree", a
   const user = userEvent.setup();
   const { read, view } = drawBody(issueTree([]), [], { coverage: "failed", stage: true });
   try {
-    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    const alert = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
     const retry = within(alert).getByRole("button", { name: "Retry" });
     await waitFor(() => expect(document.activeElement).toBe(retry));
     read.coverage.mockResolvedValue(coverageRead([]));
@@ -2326,13 +2324,15 @@ test("a Retry whose line leaves while another line stays hands the focus to that
     stage: true,
   });
   try {
-    const results = await waitFor(() => alertSaying(view, ANSWER_LINES.results_unreadable));
-    const decisions = await waitFor(() => alertSaying(view, ANSWER_LINES.decisions_unreadable));
+    const results = await waitFor(() => alertSaying(view, STATE_LINES.spec_results_unreadable));
+    const decisions = await waitFor(() =>
+      alertSaying(view, STATE_LINES.issue_decisions_unreadable)
+    );
     act(() => within(decisions).getByRole("button", { name: "Retry" }).focus());
     read.decisions.mockResolvedValue(decisionsRead([]));
     await user.keyboard("{Enter}");
     await waitFor(() =>
-      expect(view.container.textContent).not.toContain(ANSWER_LINES.decisions_unreadable)
+      expect(view.container.textContent).not.toContain(STATE_LINES.issue_decisions_unreadable)
     );
     await waitFor(() =>
       expect(document.activeElement).toBe(within(results).getByRole("button", { name: "Retry" }))
@@ -2355,7 +2355,7 @@ test("a Retry hands the focus on once its own line's reads are in, while another
     stage: true,
   });
   try {
-    const alert = await waitFor(() => alertSaying(view, ANSWER_LINES.statements_unreadable));
+    const alert = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
     const retry = within(alert).getByRole("button", { name: "Retry" });
     await waitFor(() => expect(document.activeElement).toBe(rowOf(view, "spec#b-r1")));
     act(() => retry.focus());

@@ -3,7 +3,6 @@ import type { Locator } from "@playwright/test";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { firstLineOf } from "../web/src/features/issue-page/issue-tree";
 import {
-  ANSWER_LINES,
   CONTROL_LABELS,
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
@@ -11,6 +10,7 @@ import {
   PRESET_NAMES,
   PRESET_ORDER,
   SPEC_WORDS,
+  STATE_LINES,
   sentenceCase,
   VERIFICATION_WORDS,
   wordsIn,
@@ -1317,11 +1317,11 @@ test("the Spec view opened at its address with its statements' reads refused put
     await gotoIssue(page, presetPath(seeded.key, "spec"));
     const line = issuePage(page)
       .locator("[data-failed-read]")
-      .filter({ hasText: ANSWER_LINES.statements_unreadable });
+      .filter({ hasText: STATE_LINES.statements_unreadable });
     await expect(
       line,
       "the Spec view draws no line saying its statements could not be loaded"
-    ).toContainText(ANSWER_LINES.statements_unreadable);
+    ).toContainText(STATE_LINES.statements_unreadable);
     await expect(
       line.getByRole("button", { name: CONTROL_LABELS.retry }),
       "the statements' Retry does not hold the focus after the page's load"

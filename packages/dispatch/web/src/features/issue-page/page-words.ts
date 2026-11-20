@@ -627,6 +627,13 @@ export const STATE_LINES = freeze({
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
   decisions_document_unreadable: "Could not load the decisions document.",
+  /** What the Spec view says over its columns, on load as much as later, of a group of its reads
+   *  that stands failed, beside one Retry for the group (`spec-filter/SpecFilterBody.tsx`): the
+   *  spec's blocks and their coverage, and the results and the Verification document's blocks.
+   *  The second is not the outline's `results_unreadable` above, which names the results read
+   *  alone. */
+  statements_unreadable: "Could not load the statements.",
+  spec_results_unreadable: "Could not load the results.",
 } as const);
 
 /**
@@ -657,17 +664,10 @@ export const ANSWER_LINES = freeze({
   /** What the Spec filter says over its columns when the decisions could not be read, so the
    *  column beside each statement cannot say what shaped it. */
   decisions_unreadable: "Could not load the decisions.",
-  /** What the Spec view says when the spec's blocks or their coverage could not be read. */
-  statements_unreadable: "Could not load the statements.",
-  /** What the Spec view says when the results could not be read, so it marks no statement. */
-  results_unreadable: "Could not load the results.",
   /** What the list of what references the focused row says while its read, which the reader
    *  opened, is out, and when it failed (`node-references/NodeReferences.tsx`). */
   references_loading: "Loading references…",
   references_unreadable: "Could not load the references.",
-  /** What the Spec view says over its columns when the issue's questions and their answers could
-   *  not be read, so it draws no decision a person made. */
-  answers_unreadable: "Could not load the answers.",
   /** What a decision's Change form says when Dispatch refused its send, whatever the server
    *  answered: the reader's words stay in the field, to send again (`DecisionActions.tsx`). */
   change_not_sent: "Could not send the change.",
