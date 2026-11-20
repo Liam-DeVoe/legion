@@ -265,6 +265,50 @@ const SESSIONS: Record<
   // A read the prefix table places at the cut's copy, through a plugin whose manifest acme/skills
   // did not hold at the session's start: its profile ships no alpha.
   unshipped: { store: "store_a", change: readFrom("/opt/acme-tools/skills/alpha") },
+  // Before its read of alpha, the session reads acme/other's delta, whose unit (acme/other's
+  // user skills) ships acme/other's alpha too and comes first; the session read acme/skills's
+  // alpha, which is the copy its host gave it.
+  "read-wins": {
+    store: "store_a",
+    change: (lines) => {
+      const prompt = lines.filter((line) => line.type === "message")[0] ?? {};
+      const call = {
+        type: "message",
+        id: "de17a001",
+        timestamp: "2026-11-20T01:59:45.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "toolu_delta",
+              name: "read",
+              arguments: { path: "skill://delta" },
+            },
+          ],
+        },
+      };
+      const result = {
+        type: "message",
+        id: "de17a002",
+        timestamp: "2026-11-20T01:59:45.100Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "toolu_delta",
+          toolName: "read",
+          isError: false,
+          content: [
+            {
+              type: "text",
+              text: "[Skill file: /elsewhere/other-skills/delta/SKILL.md]\n# delta\n",
+            },
+          ],
+        },
+      };
+      insertAfter(lines, prompt, call);
+      insertAfter(lines, call, result);
+    },
+  },
   secret: {
     store: "store_a",
     change: (lines) =>
@@ -637,20 +681,27 @@ const skillMd = (name: string) =>
 
 /** The made-up repositories as each was at the commit SHA: every file's path and text. acme/skills
  *  holds `older` and no `newer`; its installer links each skill of skills/ into Oh My Pi's user
- *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme. */
+ *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme. acme/other
+ *  holds its own alpha and delta, which its installer links the same way. */
+const INSTALLER = [
+  "#!/usr/bin/env bash",
+  'for skill in "$REPO"/skills/*/; do',
+  '  ln -sfn "$skill" "$HOME/.omp/agent/skills/$(basename "$skill")"',
+  "done",
+  "",
+].join("\n");
 const REPOSITORIES: Record<string, Record<string, string>> = {
+  "acme/other": {
+    "skills/alpha/SKILL.md": skillMd("alpha"),
+    "skills/delta/SKILL.md": skillMd("delta"),
+    "installers/skills.sh": INSTALLER,
+  },
   "acme/skills": {
     "skills/alpha/SKILL.md": skillMd("alpha"),
     "skills/alpha/references/x.md": "Step notes.\n",
     "skills/beta/SKILL.md": skillMd("beta"),
     "skills/older/SKILL.md": skillMd("older"),
-    "installers/skills.sh": [
-      "#!/usr/bin/env bash",
-      'for skill in "$REPO"/skills/*/; do',
-      '  ln -sfn "$skill" "$HOME/.omp/agent/skills/$(basename "$skill")"',
-      "done",
-      "",
-    ].join("\n"),
+    "installers/skills.sh": INSTALLER,
     "packages/pi-acme/package.json": JSON.stringify({
       name: "@acme/pi-acme",
       omp: { skills: ["dist/skills"] },
@@ -830,6 +881,7 @@ beforeAll(() => {
       ["**/agent/skills/beta/", "acme/skills", "skills/beta", "beta", userSkills],
       ["**/agent/skills/newer/", "acme/skills", "skills/newer", "newer", userSkills],
       ["/elsewhere/other-skills/alpha/", "acme/other", "skills/alpha", "alpha", otherSkills],
+      ["/elsewhere/other-skills/delta/", "acme/other", "skills/delta", "delta", otherSkills],
       ["/opt/legion/pi-acme/dist/skills/alpha/", "acme/skills", "skills/alpha", "alpha", pkg],
       ["/opt/legion/pi-acme/dist/skills/beta/", "acme/skills", "skills/beta", "beta", pkg],
       ["/opt/legion/pi-acme/dist/skills/newer/", "acme/skills", "skills/newer", "newer", pkg],
@@ -956,6 +1008,7 @@ beforeAll(() => {
     path.join(copiesDir, "skill-copies.tsv"),
     tsv(SKILL_COPIES_COLUMNS, [
       ["acme/other", "skills/alpha", "alpha", 10, "no", "no", "", "", ""],
+      ["acme/other", "skills/delta", "delta", 10, "no", "no", "", "", ""],
       ["acme/skills", "skills/alpha", "alpha", 10, "no", "no", "", "", ""],
       ["acme/skills", "skills/beta", "beta", 10, "no", "no", "", "", ""],
       ["acme/skills", "skills/newer", "newer", 10, "no", "no", "", "", ""],
@@ -1126,6 +1179,7 @@ describe("build-cases over every made-up session", () => {
         "skill-md-only",
         "checkout",
         "context",
+        "read-wins",
       ]
         .map((name) => pathHash(sessionPath(name)))
         .sort()
@@ -1285,7 +1339,7 @@ describe("build-cases over every made-up session", () => {
       "its 3 SKILL.md files and 4 manifest files"
     );
     expect(evidence["skill alpha (acme/skills skills/alpha)"]).toBe(
-      `acme/skills at ${SHA}: user-skills:omp links it (acme/skills:installers/skills.sh)`
+      `acme/skills at ${SHA}: user-skills:omp links it (acme/skills:installers/skills.sh); message 2 reads this copy`
     );
     // The copies output lists `newer`, which acme/skills did not hold at the commit, and not
     // `older`, which it held.
@@ -1612,6 +1666,29 @@ describe("build-cases over every made-up session", () => {
     expect(requests.some((each) => each.body.includes("(case unshipped)"))).toBe(false);
   });
 
+  test("the copy of a skill the session read is the profile's copy of its name, ahead of another unit's copy that comes first", () => {
+    const c = byName("read-wins");
+    expect(c?.profile.skills).toEqual([
+      { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
+      { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+      { repo: "acme/other", commit: SHA, path: "skills/delta", name: "delta" },
+      { repo: "acme/skills", commit: SHA, path: "skills/older", name: "older" },
+    ]);
+    const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    // acme/other's unit comes first, from the read of delta at message 2.
+    const units = (c?.evidence ?? []).filter((each) => each.item.startsWith("unit "));
+    expect(units.map((each) => each.item)).toEqual([
+      "unit user-skills:omp (acme/other:installers/skills.sh)",
+      "unit user-skills:omp (acme/skills:installers/skills.sh)",
+    ]);
+    expect(evidence["left out: skill alpha from acme/other skills/alpha"]).toBe(
+      "user-skills:omp links it (acme/other:installers/skills.sh) too; the session read the copy of acme/skills skills/alpha (message 4)"
+    );
+    expect(evidence["skill alpha (acme/skills skills/alpha)"]).toContain(
+      "; message 4 reads this copy"
+    );
+  });
+
   test("a session whose reads hold no line of the base text is dropped as no-common-line, with no reader call", () => {
     const record = summaryOf(out).sessions.find(
       (each) => each.hash === fileHash(sessionPath("no-common"))
@@ -1689,7 +1766,7 @@ describe("build-cases over every made-up session", () => {
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
     expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length + 1);
-    expect(summary.casesBuilt).toBe(14);
+    expect(summary.casesBuilt).toBe(15);
     const reasonOf = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
     expect(reasonOf("quoted")).toBe("line-quoted");

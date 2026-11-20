@@ -180,10 +180,12 @@
  *   the copies installers.tsv lists for it) is read at its commit as copies.ts reads one: its
  *   tree, each `SKILL.md` outside the configuration's `excludePaths`, and each manifest file by
  *   its path; copies.ts's `resolveInstallers` then gives each unit's skills (the prepack script's
- *   list for a package, a plugin's `skills/`, an installer's linked directory), by name, the first
- *   unit's copy winning. So every skill of a profile is in its repository at the commit the
- *   profile names; the evidence names each skill installers.tsv lists that the unit did not ship
- *   then, and each it shipped then that installers.tsv does not list. Plugins: an Oh My Pi
+ *   list for a package, a plugin's `skills/`, an installer's linked directory), by name. Two units
+ *   that ship copies of one name install the one the session read (its first read of that name,
+ *   placed by attribute.ts's rules: the host gave the session that copy) when a unit ships it
+ *   then, else the first unit's. So every skill of a profile is in its repository at the commit
+ *   the profile names; the evidence names each skill installers.tsv lists that the unit did not
+ *   ship then, and each it shipped then that installers.tsv does not list. Plugins: an Oh My Pi
  *   package's directory (the `omp-package` manifest's, at that commit), or a Claude Code plugin's
  *   directory (its skills' parent), named by its last part.
  * - Context files: for a Legion context, the `AGENTS.md` of the repository of the session's
@@ -1658,8 +1660,18 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const viaKey = (via: Via) => `${via.unit} (${via.repository}:${via.manifest})`;
   // A copy a read is placed at that no prefix row names a unit for: it is installed alone.
   const alone = new Map<string, { repo: string; path: string; why: string }>();
+  // The copy each skill name's first read shows, by attribute.ts's rules: the host gave the
+  // session that copy of the name, so it is the profile's copy of it when a unit ships it then.
+  const readCopies = new Map<string, { repo: string; path: string; index: number }>();
   const shown = new Set<string>();
   for (const read of input.reads) {
+    if (read.skill !== undefined && !readCopies.has(read.skill)) {
+      const copy = run.placer.place(input.store, read.header, read.skill).copy;
+      if (copy !== undefined) {
+        const [repo = "", dir = ""] = copy.split("\t");
+        readCopies.set(read.skill, { repo, path: repoPath(dir), index: read.index });
+      }
+    }
     if (shown.has(read.header)) continue;
     shown.add(read.header);
     const reading = `message ${read.index} reads [Skill file: ${read.header}]`;
@@ -1773,25 +1785,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     new CopyIndex([...held.values()].flatMap((at) => at.copies))
   );
 
-  const skills = new Map<string, Omit<ProfileSkill, "commit">>();
   const plugins = new Map<string, { repo: string; path: string; name: string; why: string }>();
-  const shipped = new Set<string>();
-  /** Adds `copy` to the profile's skills, or says why not: a copy of its name came first. */
-  const install = (copy: Omit<ProfileSkill, "commit">, how: string): boolean => {
-    shipped.add(`${copy.repo}\0${copy.name}`);
-    const known = skills.get(copy.name);
-    if (known === undefined) {
-      skills.set(copy.name, copy);
-      return true;
-    }
-    if (known.repo !== copy.repo || known.path !== copy.path) {
-      evidence.push({
-        item: `left out: skill ${copy.name} from ${copy.repo} ${copy.path}`,
-        source: `${how} too; the copy of ${known.repo} ${known.path} came first`,
-      });
-    }
-    return false;
-  };
+  /** Each copy a unit ships at the session's start, in the order of the units, with how it ships
+   *  and the evidence of it. */
+  const offers: { copy: Omit<ProfileSkill, "commit">; how: string; source: string }[] = [];
   for (const [key, { via, why }] of units) {
     const id = via.unit;
     const start = `${via.repository} at ${commits.get(via.repository)}`;
@@ -1814,12 +1811,12 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     for (const row of members) {
       const copy = { repo: row.copyRepository, path: row.copyPath ?? "", name: row.skill };
       const how = `${id} ${row.action} it (${row.manifestRepository}:${row.manifestPath})`;
-      if (!install(copy, how)) continue;
       const inR4 = later.some(
         (each) => each.copy_repository === copy.repo && repoPath(each.copy_path ?? "") === copy.path
       );
-      evidence.push({
-        item: `skill ${copy.name} (${copy.repo} ${copy.path})`,
+      offers.push({
+        copy,
+        how,
         source: `${copy.repo} at ${commits.get(copy.repo)}: ${how}${inR4 ? "" : "; installers.tsv, which R4 read later, does not list it"}`,
       });
     }
@@ -1881,12 +1878,45 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       continue;
     }
     const how = `${copy.why}; no row of prefix-table.tsv names a unit that ships that copy, so the profile installs it alone`;
-    if (!install({ repo: copy.repo, path: copy.path, name: found.name }, how)) continue;
-    evidence.push({
-      item: `skill ${found.name} (${copy.repo} ${copy.path})`,
+    offers.push({
+      copy: { repo: copy.repo, path: copy.path, name: found.name },
+      how,
       source: `${start}: ${how}`,
     });
   }
+
+  // Each name's copy: the one the session read, when a unit ships it at the session's start (the
+  // read shows which of the copies of one name the host gave the session), else the first unit's.
+  const same = (a: { repo: string; path: string }, b: { repo: string; path: string }) =>
+    a.repo === b.repo && a.path === b.path;
+  const chosen = new Map<string, (typeof offers)[number]>();
+  for (const [name, read] of readCopies) {
+    const offer = offers.find((each) => each.copy.name === name && same(each.copy, read));
+    if (offer !== undefined) chosen.set(name, offer);
+  }
+  for (const offer of offers) {
+    if (!chosen.has(offer.copy.name)) chosen.set(offer.copy.name, offer);
+  }
+  const skills = new Map<string, Omit<ProfileSkill, "commit">>();
+  for (const offer of offers) {
+    const pick = chosen.get(offer.copy.name);
+    if (pick === undefined) continue;
+    const read = readCopies.get(offer.copy.name);
+    const readAt = read !== undefined && same(pick.copy, read) ? read.index : undefined;
+    if (pick === offer) {
+      skills.set(offer.copy.name, offer.copy);
+      evidence.push({
+        item: `skill ${offer.copy.name} (${offer.copy.repo} ${offer.copy.path})`,
+        source: `${offer.source}${readAt === undefined ? "" : `; message ${readAt} reads this copy`}`,
+      });
+    } else if (!same(pick.copy, offer.copy)) {
+      evidence.push({
+        item: `left out: skill ${offer.copy.name} from ${offer.copy.repo} ${offer.copy.path}`,
+        source: `${offer.how} too; ${readAt === undefined ? `the copy of ${pick.copy.repo} ${pick.copy.path} came first` : `the session read the copy of ${pick.copy.repo} ${pick.copy.path} (message ${readAt})`}`,
+      });
+    }
+  }
+  const shipped = new Set(offers.map((offer) => `${offer.copy.repo}\0${offer.copy.name}`));
 
   // Context files: the session repository's AGENTS.md and the project's instructions file, which
   // a recorded prompt already holds as its session had them.
