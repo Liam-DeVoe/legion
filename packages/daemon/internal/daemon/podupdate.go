@@ -270,6 +270,11 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	}
 	open := openPodRound(group)
 	if pod == "" {
+		// A held reviewer start opens and carries a round over the pod it was held for though no
+		// claim records a process there (reviewerPodlessRound).
+		if s.reviewerPodlessRound(ctx, issue, group, open, clock) {
+			return nil
+		}
 		if open != "" {
 			s.podlessRound(ctx, issue, group, open, clock)
 		}

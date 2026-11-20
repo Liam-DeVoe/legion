@@ -19,6 +19,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -40,10 +41,17 @@ const (
 )
 
 // issuePodImages is what a runtime that runs issue pods answers of the image an issue's live pod
-// runs (sandbox.Runtime.IssuePodImage). A runtime that runs no pods implements none of it.
+// runs (sandbox.Runtime.IssuePodImage), and how it ends that pod for a round no claim records a
+// process in it for (sandbox.Runtime.ReplaceIssuePod). A runtime that runs no pods implements
+// none of it.
 type issuePodImages interface {
 	IssuePodImage(issue string) (sandbox.PodImage, bool)
+	ReplaceIssuePod(ctx context.Context, issue, pod string, due func(context.Context) error) error
 }
+
+// The Sandbox runtime is the one that answers it: a signature that drifted would leave the rule
+// holding nothing in production while every test, which hands the reading in, still passed.
+var _ issuePodImages = (*sandbox.Runtime)(nil)
 
 // reviewerPods holds a reviewer's start out of an issue pod on another image than the configured
 // one, and keeps, by issue, the pod whose replacement a held start waits for, which the
@@ -110,8 +118,18 @@ func (p *reviewerPods) check(c supervise.Claim) error {
 		c.Issue, image.Configured, image.Pod, image.Image)}
 }
 
+// holdsTask is the rule at a task's send (supervise.Deps.DeliveryWaits): a reviewer process
+// already running in an issue pod on another image is handed no task there, whichever backend
+// runs it and whatever contract its plugin records. The task stays pending, the pod is recorded
+// as a held start records it, so the sweep opens its round at once, and the reviewer is handed
+// the task once it runs in the pod that replaces this one.
+func (p *reviewerPods) holdsTask(c supervise.Claim) bool {
+	return p.check(c) != nil
+}
+
 // waitsFor is whether a held reviewer start waits for pod, the pod issue's claims record, to be
-// replaced. A recorded pod the claims no longer record has gone, and is dropped.
+// replaced. It reads and changes nothing: the next check of the reviewer's launch, and keepOnly,
+// keep the record.
 func (p *reviewerPods) waitsFor(issue, pod string) bool {
 	if p == nil {
 		return false
@@ -119,9 +137,6 @@ func (p *reviewerPods) waitsFor(issue, pod string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	held, ok := p.waiting[issue]
-	if ok && held != pod {
-		delete(p.waiting, issue)
-	}
 	return ok && held == pod
 }
 
@@ -157,4 +172,70 @@ func (s reviewerGatedStore) CheckLaunch(ctx context.Context, c supervise.Claim) 
 		return err
 	}
 	return s.pods.check(c)
+}
+
+// heldPod is the pod a held reviewer start of issue waits on, recorded by check.
+func (p *reviewerPods) heldPod(issue string) (string, bool) {
+	if p == nil {
+		return "", false
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pod, ok := p.waiting[issue]
+	return pod, ok
+}
+
+// reviewerPodlessRound carries the round a held reviewer start opens over a pod no claim of the
+// issue records a process in (the sweep's group records no pod), and reports whether it did: a
+// held start depends on no other role's process. The pod is the one the start was held for, as
+// the runtime still reads it live on another image; any other reading leaves the issue to the
+// sweep's own podless rule (podlessRound).
+//
+// The round is opened, or kept open, on the issue's blocking claims as any round is
+// (openPodUpdate), under `reviewer start`. It is replaced through the issue's Sandbox
+// (ReplaceIssuePod), there being no process to replace it through, once no claim it asks is left
+// unanswered or its bound has come, and while no operator's suspension and no project's pause
+// holds it. The last word, under the pod's launch turn, refuses the replacement where a claim of
+// the issue records a process by then (a launch kept the pod) or an operator suspended one.
+func (s *supervision) reviewerPodlessRound(ctx context.Context, issue string, group []supervise.Claim, open string, clock roundClock) bool {
+	held, ok := s.reviewerPods.heldPod(issue)
+	if !ok {
+		return false
+	}
+	image, running := s.reviewerPods.images.IssuePodImage(issue)
+	round := supervise.PodRound(held)
+	if !running || image.Pod != held || image.Image == image.Configured || (open != "" && open != round) {
+		return false
+	}
+	live := s.liveGroup(group)
+	if open == "" {
+		s.openPodUpdate(ctx, issue, live, held, reviewerStartReason+", image "+image.Image+", now "+image.Configured, clock)
+	}
+	if len(heldByOperator(live, round)) > 0 || clock.held() || (!clock.pastBound(live, round) && len(waitingClaims(live, round)) > 0) {
+		return true
+	}
+	due := func(ctx context.Context) error {
+		claims, err := s.supervisor.Claims(ctx)
+		if err != nil {
+			return err
+		}
+		now := s.viewedGroup(claims, issue)
+		if pod, _ := groupPod(now); pod != "" {
+			return fmt.Errorf("%w: a claim of %s records a process in pod %s now", errReplacementNotDue, issue, pod)
+		}
+		if len(heldByOperator(now, round)) > 0 {
+			return fmt.Errorf("%w: an operator suspended a claim of %s", errReplacementNotDue, issue)
+		}
+		return nil
+	}
+	if err := s.reviewerPods.images.ReplaceIssuePod(ctx, issue, held, due); err != nil {
+		if ctx.Err() == nil {
+			s.log.Info("supervise: the pod a reviewer's start waits on was not replaced; the next sweep decides again",
+				"issue", issue, "round", round, "pod", held, "reason", err)
+		}
+		return true
+	}
+	s.log.Info("supervise: the pod a reviewer's start waits on is replaced; no claim ran a process in it", "issue", issue, "round", round, "pod", held)
+	s.endPodUpdates(live, round)
+	return true
 }

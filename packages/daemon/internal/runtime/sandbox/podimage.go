@@ -1,6 +1,9 @@
 package sandbox
 
 import (
+	"context"
+	"fmt"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -82,6 +85,47 @@ func (r *Runtime) IssuePodImage(issue string) (PodImage, bool) {
 		image = other
 	}
 	return PodImage{Pod: string(pod.UID), Image: image, Configured: r.image}, true
+}
+
+// ReplaceIssuePod ends pod, the live pod of issue's Sandbox, for an update round that no claim
+// records a process in that pod for: ReplacePod's act, keyed by the issue and the pod's uid
+// rather than by a claim's locator. Under the pod's launch turn it finds the Sandbox running and
+// pod its own, asks due last, one statement before the write, and then suspends the Sandbox with
+// the round's own mark (suspendDisplacing, roundReplacement) and waits the pod out. A Sandbox
+// that is absent or suspended, or whose pod is another, has no pod of this round to end, and
+// nothing is written. The first launch after it provisions a fresh pod from the configuration.
+func (r *Runtime) ReplaceIssuePod(ctx context.Context, issue, pod string, due func(context.Context) error) error {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return fmt.Errorf("replace %s's pod: %w", issue, err)
+	}
+	release, err := r.lockPod(ctx, name)
+	if err != nil {
+		return fmt.Errorf("replace %s's pod: take its pod's launch turn: %w", issue, err)
+	}
+	defer release()
+	s, err := r.storedSandbox(name)
+	if err != nil {
+		return fmt.Errorf("replace %s's pod: %w", issue, err)
+	}
+	if s == nil || s.mode() == modeSuspended {
+		return nil
+	}
+	v := r.viewOf(name, s)
+	if v.pod == nil || string(v.pod.UID) != pod {
+		return nil
+	}
+	if err := due(ctx); err != nil {
+		return err
+	}
+	if _, err := r.suspendDisplacing(ctx, s, v.pod.UID, roundReplacement); err != nil {
+		return fmt.Errorf("replace %s's pod: suspend its sandbox: %w", issue, err)
+	}
+	if _, err := r.awaitPodGone(ctx, s); err != nil {
+		return fmt.Errorf("replace %s's pod: wait out its pod: %w", issue, err)
+	}
+	r.log.Info("sandbox runtime: the pod of a finished update round no claim ran a process in is replaced", "sandbox", name, "pod", v.pod.UID, "issue", issue)
+	return nil
 }
 
 // IssueSandbox says whether the runtime still holds the Sandbox of issue, and what that Sandbox
