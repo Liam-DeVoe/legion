@@ -21,7 +21,7 @@ import {
   syncArchitectureSource,
   userHeaders,
 } from "./api";
-import { seedDeliveryFixture } from "./delivery-seed";
+import { type DeliveryPlace, seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
@@ -194,6 +194,8 @@ async function uploadAgentPicture(sessionID: string): Promise<string> {
 interface Seeded {
   readonly agentArtifact: string;
   readonly broadcast: string;
+  /** The window `/delivery` opens on to show the timeline's runs (`DeliveryPlace`). */
+  readonly deliveryQuery: string;
   readonly document: string;
   readonly issue: string;
   readonly issueArtifact: string;
@@ -204,8 +206,8 @@ interface Seeded {
  *  project with an architecture source, an issue with a spec, a child, a comment, a message
  *  holding a Mermaid diagram and a document artifact, a project document, a live session with a
  *  broadcast, a replayed conversation and a picture, a priority with a description and an issue
- *  in flight that advances it, and the delivery timeline's runs. */
-async function seedEveryRoute(): Promise<Seeded> {
+ *  in flight that advances it, and the delivery timeline's runs, in the row's own place. */
+async function seedEveryRoute(delivery: DeliveryPlace): Promise<Seeded> {
   const core = rowKey("CORE");
   await setLiveSessions([session]);
   await createProject({ key: core, name: "Core" });
@@ -288,10 +290,11 @@ async function seedEveryRoute(): Promise<Seeded> {
     "replay"
   );
   const agentArtifact = await uploadAgentPicture(session.session_id);
-  await seedDeliveryFixture(rowKey("ACME"));
+  await seedDeliveryFixture(delivery);
   return {
     agentArtifact,
     broadcast: broadcast.id,
+    deliveryQuery: delivery.timelineQuery,
     document: document.artifact.slug,
     issue: issue.key,
     issueArtifact: issueArtifact.artifact.slug,
@@ -326,9 +329,6 @@ function issueHeading(page: Page, name: string): Locator {
 function openDocument(page: Page, text: string): readonly Locator[] {
   return [documentEditor(page).filter({ hasText: text }), connectedDot(page)];
 }
-
-/** The timeline fixture's day (`seedDeliveryFixture`). */
-const deliveryWindow = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
 
 function visits(seed: Seeded): readonly Visit[] {
   const core = rowKey("CORE");
@@ -540,7 +540,7 @@ function visits(seed: Seeded): readonly Visit[] {
         heading(page, "Delivery timeline"),
         page.getByTestId("delivery-chart").locator("canvas").first(),
       ],
-      url: `/delivery?${deliveryWindow}`,
+      url: `/delivery?${seed.deliveryQuery}`,
     },
     { route: "/pipeline", shows: (page) => [heading(page, "Pipeline")], url: "/pipeline" },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },
@@ -567,13 +567,15 @@ function isAsset(url: URL): boolean {
 /** Opens every visit with the page document, API calls and sockets on `pageProcess` (the pin
  *  cookie) and every `/assets/` request on `assetProcess` (the pin header, which wins over the
  *  cookie), and then asks that every script and stylesheet of `pageProcess`'s build was answered
- *  200: the page names only its own build's chunks. */
+ *  200: the page names only its own build's chunks. The delivery timeline's runs are written in
+ *  the row's own place (`delivery`, e2e/test.ts). */
 async function walk(
   browser: Browser,
+  delivery: DeliveryPlace,
   pageProcess: DispatchProcess,
   assetProcess: DispatchProcess
 ): Promise<void> {
-  const seed = await seedEveryRoute();
+  const seed = await seedEveryRoute(delivery);
   const planned = visits(seed);
   expect(
     walkRoutes.filter((route) => !planned.some((visit) => visit.route === route.path)),
@@ -701,16 +703,18 @@ const walkTimeout = 300_000;
 
 test("every route renders with its page from Dispatch A and every asset from Dispatch B", async ({
   browser,
+  delivery,
 }) => {
   test.setTimeout(walkTimeout);
-  await walk(browser, "a", "b");
+  await walk(browser, delivery, "a", "b");
 });
 
 test("every route renders with its page from Dispatch B and every asset from Dispatch A", async ({
   browser,
+  delivery,
 }) => {
   test.setTimeout(walkTimeout);
-  await walk(browser, "b", "a");
+  await walk(browser, delivery, "b", "a");
 });
 
 /** Opens the inbox in a signed-in tab whose page, API calls and sockets are all `process`'s (the

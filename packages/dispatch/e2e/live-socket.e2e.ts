@@ -149,11 +149,12 @@ function trackDocumentLoads(page: Page): string[] {
 // @pr: The live socket: one socket per tab, read over three live views at once.
 test("a tab holds one live socket for every live view @webkit @firefox @pr", async ({
   browser,
+  delivery,
 }) => {
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
   await createIssue({ project: core, title: "Board issue" });
-  await seedDeliveryFixture(rowKey("ACME"));
+  await seedDeliveryFixture(delivery);
   await setLiveSessions([agent]);
   await setAgentStreamResponder(agent.session_id, true);
 
@@ -212,13 +213,13 @@ const SILENCE_CHECK_MS = 15_000;
 // SLOW(>=2s): real idling is the measurement. The ages below are read in this process, in real
 // wall time, and a connection Dispatch holds open ages whatever the page's timers believe, so no
 // page clock can stand in for the idle itself.
-test("no request to Dispatch stays open while the page idles", async ({ browser }) => {
+test("no request to Dispatch stays open while the page idles", async ({ browser, delivery }) => {
   const core = rowKey("CORE");
   // The 5 s idle and three page loads are all this row spends.
   test.setTimeout(40_000);
   await createProject({ key: core, name: "Core" });
   await createIssue({ project: core, title: "Board issue" });
-  await seedDeliveryFixture(rowKey("ACME"));
+  await seedDeliveryFixture(delivery);
   await setLiveSessions([agent]);
   await setAgentStreamResponder(agent.session_id, true);
 

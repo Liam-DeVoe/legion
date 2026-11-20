@@ -18,7 +18,7 @@ import { recordClipboard } from "./clipboard";
 import { needsYouCards } from "./editor";
 import { nextFrames } from "./frames";
 import { clearIssueCreator, resetDatabase } from "./seed";
-import { expect, type Locator, rowKey, rowPerson, test } from "./test";
+import { expect, type Locator, rowKey, rowNumber, rowPerson, test } from "./test";
 import { assertPageFits, assertWhole } from "./unclipped";
 import { asUser } from "./users";
 
@@ -305,6 +305,9 @@ test("issue header copies its key and persists its title, status, and route", as
 
 test("issue pages show subscribers, external-link fallbacks, and children", async ({ browser }) => {
   const core = rowKey("CORE");
+  // The linked GitHub issue's number is the row's own (`rowNumber`, e2e/test.ts): Dispatch links
+  // one address from one issue alone (`EXTERNAL_LINK_TAKEN`).
+  const linked = rowNumber("issue");
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "First decision" });
   const child = await createIssue({
@@ -319,7 +322,9 @@ test("issue pages show subscribers, external-link fallbacks, and children", asyn
   });
   await patchIssue(grandchild.key, { status: "done" });
   await patchIssue(issue.key, {
-    external_links: [{ kind: "github_issue", url: "https://github.com/sjawhar/legion/issues/815" }],
+    external_links: [
+      { kind: "github_issue", url: `https://github.com/sjawhar/legion/issues/${linked}` },
+    ],
   });
   await createAsk(issue.key, { question: "First ask" }, session);
   await subscribeSession(issue.key);
@@ -339,12 +344,12 @@ test("issue pages show subscribers, external-link fallbacks, and children", asyn
     await expect(subscribedAgents.getByText("e2e-session", { exact: true })).toHaveCount(0);
     await expect(subscribedAgents.locator("[title='e2e-session']")).toHaveCount(1);
     // Without GitHub App credentials the link still reads as the reference, never the raw address.
-    await expect(page.getByRole("link", { name: "#815 sjawhar/legion" })).toHaveAttribute(
+    await expect(page.getByRole("link", { name: `#${linked} sjawhar/legion` })).toHaveAttribute(
       "title",
       "GitHub details are unavailable for this repository."
     );
     await expect(
-      page.getByRole("link", { name: "https://github.com/sjawhar/legion/issues/815" })
+      page.getByRole("link", { name: `https://github.com/sjawhar/legion/issues/${linked}` })
     ).toHaveCount(0);
     // No component attached anywhere on the chain: the rail's read-only line says so.
     await expect(page.getByTestId("issue-components")).toContainText("Components:Not attached");
@@ -743,10 +748,13 @@ test("issue header keeps every control in a shared row on a phone and the whose-
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
+  // The pull request's number is the row's own (`rowNumber`, e2e/test.ts): Dispatch links one
+  // address from one issue alone (`EXTERNAL_LINK_TAKEN`).
+  const pull = rowNumber("pull");
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Header on a phone" });
   await patchIssue(issue.key, {
-    external_links: [{ kind: "github_pr", url: "https://github.com/sjawhar/legion/pull/1051" }],
+    external_links: [{ kind: "github_pr", url: `https://github.com/sjawhar/legion/pull/${pull}` }],
     labels: ["Frontend", "api"],
     priority: 1,
   });
@@ -771,12 +779,12 @@ test("issue header keeps every control in a shared row on a phone and the whose-
     const indicator = page.getByTestId("issue-whose-turn");
     const openedBy = page.getByText("Opened by:", { exact: true });
     const subscribers = page.getByRole("button", { name: "Subscribers: 1" });
-    const link = page.getByRole("link", { name: "#1051 sjawhar/legion" });
+    const link = page.getByRole("link", { name: `#${pull} sjawhar/legion` });
     await expect(indicator).toHaveText("Waiting on you (1)");
     await expect(subscribers).toBeVisible();
     await expect(link).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "https://github.com/sjawhar/legion/pull/1051" })
+      page.getByRole("link", { name: `https://github.com/sjawhar/legion/pull/${pull}` })
     ).toHaveCount(0);
 
     // Close shares the state row; creator, labels, subscribers, and the GitHub link share the
@@ -869,6 +877,9 @@ test("issue header gives the title the row's free space beside a short details l
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
+  // The pull request's number is the row's own (`rowNumber`, e2e/test.ts): Dispatch links one
+  // address from one issue alone (`EXTERNAL_LINK_TAKEN`).
+  const pullUrl = `https://github.com/sjawhar/legion/pull/${rowNumber("pull")}`;
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Header keeps its title readable" });
 
@@ -936,14 +947,10 @@ test("issue header gives the title the row's free space beside a short details l
     await expect(title).toHaveText("Migrate the issue header to a single row");
     await expect(page.getByTestId("issue-whose-turn")).toHaveText("Waiting on you (1)");
     await expect(page.getByRole("button", { name: "Subscribers: 1" })).toBeVisible();
-    const githubLink = page.locator(
-      '[data-testid=issue-header] a[href="https://github.com/sjawhar/legion/pull/1051"]'
-    );
+    const githubLink = page.locator(`[data-testid=issue-header] a[href="${pullUrl}"]`);
     for (const withLink of [false, true]) {
       await patchIssue(issue.key, {
-        external_links: withLink
-          ? [{ kind: "github_pr", url: "https://github.com/sjawhar/legion/pull/1051" }]
-          : [],
+        external_links: withLink ? [{ kind: "github_pr", url: pullUrl }] : [],
       });
       // The link's own state is what the measurement below depends on, so it is waited for.
       await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);

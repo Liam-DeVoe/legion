@@ -21,8 +21,39 @@ import {
   patchIssue,
   patchPriority,
 } from "./api";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { sql } from "./psql";
+import { test as base, expect, type Locator, type Page, rowKey } from "./test";
 import { asUser } from "./users";
+
+/** This file's `test`: e2e/test.ts's, with the priorities a row wrote taken out again when it
+ *  ends. Every priority is one list for the whole deployment, read whole by the rows below - the
+ *  order a priority's place `P1` is counted in, the page's empty state, the rail's count - and a
+ *  priority a row ended still stands as a node (`endPriority`), so each row deletes the records it
+ *  wrote, as the reset does (`priority_nodes` and `priority_tuples`, which no foreign key
+ *  reaches): every node the stack holds at the row's end that it did not hold at its start, and
+ *  every tuple written after the newest one at its start. Rows of one worker run one at a time on
+ *  that worker's own stack, so what the end holds beyond the start is this row's, and the next
+ *  row's order starts where this one's did. Each priority's title also carries the row's own key
+ *  (`rowKey`, e2e/test.ts), so its id, which the server derives from the title and refuses a
+ *  second time (`PRIORITY_EXISTS`), is the row's own too. */
+const test = base.extend<{ ownPriorities: undefined }>({
+  ownPriorities: [
+    async ({ freshDatabase: _resetFirst }, use) => {
+      const held = await sql(`SELECT json_build_object(
+        'nodes', coalesce((SELECT json_agg(kind || ':' || id) FROM priority_nodes), '[]'),
+        'seq', coalesce((SELECT max(seq) FROM priority_tuples), 0))`);
+      await use(undefined);
+      await sql(`WITH held AS (
+  SELECT $held$${held}$held$::jsonb AS rows
+), tuples AS (
+  DELETE FROM priority_tuples WHERE seq > (SELECT (rows ->> 'seq')::bigint FROM held)
+)
+DELETE FROM priority_nodes
+WHERE kind || ':' || id NOT IN (SELECT jsonb_array_elements_text(rows -> 'nodes') FROM held)`);
+    },
+    { auto: true },
+  ],
+});
 
 const PRIORITIES_PATH = "/priorities";
 
@@ -101,10 +132,10 @@ async function seedPriorities(): Promise<Seeded> {
   const first = await createPriority({
     description: FIRST_DESCRIPTION,
     owner: "alice",
-    title: "Ship the daemon everywhere",
+    title: `Ship the daemon everywhere (${core})`,
   });
-  const second = await createPriority({ owner: "bob", title: "Cut the review queue" });
-  const third = await createPriority({ owner: "alice", title: "Retire the old ledger" });
+  const second = await createPriority({ owner: "bob", title: `Cut the review queue (${core})` });
+  const third = await createPriority({ owner: "alice", title: `Retire the old ledger (${core})` });
 
   const rollout = await createIssue({ project: core, title: "Daemon rollout to the fleet" });
   const smoke = await createIssue({ project: core, title: "Daemon smoke suite" });
@@ -365,7 +396,8 @@ test("the priorities page draws the order first and the two fault lists under it
 test("with no priority the page reads the server's sentence, and writes the first one", async ({
   browser,
 }) => {
-  // No seed: the row starts from the emptied database (`e2e/test.ts`), which holds no priority.
+  // No seed: the row starts on a deployment that holds no priority, since the reset empties it
+  // and every row of this file takes its own priorities out again (`ownPriorities`).
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -381,7 +413,7 @@ test("with no priority the page reads the server's sentence, and writes the firs
 
     // The page with no priority is where the first is written, with the control the table's
     // toolbar carries once there is one.
-    const added = "Ship the daemon everywhere";
+    const added = `Ship the daemon everywhere (${rowKey("CORE")})`;
     await page.getByRole("button", { exact: true, name: "New priority" }).click();
     await page.getByLabel("Title of the new priority").fill(added);
     await page
@@ -450,7 +482,7 @@ test("a priority row opens its work by status, and four writes survive a reload"
     await expect(rendered).toContainText(described);
 
     // Added, which takes the last place of the order.
-    const added = "Keep the fleet on one build";
+    const added = `Keep the fleet on one build (${rowKey("CORE")})`;
     await page.getByRole("button", { name: "New priority" }).click();
     await page.getByLabel("Title of the new priority").fill(added);
     await page

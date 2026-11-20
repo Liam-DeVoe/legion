@@ -48,6 +48,13 @@
  *  and it governs the default context alone. A row that opens its own context signs that one in
  *  itself, as it always has: `asUser(browser, rowPerson("alice"))` for a person of its own.
  *
+ *  **What a worker keeps.** Two datasets are the worker's, not a row's: the delivery settings the
+ *  delivery rows read (`deliverySettings`, handed to a row as its `delivery` place) and the review
+ *  corpus the accessibility rows scan (`reviewCorpus`, handed to a row as its `reviewSeed`). Each
+ *  is written once for each database the worker empties - before every row while the per-row
+ *  reset runs, so once a row there, and once a worker without it - and a row that changes one
+ *  puts it back when it ends.
+ *
  *  The stubbed layer takes no part in any of this: it reaches no server, no database and no
  *  sign-in, and declares a `test` of its own (e2e/stub/stub-test.ts). So does the containerised
  *  visual review (e2e/visual.e2e.ts), whose rows seed outside Playwright.
@@ -57,9 +64,24 @@ import { createHash, randomBytes } from "node:crypto";
 
 import { test as base } from "@playwright/test";
 
+import { setLiveSessions } from "./agents";
+import {
+  type DeliveryPlace,
+  deleteDeliveryRowsBut,
+  deliveryPlace,
+  deliveryRowsHeld,
+  putDeliverySettings,
+  ROW_DAYS_EARLIER,
+  readDeliverySettings,
+  writeDeliverySettings,
+} from "./delivery-seed";
+import { expectTimeout } from "./expect-timeout";
 import { sql } from "./psql";
+import type { ReviewSeed } from "./review-routes";
+import { seedReviewRoutes } from "./review-seed";
 import { broadcastIds, deleteBroadcastsBut, resetDatabase, sqlLiteral } from "./seed";
 import { signIn } from "./users";
+import { workspaceSessions } from "./workspace";
 
 /** Bytes this process drew once, when it loaded this module, and folds into every `rowKey`: a
  *  second run of the suite against the same database, or a retry in a new worker, draws others,
@@ -122,8 +144,8 @@ export function rowKey(logical: string): string {
   return `${logical.slice(0, 5)}${rowSuffix(logical)}`;
 }
 
-/** Whether `logical` is a name `rowPerson`, `own` and `rowSessionId` take: a-z, then a-z and
- *  0-9. */
+/** Whether `logical` is a name `rowPerson`, `own`, `rowSessionId` and `rowNumber` take: a-z,
+ *  then a-z and 0-9. */
 function checkLogicalLogin(caller: string, logical: string): void {
   if (!/^[a-z][a-z0-9]*$/.test(logical)) {
     throw new Error(
@@ -151,6 +173,29 @@ export function rowSessionId(logical: string): string {
   bytes.writeUInt8((bytes.readUInt8(8) & 0x3f) | 0x80, 8);
   const hex = bytes.toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** The first number `rowNumber` answers. Every number the suite writes as a fixed one - the
+ *  review corpus's pull requests and runs (e2e/delivery-seed.ts), a pull request a spec names -
+ *  is below it, so a row's number is never one of them. */
+const FIRST_ROW_NUMBER = 10_000;
+
+/** A number of the running row's own for the number `logical` its spec writes - a pull
+ *  request's, a run's - so that no two rows share one a table holds unique (a pull request's head
+ *  in `pull_request_heads`, by repository and number; the address of an external link, which
+ *  names one) and a row reads none another row left.
+ *
+ *  It is `rowKey`'s suffix read as a number rather than spelled in letters, from the same SHA-256
+ *  of the row, of this process's nonce and of `number:` and `logical`, plus `FIRST_ROW_NUMBER`: a
+ *  whole number from 10,000 up and below 10,000 + 26 ** 5, so it fits a Postgres `integer`, which
+ *  a pull request's number is. Within a row every call with the same `logical` answers the same
+ *  number; outside a running row it throws, as `rowKey` does.
+ *
+ *      const pull = rowNumber("pull");
+ *      const url = `https://github.com/acme/widgets/pull/${pull}`; */
+export function rowNumber(logical: string): number {
+  checkLogicalLogin("rowNumber", logical);
+  return FIRST_ROW_NUMBER + (rowDigest(`number:${logical}`).readUIntBE(0, 6) % SUFFIXES);
 }
 
 /** Every login `rowPerson` has named in the running row, which `ownPeople` deletes when the row
@@ -204,6 +249,11 @@ export function own(login: string): OwnPerson {
   return { own: login };
 }
 
+/** How many times this worker has emptied its database (`freshDatabase`): the database a dataset
+ *  the worker keeps was written into, so that it is written again once that database is gone,
+ *  and never twice into one. */
+let emptied = 0;
+
 /** What a spec may set with `test.use`. */
 type DispatchOptions = {
   /** The login Playwright's own `context` is signed in as, `own(login)` for the row's own
@@ -222,15 +272,34 @@ type DispatchFixtures = {
   /** The broadcasts the row sent taken out again once it ends. It is automatic and carries no
    *  value: its work is its teardown. */
   ownBroadcasts: undefined;
+  /** The row's own place in the delivery tables (`DeliveryPlace`, e2e/delivery-seed.ts), on the
+   *  delivery settings the worker wrote: what a delivery row hands its fixtures, and reads its
+   *  numbers, its day and its window from. What the row wrote there is taken out again once it
+   *  ends, and the settings are put back. */
+  delivery: DeliveryPlace;
+  /** The review corpus (e2e/review-seed.ts), as the worker seeded it, for a row that reads the
+   *  review layers' pages; the delivery settings are put back once the row ends. */
+  reviewSeed: ReviewSeed;
 };
 
-export const test = base.extend<DispatchOptions & DispatchFixtures>({
+/** What this `test` keeps for a whole worker. */
+type DispatchWorkerFixtures = {
+  /** Writes the delivery settings the delivery rows read (`writeDeliverySettings`), unless the
+   *  worker has written them into the database it holds now. */
+  deliverySettings: () => Promise<void>;
+  /** The review corpus (`seedReviewRoutes`), seeded unless the worker has seeded it into the
+   *  database it holds now, with what a row before this one changed of it put back. */
+  reviewCorpus: () => Promise<ReviewSeed>;
+};
+
+export const test = base.extend<DispatchOptions & DispatchFixtures, DispatchWorkerFixtures>({
   signedIn: ["alice", { option: true }],
   freshDatabase: [
     // Playwright refuses a first argument that is not a destructuring pattern.
     // biome-ignore lint/correctness/noEmptyPattern: the reset takes no other fixture.
     async ({}, use) => {
       await resetDatabase();
+      emptied += 1;
       await use(undefined);
     },
     { auto: true },
@@ -262,8 +331,11 @@ export const test = base.extend<DispatchOptions & DispatchFixtures>({
   // page's Broadcasts region) is the stack's, not a person's, and a row that reads it whole -
   // that it holds exactly the broadcast the row sent - reads it back at its start only if each
   // row takes its own out again. Rows of one worker run one at a time on that worker's own
-  // stack, so what the end holds beyond the start is this row's. It is read after the reset and
-  // torn down after the default context is closed, which names it as it names `ownPeople`.
+  // stack, so what the end holds beyond the start is this row's. That includes the review
+  // corpus's broadcast when this row was the first to read the corpus: the list stays whole for
+  // the rows after it, and no page the accessibility rows scan draws it (`reviewCorpus`). It is
+  // read after the reset and torn down after the default context is closed, which names it as
+  // it names `ownPeople`.
   ownBroadcasts: [
     async ({ freshDatabase: _resetFirst }, use) => {
       const kept = await broadcastIds();
@@ -272,6 +344,85 @@ export const test = base.extend<DispatchOptions & DispatchFixtures>({
     },
     { auto: true },
   ],
+  // The delivery settings are one row for the whole deployment (`delivery_settings.singleton`),
+  // which every delivery row reads and none owns, so the worker writes them rather than each row:
+  // once into each database it empties - before every row while the per-row reset runs, and
+  // once for the worker without it - with an upsert, which writes them whether or not a settings
+  // row stands and empties nothing. A row that changes them - the unconfigured page's row, which
+  // starts with none, a row that sets a staging job or a reconcile error - gets them back from
+  // the `delivery` fixture when it ends, as the fixture left them. No lock orders those rows:
+  // rows of one worker run one at a time on that worker's own stack, so the teardown is what
+  // keeps the next row's start, and Playwright has no lock that orders rows of one worker; rows
+  // of two workers never share a stack, so there is nothing for a lock between workers to guard.
+  deliverySettings: [
+    // biome-ignore lint/correctness/noEmptyPattern: the settings take no other fixture.
+    async ({}, use) => {
+      let writtenInto: number | undefined;
+      await use(async () => {
+        if (writtenInto === emptied) return;
+        await writeDeliverySettings();
+        writtenInto = emptied;
+      });
+    },
+    { scope: "worker" },
+  ],
+  // A delivery row's own place: the row's project (`rowKey("ACME")`), numbers of its own for
+  // its pull requests and runs, a multiple of 10,000 from `rowNumber` between 10,000 and
+  // 1,999,990,000, which keeps every sum inside a Postgres `integer`, which a pull request's
+  // number is, and the timeline and the Pipeline written `ROW_DAYS_EARLIER` days before the
+  // review corpus's, which the worker keeps beside them (`reviewCorpus`). The teardown is the
+  // `finally` of every delivery row: the timeline, the measures and the Pipeline read every pull
+  // request, run and session group of their window whole ("2 PRs in current filter/window", the
+  // four measures, "p90 30m · 2 runs"), so each row deletes what it wrote there
+  // (`deleteDeliveryRowsBut`) and puts the settings back, and the next row of the worker starts
+  // on the tables and the settings this one started on.
+  delivery: async ({ deliverySettings, freshDatabase: _resetFirst }, use) => {
+    await deliverySettings();
+    const held = await deliveryRowsHeld();
+    const place = deliveryPlace(
+      rowKey("ACME"),
+      10_000 * (1 + (rowNumber("delivery") % 199_999)),
+      ROW_DAYS_EARLIER
+    );
+    await use(place);
+    await deleteDeliveryRowsBut(held, place.project);
+    await writeDeliverySettings();
+  },
+  // The review corpus is a dataset every accessibility row reads alike, so the worker seeds it
+  // once into each database it empties, as the delivery settings are, and hands each row the
+  // seed it returned. Its keys are the corpus's own (`CORE`, `ACME`), which the stubbed layer's
+  // recordings were made under and no other row writes, since every other row writes keys of
+  // its own. Two things of it a row before can change without touching those keys, and both are
+  // put back before a row reads it: the delivery settings, which a delivery row puts back to
+  // `writeDeliverySettings`'s and the corpus seeds with its Pipeline job names and its reconcile
+  // error, and the fake Envoy's sessions, which a row may set and a reset of the fakes empties.
+  // Its broadcast goes at the end of the row that seeded it (`ownBroadcasts`): every broadcast
+  // is one list a row reads whole, and no page these rows scan draws it. The corpus is seeded
+  // into a database that holds none of it, which is every database a worker has just emptied.
+  reviewCorpus: [
+    // biome-ignore lint/correctness/noEmptyPattern: the corpus takes no other fixture.
+    async ({}, use) => {
+      let seeded: { into: number; seed: ReviewSeed; settings: string } | undefined;
+      await use(async () => {
+        if (seeded?.into === emptied) {
+          await putDeliverySettings(seeded.settings);
+          await setLiveSessions(workspaceSessions);
+          return seeded.seed;
+        }
+        // The seed's waits give up at the bound a row's own assertions use, inside its clock.
+        const seed = await seedReviewRoutes({ boundMs: expectTimeout });
+        seeded = { into: emptied, seed, settings: await readDeliverySettings() };
+        return seed;
+      });
+    },
+    { scope: "worker" },
+  ],
+  // The teardown puts the delivery settings back to the ones a delivery row starts on: the
+  // corpus's Pipeline job names and reconcile error are its own, and no other row reads them.
+  reviewSeed: async ({ freshDatabase: _resetFirst, reviewCorpus }, use) => {
+    await use(await reviewCorpus());
+    await writeDeliverySettings();
+  },
   // `freshDatabase` is in this list for its order rather than for its value, hence the unused
   // binding: naming it is what makes Playwright empty the database before this fixture signs
   // anyone in, which is the order the hooks this replaces were written in. `ownPeople` and

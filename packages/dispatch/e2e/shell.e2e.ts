@@ -4,7 +4,7 @@ import { EVENT_HEAD_RETRY_CEILING_MS } from "../web/src/api/query-client";
 import { baseUrl, createIssue, createProject, sessionCookieName } from "./api";
 import { holdFirstRequest } from "./editor";
 import { failBuildScript, missEntryChunk, recordTabReloads, tabReloads } from "./shell";
-import { expect, rowKey, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -109,16 +109,19 @@ test("a page asks whoami again while it answers EVENT_HEAD_UNAVAILABLE, and open
   await context.close();
 });
 
-// It is no stubbed row: the claim is the server's, that logout advanced alice's session
-// generation there.
+// It is no stubbed row: the claim is the server's, that logout advanced the person's session
+// generation there. The person is the row's own (`rowPerson`, e2e/test.ts), never alice: a
+// logout of alice would advance the generation the cookie e2e/api.ts keeps for her names, and
+// every row after this one that seeds as alice would be refused with it.
 // @pr: Sign-in and tokens: the sign-out revokes the session on the server, not only in the page.
 test("signing out revokes the session on the server and returns to the sign-in page @pr", async ({
   browser,
 }) => {
-  const context = await asUser(browser, "alice");
+  const me = rowPerson("alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   await page.goto("/");
-  await expect(page.getByText("Signed in as alice")).toBeVisible();
+  await expect(page.getByText(`Signed in as ${me}`)).toBeVisible();
   const session = (await context.cookies()).find((cookie) => cookie.name === sessionCookieName);
   if (session === undefined) {
     throw new Error(`no ${sessionCookieName} cookie after sign-in`);
@@ -135,7 +138,7 @@ test("signing out revokes the session on the server and returns to the sign-in p
 
   // /auth/logout clears the browser's cookie, which alone would make the next whoami 401. The
   // check that cannot pass for that reason: a copy of the cookie the browser held, replayed after
-  // Sign out, is refused because logout advanced alice's session generation on the server.
+  // Sign out, is refused because logout advanced the person's session generation on the server.
   expect((await whoami()).status).toBe(401);
   await context.close();
 });

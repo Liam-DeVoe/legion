@@ -8,22 +8,23 @@
  *  not carry - and each entry's `realStackScan` says which. Scanned against a recording, such a
  *  page would be read without that part (packages/dispatch/AGENTS.md, "The stubbed layer"). The
  *  rows are untagged: the pull-request lane already holds its 150 real-stack rows, so `chromium`
- *  runs them on the full lane, which the merge queue and the nightly run. */
+ *  runs them on the full lane, which the merge queue and the nightly run.
+ *
+ *  Every row reads one review corpus (e2e/review-seed.ts), which the worker seeds once and hands
+ *  each row as its `reviewSeed` (e2e/test.ts): the rows read it alike, so none seeds it again. */
 import { expectNoStaleExclusion, scanRoute } from "./accessibility-scan";
-import { expectTimeout } from "./expect-timeout";
 import { realStackScannedRoutes } from "./review-routes";
-import { seedReviewRoutes } from "./review-seed";
 import { test } from "./test";
 import { withAlice } from "./users";
 
 for (const route of realStackScannedRoutes) {
-  // SLOW(>=2s): a database reset, the review corpus, a sign-in and two axe scans of a drawn page.
+  // SLOW(>=2s): a database reset, the review corpus where the worker has not seeded it yet, a
+  // sign-in and two axe scans of a drawn page.
   test(`${route.name} has no serious or critical accessibility violation in light or dark`, async ({
     browser,
+    reviewSeed,
   }, testInfo) => {
-    // The seed's waits give up at the bound this row's own assertions use, inside the row's clock.
-    const seed = await seedReviewRoutes({ boundMs: expectTimeout });
-    await withAlice(browser, (page) => scanRoute(page, route, seed, testInfo));
+    await withAlice(browser, (page) => scanRoute(page, route, reviewSeed, testInfo));
   });
 }
 

@@ -212,9 +212,6 @@ async function pageWritable(
   );
 }
 
-/** The day `seedDeliveryFixture` writes its timeline on. */
-const deliveryWindow = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
-
 // The database reset is the `test` this file imports (e2e/test.ts); the round-robin proxy's log
 // is not in the database, so it is cleared here.
 test.beforeEach(async () => {
@@ -257,6 +254,7 @@ for (const pageProcess of dispatchProcesses) {
   const server: DispatchProcess = pageProcess === "a" ? "b" : "a";
   test(`a page of ${builds[pageProcess]} works against the server of ${builds[server]}`, async ({
     browser,
+    delivery,
   }) => {
     const xb = rowKey("XB");
     test.setTimeout(120_000);
@@ -280,9 +278,10 @@ for (const pageProcess of dispatchProcesses) {
       { options: [{ label: "Ship" }, { label: "Hold" }], question: "Ship it?" },
       { ...on, actor: seedAgent, as: "agent" }
     );
-    // The Delivery page's timeline, written in Postgres: the live socket answers its timeline
-    // subscription with a snapshot only once delivery is configured.
-    await seedDeliveryFixture(rowKey("ACME"));
+    // The Delivery page's timeline, written in Postgres in the row's own place (`delivery`,
+    // e2e/test.ts): the live socket answers its timeline subscription with a snapshot only once
+    // delivery is configured.
+    await seedDeliveryFixture(delivery);
 
     const context = await splitContext(browser, pageProcess, server);
     try {
@@ -359,9 +358,9 @@ for (const pageProcess of dispatchProcesses) {
         }
       }
 
-      // The Delivery page on the fixture's day: the page's live socket subscribes to the timeline
+      // The Delivery page on the place's day: the page's live socket subscribes to the timeline
       // view, and the other build's server answers that subscription with a snapshot.
-      await page.goto(`/delivery?${deliveryWindow}`);
+      await page.goto(`/delivery?${delivery.timelineQuery}`);
       await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
       await expect
         .poll(() =>

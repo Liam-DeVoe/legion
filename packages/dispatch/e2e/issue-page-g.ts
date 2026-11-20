@@ -35,6 +35,7 @@ import { blockId } from "./editor";
 import { withIssuePage } from "./issue-page-option";
 import type { Box } from "./layout";
 import { ONE_PIXEL_PNG } from "./sends";
+import { rowKey } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -912,9 +913,6 @@ export function expectRowGroups(
 // The seed: one issue that holds every node the part's rows read.
 // ---------------------------------------------------------------------------------------------
 
-/** The project the seed makes. */
-const PROJECT = "ROW";
-
 /** The title the planner's session stamps on what it writes, which the registry does not list,
  *  so the page names it by this title alone. */
 export const PLANNER_TITLE = "Planner (issue layout)";
@@ -1032,10 +1030,12 @@ async function uploadPicture(key: string, name: string): Promise<string> {
  * long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
  */
 export async function seedRows(): Promise<RowSeed> {
-  await createProject({ key: PROJECT, name: "Rows" });
+  // The row's own project (`rowKey`, e2e/test.ts), as each seed here makes one of its own.
+  const project = rowKey("ROW");
+  await createProject({ key: project, name: "Rows" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     spec: `:::requirement{#r-one}\n${ONE_LINE_WORDS}\n:::\n`,
     title: "A node of an issue is drawn as one row",
   });
@@ -1043,14 +1043,14 @@ export async function seedRows(): Promise<RowSeed> {
   const blocker = await createIssue({
     force: true,
     parent: key,
-    project: PROJECT,
+    project,
     title: "Read the names",
   });
   const childTitle = "Draw the child's row";
   const child = await createIssue({
     force: true,
     parent: key,
-    project: PROJECT,
+    project,
     title: childTitle,
   });
   await patchIssue(child.key, { blocked_by: [blocker.key] });
@@ -1248,10 +1248,11 @@ export interface LongRowsSeed {
  * the check nothing proves keeps it open in an outline folded to what is open.
  */
 export async function seedLongRows(): Promise<LongRowsSeed> {
-  await createProject({ key: PROJECT, name: "Rows" });
+  const project = rowKey("LONG");
+  await createProject({ key: project, name: "Rows" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     title: "A conversation of long rows",
   });
   const key = issue.key;
@@ -1314,10 +1315,11 @@ export interface WideNoteSeed {
  * line ends against its tag - meets a table wider than a row's words.
  */
 export async function seedWideNote(): Promise<WideNoteSeed> {
-  await createProject({ key: PROJECT, name: "Rows" });
+  const project = rowKey("WIDE");
+  await createProject({ key: project, name: "Rows" });
   const issue = await createIssue({
     force: true,
-    project: PROJECT,
+    project,
     title: "A note holds a table wider than a phone",
   });
   const line = (cells: readonly string[]) => `| ${cells.join(" | ")} |`;

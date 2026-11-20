@@ -148,10 +148,10 @@ export async function seedReviewRoutes({
   const workspace = await seedWorkspace({ boundMs });
   const issue = workspace.issues.workflow;
 
-  // `seedPipelineFixture()` is `seedDeliveryFixture()`'s settings row written a second time and
-  // then the Pipeline's own rows, and `delivery_settings` holds one row, so the two fixtures are
-  // seeded as their halves: the settings and the timeline's rows, then `seedPipelineRows()`,
-  // which only updates that one row's job names before writing the Pipeline's runs.
+  // The timeline's fixture writes the delivery settings, which `delivery_settings` holds as one
+  // row, and its own rows; `seedPipelineRows()` then only updates that row's job names before
+  // writing the Pipeline's runs. Both are written in the place the fixtures spell, with no place
+  // of a row's (e2e/delivery-seed.ts).
   await seedDeliveryFixture();
   await seedPipelineRows();
 
