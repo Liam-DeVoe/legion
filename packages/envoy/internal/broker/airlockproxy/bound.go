@@ -720,11 +720,14 @@ func cutJoined(cut *cutConn, c net.Conn) {
 // says nothing about the grant, and a database failover must cut no WebSocket and no stream the
 // airlock carries.
 //
-// The hold is read as a request reads it (holdRefusal) but for one thing: any answer that holds
+// The hold is read as a request reads it (holdRefusal) but for two things: any answer that holds
 // the person ends the call, a held answer the broker could not keep among them, since that answer
-// still says Dispatch holds them; and a check that decides nothing - Dispatch refusing the
-// broker's own account, an answer the broker can neither ask for nor read - leaves the call to
-// the reads after it, logged, as a read that failed does.
+// still says Dispatch holds them; and of the checks that decide nothing, one whose person's last
+// not-held answer has passed its deadline (hold.ErrDeadlinePassed) ends the call too, 503
+// HOLD_UNCHECKABLE in hold.Reason's fixed words, since that deadline is the bound the broker
+// serves the person to and a call opened before it must not outlive it. Every other check that
+// decides nothing - Dispatch refusing the broker's own account, an answer the broker can neither
+// ask for nor read - leaves the call to the reads after it, logged, as a read that failed does.
 func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *cutCall {
 	if expires := info.grant.Expires; expires != nil && !s.now().Before(*expires) {
 		return &cutCall{http.StatusProxyAuthRequired, codeGrantNotLive, "this grant expired while the proxy carried this call"}
@@ -736,7 +739,10 @@ func (s *Server) carryRefusal(ctx context.Context, info connInfo, chosen pair) *
 	if grant.Operator != "" {
 		switch err := s.hold.Check(ctx, grant.Operator); {
 		case errors.Is(err, hold.ErrHeld):
-			return &cutCall{http.StatusForbidden, "MEMBERSHIP_HELD", heldWords(grant.Operator)}
+			return &cutCall{http.StatusForbidden, "MEMBERSHIP_HELD", s.hold.HeldWords(grant.Operator)}
+		case errors.Is(err, hold.ErrDeadlinePassed):
+			s.log.Error(holdUnreadable, "person", grant.Operator, "error", err)
+			return &cutCall{http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", "whether Dispatch holds " + grant.Operator + " cannot be read: " + hold.Reason(err)}
 		case err != nil:
 			s.log.Error(holdUnreadable, "person", grant.Operator, "error", err)
 		}

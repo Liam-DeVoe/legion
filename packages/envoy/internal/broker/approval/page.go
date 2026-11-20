@@ -512,11 +512,11 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 }
 
 // refuseHeld asks the hold gate whether Dispatch holds login, the signed-in approver, and answers
-// the page's refusal when it does or cannot tell, reporting whether it refused: 403 in the
-// broker's words for a hold, and 503 while the gate cannot tell (hold.ErrUncheckable, tested
-// first, so a held answer the gate could not keep is a 503), saying why in hold.Reason's fixed
-// words and logging the gate's own error, which can carry the database's user, name and address,
-// alone. A broker with no gate holds nobody.
+// the page's refusal when it does or cannot tell, reporting whether it refused: 403 in the gate's
+// words for a hold (hold.Gate.HeldWords), and 503 while the gate cannot tell (hold.ErrUncheckable,
+// tested first, so a held answer the gate could not keep is a 503), saying why in hold.Reason's
+// fixed words and logging the gate's own error, which can carry the database's user, name and
+// address, alone. A broker with no gate holds nobody.
 func (p *Page) refuseHeld(w http.ResponseWriter, r *http.Request, login string) bool {
 	err := p.cfg.Hold.Check(r.Context(), login)
 	switch {
@@ -529,7 +529,7 @@ func (p *Page) refuseHeld(w http.ResponseWriter, r *http.Request, login string) 
 			"Nothing was decided. Try again shortly."))
 	default:
 		writeMessage(w, http.StatusForbidden, "MEMBERSHIP_HELD", say("Held",
-			fmt.Sprintf("%s's credentials are held by Dispatch; they work again when %s signs in to Dispatch, or when Dispatch can confirm %s with Google again.", login, login, login),
+			p.cfg.Hold.HeldWords(login)+".",
 			"Nothing was decided."))
 	}
 	return true

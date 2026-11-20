@@ -51,7 +51,9 @@ import (
 // A live token naming a person, as its person or, for a machine login's own token, as the login's
 // operator, is answered held when the hold gate (ExchangeConfig.Hold) says Dispatch holds that
 // person: still active, since a hold revokes nothing, and refused by the resource server after its
-// own checks. A gate that cannot tell is *HoldUncheckableError, never an answer.
+// own checks. A person the gate serves until a deadline is answered with that deadline
+// (not_held_until, Unix seconds rounded down), past which the resource server keeps no such answer.
+// A gate that cannot tell is *HoldUncheckableError, never an answer.
 func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Introspection, error) {
 	if p.strategy.Enigma.Validate(ctx, token) != nil {
 		return oauthwire.Introspection{}, nil
@@ -123,9 +125,11 @@ func (p *Provider) Introspect(ctx context.Context, token string) (oauthwire.Intr
 }
 
 // withHold is answer with Held set when Dispatch holds the person it names, its person or, for a
-// machine login's own token, which names none, the login's operator (session's extraOperator). A
-// gate that cannot tell (hold.ErrUncheckable, tested first, so a held answer it could not keep
-// is no answer either) is *HoldUncheckableError.
+// machine login's own token, which names none, the login's operator (session's extraOperator), and
+// with NotHeldUntil set to the deadline the gate serves a person it does not hold until, in Unix
+// seconds rounded down so no reader keeps the answer later than the gate serves it. A gate that
+// cannot tell (hold.ErrUncheckable, tested first, so a held answer it could not keep is no answer
+// either) is *HoldUncheckableError.
 func (p *Provider) withHold(ctx context.Context, answer oauthwire.Introspection, session *oauthstore.ExchangeSession) (oauthwire.Introspection, error) {
 	person := answer.Person
 	if person == "" {
@@ -134,9 +138,12 @@ func (p *Provider) withHold(ctx context.Context, answer oauthwire.Introspection,
 	if person == "" {
 		return answer, nil
 	}
-	err := p.exchange.Hold.Check(ctx, person)
+	until, err := p.exchange.Hold.CheckUntil(ctx, person)
 	switch {
 	case err == nil:
+		if !until.IsZero() {
+			answer.NotHeldUntil = until.Unix()
+		}
 	case errors.Is(err, hold.ErrUncheckable), !errors.Is(err, hold.ErrHeld):
 		return oauthwire.Introspection{}, &HoldUncheckableError{Person: person, Err: err}
 	default:

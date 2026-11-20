@@ -39,12 +39,14 @@ const bob = "bob@example.com"
 // holdUpstreamBody is what the service behind the airlock answers every request it is carried.
 const holdUpstreamBody = "the service behind the airlock answered"
 
-// The three ways a place can answer one person's credential: serve it; refuse it as held, which
-// for introspection is reporting the token held; or neither, which no row of this test wants.
+// The ways a place can answer one person's credential: serve it; refuse it as held, which for
+// introspection is reporting the token held; refuse it as a person whose hold the gate cannot
+// decide; or none of these, which no row of this test wants.
 const (
-	answeredServed  = "served"
-	answeredHeld    = "held"
-	answeredNeither = "neither"
+	answeredServed      = "served"
+	answeredHeld        = "held"
+	answeredUncheckable = "uncheckable"
+	answeredNeither     = "neither"
 )
 
 // holdAnswer is what one place did with one person's credential, and the broker's answer as a
@@ -57,14 +59,17 @@ type holdAnswer struct {
 // holdPlace is one place of the broker a wiring line of the hold in cmd/broker/main.go reaches, as
 // a person's credential, or Dispatch asking about a person, reaches it through the compiled broker:
 // what a failure names it, the line of main.go that wires it, which is what the place's control
-// deletes, whether that line hands the place the hold gate, and the probe that drives it once for
-// a person and answers what it did. A place the line hands the gate refuses a person the broker
-// holds; every other place serves them as it serves anyone.
+// deletes, whether that line hands the place the hold gate, whether it is the gate's deadline rule
+// (BROKER_HOLD_REQUIRES_DEADLINE), and the probe that drives it once for a person and answers what
+// it did. A place the line hands the gate refuses a person the broker holds; the deadline rule
+// refuses, at a boot that sets it, a person Dispatch answers with no deadline; every other place
+// serves them as it serves anyone.
 type holdPlace struct {
-	name   string
-	wiring string
-	gated  bool
-	probe  func(r *holdRig, t *testing.T, p *holdPerson) holdAnswer
+	name     string
+	wiring   string
+	gated    bool
+	deadline bool
+	probe    func(r *holdRig, t *testing.T, p *holdPerson) holdAnswer
 }
 
 // holdPlaces is every place a wiring line of the hold in main reaches: each place main hands the
@@ -81,6 +86,7 @@ func holdPlaces() []holdPlace {
 		{name: "an approval-page decision", wiring: "approval.Config's Hold: holdGate", gated: true, probe: (*holdRig).decideOnThePage},
 		{name: "an airlock request", wiring: "airlockproxy.Options's Hold: holdGate", gated: true, probe: (*holdRig).askThroughTheAirlock},
 		{name: "the person-access route (GET /v1/person-access as Dispatch)", wiring: "api.Deps's Exchange: exchangePolicy", probe: (*holdRig).countExchangeEntries},
+		{name: "a device-code redemption of a person Dispatch answers with no deadline", wiring: "hold.Config's RequireDeadline: cfg.HoldRequiresDeadline", deadline: true, probe: (*holdRig).redeemWithNoDeadline},
 	}
 }
 
@@ -132,22 +138,24 @@ type holdUpstream struct {
 
 // holdRig is the broker binary on one database behind one public URL, booted again whenever a row
 // needs another setting, with a Dispatch stand-in, a sign-in provider, the service behind the
-// airlock, and the clients every probe reaches it through.
+// airlock, and the clients every probe reaches it through. requireDeadline is whether the boots
+// with the hold on set BROKER_HOLD_REQUIRES_DEADLINE, as an IAP deployment's broker does.
 type holdRig struct {
-	f           approvalFixture
-	databaseURL string
-	public      *front
-	frontAddr   string
-	dispatch    *projectaccesstest.Server
-	accessFile  string
-	airlock     []string
-	upstream    *holdUpstream
-	client      *brokertest.Client
-	pods        brokertest.Pods
-	launcher    brokertest.Launcher
-	broker      *brokerProcess
-	proxyAddr   string
-	made        int
+	f               approvalFixture
+	databaseURL     string
+	public          *front
+	frontAddr       string
+	dispatch        *projectaccesstest.Server
+	accessFile      string
+	airlock         []string
+	upstream        *holdUpstream
+	client          *brokertest.Client
+	pods            brokertest.Pods
+	launcher        brokertest.Launcher
+	broker          *brokerProcess
+	proxyAddr       string
+	made            int
+	requireDeadline bool
 }
 
 // newHoldRig writes the four secrets the two people own and the airlock's rules for the two behind
@@ -200,7 +208,7 @@ func newHoldRig(t *testing.T) *holdRig {
 // machine-login page that turns the device grant on, the airlock, a lease and an access token
 // that outlive the whole run, a token exchange whose entries name each person once, and, for a
 // boot with the hold on, the Dispatch stand-in as BROKER_PROJECT_ACCESS_URL and the file holding
-// the one bearer it takes.
+// the one bearer it takes, beside BROKER_HOLD_REQUIRES_DEADLINE where the rig requires a deadline.
 func (r *holdRig) env(holdOn bool) []string {
 	env := append(r.f.baseEnv(r.databaseURL, r.public.URL), r.f.signInEnv()...)
 	env = append(env, r.airlock...)
@@ -213,6 +221,9 @@ func (r *holdRig) env(holdOn bool) []string {
 	)
 	if holdOn {
 		env = append(env, "BROKER_PROJECT_ACCESS_URL="+r.dispatch.URL, "BROKER_PROJECT_ACCESS_TOKEN_FILE="+r.accessFile)
+	}
+	if holdOn && r.requireDeadline {
+		env = append(env, "BROKER_HOLD_REQUIRES_DEADLINE=true")
 	}
 	return env
 }
@@ -303,21 +314,25 @@ func (r *holdRig) pendingRecord(t *testing.T, p *holdPerson) string {
 
 // heldText is the broker's refusal of a held person's credential, naming person: the text of the
 // API's 403 MEMBERSHIP_HELD, of the token endpoint's membership_held, of the airlock's 403 and of
-// the approval page's refusal, which ends it with a full stop.
-func heldText(person string) string {
+// the approval page's refusal, which ends it with a full stop. A broker that requires a deadline
+// is an IAP deployment's, where the Workspace Directory, not a sign-in, ends a hold, and says so.
+func (r *holdRig) heldText(person string) string {
+	if r.requireDeadline {
+		return "Google's Workspace Directory no longer confirms " + person + "; their credentials work again once it does"
+	}
 	return person + "'s credentials are held by Dispatch; they work again when " + person +
 		" signs in to Dispatch, or when Dispatch can confirm " + person + " with Google again"
 }
 
 // apiAnswer reads an answer of the broker's API to p's call: served at status served, held at 403
 // MEMBERSHIP_HELD naming p, and neither otherwise.
-func apiAnswer(p *holdPerson, call string, status, served int, body []byte) holdAnswer {
+func (r *holdRig) apiAnswer(p *holdPerson, call string, status, served int, body []byte) holdAnswer {
 	if status == served {
 		return holdAnswer{answeredServed, fmt.Sprintf("%s answered %d", call, status)}
 	}
 	said := fmt.Sprintf("%s answered %d %s", call, status, strings.TrimSpace(string(body)))
 	var refused errorBody
-	if json.Unmarshal(body, &refused) == nil && status == http.StatusForbidden && refused.Code == "MEMBERSHIP_HELD" && refused.Error == heldText(p.login) {
+	if json.Unmarshal(body, &refused) == nil && status == http.StatusForbidden && refused.Code == "MEMBERSHIP_HELD" && refused.Error == r.heldText(p.login) {
 		return holdAnswer{answeredHeld, said}
 	}
 	return holdAnswer{answeredNeither, said}
@@ -327,7 +342,7 @@ func apiAnswer(p *holdPerson, call string, status, served int, body []byte) hold
 func (r *holdRig) readGrantValues(t *testing.T, p *holdPerson) holdAnswer {
 	t.Helper()
 	status, body := r.client.Session(t, p.sessionKey, p.enrollment, http.MethodPost, "/v1/grants/"+p.grant+"/values", nil)
-	return apiAnswer(p, "POST /v1/grants/"+p.grant+"/values", status, http.StatusOK, body)
+	return r.apiAnswer(p, "POST /v1/grants/"+p.grant+"/values", status, http.StatusOK, body)
 }
 
 // enrolUnderTheLogin is p's machine login enrolling a new session.
@@ -339,7 +354,7 @@ func (r *holdRig) enrolUnderTheLogin(t *testing.T, p *holdPerson) holdAnswer {
 	}
 	status, body := r.client.Launcher(t, p.machineKey, p.credential, http.MethodPost, "/v1/enrollments",
 		map[string]any{"kind": "session", "runtime_id": r.name(p, "session"), "thumbprint": thumbprint})
-	return apiAnswer(p, "POST /v1/enrollments", status, http.StatusCreated, body)
+	return r.apiAnswer(p, "POST /v1/enrollments", status, http.StatusCreated, body)
 }
 
 // tradeTheMachineToken is p's machine login trading its own token for a session's, as a dev box
@@ -353,7 +368,7 @@ func (r *holdRig) tradeTheMachineToken(t *testing.T, p *holdPerson) holdAnswer {
 	switch {
 	case status == http.StatusOK && token != "":
 		return holdAnswer{answeredServed, fmt.Sprintf("the trade answered %d and a token", status)}
-	case status == http.StatusBadRequest && answer["error"] == oauthwire.MembershipHeld && description == heldText(p.login) && token == "":
+	case status == http.StatusBadRequest && answer["error"] == oauthwire.MembershipHeld && description == r.heldText(p.login) && token == "":
 		return holdAnswer{answeredHeld, said}
 	}
 	return holdAnswer{answeredNeither, said}
@@ -376,8 +391,35 @@ func (r *holdRig) redeemADeviceCode(t *testing.T, p *holdPerson) holdAnswer {
 		return holdAnswer{answeredNeither, fmt.Sprintf("the redemption answered %v", err)}
 	}
 	said := fmt.Sprintf("the redemption answered %d %s %q", refused.Response.StatusCode, refused.ErrorCode, refused.ErrorDescription)
-	if refused.Response.StatusCode == http.StatusBadRequest && refused.ErrorCode == oauthwire.MembershipHeld && refused.ErrorDescription == heldText(p.login) {
+	if refused.Response.StatusCode == http.StatusBadRequest && refused.ErrorCode == oauthwire.MembershipHeld && refused.ErrorDescription == r.heldText(p.login) {
 		return holdAnswer{answeredHeld, said}
+	}
+	return holdAnswer{answeredNeither, said}
+}
+
+// redeemWithNoDeadline is a new machine login of a colleague of p's whom Dispatch answers not
+// held and with no deadline (not_held_until), as a Dispatch outside IAP answers everyone: its
+// device authorization, the colleague's approval as Dispatch relays it, and the redemption of its
+// device code, which asks the hold. A broker that requires a deadline refuses the redemption
+// server_error, saying Dispatch's answer names none; every other broker serves it.
+func (r *holdRig) redeemWithNoDeadline(t *testing.T, p *holdPerson) holdAnswer {
+	t.Helper()
+	colleague := p.local() + "-unconfirmed@example.com"
+	key := brokertest.NewSigningKey(t)
+	authorization := r.client.DeviceLogin(t, key, colleague, r.name(p, "box"))
+	r.client.ApproveMachineLogin(t, colleague, authorization.UserCode)
+	token, err := r.client.DeviceToken(t, key, authorization)
+	if err == nil && token.AccessToken != "" {
+		return holdAnswer{answeredServed, "the redemption of " + colleague + "'s machine login answered a token pair"}
+	}
+	var refused *oauth2.RetrieveError
+	if !errors.As(err, &refused) {
+		return holdAnswer{answeredNeither, fmt.Sprintf("the redemption of %s's machine login answered %v", colleague, err)}
+	}
+	said := fmt.Sprintf("the redemption of %s's machine login answered %d %s %q", colleague, refused.Response.StatusCode, refused.ErrorCode, refused.ErrorDescription)
+	if refused.Response.StatusCode == http.StatusInternalServerError && refused.ErrorCode == "server_error" &&
+		strings.Contains(refused.ErrorDescription, "whether Dispatch holds "+colleague+" cannot be read: Dispatch's answer that they are not held names no deadline, which this broker requires") {
+		return holdAnswer{answeredUncheckable, said}
 	}
 	return holdAnswer{answeredNeither, said}
 }
@@ -412,7 +454,7 @@ func (r *holdRig) decideOnThePage(t *testing.T, p *holdPerson) holdAnswer {
 	}
 	text := brokertest.PageText(t, res.Body)
 	said := fmt.Sprintf("the decision answered %d: %s", res.Status, text)
-	if res.Status == http.StatusForbidden && strings.Contains(text, heldText(p.login)) {
+	if res.Status == http.StatusForbidden && strings.Contains(text, r.heldText(p.login)) {
 		return holdAnswer{answeredHeld, said}
 	}
 	return holdAnswer{answeredNeither, said}
@@ -442,7 +484,7 @@ func (r *holdRig) askThroughTheAirlock(t *testing.T, p *holdPerson) holdAnswer {
 	switch {
 	case res.StatusCode == http.StatusOK && string(body) == holdUpstreamBody && carried == 1:
 		return holdAnswer{answeredServed, said}
-	case res.StatusCode == http.StatusForbidden && strings.Contains(string(body), heldText(p.login)) && carried == 0:
+	case res.StatusCode == http.StatusForbidden && strings.Contains(string(body), r.heldText(p.login)) && carried == 0:
 		return holdAnswer{answeredHeld, said}
 	}
 	return holdAnswer{answeredNeither, said}
@@ -468,13 +510,17 @@ func (r *holdRig) countExchangeEntries(t *testing.T, p *holdPerson) holdAnswer {
 
 // expectAtEachPlace drives every place for p through the broker booted now and fails t, naming the
 // place and the line of main that wires it, at each that does not answer as it should: held where
-// the line hands the place the gate and the broker holds p, served everywhere else. holdsThem says
-// whether the broker booted now holds p, and while what is true of this boot.
+// the line hands the place the gate and the broker holds p, refused as uncheckable at the deadline
+// rule's place where the broker requires a deadline, served everywhere else. holdsThem says whether
+// the broker booted now holds p, and while what is true of this boot.
 func (r *holdRig) expectAtEachPlace(t *testing.T, while string, p *holdPerson, holdsThem bool) {
 	t.Helper()
 	for _, place := range holdPlaces() {
 		want := answeredServed
-		if holdsThem && place.gated {
+		switch {
+		case place.deadline && r.requireDeadline:
+			want = answeredUncheckable
+		case holdsThem && place.gated:
 			want = answeredHeld
 		}
 		got := place.probe(r, t, p)
@@ -493,6 +539,8 @@ func verbOf(outcome string) string {
 		return "served"
 	case answeredHeld:
 		return "held"
+	case answeredUncheckable:
+		return "refused as uncheckable"
 	}
 	return "neither served nor held"
 }
@@ -504,19 +552,26 @@ func verbOf(outcome string) string {
 // while bob is served at each and his token is not held. With BROKER_PROJECT_ACCESS_URL unset, the
 // same broker serves her at each, and its boot log says the hold is off. At every boot, the
 // person-access route Dispatch asks at a sign-out counts the one exchange entry that names each.
+// With BROKER_HOLD_REQUIRES_DEADLINE set, as an IAP deployment's broker sets it, the broker refuses
+// a person Dispatch answers with no deadline as one whose hold it cannot decide, and each refusal of
+// a held person says the Workspace Directory ends the hold.
 //
-// Three boots of the binary on one database behind one public URL. The first, with the hold on and
+// Four boots of the binary on one database behind one public URL. The first, with the hold on and
 // Dispatch holding nobody, makes what ada and bob hold and finds each place serving both, which is
 // what makes the second boot's refusals the hold's. Dispatch then holds ada, and the second boot,
 // the hold on, reads every place again: ada refused, bob served. The hold is set between boots
 // because the broker keeps each person's answer for 30 seconds (projectaccess.CacheTTL), which no
 // clock of this test moves in another process; a new process asks Dispatch afresh. The third boot
 // has no BROKER_PROJECT_ACCESS_URL: Dispatch still holds ada, and the broker's database keeps the
-// held answer the second boot read, yet the broker asks nobody and serves her at each place.
+// held answer the second boot read, yet the broker asks nobody and serves her at each place. The
+// fourth has the hold on with BROKER_HOLD_REQUIRES_DEADLINE, and Dispatch answers bob with a
+// deadline a day ahead, as an IAP deployment's Dispatch does: ada is refused in the Directory's
+// words, bob is served, and a colleague Dispatch answers with no deadline is refused.
 //
 // Each place's control deletes the line of main.go that wires it (holdPlaces' wiring): a gated
-// place then serves ada at the second boot, the person-access route counts no entry, and this test
-// fails naming that place and that line.
+// place then serves ada at the second boot, the person-access route counts no entry, the deadline
+// rule's place serves the colleague at the fourth, and this test fails naming that place and that
+// line.
 func TestTheCompiledBrokerHoldsAHeldPerson(t *testing.T) {
 	r := newHoldRig(t)
 	heldAda := &holdPerson{login: ada, deploySecret: approvalSecretName, airlockSecret: "ADA_AIRLOCK"}
@@ -545,4 +600,11 @@ func TestTheCompiledBrokerHoldsAHeldPerson(t *testing.T) {
 	if calls := r.dispatch.Calls() - asked; calls != 0 {
 		t.Errorf("the broker with BROKER_PROJECT_ACCESS_URL unset asked the Dispatch stand-in %d times, want none", calls)
 	}
+
+	r.requireDeadline = true
+	r.dispatch.SetNotHeldUntil(bob, time.Now().Add(24*time.Hour))
+	r.boot(t, true)
+	const deadlineBoot = "with BROKER_HOLD_REQUIRES_DEADLINE=true and Dispatch holding ada"
+	r.expectAtEachPlace(t, deadlineBoot, heldAda, true)
+	r.expectAtEachPlace(t, deadlineBoot, servedBob, false)
 }

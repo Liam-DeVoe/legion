@@ -670,13 +670,6 @@ func errMembershipHeld(text string) error {
 	return errorf(http.StatusUnauthorized, codeMembershipHeld, "%s", text)
 }
 
-// errBrokerTokenHeld is the refusal of a broker token whose introspection answered held
-// (brokertoken.Caller.Held): the broker's own words for a hold, naming person, since the answer
-// carries no rule (the Envoy listener answers the same text).
-func errBrokerTokenHeld(person string) error {
-	return errMembershipHeld(fmt.Sprintf("%[1]s's credentials are held by Dispatch; they work again when %[1]s signs in to Dispatch, or when Dispatch can confirm %[1]s with Google again", person))
-}
-
 // ownerHold is what a personal token's statement reads of its owner's people row for
 // personalTokenHeld (ownerHoldColumns): a recorded hold (held_since later than signed_in_at),
 // whether a refresh token is stored (one that does not open included), and the confirmation's age

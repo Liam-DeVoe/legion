@@ -501,11 +501,11 @@ func (s *server) refuseHeldSession(w http.ResponseWriter, r *http.Request, enrol
 
 // refuseHeld asks the hold gate (Deps.Hold) whether Dispatch holds person, the operator a
 // session's enrollment or a machine login's credential names, and writes the refusal when it does
-// or cannot tell, reporting whether it refused: 403 MEMBERSHIP_HELD naming the person, or 503
-// HOLD_UNCHECKABLE, tested first, so a held answer the gate could not keep is a 503. The 503 says
-// why in hold.Reason's fixed words, and the gate's own error goes to the log alone. No person (a
-// pod's enrollment, a service's login) is asked nothing, and neither is anyone on a broker with
-// no gate.
+// or cannot tell, reporting whether it refused: 403 MEMBERSHIP_HELD naming the person in the gate's
+// words (hold.Gate.HeldWords), or 503 HOLD_UNCHECKABLE, tested first, so a held answer the gate
+// could not keep is a 503. The 503 says why in hold.Reason's fixed words, and the gate's own error
+// goes to the log alone. No person (a pod's enrollment, a service's login) is asked nothing, and
+// neither is anyone on a broker with no gate.
 func (s *server) refuseHeld(w http.ResponseWriter, r *http.Request, person string) bool {
 	if person == "" {
 		return false
@@ -518,7 +518,7 @@ func (s *server) refuseHeld(w http.ResponseWriter, r *http.Request, person strin
 		slog.Error("broker: whether Dispatch holds a person cannot be read, so their credential is refused", "person", person, "error", err)
 		writeError(w, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", fmt.Sprintf("whether Dispatch holds %s cannot be read: %s", person, hold.Reason(err)))
 	default:
-		writeError(w, http.StatusForbidden, "MEMBERSHIP_HELD", fmt.Sprintf("%s's credentials are held by Dispatch; they work again when %s signs in to Dispatch, or when Dispatch can confirm %s with Google again", person, person, person))
+		writeError(w, http.StatusForbidden, "MEMBERSHIP_HELD", s.deps.Hold.HeldWords(person))
 	}
 	return true
 }

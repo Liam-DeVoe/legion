@@ -85,7 +85,9 @@ func expiryOf(answer Introspection) time.Time {
 // the token's credential records, and when that credential was made, are carried too, which the
 // cache keeps with the rest of the answer. So is held: a held answer is still a live one, kept in
 // the cache as any other for AffirmativeCacheTTL, and each reader refuses a held Caller after its
-// own checks.
+// own checks. And so is not_held_until, the deadline of a not-held answer, which the cache keeps
+// the answer no later than (answerCache.remember) and each reader refuses a Caller past
+// (Verifier.Lapsed).
 func callerOf(answer Introspection, shape tokenShape) Caller {
 	caller := Caller{
 		Session: answer.Session, Person: answer.Person, Service: answer.Service,
@@ -97,7 +99,19 @@ func callerOf(answer Introspection, shape tokenShape) Caller {
 	if answer.CredentialCreatedAt > 0 {
 		caller.CredentialCreatedAt = time.Unix(answer.CredentialCreatedAt, 0).UTC()
 	}
+	if answer.NotHeldUntil > 0 {
+		caller.NotHeldUntil = time.Unix(answer.NotHeldUntil, 0).UTC()
+	}
 	return caller
+}
+
+// notHeldUntilOf is when a live answer that its person is not held stops being good, or the zero
+// time for an answer naming no deadline and for a held one, which is kept as every held answer is.
+func notHeldUntilOf(answer Introspection) time.Time {
+	if answer.Held || answer.NotHeldUntil <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(answer.NotHeldUntil, 0)
 }
 
 // introspect asks the broker what token is, presenting Dispatch's own projected ServiceAccount

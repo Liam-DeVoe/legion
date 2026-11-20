@@ -46,11 +46,15 @@ const (
 var bobPlaceholder = requests.PlaceholderPrefix + "bobbobbobbobbobbobbobbobbobbob01"
 
 // The words K2 gives the airlock's answers to ada, spelled out here rather than read from the
-// proxy, so a change to what the proxy says is a change this row sees.
+// proxy, so a change to what the proxy says is a change this row sees. adaDirectoryHeld is what a
+// broker that requires a deadline (an IAP deployment's) says of a hold instead, and adaLapsed what
+// it says once Dispatch's answer that ada is not held has passed its deadline.
 const (
 	adaHeld          = "ada@example.com's credentials are held by Dispatch; they work again when ada@example.com signs in to Dispatch, or when Dispatch can confirm ada@example.com with Google again"
+	adaDirectoryHeld = "Google's Workspace Directory no longer confirms ada@example.com; their credentials work again once it does"
 	adaUncheckable   = "whether Dispatch holds ada@example.com cannot be read: "
 	unkeptHeldAnswer = adaUncheckable + "the broker could not keep Dispatch's answer that holds them"
+	adaLapsed        = adaUncheckable + "Dispatch's answer that they are not held has passed its deadline"
 	brokerRefused    = "Dispatch refused the broker's own account"
 )
 
@@ -102,16 +106,18 @@ func (h *heldStand) Answer(w http.ResponseWriter, request *http.Request, seen ai
 
 // heldRig is the rig with a real hold in front of the proxy: the gate's Dispatch stand-in, the
 // store the gate keeps its answers in, the clock the gate and its client read, the account the
-// client presents, the count of answers, and how many connections the proxy port has accepted.
+// client presents, the count of answers, how many connections the proxy port has accepted, and
+// the words the gate gives a hold of ada.
 type heldRig struct {
 	*rig
-	dispatch *projectaccesstest.Server
-	store    *store.Store
-	clock    *testClock
-	account  *standInAccount
-	registry *metrics.Registry
-	accepts  atomic.Int64
-	stand    *heldStand
+	dispatch  *projectaccesstest.Server
+	store     *store.Store
+	clock     *testClock
+	account   *standInAccount
+	registry  *metrics.Registry
+	accepts   atomic.Int64
+	stand     *heldStand
+	heldWords string
 }
 
 // newHeldRig builds the rig with ada's grant and bob's, the proxy counting its answers on answers,
@@ -119,20 +125,36 @@ type heldRig struct {
 // many rigs' answers on one counter hands its own.
 func newHeldRig(t *testing.T, registry *metrics.Registry, answers *metrics.Counter) *heldRig {
 	t.Helper()
+	return newHeldRigWith(t, registry, answers, false)
+}
+
+// newHeldRigWith is newHeldRig with the gate's RequireDeadline set as requireDeadline says, as
+// BROKER_HOLD_REQUIRES_DEADLINE sets it on an IAP deployment's broker. Such a broker serves a
+// person only on an answer with a deadline, so the stand-in then answers ada not held until a day
+// after the rig's clock starts, and bob until two days after, as an IAP deployment's Dispatch
+// answers each person with their last active Workspace Directory answer plus 24 hours.
+func newHeldRigWith(t *testing.T, registry *metrics.Registry, answers *metrics.Counter, requireDeadline bool) *heldRig {
+	t.Helper()
 	if answers == nil {
 		answers = answer.NewAnswers(registry)
 	}
 	h := &heldRig{
-		store:    storetest.Open(t),
-		clock:    &testClock{now: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)},
-		registry: registry,
-		stand:    &heldStand{joins: map[string]*frameStand{}, streams: map[string]chan error{}},
+		store:     storetest.Open(t),
+		clock:     &testClock{now: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)},
+		registry:  registry,
+		stand:     &heldStand{joins: map[string]*frameStand{}, streams: map[string]chan error{}},
+		heldWords: adaHeld,
 	}
 	h.dispatch = projectaccesstest.NewServer(t, nil, map[string]string{heldPerson: projectaccess.MemberFull, servedPerson: projectaccess.MemberFull})
+	if requireDeadline {
+		h.dispatch.SetNotHeldUntil(heldPerson, h.clock.read().Add(24*time.Hour))
+		h.dispatch.SetNotHeldUntil(servedPerson, h.clock.read().Add(48*time.Hour))
+		h.heldWords = adaDirectoryHeld
+	}
 	h.account = &standInAccount{bearer: h.dispatch.Token}
 	client := projectaccess.New(h.dispatch.URL, h.account, nil)
 	client.UseClock(h.clock.read)
-	gate := hold.New(hold.Config{Access: client, Store: h.store, Log: slog.New(slog.DiscardHandler), Now: h.clock.read})
+	gate := hold.New(hold.Config{Access: client, Store: h.store, Log: slog.New(slog.DiscardHandler), Now: h.clock.read, RequireDeadline: requireDeadline})
 	h.rig = newRig(t, Options{Hold: gate, Watch: watchFast, Answers: answers}, func(c net.Conn) net.Conn {
 		h.accepts.Add(1)
 		return c
@@ -358,9 +380,17 @@ func heldOrUncheckable(code string) string {
 }
 
 // cutWithinTheWatch fails t unless s's joined connection and streamed answer are each cut by the
-// watch, the joined connection and the stream each logging one line with status 403 and K2's
-// words, and the service's side of the stream ended.
+// watch, the joined connection and the stream each logging one line with status 403 and the words
+// the gate gives a hold of ada, and the service's side of the stream ended.
 func (h *heldRig) cutWithinTheWatch(t *testing.T, s *side, when string) {
+	t.Helper()
+	h.cutWithin(t, s, http.StatusForbidden, h.heldWords, when)
+}
+
+// cutWithin fails t unless s's joined connection and streamed answer are each cut by the watch,
+// the joined connection and the stream each logging one line with status and reason, and the
+// service's side of the stream ended.
+func (h *heldRig) cutWithin(t *testing.T, s *side, status int, reason, when string) {
 	t.Helper()
 	if err := s.join.SetReadDeadline(time.Now().Add(cutWait)); err != nil {
 		t.Fatalf("set the read deadline: %v", err)
@@ -403,8 +433,8 @@ func (h *heldRig) cutWithinTheWatch(t *testing.T, s *side, when string) {
 				continue
 			}
 			naming++
-			if line.fields["reason"] != adaHeld || line.fields["status"] != int64(http.StatusForbidden) {
-				t.Errorf("the cut of %s's call logged status %v and reason %v; want 403 and %q", s.who, line.fields["status"], line.fields["reason"], adaHeld)
+			if line.fields["reason"] != reason || line.fields["status"] != int64(status) {
+				t.Errorf("the cut of %s's call logged status %v and reason %v; want %d and %q", s.who, line.fields["status"], line.fields["reason"], status, reason)
 			}
 		}
 		if naming != 1 {
@@ -514,5 +544,50 @@ func TestHeldAirlockOpenConnectionIsRefused(t *testing.T) {
 		}
 		h.carriesOn(t, ada, "while Dispatch refuses the broker: the uncheckable case leaves a carried call alone")
 		h.carriesOn(t, bob, "while Dispatch refuses the broker")
+	})
+}
+
+// TestHeldAirlockCarriedCallUnderADeadline: on a broker that requires a deadline
+// (BROKER_HOLD_REQUIRES_DEADLINE, an IAP deployment's), with Dispatch answering ada not held until
+// a day ahead and bob until two days ahead, each of ada's calls is served before anything changes.
+// When Dispatch then holds ada, her joined connection and streamed answer are cut within the watch,
+// and a new connection and a plain request are refused, 403 MEMBERSHIP_HELD in the words such a
+// broker gives a hold, that the Workspace Directory, not a sign-in, ends it. When instead the gate's
+// clock passes ada's deadline with Dispatch still answering it, her carried calls are cut 503
+// HOLD_UNCHECKABLE, saying Dispatch's answer that she is not held has passed its deadline, and so
+// are her new connection and plain request: a call already carried does not outlive the deadline
+// a new one is refused at. Bob's calls are served throughout.
+//
+// Controls: carryRefusal ending a held person's call in the words of a broker that requires no
+// deadline (the held row fails naming the cut's words); carryRefusal leaving a call alone once its
+// person's deadline passed (the lapsed row fails naming ada served).
+func TestHeldAirlockCarriedCallUnderADeadline(t *testing.T) {
+	t.Run("Dispatch holds ada", func(t *testing.T) {
+		h := newHeldRigWith(t, metrics.New(), nil, true)
+		ada := h.openSide(t, "ada", workerPlaceholder, workerValue, testGrantID)
+		bob := h.openSide(t, "bob", bobPlaceholder, bobValue, bobGrantID)
+
+		h.dispatch.SetHeld(heldPerson, true)
+		h.passThirtySeconds()
+		h.cutWithinTheWatch(t, ada, "after the hold")
+		h.refusedNewConnection(t, ada, http.StatusForbidden, "MEMBERSHIP_HELD", adaDirectoryHeld, "after the hold")
+
+		time.Sleep(5 * watchFast)
+		h.served(t, h.client(bobPlaceholder), bob, "a new connection after the hold")
+		h.carriesOn(t, bob, "after the hold")
+	})
+
+	t.Run("ada's deadline passes", func(t *testing.T) {
+		h := newHeldRigWith(t, metrics.New(), nil, true)
+		ada := h.openSide(t, "ada", workerPlaceholder, workerValue, testGrantID)
+		bob := h.openSide(t, "bob", bobPlaceholder, bobValue, bobGrantID)
+
+		h.clock.set(h.clock.read().Add(24*time.Hour + time.Second))
+		h.cutWithin(t, ada, http.StatusServiceUnavailable, adaLapsed, "once her deadline passed")
+		h.refusedNewConnection(t, ada, http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", adaLapsed, "once her deadline passed")
+
+		time.Sleep(5 * watchFast)
+		h.served(t, h.client(bobPlaceholder), bob, "a new connection once ada's deadline passed")
+		h.carriesOn(t, bob, "once ada's deadline passed")
 	})
 }
