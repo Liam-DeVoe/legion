@@ -3,9 +3,9 @@ package ghroutetest
 import "strings"
 
 // PinnedCheckPortSHA256 is the sha256 of the public_leak_check.py PinnedCheckReads was ported
-// from, leak-check-v18's. ghroute's TestGhReadsAreProvenAgainstThePinnedCheck fails while it is
+// from, leak-check-v21's. ghroute's TestGhReadsAreProvenAgainstThePinnedCheck fails while it is
 // not ghroute.ReadsProvenCheckSHA256, so a bump of the pin fails until this port moves with it.
-const PinnedCheckPortSHA256 = "9c8aa217e9bade9e1f82ae59120f0a86b97be208375f1dde592b6c9da9fd61d7"
+const PinnedCheckPortSHA256 = "5e5e0e00e4932ac307b79f53ac43e7cb156ed9dd38f01780022e69c18cce6354"
 
 // PinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
 // PinnedCheckPortSHA256, reads argv, a gh call's arguments, as a read in its gh_guard: whether it

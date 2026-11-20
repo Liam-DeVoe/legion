@@ -19,11 +19,12 @@ import (
 // they reach (graphql_endpoint, API_VALUE_OPTS and FIELD_ARGS among them), against the old tag's;
 // port each change to what they read as a read into ghroutetest.PinnedCheckReads and the new
 // sha256 into ghroutetest.PinnedCheckPortSHA256; run INFRA-3562's xcheck4069 harness against it
-// with 0 mismatching rows; then write its tag here and the sha256 of its public_leak_check.py, `git show <tag>:leak-check/public_leak_check.py |
-// sha256sum` in the shared check's own repository.
+// with 0 mismatching rows; then write its tag here and the sha256 of its public_leak_check.py,
+// `git show <tag>:leak-check/public_leak_check.py | sha256sum` in the shared check's own
+// repository.
 const (
-	ReadsProvenCheckTag    = "leak-check-v18"
-	ReadsProvenCheckSHA256 = "9c8aa217e9bade9e1f82ae59120f0a86b97be208375f1dde592b6c9da9fd61d7"
+	ReadsProvenCheckTag    = "leak-check-v21"
+	ReadsProvenCheckSHA256 = "5e5e0e00e4932ac307b79f53ac43e7cb156ed9dd38f01780022e69c18cce6354"
 )
 
 // readLeaves are the leaves that send GitHub no request that writes, by the canonical path the
