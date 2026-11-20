@@ -357,8 +357,10 @@ const parallelProjects = [
   // elsewhere while its Reply holds the focus hands the focus into no other turn, whose turn the
   // Open filter takes away, its row that a pinned card unpinned on another device while its
   // Unpin holds the focus hands the focus into no other card, whose card the Pinned tab takes
-  // away, and its row that a date the reader gives the search bar's Updated since is their press,
-  // whose box the date takes away. Measured in WebKit as well as Firefox:
+  // away, its row that a date the reader gives the search bar's Updated since is their press,
+  // whose box the date takes away, and its row that a Snooze pick in the reading column's head
+  // takes none of the reader's next keys as text, whose Snooze the snoozed row takes away.
+  // Measured in WebKit as well as Firefox:
   // neither fires a `focusout` for it. And a table scrolled while one of its rows holds the
   // focus, whose row the virtual list takes away out of sight: `table-controls`'s
   // scrolling-table row.

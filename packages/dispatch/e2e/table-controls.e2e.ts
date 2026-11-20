@@ -5722,6 +5722,78 @@ test("a date the reader gives the search bar's Updated since is their press, so 
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
+// SLOW(>=2s): two free-text questions seeded and one snoozed from the reading column's head.
+// INFRA-3135, round 20 (the tester's, measured in builds Jobs infra-3135-r20ph, -r20pm and -r20rh
+// at 46b75d84 and main's 1c7c8253): at 1440 px the reader snoozes the question the reading
+// column shows, by its Snooze in the column's head, a loss the reader caused. Once the write
+// lands the row leaves and the column shows the next question. At 46b75d84 the focus then lands
+// in that question's own answer box, so the reader's next j, a binding R6 keeps, is typed into
+// the answer: 9 of 9 runs in Chromium, Firefox and WebKit (r20rh). At main the focus falls to the
+// body and j steps the column's selection. The architect's rule of 2026-11-19 13:0xZ
+// (open-items.md, "The replacement rule, narrowed"): in the reading column the focus goes to the
+// column's own focus stop, whoever caused the loss. A focused control taken away, for which
+// Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects that
+// names the page-own focus row (e2e/playwright.config.ts).
+test("a Snooze pick in the reading column's head takes none of the reader's next keys as text @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await createProject({ key: "CORE", name: "Core" });
+  const ids: string[] = [];
+  for (const question of ["Describe the lease format.", "Describe the handover."]) {
+    const issue = await createIssue({ project: "CORE", title: `Reading column: ${question}` });
+    await patchIssue(issue.key, { assignee: "alice" });
+    ids.push((await createAsk(issue.key, { question }, SURFACE_SESSION)).id);
+  }
+  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.goto("/");
+  // The Inbox lists newest first: the question the reader snoozes is the first row.
+  const snoozed = ids[1] as string;
+  const snooze = (await askControls(page, snoozed)).getByRole("combobox", { name: /^Snooze / });
+  await snooze.focus();
+  await snooze.selectOption({ index: 1 });
+  await expect(inboxRow(page, snoozed)).toHaveCount(0);
+  // The page's rescue runs a frame and a task after the loss, so it is done by now.
+  await nextFrames(page);
+  await nextFrames(page);
+  const wrong: string[] = [];
+  // One read is the answer: every hand-off of the loss has run, and nothing else moves the focus.
+  const holder = await page.evaluate(() => {
+    const active = document.activeElement;
+    const takesText =
+      active instanceof HTMLTextAreaElement ||
+      (active instanceof HTMLElement && active.isContentEditable) ||
+      (active instanceof HTMLInputElement &&
+        ["", "text", "search", "email", "url", "tel", "number", "password"].includes(
+          active.getAttribute("type") ?? ""
+        ));
+    const field = active as HTMLTextAreaElement | HTMLInputElement | null;
+    const named =
+      active?.getAttribute("aria-label") ||
+      field?.labels?.[0]?.textContent?.trim() ||
+      active?.getAttribute("placeholder") ||
+      active?.textContent?.trim().slice(0, 40);
+    return { name: `${active?.tagName.toLowerCase()} "${named}"`, takesText };
+  });
+  if (holder.takesText) wrong.push(`the focus is in ${holder.name}, which takes text`);
+  await page.keyboard.press("j");
+  await nextFrames(page);
+  // One read after the key's frames is the answer: a key typed into a box is there at once.
+  const typedInto = await page.evaluate(() =>
+    [...document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>("textarea, input")]
+      .filter((field) => field.value.includes("j"))
+      .map(
+        (field) =>
+          field.getAttribute("aria-label") ||
+          field.labels?.[0]?.textContent?.trim() ||
+          field.getAttribute("placeholder") ||
+          field.tagName.toLowerCase()
+      )
+  );
+  if (typedInto.length > 0) wrong.push(`j was typed into ${typedInto.join(", ")}`);
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
 // SLOW(>=2s): three priorities and two asks seeded, and two pages opened.
 // INFRA-3135's review round 1, follow-up F5: the display menu replaced the Priorities page's
 // grouping select, where `j` and `k` did nothing, with radios, which take no text, so `j` on one
