@@ -569,18 +569,10 @@ func (m *lineMachine) exitBare(keep, line int) {
 // thousands of such exits would otherwise move the stream and walk every line's marks once per
 // exit, which is quadratic in its lines (a 1 MiB body of 4,000 bare exits took 7.7 s that way,
 // and 0.08 s this way). The patched mdast-util-from-markdown collects prepareList's own
-// insertions the same way and rebuilds the events once.
-//
-// Every stream insert goes through here, so here is where its steps are counted (ParseWork): one
-// for each element a loop of the insert visits. This one visits the events it adds, as it records
-// them, and moves none and walks no mark; an insert that moved the stream in place would count
-// each event it moved and each line mark its loop walked, which writeInserts then moves no more.
+// insertions the same way and rebuilds the events once. Every stream insert goes through here.
 func (m *lineMachine) insertEvents(index int, added []spreadEvent) {
 	if len(added) == 0 {
 		return
-	}
-	for range added {
-		parseWork.Add(1)
 	}
 	m.inserts = append(m.inserts, eventInsert{at: index, events: added})
 }
@@ -588,8 +580,7 @@ func (m *lineMachine) insertEvents(index int, added []spreadEvent) {
 // writeInserts rebuilds the stream with every recorded insert in place, each before the event it
 // names and, where several name one event, the one recorded last first: the stream had them that
 // way, since the second insert named the event the first now stands before, and exitBare's own
-// order (its block's exit, then the containers inside it) depends on it. Each event it writes is a
-// step of the parse (ParseWork).
+// order (its block's exit, then the containers inside it) depends on it.
 func (m *lineMachine) writeInserts() {
 	if len(m.inserts) == 0 {
 		return
@@ -612,7 +603,6 @@ func (m *lineMachine) writeInserts() {
 	for ; next < len(m.inserts); next++ {
 		out = append(out, m.inserts[next].events...)
 	}
-	parseWork.Add(uint64(len(out)))
 	m.events, m.inserts = out, nil
 }
 
@@ -890,16 +880,13 @@ func prepareLists(events []spreadEvent) spreads {
 // prepareList is mdast-util-from-markdown's prepareList (dev/lib/index.js) over the events of one
 // list: an item is spread by a blank line standing in the item itself - at no nested container,
 // at no item's own marker - before the line endings that end it, and the list is spread where
-// more than one line ending ends one of its items. Each event it steps over, forward over the
-// list and back over an item's tail, is a step of the parse (ParseWork).
+// more than one line ending ends one of its items.
 func prepareList(events []spreadEvent, start, length int, found spreads) {
 	containerBalance := -1
 	listSpread := false
 	var listItem ast.Node
 	lineIndex, firstBlankLineIndex := 0, 0
 	atMarker := false
-	stepped := length - start + 1
-	defer func() { parseWork.Add(uint64(stepped)) }()
 
 	for index := start; index <= length; index++ {
 		event := events[index]
@@ -930,7 +917,6 @@ func prepareList(events []spreadEvent, start, length int, found spreads) {
 		if listItem != nil {
 			lineIndex = 0
 			for tail := index - 1; tail >= 0; tail-- {
-				stepped++
 				token := events[tail].token
 				if token == tokenLineEnding || token == tokenLineEndingBlank {
 					if lineIndex > 0 {
@@ -965,11 +951,8 @@ func prepareList(events []spreadEvent, start, length int, found spreads) {
 // moveContainerExits is micromark-util-subtokenize's move of a container's exit back over the line
 // endings before it: it steps over line endings, linePrefix and listItemIndent and stops at
 // anything else, types the first line ending it reaches a lineEnding and every later one a
-// lineEndingBlank, and puts the exit before that first one. Each event it steps over or moves is
-// a step of the parse (ParseWork).
+// lineEndingBlank, and puts the exit before that first one.
 func moveContainerExits(events []spreadEvent) {
-	stepped := len(events)
-	defer func() { parseWork.Add(uint64(stepped)) }()
 	for index := range events {
 		event := events[index]
 		if event.enter || !event.token.container() || event.settled {
@@ -977,7 +960,6 @@ func moveContainerExits(events []spreadEvent) {
 		}
 		lineIndex := 0
 		for other := index - 1; other >= 0; other-- {
-			stepped++
 			if events[other].token != tokenLineEnding && events[other].token != tokenLineEndingBlank {
 				break
 			}
@@ -988,7 +970,6 @@ func moveContainerExits(events []spreadEvent) {
 			lineIndex = other
 		}
 		if lineIndex > 0 {
-			stepped += index - lineIndex
 			copy(events[lineIndex+1:index+1], events[lineIndex:index])
 			events[lineIndex] = event
 		}

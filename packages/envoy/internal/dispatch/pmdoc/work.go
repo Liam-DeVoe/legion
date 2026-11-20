@@ -5,35 +5,22 @@ import "sync/atomic"
 // parseWork, renderWork and updateWork count what ParseWork, RenderWork and UpdateWork answer.
 var parseWork, renderWork, updateWork atomic.Uint64
 
-// ParseWork is how many steps this process's reads of markdown have taken since it started. A
-// step is what a read does once for each piece of its input when its cost is linear, and again
-// for each piece it reads again when it is not:
-//
-//   - each line goldmark's block parse advances past (lastLineColumns), the blank lines it skips
-//     included, and each byte of each line an inline raw HTML walk reads looking for its closer
-//     (inlineRawHTMLParser), the writer's scan's walks among them (rawHTMLScan);
-//   - each container the nesting bound walks up over as a block opens (opensPastBound);
-//   - each character of a delimiter run the inline parse scans (emphasisParser, tildeParser), and
-//     each run its pairing visits (delimiterList);
-//   - each character a bare address's readers read (readLiteralAddress, literalEmail,
-//     literalDomains, literalURL's path, and the transform's nextURLPattern, urlDomain, emailRun
-//     and findURLs);
-//   - each node unescapeTablePipes walks, each event the reading of list spreads steps over
-//     (readSpreads) and each event of each insert into that stream it records (insertEvents), and
-//     each footnote definition keyed for, and each reference looked up in, the map that resolves a
-//     reference up to case (footnoteDefinitionsByKey).
-//
-// A test reads it before and after a call and holds the difference to a count linear in the
-// call's input, which no load on the machine moves: the parse costs that once grew with the
-// square of a body's length (linear_test.go, heavy_bodies_test.go) grew in these steps.
+// The tests hold this package's work linear in its input by counting it with Go's coverage
+// counters, which count every statement of this package, goldmark and ygo that a call runs
+// (counted_work_test.go). Three stages of that work are counted here as well, each because the
+// coverage counters cannot tell it apart: ParseWork and RenderWork count bytes the standard
+// library's searches read, which the counters do not instrument, and UpdateWork counts the items
+// a write reaches apart from ygo's own walks, which the counters count as ygo's. A test reads each
+// before and after a call and judges it beside the counted work, never in its place.
+
+// ParseWork is how many bytes this process's inline raw HTML walks have read since it started:
+// each byte of each line a walk reads from where it stands on it, looking for its closer with
+// bytes.Index or a regexp (walkedLines).
 func ParseWork() uint64 { return parseWork.Load() }
 
-// RenderWork is how many steps this process's renders have taken since it started, beside the
-// reads of what they wrote, which ParseWork counts: each character a forward scan of a text reads
-// to find its next closer or the bounds of its delimiter run (forwardScan), each character of a
-// footnote label folded to ask whether a reference to it is defined (footnoteLabelSet.refersTo),
-// each line the writer's raw HTML scan takes into its block (rawHTMLScan), and each inline node
-// and each line of a text the writing of line breaks walks (writtenLineBreaks).
+// RenderWork is how many characters this process's renders' searches for a closer have read since
+// it started: each character a forward scan of a text reads with strings.IndexByte to find its
+// next `]` or `>` (forwardScan.indexFrom).
 func RenderWork() uint64 { return renderWork.Load() }
 
 // UpdateWork is how many fragment items this process's writes of a tree into a document have

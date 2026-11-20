@@ -20,10 +20,6 @@ import (
 // AST transformer, whose work parseSource does itself (unescapeTablePipes).
 type lazyAwareTable struct{}
 
-// tableTransformer is goldmark's table paragraph transformer, which lazyTableRows runs where
-// findTableRows reads a table the budget pays for.
-var tableTransformer = extension.NewTableParagraphTransformer()
-
 // unescapeTablePipes takes the backslash out of every escaped pipe in a table cell's code span, as
 // goldmark's table AST transformer does (extension/table.go:299-342 at v1.8.6). pmdoc does not
 // register that transformer: goldmark runs it inside its parse, before parseSource checks the
@@ -35,19 +31,14 @@ var tableTransformer = extension.NewTableParagraphTransformer()
 // inside a code span's text are exactly the `\|` that text holds. Each text is split around the
 // backslash of each one, which it drops, as goldmark splits it; in a cell split off a goldmark cell,
 // which goldmark's transformer never walks, too, as the browser editor's parser drops it. Run once
-// the bounds hold, it walks the blocks and each cell once, each node it enters a step of the parse
-// (ParseWork).
+// the bounds hold, it walks the blocks and each cell once.
 func unescapeTablePipes(root ast.Node, source []byte) {
-	walked := 0
 	_ = ast.Walk(root, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
 		switch {
 		case !entering:
 			return ast.WalkContinue, nil
 		case node.Kind() == extensionast.KindTableCell:
 			_ = ast.Walk(node, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
-				if entering {
-					walked++
-				}
 				if entering && node.Kind() == ast.KindCodeSpan {
 					unescapeCodeSpanPipes(node, source)
 					return ast.WalkSkipChildren, nil
@@ -56,13 +47,11 @@ func unescapeTablePipes(root ast.Node, source []byte) {
 			})
 			return ast.WalkSkipChildren, nil
 		}
-		walked++
 		if node.Type() == ast.TypeInline {
 			return ast.WalkSkipChildren, nil
 		}
 		return ast.WalkContinue, nil
 	})
-	parseWork.Add(uint64(walked))
 }
 
 // unescapeCodeSpanPipes splits each text of span around the backslash of every `\|` it holds,
@@ -169,8 +158,14 @@ func recordTablePadding(pc parser.Context, padding tablePadding) bool {
 	return false
 }
 
+// Extend registers lazyTableRows over goldmark's table paragraph transformer, which it asks
+// goldmark for here rather than reading from a variable of this package: the readers run Extend
+// while this package's variables are initialized (blockReader, displayReader), and Go orders that
+// initialization only by the references it sees, which a method reached through goldmark's
+// Extender interface is not one of. A build with Go's coverage counters ordered a package-level
+// copy of the transformer after the readers, so the readers held none and a table's parse panicked.
 func (lazyAwareTable) Extend(m goldmark.Markdown) {
-	m.Parser().AddOptions(parser.WithParagraphTransformers(util.Prioritized(lazyTableRows{table: tableTransformer}, 200)))
+	m.Parser().AddOptions(parser.WithParagraphTransformers(util.Prioritized(lazyTableRows{table: extension.NewTableParagraphTransformer()}, 200)))
 }
 
 // lazyTableRows runs goldmark's table transformer only where the browser editor's parser reads a
@@ -184,7 +179,8 @@ func (lazyAwareTable) Extend(m goldmark.Markdown) {
 // (headerCells), so it is a header of none and no table forms. The transformer runs on the lines
 // of the table that parser reads, the lines before them left a paragraph of their own where
 // goldmark would read no table in them at all (textBeforeTable). Where goldmark would read a
-// table, the budget pays for its padded cells before goldmark's transformer builds them.
+// table, the budget pays for its padded cells before goldmark's transformer builds them. table is
+// goldmark's table paragraph transformer (extension.NewTableParagraphTransformer).
 type lazyTableRows struct{ table parser.ParagraphTransformer }
 
 func (t lazyTableRows) Transform(node *ast.Paragraph, reader gmtext.Reader, pc parser.Context) {

@@ -606,7 +606,10 @@ func linkOpener(value string, offset int, scan *forwardScan) bool {
 // forwardScan answers where a byte next occurs at or after an offset of one text, remembering
 // the last answer and the bounds of delimiter runs. writeInlineText asks in offset order, so a
 // text of many `[`, `<`, `&`, `*`, or `_` costs one pass over each run, not one per character
-// (LEGION-465). Each character a scan reads is a step of the render (RenderWork).
+// (LEGION-465). Each character a search for a closer reads is a step of the render (RenderWork):
+// strings.IndexByte reads them, and Go's coverage counters, which count every other loop of a
+// render, do not instrument the standard library, so a search asked again from each offset would
+// count as one statement a search however far it read.
 type forwardScan struct {
 	value string
 	// closer is the last answer for `]` and `>`, which are the only closers this renderer scans.
@@ -673,7 +676,6 @@ func (s *forwardScan) delimiterBounds(offset int, b byte) (int, int) {
 		for run.end < len(s.value) && s.value[run.end] == b {
 			run.end++
 		}
-		renderWork.Add(uint64(run.end - run.start))
 	}
 	return run.start, run.end
 }

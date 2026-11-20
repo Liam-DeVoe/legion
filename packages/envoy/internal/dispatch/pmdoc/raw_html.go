@@ -123,7 +123,10 @@ func (p inlineRawHTMLParser) Parse(parent ast.Node, block text.Reader, pc parser
 // counting, as steps of the parse (ParseWork), the bytes of each line the walk reads from where it
 // stands on it: a walk searches each line it reads for its closer, so those bytes are its cost,
 // whether the line is the opener's own or one past it, and the record of where a block holds no
-// closer keeps that count linear in the block.
+// closer keeps that count linear in the block. The search is bytes.Index or a regexp, in goldmark's
+// walks and this package's, which Go's coverage counters do not instrument, so a walk from every
+// opener over the rest of a one-line paragraph would count as a few statements an opener: this
+// count is what sees those bytes.
 type walkedLines struct{ text.Reader }
 
 func (r walkedLines) PeekLine() ([]byte, text.Segment) {

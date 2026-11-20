@@ -362,37 +362,83 @@ func TestParseReadsAFootnoteDefinitionEndingInABlock(t *testing.T) {
 }
 
 // A reference goldmark's exact match leaves unresolved is looked up among the definitions by its
-// label's key once, not compared with every definition: with 2,000 definitions and 2,000 such
-// references a document parses in about the steps (ParseWork) it takes with the definitions
-// written as plain paragraphs, where keying every definition again for each reference would take
-// hundreds of times as many. Both are counts of the parse's own steps, which no load moves.
+// label's key once, not compared with every definition. A document of as many such references as
+// footnote definitions parses in work linear in its length, counted by Go's coverage counters at
+// 250 and at 2,000 of each (countedWorkIsLinear), where keying every definition again for each
+// reference would grow with the square of them. The same document with the definitions written as
+// plain paragraphs is counted beside it, and the document with definitions counts at most
+// unmatchedReferenceRatio times its work at 2,000 of each.
 func TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition(t *testing.T) {
-	document := func(definitions bool) string {
-		var markdown strings.Builder
-		for range 2000 {
-			markdown.WriteString("Unmatched [^QQ].\n\n")
-		}
-		for index := range 2000 {
-			if definitions {
-				fmt.Fprintf(&markdown, "[^d%d]: x\n\n", index)
-			} else {
-				fmt.Fprintf(&markdown, "d%d: x\n\n", index)
-			}
-		}
-		return markdown.String()
+	row := t.Name()
+	var works [2]int64
+	for index, shape := range unmatchedReferenceShapes() {
+		t.Run(shape.name, func(t *testing.T) {
+			works[index] = countedWorkIsLinear(t, row, shape)[1].work
+		})
 	}
-	steps := func(markdown string) uint64 {
-		before := ParseWork()
-		if _, err := Parse(markdown); err != nil {
-			t.Fatal(err)
-		}
-		return ParseWork() - before
-	}
-	plain, withDefinitions := steps(document(false)), steps(document(true))
-	if withDefinitions > 10*plain {
-		t.Fatalf("parsing took %d steps with 2,000 definitions and %d with them as paragraphs, want under ten times as many", withDefinitions, plain)
+	plain, withDefinitions := works[0], works[1]
+	if plain <= 0 || float64(withDefinitions) > unmatchedReferenceRatio*float64(plain) {
+		t.Fatalf("parsing counted %d statements with 2,000 definitions and %d with them as paragraphs, want at most %.1f times as many",
+			withDefinitions, plain, unmatchedReferenceRatio)
 	}
 }
+
+// unmatchedReferenceShapes are a document of unmatched references and as many definitions written
+// as plain paragraphs, then the same with them written as footnote definitions, each counted at
+// 250 and 2,000 of each.
+func unmatchedReferenceShapes() []countedShape {
+	var shapes []countedShape
+	for _, definitions := range []bool{false, true} {
+		name := "unmatched references and definitions as paragraphs"
+		if definitions {
+			name = "unmatched references and footnote definitions"
+		}
+		shapes = append(shapes, countedShape{
+			name:    name,
+			sizes:   [2]int{2000 / growthStep, 2000},
+			unit:    "character",
+			reading: unmatchedReferenceReadings[name],
+			stage:   searchedBytes,
+			prepare: func(t *testing.T, size int) (int, func()) {
+				var markdown strings.Builder
+				for range size {
+					markdown.WriteString("Unmatched [^QQ].\n\n")
+				}
+				for index := range size {
+					if definitions {
+						fmt.Fprintf(&markdown, "[^d%d]: x\n\n", index)
+					} else {
+						fmt.Fprintf(&markdown, "d%d: x\n\n", index)
+					}
+				}
+				document := markdown.String()
+				return len(document), func() {
+					if _, err := Parse(document); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+		})
+	}
+	return shapes
+}
+
+// unmatchedReferenceReadings are the readings (countedReading) of
+// TestParseResolvesUnmatchedReferencesWithoutComparingEveryDefinition's shapes, by name, taken as
+// delimiterAndOpenerHeavyReadings were (linear_test.go). The counters count goldmark's exact match
+// too, which compares each reference with every footnote definition (extension/footnote.go's
+// footnoteParser.Parse at v1.8.6): the document with definitions grew 13.35 times over 8.24 times
+// the characters, 26,432,755 statements at 2,000 of each against 12,432,860 with them written as
+// paragraphs (2.13 times).
+var unmatchedReferenceReadings = map[string]countedReading{
+	"unmatched references and definitions as paragraphs": {past: 225.7, most: 232.7},
+	"unmatched references and footnote definitions":      {past: 457.1, most: 434.1},
+}
+
+// unmatchedReferenceRatio is how many times the work of the document with 2,000 footnote
+// definitions the document with them written as plain paragraphs may count, the bound the steps
+// the parse counted of itself were held to; the reading is 2.13 times.
+const unmatchedReferenceRatio = 10.0
 
 // A panic in this package's reader or renderer is recovered at the entry point, so it never
 // crashes the caller, and is this package's bug: an ErrPanic, which callers answer as an internal

@@ -336,20 +336,44 @@ func nestedCallouts(depth int) string {
 }
 
 // A megabyte of bare quote markers is a million nested quotes, a tree deep enough to overflow the
-// process stack in the document pipeline's recursive walks. It is refused in a parse linear in
-// the markers, no more than parseStepsPerCharacter steps (ParseWork) for each, before the parser
-// builds that tree for them to enter.
+// process stack in the document pipeline's recursive walks. It is refused in work linear in the
+// markers, counted by Go's coverage counters at an eighth of a mebibyte and at the whole of it
+// (countedWorkIsLinear), before the parser builds that tree for them to enter.
 func TestParseRefusesAMebibyteOfQuotesInBoundedTime(t *testing.T) {
-	markdown := strings.Repeat(">", 1<<20)
-	before := ParseWork()
-	_, err := Parse(markdown)
-	steps := ParseWork() - before
-	if !errors.Is(err, ErrSchema) {
-		t.Fatalf("1 MiB of `>`: %v, want ErrSchema", err)
+	row := t.Name()
+	for _, shape := range quoteMarkerShapes() {
+		t.Run(shape.name, func(t *testing.T) {
+			countedWorkIsLinear(t, row, shape)
+		})
 	}
-	if allowed := parseStepsPerCharacter * uint64(len(markdown)); steps > allowed {
-		t.Fatalf("refusing 1 MiB of `>` took %d steps, past the %d (%d a character) a parse linear in it takes", steps, allowed, parseStepsPerCharacter)
-	}
+}
+
+// quoteMarkerShapes is the refusal of a line of bare quote markers.
+func quoteMarkerShapes() []countedShape {
+	const name = "a line of `>`"
+	return []countedShape{{
+		name:    name,
+		sizes:   [2]int{1 << 20 / growthStep, 1 << 20},
+		unit:    "character",
+		reading: quoteMarkerReadings[name],
+		stage:   searchedBytes,
+		prepare: func(t *testing.T, size int) (int, func()) {
+			markdown := strings.Repeat(">", size)
+			return len(markdown), func() {
+				if _, err := Parse(markdown); !errors.Is(err, ErrSchema) {
+					t.Fatalf("%d `>`: %v, want ErrSchema", size, err)
+				}
+			}
+		},
+	}}
+}
+
+// quoteMarkerReadings are the readings (countedReading) of
+// TestParseRefusesAMebibyteOfQuotesInBoundedTime's shape, by name, taken as
+// delimiterAndOpenerHeavyReadings were (linear_test.go). ParseWork's bound for it was 200 steps a
+// character; the counted parse reads every `>` at about 142 statements each.
+var quoteMarkerReadings = map[string]countedReading{
+	"a line of `>`": {past: 142.0, most: 142.3},
 }
 
 // A tree from any source is outside the schema when a node stands more than 1,000 levels below the
