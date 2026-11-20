@@ -7,9 +7,19 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
 )
+
+// TestTheMachineLoginKindIsTheBrokers: the kind ownMachineLogin holds a restricted member's
+// decision to is the one the broker writes on a machine login's record, which Dispatch names
+// rather than importing (machineLoginKind).
+func TestTheMachineLoginKindIsTheBrokers(t *testing.T) {
+	if machineLoginKind != record.KindLauncherCredential {
+		t.Fatalf("machineLoginKind = %q, want the broker's record.KindLauncherCredential %q", machineLoginKind, record.KindLauncherCredential)
+	}
+}
 
 // The machine-lookup answers TestARestrictedMemberNeverDecidesACredentialRequest's fake broker
 // gives for the code erin types: her own pending machine login; a pending machine login of

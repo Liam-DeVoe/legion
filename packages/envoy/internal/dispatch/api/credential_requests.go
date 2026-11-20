@@ -29,7 +29,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
@@ -60,10 +59,17 @@ func (s *server) restrictedCaller(w http.ResponseWriter, r *http.Request) (restr
 	return reader.Viewer != nil && reader.Viewer.Restricted, true
 }
 
+// machineLoginKind is the kind the broker's lookup answers for a machine login: its
+// record.KindLauncherCredential, as wire.RecordResponse's Kind names it. Dispatch names it here
+// rather than importing the broker's record package, which would build the broker's signing and
+// proof code into the Dispatch server for one string; TestTheMachineLoginKindIsTheBrokers holds
+// the two equal.
+const machineLoginKind = "launcher_credential"
+
 // ownMachineLogin looks up at the broker the machine login whose code lookup carries (the body of
 // its POST /v1/machine-logins/lookup), and answers the broker's record when it is login's own: a
-// machine login (record.KindLauncherCredential) whose approver is login, which no shared record's
-// sentinel approver (record.AnyoneApprover) is, and which names no service; and, where recordID is
+// machine login (machineLoginKind) whose approver is login, which no shared record's sentinel
+// approver ("anyone") is, and which names no service; and, where recordID is
 // not empty, the record recordID names, so a member's own code decides no other record. The broker
 // names a machine login's token after its approver (exchange.Set.Machine), and holds a restricted
 // member's to one project, so this is the one credential such a member may decide; the broker
@@ -79,7 +85,7 @@ func ownMachineLogin(w http.ResponseWriter, r *http.Request, client *agentsecret
 	}
 	var looked wire.RecordResponse
 	own := json.Unmarshal(answer, &looked) == nil &&
-		looked.Kind == record.KindLauncherCredential && (looked.Service == nil || *looked.Service == "") &&
+		looked.Kind == machineLoginKind && (looked.Service == nil || *looked.Service == "") &&
 		model.CanonicalLogin(looked.Approver) == login &&
 		(recordID == "" || looked.RecordID == recordID)
 	if !own {
