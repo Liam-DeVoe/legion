@@ -500,10 +500,11 @@ test("v-no-leftover-postgres: a start's removal of a dead stack's container read
     "\nfunction capped<T>(work: Promise<T>, fallback: T): Promise<T> {\n" +
     '  return Promise.race([work, new Promise<T>((done) => AbortSignal.timeout(120_000).addEventListener("abort", () => done(fallback)))]);\n' +
     "}\n";
-  const containerSweep = "const containers = await removeContainers(self, left, bounds, reader);";
+  const containerSweep =
+    "const containers = await removeContainers(self, left, bounds, reader, on);";
   for (const handing of [
-    "const containers = await capped(removeContainers(self, left, bounds, reader), undefined);",
-    "const sweeping = removeContainers(self, left, bounds, reader);\n    const containers = await capped(sweeping, undefined);",
+    "const containers = await capped(removeContainers(self, left, bounds, reader, on), undefined);",
+    "const sweeping = removeContainers(self, left, bounds, reader, on);\n    const containers = await capped(sweeping, undefined);",
   ]) {
     const cappedSweep = aroundTheRemoval(
       planted(modules, sweep, (source) => `${source.replace(containerSweep, handing)}${helper}`)

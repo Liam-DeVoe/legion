@@ -84,6 +84,8 @@ import { promisify } from "node:util";
 
 import {
   dockerMs,
+  type Machine,
+  machine,
   type RemovalBounds,
   removalBounds,
   removeContainer,
@@ -517,12 +519,14 @@ interface Containers {
  *  provider needs none. A start that cannot list the containers leaves each mark of a container
  *  and names it (`sweepRun`): with no `docker` it cannot tell whether the container still runs,
  *  from a `docker` of another PATH. Whether a process holds a socket directory it reads through
- *  `reader` (`removeDirectory`). */
+ *  `reader` (`removeDirectory`). Each removal runs on `on`, the machine's own but for a row
+ *  (`Machine`). */
 async function removeContainers(
   self: Owner | null,
   left: Left,
   bounds: RemovalBounds,
-  reader: StatReader
+  reader: StatReader,
+  on: Machine
 ): Promise<Containers | undefined> {
   const listed = new Set<string>();
   const removed = new Set<string>();
@@ -581,7 +585,8 @@ async function removeContainers(
     const removal = await removeContainer(
       id,
       `${what} (${mark.container}), which ${by} left`,
-      bounds
+      bounds,
+      on
     );
     if (removal.kind === "failed") {
       console.error(
@@ -851,17 +856,20 @@ async function removeRunDirectories(
  *  is `reader`, the program that reads where each path a process names leads (`statReader`), and
  *  `servedUnder`, the directory it looks in for those run directories elsewhere: the whole
  *  machine for a start, and a row's own directory for a row, so that the sweep of one row judges
- *  no stack that another row, or another session of the machine, planted beside it. */
+ *  no stack that another row, or another session of the machine, planted beside it; and so is
+ *  `on`, the machine each container's removal runs on (`Machine`): a row's moves its own clock,
+ *  so the line a removal ends with at its bound depends on no load. */
 export async function removeLeftoverPostgres(
   bounds = removalBounds,
   reader = statReader,
-  servedUnder = "/"
+  servedUnder = "/",
+  on = machine
 ): Promise<void> {
   const self = stackOwner();
   const left: Left = { unread: [], untrusted: [], unjudged: [], held: [] };
   try {
     // The containers first, so a container goes before the socket directory it serves in.
-    const containers = await removeContainers(self, left, bounds, reader);
+    const containers = await removeContainers(self, left, bounds, reader, on);
     await removeRunDirectories(tmpdir(), self, containers, left, reader, servedUnder);
   } catch (error) {
     console.error(

@@ -17,7 +17,9 @@
  *  `TMPDIR` of the row's own and a `PATH` that holds no `docker`, so the sweep reads no container
  *  of another run on the machine; the rows of a container's removal run a start's removal of one
  *  container (`removeContainer`), or its whole sweep, in a child instead, with a stand-in `docker`
- *  that runs no real one. They need Linux (`/proc`).
+ *  that runs no real one, or on a machine whose clock the row moves (`rowMachine`), where the row
+ *  requires how a removal ends at its bound: on the real clock that end depends on how fast the
+ *  stand-in answers. They need Linux (`/proc`).
  *  A mark another user wrote needs a second user, which a test run has none of, so the rows of
  *  `whyUntrusted` (`harness-postgres-marks.test.ts`) read owners from a stubbed `lstat`; these
  *  rows plant what one user can: a link, a program, a directory others may write. A stand-in
@@ -76,11 +78,10 @@ import {
   startSweep,
   sweep,
   sweepInChild,
-  type Tick,
   until,
   writeMark,
 } from "./harness-postgres-removal-fixtures";
-import { type RowAnswer, rowMachine } from "./harness-postgres-row-machine";
+import { type RowAnswer, type RowCall, rowMachine } from "./harness-postgres-row-machine";
 import {
   boundOf,
   claimEventMs,
@@ -533,26 +534,6 @@ function waitLines(lines: readonly string[], id: string): string[] {
  *  twice the row's (20 s for 10 s). */
 const clockRoomS = 6;
 
-/** The seconds from the stand-in's first `docker rm` to the start of its last `docker ps` ask of
- *  one container, on the stand-in's own clock: how long the start waited on its removal, as the
- *  stand-in saw it, which no load on the start or the row stretches. */
-function askedFor(ticks: readonly Tick[]): number {
-  const rm = ticks.find((tick) => tick.event === "start" && tick.call.startsWith("rm "));
-  const asks = ticks.filter(
-    (tick) => tick.event === "start" && tick.call.startsWith("ps --all --quiet")
-  );
-  return (asks.at(-1)?.at ?? Number.NaN) - (rm?.at ?? Number.NaN);
-}
-
-/** Requires that the start waited on its removal until `boundMs`, on the stand-in's clock
- *  (`askedFor`): its last ask came within `clockRoomS` past the bound, and no sooner than one
- *  pause between two asks (`watchMs` of `rowBounds`) and `clockRoomS` before it. */
-function expectEndedAtBound(ticks: readonly Tick[], boundMs: number): void {
-  const waited = askedFor(ticks);
-  expect(waited).toBeGreaterThan(boundMs / 1000 - rowBounds.watchMs / 1000 - clockRoomS);
-  expect(waited).toBeLessThan(boundMs / 1000 + clockRoomS);
-}
-
 /** Kills each `docker` stand-in a row's start ran that still runs, by its pid and start. */
 function endStandIns(docker: StandInDocker): void {
   for (const { pid, start } of [...docker.processes(), ...docker.running()]) {
@@ -729,46 +710,76 @@ for (const docker of [
   );
 }
 
-/** How many asks the next row's stand-in lists the container for: one more than the asks of one
+/** How many asks the next row's machine lists the container for: one more than the asks of one
  *  pause each (`watchMs`) that fit in the time after which the start says that it waits
  *  (`answerMs`), so the start has said so once before Docker lists the container no more. */
 const listedAsks = rowBounds.answerMs / rowBounds.watchMs + 1;
 
+/** Docker's refusal of a `docker rm` of the container `standInId` while another removal of it is
+ *  in progress. */
+const inProgressRefusal = `Error response from daemon: removal of container ${standInId} is already in progress`;
+
+/** The line a start prints once its removal of the container `standInId` has run `ran` s. */
+function waitsLine(ran: number, boundMs: number): string {
+  return `: waits for Docker's removal of container ${standInId.slice(0, 12)}: the removal has run ${ran} s and Docker answers each ask, so the start waits for it, at most ${boundMs / 1000} s in all`;
+}
+
+/** Runs a start's removal of the container `standInId` within `bounds` on a machine whose clock
+ *  the row moves (`rowMachine`), and whose `docker` answers as `answer` says, to the removal's
+ *  bound at most. Answers how the removal ended, the time of that clock it ended at, each line it
+ *  printed with the time of that clock, and each call the machine got (`RowCall`): each time is
+ *  the removal's own, so no load on the row moves one. */
+async function removeOnRowClock(
+  answer: (args: readonly string[]) => RowAnswer,
+  bounds: typeof removalBounds
+) {
+  const docker = rowMachine(answer);
+  const said: [number, string][] = [];
+  const lines = spyOn(console, "error").mockImplementation((...words: unknown[]) => {
+    said.push([docker.machine.now(), words.join(" ")]);
+  });
+  try {
+    const removal = await docker.drive(
+      removeContainer(standInId, undefined, bounds, docker.machine),
+      { horizonMs: bounds.boundMs }
+    );
+    return { removal, at: docker.machine.now(), said, calls: docker.calls() };
+  } finally {
+    lines.mockRestore();
+  }
+}
+
+/** The times of the asks of `calls`, a machine's (`RowCall`): each `docker ps` of the container. */
+function askTimes(calls: readonly RowCall[]): number[] {
+  return calls.filter((call) => call.args.startsWith("ps ")).map((call) => call.at);
+}
+
 // Another start's removal of the container, which Docker still runs: Docker refuses this start's
 // removal, and the start sends none again. It asks whether Docker still lists the container, and
-// says another start removed it once Docker lists it no more. The stand-in lists it for
-// `listedAsks` asks, which take 4 s and more.
-test.skipIf(!onLinux)(
-  "v-no-leftover-postgres: a start whose removal of a dead stack's container Docker refuses while another removal of it is in progress sends no docker rm again, waits for that removal while Docker answers, says so, and then says another start removed it",
-  async () => {
-    const row = rowOf(oneRemoval);
-    const { tmp } = scratch();
-    try {
-      const docker = standInDocker(tmp, [
-        'case "$1" in',
-        inProgress,
-        `  ps) if [ "$(grep -c "^ps " "$(dirname "$0")/calls")" -le ${listedAsks} ]; then echo "\${6#id=}"; fi ;;`,
-        "  inspect) echo removing ;;",
-        "esac",
-      ]);
+// says another start removed it once Docker lists it no more. The machine lists it for
+// `listedAsks` asks, one a second on a clock the row moves (`rowMachine`), so the fifth ask finds
+// it gone at 5 s of the removal whatever the load: on the real clock, a slow `docker` stand-in
+// moved that ask toward the 10 s bound.
+test("v-no-leftover-postgres: a start whose removal of a dead stack's container Docker refuses while another removal of it is in progress sends no docker rm again, waits for that removal while Docker answers, says so, and then says another start removed it", async () => {
+  let asks = 0;
+  const { removal, at, said, calls } = await removeOnRowClock((args) => {
+    if (args[0] === "rm") return { after: 0, stderr: `${inProgressRefusal}\n` };
+    asks += 1;
+    return { after: 0, stdout: asks <= listedAsks ? `${standInId}\n` : "" };
+  }, rowBounds);
 
-      const { removal, lines } = await removeInChild(row, docker.bin, standInId, rowBounds);
-
-      expect(removal).toEqual({
-        kind: "elsewhere",
-        reason: `Error response from daemon: removal of container ${standInId} is already in progress`,
-      });
-      const calls = docker.calls();
-      expect(calls.filter((call) => call.startsWith("rm "))).toHaveLength(1);
-      expect(calls.filter((call) => call.startsWith("ps "))).toHaveLength(listedAsks + 1);
-      expect(waitLines(lines, standInId)).toHaveLength(1);
-    } finally {
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  },
-  // What the row waits for, summed by the fixtures' program (`rowMs`): one child and its removal.
-  rowMs(oneRemoval)
-);
+  expect({ removal, at }).toEqual({
+    removal: { kind: "elsewhere", reason: inProgressRefusal },
+    at: (listedAsks + 1) * rowBounds.watchMs,
+  });
+  expect(calls.filter((call) => call.args.startsWith("rm "))).toHaveLength(1);
+  expect(askTimes(calls)).toEqual(
+    Array.from({ length: listedAsks + 1 }, (_, index) => (index + 1) * rowBounds.watchMs)
+  );
+  expect(said).toEqual([
+    [rowBounds.answerMs, expect.stringContaining(waitsLine(3, rowBounds.boundMs))],
+  ]);
+});
 
 // Docker refuses a second removal from the moment the first marks the container's removal in
 // progress, and goes on refusing while that removal kills the container: moby v28.5.2 marks it at
@@ -776,38 +787,41 @@ test.skipIf(!onLinux)(
 // containerd is given with no deadline (`daemon/kill.go:111`), and `docker inspect` reads the
 // container as `running` until its process has ended (`container/state.go:121-136`). So a start
 // that another start's stuck removal holds gets "already in progress" and `running` for as long as
-// the daemon takes. It sends no `docker rm` again, says that it waits once the removal has run as
-// long as one ask may take, and gives it up at its bound, on one line that names the container.
-test.skipIf(!onLinux)(
-  "v-no-leftover-postgres: a start whose removal of a dead stack's container Docker refuses as already in progress while docker inspect reads the container running sends no docker rm again, says that it waits, and gives the removal up at its bound",
-  async () => {
-    const row = rowOf(oneRemoval);
-    const { tmp } = scratch();
-    const docker = standInDocker(tmp, [
-      'case "$1" in',
-      inProgress,
-      listsIt,
-      "  inspect) echo running ;;",
-      "esac",
-    ]);
-    try {
-      const { removal, lines } = await removeInChild(row, docker.bin, standInId, rowBounds);
+// the daemon takes. It sends no `docker rm` again, asks no `docker inspect` at all, says that it
+// waits once the removal has run as long as one ask may take, and gives it up at its bound, on one
+// line that names the container. The row's clock (`rowMachine`) ends the removal at its bound with
+// that line whatever the load: on the real clock, an ask that a slow `docker` stand-in carried
+// into the bound's last second ended it with another line.
+test("v-no-leftover-postgres: a start whose removal of a dead stack's container Docker refuses as already in progress while docker inspect reads the container running sends no docker rm again, says that it waits, and gives the removal up at its bound", async () => {
+  const { removal, at, said, calls } = await removeOnRowClock(
+    (args) =>
+      args[0] === "rm"
+        ? { after: 0, stderr: `${inProgressRefusal}\n` }
+        : args[0] === "inspect"
+          ? { after: 0, stdout: "running\n" }
+          : { after: 0, stdout: `${standInId}\n` },
+    rowBounds
+  );
 
-      expect(removal).toEqual({
-        kind: "failed",
-        reason: `Error response from daemon: removal of container ${standInId} is already in progress, and Docker still lists it ${rowBounds.boundMs / 1000} s after this start's removal began`,
-      });
-      expect(docker.calls().filter((call) => call.startsWith("rm "))).toHaveLength(1);
-      expect(waitLines(lines, standInId)).toHaveLength(1);
-      expectEndedAtBound(docker.clock(), rowBounds.boundMs);
-    } finally {
-      endStandIns(docker);
-      rmSync(tmp, { recursive: true, force: true });
-    }
-  },
-  // What the row waits for, summed by the fixtures' program (`rowMs`): one child and its removal.
-  rowMs(oneRemoval)
-);
+  expect({ removal, at }).toEqual({
+    removal: {
+      kind: "failed",
+      reason: `${inProgressRefusal}, and Docker still lists it ${rowBounds.boundMs / 1000} s after this start's removal began`,
+    },
+    at: rowBounds.boundMs,
+  });
+  expect(calls.filter((call) => call.args.startsWith("rm "))).toHaveLength(1);
+  expect(calls.filter((call) => call.args.startsWith("inspect"))).toEqual([]);
+  expect(askTimes(calls)).toEqual(
+    Array.from(
+      { length: rowBounds.boundMs / rowBounds.watchMs - 1 },
+      (_, index) => (index + 1) * rowBounds.watchMs
+    )
+  );
+  expect(said).toEqual([
+    [rowBounds.answerMs, expect.stringContaining(waitsLine(3, rowBounds.boundMs))],
+  ]);
+});
 
 // The start's own bounds: a removal that Docker never ends, while it answers each ask at once, runs
 // the 600 s of the start's bound and no less, and says that it waits at 60 s. The row runs it on a
@@ -817,41 +831,21 @@ test.skipIf(!onLinux)(
 // `docker rm`, ends the removal sooner, with another reason; a limit on the real clock is the next
 // row's.
 test("v-no-leftover-postgres: a start whose removal of a dead stack's container Docker never ends, within the start's own bounds, says that it waits at 60 s and gives the removal up at 600 s and no sooner, on a clock the row moves", async () => {
-  const docker = rowMachine((args) =>
-    args[0] === "ps" ? { after: 0, stdout: `${standInId}\n` } : "never"
+  const { removal, said, calls } = await removeOnRowClock(
+    (args) => (args[0] === "ps" ? { after: 0, stdout: `${standInId}\n` } : "never"),
+    removalBounds
   );
-  const said: [number, string][] = [];
-  const lines = spyOn(console, "error").mockImplementation((...words: unknown[]) => {
-    said.push([docker.machine.now(), words.join(" ")]);
-  });
-  try {
-    const removal = await docker.drive(
-      removeContainer(standInId, undefined, removalBounds, docker.machine)
-    );
 
-    expect(removal).toEqual({
-      kind: "failed",
-      reason: "Docker did not end the removal within 600 s, while it answered each ask",
-    });
-    expect(said).toEqual([
-      [
-        60_000,
-        expect.stringContaining(
-          `: waits for Docker's removal of container ${standInId.slice(0, 12)}: the removal has run 60 s and Docker answers each ask, so the start waits for it, at most 600 s in all`
-        ),
-      ],
-    ]);
-    const calls = docker.calls();
-    expect(calls.filter((call) => call.args.startsWith("rm "))).toEqual([
-      { args: `rm --force --volumes ${standInId}`, at: 0, ended: 600_000, how: "aborted" },
-    ]);
-    // One ask every 5 s from the first pause to the bound, each answered at once.
-    expect(calls.filter((call) => call.args.startsWith("ps ")).map((call) => call.at)).toEqual(
-      Array.from({ length: 119 }, (_, index) => (index + 1) * 5_000)
-    );
-  } finally {
-    lines.mockRestore();
-  }
+  expect(removal).toEqual({
+    kind: "failed",
+    reason: "Docker did not end the removal within 600 s, while it answered each ask",
+  });
+  expect(said).toEqual([[60_000, expect.stringContaining(waitsLine(60, 600_000))]]);
+  expect(calls.filter((call) => call.args.startsWith("rm "))).toEqual([
+    { args: `rm --force --volumes ${standInId}`, at: 0, ended: 600_000, how: "aborted" },
+  ]);
+  // One ask every 5 s from the first pause to the bound, each answered at once.
+  expect(askTimes(calls)).toEqual(Array.from({ length: 119 }, (_, index) => (index + 1) * 5_000));
 });
 
 // Another start's removal that Docker never ends, within the start's own bounds: Docker refuses
@@ -862,50 +856,32 @@ test("v-no-leftover-postgres: a start whose removal of a dead stack's container 
 // and gives the container up at 600 s and no sooner. A wait of the other removal with no bound, a
 // second `docker rm`, no line, or a bound of any other length fails it.
 test("v-no-leftover-postgres: a start whose docker rm of a dead stack's container Docker refuses as already in progress, while Docker lists it at every ask, within the start's own bounds, sends no docker rm again, says that it waits at 60 s and gives the container up at 600 s and no sooner, on a clock the row moves", async () => {
-  const refusal = `Error response from daemon: removal of container ${standInId} is already in progress`;
-  const docker = rowMachine((args) =>
-    args[0] === "rm" ? { after: 0, stderr: `${refusal}\n` } : { after: 0, stdout: `${standInId}\n` }
+  const { removal, said, calls } = await removeOnRowClock(
+    (args) =>
+      args[0] === "rm"
+        ? { after: 0, stderr: `${inProgressRefusal}\n` }
+        : { after: 0, stdout: `${standInId}\n` },
+    removalBounds
   );
-  const said: [number, string][] = [];
-  const lines = spyOn(console, "error").mockImplementation((...words: unknown[]) => {
-    said.push([docker.machine.now(), words.join(" ")]);
-  });
-  try {
-    const removal = await docker.drive(
-      removeContainer(standInId, undefined, removalBounds, docker.machine)
-    );
 
-    expect(removal).toEqual({
-      kind: "failed",
-      reason: `${refusal}, and Docker still lists it 600 s after this start's removal began`,
-    });
-    expect(said).toEqual([
-      [
-        60_000,
-        expect.stringContaining(
-          `: waits for Docker's removal of container ${standInId.slice(0, 12)}: the removal has run 60 s and Docker answers each ask, so the start waits for it, at most 600 s in all`
-        ),
-      ],
-    ]);
-    const calls = docker.calls();
-    expect(calls.filter((call) => call.args.startsWith("rm "))).toEqual([
-      { args: `rm --force --volumes ${standInId}`, at: 0, ended: 0, how: "answered" },
-    ]);
-    // One ask every 5 s from the first pause to the bound, each answered at once.
-    expect(calls.filter((call) => call.args.startsWith("ps ")).map((call) => call.at)).toEqual(
-      Array.from({ length: 119 }, (_, index) => (index + 1) * 5_000)
-    );
-  } finally {
-    lines.mockRestore();
-  }
+  expect(removal).toEqual({
+    kind: "failed",
+    reason: `${inProgressRefusal}, and Docker still lists it 600 s after this start's removal began`,
+  });
+  expect(said).toEqual([[60_000, expect.stringContaining(waitsLine(60, 600_000))]]);
+  expect(calls.filter((call) => call.args.startsWith("rm "))).toEqual([
+    { args: `rm --force --volumes ${standInId}`, at: 0, ended: 0, how: "answered" },
+  ]);
+  // One ask every 5 s from the first pause to the bound, each answered at once.
+  expect(askTimes(calls)).toEqual(Array.from({ length: 119 }, (_, index) => (index + 1) * 5_000));
 });
 
 // Each pause between two asks is cut to what is left of the bound (`within`), so a removal gives up
 // at its bound exactly, and also where the bound is no whole number of pauses: with an ask every
 // 7 s on the start's 600 s, the last pause is 5 s. The two rows above cannot see a pause that takes
-// its whole length, since 600 s is a whole number of their 5 s pauses; with 7 s such a pause runs
-// the removal 2 s past its bound, on a clock the row moves (`rowMachine`), and these rows fail.
-const inProgressRefusal = `Error response from daemon: removal of container ${standInId} is already in progress`;
+// its whole length, since 600 s is a whole number of their 5 s pauses; with 7 s such a pause would
+// run the removal 2 s past its bound, on a clock the row moves (`rowMachine`), whose horizon, the
+// bound, ends it there, and these rows fail.
 for (const [docker, answer, reason] of [
   [
     "never ends",
@@ -923,27 +899,14 @@ for (const [docker, answer, reason] of [
   ],
 ] as const) {
   test(`v-no-leftover-postgres: a start whose removal of a dead stack's container Docker ${docker}, asking every 7 s, gives the container up at 600 s exactly and no later, on a clock the row moves`, async () => {
-    const machine = rowMachine(answer);
-    const lines = spyOn(console, "error").mockImplementation(() => undefined);
-    try {
-      const removal = await machine.drive(
-        removeContainer(standInId, undefined, { ...removalBounds, watchMs: 7_000 }, machine.machine)
-      );
+    const { removal, at, calls } = await removeOnRowClock(answer, {
+      ...removalBounds,
+      watchMs: 7_000,
+    });
 
-      expect({ removal, at: machine.machine.now() }).toEqual({
-        removal: { kind: "failed", reason },
-        at: 600_000,
-      });
-      // An ask every 7 s from the first pause, the last at 595 s, and then the last 5 s.
-      expect(
-        machine
-          .calls()
-          .filter((call) => call.args.startsWith("ps "))
-          .map((call) => call.at)
-      ).toEqual(Array.from({ length: 85 }, (_, index) => (index + 1) * 7_000));
-    } finally {
-      lines.mockRestore();
-    }
+    expect({ removal, at }).toEqual({ removal: { kind: "failed", reason }, at: 600_000 });
+    // An ask every 7 s from the first pause, the last at 595 s, and then the last 5 s.
+    expect(askTimes(calls)).toEqual(Array.from({ length: 85 }, (_, index) => (index + 1) * 7_000));
   });
 }
 
@@ -1294,14 +1257,17 @@ test.skipIf(!onLinux)(
   rowMs(ranOutInChild)
 );
 
-/** What the next rows wait for (`Waits`): one sweep in a child, the bound of its removal of the
- *  first container, three holder reads (the next container's socket directory, and the run
- *  directory's data and socket directories), and then the end of each `docker` it ran. */
-const sweepOfTwo: Waits = { children: 1, reads: 3, bounds: [rowBounds.boundMs, claimEventMs] };
+/** What the next rows wait for (`Waits`): one sweep in a child, whose removals of containers run
+ *  on a clock the child moves and so take no time of the row's, and three holder reads (the next
+ *  container's socket directory, and the run directory's data and socket directories). */
+const sweepOfTwo: Waits = { children: 1, reads: 3, bounds: [] };
 
 /** Two containers a sweep lists, each with the mark of a stack that is gone, in the listing file
  *  `listing` of `tmp`, and a data directory with its mark in `run`: the first container's removal
- *  is the row's case, and the second, which the start removes, shows that the sweep goes on. */
+ *  is the row's case, and the second, which the start removes, shows that the sweep goes on. The
+ *  stand-in `docker` that `lists` holds answers the sweep's listing; `answers` is the table of the
+ *  machine each removal runs on (`tableAnswer`), which answers the first container's `docker rm`
+ *  with `stuck` and lists it at each ask, and removes the second. */
 function twoContainers(tmp: string, run: string) {
   const gone = owners().gone;
   const stuck = { id: "1".repeat(64), name: "dispatch-e2e-pg-stuck-0" };
@@ -1318,27 +1284,57 @@ function twoContainers(tmp: string, run: string) {
   const data = join(run, "worker-0", "pgdata");
   leaveData(data);
   const file = writeMark(run, gone, data, mkdtempSync(join(tmp, "no-bin-")));
-  const lists = `  ps) if [[ " $* " == *" --format "* ]]; then cat ${JSON.stringify(listing)}; else echo "\${6#id=}"; fi ;;`;
-  return { by: `which stack ${gone.pid} left`, stuck, next, data, file, lists };
+  const lists = `  ps) cat ${JSON.stringify(listing)} ;;`;
+  const answers = (rm: RowAnswer): Record<string, RowAnswer> => ({
+    [`rm --force --volumes ${stuck.id}`]: rm,
+    [`ps --all --quiet --no-trunc --filter id=${stuck.id}`]: { after: 0, stdout: `${stuck.id}\n` },
+    [`rm --force --volumes ${next.id}`]: { after: 0, stdout: `${next.id}\n` },
+  });
+  return { by: `which stack ${gone.pid} left`, stuck, next, data, file, lists, answers };
+}
+
+/** The calls a sweep of `twoContainers` makes of its removals' machine, as `how` the first
+ *  container's `docker rm` ends: that `docker rm` at 0, an ask a second until its bound, and then
+ *  the next container's `docker rm`, at the bound, on the machine's clock. */
+function callsOfTwo(
+  stuck: string,
+  next: string,
+  how: RowCall["how"]
+): { args: string; at: number; how: RowCall["how"] }[] {
+  const answered: RowCall["how"] = "answered";
+  return [
+    { args: `rm --force --volumes ${stuck}`, at: 0, how },
+    ...Array.from({ length: rowBounds.boundMs / rowBounds.watchMs - 1 }, (_, index) => ({
+      args: `ps --all --quiet --no-trunc --filter id=${stuck}`,
+      at: (index + 1) * rowBounds.watchMs,
+      how: answered,
+    })),
+    { args: `rm --force --volumes ${next}`, at: rowBounds.boundMs, how: answered },
+  ];
 }
 
 // A removal that Docker never ends while it answers each ask, as of a container whose removal is
 // stuck in the daemon: the start says that it waits, gives the removal up at its bound on one line
-// that names the container, and goes on, to the next container and the run directories.
+// that names the container, and goes on, to the next container and the run directories. The
+// removals run on a clock the sweep's child moves (`rowMachine`), so the removal ends at its bound
+// with that line whatever the load: on the real clock, an ask that a slow `docker` stand-in
+// carried into the bound's last second ended it with another line: 1 run of 20 in CI's repeat
+// workflow on 2026-11-20, and a stand-in slowed by 0.10 s to 0.45 s on a shared Linux machine.
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start whose removal of a dead stack's container Docker never ends, while Docker answers, says that it waits, gives the removal up at its bound on one line that names the container, and goes on to the next container and the run directories",
   async () => {
     const row = rowOf(sweepOfTwo);
     const { tmp, run } = scratch();
-    const { by, stuck, next, data, file, lists } = twoContainers(tmp, run);
-    const docker = standInDocker(tmp, [
-      'case "$1" in',
-      lists,
-      `  rm) if [ "$4" = ${stuck.id} ]; then ${neverEnds(row)}; fi; echo "$4" ;;`,
-      "esac",
-    ]);
+    const { by, stuck, next, data, file, lists, answers } = twoContainers(tmp, run);
+    const docker = standInDocker(tmp, ['case "$1" in', lists, "esac"]);
     try {
-      const { lines } = await sweepInChild(row, tmp, docker.bin, rowBounds);
+      const { lines, calls } = await sweepInChild(
+        row,
+        tmp,
+        docker.bin,
+        rowBounds,
+        answers("never")
+      );
 
       expect(waitLines(lines, stuck.id)).toEqual([
         expect.stringContaining(`container ${stuck.id.slice(0, 12)} (${stuck.name}), ${by}:`),
@@ -1356,67 +1352,60 @@ test.skipIf(!onLinux)(
       expect(
         holding(lines, `removed ${join(real, "worker-0", "pgdata")} and ${real}/pg-0-`)
       ).toHaveLength(1);
-      expect(
-        docker.calls().filter((call) => call === `rm --force --volumes ${stuck.id}`)
-      ).toHaveLength(1);
-      expectEndedAtBound(docker.clock(), rowBounds.boundMs);
-      await until(
-        row,
-        () => docker.running().length === 0,
-        "the end of each docker the start ran",
-        claimEventMs
+      expect(calls.map(({ args, at, how }) => ({ args, at, how }))).toEqual(
+        callsOfTwo(stuck.id, next.id, "aborted")
       );
     } finally {
       endStandIns(docker);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep, its removal of
-  // the stuck container and its three holder reads, and then the end of each `docker` it ran.
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep and its three
+  // holder reads.
   rowMs(sweepOfTwo)
 );
 
-// Every answer of Docker about the first container is that another removal of it is in progress,
-// and `docker inspect` reads it as `removing`: the start sends no `docker rm` of it again, says that
-// it waits, gives it up at its bound on one line that names the container, and goes on to the next
-// container and the run directories.
+// Every answer of Docker about the first container is that another removal of it is in progress:
+// the start sends no `docker rm` of it again, says that it waits, gives it up at its bound on one
+// line that names the container, and goes on to the next container and the run directories, on a
+// clock the sweep's child moves (`rowMachine`), as the row above.
 test.skipIf(!onLinux)(
   "v-no-leftover-postgres: a start whose every removal of a dead stack's container Docker refuses as already in progress says that it waits, gives the container up at its bound on one line that names it, and goes on to the next container and the run directories",
   async () => {
     const row = rowOf(sweepOfTwo);
     const { tmp, run } = scratch();
-    const { by, stuck, next, data, file, lists } = twoContainers(tmp, run);
-    const docker = standInDocker(tmp, [
-      'case "$1" in',
-      lists,
-      `  rm) if [ "$4" = ${stuck.id} ]; then echo "Error response from daemon: removal of container $4 is already in progress" >&2; exit 1; fi; echo "$4" ;;`,
-      "  inspect) echo removing ;;",
-      "esac",
-    ]);
+    const { by, stuck, next, data, file, lists, answers } = twoContainers(tmp, run);
+    const docker = standInDocker(tmp, ['case "$1" in', lists, "esac"]);
+    const refusal = `Error response from daemon: removal of container ${stuck.id} is already in progress`;
     try {
-      const { lines } = await sweepInChild(row, tmp, docker.bin, rowBounds);
+      const { lines, calls } = await sweepInChild(
+        row,
+        tmp,
+        docker.bin,
+        rowBounds,
+        answers({ after: 0, stderr: `${refusal}\n` })
+      );
 
       expect(waitLines(lines, stuck.id)).toHaveLength(1);
       expect(holding(lines, `container ${stuck.id.slice(0, 12)} (`)).toContainEqual(
         expect.stringContaining(
-          `: container ${stuck.id.slice(0, 12)} (${stuck.name}), ${by}, is not removed: Error response from daemon: removal of container ${stuck.id} is already in progress, and Docker still lists it ${rowBounds.boundMs / 1000} s after this start's removal began`
+          `: container ${stuck.id.slice(0, 12)} (${stuck.name}), ${by}, is not removed: ${refusal}, and Docker still lists it ${rowBounds.boundMs / 1000} s after this start's removal began`
         )
       );
-      expect(
-        docker.calls().filter((call) => call === `rm --force --volumes ${stuck.id}`)
-      ).toHaveLength(1);
       expect(
         holding(lines, `removed container ${next.id.slice(0, 12)} (${next.name})`)
       ).toHaveLength(1);
       expect([existsSync(data), existsSync(file)]).toEqual([false, false]);
-      expectEndedAtBound(docker.clock(), rowBounds.boundMs);
+      expect(calls.map(({ args, at, how }) => ({ args, at, how }))).toEqual(
+        callsOfTwo(stuck.id, next.id, "answered")
+      );
     } finally {
       endStandIns(docker);
       rmSync(tmp, { recursive: true, force: true });
     }
   },
-  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep, its wait for the
-  // first container's bound and its three holder reads, and then the end of each `docker` it ran.
+  // What the row waits for, summed by the fixtures' program (`rowMs`): one sweep and its three
+  // holder reads.
   rowMs(sweepOfTwo)
 );
 

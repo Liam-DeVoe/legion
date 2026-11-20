@@ -29,6 +29,7 @@ import type { Subprocess } from "bun";
 import type { RemovalBounds } from "../harness-postgres-container-removal";
 import * as marks from "../harness-postgres-marks";
 import { claimInfix, type StatReader, statMs, statReader } from "../harness-postgres-processes";
+import type { RowAnswer, RowCall } from "./harness-postgres-row-machine";
 import { boundOf, type Row, type Waits } from "./harness-postgres-waits";
 import {
   parentLives,
@@ -220,22 +221,37 @@ const removalModule = fileURLToPath(new URL("../harness-postgres-removal.ts", im
 const containerRemovalModule = fileURLToPath(
   new URL("../harness-postgres-container-removal.ts", import.meta.url)
 );
+const rowMachineModule = fileURLToPath(
+  new URL("./harness-postgres-row-machine.ts", import.meta.url)
+);
 
 /** The start's sweep, as a child of this file runs it: within the start's own bounds of a
  *  container's removal, or the row's (`RemovalBounds`), where `ANSWER_MS`, `BOUND_MS` and
  *  `WATCH_MS` give them, with the start's own reader of where each path a process names leads, or
  *  the row's (`StatReader`), where `STAT_READER` gives it, and looking elsewhere only in
- *  `SERVED_UNDER`, the file's own directory (`plantsRoot`). */
+ *  `SERVED_UNDER`, the file's own directory (`plantsRoot`). Where `ROW_DOCKER` gives a table of
+ *  answers (`tableAnswer`), each container's removal runs on a machine whose clock the child moves
+ *  (`rowMachine`), beside the sweep's own work in real time, to `BOUND_MS` at most, and the child
+ *  prints that machine's calls (`RowCall`) as JSON. */
 const sweepScript = `
 import { removeLeftoverPostgres } from ${JSON.stringify(removalModule)};
-const { ANSWER_MS, BOUND_MS, WATCH_MS, STAT_READER, SERVED_UNDER } = process.env;
-await removeLeftoverPostgres(
+import { rowMachine, tableAnswer } from ${JSON.stringify(rowMachineModule)};
+const { ANSWER_MS, BOUND_MS, WATCH_MS, STAT_READER, SERVED_UNDER, ROW_DOCKER } = process.env;
+const bounds =
   ANSWER_MS === undefined
     ? undefined
-    : { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS), watchMs: Number(WATCH_MS) },
-  STAT_READER === undefined ? undefined : JSON.parse(STAT_READER),
-  SERVED_UNDER
-);
+    : { answerMs: Number(ANSWER_MS), boundMs: Number(BOUND_MS), watchMs: Number(WATCH_MS) };
+const reader = STAT_READER === undefined ? undefined : JSON.parse(STAT_READER);
+if (ROW_DOCKER === undefined) {
+  await removeLeftoverPostgres(bounds, reader, SERVED_UNDER);
+} else {
+  const row = rowMachine(tableAnswer(JSON.parse(ROW_DOCKER)));
+  await row.drive(removeLeftoverPostgres(bounds, reader, SERVED_UNDER, row.machine), {
+    horizonMs: Number(BOUND_MS),
+    beside: true,
+  });
+  console.log(JSON.stringify(row.calls()));
+}
 `;
 
 /** The environment that gives a start's removal of a container in a child of this file the
@@ -921,15 +937,25 @@ export async function fixtureDockerInChild(
 /** Runs the start's whole sweep (`sweepScript`) in a child with `tmp` for its `TMPDIR` and `bin`,
  *  a directory holding a stand-in `docker`, first on its `PATH`, within `bounds`, with the start's
  *  own reader, counted (`countedReader`), and charges `row` for the child and for the holder reads
- *  its sweep made. Answers the lines it printed and how many seconds it took; kills the child and
- *  throws where it has not ended within everything the row waits for (`Row.ms`). */
-export async function sweepInChild(row: Row, tmp: string, bin: string, bounds: RemovalBounds) {
+ *  its sweep made. Where `docker` is given, a table of answers (`tableAnswer`), each container's
+ *  removal runs on a machine whose clock the child moves, and that answers each `docker` call of
+ *  the removal by that table, while the sweep's listing of the containers still runs the stand-in
+ *  in `bin`. Answers the lines it printed, how many seconds it took, and the calls of that machine
+ *  (`RowCall`, none where no table is given); kills the child and throws where it has not ended
+ *  within everything the row waits for (`Row.ms`). */
+export async function sweepInChild(
+  row: Row,
+  tmp: string,
+  bin: string,
+  bounds: RemovalBounds,
+  docker?: Readonly<Record<string, RowAnswer>>
+) {
   const what = `the sweep of ${tmp}`;
   row.child(what);
   const counts = mkdtempSync(join(tmpdir(), "sweep-reads-"));
   const starts = join(counts, "starts");
   try {
-    const { stderr, seconds } = await inChild(
+    const { stdout, stderr, seconds } = await inChild(
       sweepScript,
       bin,
       {
@@ -937,11 +963,13 @@ export async function sweepInChild(row: Row, tmp: string, bin: string, bounds: R
         ...boundsEnv(bounds),
         STAT_READER: JSON.stringify(countedReader(starts)),
         SERVED_UNDER: plantsRoot(),
+        ...(docker === undefined ? {} : { ROW_DOCKER: JSON.stringify(docker) }),
       },
       row
     );
     row.reads(readsMade(starts), what);
-    return { lines: stderr.split("\n"), seconds };
+    const calls: RowCall[] = docker === undefined ? [] : JSON.parse(stdout);
+    return { lines: stderr.split("\n"), seconds, calls };
   } finally {
     rmSync(counts, { recursive: true, force: true });
   }
