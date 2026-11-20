@@ -3794,6 +3794,20 @@
       "production": "brokerclient Client.read: a refusal quotes no value the broker wrote"
     },
     {
+      "id": "brokerclient-refusal-beside-credential",
+      "requirement": "r4-unchanged",
+      "package": "./internal/brokerclient",
+      "test": "TestARefusalBesideACredentialedAddressPrintsNoneOfItsWords",
+      "production": "(*github.com/sjawhar/envoy/internal/brokerclient.Client).post: the refusal through the address's Error (brokeraddr.Address.Error), which withholds its words beside an address that is not clean",
+      "function": "(*github.com/sjawhar/envoy/internal/brokerclient.Client).post",
+      "capture": "brokerclient.refusal-beside-credential",
+      "mutation": {
+        "file": "packages/envoy/internal/brokerclient/brokerclient.go",
+        "preimage": "c.brokerURL.Error(newRefusedError(refusedIdentity(c.subject), resp.StatusCode, said, described))",
+        "replacement": "newRefusedError(refusedIdentity(c.subject), resp.StatusCode, said, described)"
+      }
+    },
+    {
       "id": "agentsecrets-answer-echo-body",
       "requirement": "r3-each-site",
       "package": "./cmd/agent-secrets",

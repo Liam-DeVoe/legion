@@ -3,11 +3,14 @@ package brokerclient
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -60,5 +63,36 @@ func TestATradeAnswerPrintsNoSubjectTokenItEchoes(t *testing.T) {
 			slog.New(slog.NewTextHandler(&line, nil)).Warn(msg, args...)
 			redacttest.RequireNone(t, "brokerclient.answer-echo/"+c.name+"/log", line.String())
 		})
+	}
+}
+
+// TestARefusalBesideACredentialedAddressPrintsNoneOfItsWords: the configured broker address
+// carries a credential in its fragment, which no request sends and so no request record names,
+// and whatever answers at that address refuses the trade with an OAuth error whose description
+// repeats it. The trade's error prints the refusal's status and none of its words: post wraps the
+// refusal in the address's Error (brokeraddr.Address.Error), which beside an address that is not
+// clean withholds every word of the answer (R4). Captures brokerclient.refusal-beside-credential.
+func TestARefusalBesideACredentialedAddressPrintsNoneOfItsWords(t *testing.T) {
+	base := newRawServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant","error_description":"the address ` + redacttest.Token + ` names no broker"}`))
+	})
+	client, err := New(Config{BrokerURL: brokeraddr.New(base + "#" + redacttest.Token), Key: testKey(t),
+		Subject: &scriptedSource{token: "probe-subject", tokenType: "urn:envoy:params:oauth:token-type:kubernetes-service-account", describe: "probe subject"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, tradeErr := client.trade(context.Background())
+	if tradeErr == nil {
+		t.Fatal("the trade answered no error")
+	}
+	var refused *RefusedError
+	if !errors.As(tradeErr, &refused) || !refused.HasCode("invalid_grant") {
+		t.Errorf("the trade's error is %v, want the refusal with the code the answer gave", tradeErr)
+	}
+	redacttest.RequireNone(t, "brokerclient.refusal-beside-credential", tradeErr.Error())
+	if !strings.Contains(tradeErr.Error(), "400") {
+		t.Errorf("the trade's error is %q, want its status", tradeErr)
 	}
 }
