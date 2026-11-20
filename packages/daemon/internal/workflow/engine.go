@@ -2259,8 +2259,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	// The move out of admitted is where the run's work starts, and so where the plan it carries
 	// out is written (WritePlan): the run's plan node, the plan whose first step is the start below.
+	// The node, the move's write and the start each read w, the walk this transition read once.
 	if trigger == TriggerGateOpened {
-		if err := e.WritePlan(ctx, tx, issue); err != nil {
+		if err := e.writePlanOn(ctx, tx, issue, w); err != nil {
 			return err
 		}
 	}
@@ -2287,7 +2288,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, func(at Standing) string {
+		if err := e.start(ctx, tx, issue, w, starting, func(at Standing) string {
 			return task(issue, at, handoff, pr, reason)
 		}, movedBack); err != nil {
 			return err
@@ -2368,7 +2369,7 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 	if status != "" {
 		issue.Status = status
 	}
-	if err := e.WriteIssue(ctx, tx, *issue); err != nil {
+	if err := e.writeIssueOn(ctx, tx, *issue, *w); err != nil {
 		return "", err
 	}
 	// The issue has moved: this is the write that takes it into another phase, the plainest

@@ -76,16 +76,23 @@ func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk,
 	}
 	task := stored.Tasks[0]
 	steps := stored.Steps[task.Task]
-	named := make([]plan.Step, len(steps))
-	for i, step := range steps {
-		named[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
-	}
-	line := plan.Line(named, builtinDeployment)
+	line := plan.Line(namedSteps(steps), builtinDeployment)
 	if at := slices.Index(line, ""); at >= 0 {
 		return Walk{}, fmt.Errorf("walk %s at generation %d: step %d of task %s names the role %q, which runs as no phase", issue.Key, issue.Generation, at+1, task.Task, steps[at].Role)
 	}
 	return Walk{Stored: true, Task: task.Task, Text: task.BlockText, Steps: steps, Line: line, State: task.State, Place: task.Place,
 		StoppedReason: task.StoppedReason, Version: stored.Version}, nil
+}
+
+// namedSteps is steps as a plan names them (plan.Step), each its role and the key of the agent it
+// names: what a walk's line is read from (plan.Line), what its plan node and a started worker's
+// task write (plan.Words) and what a later version is compared with (heldPlan).
+func namedSteps(steps []record.PlanStep) []plan.Step {
+	named := make([]plan.Step, len(steps))
+	for i, step := range steps {
+		named[i] = plan.Step{Role: step.Role, Key: step.AgentKey}
+	}
+	return named
 }
 
 // PlaceOf is where the task stands while its issue stands in p: the step of the line that runs
@@ -172,23 +179,32 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 }
 
 // WriteIssue writes issue (record.Store.PutIssue), and is the one write of an issue of the workflow
-// and of admission: no other code of either package calls a store's PutIssue (the scan of
-// TestEveryWriteOfAnIssueChecksItsPhaseAgainstItsTasksPlace). issues.phase and the place of the
-// run's task are two records of where the issue stands, and WriteIssue refuses a write in which
-// they disagree: the issue stands in the phase its task's place and state derive (issuePhaseOf), a
-// hold overlays that phase and names it (record.StandsAt), and a root that waits on a person
+// and of admission: no other code of either package calls a store's PutIssue. issues.phase and the
+// place of the run's task are two records of where the issue stands, and WriteIssue refuses a
+// write in which they disagree: the issue stands in the phase its task's place and state derive
+// (issuePhaseOf), a hold overlays that phase and names it (record.StandsAt), and a root that
+// waits on a person
 // before its first step stands in awaiting_person over the admitted of a task at no act. That root
 // stands there itself: no hold is from awaiting_person, which the issues table refuses
 // (issues_held_from_check), so a hold that names it is refused here too. It reads
 // the walk in the caller's transaction, after any move of the task (moveTask), so a write that
 // names its phase itself is checked against the store and not against the caller's copy: one read
 // of issue_plans for a run with no plan rows, which has only its phase and is not checked, and
-// three reads (issue_plans, plan_tasks, plan_steps) for a run with plan rows.
+// three reads (issue_plans, plan_tasks, plan_steps) for a run with plan rows. A transition's move
+// writes through writeIssueOn instead, on the walk it read once and moved.
 func (e *Engine) WriteIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
 		return err
 	}
+	return e.writeIssueOn(ctx, tx, issue, w)
+}
+
+// writeIssueOn is WriteIssue's check and write on w, the walk of issue's run as the caller holds
+// it: WriteIssue's own read, or a transition's move (arrive), which read w at the start of the
+// transition and moved its task on it (moveTask), so w is where the store holds the task: moveTask
+// writes the place and the state it sets on w, in the same transaction.
+func (e *Engine) writeIssueOn(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) error {
 	if w.Stored {
 		at, task := record.StandsAt(issue), issuePhaseOf(w, w.Place, w.State)
 		if at != task && (issue.Phase != phase.AwaitingPerson || task != phase.Admitted) {

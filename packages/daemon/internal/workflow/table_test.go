@@ -49,13 +49,14 @@ func todaysTable() []Row {
 	return rows
 }
 
-// An issue with no plan rows walks TableOf(phase.Order), so that table is today's, row for row and
-// in today's order: the same phases, trigger, target and effects, and a guard that answers every
-// snapshot as today's does (the one guard that reads anything reads the pull request).
-func TestTableOfTodaysOrderIsTodaysTable(t *testing.T) {
-	want, got := todaysTable(), TableOf(phase.Order)
+// An issue with no plan rows moves by the table its walk reads (todaysWalk, Walk.table), and that
+// table is today's, row for row and in today's order: the same phases, trigger, target and
+// effects, and a guard that answers every snapshot as today's does (the one guard that reads
+// anything reads the pull request).
+func TestAWalkWithNoPlanRowsMovesByTodaysTable(t *testing.T) {
+	want, got := todaysTable(), todaysWalk().table()
 	if len(got) != len(want) {
-		t.Fatalf("TableOf(phase.Order) has %d rows, want today's %d", len(got), len(want))
+		t.Fatalf("the table of a walk with no plan rows has %d rows, want today's %d", len(got), len(want))
 	}
 	snapshots := []Snapshot{{}, {HasOpenOrMergedPR: true}, {GateOpen: true}, {HasOpenOrMergedPR: true, GateOpen: true}}
 	for i := range want {
@@ -71,11 +72,6 @@ func TestTableOfTodaysOrderIsTodaysTable(t *testing.T) {
 				t.Fatalf("row %d (%s/%s) guards %+v %t, today's %t", i, g.From, g.Trigger, s, g.Guard(s), w.Guard(s))
 			}
 		}
-	}
-	if !slices.EqualFunc(Table, got, func(a, b Row) bool {
-		return a.From == b.From && a.Trigger == b.Trigger && a.To == b.To && slices.Equal(a.Effects, b.Effects)
-	}) {
-		t.Fatalf("Table is not TableOf(phase.Order): the walk of an issue with no plan rows reads Table")
 	}
 }
 

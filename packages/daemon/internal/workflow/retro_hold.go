@@ -149,7 +149,7 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if err := e.clearHandoff(ctx, tx, parent.Key, role); err != nil {
 		return err
 	}
-	return e.start(ctx, tx, parent, role, func(at Standing) string {
+	return e.start(ctx, tx, parent, w, role, func(at Standing) string {
 		return task(parent, at, last, pr, "")
 	}, false)
 }

@@ -99,17 +99,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		}
 		return e.openCheckIfMerged(ctx, tx, issue, false)
 	}
-	// The leave ends the child's task with its run, where it stands (moveTask, leaveState).
+	// The leave ends the child's task with its run, where it stands (endTaskWithLeave).
 	if issue.Phase != phase.Done {
-		w, err := e.walk(ctx, tx, issue)
-		if err != nil {
-			return err
-		}
-		if err := e.moveTask(ctx, tx, &issue, &w, phase.Done, leaveState(w, status)); err != nil {
-			return err
-		}
-		issue.Hold = nil
-		if err := e.WriteIssue(ctx, tx, issue); err != nil {
+		if err := e.endTaskWithLeave(ctx, tx, &issue, status); err != nil {
 			return err
 		}
 	}
@@ -208,6 +200,24 @@ func leaveState(w Walk, status string) string {
 	return record.TaskLeft
 }
 
+// endTaskWithLeave writes issue out of the workflow at status: its task ends with its run where it
+// stands, in the state its leave gives it (moveTask, leaveState), which writes the phase done, and
+// its hold and its wait on a person are cleared, in the caller's transaction (WriteIssue). Every
+// leave ends a task here: a child's (leave), a root's that begins its linger (beginLinger) and a
+// waiting root's while the operator runs a tree under its key (leaveUnderOperator). issue is the
+// caller's record, which it writes with any field it set, and which stands as written after.
+func (e *Engine) endTaskWithLeave(ctx context.Context, tx pgx.Tx, issue *record.Issue, status string) error {
+	w, err := e.walk(ctx, tx, *issue)
+	if err != nil {
+		return err
+	}
+	if err := e.moveTask(ctx, tx, issue, &w, phase.Done, leaveState(w, status)); err != nil {
+		return err
+	}
+	issue.Hold, issue.Awaiting = nil, nil
+	return e.WriteIssue(ctx, tx, *issue)
+}
+
 // releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
 // parked rather than closed: Dispatch releases a claim at a close alone. The row carries
 // nothing of the holder, which it reads with the issue's record when it runs.
@@ -228,17 +238,9 @@ func (e *Engine) leaveUnderOperator(ctx context.Context, tx pgx.Tx, root record.
 	e.logOnCommit(ctx, "workflow: a waiting root left the workflow while the operator runs a tree under its key; the operator's tree is left alone",
 		"issue", root.Key, "tree", root.Tree, "status", status)
 	// The record's phase is done, and its task ends with its run where it stands, as every leave's
-	// does (moveTask, leaveState), though the workflow never started it: the operator's tree runs
-	// the work under this key. A todo re-admits it as a closed root's does.
-	w, err := e.walk(ctx, tx, root)
-	if err != nil {
-		return err
-	}
-	if err := e.moveTask(ctx, tx, &root, &w, phase.Done, leaveState(w, status)); err != nil {
-		return err
-	}
-	root.Hold, root.Awaiting = nil, nil
-	return e.WriteIssue(ctx, tx, root)
+	// does (endTaskWithLeave), though the workflow never started it: the operator's tree runs the
+	// work under this key. A todo re-admits it as a closed root's does.
+	return e.endTaskWithLeave(ctx, tx, &root, status)
 }
 
 // LeaveUnslotted takes out of the workflow a root admission found in it with neither a slot nor a
@@ -352,16 +354,8 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 		return err
 	}
 	root.LingerUntil = &until
-	// The root's leave writes it done, and ends its task where it stands (moveTask, leaveState).
-	w, err := e.walk(ctx, tx, root)
-	if err != nil {
-		return err
-	}
-	if err := e.moveTask(ctx, tx, &root, &w, phase.Done, leaveState(w, status)); err != nil {
-		return err
-	}
-	root.Hold, root.Awaiting = nil, nil
-	if err := e.WriteIssue(ctx, tx, root); err != nil {
+	// The root's leave writes it done, and ends its task where it stands (endTaskWithLeave).
+	if err := e.endTaskWithLeave(ctx, tx, &root, status); err != nil {
 		return err
 	}
 	for _, member := range members {

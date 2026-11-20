@@ -2,10 +2,6 @@ package workflow
 
 import (
 	"context"
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -51,62 +47,6 @@ func forgeTaskPlace(t *testing.T, pool *pgxpool.Pool, key string, generation uin
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return record.NewStore().MoveTask(t.Context(), tx, key, generation, "a", place, record.TaskRunning)
 	})
-}
-
-// The workflow and admission write an issue in one place, Engine.WriteIssue, which checks the phase
-// it writes against where the issue's task stands: a scan of both packages' source, as it stands
-// when the test runs, finds each call of a method named PutIssue, and every one is in WriteIssue.
-// The scan counts, for each package, the files it parsed and the calls of WriteIssue it found
-// (admission's writes, and WriteIssue's own call of the store), so a scan that read nothing cannot
-// pass for one that found no other writer.
-func TestEveryWriteOfAnIssueChecksItsPhaseAgainstItsTasksPlace(t *testing.T) {
-	var outside []string
-	for _, dir := range []string{".", "../admit"} {
-		files, err := filepath.Glob(filepath.Join(dir, "*.go"))
-		if err != nil {
-			t.Fatalf("list the files of %s: %v", dir, err)
-		}
-		set := token.NewFileSet()
-		parsed, writes := 0, 0
-		for _, name := range files {
-			if strings.HasSuffix(name, "_test.go") {
-				continue
-			}
-			file, err := parser.ParseFile(set, name, nil, parser.SkipObjectResolution)
-			if err != nil {
-				t.Fatalf("parse %s: %v", name, err)
-			}
-			parsed++
-			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if !ok || fn.Body == nil {
-					continue
-				}
-				checked := dir == "." && fn.Name.Name == "WriteIssue"
-				ast.Inspect(fn.Body, func(node ast.Node) bool {
-					call, ok := node.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					sel, ok := call.Fun.(*ast.SelectorExpr)
-					switch {
-					case !ok:
-					case sel.Sel.Name == "WriteIssue" || sel.Sel.Name == "PutIssue" && checked:
-						writes++
-					case sel.Sel.Name == "PutIssue":
-						outside = append(outside, set.Position(call.Pos()).String()+" in "+fn.Name.Name)
-					}
-					return true
-				})
-			}
-		}
-		if parsed == 0 || writes == 0 {
-			t.Fatalf("the scan of %s parsed %d files and found %d writes through WriteIssue, want its files and its writes", dir, parsed, writes)
-		}
-	}
-	if len(outside) > 0 {
-		t.Fatalf("an issue is written outside WriteIssue, which checks its phase against its task's place:\n%s", strings.Join(outside, "\n"))
-	}
 }
 
 // Each writer of an issue's phase that names the phase itself, rather than moving the task

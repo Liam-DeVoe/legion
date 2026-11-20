@@ -62,7 +62,7 @@ func hasOpenOrMergedPR(s Snapshot) bool { return s.HasOpenOrMergedPR }
 
 // Table is the table of today's line, phase.Order: every row an issue with no plan rows walks
 // (Walk), built once. TableOf(phase.Order) is the table the workflow had before a plan picked an
-// issue's line, row for row (TestTableOfTodaysOrderIsTodaysTable).
+// issue's line, row for row (TestAWalkWithNoPlanRowsMovesByTodaysTable).
 var Table = TableOf(phase.Order)
 
 // stepRows are the rows each phase of a line carries on its own role's trigger, in the table's

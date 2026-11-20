@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -83,15 +84,13 @@ func ownersText(text string) string {
 // their reports from Dispatch (`dispatch steps`), which keeps every run, the failed ones too.
 //
 // The phase the worker starts in is issue.Phase, the phase each caller has put the issue in
-// before it composes the task. A run with plan rows whose line holds no place in that phase is
+// before it composes the task, and w is the walk of its run as the caller read it, after any move
+// of its task (moveTask). A run with plan rows whose line holds no place in that phase is
 // refused: no start of such a run names one, and a task that named none would read as an issue
 // with no plan rows.
-func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue) (Standing, error) {
-	w, err := e.walk(ctx, tx, issue)
-	if err != nil {
-		return Standing{}, err
-	}
+func (e *Engine) standingPart(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk) (Standing, error) {
 	var rows []record.PhaseRow
+	var err error
 	if place, _ := w.PlaceOf(issue.Phase); w.Stored && place.Kind == record.PlaceStep {
 		if rows, err = e.store.Phases(ctx, tx, issue.Key); err != nil {
 			return Standing{}, err
@@ -112,29 +111,22 @@ func standingText(issue record.Issue, dir func(record.Issue) string, w Walk, row
 		return Standing{}, fmt.Errorf("the task of a start of %s in %s: its task %s has no step, retro or merge in %s", issue.Key, issue.Phase, w.Task, issue.Phase)
 	}
 	lines := at.lines + fmt.Sprintf(" %s: %s.", planTaskLabel, w.Task)
+	words := plan.Words(namedSteps(w.Steps))
 	if place.Kind != record.PlaceStep {
-		return Standing{lines: lines + stepsLine(w.Steps)}, nil
+		return Standing{lines: lines + stepsLine(words)}, nil
 	}
-	lines += fmt.Sprintf(" Step %d of %d: %s.", place.Position, len(w.Steps), stepWord(w.Steps[place.Position-1]))
-	lines += stepsLine(w.Steps) + reportsBefore(rows, w, place.Position)
+	lines += fmt.Sprintf(" Step %d of %d: %s.", place.Position, len(w.Steps), words[place.Position-1])
+	lines += stepsLine(words) + reportsBefore(rows, w, words, place.Position)
 	return Standing{lines: lines, owners: ownersText(strings.TrimSpace(w.Text))}, nil
 }
 
-// stepWord is step as its plan writes it: its role, and `:<key>` after it where the step names
-// the agent that runs it (acceptance:owner).
-func stepWord(step record.PlanStep) string {
-	if step.AgentKey == "" {
-		return step.Role
-	}
-	return step.Role + ":" + step.AgentKey
-}
-
 // stepsLine is ` Steps: 1 <role>, 2 <role>, … then Legion's retro and merge.`: each step of a
-// task by its place, in the order it runs, then the retro and the merge Legion runs after them.
-func stepsLine(steps []record.PlanStep) string {
-	named := make([]string, len(steps))
-	for i, step := range steps {
-		named[i] = fmt.Sprintf("%d %s", step.Position, stepWord(step))
+// task by its place, words, the steps as its plan writes them (plan.Words), in the order they run,
+// each at its place from 1 (Walk.Steps), then the retro and the merge Legion runs after them.
+func stepsLine(words []string) string {
+	named := make([]string, len(words))
+	for i, word := range words {
+		named[i] = fmt.Sprintf("%d %s", i+1, word)
 	}
 	return fmt.Sprintf(" %s: %s then Legion's retro and merge.", stepsLabel, strings.Join(named, ", "))
 }
@@ -142,17 +134,18 @@ func stepsLine(steps []record.PlanStep) string {
 // reportsBefore is one ` Step <j> (<role>) reported: <word> version <v>.` for each step of w's
 // task before the step at place whose role's phases row holds a handoff record: the record that
 // role's completion of that step named, which `dispatch handoff-read --phase <word> --version <v>`
-// reads. A role runs at most one step of an issue, so its row holds that step's facts, and each
-// step before a running one completed in the run that led to it: a step that runs again after a
-// return writes its new record on the row before the step after it starts. A step whose role
-// writes no handoff (the owner's acceptance) has no line.
-func reportsBefore(rows []record.PhaseRow, w Walk, place int) string {
+// reads. Each step is named as its plan writes it, its word of words (plan.Words). A role runs at
+// most one step of an issue, so its row holds that step's facts, and each step before a running
+// one completed in the run that led to it: a step that runs again after a return writes its new
+// record on the row before the step after it starts. A step whose role writes no handoff (the
+// owner's acceptance) has no line.
+func reportsBefore(rows []record.PhaseRow, w Walk, words []string, place int) string {
 	var text strings.Builder
 	for j := 1; j < place; j++ {
 		role := phase.RoleFor(w.Line[j-1])
 		for _, row := range rows {
 			if row.Role == role && row.HandoffRecord != "" {
-				fmt.Fprintf(&text, " Step %d (%s) %s: %s version %d.", j, stepWord(w.Steps[j-1]), reportedLabel, handoffWord(role), row.HandoffVersion)
+				fmt.Fprintf(&text, " Step %d (%s) %s: %s version %d.", j, words[j-1], reportedLabel, handoffWord(role), row.HandoffVersion)
 			}
 		}
 	}

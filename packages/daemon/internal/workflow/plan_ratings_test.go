@@ -43,7 +43,7 @@ func TestARunWithNoPlanRowsWalksTodaysDefaultSteps(t *testing.T) {
 	changed := config.Project{}.RunsByDefault()
 	changed[0] = plan.Step{Role: "architect"}
 	if again := (config.Project{}).RunsByDefault(); again[0].Role != "planner" {
-		t.Fatalf("RunsByDefault() after a caller changed its answer = %q, want a fresh copy starting with the planner", stepWords(again))
+		t.Fatalf("RunsByDefault() after a caller changed its answer = %q, want a fresh copy starting with the planner", plan.Words(again))
 	}
 }
 

@@ -97,13 +97,12 @@ func (e *Engine) versionRefusal(ctx context.Context, tx pgx.Tx, fact intake.Plan
 			if at < 0 {
 				continue
 			}
-			switch state := given.stored.Tasks[at].State; state {
-			case record.TaskRunning:
+			state := given.stored.Tasks[at].State
+			if refusal := intake.FinishedTask(fact.Issue, id, state, intake.ChangeOfTask); refusal != nil {
+				return givenVersion{}, refusal, nil
+			}
+			if state == record.TaskRunning {
 				running = append(running, intake.RunningTaskChanged(id))
-			case record.TaskDone:
-				return givenVersion{}, intake.PlanOfDoneTask(fact.Issue, id), nil
-			case record.TaskLeft:
-				return givenVersion{}, intake.PlanOfLeftTask(fact.Issue, id), nil
 			}
 		}
 		if len(running) > 0 {
@@ -256,9 +255,7 @@ func heldPlan(stored *record.StoredPlan) plan.Plan {
 	for _, task := range stored.Tasks {
 		block := plan.Task{ID: task.Task, Needs: task.Needs, PartOf: task.PartOf, Owner: task.OwnerRole, Merges: task.Merges, Text: task.BlockText}
 		if !task.StepsByDefault {
-			for _, step := range stored.Steps[task.Task] {
-				block.Steps = append(block.Steps, plan.Step{Role: step.Role, Key: step.AgentKey})
-			}
+			block.Steps = namedSteps(stored.Steps[task.Task])
 		}
 		held.Tasks = append(held.Tasks, block)
 	}
