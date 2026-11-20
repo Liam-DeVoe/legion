@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -85,6 +86,14 @@ func (l *listenerRecorder) register(registration storedRegistration) {
 	defer l.mu.Unlock()
 	l.held = registration
 	l.order = append(l.order, "registered "+registration.clientInstanceID)
+}
+
+// note records event in what happened at the listener, at the moment a test reaches it, so the
+// order a test checks can place a step of its own among the listener's.
+func (l *listenerRecorder) note(event string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.order = append(l.order, event)
 }
 
 // releaseRead lets the held read be answered, and releaseDelete lets the held delete be judged;
@@ -689,7 +698,8 @@ func TestCleanSessionStopFitsTwiceInTheStopBudget(t *testing.T) {
 // stop's context the handshake would hang until the test's bound. The test waits for each fact it
 // checks, the stop's connect and then its return, bounded by the test binary's deadline rather
 // than a span of its own, so a correct stop that is slow to begin or to return on a loaded machine
-// passes (testwait.Bounded). Closing the accepted connection then lets the detached dial clean up.
+// passes (testwait.Bounded). The stop's failed read ends the dial it detached from the request
+// itself (notify's stopFailed); closing the accepted connection at the test's end is clean-up.
 func TestCleanSessionStopContextEndsBeforeDefaultTransportTLSHandshake(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -727,13 +737,20 @@ func TestCleanSessionStopContextEndsBeforeDefaultTransportTLSHandshake(t *testin
 }
 
 // awaitStopOnItsDeadline waits for the clean stop sent at began, whose return is ended, while the
-// step it names (what) is stalled, and requires that it ended on its own context's deadline,
-// CleanSessionStopBudget: it ran that whole budget, which a correct stop always does, since its
-// context starts after began, and it logged that context's deadline rather than a limit of the
-// transport. The wait is bounded by the test binary's deadline (testwait.Bounded), not by the
-// budget: how long after its deadline a stop returns on a loaded machine is no part of what this
-// checks, and a stop that never returns still fails, by name, at that bound. logged is read only
-// once the stop has returned, so the stop's goroutine has written all it will.
+// step it names (what) is stalled, and requires that it ended on its own context's deadline after
+// exactly its budget, CleanSessionStopBudget. From below: it ran that whole budget, which a correct
+// stop always does, since its context starts after began, and it logged that context's deadline
+// rather than a limit of the transport. From above, with no margin: the stop's line names the
+// moment its budget began and its context's deadline (sessionStop.send), and the two must be
+// exactly the budget apart, the budget must have begun after began, and the stop must have
+// returned no earlier than that deadline. Its end, measured from the moment its budget began, is
+// then the budget plus the time its request took to return after the deadline, which the test
+// measures and no fixed margin stands in for; a stop given any longer context, or one with none,
+// fails here by name, whatever the load. The wait is bounded by the test binary's deadline
+// (testwait.Bounded), not by the budget: how long after its deadline a stop returns on a loaded
+// machine is no part of what this checks, and a stop that never returns still fails, by name, at
+// that bound. logged is read only once the stop has returned, so the stop's goroutine has written
+// all it will.
 func awaitStopOnItsDeadline(t *testing.T, ended <-chan struct{}, began time.Time, logged *bytes.Buffer, what string) {
 	t.Helper()
 	bound := testwait.Bounded(t, time.Minute, time.Second)
@@ -742,7 +759,8 @@ func awaitStopOnItsDeadline(t *testing.T, ended <-chan struct{}, began time.Time
 	case <-time.After(bound):
 		t.Fatalf("the clean stop with its %s stalled had not returned %s after it was sent", what, bound)
 	}
-	took := time.Since(began)
+	returned := time.Now()
+	took := returned.Sub(began)
 	if took < CleanSessionStopBudget {
 		t.Fatalf("the clean stop with its %s stalled ended after %s and logged %q, before its budget, CleanSessionStopBudget (%s): something other than its context's deadline ended it",
 			what, took, logged.String(), CleanSessionStopBudget)
@@ -751,7 +769,23 @@ func awaitStopOnItsDeadline(t *testing.T, ended <-chan struct{}, began time.Time
 		t.Fatalf("the clean stop with its %s stalled ended after %s and logged %q, want it ended at its context's deadline, CleanSessionStopBudget (%s), before any limit of the transport",
 			what, took, logged.String(), CleanSessionStopBudget)
 	}
+	fields := stopBudgetLine.FindStringSubmatch(logged.String())
+	if fields == nil {
+		t.Fatalf("the clean stop with its %s stalled logged %q, want its line to name budgetBegan and deadline", what, logged.String())
+	}
+	budgetBegan, _ := strconv.ParseInt(fields[1], 10, 64)
+	deadline, _ := strconv.ParseInt(fields[2], 10, 64)
+	span := time.Duration(deadline-budgetBegan) * time.Millisecond
+	lag := time.Duration(returned.UnixMilli()-deadline) * time.Millisecond
+	if span != CleanSessionStopBudget || budgetBegan < began.UnixMilli() || lag < 0 {
+		t.Fatalf("the clean stop with its %s stalled ran under a context of %s from its budget's start, %s after it was sent, and returned %s after that context's deadline, %s after it was sent; want a context of exactly its budget, CleanSessionStopBudget (%s), begun after it was sent, and a return no earlier than its deadline; logged %q",
+			what, span, time.Duration(budgetBegan-began.UnixMilli())*time.Millisecond, lag, took, CleanSessionStopBudget, logged.String())
+	}
 }
+
+// stopBudgetLine reads the moment a clean stop's budget began and its context's deadline, in Unix
+// milliseconds, off the line the stop logged (sessionStop.send) through bufferedLogger.
+var stopBudgetLine = regexp.MustCompile(`budgetBegan=(-?\d+) deadline=(-?\d+)`)
 
 // awaitFinalWaitBegun waits until stops' final wait has begun, which is the moment start stops
 // counting: each stop the poll counts before then it ends again at once.

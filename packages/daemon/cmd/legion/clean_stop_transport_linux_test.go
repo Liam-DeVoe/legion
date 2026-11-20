@@ -18,17 +18,19 @@ import (
 // listener whose accept queue is full (stalledconnect.Listen). A connect limit under the budget,
 // set by an init in any package of the daemon's binary, which this package's test binary links,
 // ends the request first, after less than the budget and with the dialer's "i/o timeout"; one
-// equal to the budget races the context, which starts first. The clean stop itself dials with a
-// dialer of its own and no limit (notify.stopTransport), so neither reaches it.
+// equal to the budget races the context, which starts first. The clock is read before the context
+// starts, so time the machine spends between the two counts toward the request and a request that
+// ran its whole context never reads as early. The clean stop itself dials with a dialer of its
+// own and no limit (notify.stopTransport), so neither reaches it.
 func TestAStalledConnectThroughGosSharedTransportLastsTheCleanStopsBudget(t *testing.T) {
 	address := stalledconnect.Listen(t)
+	began := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), daemon.CleanSessionStopBudget)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+address+"/", nil)
 	if err != nil {
 		t.Fatalf("the request: %v", err)
 	}
-	began := time.Now()
 	response, err := http.DefaultTransport.RoundTrip(request)
 	took := time.Since(began)
 	if err == nil {

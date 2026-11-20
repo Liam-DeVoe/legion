@@ -299,20 +299,32 @@ func loggedBudget(line map[string]any) time.Duration {
 	return time.Duration(budget)
 }
 
+// relaunchBegun is the step the first relaunch test notes at the listener (listenerRecorder.note)
+// once the daemon has begun the relaunch, while the clean stop's read is still held there and has
+// read nothing of the registry.
+const relaunchBegun = "relaunch begun, the stop's read held unread"
+
 // The relaunch that wakes a suspended claim, in the same session, is not removed by the clean
 // stop of the process before it, whatever the listener's clock says (R3 of the suspension's clean
 // stop), and neither is the relaunch a death decides at once. Each row makes the daemon start a
-// relaunch while the listener holds the stop's read and its clock runs behind the daemon's
-// (listenerBehind), so every registration it stamps reads as written before the stop's moment and
-// the moment keeps none. A daemon whose start did not wait would bring the relaunch up, and
-// register it, while the read is held: the read would then hand back the relaunch's own client
-// instance, the delete would name it, and nothing would keep the relaunch's registration, which
-// is what happens at 46795520. The daemon starts no process of the claim while a clean stop of its
-// session is in flight, so the relaunch starts only once the stop's read and delete have
-// returned: the read answers the ended process's instance, the delete removes that registration
-// alone, and the relaunch's stays. No run of a fixed daemon can show a relaunch that registers
-// before the read, since the wait exists to prevent exactly that order; the row asserts the order
-// the daemon kept instead.
+// relaunch whose runtime registers it the moment it starts, before the daemon's read of the
+// registry: the listener holds the stop's read, unread, until the relaunch has come up or the
+// daemon says it waits for the stop, and notes that moment (relaunchBegun). The listener's clock
+// runs behind the daemon's (listenerBehind), so every registration it stamps reads as written
+// before the stop's moment and the moment keeps none. Then the stop goes on.
+//
+// A daemon whose start did not wait would bring the relaunch up, and register it, before the
+// read: the read would hand back the relaunch's own client instance, the delete would name it,
+// and nothing would keep the relaunch's registration, which is what happens at 46795520, and what
+// a start that skips its wait (Machine.awaitSessionStops) does here. The row checks the order at
+// the listener first, so such a daemon fails by name: the relaunch registered before the read.
+// The daemon starts no process of the claim while a clean stop of its session is in flight, so
+// the relaunch it began registers only once the stop's read and delete have returned: the read
+// answers the ended process's instance, the delete removes that registration alone, and the
+// relaunch's stays. A relaunch this daemon starts cannot register before the read on any path:
+// the stop's channel closes only once its send has returned, the wait has no bound of its own,
+// and a read the stop gives up sends no delete (TestARelaunchWaitsForTheCleanStopHoweverLongItRuns
+// and TestCleanSessionStopEndsAtItsOwnBudgetWhenTheListenerNeverAnswers).
 //
 // A process the daemon did not start that registers the session before the read is the one case
 // left to the moment alone, which a listener clock behind the daemon's cannot keep: the client
@@ -328,21 +340,23 @@ func TestARelaunchIsNotRemovedByTheStopBeforeItWhenTheListenersClockIsBehind(t *
 			envoy := &listenerRecorder{heldRead: make(chan struct{})}
 			r := startRelaunchRig(t, envoy, nil)
 			answered := r.stopSentAndRelaunched(row)
+			envoy.note(relaunchBegun)
 			envoy.releaseRead()
 			r.answered("the request that relaunched the claim", answered)
 			r.await("the relaunch came up", r.rt.resumed)
 			ended := r.stopEndedOn(stopStoppedLine)
 			r.await("the stop's delete was judged", envoy.settled)
 
+			if got, want := envoy.happened(), []string{relaunchBegun, "read answered inst_ended", "delete judged", "registered inst_relaunched"}; !slices.Equal(got, want) {
+				t.Fatalf("the listener saw %q, want %q: the relaunch the daemon began while the stop's read was held registered before that read, so the read named the relaunch's own instance; the daemon must start it only once the stop's read and delete have returned",
+					got, want)
+			}
 			if held := envoy.holding(); held.absent || held.clientInstanceID != "inst_relaunched" {
 				t.Fatalf("the listener holds %+v once the stop's delete %q was answered, want the relaunch's registration, inst_relaunched: the stop of the process before it removed it",
 					held, envoy.delete.query)
 			}
 			if got := envoy.deleteConditions(t).Get("client_instance_id"); got != "inst_ended" {
 				t.Fatalf("the stop's delete named client instance %q, want the ended process's own, inst_ended", got)
-			}
-			if got, want := envoy.happened(), []string{"read answered inst_ended", "delete judged", "registered inst_relaunched"}; !slices.Equal(got, want) {
-				t.Fatalf("the listener saw %q, want %q: the daemon starts the relaunch only once the stop's read and delete have returned", got, want)
 			}
 			r.wantStopBudget(ended)
 		})

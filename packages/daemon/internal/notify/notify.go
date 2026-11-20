@@ -185,7 +185,8 @@ type HTTPPublisher struct {
 	// DeleteSession) with no timeout of its own, so the caller's context is their one bound: the
 	// daemon gives both one budget (sessionStop.send in packages/daemon/internal/daemon/daemon.go).
 	// Its transport is its own (stopTransport), so no fixed limit of Go's shared transport, or one
-	// an init sets on it, can end the stop before that context does.
+	// an init sets on it, can end the stop before that context does, and a request of it that
+	// fails takes the connect or TLS handshake it started down with it (stopFailed).
 	stops *http.Client
 }
 
@@ -197,28 +198,60 @@ func New(baseURL, token string) *HTTPPublisher {
 }
 
 // stopTransport is the transport of the clean stop's read and delete: a clone of shared, Go's
-// http.DefaultTransport in production, so it keeps that transport's proxy, TLS configuration and
-// HTTP/2 setting, with each fixed limit that could end a request before its context removed. A
-// limit at or near the stop's budget races the stop's own context, which starts first, and on a
-// loaded machine, whose timers fire late by any amount, the limit can win; Go's own are a 30 s
-// connect and a 10 s TLS handshake, and any package's init can shorten them. So the dial has no
-// timeout, the TLS handshake and the response headers none, and the dialers a caller could have
-// set in place of the dial (Dial, DialTLS, DialTLSContext) are dropped, so every connection is
-// made by the one dialer here. The idle timeout stays: it closes pooled connections no request
-// uses. A shared transport of another type than *http.Transport cannot be cloned, and the stop
-// then starts from a transport of Go's own defaults instead.
+// http.DefaultTransport in production, so it keeps that transport's TLS configuration, protocols
+// and pooling, with everything removed that could end a request before its context does. A limit
+// at or near the stop's budget races the stop's own context, which starts first, and on a loaded
+// machine, whose timers fire late by any amount, the limit can win; Go's own are a 30 s connect
+// and a 10 s TLS handshake, and any package's init can shorten them or set others. So the clone
+// keeps:
+//   - no timeout but the idle timeout, which closes only pooled connections no request uses: no
+//     TLS-handshake, response-header or 100-continue limit (the stop sends no Expect header), and
+//     HTTP/2 settings with no health-check ping, ping limit or write limit;
+//   - no function but the two set here: one dialer with no timeout (DialContext), which makes
+//     every connection, since the dialers a caller could have set in its place (Dial, DialTLS,
+//     DialTLSContext) are dropped, and Go's own proxy choice (http.ProxyFromEnvironment) in place
+//     of whatever function shared names. The proxy CONNECT hooks (OnProxyConnectResponse,
+//     GetProxyConnectHeader), the protocol switches a caller registered (TLSNextProto, so the
+//     clone sets HTTP/2 up itself from its own settings) and HTTP/2's error counter are dropped.
+//
+// The tests read every field of the result by reflection (wantNoFixedLimit), so a field a later
+// Go adds to http.Transport or http.HTTP2Config is judged too. A shared transport of another type
+// than *http.Transport cannot be cloned, and the stop then starts from a transport of Go's own
+// defaults instead.
+//
+// Go dials on a context it detaches from the request's (net/http's getConn: "The dial should
+// proceed even if the request is canceled"), so the stop's context ends its request and not the
+// connect or TLS handshake behind it. With no limit of the transport left to end such a dial,
+// a failed request of the stop ends it itself (stopFailed).
 func stopTransport(shared http.RoundTripper) *http.Transport {
 	t, ok := shared.(*http.Transport)
 	if ok {
 		t = t.Clone()
 	} else {
-		t = &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second}
+		t = &http.Transport{ForceAttemptHTTP2: true, MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second}
 	}
+	t.Proxy = http.ProxyFromEnvironment
+	t.OnProxyConnectResponse, t.GetProxyConnectHeader = nil, nil
 	t.Dial, t.DialTLS, t.DialTLSContext = nil, nil, nil
 	t.DialContext = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext
-	t.TLSHandshakeTimeout = 0
-	t.ResponseHeaderTimeout = 0
+	t.TLSHandshakeTimeout, t.ResponseHeaderTimeout, t.ExpectContinueTimeout = 0, 0, 0
+	t.TLSNextProto = nil
+	if t.HTTP2 != nil {
+		h2 := *t.HTTP2
+		h2.SendPingTimeout, h2.PingTimeout, h2.WriteByteTimeout, h2.CountError = 0, 0, 0, nil
+		t.HTTP2 = &h2
+	}
 	return t
+}
+
+// stopFailed is what the clean stop's read or delete does when its request fails, on its context
+// or any other way: it closes the idle connections of the stop's own transport, which also
+// cancels every dial no request waits for any longer (http.Transport.CloseIdleConnections), so
+// the connect or TLS handshake the failed request started ends with it (stopTransport says why
+// nothing else would end it). A request of another stop still waiting on its own dial keeps it,
+// and the shared transport, which other requests use, is not touched.
+func (p *HTTPPublisher) stopFailed() {
+	p.stops.CloseIdleConnections()
 }
 
 // Publish posts the listener envelope that preserves the outbox row's idempotent delivery key.
@@ -415,6 +448,7 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	}
 	response, err := p.stops.Do(request)
 	if err != nil {
+		p.stopFailed()
 		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
 	}
 	defer response.Body.Close()
@@ -618,6 +652,7 @@ func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, condi
 	}
 	response, err := p.stops.Do(request)
 	if err != nil {
+		p.stopFailed()
 		return SessionDeleted{}, fmt.Errorf("delete session %s: %w", session, err)
 	}
 	defer response.Body.Close()

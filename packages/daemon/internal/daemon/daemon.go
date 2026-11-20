@@ -1982,15 +1982,21 @@ type sessionStopOverrides struct {
 // machines', or an operator's suspension a route decided — and a released claim is the one a
 // message's wake acts on. Cut short there, its stop would leave the registration standing, and a
 // message to the role would be stored for a session that reads nothing, with no wake raised, until
-// the registration's record expires. Each line it logs names the budget it ran under, so a read
-// the listener did not answer says how long it was given.
+// the registration's record expires. Each line it logs names the budget it ran under, the moment
+// that budget began and the deadline its context holds (budgetBegan and deadline, in Unix
+// milliseconds; the deadline is made from that one reading of the clock), so a read the listener
+// did not answer says how long it was given and when it gave up, and a stop that ran under any
+// other span than its budget says so in its own line.
 func (s sessionStop) send(session string, goneAt time.Time) {
 	budget := s.budget
 	if budget == 0 {
 		budget = CleanSessionStopBudget
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	budgetBegan := time.Now()
+	ctx, cancel := context.WithDeadline(context.Background(), budgetBegan.Add(budget))
 	defer cancel()
+	deadline, _ := ctx.Deadline()
+	log := s.log.With("budget", budget, "budgetBegan", budgetBegan.UnixMilli(), "deadline", deadline.UnixMilli())
 	if s.end != nil {
 		go func() {
 			select {
@@ -2002,13 +2008,13 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 	}
 	registration, err := s.sessions.ReadSessionRegistration(ctx, session)
 	if err != nil {
-		s.log.Warn("the Envoy listener did not answer what a dead role's session registration is, so no clean stop was sent",
-			"session", session, "budget", budget, "error", err)
+		log.Warn("the Envoy listener did not answer what a dead role's session registration is, so no clean stop was sent",
+			"session", session, "error", err)
 		return
 	}
 	if !registration.Registered {
-		s.log.Info("the Envoy listener answered no registration of a dead role's session, so none was stopped",
-			"session", session, "budget", budget)
+		log.Info("the Envoy listener answered no registration of a dead role's session, so none was stopped",
+			"session", session)
 		return
 	}
 	stopped, err := s.sessions.DeleteSession(ctx, session, notify.DeleteConditions{
@@ -2018,18 +2024,18 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 	if err != nil {
 		// A refused delete and an unreachable listener did not stop the session, and an answer
 		// that could not be read to its end leaves whether it did unknown; the error says which.
-		s.log.Warn("the Envoy listener did not confirm the clean stop of a dead role's session",
-			"session", session, "budget", budget, "error", err)
+		log.Warn("the Envoy listener did not confirm the clean stop of a dead role's session",
+			"session", session, "error", err)
 		return
 	}
 	if !stopped.Deleted {
-		s.log.Info("the Envoy listener kept the registration of a dead role's session",
-			"session", session, "budget", budget, "goneAt", goneAt.UnixMilli(),
+		log.Info("the Envoy listener kept the registration of a dead role's session",
+			"session", session, "goneAt", goneAt.UnixMilli(),
 			"clientInstanceID", registration.ClientInstanceID, "lastSeen", registration.LastSeen,
 			"reason", stopped.Reason)
 		return
 	}
-	s.log.Info("the Envoy session of a role whose process is gone was stopped", "session", session, "budget", budget)
+	log.Info("the Envoy session of a role whose process is gone was stopped", "session", session)
 }
 
 // start supervises every claim the store holds. A claim with a live locator is re-adopted — its
