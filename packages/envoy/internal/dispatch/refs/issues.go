@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -162,6 +161,14 @@ var IssueRepoTerms = `repo_chain as (
 const IssueRepoJoin = `left join repo on repo.key = i.key
 	left join repo_projects repo_default on repo_default.project = i.project_key and repo_default.is_default`
 
+// projectDefaultRepoSQL is the default repository of the project projectExpr names, read as
+// IssueRepoJoin reads it (the project's default mapping), null where it has none: the repository an
+// issue of that project resolves to when its chain names none. RepositoryClause's index path
+// (repositorySeen) reads it, so the default comes from this file's one read of it.
+func projectDefaultRepoSQL(projectExpr string) string {
+	return `(select max(repo_default.repo) from repo_projects repo_default where repo_default.project = (` + projectExpr + `) and repo_default.is_default)`
+}
+
 // IssueRepoResolved is the repository an issue resolves to, over IssueRepoJoin: the nearest one
 // its chain names, else its project's default mapping, else null. A statement that holds an
 // issue to a repository rather than reading one — delivery's attributionHeld, which keeps a
@@ -213,69 +220,4 @@ func IssueRepository(ctx context.Context, q Queryer, key string) (*string, error
 		return nil, fmt.Errorf("resolve the repository of %s: its parent chain is deeper than %d links or loops", key, IssueDepthCap)
 	}
 	return resolved, nil
-}
-
-// UnresolvedChainError is ProjectRepositories' refusal of a project one of whose issues has a
-// parent chain the walk could not finish, deeper than IssueDepthCap links or a loop: Issue is the
-// first such issue by number. Its unread ancestors may name a repository, so no list is answered
-// rather than one that leaves that repository out.
-type UnresolvedChainError struct {
-	Project, Issue string
-}
-
-func (e *UnresolvedChainError) Error() string {
-	return fmt.Sprintf("the repositories of project %s are unresolved: the parent chain of %s is deeper than %d links or loops",
-		e.Project, e.Issue, IssueDepthCap)
-}
-
-// projectRepositoriesQuery is IssueRepoTerms over every issue of the project bound at $1, open or
-// done: whether the project exists, the first issue by number whose walk ran out of depth, and the
-// repositories the issues resolve to, as stored, each once and sorted byte-wise (collate "C", the
-// order Go's sort.Strings gives, whatever the database's collation). Like issueRepositoryQuery, the
-// text is built once, at start.
-var projectRepositoriesQuery = `
-	with recursive subjects as (select i.key from issues i where i.project_key = $1), ` + IssueRepoTerms + `,
-	resolved as (
-		select i.key, i.number, ` + IssueRepoResolved + ` as repository, ` + IssueRepoTooDeep + ` as too_deep
-		from issues i ` + IssueRepoJoin + `
-		where i.project_key = $1
-	)
-	select exists (select 1 from projects where key = $1),
-		(select key from resolved where too_deep order by number limit 1),
-		array(select distinct repository collate "C" from resolved where repository is not null order by 1)`
-
-// ProjectRepositories is the repository each issue of project resolves to, open or done, read
-// through q: its own, else the nearest one above it on `child_of`, else its project's default
-// mapping. It runs the terms IssueRepository runs for one key (IssueRepoTerms, IssueRepoJoin,
-// IssueRepoResolved and IssueRepoTooDeep) over every issue of the project in one statement, so
-// the union of IssueRepository over those issues is this list. Each repository is named once, as
-// the issue, or the project's default mapping, stores it (the API stores both lowercase), and the
-// list is sorted byte-wise; a project none of whose issues resolves to one answers [], never nil.
-// No rename is read: a repository GitHub renamed is answered under the name its issues store. An
-// issue whose chain the walk could not finish is an *UnresolvedChainError naming it, never the
-// list of the others, and an unknown project is access.ErrProjectNotFound.
-//
-// It reads the issues and no list of a project's repositories: a repository the project maps and
-// no issue of it resolves to is not in the answer. ProjectRepositoriesSQL, the rule by which the
-// GitHub proxy hides a repository, walks the same terms and differs from this answer in three ways:
-// it counts such a mapped repository as the project's too, it reads an issue whose chain the walk
-// could not finish as resolving to its project's default, and it reads each repository under the
-// name a rename recorded in repo_projects gives it (CanonicalRepoSQL). For every issue whose chain
-// the walk finishes, the two give the project the same repository, compared under the name the
-// issue stores. Dispatch answers this list at GET /api/v1/access/projects/{key}/repositories, which
-// the secrets broker relays to the edge listener.
-func ProjectRepositories(ctx context.Context, q Queryer, project string) ([]string, error) {
-	var exists bool
-	var unresolved *string
-	repositories := []string{}
-	if err := q.QueryRow(ctx, projectRepositoriesQuery, project).Scan(&exists, &unresolved, &repositories); err != nil {
-		return nil, fmt.Errorf("resolve the repositories of project %s: %w", project, err)
-	}
-	if !exists {
-		return nil, fmt.Errorf("%w: %s", access.ErrProjectNotFound, project)
-	}
-	if unresolved != nil {
-		return nil, &UnresolvedChainError{Project: project, Issue: *unresolved}
-	}
-	return repositories, nil
 }
