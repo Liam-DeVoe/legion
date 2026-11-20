@@ -21,7 +21,12 @@ import {
   markStartupTurnSent,
 } from "@legion/pi-shared/startup-turn";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
-import { type ClaimTaskTake, type TaskTake, takeClaimTask } from "@legion/pi-shared/task-take";
+import {
+  type ClaimTaskTake,
+  type TaskTake,
+  type TaskTakeDeps,
+  takeClaimTask,
+} from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import {
@@ -60,7 +65,8 @@ export interface ControllerSession {
   /** The daemon-launched controller's take of its start task (`@legion/pi-shared/task-take`),
    * whose hooks `legion.ts` calls for a run of `sessionID` (`agent_start` and `agent_end`) and for
    * the daemon's refusal of that run's report (`src/turn-outcome.ts`): the first run after its
-   * accepted take is the start task's turn, and its end the report naming that task's number.
+   * accepted take's text was handed to the idle host is the start task's turn, and its end the
+   * report naming that task's number.
    * Undefined for another session than the one the take was made for, and for an operator's
    * controller, which takes no task. */
   readonly take: (sessionID: string) => TaskTake | undefined;
@@ -93,9 +99,10 @@ export function createControllerSession(deps: {
   readonly daemon: () => LegionDaemonClient;
   readonly persistedTranscript: PersistedTranscript;
   readonly pi: PiApi;
-  /** Sends an accepted take's text as the turn's user message; the host's answer rejects when the
-   *  host dropped the text before its turn began (`TaskTakeDeps.run`). */
-  readonly runTask: (text: string) => void | Promise<void>;
+  /** Sends an accepted take's text as the turn's user message, or answers `"not idle"` and sends
+   *  nothing where the host is not idle; the host's answer rejects when the host dropped the text
+   *  before its turn began (`TaskTakeDeps.run`). */
+  readonly runTask: TaskTakeDeps["run"];
   readonly exitProcess: (code: number) => never;
 }): ControllerSession {
   const { daemon, persistedTranscript, pi } = deps;

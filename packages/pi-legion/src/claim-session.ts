@@ -10,7 +10,12 @@ import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type { SessionContext } from "@legion/pi-shared/pi-types";
 import { claimEnvoyRole, onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
 import { recordBootstrappedSession } from "@legion/pi-shared/subagent-session";
-import { type ClaimTaskTake, type TaskTake, takeClaimTask } from "@legion/pi-shared/task-take";
+import {
+  type ClaimTaskTake,
+  type TaskTake,
+  type TaskTakeDeps,
+  takeClaimTask,
+} from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import pkg from "../package.json";
 import { requiredEnvironment, requiredSecret } from "./classify";
@@ -26,7 +31,8 @@ export interface ClaimSession {
   /** The take of this pane's claim (`@legion/pi-shared/task-take`), whose hooks `legion.ts` calls
    * for a run of this pane's session (`agent_start` and `agent_end`, never a `task` subagent's
    * event) and for the daemon's refusal of that run's report (`src/turn-outcome.ts`): the first
-   * run after an accepted take is that task's turn, and its end the report naming its number.
+   * run after an accepted take's text was handed to the idle host is that task's turn, and its end
+   * the report naming its number.
    * Every session of this pane is its claim's, so `sessionID` selects nothing. Undefined before
    * the claim is registered. */
   readonly take: (sessionID: string) => TaskTake | undefined;
@@ -91,9 +97,10 @@ export function createClaimSession(deps: {
   readonly persistedTranscript: (
     context: SessionContext
   ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
-  /** Sends an accepted take's text as the turn's user message; the host's answer rejects when the
-   *  host dropped the text before its turn began (`TaskTakeDeps.run`). */
-  readonly runTask: (text: string) => void | Promise<void>;
+  /** Sends an accepted take's text as the turn's user message, or answers `"not idle"` and sends
+   *  nothing where the host is not idle; the host's answer rejects when the host dropped the text
+   *  before its turn began (`TaskTakeDeps.run`). */
+  readonly runTask: TaskTakeDeps["run"];
   readonly exitProcess: (code: number) => never;
 }): ClaimSession {
   let capability: ClaimCapability | undefined;

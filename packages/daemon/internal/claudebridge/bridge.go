@@ -144,10 +144,14 @@ type bridge struct {
 	seeing, asking      *call
 	// heldTask is the number of a take the daemon accepted while a turn ran, and heldText its
 	// text: that task starts a turn of its own once the turn ends (idle), and heldTask, never 0
-	// for an accepted take, is what says one is waiting. runTask is the number of the
-	// task whose turn is running (startTask), 0 for a turn of no task.
-	heldText          string
+	// for an accepted take, is what says one is waiting. runTask is the number of the task whose
+	// turn is running (startTask), 0 for a turn of no task; runText is the text that turn began
+	// with, and runTaken Claude Code having re-emitted it in the turn (echoed): the text has
+	// reached Claude Code only then, and a task's turn that ends without it is reported as no
+	// task's (result).
+	heldText, runText string
 	heldTask, runTask uint64
+	runTaken          bool
 	// command is the command_uuid of the slash command Claude Code is running for a mod of the
 	// plugin's ($.command.run), and "" when it runs none. A command writes a block of its own on
 	// the same stream — a `system` `init` of its own and a `result` of its own, between the
@@ -537,7 +541,7 @@ func (b *bridge) sendQueued() {
 // against it — what the provider said about an earlier turn is not this turn's outcome — and as
 // the turn of no task, which startTask makes it once the turn has begun.
 func (b *bridge) beginRun() {
-	b.inRun, b.refusal, b.runTask = true, nil, 0
+	b.inRun, b.refusal, b.runTask, b.runText, b.runTaken = true, nil, 0, "", false
 	b.emit(shimwire.AgentStart{})
 }
 
@@ -779,7 +783,9 @@ func (b *bridge) assistant(message json.RawMessage, subagent bool) {
 
 // echoed answers the delivery Claude Code has just taken: the oldest one sent, not yet answered,
 // whose text is the re-emitted user message's. The bridge's own user message (the seed) is no
-// delivery sent, so its echo answers none.
+// delivery sent, so its echo answers none. The text of the task whose turn is running is read
+// first: its echo, and no other, is Claude Code having taken that text (runTaken), so an Envoy
+// delivery's echo in the turn says nothing of the task's.
 func (b *bridge) echoed(message json.RawMessage) {
 	var texts []string
 	for _, block := range blocksOf(message) {
@@ -788,6 +794,10 @@ func (b *bridge) echoed(message json.RawMessage) {
 		}
 	}
 	text := strings.Join(texts, "\n")
+	if b.runTask != 0 && !b.runTaken && text == b.runText {
+		b.runTaken = true
+		return
+	}
 	for i, d := range b.taking {
 		if d.content == text {
 			d.answer <- nil
@@ -819,8 +829,11 @@ func answerAll(deliveries []delivery, err error) {
 // The turn's outcome is the outcome of its newest step (refusal), reported when the turn ends
 // with the bridge's own sequence (turnoutcome.go): a step the provider failed is the turn
 // refused, and a step that ran clears what an earlier failed one left, since the provider
-// answered after all. The report names the task whose turn it was (runTask), and a task's turn
-// the provider did not fail holds that task finished from its end (take.go's runEnded).
+// answered after all. The report names the task whose turn it was (runTask) where Claude Code
+// re-emitted that task's text in the turn (runTaken), and no task where it did not: Claude Code
+// dropped the text, which the bridge takes again at its value's next revision (take.go). A task's
+// turn so named that the provider did not fail holds that task finished from its end (take.go's
+// runEnded).
 //
 // Once Claude Code is in no turn, what waits for that runs (idle): a task whose take was accepted
 // during the turn, then a take of the claim's task value, then the next Envoy delivery.
@@ -883,7 +896,11 @@ func (b *bridge) result(res resultLine) {
 		return
 	}
 	refusal, task := b.refusal, b.runTask
-	b.inRun, b.refusal, b.runTask = false, nil, 0
+	if task != 0 && !b.runTaken {
+		b.log.Printf("Claude Code ended task %d's turn without re-emitting its text, so it never took it: the turn is reported as no task's, and the task is taken again at its value's next revision", task)
+		task = 0
+	}
+	b.inRun, b.refusal, b.runTask, b.runText, b.runTaken = false, nil, 0, "", false
 	b.runEnded(task, refusal != nil)
 	b.emit(shimwire.AgentEnd{})
 	b.reports.turnEnded(task, refusal)

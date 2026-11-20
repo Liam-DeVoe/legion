@@ -82,7 +82,10 @@ async function flush(): Promise<void> {
  * passes; a wait that fired stops listening for its abort, as `timerWait` does, so a later abort
  * of its signal takes no other wait off the clock. `waits` is every wait between two attempts of
  * one request, in the order they were made. `handed` is the host's answer to each text the take
- * handed it, in the order of `ran`, which a case rejects where the host dropped that text.
+ * handed it, in the order of `ran`, which a case rejects where the host dropped that text. `host`
+ * is the host's own idle reading at each hand-over: a case sets `idle` false while the host sets
+ * up a prompt it already took (a card's or a person's, before its `agent_start`), for which `run`
+ * answers that the host is not idle and hands nothing, as pi-legion's `runTask` does.
  */
 function rig() {
   const calls: Call[] = [];
@@ -95,6 +98,7 @@ function rig() {
   const waits: number[] = [];
   let now = 0;
   const timers: { readonly due: number; readonly fire: () => void }[] = [];
+  const host = { idle: true };
 
   const attempt = <T>(next: Attempt<T> | undefined, fallback: T, signal?: AbortSignal) => {
     if (next === undefined) return Promise.resolve(fallback);
@@ -119,6 +123,7 @@ function rig() {
       },
     },
     run: (text) => {
+      if (!host.idle) return "not idle";
       ran.push(text);
       const hand = Promise.withResolvers<void>();
       handed.push(hand);
@@ -168,7 +173,7 @@ function rig() {
   const routed = (route: Call["route"]) =>
     calls.filter((call) => call.route === route).map((call) => call.body);
 
-  return { take, calls, takes, seens, ran, handed, marks, warned, waits, advance, routed };
+  return { take, calls, takes, seens, ran, handed, marks, warned, waits, advance, routed, host };
 }
 
 const body = (number: number, revision: number) => ({
@@ -496,6 +501,69 @@ test("a take whose accepted answer was lost is answered again during a run that 
   expect(take.runEnded(false)).toBe(4);
   take.runStarted();
   expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+});
+
+// R5 and the plan's decision 9 for a host that is not idle though no run of its session is going:
+// it sets up a prompt it already took, a card's here, before that prompt's `agent_start`. The take
+// hands the text in no form into that setup — a follow-up's answer settles once the host queues
+// it, so a drop of it after that would not be seen —: `run` answers that the host is not idle, and
+// the take holds the text as it holds one accepted during a run. The card's run is the first to
+// start after the accept, so the daemon counts it as the take's turn; its end names no task, which
+// puts the take back, and the text goes to the idle host then, once, as the prompt that starts the
+// task's own turn, whose end names the number.
+test("a take accepted while the host sets up a card's prompt holds its text: the card's run names no task, and the text is handed at idle once, as the prompt of the next run, whose end names the task", async () => {
+  const { take, takes, ran, advance, marks, host, routed } = rig();
+  take.ready();
+  host.idle = false;
+  takes.push({ answer: ACCEPTED });
+  take.relayed(put(4, 12));
+  await advance(0);
+  expect(routed("take")).toEqual([body(4, 12)]);
+  expect(ran).toEqual([]);
+  expect(marks).toEqual([true]);
+
+  // The card's run starts and ends; the host is idle again at its end.
+  take.runStarted();
+  expect(marks).toEqual([true]);
+  host.idle = true;
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+
+  // The run the text starts is the task's turn, and only it names the number.
+  take.runStarted();
+  expect(marks).toEqual([true, false]);
+  expect(take.runEnded(false)).toBe(4);
+  take.runStarted();
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+  expect(routed("take")).toEqual([body(4, 12)]);
+});
+
+// A run's end can find the host not idle as well: the host goes on with a continuation it has
+// already scheduled (`willContinue`). A text held for that end is held again, through the
+// continuation's run, whose end names no task either, and goes to the host at the first end that
+// finds it idle, once.
+test("a held text whose run's end finds the host not idle, a continuation following, is held through that continuation too, and handed at idle once", async () => {
+  const { take, takes, ran, advance, host } = rig();
+  take.ready();
+  const answer = Promise.withResolvers<LegionTake>();
+  takes.push({ late: answer.promise });
+  take.relayed(put(4, 12));
+  await advance(0);
+  take.runStarted();
+  answer.resolve(ACCEPTED);
+  await advance(0);
+
+  host.idle = false;
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([]);
+  take.runStarted();
+  host.idle = true;
+  expect(take.runEnded(false)).toBeUndefined();
+  expect(ran).toEqual([TEXT]);
+  take.runStarted();
+  expect(take.runEnded(false)).toBe(4);
   expect(ran).toEqual([TEXT]);
 });
 

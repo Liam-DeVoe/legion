@@ -70,6 +70,10 @@ func TestMain(m *testing.M) {
 //   - "held <name>": the re-emission only once the test releases name (rig.release);
 //   - "wait <name>": an assistant message "done" only once the test releases name;
 //   - "die": exits, never re-emitting it;
+//   - "drop <name>": once the test releases name, a success result and no re-emission: the step
+//     Claude Code ended without taking the message, as the bridge reads a message Claude Code
+//     dropped (errNotTaken). No recording shows Claude Code dropping a stdin message; this is the
+//     bridge's own reading of one, the turn end it acts on;
 //   - "fail <text>": an assistant message of text, then an error_during_execution result, as a
 //     turn a tool failed in ends, which is no provider failure;
 //   - "api-error-529 <text>": the same text, then the result a provider failure ends a turn with
@@ -165,6 +169,11 @@ func fakeClaude() int {
 		}
 		if body == "die" {
 			return 0
+		}
+		if name, ok := strings.CutPrefix(body, "drop "); ok {
+			released(name)
+			result("success", false)
+			continue
 		}
 		emit(map[string]any{"type": "user", "message": msg.Message, "session_id": "s", "parent_tool_use_id": nil,
 			"uuid": "u", "timestamp": time.Now().UTC().Format(time.RFC3339Nano), "isReplay": true})
@@ -2242,6 +2251,74 @@ func TestTakeOfANewerRevisionBeforeClaudeCodeTakesTheTextHandsNothingMore(t *tes
 	}
 	if texts := r.userTexts(); !slices.Equal(texts, []string{"held r1"}) {
 		t.Fatalf("Claude Code read %q, want the task's text once", texts)
+	}
+}
+
+// The plan's decision 9 in the bridge: the task's text has reached Claude Code only once Claude
+// Code re-emits it (--replay-user-messages), as an Envoy delivery has. A task's turn that ends with
+// no echo of the task's own text is a text Claude Code dropped: that turn is reported naming no
+// task, which puts the take back on the daemon (decision 8), nothing is held finished, and the
+// number is taken again at its value's next revision, whose accepted text is written once, at
+// idle, and runs once, re-emitted, its turn's report naming the number. An Envoy delivery's echo
+// in the dropped text's turn is no echo of the task's.
+func TestATaskTextClaudeCodeDoesNotReEmitIsTakenAgainAndRunsOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		card  bool
+		texts []string
+	}{
+		{name: "no echo of the text", texts: []string{"drop r1", "say the task taken again"}},
+		{name: "an Envoy delivery's echo only", card: true, texts: []string{"drop r1", "say the card", "say the task taken again"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTaskDaemon(t)
+			d.answerTake = func(take claim.TakeRequest) (int, any) {
+				if take.Revision == 1 {
+					return accepted("drop r1")
+				}
+				return accepted("say the task taken again")
+			}
+			r := newTakingRig(t, d, "", daemonCalls{})
+			r.handReady()
+			inbox := r.dialInbox()
+
+			r.handTask(testTask, 1)
+			r.expect("agent_start", nil)
+			if tc.card {
+				inbox.deliver("ev1", "say the card")
+				r.logged("Envoy delivery ev1 waits for the next step")
+			}
+			r.release("r1")
+			if tc.card {
+				if answer := inbox.answer(); answer != (InboxAnswer{ID: "ev1", OK: true}) {
+					t.Fatalf("the inbox answered %+v, want ev1 taken", answer)
+				}
+			}
+			r.untilTurnEnds()
+			if report := d.reportOf(1); report.Task != 0 {
+				t.Fatalf("the turn whose text Claude Code never re-emitted was reported %+v, want a turn of no task", report)
+			}
+			r.logged("Claude Code ended task 7's turn without re-emitting its text")
+			r.quiet()
+
+			// The daemon writes the number's value again, as it does once it has taken the task
+			// back: the take is made at that revision, and its text runs, once.
+			r.handTask(testTask, 2)
+			r.expect("agent_start", nil)
+			r.untilTurnEnds()
+			if report := d.reportOf(2); report.Task != testTask {
+				t.Fatalf("the turn of the text taken again was reported %+v, want the turn of task %d", report, testTask)
+			}
+			// That turn's report finishes the task: a later revision of its number runs nothing.
+			r.handTask(testTask, 3)
+			r.quiet()
+			if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1", "7 at 2"}) {
+				t.Errorf("the bridge asked to take %q, want task 7 at revision 1 and again at revision 2", takes)
+			}
+			if texts := r.userTexts(); !slices.Equal(texts, tc.texts) {
+				t.Fatalf("Claude Code read %q, want %q", texts, tc.texts)
+			}
+		})
 	}
 }
 

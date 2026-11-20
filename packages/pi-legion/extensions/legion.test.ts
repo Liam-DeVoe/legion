@@ -2387,6 +2387,69 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(taken).toBe(1);
     });
 
+    // At the pane: the take's answer finds the host setting up a prompt it already took — a
+    // card's, before its `agent_start` — so the host reads not idle though no run of the session
+    // is going. The text goes into that setup in no form: no follow-up, whose answer settles once
+    // the host queues it, so a drop of it after that would not be seen. The take holds the text,
+    // the card's run is reported naming no task, and the text starts the task's own turn once the
+    // host is idle, as a plain prompt, whose report names the task.
+    test("a take accepted while the host sets up a card's prompt sends no follow-up: the card's run's report names no task, and the text starts the task's turn once the host is idle", async () => {
+      const text = "Implement REPO-43 on its branch.";
+      const tasks = taskStandIn();
+      const value = tasks.give(text);
+      const answer = Promise.withResolvers<Response>();
+      let taken = 0;
+      let idle = true;
+      const worker = await bootStalling({
+        taskValue: value,
+        idle: () => idle,
+        routes: (url, body) => {
+          if (url.pathname === "/legion/v1/claims/take") {
+            taken += 1;
+            return answer.promise;
+          }
+          return tasks.answer(url.pathname, body as Record<string, unknown>);
+        },
+      });
+      await turns(() => taken > 0);
+      expect(taken).toBe(1);
+
+      // The host takes a card's prompt and sets it up, and the daemon's acceptance arrives before
+      // that prompt's `agent_start`.
+      idle = false;
+      answer.resolve(Response.json({ outcome: "accepted", text }));
+      await turns(() => false);
+      expect(worker.sentUserMessageOptions).toEqual([]);
+      expect(worker.sentUserMessages).toEqual([]);
+      expect(envoyPluginInterface().taskTurnPending).toEqual({ session: "ses_stall" });
+
+      // The card's run, at whose end the host is idle again.
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      expect(worker.sentUserMessages).toEqual([]);
+      idle = true;
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      expect(worker.sentUserMessages).toEqual([text]);
+      expect(worker.sentUserMessageOptions).toEqual([undefined]);
+
+      // The task's turn.
+      idle = false;
+      await hook(worker.handlers, "agent_start")({}, worker.context);
+      expect(envoyPluginInterface().taskTurnPending).toBeUndefined();
+      idle = true;
+      await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+
+      const reports = daemonRequests(worker.requests)
+        .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+        .map((request) => request.body as Record<string, unknown>);
+      expect(reports.map((report) => [report.sequence, report.task])).toEqual([
+        [1, undefined],
+        [2, value.number],
+      ]);
+      expect(taken).toBe(1);
+      expect(worker.sentUserMessages).toEqual([text]);
+      expect(worker.sentUserMessageOptions).not.toContainEqual({ deliverAs: "followUp" });
+    });
+
     // The daemon may write a task's value again, under the same number, after its turn ended and
     // before the turn's report lands (a daemon start writes every owed value again), and it
     // answers a take of that accepted, unfinished number with the same text. A report with no

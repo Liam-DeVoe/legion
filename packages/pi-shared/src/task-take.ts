@@ -40,14 +40,25 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * Nothing sends a task into a busy worker (R5). A take the daemon accepts while a run is going —
  * the run started after the daemon decided the take and before its answer came back, or while a
  * take sent again after a lost answer waited — has its text held until that run's `agent_end`,
- * and sent then, so it starts a run of its own. The daemon gave the run that was going to the
- * take, as the first to start after its accept; that run's end is reported naming no task, which
- * puts the take back to awaiting its turn on the daemon (the plan's decisions 8 and 9), and the
- * run the held text starts is then the task's turn on both sides, its end the report that names
- * the number. The text is never sent as a follow-up into the running run: Oh My Pi folds a
+ * and sent then, so it starts a run of its own. So has a take whose accepted answer finds the host
+ * not idle by its own reading though no run is going: the host is setting up a prompt it already
+ * took, a card's or a person's, before that prompt's `agent_start`, so `run` answers that it is
+ * not idle and hands nothing, and the text waits for the end of the run that setup starts. A run's
+ * end that finds the host not idle, a continuation it scheduled following, holds the text on in
+ * the same way, to the end of that continuation. The daemon gave the run that was going, or the
+ * one the setup started, to the take, as the first to start after its accept; that run's end is
+ * reported naming no task, which puts the take back to awaiting its turn on the daemon (the plan's
+ * decisions 8 and 9), and the run the held text starts is then the task's turn on both sides, its
+ * end the report that names the number. The text is never sent as a follow-up: Oh My Pi folds a
  * follow-up sent during a run into that run (its agent loop reads the follow-up queue once the
  * run's last step has stopped, `getFollowUpMessages`, and goes on with no `agent_end` or
- * `agent_start` between), so the task would run inside a run whose end names no task.
+ * `agent_start` between), so the task would run inside a run whose end names no task, and a
+ * follow-up's answer settles once the host has queued it, so a drop of it after that would not be
+ * seen (plan review round 71). So every handing of the text settles at the text's own turn or at
+ * its drop. A setup the host gives up with no run (an interrupt while it sets the prompt up) ends
+ * no run, so the text stays held until the daemon writes the number's value again, which lets the
+ * held text go (`hold`): R5's second wait, which charges and takes back an accepted take whose
+ * turn has not started within its bound, makes that write.
  *
  * An accepted number's text reaches the host when the take hands it over (`run`), and from then
  * on a newer revision of that number changes nothing: the daemon answers its take with the same
@@ -62,8 +73,7 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * next revision. The next accepted answer's text goes to the host once, at idle: one that came
  * while the host still held the text it then dropped goes in that text's place at the drop. The
  * daemon answers such a take afresh where it took the task back (a provider error's ladder, R5's
- * second wait, a compaction) and with the same text where it only wrote the value again. A
- * follow-up's answer settles once the host has queued it, so a drop of one after that is not seen.
+ * second wait, a compaction) and with the same text where it only wrote the value again.
  *
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
  * gave no answer to — any failure that carries no HTTP status, whatever the transport names it (a
@@ -95,11 +105,14 @@ export interface TaskTakeDeps {
   readonly caller: ClaimCaller;
   /**
    * Runs an accepted take's text as the turn's user message, in the form that starts a turn on
-   * an idle host and waits behind a setup or a compaction that runs. Its answer, where the host
-   * gives one, rejects when the host dropped the text before its turn started, as Oh My Pi's
-   * `pi.sendUserMessage` does (`PiApi.sendUserMessage`).
+   * an idle host and waits behind a compaction that runs, and never as a follow-up. Its answer,
+   * where the host gives one, rejects when the host dropped the text before its turn started, as
+   * Oh My Pi's `pi.sendUserMessage` does (`PiApi.sendUserMessage`). A host that is not idle by its
+   * own reading — one setting up a prompt it already took, before that prompt's `agent_start` —
+   * is handed nothing: `run` answers `"not idle"`, and the take holds the text until the end of
+   * the run that setup starts.
    */
-  readonly run: (text: string) => void | Promise<void>;
+  readonly run: (text: string) => "not idle" | void | Promise<void>;
   /** Sets the task-turn mark for the claim's session, or clears it. */
   readonly setPending: (pending: boolean) => void;
   readonly log: TaskTakeLog;
@@ -173,11 +186,12 @@ interface Sending {
 
 /**
  * Where the take the daemon last accepted stands: none; its text held until the run going when
- * it was accepted has ended (`during` is the number of the task whose turn that run is, where it
- * is one's); its text handed to the host, its turn not started; or its turn running. A handed
- * text carries the count of its hand-over (`handing`), so a drop of an earlier one changes nothing,
- * and `again`, the text of an accepted answer to a take at a newer revision of its number that
- * came while the host held the text, which goes to the host in its place should the host drop it.
+ * it was accepted, or the one the host was setting up then, has ended on an idle host (`during`
+ * is the number of the task whose turn that run is, where it is one's); its text handed to the
+ * host, its turn not started; or its turn running. A handed text carries the count of its
+ * hand-over (`handing`), so a drop of an earlier one changes nothing, and `again`, the text of an
+ * accepted answer to a take at a newer revision of its number that came while the host held the
+ * text, which goes to the host in its place should the host drop it.
  */
 type Accepted =
   | { readonly kind: "none" }
@@ -219,8 +233,8 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   const asked = new Set<string>();
   let armed = false;
   let busy = false;
-  // Where the take the daemon last accepted stands (`Accepted`), and how many texts it has handed
-  // the host.
+  // Where the take the daemon last accepted stands (`Accepted`), and the count of its hand-overs
+  // (`hand`).
   let accepted: Accepted = NONE;
   let handings = 0;
   let seeing: Sending | undefined;
@@ -285,13 +299,21 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     settle();
   };
 
-  /** Hands an accepted take's text to the idle host (`run`): from here it has reached the host,
-   *  unless the host's answer to it rejects before the text's turn starts (`dropped`). */
+  /** Hands an accepted take's text to the host (`run`), when no run is going: from here it has
+   *  reached the host, unless the host's answer to it rejects before the text's turn starts
+   *  (`dropped`). A host that answers it is not idle, one setting up a prompt it already took,
+   *  took nothing: the text is held as one accepted during a run is, and goes to the host at the
+   *  end of the run that setup starts (`runEnded`). */
   const hand = (number: number, text: string): void => {
     handings += 1;
     const handing = handings;
     accepted = { kind: "sent", number, handing, again: undefined };
-    Promise.resolve(deps.run(text)).then(undefined, (error: unknown) => dropped(handing, error));
+    const answer = deps.run(text);
+    if (answer === "not idle") {
+      accepted = { kind: "held", number, text, during: undefined };
+      return;
+    }
+    Promise.resolve(answer).then(undefined, (error: unknown) => dropped(handing, error));
   };
 
   const answered = (value: TaskValue, answer: LegionTake): void => {
@@ -316,7 +338,8 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
         }
         // Nothing goes into a busy worker: a text accepted while a run is going waits for that
         // run's end and starts a run of its own then (`runEnded`), and that run is the task's
-        // turn. Sent now, it goes to an idle host (`run`).
+        // turn. Sent now, it goes to a host no run of which is going (`hand`), which holds it all
+        // the same where the host is setting a prompt up.
         if (busy) {
           accepted = {
             kind: "held",
@@ -454,9 +477,11 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     runStarted: () => {
       if (closed) return;
       busy = true;
-      // The first run that starts after an accepted take's text was sent is the task's turn. A
-      // text still held waits for the end of a run that started before it was accepted, so a run
-      // that starts before that end is not its turn.
+      // The first run that starts after an accepted take's text was handed to an idle host is the
+      // task's turn. A text still held waits for the end of a run that was going when it was
+      // accepted, or that the host was setting up then (`hand`), so a run that starts before that
+      // end is not its turn: the daemon counts that run as the take's, and its end, reported
+      // naming no task, puts the take back.
       if (accepted.kind === "sent") accepted = { kind: "running", number: accepted.number };
       settle();
     },
@@ -468,9 +493,10 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       // daemon: the number is owed nothing from here on, before the report has even landed, and
       // until the daemon refuses it (`reportRefused`).
       if (ended !== undefined && !providerError) finishing = Math.max(finishing, ended);
-      // A text accepted during the run that just ended: that run was not the task's turn, so its
-      // end names no task (`ended` is that run's own task, if any), and the text starts the next
-      // run, the task's.
+      // A text accepted during the run that just ended, or while the host set that run's prompt
+      // up: that run was not the task's turn, so its end names no task (`ended` is that run's own
+      // task, if any), and the text starts the next run, the task's, or waits for that next run's
+      // end too where the host is still not idle here (`hand`).
       if (accepted.kind === "held") {
         hand(accepted.number, accepted.text);
       } else if (accepted.kind === "running") {

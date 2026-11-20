@@ -58,7 +58,7 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { clearStartupTurn } from "@legion/pi-shared/startup-turn";
 import { subagentSessionCheck } from "@legion/pi-shared/subagent-session";
-import type { TaskTake } from "@legion/pi-shared/task-take";
+import type { TaskTake, TaskTakeDeps } from "@legion/pi-shared/task-take";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
   type CapabilityBudgets,
@@ -394,18 +394,19 @@ export default function legionExtension(pi: PiApi): void {
   // (`inboundKind`). The take sends it only while no run of the session is going, as its
   // `agent_start` and `agent_end` count runs: when its answer finds no run going, or at the end of
   // the run that was going when the take was accepted, which the take held the text for
-  // (`@legion/pi-shared/task-take`); a task is never sent into a run. On an idle host a plain send
-  // starts the task's turn, and while a compaction runs Oh My Pi holds the prompt until it ends.
-  // The follow-up is for one case alone: an answer that finds no run going on a host that is not
-  // idle, one setting up a prompt it already took (a card's turn or a person's input, between its
-  // `prompt` and its `agent_start`). The follow-up joins the run that setup starts, the first run
-  // to start after the accept, which the take counts as the task's turn (`runStarted`), as the
-  // daemon does, so its end names the task's number. The host's answer is the take's to read: it
-  // rejects when the host dropped the text before its turn began (`PiApi.sendUserMessage`).
-  const runTask = (text: string): void | Promise<void> =>
-    paneContext?.isIdle?.() === false
-      ? pi.sendUserMessage(text, { deliverAs: "followUp" })
-      : pi.sendUserMessage(text);
+  // (`@legion/pi-shared/task-take`); a task is never sent into a run. It goes in one form alone, a
+  // plain send, which on an idle host starts the task's turn, and which Oh My Pi holds until a
+  // compaction that runs has ended; never as a follow-up, whose answer settles once the host has
+  // queued it, so a drop of it after that would not be seen. A host that is not idle though no run
+  // is going — one setting up a prompt it already took, a card's turn or a person's input, between
+  // its `prompt` and its `agent_start`, or one going on with a continuation at a run's end — is
+  // sent nothing: the take holds the text, and the run that setup or continuation starts, which
+  // the daemon counts as the take's turn, is reported naming no task; the text goes to the host at
+  // the end of that run (`runStarted`, `runEnded`). So the host's answer to every text sent settles
+  // at that text's own turn or at its drop, and the take reads it: it rejects when the host
+  // dropped the text before its turn began (`PiApi.sendUserMessage`).
+  const runTask: TaskTakeDeps["run"] = (text) =>
+    paneContext?.isIdle?.() === false ? "not idle" : pi.sendUserMessage(text);
 
   // A root architect's or phase worker's claim, and the operator-launched controller's.
   const claimSession = createClaimSession({
@@ -773,9 +774,11 @@ export default function legionExtension(pi: PiApi): void {
     // The operator moved on: a session change's re-claim outcome left in its widget comes down.
     controllerSession.handleAgentStart(context);
     // A turn of this session has started, whatever started it: the take of the session's claim,
-    // or of the daemon-launched controller, no longer finds the host idle, and the first run after
-    // an accepted take is that task's turn (`@legion/pi-shared/task-take`). A `task` subagent's
-    // event is not a turn of this session (`subagentEvent`).
+    // or of the daemon-launched controller, no longer finds the host idle, and the first run to
+    // start after an accepted take's text was handed to the idle host is that task's turn; a run
+    // that starts while the take holds the text, one a card's or a person's prompt started, is not
+    // (`@legion/pi-shared/task-take`). A `task` subagent's event is not a turn of this session
+    // (`subagentEvent`).
     if (!subagentEvent(context)) {
       const sessionID = context.sessionManager.getSessionId();
       (claimSession.take(sessionID) ?? controllerSession.take(sessionID))?.runStarted();
