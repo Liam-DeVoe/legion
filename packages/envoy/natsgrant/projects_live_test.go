@@ -24,13 +24,13 @@ import (
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
-// The live half of WithinProjects' tests: measurement M5 of the private projects plan, rebuilt on
+// The live half of WithinProjects' tests: the measurement that found the leak, rebuilt on
 // the image the hub runs (testnats.HubImage) behind an auth callout, each daemon's grant arriving
 // in the user JWT of the callout's answer as the auth service sends it (natscallout's
 // encodeAnswer). A PUB daemon on today's grant (natsgrant.Daemon) is the control: it subscribes
 // _INBOX.> and must receive what a PRIV daemon pulls from its consumer, or the measurement cannot
-// see a leak at all. A PUB daemon on WithinProjects(Daemon(), PUB) then makes the calls the Legion
-// daemon makes under it (t-c-10): its consumers created with one filter each, their info, their
+// see a leak at all. A PUB daemon on WithinProjects(Daemon(), PUB) then makes the calls a Legion
+// daemon held to its projects makes: its consumers created with one filter each, their info, their
 // pull with Consume and Fetch, and the acknowledgements; it receives none of PRIV's messages, and
 // the server refuses each call that would reach PRIV.
 
@@ -52,7 +52,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	// must name one filter for it (natsgrant.GitHubFilter), or the server refuses the create.
 	// acme/one and acme/two are two repositories whose filters differ, for the refusals of one's
 	// consumer on the other's filter. acme/mixedcase is how Dispatch spells a repository GitHub
-	// spells Acme/MixedCase: t-c-10's daemon is to name its consumer from GitHub's spelling, and
+	// spells Acme/MixedCase: a daemon names its consumer from GitHub's spelling, and
 	// GitHubConsumerName lower-cases it, so the name is the one the grant holds.
 	pubScope := natsgrant.Scope{Projects: []string{"PUB"}, Repositories: []string{"acme/widgets", "acme/gadgets.js", "acme/one", "acme/two", "acme/mixedcase"}, Identity: livePUBIdentity}
 	privScope := natsgrant.Scope{Projects: []string{"PRIV"}, Repositories: []string{"acme/secret"}, Identity: livePRIVIdentity}
@@ -85,7 +85,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	}
 
 	keys := testnats.NewCalloutKeys(t)
-	keys.XKeySeed, keys.XKeyPublic = "", "" // requests in the clear: the sealing is t-e-3's to test
+	keys.XKeySeed, keys.XKeyPublic = "", "" // requests in the clear: natscallout's own tests test the sealing
 	adminSeed, adminPublic := testnats.User(t)
 	url := testnats.StartImageWithCallout(t, keys, testnats.StaticUser{NKey: adminPublic, Publish: []string{">"}, Subscribe: []string{">"}})
 	answers := serveCallout(t, url, keys, grants)
@@ -158,7 +158,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	require.Eventually(t, func() bool { return controlSeen.count() >= 10 }, liveWait, 50*time.Millisecond,
 		"the control saw %d PRIV messages after today's PRIV pulled 10", controlSeen.count())
 
-	// The narrowed PUB daemon's own work: each consumer t-c-10 opens, created with its one filter,
+	// The narrowed PUB daemon's own work: each consumer it opens, created with its one filter,
 	// read and pulled; the Dispatch consumer through Consume, as the daemon pulls, every message
 	// acknowledged.
 	pubJS, err := jetstream.New(narrowedPub.conn)
@@ -215,7 +215,7 @@ func TestWithinProjectsHoldsADaemonToItsProjectsOnTheHub(t *testing.T) {
 	}
 	// The daemon names the mixed-case repository's consumer from GitHub's spelling and opens it
 	// on the lane the grant holds, Dispatch's lower case, which is the listener's spelling once
-	// t-c-21 lower-cases every GitHub subject at its source.
+	// every GitHub subject is lower-cased at its source.
 	mixed := openConsumer(ctx, t, pubJS, natsgrant.GitHubConsumerName("PUB", "Acme/MixedCase"), natsgrant.GitHubFilter("acme/mixedcase"))
 	mixedBatch, err := mixed.Fetch(2, jetstream.FetchMaxWait(2*time.Second))
 	require.NoError(t, err, "Acme/MixedCase")
@@ -550,8 +550,8 @@ func pullPRIV(ctx context.Context, t *testing.T, conn *natsgo.Conn, n int) {
 }
 
 // openConsumer creates or updates the durable consumer name on the notification stream with the
-// one filter the daemon gives it, as t-c-10's daemon opens each (never js.Stream, which sends the
-// stream's info), and reads it back through its info.
+// one filter the daemon gives it, as a daemon held to its projects opens each (never js.Stream,
+// which sends the stream's info), and reads it back through its info.
 func openConsumer(ctx context.Context, t *testing.T, js jetstream.JetStream, name, filter string) jetstream.Consumer {
 	t.Helper()
 	_, err := js.CreateOrUpdateConsumer(ctx, bus.Stream, jetstream.ConsumerConfig{

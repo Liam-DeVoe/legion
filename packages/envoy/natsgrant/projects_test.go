@@ -117,9 +117,9 @@ func TestGitHubConsumerNameKeepsLongRepositoriesApart(t *testing.T) {
 // A repository's GitHub consumer name, prefix and filter. The name escapes as InboxPrefix does,
 // after lower-casing the repository: the daemon keeps GitHub's spelling (Acme/Widgets) and
 // Dispatch, whose list the grant is built from, its lower case, and both must name one consumer.
-// The prefix and filter keep the case they are given (lower-casing the subject is t-c-21's, at
-// its one source) and write a dot "_", so a.b and a_b get two names but share one lane, which
-// plan A's t-a-32 refuses at the mapping write.
+// The prefix and filter keep the case they are given (lower-casing the subject belongs at its
+// one source) and write a dot "_", so a.b and a_b get two names but share one lane, which only
+// Dispatch can refuse, at the mapping write.
 func TestGitHubConsumerNamePrefixAndFilter(t *testing.T) {
 	for _, row := range []struct{ repository, name, prefix string }{
 		{"acme/widgets", "legion-go-PUB-github-acme_2fwidgets", "notifications.github.acme.widgets"},
@@ -208,7 +208,7 @@ func TestInboxPrefixIsOneTokenOfTheIdentity(t *testing.T) {
 }
 
 // The daemon's grant held to PUB: its reply prefix in place of _INBOX.>, the role-lane exceptions
-// of PUB alone, and for each consumer the daemon opens under PUB (t-c-10's names, each create
+// of PUB alone, and for each consumer the daemon opens under PUB (each create
 // subject naming its one filter) the create, info, pull and acknowledgement of that consumer and
 // no other. The stream's info and stored-message get are gone. Written out in full, so the test
 // reads the subjects, not the code that builds them.
