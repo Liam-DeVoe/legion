@@ -50,9 +50,10 @@ const mergeRefusedNextStep = "Next step: act on the reason above.\nDo not make t
 // workspace that the directory repository is in, running each git and jj through runner. It
 // answers 0 for a merge git made cleanly and 1 for a merge that holds git's conflicts, each with
 // the merge on stdout, and 3 for a refusal or a failure, with the reason on stderr and nothing
-// made. A commit of an earlier run that the merge keeps, because another commit stands on it, and
-// a bookmark of a carrier's name that it leaves on a commit no legion merge wrote, are named on
-// stderr too, and the merge goes on.
+// made. A commit of an earlier run that the merge keeps, because another commit stands on it, a
+// bookmark other than a carrier's names it, a remote bookmark holds it or it is a working-copy
+// commit, and a bookmark of a carrier's name that it leaves on a commit no legion merge wrote, are
+// named on stderr too, and the merge goes on.
 func runMerge(ctx context.Context, runner jjmerge.Runner, repository, message string, revisions []string, stdout, stderr io.Writer) int {
 	root, err := mergeWorkspace(repository)
 	if err == nil {
@@ -171,10 +172,11 @@ func shownPath(path string) string {
 }
 
 // mergeComparison is the command that prints how merge differs from git's merge of its parents,
-// with the merge's own option list, so no configuration file makes git's merge another one. git
-// rev-parse gives merge-tree the parents' full commit ids, as the merge gives them: git names a
-// file it puts aside in a conflict after the revision it was given (p~<id>), so a merge-tree of
-// <merge>^1 would name a path the merge does not hold. flags go to git diff, as --name-only does.
+// with the merge's own option list, so the machine's configuration does not make git's merge
+// another one (jjmerge.MergeTreeOptions). git rev-parse gives merge-tree the parents' full commit
+// ids, as the merge gives them: git names a file it puts aside in a conflict after the revision it
+// was given (p~<id>), so a merge-tree of <merge>^1 would name a path the merge does not hold.
+// flags go to git diff, as --name-only does.
 func mergeComparison(merge string, flags ...string) string {
 	diff := strings.Join(append([]string{"git", "diff"}, flags...), " ")
 	return fmt.Sprintf(`%s "$(git %s merge-tree --write-tree $(git rev-parse %s^1 %s^2) | head -n 1)" %s`,
@@ -182,9 +184,9 @@ func mergeComparison(merge string, flags ...string) string {
 }
 
 // mergeHelp is `legion merge --help`'s text: what the command does and why, that one run at a
-// time goes on in a workspace and what the next run does with the commits a stopped run left, the
-// next step of each exit status, the case of a legion that has no merge command, what goes into
-// the merge, how to name a merge, and how to read one.
+// time goes on in a workspace, which commits of a stopped run the next run removes and which it
+// keeps and names, the next step of each exit status, the case of a legion that has no merge
+// command, what goes into the merge, how to name a merge, and how to read one.
 func mergeHelp() string {
 	return `legion merge makes the merge commit of two commits in a jj workspace.
 The merge holds git's merge of the two commits (git merge-tree --write-tree).
@@ -206,10 +208,24 @@ The command then makes the working copy an empty commit on top of the merge.
 
 One legion merge runs in a workspace at a time.
 While another legion merge runs in the workspace, the command refuses with exit 3.
+The command writes git's versions of the files as commits with git. These commits are the carriers.
+Each carrier has a bookmark whose name starts with legion-merge-<workspace>-.
 Each commit that the command makes in jj carries the line "Legion-Merge-Run: <run>".
+These commits are the merge and, where git has a conflict, jj's merge of the carriers.
 When the merge holds git's merge, the command removes this line from the merge and adds the Legion-Merge line.
-If a run stops before its end, the next run in the workspace removes the commits that the stopped run made.
-It keeps a commit that another commit stands on or that is a working-copy commit, and it names that commit on stderr.
+If a run stops before its end, the next run in the workspace removes these commits of the stopped run:
+  the carriers, with their bookmarks,
+  jj's merge of the carriers,
+  the merge, if it still carries the Legion-Merge-Run line.
+If the description of the merge ends with its Legion-Merge line, the merge holds git's merge. The next run does not remove it.
+The next run keeps a commit of the stopped run if one of these is true, and it names the commit on stderr:
+  another commit stands on it,
+  a bookmark other than the carrier bookmarks names it,
+  a remote bookmark is on it or on a commit above it,
+  it is a working-copy commit.
+The next run also keeps each commit of the stopped run below a commit that it keeps.
+A bookmark with the name of a carrier bookmark can be on a commit that is not a carrier.
+The next run does not remove that commit or that bookmark, and it names the bookmark on stderr.
 
 Exit status and next step:
   0  The command made the merge, and git merged with no conflict.
