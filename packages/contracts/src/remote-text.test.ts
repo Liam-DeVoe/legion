@@ -132,14 +132,15 @@ test("a RemoteText compares ignoring case and parses a time, and answers no text
 test("callLibrary turns what a library throws or rejects with into a LibraryError that keeps no words", async () => {
   const probe = corpus.rows.find((row) => row.id === "probe");
   if (probe === undefined) throw new Error("the fixture has no probe row");
+  const description = "the issuer refused this request";
   /** An error shaped as oauth4webapi's ResponseBodyError: the answer's words and its body. */
   const answered = () =>
     Object.assign(new Error("server responded with an error in the response body"), {
       name: "ResponseBodyError",
       status: 400,
       error: "invalid_grant",
-      error_description: probe.field,
-      cause: { error: "invalid_grant", error_description: probe.field, access_token: probe.field },
+      error_description: description,
+      cause: { error: "invalid_grant", error_description: description, access_token: probe.field },
     });
   const thrown = (() => {
     try {
@@ -161,8 +162,17 @@ test("callLibrary turns what a library throws or rejects with into a LibraryErro
       400,
       true,
     ]);
-    expect(error.description.equals(probe.field)).toBe(true);
-    for (const text of [error.message, JSON.stringify(error), Bun.inspect(error)]) {
+    expect(error.description.equals(description)).toBe(true);
+    for (const text of [
+      String(error.code),
+      String(error.description),
+      error.message,
+      JSON.stringify(error),
+      Bun.inspect(error),
+    ]) {
+      for (const privateWord of ["invalid_grant", description]) {
+        expect(text).not.toContain(privateWord);
+      }
       for (const secret of probe.secrets) expect(text).not.toContain(secret);
     }
   }
