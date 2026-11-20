@@ -569,10 +569,16 @@ func atCapCases(limit int) map[string]string {
 }
 
 // assertCapExceeded requires response to be the 400 CAP_EXCEEDED capExceededError writes for a
-// field of length units past a cap of limit, followed by "; hint" when hint is not empty.
+// field of length units past a cap of limit, followed by "; hint" when hint is not empty. The trim
+// amount is "unit" for 1 and "units" for more.
 func assertCapExceeded(t *testing.T, request string, response *httptest.ResponseRecorder, field string, length, limit int, hint string) {
 	t.Helper()
-	want := fmt.Sprintf("%s: %d of at most %d", field, length, limit)
+	trim := length - limit
+	unit := "units"
+	if trim == 1 {
+		unit = "unit"
+	}
+	want := fmt.Sprintf("%s: trim %d UTF-16 code %s (%d/%d)", field, trim, unit, length, limit)
 	if hint != "" {
 		want += "; " + hint
 	}
@@ -580,22 +586,31 @@ func assertCapExceeded(t *testing.T, request string, response *httptest.Response
 }
 
 // assertBlockCapExceeded requires response to be the 400 CAP_EXCEEDED a body whose block at
-// position (counted from 1) holds units UTF-16 units is refused with. The trim amount is the
-// difference in the same unit: an agent can act on it without re-counting the body.
+// position (counted from 1) holds units UTF-16 units is refused with. The trim amount is
+// "unit" for 1 and "units" for more.
 func assertBlockCapExceeded(t *testing.T, request string, response *httptest.ResponseRecorder, field string, position int, blockType string, units int) {
 	t.Helper()
 	limit := contracts.DispatchBlockUnits
 	trim := units - limit
-	want := fmt.Sprintf("%s block %d (%s): trim %d UTF-16 code units (%d/%d)", field, position, blockType, trim, units, limit)
+	unit := "units"
+	if trim == 1 {
+		unit = "unit"
+	}
+	want := fmt.Sprintf("%s block %d (%s): trim %d UTF-16 code %s (%d/%d)", field, position, blockType, trim, unit, units, limit)
 	assertRefusalMessage(t, request, response, want)
 }
 
 // assertBlockCountExceeded requires response to be the 400 CAP_EXCEEDED a body of blocks blocks
-// is refused with. The trim amount is in blocks, the unit its cap counts.
+// is refused with. The trim amount is "block" for 1 and "blocks" for more.
 func assertBlockCountExceeded(t *testing.T, request string, response *httptest.ResponseRecorder, field string, blocks int) {
 	t.Helper()
 	limit := contracts.DispatchItemBlocks
-	want := fmt.Sprintf("%s: trim %d blocks (%d/%d)", field, blocks-limit, blocks, limit)
+	trim := blocks - limit
+	noun := "blocks"
+	if trim == 1 {
+		noun = "block"
+	}
+	want := fmt.Sprintf("%s: trim %d %s (%d/%d)", field, trim, noun, blocks, limit)
 	assertRefusalMessage(t, request, response, want)
 }
 

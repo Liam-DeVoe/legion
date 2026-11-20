@@ -23,8 +23,13 @@ type CapExceeded struct {
 }
 
 func (e *CapExceeded) Error() string {
-	return fmt.Sprintf("%s block %d (%s): trim %d UTF-16 code units (%d/%d)",
-		e.Field, e.Position, e.Type, e.Units-e.Limit, e.Units, e.Limit)
+	trim := e.Units - e.Limit
+	unit := "units"
+	if trim == 1 {
+		unit = "unit"
+	}
+	return fmt.Sprintf("%s block %d (%s): trim %d UTF-16 code %s (%d/%d)",
+		e.Field, e.Position, e.Type, trim, unit, e.Units, e.Limit)
 }
 
 // CountExceeded is a body holding more blocks than contracts.DispatchItemBlocks. Field is the
@@ -37,8 +42,13 @@ type CountExceeded struct {
 }
 
 func (e *CountExceeded) Error() string {
-	return fmt.Sprintf("%s: trim %d blocks (%d/%d)",
-		e.Field, e.Blocks-e.Limit, e.Blocks, e.Limit)
+	trim := e.Blocks - e.Limit
+	noun := "blocks"
+	if trim == 1 {
+		noun = "block"
+	}
+	return fmt.Sprintf("%s: trim %d %s (%d/%d)",
+		e.Field, trim, noun, e.Blocks, e.Limit)
 }
 
 // DecisionBlock is a body holding a decision block: an `ask` node, which the reader draws a

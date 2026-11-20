@@ -96,7 +96,7 @@ func TestCheckPassesABodyInsideBothBounds(t *testing.T) {
 func TestCheckRefusesABlockOverTheBlockBound(t *testing.T) {
 	body := "a\n\n" + strings.Repeat("x", contracts.DispatchBlockUnits+1)
 	err := requireRefusal(t, "a second paragraph one unit over", body,
-		"body block 2 (paragraph): trim 1 UTF-16 code units (32001/32000)")
+		"body block 2 (paragraph): trim 1 UTF-16 code unit (32001/32000)")
 	var capExceeded *CapExceeded
 	if !errors.As(err, &capExceeded) {
 		t.Fatalf("Check returned %T, want *CapExceeded", err)
@@ -108,7 +108,7 @@ func TestCheckRefusesABlockOverTheBlockBound(t *testing.T) {
 func TestCheckRefusesABodyOverTheBlockCount(t *testing.T) {
 	body := paragraphBody(contracts.DispatchItemBlocks+1, 1)
 	err := requireRefusal(t, "one block over the count", body,
-		"body: trim 1 blocks (32769/32768)")
+		"body: trim 1 block (32769/32768)")
 	var countExceeded *CountExceeded
 	if !errors.As(err, &countExceeded) {
 		t.Fatalf("Check returned %T, want *CountExceeded", err)
