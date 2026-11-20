@@ -12,12 +12,12 @@
 // on a disk of its own, while tree 2, a root set todo, waits in the line; child 1 closed and child
 // 2 parked free the slots, and tree 2 takes one. Tree 1's planner completes planning through the
 // `legion` tool, so its implementer starts in the same pod. TestStage4bSandboxTreeOnTheKindRigLive
-// drives that tree, then ends one role's generation and loses its pod. The daemon's restarts start
-// from the claims that tree holds at the end of it, seeded (newStage4bRunningTree): three restarts
-// in TestStage4bDaemonRestartsOnTheKindRigLive, the last under `controller: daemon`, and one in
-// TestStage4bStreamMoveOnTheKindRigLive. The model is the rig's stand-in, which
-// answers every turn with a WAITING line and the turns a checkpoint scripts with a call of the
-// tool the checkpoint names.
+// drives that tree, then ends one role's generation and loses its pod, and last restarts the daemon
+// under `controller: daemon`. The daemon's other restarts start from the claims that tree holds at
+// the end of it, seeded (newStage4bRunningTree): two in TestStage4bDaemonRestartsOnTheKindRigLive
+// and one in TestStage4bStreamMoveOnTheKindRigLive. The model is the rig's stand-in, which answers
+// every turn with a WAITING line and the turns a checkpoint scripts with a call of the tool the
+// checkpoint names.
 //
 // What the devbox script this replaces also judged and this test does not: the checks that read a
 // production system (its preflight, the deployment's own pod block, the projected token's
@@ -89,10 +89,13 @@ type stage4bLive struct {
 }
 
 // TestStage4bSandboxTreeOnTheKindRigLive drives tree 1 and its children through the checkpoints of
-// the stage 4b proof up to one role's end and its pod's loss, each a subtest. The daemon's restarts
-// are TestStage4bDaemonRestartsOnTheKindRigLive's and TestStage4bStreamMoveOnTheKindRigLive's,
-// each on a rig of its own: one rig running all fourteen checkpoints runs past the kind job's part
-// budget.
+// the stage 4b proof up to one role's end and its pod's loss, each a subtest, and last restarts
+// the daemon under `controller: daemon`, which reads nothing of the tree. The daemon's other
+// restarts are TestStage4bDaemonRestartsOnTheKindRigLive's and
+// TestStage4bStreamMoveOnTheKindRigLive's, each on a rig of its own: one rig running all fourteen
+// checkpoints runs past the kind job's part budget. The controller's restart runs here because
+// this part has the room: in CI run 44808127763 the restarts' part ran it in 203 s and took 1,436
+// s of its 1,461, where this part's ten checkpoints took 1,044 s of part in run 44766893801.
 func TestStage4bSandboxTreeOnTheKindRigLive(t *testing.T) {
 	// A token lives seventeen minutes, so the daemon's refresh, which comes at least fifteen
 	// minutes before a lease's expiry, comes inside the run. A quiet pod is kept thirty minutes,
@@ -112,18 +115,15 @@ func TestStage4bSandboxTreeOnTheKindRigLive(t *testing.T) {
 	r.checkpoint("kill-role-resume", r.killRoleResume)
 	r.checkpoint("fence", r.fence)
 	r.checkpoint("pod-shape", r.podShape)
+	r.checkpoint("controller", r.controllerCheck)
 }
 
 // TestStage4bDaemonRestartsOnTheKindRigLive restarts the daemon over a running tree at the same
-// addresses, then handing the pods another address of the listener, then under `controller:
-// daemon`. The controller's restart reads nothing of the tree, so it runs here, where it keeps
-// each part under the budget: on CI run 44766893801 it took 185 s, and the part that ran it with
-// the stream move took 24.0 minutes of its 24 minutes 21 seconds.
+// addresses, then handing the pods another address of the listener.
 func TestStage4bDaemonRestartsOnTheKindRigLive(t *testing.T) {
 	r := newStage4bRunningTree(t)
 	r.checkpoint("restart-mid-tree", r.restartMidTree)
 	r.checkpoint("address-moved-env-same-pod", r.addressMovedEnvSamePod)
-	r.checkpoint("controller", r.controllerCheck)
 }
 
 // TestStage4bStreamMoveOnTheKindRigLive restarts the daemon over a running tree with its API and
@@ -450,10 +450,10 @@ func (r *stage4bLive) githubCredential() {
 	if bin, err := r.roleExec(pod, claim.RoleImplementer, "sh", "-c", "command -v gh"); err != nil || bin != "/opt/legion/bin/gh" {
 		t.Errorf("the implementer's gh is %q (%v), want the image's wrapper /opt/legion/bin/gh", bin, err)
 	}
-	status, _ := r.agentShell(pod, claim.RoleImplementer, "LEGION_GH_PATH=/usr/local/bin/gh LEGION_GH_OWNERS_DIR="+stage4bGhOwnersDir+
+	status, err := r.agentShell(pod, claim.RoleImplementer, "LEGION_GH_PATH=/usr/local/bin/gh LEGION_GH_OWNERS_DIR="+stage4bGhOwnersDir+
 		" GH_CONFIG_DIR="+configDir+" GH_TOKEN= GITHUB_TOKEN= GH_HOST= gh auth status 2>&1")
 	if !strings.Contains(status, "x-access-token") {
-		t.Errorf("gh auth status in the implementer's namespaces names no x-access-token account: %s", status)
+		t.Errorf("gh auth status in the implementer's namespaces names no x-access-token account: %q (%v)", status, err)
 	}
 	hashes := map[claim.Role]string{}
 	for role, app := range map[claim.Role]string{claim.RoleImplementer: r.implement.Slug, claim.RoleArchitect: r.review.Slug} {
@@ -592,16 +592,30 @@ func (r *stage4bLive) agentEnviron(pod string, role claim.Role) ([]string, error
 }
 
 // agentEnvironIn is the environment of the agent in, an exec that sees its processes: the child
-// of its worker-shim, one NAME=value a line.
+// of its worker-shim that holds the gh bundle's variable (LEGION_GH_OWNERS_DIR), one NAME=value a
+// line. The shim has other children beside the agent at times (agent-secrets renews, a codegraph
+// warm-up), and a role's processes come and go across a launch, so the read is tried again for up
+// to half a minute before it fails, naming what it found.
 func agentEnvironIn(in func(command ...string) (string, error)) ([]string, error) {
-	out, err := in("sh", "-c", `for d in /proc/[0-9]*; do [ "$(tr '\0' '\n' 2>/dev/null <"$d/cmdline" | sed -n 2p)" = worker-shim ] && shim=${d##*/}; done
-[ -n "$shim" ] || exit 1
-for d in /proc/[0-9]*; do [ "$(cut -d' ' -f4 "$d/stat" 2>/dev/null)" = "$shim" ] && { tr '\0' '\n' <"$d/environ"; exit 0; }; done
-exit 1`)
-	if err != nil {
-		return nil, err
+	const read = `for d in /proc/[0-9]*; do [ "$(tr '\0' '\n' 2>/dev/null <"$d/cmdline" | sed -n 2p)" = worker-shim ] && shim=${d##*/}; done
+[ -n "$shim" ] || { echo "no worker-shim among the processes"; exit 1; }
+for d in /proc/[0-9]*; do
+  [ "$(cut -d' ' -f4 "$d/stat" 2>/dev/null)" = "$shim" ] || continue
+  env=$(tr '\0' '\n' <"$d/environ" 2>/dev/null) || continue
+  case "$env" in *LEGION_GH_OWNERS_DIR=*) printf '%s\n' "$env"; exit 0 ;; esac
+done
+echo "no child of worker-shim $shim holds LEGION_GH_OWNERS_DIR"; exit 1`
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		out, err := in("sh", "-c", read)
+		if err == nil {
+			return strings.Split(out, "\n"), nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("%w: %s", err, strings.TrimSpace(out))
+		}
+		time.Sleep(2 * time.Second)
 	}
-	return strings.Split(out, "\n"), nil
 }
 
 // hostsToken is the oauth_token role's hosts.yml holds in pod.

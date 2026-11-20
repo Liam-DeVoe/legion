@@ -364,9 +364,14 @@ func (s *Server) gitOutput(bare, stdin string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// statusWriter keeps the status a handler answered with, for the request log, gives every answer
-// a type (plainUnlessTyped), and hands the writer's Flush and Hijack through, which a cut-short
-// pack needs. Every answer of the server goes out through it (serve).
+// statusWriter keeps the status a handler answered with, for the request log, and hands the
+// writer's Flush and Hijack through, which a cut-short pack needs. Every answer of the server goes
+// out through it (serve). It defines no Write of its own: a body goes to the wrapped writer as the
+// handler wrote it, so this type is no step between a request and a response body. With a Write
+// here, CodeQL's go/reflected-xss read every ResponseWriter.Write call it could reach as one that
+// might land in it, and flagged this file for a test fake of another package (alert 248, on
+// cybermonklabs/legion#4397). A handler that wrote no status answered net/http's 200, which serve
+// logs.
 type statusWriter struct {
 	http.ResponseWriter
 	status int
@@ -376,29 +381,7 @@ func (w *statusWriter) WriteHeader(status int) {
 	if w.status == 0 {
 		w.status = status
 	}
-	w.plainUnlessTyped()
 	w.ResponseWriter.WriteHeader(status)
-}
-
-func (w *statusWriter) Write(b []byte) (int, error) {
-	if w.status == 0 {
-		w.status = http.StatusOK
-	}
-	w.plainUnlessTyped()
-	return w.ResponseWriter.Write(b)
-}
-
-// plainUnlessTyped gives the answer a Content-Type before its header goes out, where its handler
-// named none: text/plain, so no answer is sniffed as HTML, whatever text of the request it
-// carries back (a path's owner and name in a refusal, a GraphQL variable in an error). Every
-// answer the server writes names its own type before this runs (answer's JSON, the archive's
-// gzip, http.Error's plain text, git http-backend's own), so it changes none of them. It is set
-// on the wrapped writer, the one the body is written to; once the header is out, setting it
-// changes nothing.
-func (w *statusWriter) plainUnlessTyped() {
-	if header := w.ResponseWriter.Header(); header.Get("Content-Type") == "" {
-		header.Set("Content-Type", "text/plain; charset=utf-8")
-	}
 }
 
 func (w *statusWriter) Flush() { w.ResponseWriter.(http.Flusher).Flush() }
@@ -415,14 +398,25 @@ var gitPath = regexp.MustCompile(`^/([^/]+)/([^/]+?)(?:\.git)?/(info/refs|git-up
 func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	recorded := &statusWriter{ResponseWriter: w}
 	defer func() {
+		status := recorded.status
+		if status == 0 {
+			status = http.StatusOK
+		}
 		s.mu.Lock()
-		s.requests = append(s.requests, fmt.Sprintf("%s %s%s -> %d", r.Method, r.Host, r.URL.RequestURI(), recorded.status))
+		s.requests = append(s.requests, fmt.Sprintf("%s %s%s -> %d", r.Method, r.Host, r.URL.RequestURI(), status))
 		s.mu.Unlock()
 	}()
 	if match := gitPath.FindStringSubmatch(r.URL.Path); match != nil {
 		s.serveGit(recorded, r, match[1], match[2], match[3])
 		return
 	}
+	// An API answer is text/plain unless its handler names its own type, so no answer is sniffed
+	// as HTML, whatever text of the request it carries back (a path's owner and name in a
+	// refusal, a GraphQL variable in an error). Each handler that names one sets it (answer's
+	// JSON, the archive's gzip, http.Error's plain text), which replaces this. A git answer is
+	// left alone: git http-backend's CGI host adds the type the backend prints, and a type set
+	// here first would be a second one.
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	s.serveAPI(recorded, r)
 }
 

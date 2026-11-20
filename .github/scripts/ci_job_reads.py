@@ -1970,18 +1970,18 @@ KIND_TREE_FILES = {
 # backend's, which took 732 s and 706 s in CI runs 44615479190 and 44625956146. Stage 4b's fourteen
 # checkpoints run past the part budget on one rig, about 30 minutes with four daemon restarts of
 # about two minutes of image probe each, so they run in three tests, each on a rig of its own,
-# measured in CI run 44766893801: tree-stage4b the tree through one role's end and its pod's
-# loss, 778 s, so 20m; tree-stage4b-restart the restarts at the same addresses, at another
-# address of the listener and under `controller: daemon`, 848 s and the controller's 185 s, so
-# 26m; and tree-stage4b-move the stream's move and the pod shape, about 843 s, so 25m.
+# measured in CI runs 44766893801 and 44808127763: tree-stage4b the tree through one role's end
+# and its pod's loss, 778 s, and the controller's restart, 203 s, so 25m; tree-stage4b-restart the
+# restarts at the same addresses and at another address of the listener, 848 s, so 25m; and
+# tree-stage4b-move the stream's move and the pod shape, about 843 s, so 25m.
 KIND_TREE_PARTS = {
     "tree-claude": ("Run the Claude Code backend's tree test", "20m", {
         "internal/daemon": ["TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive"],
     }),
-    "tree-stage4b": ("Run Stage 4b's tree test", "20m", {
+    "tree-stage4b": ("Run Stage 4b's tree test", "25m", {
         "internal/daemon": ["TestStage4bSandboxTreeOnTheKindRigLive"],
     }),
-    "tree-stage4b-restart": ("Run Stage 4b's restart test", "26m", {
+    "tree-stage4b-restart": ("Run Stage 4b's restart test", "25m", {
         "internal/daemon": ["TestStage4bDaemonRestartsOnTheKindRigLive"],
     }),
     "tree-stage4b-move": ("Run Stage 4b's stream move test", "25m", {

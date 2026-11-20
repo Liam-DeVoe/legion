@@ -7497,8 +7497,8 @@ It has no pod create or delete and no PVC verb (LEGION-206 Requirement 8).
 
 ### The test on a kind cluster
 
-`TestStage4bSandboxTreeOnTheKindRigLive` (`packages/daemon/internal/daemon/stage4b_kind_live_test.go`) drives an issue tree through the Go daemon on this runtime, in a kind cluster with Agent Sandbox and gVisor, against Dispatch, the Envoy listener and NATS built from the checkout and a fake GitHub, with real agents on a Messages stand-in, one subtest per checkpoint.
-Two more tests of the same file start from the claims that tree holds and restart the daemon over them: `TestStage4bDaemonRestartsOnTheKindRigLive` at the same addresses, at another address of the listener and under `controller: daemon`, and `TestStage4bStreamMoveOnTheKindRigLive` onto a moved worker stream.
+`TestStage4bSandboxTreeOnTheKindRigLive` (`packages/daemon/internal/daemon/stage4b_kind_live_test.go`) drives an issue tree through the Go daemon on this runtime, in a kind cluster with Agent Sandbox and gVisor, against Dispatch, the Envoy listener and NATS built from the checkout and a fake GitHub, with real agents on a Messages stand-in, one subtest per checkpoint, and last restarts the daemon under `controller: daemon`.
+Two more tests of the same file start from the claims that tree holds and restart the daemon over them: `TestStage4bDaemonRestartsOnTheKindRigLive` at the same addresses and at another address of the listener, and `TestStage4bStreamMoveOnTheKindRigLive` onto a moved worker stream.
 Each brings up a rig of its own, since one rig running every checkpoint runs past the time a part of the kind job has.
 The kind job of `ci.yaml` runs the three in its `tree-stage4b`, `tree-stage4b-restart` and `tree-stage4b-move` parts.
 

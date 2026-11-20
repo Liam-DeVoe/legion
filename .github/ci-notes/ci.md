@@ -1832,9 +1832,9 @@ sweep tests in a third, the Sandbox runtime's live test in five, one group of it
 each of those eight within about 24 minutes, and the whole-tree tests in four more, one each:
 tree-claude the Claude Code backend's, within about 24 minutes too, and tree-stage4b,
 tree-stage4b-restart and tree-stage4b-move Stage 4b's tree, whose fourteen checkpoints one rig
-runs past that budget, so three tests on rigs of their own hold them, each within it as CI run
-44766893801 measured them (17.4, 18.5 and 24.0 minutes, the last before its controller check
-moved to tree-stage4b-restart).
+runs past that budget, so three tests on rigs of their own hold them, each within it: CI run
+44808127763 measured the restart and move parts at 23.9 and 16.7 minutes, the first with the
+controller's check, which then moved to tree-stage4b (17.4 minutes without it in run 44766893801).
 The image under test is the worker-image job's on a pull request where that job built the
 head, handed down as `worker-image`, and otherwise the called file's image job builds it once
 per run; so this job needs worker-image for the order, and ci-images too, since the rig pulls

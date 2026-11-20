@@ -62,10 +62,10 @@ name: CI job kind
 # internal/daemon's whole-tree tests, which boot the whole daemon on the rig with real agents in
 # issue pods: tree-claude the Claude Code backend's in an issue pod, and the other three Stage 4b's
 # tree, whose checkpoints one rig runs past the part budget, so three tests hold them, each on a
-# rig of its own: tree-stage4b the tree through one role's end and its pod's loss,
-# tree-stage4b-restart the daemon's restarts at the same addresses, at another address of the
-# listener and under `controller: daemon`, and tree-stage4b-move its restart onto a moved worker
-# stream, then every pod's shape.
+# rig of its own: tree-stage4b the tree through one role's end and its pod's loss, then the
+# daemon's restart under `controller: daemon`, tree-stage4b-restart the daemon's restarts at the
+# same addresses and at another address of the listener, and tree-stage4b-move its restart onto a
+# moved worker stream, then every pod's shape.
 #
 # A failed test leaves the cluster's pods, Sandboxes, events, logs and the Agent Sandbox
 # controller's log, the fake GitHub's requests and the test's own logs under kind-logs, which the
@@ -823,12 +823,13 @@ jobs:
     # all ran: 17.4 minutes in all, the test 778 s of it, the rig 500 s to the first checkpoint, two
     # minutes of that the daemon's image probe. The fourteen checkpoints on one rig, with four daemon
     # restarts of about two minutes of image probe each, come to about 30 minutes, past the part
-    # budget of 24 minutes 21 seconds, so this part runs the ten that need no restart, and
-    # tree-stage4b-restart and tree-stage4b-move run the four restarts. The test binary's -timeout
-    # is 20m, more than half again over the test's 778 s; the job has that, the setup's five minutes
-    # on top, and five more for a failed test's upload, so a hung test's own -timeout ends it first
-    # and its state still uploads: 30 minutes.
-    timeout-minutes: 30
+    # budget of 24 minutes 21 seconds, so this part runs the ten that need no restart and the
+    # controller's restart, 203 s in CI run 44808127763, about 20.8 minutes in all, and
+    # tree-stage4b-restart and tree-stage4b-move run the other three restarts. The test binary's
+    # -timeout is 25m, more than half again over the test's 981 s; the job has that, the setup's
+    # five minutes on top, and five more for a failed test's upload, so a hung test's own -timeout
+    # ends it first and its state still uploads: 35 minutes.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -862,7 +863,7 @@ jobs:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
           LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
           LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
-        run: go test -v -count=1 -timeout 20m -run '^(TestStage4bSandboxTreeOnTheKindRigLive)$' ./internal/daemon/
+        run: go test -v -count=1 -timeout 25m -run '^(TestStage4bSandboxTreeOnTheKindRigLive)$' ./internal/daemon/
         working-directory: packages/daemon
 
       # A failed test's state, as tree-claude uploads its own.
@@ -888,13 +889,12 @@ jobs:
     if: ${{ !cancelled() && needs.image.result != 'failure' }}
     runs-on: ubuntu-24.04
     # Budget, measured in CI run 44766893801 (job 136406642255): restart-mid-tree took 187 s and
-    # address-moved-env-same-pod 146 s, the test 848 s and the part 18.5 minutes in all; controller,
-    # which took 185 s in that run's tree-stage4b-move (job 136406642222), comes to about 1,033 s of
-    # test and 21.6 minutes of part, within the part budget of 24 minutes 21 seconds, where with the
-    # stream move it took 24.0. The test binary's -timeout is 26m, more than half again over the
-    # test's 1,033 s; the job has that, the setup's five minutes on top, and five more for a failed
-    # test's upload: 36 minutes.
-    timeout-minutes: 36
+    # address-moved-env-same-pod 146 s, the test 848 s and the part 18.5 minutes in all. With the
+    # controller's restart too it took 1,436 s of its 1,461 in CI run 44808127763 (job
+    # 136543181287), so that check runs in tree-stage4b. The test binary's -timeout is 25m, more
+    # than half again over the test's 848 s; the job has that, the setup's five minutes on top, and
+    # five more for a failed test's upload: 35 minutes.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -928,7 +928,7 @@ jobs:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
           LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
           LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
-        run: go test -v -count=1 -timeout 26m -run '^(TestStage4bDaemonRestartsOnTheKindRigLive)$' ./internal/daemon/
+        run: go test -v -count=1 -timeout 25m -run '^(TestStage4bDaemonRestartsOnTheKindRigLive)$' ./internal/daemon/
         working-directory: packages/daemon
 
       # A failed test's state, as tree-claude uploads its own.
@@ -955,8 +955,8 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget, measured in CI run 44766893801 (job 136406642222), where this part also ran
     # controller: 24.0 minutes in all, the test 1,028 s of it, address-moved-stream-new-pod 177 s
-    # and controller 185 s. With controller in tree-stage4b-restart, the part comes to about 20.9
-    # minutes and the test to about 843 s. The test binary's -timeout is 25m, more than half again
+    # and controller 185 s. Without controller it took 1,002 s in CI run 44808127763 (job
+    # 136543181233), the test about 843 s. The test binary's -timeout is 25m, more than half again
     # over that; the job has that, the setup's five minutes on top, and five more for a failed
     # test's upload: 35 minutes.
     timeout-minutes: 35
