@@ -231,12 +231,17 @@ async function preloadAfterRefresher(home: string, state: string, signal: string
 
 /** What the hook measured of itself, written to `ENVOY_ANSWERS_TIMING_FILE`, in ms after its
  *  process started: when its code began, when it printed (null: it failed before), and when it
- *  exited. */
+ *  exited; and the pid of the refresher it started (null: none). */
 interface HookTiming {
   readonly began: number
   readonly printed: number | null
   readonly ended: number
+  readonly refresher: number | null
 }
+
+/** The pid of every refresher a hook of this file started, as the hook named it: the processes
+ *  `noRefresher` reads. */
+const refreshers: number[] = []
 
 interface HookRun {
   readonly exitCode: number
@@ -271,6 +276,7 @@ async function runHook(
     new Response(run.stderr).text(),
   ])
   const timing: HookTiming = JSON.parse(await readFile(timingFile, "utf8"))
+  if (timing.refresher !== null) refreshers.push(timing.refresher)
   return { exitCode, stdout, stderr, timing }
 }
 
@@ -815,19 +821,38 @@ test(
   holdingWaits(4),
 )
 
-/** Processes whose command line holds `marker`, as `pgrep -f` finds them. */
-function processesWith(marker: string): string {
-  return Bun.spawnSync(["pgrep", "-f", marker]).stdout.toString().trim()
+/** Whether `pid` runs a command line holding `marker`, read from that one process's
+ *  `/proc/<pid>/cmdline` (`ps -o args= -p` on a host with no /proc), never from the machine's
+ *  whole process table: `pgrep -f` took 0.7 s to 12 s a call on a loaded host, past the waits that
+ *  polled it (docs/testing.md, "A test that looks for a process it started"). A pid another
+ *  process took since, and a process that has ended, read as not running it. */
+function runs(pid: number, marker: string): boolean {
+  let commandLine: string
+  try {
+    commandLine = existsSync("/proc/self")
+      ? readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ")
+      : Bun.spawnSync(["ps", "-o", "args=", "-p", String(pid)]).stdout.toString()
+  } catch {
+    // Ended: its /proc entry is gone.
+    return false
+  }
+  return commandLine.includes(marker)
+}
+
+/** The pid a `!` token command wrote to `file` as its first act (`echo $$ > file`), once it has
+ *  written it whole; undefined before. */
+function commandPid(file: string): number | undefined {
+  const text = existsSync(file) ? readFileSync(file, "utf8") : ""
+  return /^\d+\n$/.test(text) ? Number(text) : undefined
 }
 
 /** Whether no refresher of the session runs for the project directory `home` (its command line
- *  is `bun <bundle> answers-refresh <session> <directory>`) and none holds the lock. The lock is
- *  a file test and the processes are a `pgrep` fork, so the lock decides first: both reads are
- *  free of side effects, and a poll every 20 ms pays for the fork each time it runs. */
+ *  is `bun <bundle> answers-refresh <session> <directory>`) and none holds the lock. The
+ *  refreshers are those the hooks named (`refreshers`), each read by its pid. */
 function noRefresher(home: string, state: string): boolean {
   return (
     !existsSync(join(state, "sessions", SESSION, "answers-refresh.lock")) &&
-    processesWith(`answers-refresh ${SESSION} ${home}`) === ""
+    !refreshers.some((pid) => runs(pid, `answers-refresh ${SESSION} ${home}`))
   )
 }
 
@@ -839,11 +864,11 @@ test(
     dispatch.route = { kind: "list", items }
     const { home, state, config, tmp } = await scratch()
     const env = { HOME: home, DISPATCH_STATE_DIR: state, CLAUDE_CONFIG_DIR: config, TMPDIR: tmp }
-    // The command marks its own start, then waits until the test opens the gate, a path no other
-    // process names (`pgrep -f` finds the command's shell by it). The test opens the gate once the
-    // first hook has returned and the command has marked its start: only the hook's own run, which
-    // `expectWithinDeadline` bounds, stands between the command's start and the gate. A look at the
-    // process table must not: a loaded machine can stretch it past the command's own limit, 10 s
+    // The command writes its own pid as its first act, then waits until the test opens the gate, a
+    // path no other process names. The test opens the gate once the first hook has returned and
+    // the command has written its pid: only the hook's own run, which `expectWithinDeadline`
+    // bounds, stands between the command's start and the gate. A look at the machine's process
+    // table must not: a loaded machine can stretch it past the command's own limit, 10 s
     // (`COMMAND_TIMEOUT_MS` in envoy-client's envoy-config.ts), and the command then dies with no
     // token and the refresher sends no request.
     const gate = join(home, "gate")
@@ -853,7 +878,7 @@ test(
       JSON.stringify({
         dispatch: {
           serverUrl: dispatch.base,
-          token: `!: > '${started}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
+          token: `!echo $$ > '${started}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${DISPATCH_TOKEN}`,
         },
       }),
     )
@@ -869,13 +894,19 @@ test(
     )
     expectWithinDeadline(first)
     // The command outlives the hook, in the refresher the hook started (whose own bun start-up may
-    // end after the hook did).
-    await eventually(() => existsSync(started), "the command's start")
+    // end after the hook did) and named.
+    await eventually(() => commandPid(started) !== undefined, "the command's start")
+    const command = commandPid(started) as number
+    // Both wait on the gate, so each read by its pid must be seen running: the absence the case
+    // checks after the gate opens, and every wait on `noRefresher`, means nothing otherwise.
+    expect(runs(command, gate)).toBe(true)
+    expect(first.timing.refresher).not.toBeNull()
+    expect(runs(first.timing.refresher as number, `answers-refresh ${SESSION} ${home}`)).toBe(true)
 
     await writeFile(gate, "")
     await refresherFinished(state, firstSince)
     expect(await readdir(tmp)).toEqual([])
-    expect(processesWith(gate)).toBe("")
+    expect(runs(command, gate)).toBe(false)
     expect(dispatch.requests).toEqual([
       `Bearer ${DISPATCH_TOKEN} /api/v1/agents/${SESSION}/answers`,
     ])
@@ -890,7 +921,7 @@ test(
     expectWithinDeadline(second)
     await writeFile(gate, "")
     await refresherFinished(state, secondSince)
-    expect(processesWith(gate)).toBe("")
+    expect(runs(commandPid(started) as number, gate)).toBe(false)
     // Its waits: the command's start and two refreshers' ends.
   },
   holdingWaits(3),
@@ -970,14 +1001,14 @@ test(
     const secret = "pw-4c7e19"
     const beforeUrl = before.base.replace("://", `://${user}:${secret}@`)
 
-    // The first hook's refresher runs the command, which marks its own start and waits until the
-    // gate opens.
+    // The first hook's refresher runs the command, which writes its own pid as its first act and
+    // waits until the gate opens.
     await writeFile(
       envoyJson,
       JSON.stringify({
         dispatch: {
           serverUrl: beforeUrl,
-          token: `!: > '${started}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
+          token: `!echo $$ > '${started}'; while [ ! -e '${gate}' ]; do sleep 0.02; done; printf ${BEFORE_TOKEN}`,
         },
       }),
     )
@@ -991,11 +1022,11 @@ test(
     )
 
     // The refresher resolves envoy.json before its command runs: once the command runs, it reads
-    // `before` whatever envoy.json names next. The case waits for the command's own mark, not a
-    // look at the process table, which a loaded machine can stretch past the command's own limit,
-    // 10 s (`COMMAND_TIMEOUT_MS` in envoy-client's envoy-config.ts): the command then dies before
-    // the gate opens, and the next hook reads `now` itself.
-    await eventually(() => existsSync(started), "the command's start")
+    // `before` whatever envoy.json names next. The case waits for the pid the command wrote, not a
+    // look at the machine's process table, which a loaded machine can stretch past the command's
+    // own limit, 10 s (`COMMAND_TIMEOUT_MS` in envoy-client's envoy-config.ts): the command then
+    // dies before the gate opens, and the next hook reads `now` itself.
+    await eventually(() => commandPid(started) !== undefined, "the command's start")
 
     // envoy.json now names another Dispatch. A hook starts while the refresher runs; it opens the
     // gate once its process has started and holds its code until the refresher has read `before`
@@ -1023,9 +1054,9 @@ test(
     expect(context).not.toContain(user)
     expect(context).not.toContain(secret)
     // The refresher this hook started reads the Dispatch named now. When the hook returns, that
-    // refresher may not hold its lock yet, nor have a command line `pgrep -f` can find (its exec of
-    // bun can be slow on a loaded disk), so `noRefresher` can hold before it even ran: the case
-    // waits for the outcome it writes for the Dispatch named now, and for its lock to go.
+    // refresher may not hold its lock yet, nor have run at all (its exec of bun can be slow on a
+    // loaded disk), so the case waits for the outcome it writes for the Dispatch named now, and
+    // for its lock to go.
     const directory = join(state, "sessions", SESSION)
     await eventually(() => {
       try {
