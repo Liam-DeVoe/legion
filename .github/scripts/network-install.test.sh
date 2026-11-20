@@ -87,9 +87,10 @@ run_install() {
 # mode says: `hang` sleeps without end, `stubborn` ignores SIGTERM and sleeps, `hang-once` hangs
 # the first time and passes the second, `fail` exits 3, `own124` exits 124 and `own137` is killed
 # by SIGKILL at once (as an install that exits 124 itself, or is killed by the kernel), `refused`
-# prints Bun 1.4.4's error for a registry that refused the connection and exits 1, `stale` prints
-# its error for a frozen lockfile that disagrees and exits 1, `streams` prints a line on each
-# stream, `stdin` prints the line it reads, and `ok` exits 0. A stand-in that sleeps writes its pid
+# prints Bun 1.4.4's error for a registry that refused the connection and exits 1, `says` prints its
+# third argument on standard error and exits 1, `stale` prints its error for a frozen lockfile that
+# disagrees and exits 1, `streams` prints a line on each stream, `stdin` prints the line it reads,
+# and `ok` exits 0. A stand-in that sleeps writes its pid
 # first and sleeps in that same process.
 standin="$work/standin"
 cat > "$standin" <<SH
@@ -103,6 +104,8 @@ case "\$2" in
   own124) exit 124 ;;
   own137) kill -KILL \$\$ ;;
   refused) echo "error: ConnectionRefused downloading package manifest left-pad" >&2; exit 1 ;;
+  leaves) "$real_sleep" 1000 & echo \$! > "\$1.held"; exit 0 ;;
+  says) printf '%s\n' "\$3" >&2; exit 1 ;;
   stale) echo "error: lockfile had changes, but lockfile is frozen" >&2; exit 1 ;;
   streams) echo "the command's own output"; echo "the command's own error" >&2 ;;
   stdin) read -r line; echo "read: \$line" ;;
@@ -169,6 +172,35 @@ check "names the fault each attempt printed" \
   "$(contains "$out" "^network-install bun: attempt 1 exited 1 after [0-9]* s, and its output names a network fault (ConnectionRefused)")"
 check "says the network failed" "$(contains "$out" "what failed is the network or the server it reads, not the change under test")"
 check "does not call it the command's own" "$(is "$(contains "$out" "is the command's own")" false)"
+
+# The words Go's HTTP client gives a server that fails it, which docker, containerd and the go
+# command print as they are (network-install.sh's NETWORK_FAULT says where each was read), and a
+# registry's rate limit: each is the network's, tried again and blamed on the network. The lines are
+# the clients' own: docker 29.9.2 against a registry that accepted and never answered, go 1.27.3
+# against a GOPROXY that answered 429 or cut its body, run 44317642380's HTTP/2 reset, Bun 1.4.4's
+# 429.
+while IFS='|' read -r fault line; do
+  echo "case: an install whose output names $fault is tried again and blamed on the network"
+  : > "$work/says.count"
+  run_install "$fault" docker -- "$standin" "$work/says.count" says "$line"
+  check "$fault: ran three times" "$(is "$(count "$work/says.count")" 3)"
+  check "$fault: names it as a network fault" "$(contains "$out" "^network-install docker: attempt 1 exited 1 after [0-9]* s, and its output names a network fault")"
+  check "$fault: says the network failed" "$(contains "$out" "what failed is the network or the server it reads, not the change under test")"
+done <<'FAULTS'
+a response-header timeout|Error response from daemon: Get "http://127.0.0.1:5000/v2/": net/http: timeout awaiting response headers
+a client timeout|Get "https://ghcr.io/v2/": net/http: request canceled (Client.Timeout exceeded while awaiting headers)
+a TLS handshake timeout|Get "https://ghcr.io/v2/": net/http: TLS handshake timeout
+an i/o timeout|dial tcp 140.82.112.33:443: i/o timeout
+a reset connection|read tcp 10.1.0.4:51230->140.82.112.33:443: read: connection reset by peer
+a cut body|go: example.com/m@v1.0.0: unexpected EOF
+an HTTP/2 stream reset|stream error: stream ID 399; INTERNAL_ERROR; received from peer
+a GOAWAY|http2: server sent GOAWAY and closed the connection; LastStreamID=1, ErrCode=NO_ERROR, debug=""
+go's 429|go: example.com/m@v1.0.0: reading https://proxy.golang.org/example.com/m/@v/v1.0.0.zip: 429 Too Many Requests
+containerd's rate limit|failed to copy: httpReadSeeker: failed open: unexpected status code: toomanyrequests: too many requests
+Bun's 429|error: GET http://127.0.0.1:4873/left-pad - 429
+Yarn's 429|error Error: http://127.0.0.1:45695/left-pad: Request "http://127.0.0.1:45695/left-pad" returned a 429
+Yarn's registry trouble|info There appears to be trouble with the npm registry (returned undefined). Retrying...
+FAULTS
 
 echo "case: an install whose own error names no network fault is not tried again"
 run_install "stale lockfile" bun -- "$standin" "$work/stale.count" stale

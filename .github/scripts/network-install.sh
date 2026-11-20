@@ -54,11 +54,20 @@
 # Unavailable`; apt `Could not connect to`, `Connection failed`, `503  Service Unavailable`; elan
 # `Could not connect to server`, `Connection reset by peer`, `tunnel failed, response 503`;
 # Playwright `ECONNREFUSED`, `ECONNRESET`, `server returned code 503`; docker `connect: connection
-# refused`. Their own faults name none of these: bun `lockfile had changes, but lockfile is
-# frozen`, go `404 Not Found … unknown revision`, apt `Unable to locate package`, elan `no such
-# release`, Playwright `Invalid installation targets`, docker `not found`. apt-get update exits 0
-# on a mirror it could not read unless it is given `--error-on=any`, so each wrapped update is.
-NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefused|econnreset|etimedout|eai_again|could not connect|connection failed|failed to connect|connection timed out|operation timed out|i/o timeout|tls handshake timeout|temporary failure (in name )?resolv|could not resolve host|no such host|network is unreachable|tunnel failed|failure when receiving data from the peer|server returned code 5[0-9][0-9]|get [^ ]+ - 5[0-9][0-9]|5[0-9][0-9] +(service unavailable|bad gateway|gateway time-?out|internal server error)'
+# refused`. And the words Go's own HTTP client, which docker, containerd and the go command are
+# built on, gives a server that fails it otherwise, read from their sources (go 1.27.3's net/http,
+# containerd 1.7.30's remotes/docker): `net/http: timeout awaiting response headers` (docker gave up
+# with it after 41 s on a registry that accepted and never answered), `Client.Timeout exceeded`,
+# `net/http: TLS handshake timeout`, `i/o timeout`, `request canceled while waiting for
+# connection`, `unexpected EOF` (a body cut short), `stream error: stream ID <n>; INTERNAL_ERROR`
+# (an HTTP/2 stream the server reset, the line envoy-infra-go failed on in run 44317642380) and
+# `http2: server sent GOAWAY`; and a registry's rate limit, `429 Too Many Requests`, containerd's
+# `toomanyrequests` and bun's `GET <url> - 429`. Their own faults name none of these: bun `lockfile
+# had changes, but lockfile is frozen`, go `404 Not Found … unknown revision`, apt `Unable to locate
+# package`, elan `no such release`, Playwright `Invalid installation targets`, docker `not found`.
+# apt-get update exits 0 on a mirror it could not read unless it is given `--error-on=any`, so each
+# wrapped update is.
+NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefused|econnreset|etimedout|eai_again|could not connect|connection failed|failed to connect|connection timed out|operation timed out|i/o timeout|tls handshake timeout|timeout awaiting response headers|client\.timeout exceeded|request canceled while waiting for connection|unexpected eof|stream error: stream id [0-9]+|server sent goaway|too ?many ?requests|temporary failure (in name )?resolv|could not resolve host|no such host|network is unreachable|tunnel failed|failure when receiving data from the peer|server returned code (429|5[0-9][0-9])|get [^ ]+ - (429|5[0-9][0-9])|returned a (429|5[0-9][0-9])|trouble with the npm registry|5[0-9][0-9] +(service unavailable|bad gateway|gateway time-?out|internal server error)'
 #
 # THE KINDS. A kind's bound is what the installs it guards took at worst, with room: the slowest
 # green run of those installs, times two, rounded up to the next minute. Two, because an install
