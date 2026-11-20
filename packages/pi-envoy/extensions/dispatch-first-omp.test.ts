@@ -12,6 +12,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 
 // The dispatch-first skill's insertion on the real Oh My Pi (src/dispatch-first.ts): Oh My Pi keeps
@@ -24,6 +25,8 @@ const withoutOmp = requireOrSkip(
   omp !== undefined,
   "pi-envoy"
 );
+/** The Dispatch token a session with Dispatch is handed. */
+const DISPATCH_TOKEN = fixtureSecret("dsp");
 
 /** One thing the session is told over RPC, in order: a user prompt, or a manual compaction. */
 type Step = { readonly prompt: string } | { readonly compact: true };
@@ -102,7 +105,7 @@ async function runSession(
       sessions,
       env: {
         ENVOY_URL: base,
-        ...(options.dispatch ? { DISPATCH_URL: base, DISPATCH_TOKEN: "dispatch-first-token" } : {}),
+        ...(options.dispatch ? { DISPATCH_URL: base, DISPATCH_TOKEN } : {}),
       },
       onFrame: (frame) => {
         if (settle?.(frame)) {

@@ -738,8 +738,8 @@ func (c Claim) treeRoot() bool { return claim.IsTreeArchitect(c.Role, c.Issue, c
 // Event is everything that reaches a machine: RuntimeObservation, StreamHello, StreamTurnStart,
 // StreamTurnEnd, IssueTurnEnded, StreamPromptResult, StreamClosed, StreamLateRefusal,
 // PromptAcked, PromptRefused, Timer, StalePlugin, PodUpdateOpen, PodUpdateEnded,
-// PodUpdateSignalled, and the requests. The transition table has a row or a named ignore for
-// every one in every state.
+// PodUpdateSignalled, ResumePause, and the requests. The transition table has a row or a named
+// ignore for every one in every state.
 type Event interface{ isEvent() }
 
 // Store is the persistence a machine writes through. A claim and its pending delivery are
@@ -768,6 +768,21 @@ type Store interface {
 	// write would erase every step recorded since that machine read its claim. It answers
 	// whether the store holds the claim at all.
 	PutClaimStep(ctx context.Context, token claim.Token, step StepRecord) (bool, error)
+	// HoldSessions records every one of holds as token's claim's within project when no claim of
+	// the project has recorded it, and answers, in holds' order, the claim that holds each: token
+	// itself when it recorded the name before or none had, another claim when that one recorded it
+	// first, and the empty token for a name held for no claim. It records all of holds or none: a
+	// name another claim holds leaves every other name unrecorded. A hold ends only by an
+	// operator's release (ReleaseHolds), whatever becomes of the claim holding it (holdRecorded).
+	HoldSessions(ctx context.Context, project string, token claim.Token, holds []Hold) ([]claim.Token, error)
+	// ClaimHolds is every name token's claim holds within project, in kind and then name order.
+	ClaimHolds(ctx context.Context, project string, token claim.Token) ([]Hold, error)
+	// ReleaseHolds deletes every one of holds the table holds for c's claim within c's project and
+	// writes c, in one transaction, and answers the names it deleted, in kind and then name order:
+	// the operator's release (Machine.ReleaseNames), the one way a hold ends. A refused claim write
+	// frees nothing, so the claim's record of which abandoned session a release freed never
+	// disagrees with the names the store still holds for it.
+	ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error)
 }
 
 // Specs builds the part of a launch the claim does not carry — the pane's environment, its
@@ -980,6 +995,16 @@ type Deps struct {
 	// recorded no session tells nothing. It is called inside the machine's decision, so it returns
 	// at once and does the call elsewhere.
 	SessionGone func(session string)
+	// RoleHolder reads the session the Envoy listener names as role's holder, with that holder's
+	// state (`live`, `unresponsive`, `gone`, or `lapsed` from an older listener), or no holder for
+	// a role no claim names (notify.HTTPPublisher.RoleHolder). A forget of a session this claim
+	// records but does not hold asks it once and refuses while the listener names that session as
+	// the claim's role holder, in any state (mayForget): the claim's role topic opens once it
+	// records no session, and the role's messages would then reach the other claim's process under
+	// that session. An error is an answer the daemon does not have, and the forget refuses on it.
+	// Nil is a daemon with no Envoy listener, where no role carries anything, and asks nothing. It
+	// is called inside the machine's decision, bounded by Timeouts.RPC.
+	RoleHolder func(ctx context.Context, role string) (holder, state string, err error)
 	// StallBackstopped is told of each turn the daemon's stall backstop did something to
 	// (backstopStalledTurn), with the record it acted on and the end it made: the owner's notice
 	// says what happened to that worker, and only the machine knows it. The sweep that posted the
@@ -998,6 +1023,56 @@ type Deps struct {
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
+	// Paused is the daemon's project pause flag (decision 18 of dispatch://INFRA-3759's plan):
+	// the id of the open pause and true while the project is paused, 0 and false while it runs.
+	// The daemon hands the pause service's method value (internal/pause's Service.Paused), which
+	// is one atomic load: it is read inside decisions, under the machine's lock, so it answers at
+	// once and never waits on anything. Every machine of the project reads it for four things:
+	// the gate that holds every launch of a claim that is not the controller's while the project
+	// is paused (reserveWake, wakeNow, pauseGate), the send that hands such a claim no task then
+	// (sendPending), a start that keeps the hold of the open pause (StartedBy), and a pause's
+	// hold that is dropped at the start of a decision once its pause is no longer the open one
+	// (dropEndedPauseHold). The controller's claim (claim.IsController) is never held by it. nil
+	// is a project never paused, which is today's behaviour: nothing is gated, and a hold that
+	// names a pause is one whose pause has ended.
+	Paused func() (int64, bool)
+	// PauseStopped is the stop transaction (decision 6): the claim write a suspension a project
+	// pause asked for (RequestSuspend.Pause) ends in, in place of the plain write, together with
+	// the pause's records, in one store transaction under the claim-write deadline
+	// (Timeouts.ClaimWrite, defaultClaimWrite), which the machine applies to the context it hands.
+	//
+	// c is the claim as the plain write would write it, normalized (NormalizeClaim). Where
+	// c.Pending is nil the plain write is the claim alone (Store.PutClaim); where it is not, the
+	// plain write is the claim with that pending delivery in the same transaction
+	// (Store.PutClaimAndDelivery(ctx, StoredClaim(c), *c.Pending)), and the implementation
+	// writes both. stop names the pause (store.Pause.ID) and whether the role is owed a launch at
+	// the resume (PauseStop.LaunchOwed, which the machine decides).
+	//
+	// internal/daemon's projectPause.stopped is the implementation, and it owns what the
+	// transaction writes beside the claim and in what order.
+	//
+	// Its error is read by the rule a plain write's is (writeOwed). A failure the rule owes
+	// leaves the stop owed on the machine (owedClaimWrite.stops), and every later claim write
+	// comes back here with that same stop until one lands: the repair at the head of each
+	// decision, and every write that settles an owed write when it lands (putClaim,
+	// putClaimAndPending, the stop-first write of retirePending, StartedBy's persist). So c can
+	// be a claim that is no longer suspended by then — a later write of a claim whose stop is
+	// owed — and the transaction records the stop all the same. It must therefore be safe to run
+	// again for one pause and claim: a commit whose answer the deadline cut off is owed and made
+	// again, and must not open a second stop row, a second held wake or a second pod hold. nil
+	// writes the claim through the plain write and records nothing of a pause.
+	PauseStopped func(ctx context.Context, c Claim, stop PauseStop) error
+	// WakeLetOut is told the moment the wake pacing lets a launch of the claim token (of issue's
+	// role) out, at each reservation the machine takes for one (decision 14): the gate's own
+	// (reserveWake), the one that lets the launch out at once included, and the let-out of a
+	// launch the pause's gate held once its pause has ended (letOutHeldLaunch). at is the moment
+	// the reservation answered, never before the decision's now. The daemon sets the stuck clock
+	// of the role's open resume to it (store.Store.SetResumeClock on pod_resumes.clock_at, which
+	// never moves a clock back), so a launch that waits its turn in a long queue is not warned
+	// stuck for the wait. It is called inside the machine's decision, so it returns at once and
+	// does its write on a goroutine of its own, as the durable-state report's podResume does in
+	// internal/daemon. nil stamps nothing.
+	WakeLetOut func(token claim.Token, issue string, role claim.Role, at time.Time)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
 	// beside whatever goroutine feeds the machine its events, and the decision writes the claim
@@ -1236,8 +1311,17 @@ type Machine struct {
 	// stayed armed on a working claim (askTurnOver); from unansweredAsksWarn on, each one is
 	// logged at Warn.
 	unansweredAsks int
-	// held is the suspension held for the agent's turn (holdSuspension), nil for none.
+	// held is the suspension held for the agent's turn (holdSuspension), or for a launch's ready
+	// (holdSuspendUntilReady), nil for none.
 	held *RequestSuspend
+	// heldLaunch is whether the held suspension waits over a launch — one holdSuspendUntilReady
+	// keeps until the agent says ready — and false whenever held is nil: it is set with held and
+	// cleared with it (dropHeld, letGo). A project pause's stop owes the role that launch at the
+	// resume once the hold runs (PauseStop.LaunchOwed, suspendHeld, endHeld), and nothing else
+	// says it by then: the claim reads ready, or its process is gone. It is a mark of its own
+	// rather than a field of the request, because the request is the event the daemon posts and
+	// carries nothing a caller may not set.
+	heldLaunch bool
 	// staleRelaunch is the stale-plugin relaunch held for the agent's turn to end, naming the pass
 	// that found the claim ("boot", "sweep"); nil for none. Relaunching a stale claim where it
 	// stands would end a turn whose worker the stale-plugin lane asked nothing of, so the relaunch
@@ -1424,10 +1508,32 @@ type Machine struct {
 	// to the shim over the claim's current connection.
 	identity       *heldIdentity
 	enrollmentSent bool
+	// heldNames is every name of the session the claim records that the store answered as this
+	// claim's (holdRecorded): such a name is not asked again while the claim records that session.
+	// An operator's release keeps the names of the recorded file and id, may free one of an earlier
+	// file of the session whose name contains no id, and takes each name it frees out of the cache
+	// (ReleaseNames). forgetSession empties it. Memory only: a restarted machine asks once more.
+	heldNames map[Hold]bool
+	// unheldDelivery is the pending delivery sendPending last held back because the claim records a
+	// session it does not hold, so its Error line is written once per delivery rather than at every
+	// sweep that asks again. Memory only.
+	unheldDelivery string
+	// refusalLogged is the Warn line holdRecorded last wrote for a refused hold, so a refusal asked
+	// again at every sweep (sendPending, for a claim that does not hold its session) is written
+	// once rather than every probe interval; a hold admitted clears it (warnRefusal). Memory only.
+	refusalLogged string
+	// admitted is the session and file the store last admitted for this claim, which holdRecorded
+	// and HoldsItsSession write, and HoldsItsSession and Admits (the daemon's step record) read
+	// without the lock; forgetSession clears it with heldNames. Memory only.
+	admitted atomic.Pointer[admittedSession]
 	// registration is the pod-session registration this machine keeps written for the claim's
 	// current process (ensureRegistered), nil while it keeps none. Memory only: a restored claim
 	// writes it again at its shim's first hello to the new daemon.
 	registration *podRegistration
+	// registrationRefused is the incarnation and session ensureRegistered last wrote a hold's
+	// refusal at Error for, so a refusal asked again at every observation is written once; a
+	// registration the hold admits clears it. Memory only.
+	registrationRefused registrationKey
 	// helloKey is the thumbprint the first hello of the claim's current incarnation named, which
 	// every registration of that incarnation is bound to (ensureRegistered); a later hello of the
 	// same incarnation naming another key is logged and changes nothing. A machine with no
@@ -1537,9 +1643,11 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // launch — minutes under Kubernetes, and 120 seconds was not enough for an operator's
 // `legion claims suspend` to be answered at all (dispatch://INFRA-714 R10). The cancelled start
 // has charged nothing, and the row this suspension then runs finds a claim launching with no
-// process to stop (holdSuspendUntilReady).
+// process to stop (holdSuspendUntilReady). A project pause's stop whose pause has ended cancels
+// nothing, since it stops nothing (pauseStopEnded, ErrPauseEnded): the start it would cut short
+// may be the very launch the resume let out.
 func (m *Machine) Handle(ctx context.Context, ev Event) error {
-	if _, suspending := ev.(RequestSuspend); suspending {
+	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) {
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
 	m.mu.Lock()
@@ -1551,6 +1659,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	// The write a decision owes is made before anything reads or writes the claim again: settle
 	// can retire a delivery, and the repair must write what the failed decision left.
 	m.repair(ctx)
+	// A project pause's hold whose pause has ended goes before anything of the decision reads the
+	// hold, so the fence, the row, the send and every place a hold fires read only one that stands.
+	m.dropEndedPauseHold()
 	// Settle first, so the fence judges the task the row will find: a settle after the fence could
 	// retire the very task it let the event through for.
 	if err := m.settle(ctx); err != nil {
@@ -1769,7 +1880,14 @@ func (c Claim) ReleasedLaunch() bool {
 // it, and a retry that lands after this start would suspend the run this start began. That
 // includes a held suspension (holdSuspension), which the start drops — unless it is the operator's:
 // a claim an operator's suspension holds records no start and answers ErrHeldByOperator, so the
-// start waits for the operator to resume the claim.
+// start waits for the operator to resume the claim. A project pause's hold whose pause is the
+// open pause (Deps.Paused) is kept too, and the start is recorded beside it (decision 5 of
+// dispatch://INFRA-3759's plan): a start leased before the pause began must not let the role it
+// starts run past the pause's stop, which the outbox's pause rule would otherwise have held back
+// (record's outboxPauseFree). Its task waits as every task does while the project is paused
+// (sendPending). A pause's hold whose pause has ended is gone before the start reads the hold, as
+// it is at the start of every decision (dropEndedPauseHold): this is the one decision that does
+// not go through Handle.
 //
 // It is also what releases a task held because its root had no architect to hear it (sendPending,
 // Deps.RootHears): this start is the root running again, so the held task goes now, before the
@@ -1790,6 +1908,7 @@ func (c Claim) ReleasedLaunch() bool {
 func (m *Machine) StartedBy(ctx context.Context, row int64, task *RequestDeliver) error {
 	m.mu.Lock()
 	defer m.unlock()
+	m.dropEndedPauseHold()
 	if m.current().RuleHolds() {
 		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, m.current().RuleHoldError())
 	}
@@ -1797,7 +1916,12 @@ func (m *Machine) StartedBy(ctx context.Context, row int64, task *RequestDeliver
 		return m.releaseHeld(ctx, row, task)
 	}
 	m.claim.LastStartRow = row
-	if m.held != nil {
+	switch {
+	case m.held == nil:
+	case m.held.Pause != 0:
+		m.log.Info("supervise: a start keeps the held suspension of the open pause", "row", row,
+			"pause", m.held.Pause, "reason", m.held.Reason)
+	default:
 		m.log.Info("supervise: a start drops the held suspension", "row", row, "reason", m.held.Reason)
 		m.dropHeld()
 	}
@@ -2067,11 +2191,12 @@ func (m *Machine) current() Claim {
 }
 
 // publish makes the claim as the machine holds it now the one View reports, with the wake the
-// pacing holds over it, if any: a fresh value each time, since the view is read without mu. The
-// caller holds mu.
+// pacing holds over it, if any: a fresh value each time, since the view is read without mu. A
+// launch the project pause's gate holds is no such wake: it has no moment to run and waits in no
+// pacing (wake.pause), so it is published as none. The caller holds mu.
 func (m *Machine) publish() {
 	view := &ClaimView{Claim: m.current(), Stopping: m.stopping, SendInFlight: m.send != nil}
-	if m.wake != nil {
+	if m.wake != nil && m.wake.pause == 0 {
 		view.WakeWaiting = &WakeWaiting{Kind: m.wake.kind, At: m.wake.at}
 	}
 	m.view.Store(view)
@@ -2571,6 +2696,18 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			m.log.Info("supervise: launch cut short; its context ended", "generation", m.claim.Generation, "error", err)
 			return err
 		}
+		if errors.Is(err, errHoldUnanswered) {
+			// The store did not answer the session's hold, which says nothing about the claim or
+			// its session: nothing started, so nothing is charged, and the same launch is tried
+			// again at the probe interval, as a launch whose write the store did not take is.
+			err = errors.Join(err, m.stopPrevious(starting))
+			m.log.Warn("supervise: the store did not answer the session's hold; trying the launch again at the probe interval, charging nothing",
+				"generation", m.claim.Generation, "error", err)
+			m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(intent, func(ctx context.Context) error {
+				return m.launchAfter(ctx, charged, exempt, noEnd)
+			}))
+			return errors.Join(err, m.persist(starting))
+		}
 		m.claim.LastStartFailure = err.Error()
 		if errors.Is(err, runtime.ErrSessionStore) {
 			return m.startWaitsForStore(starting, err, charged, exempt)
@@ -2785,6 +2922,14 @@ func (m *Machine) backOff(ctx context.Context) error {
 // runtime.ErrSessionStore and the caller waits for the store (startWaitsForStore). Any other
 // refusal of a Resume is a launch failure the caller charges, and the claim keeps its session: a
 // fresh agent on a claim that had one is what the same-agent refusal exists to catch.
+//
+// A resume runs under every name its record gives the session, so each is held to the claim
+// before anything starts (holdRecorded, plan E's t-e-54): an Oh My Pi launch continues the
+// recorded file (`--resume=<file>`), the tmux runtime one of the file's name or id where that path
+// is missing (sessionFileOf), and a Claude Code launch the session the transcript's name gives
+// (claudelaunch.ResumeSession), any of which a claim recorded before the hold could name for
+// another claim's session. One another claim holds is refused here, as a launch failure the caller
+// charges, and nothing starts under it.
 func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, error) {
 	spec, err := m.spawnSpec(ctx, token, false)
 	if err != nil {
@@ -2792,6 +2937,9 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, err
 	}
 	if m.claim.SessionFile == "" {
 		return m.spawn(ctx, spec)
+	}
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		return runtime.Locator{}, err
 	}
 	spec.ResumeSessionFile = m.claim.SessionFile
 	loc, err := m.deps.Runtime.Resume(ctx, m.previous, spec)
@@ -2948,12 +3096,12 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	m.claim.PodEnd = observation.PodEnd
 	ended := endDied(m.claim.LastDeathCause)
 	m.recordGoneEnd(ctx, ended)
-	m.sessionGone()
+	m.sessionGone(ctx)
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
 	}
 	if m.held != nil {
-		return m.endHeld(ctx, stopSent)
+		return m.endHeld(ctx, false, stopSent)
 	}
 	if m.claim.DeathCharged {
 		return m.relaunchAfterFailure(ctx, CauseDied, ended)
@@ -3002,6 +3150,10 @@ type AbandonedSession struct {
 	// (dispatch://INFRA-714).
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
+	// Released is when an operator's release freed the names of this session (Machine.ReleaseNames),
+	// zero while the table holds them: the boot holds no name of a released session again (store's
+	// recordedNames), and the record of where the session went stays.
+	Released time.Time `json:"released,omitzero"`
 }
 
 // Tells is whether a prompt to this claim's agent must still name the session the claim
@@ -3040,8 +3192,35 @@ func (a AbandonedSession) Tells() bool { return a.Session != "" && !a.Told }
 // of the claim registers the same session again — in the same decision after a death, or at a
 // later wake after a suspension — which is the state the listener should then read, so the stop
 // says what is true when it is sent.
-func (m *Machine) sessionGone() {
+//
+// A claim that records a session it does not hold sends no stop (holdRecorded, plan E's t-e-54).
+// The stop deletes the registration the listener holds for the session id, whichever process
+// wrote it last (cleanSessionStop reads its client instance id first), and where another claim
+// holds the id its live process can be that writer, as after a rollback: the stop of this claim's
+// ended process would delete the registration of a process it never ran, and that claim's role
+// would read gone until the next heartbeat. The boot suspends such a claim (the merge of
+// cybermonklabs/legion#4088 into #4220 made that suspension send a stop), so the stop is held as
+// a publish to the claim's role is (outbox.publish). A store that does not answer sends nothing
+// either, since whose registration the id names is then unknown; the registration lapses when its
+// record expires, the wait the session had before the stop existed. A claim holding its session
+// is stopped as before (R9): with names this machine has admitted already (Machine.heldNames) it
+// asks nothing of the store, and with names it has not, as after a restart, which NewMachine
+// starts with none of, it asks the store once, and a store that does not answer then sends no
+// stop for it either. That ask runs on a context the decision's end does not cancel, bounded by
+// the store write's own timeout (Machine.write): the daemon's stop must not cut a clean stop
+// short (sessionStop.send says why), and a hold cancelled mid-ask would send none.
+func (m *Machine) sessionGone(ctx context.Context) {
 	if m.deps.SessionGone == nil || m.claim.Session == "" {
+		return
+	}
+	if err := m.holdRecorded(context.WithoutCancel(ctx), m.claim.Session, m.claim.SessionFile); err != nil {
+		if errors.Is(err, errHoldUnanswered) {
+			m.log.Warn("supervise: no clean stop of the Envoy session: the store did not answer whether the claim holds it",
+				"session", m.claim.Session, "error", err)
+			return
+		}
+		m.log.Info("supervise: no clean stop of the Envoy session of a claim that does not hold it",
+			"session", m.claim.Session, "error", err)
 		return
 	}
 	m.deps.SessionGone(m.claim.Session)
@@ -3099,6 +3278,12 @@ func (m *Machine) forgetSession(why string) {
 		}
 	}
 	m.claim.Session, m.claim.SessionFile = "", ""
+	// The names the machine knows it holds are of the session it just let go, which an operator's
+	// release may free later (ReleaseNames) and another claim then take: kept, they would let this
+	// claim register that session again without asking the store. So the cache holds only the
+	// names of the session the claim records now (review F2 of #4220's round 4).
+	m.heldNames = nil
+	m.admitted.Store(nil)
 	m.freshRun()
 	m.claim.ProviderErrorRun = 0
 }
@@ -3255,7 +3440,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.wake = nil
 	m.forgetSend()
 	m.outstanding = nil
-	m.held = nil
+	m.held, m.heldLaunch = nil, false
 	m.staleRelaunch = nil
 	m.busyTurn = false
 	m.turnsDelivery, m.cutTurnOf, m.carried = "", "", sentences{}
@@ -3518,12 +3703,17 @@ func (m *Machine) write(ctx context.Context, call func(context.Context) error) e
 //
 // A write that lands settles a write the machine owed (settleOwedWrite): it wrote the claim as
 // the machine holds it, which is exactly what the repair would have written, so this write is
-// the repair, whichever decision made it.
+// the repair, whichever decision made it. While a project pause's stop is owed, the write is that
+// stop's transaction instead (putStops, Deps.PauseStopped), so no write of the claim lands
+// without the pause's records.
 func (m *Machine) putClaim(ctx context.Context) error {
 	c := m.stored()
 	// Published here as well as when the decision ends: a launch writes the claim before it waits
 	// in the runtime, and View then shows the launch rather than what it replaced.
 	m.publish()
+	if len(m.owedStops()) > 0 {
+		return m.putStops(ctx, c)
+	}
 	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaim(ctx, c) }); err != nil {
 		return err
 	}
@@ -3563,11 +3753,23 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // settles. It marks nothing owed: the callers that owe their claim write say so themselves
 // (confirm, repair).
 //
-// Its four callers are the decisions that write both of memory's own rows: confirm, refused where
+// Its five callers are the decisions that write both of memory's own rows: confirm, refused where
 // the confirmation it takes back takes its telling back with it (moveTelling), settle's write of a
-// delivery an earlier write left unsaved, and repair's branch for a claim that holds a pending
-// delivery. Each has a pending delivery by the time it calls, which is what this reads.
+// delivery an earlier write left unsaved, repair's branch for a claim that holds a pending
+// delivery, and retirePending's write of a project pause's stop it owes before the retirement.
+// Each has a pending delivery by the time it calls, which is what this reads. While a pause's stop
+// is owed, the two rows go through that stop's transaction instead (putStops, Deps.PauseStopped),
+// the delivery carried on the claim it is handed.
 func (m *Machine) putClaimAndPending(ctx context.Context) error {
+	if len(m.owedStops()) > 0 {
+		c, pending := m.stored(), *m.claim.Pending
+		c.Pending = &pending
+		if err := m.putStops(ctx, c); err != nil {
+			return err
+		}
+		m.unsaved = false
+		return nil
+	}
 	if err := m.putClaimAndDelivery(ctx, m.stored(), *m.claim.Pending); err != nil {
 		return err
 	}
@@ -3581,7 +3783,11 @@ func (m *Machine) putClaimAndPending(ctx context.Context) error {
 // it back, so a write the store did not take is the only thing still missing, and it is owed and
 // made again at the claim's next decision rather than lost with the event that failed.
 func (m *Machine) persist(ctx context.Context) error {
-	return m.owes("PutClaim", m.putClaim(ctx))
+	method := "PutClaim"
+	if len(m.owedStops()) > 0 {
+		method = "PauseStopped"
+	}
+	return m.owes(method, m.putClaim(ctx))
 }
 
 // putStep writes the claim's step columns and nothing else (Store.PutClaimStep): what the
@@ -3717,9 +3923,9 @@ func HoldsCapability(state ClaimState) bool {
 // its session's first turn, or at a bound if no turn comes — so a claim this answers true for
 // may not answer to its name yet. The listener refuses a keep: false publish to a role no live
 // session holds with 404 (notify.ErrNoHolder), and what that costs is the sending row's own, not
-// one rule: noticeAnswered and mergeQueue each decide it for the rows they finish, and phaseEnded
-// and hookPrompt publish with keep, which the listener answers by keeping the message for the
-// role's next live holder (internal/daemon).
+// one rule: noticeAnswered, mergeQueue and the merge forward's message each decide it for the rows
+// they finish, and hookPrompt publishes with keep, which the listener answers by keeping the
+// message for the role's next live holder (internal/daemon).
 //
 // The window is bounded at both ends: the name is taken inside the session's first turn — the
 // daemon's own task starts one, on either harness — and at the first-turn bound (30 s by
@@ -3801,6 +4007,8 @@ func claimOf(ev Event) claim.Token {
 	case RequestCompact:
 		return ev.Claim
 	case CompactEnded:
+		return ev.Claim
+	case ResumePause:
 		return ev.Claim
 	}
 	return ""

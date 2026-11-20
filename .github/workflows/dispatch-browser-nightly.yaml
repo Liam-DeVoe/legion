@@ -9,8 +9,9 @@ name: Dispatch browser nightly
 # holds every step).
 #
 # What a red run does, and what it does not. The run fails, and its merged report, every leg's
-# blob and the failed legs' traces are artifacts of that run; GitHub mails the default branch's
-# last committer that a scheduled workflow failed. Nothing else is told: this call passes no
+# blob and the failed legs' traces are artifacts of that run; GitHub's "Events that trigger
+# workflows" page says: "Notifications for scheduled workflows are sent to the user who last
+# modified the cron syntax in the workflow file." Nothing else is told: this call passes no
 # `ci-ok-changes`, so the merge job's report step does not run and the run posts no check, files
 # no issue and sends no message. dispatch://INFRA-1066's R22 owns a reader for nightly results,
 # and this workflow deliberately builds no second one: a reader written here is the thing R22

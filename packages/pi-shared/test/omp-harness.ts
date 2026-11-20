@@ -16,6 +16,7 @@ import {
 } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { requireOrSkip } from "@legion/test-fixtures/host-tools";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
@@ -681,7 +682,7 @@ export interface Refusal {
   readonly explanation?: string;
   /** Text the model streamed before the refusal, committed by the time it came. The host walks
    * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1625-1653` and `:2693-2703`
+   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1782-1816` and `:3153-3163`
    * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
    * which of the two walks a case proves. */
   readonly text?: string;
@@ -690,7 +691,7 @@ export interface Refusal {
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3117-3126` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3185-3193` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It
@@ -973,6 +974,11 @@ export async function runLegionPane(
 ): Promise<LegionPane> {
   const { name, role, tree, issue } = options;
   const claimToken = `legion-${name}-${issue.toLowerCase()}-${role}`;
+  // The pane's secrets: the boot token its registration spends, the secret the stand-in daemon
+  // answers it with, and its Dispatch bearer.
+  const bootToken = fixtureSecret("boot");
+  const claimSecret = fixtureSecret("claim");
+  const dispatchToken = fixtureSecret("dsp");
   // The daemon's golden registration answer (`packages/daemon/internal/api`), so a field the
   // daemon adds to it reaches the stand-in's `claims/register`.
   const registered: Record<string, unknown> = JSON.parse(
@@ -1040,7 +1046,7 @@ export async function runLegionPane(
         issue,
         role,
         generation: 1,
-        secret: `${name}-secret`,
+        secret: claimSecret,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -1096,9 +1102,7 @@ export async function runLegionPane(
         env: {
           ENVOY_URL: base,
           ENVOY_NATS_URL: options.nats,
-          ...(options.dispatch
-            ? { DISPATCH_URL: base, DISPATCH_TOKEN: `${name}-dispatch-token` }
-            : {}),
+          ...(options.dispatch ? { DISPATCH_URL: base, DISPATCH_TOKEN: dispatchToken } : {}),
           ...((options.legion ?? true)
             ? {
                 LEGION_DAEMON_URL: base,
@@ -1106,7 +1110,7 @@ export async function runLegionPane(
                 LEGION_TREE: tree,
                 LEGION_ISSUE: issue,
                 LEGION_GENERATION: "1",
-                LEGION_BOOT_TOKEN: `${name}-boot`,
+                LEGION_BOOT_TOKEN: bootToken,
                 LEGION_STATE_DIR: state,
                 LEGION_WORKSPACE: workspace,
               }

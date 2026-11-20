@@ -183,7 +183,7 @@ func BenchmarkProfileTheColdEditOfTheHeaviestDocuments(b *testing.B) {
 	for _, shape := range heaviestAdmittedShapes(b) {
 		documents = append(documents, coldEditDocument{name: shape.name, markdown: withSentinelWord(b, shape.markdown)})
 	}
-	for _, path := range []string{"docs/superpowers/plans/2026-09-05-dispatch-conversations.md", "packages/envoy/AGENTS.md", "packages/envoy/README.md"} {
+	for _, path := range []string{"docs/superpowers/plans/2026-09-05-dispatch-conversations.md", "packages/envoy/README.md"} {
 		text, err := os.ReadFile(filepath.Join("..", "..", "..", "..", path))
 		if err != nil {
 			b.Fatal(err)

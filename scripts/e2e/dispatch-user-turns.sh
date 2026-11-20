@@ -101,12 +101,16 @@ fail() {
 . "$root/scripts/e2e/lib/leftovers.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
 . "$root/scripts/e2e/lib/omp-home.sh"
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a start that clears its
+# environment (`env -i`) names the mark itself, and a fork of this shell that execs nothing carries
+# none and is stopped by its pid (run_marks' comment there).
+export LEGION_E2E_RUN=$work
 
 tm() { tmux -S "$work/tmux.sock" "$@"; }
 
 # Unconditional: every run removes what it made, whatever it ended on.
 cleanup() {
-  local p
   set +e
   tm capture-pane -p -t user >"$evidence/checks/session.pane" 2>/dev/null
   [ -z "$session_file" ] || cp "$session_file" "$evidence/session.jsonl" 2>/dev/null
@@ -115,7 +119,7 @@ cleanup() {
   stop_pid "$listener_pid"
   stop_pid "$natsd_pid"
   stop_pid "$standin_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  stop_marked_processes "$work"
   if [ -n "$database_created" ]; then
     psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null ||
       echo "could not drop database $database; drop it by hand" >&2
@@ -200,11 +204,12 @@ registered() {
 unlisted() {
   listener "http://127.0.0.1:$envoy_port/v1/sessions" | jq -e --arg d "$session_cwd" 'all(.[]; .dir != $d)' >/dev/null
 }
-# session_gone: no process of the session (Oh My Pi or a tool it runs) is left in session_cwd.
-session_gone() {
-  local p
-  for p in /proc/[0-9]*; do [ "$(readlink "$p/cwd" 2>/dev/null)" != "$session_cwd" ] || return 1; done
-}
+# session_gone: the session's Oh My Pi has exited, by the pid its pane recorded as it started it
+# (record_pid_sh and recorded_pid, lib/process-tree.sh), which execs Oh My Pi:
+# that process's Envoy plugin is what holds the session on the listener, which the next wait reads.
+# No walk of the machine's /proc by working directory: one took 26 s over 28,165 entries at load
+# 453, against this wait's 30 s.
+session_gone() { ! recorded_pid "$work/session.pid" "$omp_bin" >/dev/null; }
 human() { curl -fsS -H "X-Dispatch-User: $login" -H 'Content-Type: application/json' "$@"; }
 # bearer sends the run's Dispatch token on curl's standard input, in no command line; its callers
 # give their bodies with -d.
@@ -218,7 +223,7 @@ page() { bun "$root/scripts/e2e/lib/dispatch-user-turns.ts" "$@"; }
 # which otherwise holds the terminal for the whole run.
 launch_session() {
   local command
-  command=$(printf '%q ' env "${omp_session_unsets[@]}" \
+  command=$(printf '%q ' sh -c "$record_pid_sh" record-pid "$work/session.pid" env "${omp_session_unsets[@]}" \
     HOME="$omp_home" OMP_PROFILE="$profile" \
     ENVOY_URL="http://127.0.0.1:$envoy_port" ENVOY_TOKEN_FILE="$work/envoy-token" ENVOY_NATS_URL="$nats_url" \
     DISPATCH_URL="http://127.0.0.1:$dispatch_port" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
@@ -241,6 +246,10 @@ run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$databas
 mkdir -p "$session_cwd"
 refuse_leftovers legion-e2e-user-turns
 make_omp_home "$omp_home"
+# The session's Oh My Pi is known by the program the kernel records it runs (session_gone), so
+# LEGION_TEST_OMP names the binary itself (native_program, lib/process-tree.sh): a script's or a
+# mise shim's process runs another file, and the wait for the session to end would pass at once.
+omp_bin=$(native_program "$omp_bin") || fail "LEGION_TEST_OMP: $omp_bin"
 (cd "$root" && bun install --frozen-lockfile >/dev/null)
 go -C "$root/packages/envoy" build -o "$work/envoy-listener" ./cmd/listener
 go -C "$root/packages/envoy" build -o "$work/dispatch" ./cmd/dispatch
@@ -274,12 +283,12 @@ await_port_file standin "$work/standin.port" standin_port
 # start_held); `env -i` clears the descriptor's variable the helper sets, so each names its own: the
 # helper hands the socket over as descriptor 3.
 start_held listener envoy_port ENVOY_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
+  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-user-turns-$$" NATS_URLS="$nats_url" \
   "$work/envoy-listener"
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
 start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
   DATABASE_URL="$database_url" \
   DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_LISTEN_FD=3 \
   DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
@@ -382,6 +391,10 @@ pass
 begin session-registers
 launch_session
 until_true 90 "the session to register with the listener" registered
+# The session's own process, by the pid its pane recorded: the later wait for it to end
+# (session_gone) holds only once this has held, so it can fail.
+recorded_pid "$work/session.pid" "$omp_bin" >/dev/null ||
+  fail "the pane's recorded process ($(cat "$work/session.pid" 2>&1)) does not run $omp_bin"
 row=$(listener "http://127.0.0.1:$envoy_port/v1/sessions" | jq -c --arg d "$session_cwd" 'first(.[] | select(.dir == $d))')
 session_id=$(jq -r .session_id <<<"$row")
 jq -e '.capabilities | index("aside") and index("btw") and index("steer")' <<<"$row" >/dev/null ||

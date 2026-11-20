@@ -88,7 +88,7 @@ AUDITED_SCRIPTS = {
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
         },
-        sha256="94b327121257a1caf295898b91bfd9adeabe2544350ff462b5a6f4cb39129a14",
+        sha256="c11d930be0bab381f0c8877c828ffd71a7192b1d557cca1decf4578702ab10bf",
     ),
 }
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.

@@ -134,6 +134,14 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_private_names_test: check-private-names.test.sh and what it tests."
         type: string
         required: true
+      check_private_names_terms_test:
+        description: "ci.yaml's needs.changes.outputs.check_private_names_terms_test: check-private-names-terms.test.sh and what it tests."
+        type: string
+        required: true
+      check_private_names_keys_test:
+        description: "ci.yaml's needs.changes.outputs.check_private_names_keys_test: check-private-names-keys.test.sh and what it tests."
+        type: string
+        required: true
       check_plugin_names_test:
         description: "ci.yaml's needs.changes.outputs.check_plugin_names_test: check-plugin-names.test.sh and what it tests."
         type: string
@@ -186,6 +194,12 @@ on:
         required: true
       main_bypass_check_test:
         description: "ci.yaml's needs.changes.outputs.main_bypass_check_test: main-bypass-check.test.sh and what it tests."
+        type: string
+        required: true
+      edited_migrations_base_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.edited_migrations_base_test:
+          edited-migrations-base.test.sh and what it tests.
         type: string
         required: true
       dispatch_browser_latest_blobs_test:
@@ -400,6 +414,14 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.check_private_names_test == 'true'
         run: .github/scripts/check-private-names.test.sh
 
+      - name: Test the private-name check's term list
+        if: inputs.changes-result != 'success' || inputs.check_private_names_terms_test == 'true'
+        run: .github/scripts/check-private-names-terms.test.sh
+
+      - name: Test the private-name check's issue-key rule
+        if: inputs.changes-result != 'success' || inputs.check_private_names_keys_test == 'true'
+        run: .github/scripts/check-private-names-keys.test.sh
+
       - name: Test the plugin-name check
         if: inputs.changes-result != 'success' || inputs.check_plugin_names_test == 'true'
         run: .github/scripts/check-plugin-names.test.sh
@@ -449,6 +471,12 @@ jobs:
       - name: Test the main bypass check's decision
         if: inputs.changes-result != 'success' || inputs.main_bypass_check_test == 'true'
         run: .github/scripts/main-bypass-check.test.sh
+
+      # The base envoy-go-checks' edited-migrations check compares a run's tree with, per event,
+      # over fixture remotes cloned one commit deep as actions/checkout leaves a run's tree.
+      - name: Test the edited-migrations check's choice of base (fixture git remotes; no GitHub)
+        if: inputs.changes-result != 'success' || inputs.edited_migrations_base_test == 'true'
+        run: .github/scripts/edited-migrations-base.test.sh
 
       # The attempt selection dispatch-browser.yaml's merge job runs over the legs' blob
       # artifacts. A run holds every attempt's artifacts, so the newest of each leg has to be
@@ -526,7 +554,9 @@ jobs:
       # scripts/e2e is no workspace either; the root package pins its TypeScript and Bun types.
       # The program is every TypeScript file there: the drivers and model stand-ins the
       # agent-harness, daemon-live and envoy-session-stall jobs run under bun, which no step
-      # typechecks before it runs them, and the libraries and Bun tests beside them.
+      # typechecks before it runs them, and the libraries and Bun tests beside them, the plan
+      # ratings read's test among them, whose answer is typed to the contract
+      # (@legion/contracts's own types).
       - name: Typecheck the e2e scripts and their libraries
         run: bunx tsc --noEmit -p scripts/e2e
 
@@ -541,6 +571,12 @@ jobs:
         with:
           go-version-file: packages/daemon/go.mod
           cache: false
+
+      # The traced row of scripts/e2e/lib/process-tree.test.ts runs the rig's process helpers
+      # under strace, which the runner image does not carry, and on GitHub Actions a program a
+      # test names missing fails its file rather than skipping it (@legion/test-fixtures/host-tools).
+      - name: Install strace for the e2e libraries' traced row
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends strace
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
       - name: Test the e2e scripts' libraries

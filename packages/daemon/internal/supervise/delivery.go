@@ -715,7 +715,15 @@ func (c Claim) openRoundHoldsTask() bool {
 // gives that delivery only to a claim that holds nothing then (finishReady, queueRelaunch), so a
 // held task dropped at the ready's own send would otherwise leave the sentence waiting for
 // whatever task comes next.
+//
+// Before all of it, a claim the project's pause holds is handed nothing at all (decision 8 of
+// dispatch://INFRA-3759's plan): while the project is paused, no task leaves for any role but the
+// controller (pauseHolds). The task stays pending, decided nothing about and dropped for nothing,
+// and the resume's event sends it once the pause is over (ResumePause).
 func (m *Machine) sendPending(ctx context.Context) error {
+	if _, holds := m.pauseHolds(); holds {
+		return nil
+	}
 	// A claim holding a suspension is handed nothing (holdSuspension), and neither is one whose
 	// paced launch is about to replace the process a send would reach (launchWaits).
 	if state := m.claim.State; (state != StateReady && state != StateIdle) || m.held != nil || m.launchWaits() {
@@ -796,6 +804,25 @@ func (m *Machine) sendPending(ctx context.Context) error {
 			return err
 		}
 		return m.relaunchAfterDrop(ctx)
+	}
+	// Nothing is sent to a process under a session its claim does not hold (holdRecorded, plan E's
+	// t-e-54): a claim the boot could not suspend, its stop refused, keeps its live process, and a
+	// task sent to it would put that process to work under another claim's session, or one no claim
+	// holds (review round 12 of #4220). The task waits, unsent and charged nothing, and the next
+	// decision asks again, so an operator's settle of the name sends it. A store that does not
+	// answer sends nothing either. For a claim holding its session this asks the store once per
+	// session (Machine.heldNames).
+	if err := m.holdRecorded(ctx, m.claim.Session, m.claim.SessionFile); err != nil {
+		var refusal claim.Refusal
+		switch {
+		case !errors.As(err, &refusal):
+			m.log.Warn("supervise: the store did not answer whether this claim holds its session; the task waits", "delivery", p.ID, "error", err)
+		case m.unheldDelivery != p.ID:
+			m.unheldDelivery = p.ID
+			m.log.Error("supervise: this claim records a session it does not hold, so no task is sent to its process; the task waits until the claim holds it: an operator gives the claim a new session, or records it as the rightful holder of a name held for none",
+				"delivery", p.ID, "session", m.claim.Session, "error", err)
+		}
+		return nil
 	}
 	// A root architect's task of a run (asksRoot) is the one delivery the question a restart left
 	// never answers: such a task may be one nobody has ever sent — it is held on the claim while
@@ -1003,7 +1030,7 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 	if streaming, _ := m.streaming(ctx, conn); !streaming {
 		return nil
 	}
-	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped", "claim", m.claim.Token)
+	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped")
 	// The turn is dated from the agent's answer, the daemon's first word of it, as the askFirst
 	// branch of sendPending dates the turn it confirms a task by (Claim.LastTurnStart).
 	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
@@ -1143,7 +1170,19 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 //
 // A retirement that landed is the repair of any claim write the machine owed: the store wrote
 // the claim beside the delete, so the row is no longer behind memory (settleOwedWrite).
+//
+// A project pause's stop the machine owes is written first, through its own transaction, with the
+// claim and this delivery as memory holds them now — the repair's own write (putClaimAndPending,
+// putStops) — and the retirement after it, as it would have run: the pause's records land with the
+// first claim write that lands, and the retirement keeps the store's fenced answers
+// (ErrNoSuchDelivery, ErrOtherDelivery) whole. A stop that fails again stops the retirement here,
+// with nothing retired, for the next decision's repair and settle to make in that same order.
 func (m *Machine) retirePending(ctx context.Context) error {
+	if len(m.owedStops()) > 0 {
+		if err := m.putClaimAndPending(ctx); err != nil {
+			return m.owes("PauseStopped", err)
+		}
+	}
 	p := m.claim.Pending
 	// The ladder's wait is this task's, so it ends with it (providererror.go).
 	m.disarm(TimerPromptRetry)

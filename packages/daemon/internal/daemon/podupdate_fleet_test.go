@@ -215,7 +215,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		cfg: config.Config{Project: "LEGION", PodUpdateGrace: podUpdateGrace},
 		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
-		enqueue:     (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox,
+		enqueue:     (&workflowRuntime{pool: pool, records: records, dispatchProject: "LEGION", log: quietLogger()}).enqueueOutbox,
 		refreshGate: supervise.NewRefreshGate(0),
 	}
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
@@ -445,6 +445,12 @@ func (d *fleetHandoffs) PostMessage(context.Context, string, string) error      
 func (d *fleetHandoffs) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
 func (d *fleetHandoffs) PutGatedSteps(context.Context, string, []string) error     { return nil }
 func (d *fleetHandoffs) PutStep(context.Context, string, string, dispatch.StepWrite) error {
+	return nil
+}
+func (d *fleetHandoffs) PutStepRating(context.Context, string, string, dispatch.StepWrite, dispatch.PlanRating) error {
+	return nil
+}
+func (d *fleetHandoffs) PutPlan(context.Context, string, string, dispatch.PlanWrite) error {
 	return nil
 }
 func (d *fleetHandoffs) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {

@@ -28,6 +28,8 @@
 # - LEGION_TEST_CLAUDE (required) is the Claude Code binary the Claude Code pane runs, by an
 #   absolute path: the release .claude-code-pin pins, which .github/actions/install-claude-code
 #   installs in CI.
+#   The proof knows each agent's process by the program the kernel records it runs, so a wrapper
+#   script or a mise shim named in either is refused.
 # - LEGION_TEST_PG_DSN (required) is a loopback PostgreSQL the run creates the daemon's own database
 #   in and drops on exit. This script starts no database.
 # - CLEAN_SESSION_STOP_CHECKS, or --checks <names>, is the comma-separated list of named checks to
@@ -187,6 +189,12 @@ mkdir -p "$evidence/logs" "$evidence/answers"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/clean-session-stop.$$.XXXXXXXX")
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a start that clears its
+# environment (`env -i`) names the mark itself, and a fork of this shell that execs nothing carries
+# none and is stopped by its pid (run_marks' comment there). The transcript's tee, started above,
+# carries none, so it outlives the sweep and writes the run's last line.
+export LEGION_E2E_RUN=$work
 
 note() { echo "   $*"; }
 fail() {
@@ -262,9 +270,9 @@ cleanup() {
   stop_pid "$standin_pid"
   stop_pid "$daemon_keeper_pid"
   stop_pid "$listener_keeper_pid"
-  # Any pane the daemon's tmux server left: every one of them runs out of this run's work
-  # directory, and nothing else of this user's does.
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null; done
+  # Any process of the run's the daemon's tmux server left: each carries the run's mark, and nothing
+  # of this user's else does.
+  stop_marked_processes "$work"
   if [ -n "$database" ]; then
     psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand" >&2
@@ -357,30 +365,21 @@ state_is() { session_state "$1" && [ "$state" = "$2" ]; }
 serving() { curl -fsS --max-time 3 -H "@$work/envoy-auth-header" "http://127.0.0.1:$1/v1/sessions"; }
 
 # ---- the kill, and the measurement ----------------------------------------------------------------
-# process_args PID NAME reads PID's arguments into the array NAME from the NUL-delimited
-# /proc/PID/cmdline, in this shell: no pipe stands between the read and the check, so nothing ends
-# early on a pane's command line, which holds its whole system prompt.
-process_args() {
-  local -n _args=$2
-  { mapfile -d '' -t _args <"/proc/$1/cmdline"; } 2>/dev/null && [ "${#_args[@]}" -gt 0 ]
-}
 
-# agent_descendant PID NAME prints the first process under PID (PID included) whose argv[0] is
-# called NAME, breadth first.
+# agent_descendant PID NAME prints the pane's agent: the one process below PID, the pid the claim's
+# locator recorded, that runs the program NAME stands for ($omp_bin for omp, $claude_bin for
+# claude, the two the daemon is told: LEGION_OMP_PATH and LEGION_CLAUDE_PATH) by the kernel's record
+# (launched, lib/process-tree.sh), whatever name it was called by. No argv[0] is read: a wrapper or
+# an argv[0] of another name cannot stand in for the agent or hide it.
 agent_descendant() {
-  local queue=("$1") pid child children
-  local -a args
-  while [ "${#queue[@]}" -gt 0 ]; do
-    pid=${queue[0]}
-    queue=("${queue[@]:1}")
-    if process_args "$pid" args && [ "$(basename -- "${args[0]}")" = "$2" ]; then
-      printf '%s\n' "$pid"
-      return 0
-    fi
-    children=$(cat /proc/"$pid"/task/*/children 2>/dev/null) || children=
-    for child in $children; do queue+=("$child"); done
-  done
-  return 1
+  case $2 in
+    omp) launched "$1" "$omp_bin" ;;
+    claude) launched "$1" "$claude_bin" ;;
+    *)
+      printf 'no agent program is named %s\n' "$2"
+      return 1
+      ;;
+  esac
 }
 
 # parent_pid PID prints its parent's, from the stat fields after the comm field's own `) `.
@@ -435,7 +434,7 @@ gone_within() {
 
 # ---- the daemon's own surface -----------------------------------------------------------------------
 legion() {
-  env -i PATH="$PATH" HOME="$omp_home" TMPDIR="$work/tmp" XDG_STATE_HOME="$work/xdg" \
+  env -i PATH="$PATH" HOME="$omp_home" TMPDIR="$work/tmp" XDG_STATE_HOME="$work/xdg" LEGION_E2E_RUN="$work" \
     "$work/bin/legion" "$@" --config "$work/legion.yaml" --operator-token-file "$work/operator-token"
 }
 
@@ -446,8 +445,14 @@ claim_json() {
 }
 claim_is() { claim_json "$1" | jq -e "$2" >/dev/null; }
 claim_field() { claim_json "$1" | jq -r "$2"; }
-# claim_pane_pid TOKEN prints the process its pane was launched as, out of the claim's locator.
-claim_pane_pid() { claim_field "$1" '.locator.incarnation | split(":")[0]'; }
+# claim_pane_pid TOKEN prints the process its pane was launched as, out of the claim's locator: the
+# incarnation `<pid>:<start ticks>`, and only while that pid is still the process that started then
+# (incarnation_pid, lib/process-tree.sh), never a pid the kernel has since given to another.
+claim_pane_pid() {
+  local inc
+  inc=$(claim_field "$1" '.locator.incarnation // empty') && [ -n "$inc" ] || return 1
+  incarnation_pid "$inc"
+}
 
 # daemon_said PATTERN counts the daemon's log lines matching PATTERN.
 daemon_said() {
@@ -521,14 +526,17 @@ ensure_tree_root() {
 
 # kill_the_agent TOKEN NAME SIGKILLs the agent process of that claim's pane and prints the
 # millisecond it was killed at. The pane's own process is left alone: the clause is about the agent
-# dying under its shim, which is what a crashed Oh My Pi or Claude Code does.
+# dying under its shim, which is what a crashed Oh My Pi or Claude Code does. The pane is the
+# locator's incarnation, checked by its start ticks (claim_pane_pid), and the agent is signalled
+# only while it is the process launched found and still runs under a worker shim (freeze_if,
+# lib/process-tree.sh).
 kill_the_agent() {
-  local token=$1 name=$2 pane agent
+  local token=$1 name=$2 pane agent start
   pane=$(claim_pane_pid "$token") || return 1
-  [ -n "$pane" ] && [ "$pane" != null ] || return 1
   agent=$(agent_descendant "$pane" "$name") || return 1
+  start=$(proc_start "$agent") && [ -n "$start" ] || return 1
   shimmed "$agent" || return 1
-  kill -KILL "$agent" || return 1
+  freeze_if "$agent" "$start" KILL shimmed || return 1
   date +%s%3N
 }
 
@@ -547,15 +555,18 @@ case $pg_dsn in
   *) fail "LEGION_TEST_PG_DSN must be a postgres:// or postgresql:// URL" ;;
 esac
 require_loopback_dsn db_host LEGION_TEST_PG_DSN "$pg_dsn" "the run creates and drops a database there" || fail "$db_host"
+# The proof kills the agent's own process, which it knows by the program the kernel records it runs
+# (agent_descendant), so the Oh My Pi and the Claude Code it is given are the binaries themselves
+# (native_program, lib/process-tree.sh): a wrapper script's process runs its interpreter and a mise
+# shim's runs the version mise picks, and the agent either starts runs another file.
 [ -n "$omp_bin" ] ||
   fail "LEGION_TEST_OMP is required: the Oh My Pi every Oh My Pi pane runs (.github/actions/install-omp exports it in CI)"
 [ -x "$omp_bin" ] || fail "LEGION_TEST_OMP names $omp_bin, which is not an executable file"
-omp_bin=$(realpath -e -- "$omp_bin")
+omp_bin=$(native_program "$omp_bin") || fail "LEGION_TEST_OMP: $omp_bin"
 [ -n "$claude_bin" ] ||
   fail "LEGION_TEST_CLAUDE is required: the Claude Code binary the Claude Code pane runs (.github/actions/install-claude-code exports it in CI)"
 [[ $claude_bin == /* ]] && [ -x "$claude_bin" ] || fail "LEGION_TEST_CLAUDE names $claude_bin, which is not an absolute path to an executable file"
-# Kept as named, not resolved: the pane runs Claude Code by this path, so its argv[0] is this
-# path's own name (`claude`), which kill_the_agent finds it by, whatever file the path links to.
+claude_native=$(native_program "$claude_bin") || fail "LEGION_TEST_CLAUDE: $claude_native"
 installed=$("$claude_bin" --version) || fail "the Claude Code LEGION_TEST_CLAUDE names does not run"
 
 mkdir -p "$work/bin" "$work/tmp" "$work/tmux" "$work/xdg" "$omp_home/.omp" "$state_dir"
@@ -598,7 +609,7 @@ ln -sfT "$natives" "$omp_home/.omp/natives"
 # profile_omp runs that Oh My Pi as the daemon runs it: the binary by its absolute path, under the
 # run's home and profile, from a directory holding no configuration of anyone's.
 profile_omp() {
-  (cd "$work" && env -i PATH="$PATH" HOME="$omp_home" TMPDIR="$work/tmp" OMP_PROFILE="$profile" \
+  (cd "$work" && env -i PATH="$PATH" HOME="$omp_home" TMPDIR="$work/tmp" OMP_PROFILE="$profile" LEGION_E2E_RUN="$work" \
     "$omp_bin" "$@")
 }
 
@@ -675,7 +686,7 @@ nats_url=nats://127.0.0.1:$nats_port
 note "NATS on $nats_url, its JetStream store in $work/nats-store"
 
 keep_port listener_keeper listener_port
-start_kept listener listener_keeper ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+start_kept listener listener_keeper ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
   ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
   ENVOY_MACHINE_ID="clean-session-stop-$$" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
   ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
@@ -737,7 +748,7 @@ claude_claim_dir=$state_dir/claude/legion-$ptoken-css-2-implementer
 )
 chmod 0700 "$work/claude-key-command"
 
-start_kept daemon daemon_keeper LEGION_LISTEN_FD -- env -i PATH="$PATH" \
+start_kept daemon daemon_keeper LEGION_LISTEN_FD -- env -i PATH="$PATH" LEGION_E2E_RUN="$work" \
   LEGION_LISTEN_FD=3 HOME="$omp_home" TMPDIR="$work/tmp" OMP_PROFILE="$profile" \
   TMUX_TMPDIR="$work/tmux" XDG_STATE_HOME="$work/xdg" LEGION_OMP_PATH="$omp_bin" \
   LEGION_CLAUDE_PATH="$claude_bin" LEGION_BUN_PATH="$(command -v bun)" \
