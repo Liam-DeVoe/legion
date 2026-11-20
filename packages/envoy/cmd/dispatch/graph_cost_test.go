@@ -289,14 +289,22 @@ func costInterleaved(
 // nothing.
 func (a *costArm) timed(t *testing.T, method, path, body string, want int) (time.Duration, httpAnswer) {
 	t.Helper()
+	taken, answer := a.timedAnswer(t, method, path, body)
+	if answer.status != want {
+		t.Fatalf("%s: %s %s: status %d, want %d: %s", a.name, method, path, answer.status, want, answer.body)
+	}
+	return taken, answer
+}
+
+// timedAnswer is timed without the status check, for a read whose caller takes one refusal as a
+// reading (predicateCostRead's cutAtBase) and checks the status itself.
+func (a *costArm) timedAnswer(t *testing.T, method, path, body string) (time.Duration, httpAnswer) {
+	t.Helper()
 	start := time.Now()
 	answer, err := a.server.trySend(method, path, body, asUser(costLogin))
 	taken := time.Since(start)
 	if err != nil {
 		t.Fatalf("%s: %s %s: %v", a.name, method, path, err)
-	}
-	if answer.status != want {
-		t.Fatalf("%s: %s %s: status %d, want %d: %s", a.name, method, path, answer.status, want, answer.body)
 	}
 	return taken, answer
 }

@@ -537,20 +537,20 @@ var projections = []projection{{
 	tieProjection(refs.TupleShaped,
 		"a decision's shaped, and an ask's, which hangs on the ask's node: the row side is every shaped row of"+
 			" block_refs as the triple of the node it names, shaped and its block, against every shaped tuple a"+
-			" live block or ask node states now", refs.BlockNodeKind, graphstore.KindAsk),
+			" block or ask node not gone states now", refs.BlockNodeKind, graphstore.KindAsk),
 	tieProjection(refs.TupleFromAsk,
 		"a decision's from_ask: the row side is every from_ask row of block_refs as the triple of the"+
-			" decision's node, from_ask and its ask, against every from_ask a live block node states now", refs.BlockNodeKind),
+			" decision's node, from_ask and its ask, against every from_ask a block node not gone states now", refs.BlockNodeKind),
 	tieProjection(graphstore.TupleDecidedBy,
 		"a decision's decided_by: the row side is every decided_by row of block_refs as the triple of the"+
-			" decision's node, decided_by and its person or session, against every decided_by a live block node"+
-			" states now", refs.BlockNodeKind),
+			" decision's node, decided_by and its person or session, against every decided_by a block node not"+
+			" gone states now", refs.BlockNodeKind),
 	{
 		name:     graphstore.TupleFollowedBy,
 		nodeKind: graphstore.KindAsk,
 		table:    "ask_followers",
 		note: "an ask's followers: the row side is every marked ask_followers row as the triple of the ask's node" +
-			" it names, followed_by and its session, against every followed_by a live ask node states now",
+			" it names, followed_by and its session, against every followed_by an ask node not gone states now",
 		rows: `
 		select 'ask_follower ' || f.ask_id::text || ' ' || f.session_id, f.node_kind, f.node_address,
 		       '` + graphstore.TupleFollowedBy + `', '` + graphstore.KindSession + `', f.session_id
@@ -567,8 +567,8 @@ var projections = []projection{{
 		nodeKind: refs.BlockNodeKind,
 		table:    "document_blocks.parent_block_id",
 		note: "the parent of each reading: the row side is the document_blocks row of every reading's node as the" +
-			" triple of that node, part_of and the block its parent_block_id names, against the part_of every live" +
-			" reading's node states now, a part_of to an ask's node read as the ask's block in the node's own document",
+			" triple of that node, part_of and the block its parent_block_id names, against the part_of every" +
+			" reading's node not gone states now, a part_of to an ask's node read as the ask's block in the node's own document",
 		rows: `
 		select 'reading ' || d.node_id, d.node_kind, d.node_address, '` + graphstore.TuplePartOf + `',
 		       case when d.parent_block_id is null then 'artifact' else '` + refs.BlockNodeKind + `' end,
@@ -584,14 +584,14 @@ var projections = []projection{{
 	askProjection("ask_parent", "asks.block_artifact_id, asks.artifact_id",
 		"an ask's placement: the row side is every marked asks row as the triples of its node, part_of and the"+
 			" document holding its block, and owned_by and the document owning it, against the part_of and owned_by"+
-			" every live ask node states now",
+			" every ask node not gone states now",
 		`(document.id is not null or owner.id is not null)`,
 		[]string{`'` + graphstore.TuplePartOf + `', 'artifact', document.ref_key`, `'` + graphstore.TupleOwnedBy + `', 'artifact', owner.ref_key`},
 		`t.kind in ('`+graphstore.TuplePartOf+`', '`+graphstore.TupleOwnedBy+`')`),
 	askProjection("ask_anchor", "asks.block_artifact_id, asks.anchor",
 		"an ask's anchor: the row side is every marked asks row whose block's document or anchor names a"+
 			" document, as the triple of its node, anchored_to and that document, against the anchored_to every"+
-			" live ask node states now",
+			" ask node not gone states now",
 		`anchor.id is not null`,
 		[]string{`'` + graphstore.TupleAnchoredTo + `', 'artifact', anchor.ref_key`},
 		`t.kind = '`+graphstore.TupleAnchoredTo+`'`),
@@ -649,31 +649,31 @@ var projections = []projection{{
 	edgeProjection(refs.TupleShaped+edgeSuffix, refs.TupleShaped,
 		"graph_edges' shaped: the row side is every shaped edge graph_edges answers out of a block or ask node not"+
 			" gone, read node by node, as the triple of that node, shaped and its far end, against every shaped tuple"+
-			" a live block or ask node states now", "", "", refs.BlockNodeKind, graphstore.KindAsk),
+			" a block or ask node not gone states now", "", "", refs.BlockNodeKind, graphstore.KindAsk),
 	edgeProjection(refs.TupleFromAsk+edgeSuffix, refs.TupleFromAsk,
 		"graph_edges' from_ask: the row side is every from_ask edge graph_edges answers out of a block node not"+
 			" gone, read node by node, as the triple of that node, from_ask and its ask, against every from_ask a"+
-			" live block node states now", "", "", refs.BlockNodeKind),
+			" block node not gone states now", "", "", refs.BlockNodeKind),
 	edgeProjection(graphstore.TupleDecidedBy+edgeSuffix, graphstore.TupleDecidedBy,
 		"graph_edges' decided_by: the row side is every decided_by edge graph_edges answers out of a block node"+
 			" not gone, read node by node, as the triple of that node, decided_by and its person or session, against"+
-			" every decided_by a live block node states now", "", "", refs.BlockNodeKind),
+			" every decided_by a block node not gone states now", "", "", refs.BlockNodeKind),
 	edgeProjection(graphstore.TupleFollowedBy+edgeSuffix, graphstore.TupleFollowedBy,
 		"graph_edges' followed_by: the row side is every followed_by edge graph_edges answers out of an ask node"+
 			" not gone, read node by node, as the triple of that node, followed_by and its session, against every"+
-			" followed_by a live ask node states now, an edge the old arm answers from an unmarked row aside",
+			" followed_by an ask node not gone states now, an edge the old arm answers from an unmarked row aside",
 		followerRowUnmarked, `
 		select count(*) from ask_followers f where octet_length(f.session_id) > `+addressBound, graphstore.KindAsk),
 	edgeProjection("ask_parent"+edgeSuffix, graphstore.TupleOwnedBy,
 		"graph_edges' half of an ask's placement, its owned_by: the row side is every owned_by edge graph_edges"+
 			" answers out of an ask node not gone, read node by node, as the triple of that node, owned_by and the"+
-			" document owning it, against every owned_by a live ask node states now; no arm of graph_edges answers"+
+			" document owning it, against every owned_by an ask node not gone states now; no arm of graph_edges answers"+
 			" an ask's part_of, which ask_parent holds against asks alone; an edge the old arm answers from an unmarked"+
 			" row aside", askRowUnmarked, askPastBound, graphstore.KindAsk),
 	edgeProjection("ask_anchor"+edgeSuffix, graphstore.TupleAnchoredTo,
 		"graph_edges' anchor of an ask: the row side is every anchored_to edge graph_edges answers out of an ask"+
 			" node not gone, read node by node, as the triple of that node, anchored_to and its document, against"+
-			" every anchored_to a live ask node states now, an edge the old arm answers from an unmarked row aside",
+			" every anchored_to an ask node not gone states now, an edge the old arm answers from an unmarked row aside",
 		askRowUnmarked, askPastBound, graphstore.KindAsk),
 	baseAttributeCensus(graphstore.KindInteraction, graphstore.KindInteraction, nil, graphstore.VisibilityAuthor),
 	baseAttributeCensus(graphstore.KindLens, graphstore.KindLens, nil, ""),
@@ -956,12 +956,14 @@ const edgeSuffix = "_edge"
 // edgeProjection is one tie of decisions, readings and asks as graph_edges answers it, held
 // triple by triple (projection.tuples) as tieProjection holds block_refs: each row is an edge the
 // view answers out of a node of one of holders (graphEdgesOut), as the triple of that node, kind
-// and its far end, against every tuple of kind a live node of one of holders states now. So an
+// and its far end, against every tuple of kind a node of one of holders that is not gone states
+// now. So an
 // edge the view answers that no tuple states is a row no tuple states, a tuple the view answers no
 // edge for is a tuple no row projects, and an edge that reaches the wrong node reads as both.
 //
-// The view's newest definition (store/migrations/20261116094101_graph_edges_asks.up.sql) answers
-// each of these ties from one arm, which the projection row decides. For a row that names its
+// The view's definition (store/migrations/20261116094101_graph_edges_asks.up.sql, whose arms for
+// these ties 20261117020856_graph_edges_asks_and_store_class.up.sql restates) answers each of
+// these ties from one arm, which the projection row decides. For a row that names its
 // node, the tuple arm answers the newest tuple of the triple while it asserts, out of a node not
 // gone: shaped, from_ask and decided_by out of a block node, and shaped out of an ask's node, while
 // a block_refs row of that node, kind and far end stands (a block's pointer only while its target
@@ -1010,19 +1012,20 @@ const (
 // node. Fenced, each arm keys its own index with the node's kind and id. The probe also names the
 // holders' kinds as constants, the kinds n.kind takes, so an arm whose from_kind is a constant of
 // another kind - the arm out of a finding of a lens, whose from_kind is lens_block - is cut from
-// the plan rather than probed for each node. An edge an old arm answers out of a row whose ask the
-// store holds no node of yet is no row of this read either.
+// the plan rather than kept in it, scan and all, behind a test of n.kind for each node. An edge an
+// old arm answers out of a row whose ask the store holds no node of yet is no row of this read
+// either.
 func graphEdgesOut(kind, unmarked string, holders ...string) string {
 	read := `
 		select 'graph_edges ' || n.kind || ':' || n.id, n.kind, n.id, edge.kind, edge.to_kind, edge.to_id
 		from graph_nodes n
 		cross join lateral (
 			select e.kind, e.to_kind, e.to_id from graph_edges e
-			where e.from_kind = n.kind and e.from_kind in ('` + strings.Join(holders, `', '`) + `')
+			where e.from_kind = n.kind and ` + kindIn("e.from_kind", holders) + `
 			  and e.from_id = n.id and e.kind = '` + kind + `'
 			offset 0
 		) edge
-		where n.kind in ('` + strings.Join(holders, `', '`) + `') and n.state <> '` + graphstore.StateGone + `'`
+		where ` + kindIn("n.kind", holders) + ` and n.state <> '` + graphstore.StateGone + `'`
 	if unmarked != "" {
 		read += `
 		  and not ` + unmarked
@@ -1316,7 +1319,7 @@ var goneRunsAuthored = currentAuthors(`held.kind = '` + graphstore.KindInteracti
 // decided_by, which its block_refs row projects, and that row is what is read for it. A reading's
 // author is the far end
 // of its authored_by, which no table projects (the tuple table), so the
-// row read for it is the tuple itself, the authored_by each live reading's node states now, as
+// row read for it is the tuple itself, the authored_by each reading's node not gone states now, as
 // graph_edges' tuple arm would answer it. An ask's author is read the same way, off the
 // authored_by every ask node states now: an ask one of whose documents is past the store's bound
 // keeps a row that names no node (graphstore.AskPlaces.Fit), which the ask author arms of

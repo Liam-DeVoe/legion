@@ -720,19 +720,6 @@ type predicateCostRead struct {
 // bound, so it is cut there; this head reads the same references in milliseconds.
 const predicateCostClosureBound = 2 * time.Second
 
-// timedAnswer is timed without the status check, for the one read whose refusal at the base
-// build counts as a reading (predicateCostRead's cutAtBase); its caller checks the status.
-func (a *costArm) timedAnswer(t *testing.T, method, path string) (time.Duration, httpAnswer) {
-	t.Helper()
-	start := time.Now()
-	answer, err := a.server.trySend(method, path, "", asUser(costLogin))
-	taken := time.Since(start)
-	if err != nil {
-		t.Fatalf("%s: %s %s: %v", a.name, method, path, err)
-	}
-	return taken, answer
-}
-
 func predicateCostReads() []predicateCostRead {
 	return []predicateCostRead{
 		{name: "the list of a kind (GET /api/v1/block-links)", path: func(shape *predicateCostShape) string {
@@ -935,8 +922,8 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 					reading, _ := subject.timed(t, http.MethodGet, path, "", http.StatusOK)
 					return reading
 				}
-				reading, answer := subject.timedAnswer(t, http.MethodGet, path)
-				if answer.status == http.StatusServiceUnavailable && errorCodeOf(string(answer.body)) == read.cutAtBase {
+				reading, answer := subject.timedAnswer(t, http.MethodGet, path, "")
+				if answer.status == http.StatusServiceUnavailable && answer.code() == read.cutAtBase {
 					if run >= 0 {
 						cut++
 					}

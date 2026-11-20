@@ -217,15 +217,15 @@ func TestTheCensusResolvesADocumentsMoveToItsLens(t *testing.T) {
 	}
 }
 
-// A moved_to into an ask resolves only to a live ask node, as a copied_from does: the heading of a
-// section that cites an answered ask a person removed from its spec takes one moved_to to that
+// A moved_to into an ask resolves only to an ask node that is not gone, as a copied_from does: the
+// heading of a section that cites an answered ask a person removed from its spec takes one moved_to to that
 // ask's node (R9), and a citation of the heading resolves through it. Over the agreeing store and
 // one ask the backfill marked, a moved_to from a heading address into that ask's live node reads
 // tuples=1 unresolved=0 left_out=0, and the census passes. Once the ask's node is stated gone
 // through the store's writer, its asks row still standing, the same far end does not resolve, and
 // the census refuses. A census that resolved such a far end by the asks row alone would read it
 // resolved both times.
-func TestTheCensusResolvesAMovedToIntoAnAskOnlyToALiveAskNode(t *testing.T) {
+func TestTheCensusResolvesAMovedToIntoAnAskOnlyToAnAskNodeNotGone(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seeded := seedAgreeingStore(t, database)
@@ -257,9 +257,7 @@ func TestTheCensusResolvesAMovedToIntoAnAskOnlyToALiveAskNode(t *testing.T) {
 	}
 
 	gone := graphstore.AskNode(ask, "CORE", nil, censusWriter, time.Now().UTC())
-	// An ask's own writer restates its node and keeps the state the store holds (graphstore.Node's
-	// Restates), so the move to gone is a write of the state, as the state route writes one.
-	gone.State, gone.Restates = graphstore.StateGone, false
+	gone.State = graphstore.StateGone
 	writeTestTuples(t, database, []graphstore.Node{gone}, nil)
 	var state string
 	if err := database.Pool.QueryRow(ctx, `select state from graph_nodes where kind = 'ask' and id = $1`, ask).Scan(&state); err != nil || state != graphstore.StateGone {
