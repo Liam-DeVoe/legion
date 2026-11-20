@@ -749,8 +749,10 @@ func seededDrives(database *store.Store) []StoreDrive {
 	}, {
 		// The backfill's pass over the issues, documents, asks and messages the build before the
 		// store wrote: each one's node and its visibility, state and project, as its create states
-		// them, a document's part_of the issue that owns it, and an issue's child_of its parent,
-		// CORE-2's of CORE-1. The seeded history's are all in project CORE, so none states parties.
+		// them, a document's part_of the issue that owns it, an issue's child_of its parent,
+		// CORE-2's of CORE-1, and the mentions of each refs row a document it names holds
+		// (nameArtifactNodes), which the term document_ref counts. The seeded history's are all in
+		// project CORE, so none states parties.
 		Name: objectBatchDrive, Sites: []string{"graphcensus/projects_backfill.go#writeObjectBatch"},
 		Database: database, Drive: passes(backfillObjectNodes),
 		Counts: map[StoredKind][]string{
@@ -768,6 +770,7 @@ func seededDrives(database *store.Store) []StoreDrive {
 			{graphstore.KindMessage, graphstore.AttributeProject}:     {graphstore.KindMessage},
 			{graphstore.KindIssue, graphstore.TupleChildOf}:           {"issue_relation"},
 			{graphstore.KindArtifact, graphstore.TuplePartOf}:         {"document_part_of"},
+			{graphstore.KindArtifact, graphstore.TupleMentions}:       {"document_ref"},
 		},
 	}, {
 		// The backfill's fill of the project of a node an earlier build stored with none: the

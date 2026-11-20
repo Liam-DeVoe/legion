@@ -918,13 +918,21 @@ func issueParentClaims(nodes []graphstore.Node, marks map[string]rowMark) ([]gra
 // is no node of the store and no row the version pass reads, so its bytes are stated here, as its
 // upload states them on its document's node (api's statedVersionBytes).
 //
+// Beside them it answers the mentions each document it named owes its node for the refs rows it
+// holds (documentMentionMoves), as the backfill's pass over the references states them: graph_edges'
+// arm over refs answers a document's row only while the document's row names no node (migration
+// 20261119100000), so a document named without them would leave each of its references answered
+// by neither arm until that pass ran.
+//
 // The read follows the update, under the owner locks the batch took first: an upload of a later
 // version takes its issue's row, or its project document's own row, before it writes, and reads its
 // document's row FOR SHARE, which the update's lock conflicts with, before it states that
 // version's bytes on the node the row names (api's statedVersionBytes). So either the upload
 // commits first and this read, a statement after it, finds its version, with the node the upload
 // wrote for it, as the newest, or the upload waits for this transaction, sees the node named, and
-// states its bytes after these.
+// states its bytes after these. Every writer of a document's refs rows holds the same owner lock
+// (writeReferenceBatch says which), so the references read after the update are the ones that
+// stand as the batch commits.
 func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]graphstore.Tuple, error) {
 	rows, err := tx.Query(ctx, `
 		update artifacts set node_kind = $2, node_address = ref_key
@@ -934,7 +942,7 @@ func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]grap
 	if err != nil {
 		return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
 	}
-	var files []string
+	var named, files []string
 	for rows.Next() {
 		var id string
 		var file bool
@@ -942,6 +950,7 @@ func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]grap
 			rows.Close()
 			return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
 		}
+		named = append(named, id)
 		if file {
 			files = append(files, id)
 		}
@@ -950,8 +959,15 @@ func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]grap
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("name the nodes of a document batch on their rows: %w", err)
 	}
-	if len(files) == 0 {
+	if len(named) == 0 {
 		return nil, nil
+	}
+	stated, err := documentMentionMoves(ctx, tx, named, time.Now().UTC(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("read the references of the documents a batch named: %w", err)
+	}
+	if len(files) == 0 {
+		return stated, nil
 	}
 	rows, err = tx.Query(ctx, `
 		select a.ref_key, v.mime, v.size, v.sha256, v.created_at, coalesce(v.authors->0, a.created_by)
@@ -968,7 +984,7 @@ func nameArtifactNodes(ctx context.Context, tx pgx.Tx, refKeys []string) ([]grap
 		return nil, fmt.Errorf("read the newest bytes of a batch's images and files: %w", err)
 	}
 	defer rows.Close()
-	var stated []graphstore.Tuple
+	// stated holds the named documents' mentions already; the bytes follow them.
 	for rows.Next() {
 		var refKey, mime, digest string
 		var size int64

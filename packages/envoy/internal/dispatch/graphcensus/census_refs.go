@@ -120,9 +120,10 @@ type referenceMove struct {
 // rows (owedReferenceMoves). Each row with no tuple asserting its triple takes its mentions tuple,
 // out of the document's node, dated at the row's own created_at and carrying its own source_seq as
 // its legacy_source_seq, so the store answers the edge at the moment and with the cause
-// graph_edges' arm over refs answered it: a row a process of the release before wrote - before the
-// object pass named its document's node, or after, beside a document this build wrote - and a row
-// whose tuple that release lost are each such a row. Each mentions tuple the node states now whose
+// graph_edges' arm over refs answered it: a row a process of the release before wrote beside a
+// document whose row names its node - the object pass states the rows a document holds as it names
+// its node (nameArtifactNodes), and a row written after that states none - and a row whose tuple
+// that release lost are each such a row. Each mentions tuple the node states now whose
 // row that release deleted, retracting nothing, is retracted, dated at the run's time, as the
 // anchor pass retracts an anchored_in its row no longer names (backfillAnchoredIn). The refs table
 // takes no marker column, so the tuple itself is the marker (anchorProjections): the pass finds a
@@ -203,39 +204,11 @@ func writeReferenceBatch(ctx context.Context, database *store.Store, batch []ref
 		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `
-			select owed.document, owed.node, owed.to_kind, owed.to_id, owed.created_at, owed.source_seq, owed.asserted
-			from (`+owedReferenceMoves+`) owed
-			where owed.document = any($1::text[])
-			order by owed.document, owed.to_kind, owed.to_id
-		`, documents)
+		tuples, err := documentMentionMoves(ctx, tx, documents, time.Now().UTC(), func(move referenceMove) bool {
+			_, owed := moves[move]
+			return owed
+		})
 		if err != nil {
-			return fmt.Errorf("read a batch of references again under their owners: %w", err)
-		}
-		now := time.Now().UTC()
-		var tuples []graphstore.Tuple
-		for rows.Next() {
-			var document, node, toKind, toID string
-			var createdAt *time.Time
-			var sourceSeq *int64
-			var asserted bool
-			if err := rows.Scan(&document, &node, &toKind, &toID, &createdAt, &sourceSeq, &asserted); err != nil {
-				rows.Close()
-				return fmt.Errorf("read a batch of references again under their owners: %w", err)
-			}
-			if _, owed := moves[referenceMove{document: document, toKind: toKind, toID: toID}]; !owed {
-				continue
-			}
-			at := now
-			if asserted {
-				at = *createdAt
-			}
-			tuple := graphstore.ArtifactMentions(node, toKind, toID, asserted, backfillActor, at)
-			tuple.LegacySourceSeq = sourceSeq
-			tuples = append(tuples, tuple)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
 			return fmt.Errorf("read a batch of references again under their owners: %w", err)
 		}
 		if len(tuples) == 0 {
@@ -250,4 +223,45 @@ func writeReferenceBatch(ctx context.Context, database *store.Store, batch []ref
 		return 0, fmt.Errorf("write a batch of references: %w", err)
 	}
 	return written, nil
+}
+
+// documentMentionMoves reads, through tx, every move the nodes of documents - their uuids, each
+// once - owe their mentions (owedReferenceMoves), where keep, when it is not nil, keeps the move,
+// and answers the tuple each makes, as the backfill's pass states it: the assertion a refs row
+// with no tuple owes, out of the document's node, dated at the row's own created_at and carrying
+// its source_seq as its legacy_source_seq, and the retraction a tuple whose row is gone owes,
+// dated at now, each written by the run (backfillActor) at the sentinel. Its caller holds the
+// owner rows the documents stand under, so what it reads is what it writes.
+func documentMentionMoves(ctx context.Context, tx pgx.Tx, documents []string, now time.Time, keep func(referenceMove) bool) ([]graphstore.Tuple, error) {
+	rows, err := tx.Query(ctx, `
+		select owed.document, owed.node, owed.to_kind, owed.to_id, owed.created_at, owed.source_seq, owed.asserted
+		from (`+owedReferenceMoves+`) owed
+		where owed.document = any($1::text[])
+		order by owed.document, owed.to_kind, owed.to_id
+	`, documents)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tuples []graphstore.Tuple
+	for rows.Next() {
+		var document, node, toKind, toID string
+		var createdAt *time.Time
+		var sourceSeq *int64
+		var asserted bool
+		if err := rows.Scan(&document, &node, &toKind, &toID, &createdAt, &sourceSeq, &asserted); err != nil {
+			return nil, err
+		}
+		if keep != nil && !keep(referenceMove{document: document, toKind: toKind, toID: toID}) {
+			continue
+		}
+		at := now
+		if asserted {
+			at = *createdAt
+		}
+		tuple := graphstore.ArtifactMentions(node, toKind, toID, asserted, backfillActor, at)
+		tuple.LegacySourceSeq = sourceSeq
+		tuples = append(tuples, tuple)
+	}
+	return tuples, rows.Err()
 }

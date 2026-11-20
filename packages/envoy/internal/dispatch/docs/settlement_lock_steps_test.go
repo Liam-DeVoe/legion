@@ -377,12 +377,19 @@ func (r *docsWriterRig) settledCarry() docsWriter {
 			approver := r.fresh("lock-approver")
 			approveStoredVersion(t, r.database, document, 1, approver)
 			agent := model.Actor{Kind: "session", ID: r.fresh("lock-steps-agent")}
+			// The agent's version is recorded as a version of the fixtures is (restoreIssue.write):
+			// what its write stated, its version's node among it, is caused at the sentinel in its
+			// own write phase, as a route causes it under the version's event.
 			if err := joinedWrite(r.service, func(ctx context.Context) error {
 				if _, err := r.service.ApplyOps(ctx, document, []model.EditOp{{Op: "replace", Find: "Context.", With: "Context, edited."}}, agent, nil); err != nil {
 					return err
 				}
-				_, err := r.service.SnapshotVersion(ctx, document, agent)
-				return err
+				written, err := r.service.SnapshotVersion(ctx, document, agent)
+				if err != nil {
+					return err
+				}
+				tx, _ := txFromContext(ctx)
+				return causeInWritePhase(ctx, tx, written.Blocks, graphstore.NoEvent)
 			}); err != nil {
 				t.Fatalf("version the agent's edit of %s: %v", slug, err)
 			}
