@@ -307,6 +307,82 @@ func requireOnlyTheProof(t *testing.T, admission *recordingAdmission, want prove
 	}
 }
 
+// TestThePrivateListAnswersOnlyCommittedRows: every listener reads which projects are private, and
+// their Slack channels, from GET /api/v1/access/private-projects through the broker, uncached, so
+// no copy can lag behind a switch. While PRIV's switch to private is held at its commit, after its
+// proof, the broker's read does not list PRIV; the read after the commit lists it; a channel write
+// on PRIV shows in the next read; and the read after PRIV's switch to public does not list it.
+// Control: answer the route from a copy read once and kept for 30 s, as privateProjectsState keeps
+// the header's, and the read right after the commit lacks PRIV, and the test fails naming the read.
+func TestThePrivateListAnswersOnlyCommittedRows(t *testing.T) {
+	ctx := context.Background()
+	server := newChannelSwitchServer(t, &recordingAdmission{})
+	lists := func(t *testing.T) (model.PrivateProjectChannels, bool) {
+		t.Helper()
+		project, listed := server.privateList(t)["PRIV"]
+		return project, listed
+	}
+	if _, listed := lists(t); listed {
+		t.Fatal("the broker's read lists PRIV before its switch to private")
+	}
+	// PRIV's switch is held at its commit, after every statement of it, its proof included, until
+	// the test releases the lock the trigger waits for.
+	if _, err := server.database.Pool.Exec(ctx, `
+		create function hold_priv_commit() returns trigger language plpgsql as $$
+		begin
+			perform pg_advisory_xact_lock(hashtext('the committed-rows row holds PRIV''s commit'));
+			return null;
+		end $$;
+		create constraint trigger hold_priv_commit after update on projects
+			deferrable initially deferred for each row when (new.key = 'PRIV')
+			execute function hold_priv_commit();
+	`); err != nil {
+		t.Fatalf("hold every commit that writes PRIV: %v", err)
+	}
+	held, err := server.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction that holds PRIV's commit: %v", err)
+	}
+	defer held.Rollback(ctx)
+	if _, err := held.Exec(ctx, `select pg_advisory_xact_lock(hashtext('the committed-rows row holds PRIV''s commit'))`); err != nil {
+		t.Fatalf("hold PRIV's commit: %v", err)
+	}
+	switched := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		switched <- accessPatch(ctx, server.handler, "PRIV", `{"visibility":"private"}`, "alice")
+	}()
+	waitForDatabaseLocks(t, held, 1)
+	if _, listed := lists(t); listed {
+		t.Fatal("the broker's read while PRIV's switch is held at its commit lists PRIV: it must answer the committed rows")
+	}
+	if err := held.Rollback(ctx); err != nil {
+		t.Fatalf("release PRIV's commit: %v", err)
+	}
+	select {
+	case response := <-switched:
+		if response.Code != http.StatusOK {
+			t.Fatalf("PATCH PRIV private = %d %s, want 200", response.Code, response.Body.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("PRIV's switch never answered once its commit was released")
+	}
+	if _, listed := lists(t); !listed {
+		t.Fatal("the broker's read right after PRIV's switch committed does not list PRIV: it must answer the committed rows")
+	}
+	if response := server.patch(t, "PRIV", map[string]any{"slack_channels": []string{"C0PRIV00009"}}); response.Code != http.StatusOK {
+		t.Fatalf("alice's PATCH of private PRIV's channels = %d %s, want 200", response.Code, response.Body.String())
+	}
+	if project, _ := lists(t); !slices.Equal(project.SlackChannels, []string{"C0PRIV00009"}) {
+		t.Fatalf("the broker's read after PRIV's channel write lists %v for PRIV, want [C0PRIV00009]", project.SlackChannels)
+	}
+	if response := server.patch(t, "PRIV", map[string]string{"visibility": model.ProjectPublic}); response.Code != http.StatusOK {
+		t.Fatalf("PATCH PRIV public = %d %s, want 200", response.Code, response.Body.String())
+	}
+	if _, listed := lists(t); listed {
+		t.Fatal("the broker's read after PRIV's switch to public still lists PRIV")
+	}
+}
+
 // The maintenance sweep logs, on every pass, an error for each private project the list does not
 // name, and, where the list names any, at its first pass and then once an hour, an error naming
 // any row a project owns whose node does not name its project. With an empty list it reads no row
