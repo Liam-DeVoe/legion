@@ -253,10 +253,12 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 // for the issue (reconcilePodUpdates, podReplacement).
 //
 // clock is the sweep's now and what a project's pause did to the issue's pod (roundClock), built
-// once for the issue: each round bound and each pause hold read below comes from it, and an
-// opening is recorded at its now. No round opens over a pod a hold stands on (roundClock.held):
-// the pause kept that pod for its stopped roles, and a round would ask them to push work for a
-// replacement while nothing of theirs runs.
+// once for the issue: each round bound and each pause hold read below comes from it. Neither an
+// opening nor a late round's told mark is dated at that now: an opening is dated when it is made
+// (recordPodUpdateOpening), and a told mark when the round is told (tellUpdateStalled), since the
+// walk can wait before it reaches the issue. No round opens over a pod a hold stands on
+// (roundClock.held): the pause kept that pod for its stopped roles, and a round would ask them to
+// push work for a replacement while nothing of theirs runs.
 func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string, group []supervise.Claim, sweep *podUpdateSweep, clock roundClock) *podReplacement {
 	slices.SortFunc(group, func(a, b supervise.Claim) int { return strings.Compare(string(a.Token), string(b.Token)) })
 	pod, split := groupPod(group)
