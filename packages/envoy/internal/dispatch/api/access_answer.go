@@ -160,8 +160,9 @@ func (s *server) accountHolder(ctx context.Context, q access.Querier, question a
 }
 
 // getAccessProject answers project {key}'s membership answer for ?person=, which may be left out
-// to read the project alone (visible false, member_kind none). A question whose account does not
-// hold the person's address answers visible false, with holder false.
+// to read the project alone (member_kind none, and visible whether the project is public). A
+// question whose account does not hold the person's address answers visible false, with holder
+// false.
 func (s *server) getAccessProject(w http.ResponseWriter, r *http.Request) {
 	question, ok := readAccessQuestion(w, r, false)
 	if !ok {

@@ -7,13 +7,13 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/principal"
 )
 
 // The refusals of the reads and writes below. Each is wrapped with what it names, so a caller
@@ -52,21 +52,14 @@ var groupName = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,62}$`)
 // underscores and dashes, starting with a letter or digit, at most 63 long.
 func ValidGroupName(name string) bool { return groupName.MatchString(name) }
 
-// PersonPrincipal is the stored form of a person an access list or a group names: the trimmed,
-// lowercase email. It refuses a value that is no email, and one holding a control character or a
-// bidi control, which would show one address and store another, as a project name refuses them.
+// PersonPrincipal is the stored form of a person an access list or a group names: the email as
+// typed, in its stored form (model.CanonicalLogin), refused as ErrPrincipalInput when it is not a
+// person's email as Dispatch stores one (principal.CheckPersonLogin): no email, a control or bidi
+// character, or a capital beyond A-Z, which names nobody who could sign in.
 func PersonPrincipal(email string) (string, error) {
 	login := model.CanonicalLogin(email)
-	if at := strings.IndexByte(login, '@'); at <= 0 || at == len(login)-1 || strings.ContainsAny(login, " \t\r\n,") || len(login) > 320 {
-		return "", fmt.Errorf("%w: %q is no email", ErrPrincipalInput, strings.TrimSpace(email))
-	}
-	for _, r := range login {
-		switch {
-		case unicode.IsControl(r):
-			return "", fmt.Errorf("%w: %q holds a control character", ErrPrincipalInput, login)
-		case unicode.Is(unicode.Bidi_Control, r):
-			return "", fmt.Errorf("%w: %q holds a bidi control", ErrPrincipalInput, login)
-		}
+	if err := principal.CheckPersonLogin(login); err != nil {
+		return "", fmt.Errorf("%w: %w", ErrPrincipalInput, err)
 	}
 	return login, nil
 }
@@ -244,22 +237,22 @@ const MaxSlackChannels = 16
 var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,20}$`)
 
 // SetSlackChannels replaces the Slack channel ids project key's credentials may post to, sorted
-// and with each id named once. The secrets broker releases the Legion Slack bot token to a
-// private project's credentials for these channels alone (R14), so only the project's owner
-// writes them: the caller makes that check first, under the project's owner lock
-// (LockForAccessWrite). A list different from the one stored, compared sorted, sets
+// and with each id named once. The secrets broker reads a private project's Slack channels to
+// release the Legion Slack bot token to that project's credentials for those channels alone (R14),
+// so only the project's owner writes them: the caller makes that check first, under the project's
+// owner lock (LockForAccessWrite). A list different from the one stored, compared sorted, sets
 // slack_channels_changed_at in the same update to statement_timestamp(), that update's own start:
 // it comes after the project's owner lock and the channel lock are held, so it never precedes a
 // lock wait, and two writes of one project are stamped in the order they wrote. The transaction's
 // now() would be its start, before those waits. The same list leaves the time.
 //
-// A Slack channel belongs to one private project. So every call takes the channel lock
-// (lockSlackChannels) before it reads anything, and a private project's write naming a channel
-// another private project lists is refused with ErrSlackChannelShared, which names that project
-// only to a viewer who sees it (refuseSharedSlackChannel); a public project's write is never
-// refused for it. by is the person the write records, and viewer what the request's own caller
-// sees, as the API resolved it for the request (readerOf), whom the refusal is written for. It
-// appends project.access_changed in tx.
+// A Slack channel belongs to one private project. So every call takes the project's owner lock,
+// then the channel lock (lockSlackChannels), before it reads anything, and a private project's
+// write naming a channel another private project lists is refused with ErrSlackChannelShared,
+// which names that project only to a viewer who sees it (refuseSharedSlackChannel); a public
+// project's write is never refused for it. by is the person the write records, and viewer what
+// the request's own caller sees, as the API resolved it for the request (readerOf), whom the
+// refusal is written for. It appends project.access_changed in tx.
 func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, model.Event, error) {
 	named := make([]string, 0, len(channels))
 	for _, channel := range channels {
@@ -312,8 +305,8 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 // lockSlackChannels takes, for the rest of tx, the one lock every write of a project's Slack
 // channels takes before it reads any project's list, so two writes naming one channel for two
 // private projects cannot both read the other's list as it was and both commit. It comes after the
-// project's owner lock (LockForAccessWrite, lockProject) in the order every access write takes its
-// locks, and no writer takes a project's owner lock after it.
+// project's owner lock (lockProject, which LockForAccessWrite also takes) in the order every access
+// write takes its locks, and a project's row is written only under that project's owner lock.
 func lockSlackChannels(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-slack-channel'), 0)`); err != nil {
 		return fmt.Errorf("lock the Slack channels: %w", err)

@@ -266,7 +266,7 @@ func (s *outsideSignIn) brokerRouter(t *testing.T, broker *fakeBroker) (http.Han
 	built := routes.AppContextOptions{
 		Lifetime: t.Context(), SigningKey: testSigningKey, SignIn: signInFlow(boot), People: s.people,
 		Store: s.database, Sessions: store.NewPgSessionStore(s.database.Pool), BrokerTokens: verifier,
-		Metrics: s.metrics.Handler(), BrokerRevocationsSuperseded: api.NewBrokerRevocationsSuperseded(s.metrics),
+		Metrics: s.metrics, BrokerRevocationsSuperseded: api.NewBrokerRevocationsSuperseded(s.metrics),
 	}
 	rule, err := signInRule(boot, accessLister(built.Store))
 	if err != nil {

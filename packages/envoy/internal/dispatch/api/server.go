@@ -230,9 +230,21 @@ type Deps struct {
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
 	// changes the listener's sessions sees the change at its next read. Each answer is still
-	// stored, since the session rule reads the listener's record of a session from that row. A
-	// deployment leaves it false.
+	// stored, so route_roster_session_projects records the listener's sessions for SessionClause.
+	// A deployment leaves it false.
 	ListenerRosterUncached bool
+	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
+	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no
+	// earlier event of its comment's owner still owes a send its session may take
+	// (model.MentionCopyHolderSQL, deliverResolvedCommentMention), the order the outbox keeps for its
+	// own sends. With no outbox no event is ever sent, so there is no order to keep with them and
+	// the wait would never end: the send goes at once, as it does in every test of this package
+	// that runs no outbox.
+	OutboxPublishes bool
+	// Metrics is the process's registry: GET /metrics serves it (getMetrics), and register adds
+	// the gauges of the mention sends held behind an earlier event to it (registerHeldGauges). Nil,
+	// as this package's tests run, serves an empty one and adds none.
+	Metrics *metrics.Registry
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
@@ -243,9 +255,6 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
-	// Metrics is the process's metrics registry, which GET /metrics serves (getMetrics); nil, a
-	// test's server, serves an empty one.
-	Metrics http.Handler
 	// BrokerRevocationsSuperseded counts each revocation the broker answered superseded
 	// (NewBrokerRevocationsSuperseded); nil counts nothing.
 	BrokerRevocationsSuperseded *metrics.Counter
@@ -337,13 +346,15 @@ type DepsInput struct {
 	// ListenerRosterUncached is for end-to-end test processes only; see
 	// Deps.ListenerRosterUncached.
 	ListenerRosterUncached bool
+	// OutboxPublishes is that an outbox publishes this deployment's events; see
+	// Deps.OutboxPublishes.
+	OutboxPublishes bool
+	// Metrics is the process's metrics registry; see Deps.Metrics.
+	Metrics *metrics.Registry
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
-	// Metrics is the process's metrics registry; see Deps.Metrics. cmd/dispatch passes the one
-	// its outbox counts on.
-	Metrics http.Handler
 	// BrokerRevocationsSuperseded is the process's count of revocations the broker answered
 	// superseded; see Deps.BrokerRevocationsSuperseded.
 	BrokerRevocationsSuperseded *metrics.Counter
@@ -441,9 +452,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
+		OutboxPublishes:        input.OutboxPublishes,
+		Metrics:                input.Metrics,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
-		Metrics:                input.Metrics,
 		// The process's count of revocations the broker answered superseded.
 		BrokerRevocationsSuperseded: input.BrokerRevocationsSuperseded,
 	}, nil
@@ -847,6 +859,7 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	s.eventRelay = newEventStreamRelay(s, lifetime)
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
+	s.registerHeldGauges(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -1765,10 +1778,11 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 // when the body names the session the credential proved; a session the body alone names is not
 // proven.
 //
-// Only those routes read it: decodeJSON refuses an unknown field, so a body actor on a route
-// whose input struct does not declare one is a 400, and four of the mutating rows a person's
-// scope opened are DELETEs with no body at all. A browser's actor names no agent (act is nil),
-// so there is nothing for a body to name, and its body actor is ignored here as it always was.
+// Only those routes read it: decodeJSON ignores a member the route's input struct does not
+// declare (it logs it at debug), so a body actor on any other route is dropped unread, and four of
+// the mutating rows a person's scope opened are DELETEs with no body at all. A browser's actor
+// names no agent (act is nil), so there is nothing for a body to name, and its body actor is
+// ignored here as it always was.
 func actSessionFromBody(w http.ResponseWriter, actor model.Actor, supplied *model.Actor) (model.Actor, bool) {
 	named := ""
 	if supplied != nil && supplied.Kind == "session" {

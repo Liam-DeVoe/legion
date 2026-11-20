@@ -53,8 +53,8 @@ const (
 	// (lockProjectIssueDependencies), the deployment's own issue dependencies'
 	// (lockDeploymentIssueDependencies), one repository mapping's write (lockRepoProjectWrite), the
 	// rename graph's own (refuseRepoRenameChain), the Slack channels' (access's lockSlackChannels)
-	// and the delivery change log's (store migration 0100's delivery_change_log). The second key is
-	// the listening connection's backend pid, which no other live connection has, so two
+	// and the delivery change log's (store migration 0100's delivery_change_log, 6900). The second
+	// key is the listening connection's backend pid, which no other live connection has, so two
 	// processes' keys never meet.
 	testHookLockNamespace int32 = 0x484F4F4B
 	// testHookTimeout bounds a call: the wait for this process's own listener, and then for every

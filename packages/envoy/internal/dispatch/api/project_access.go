@@ -33,7 +33,7 @@ type projectAccessInput struct {
 	// Owner is the email of the full member the project is given to.
 	Owner *string `json:"owner,omitempty"`
 	// Visibility is public or private.
-	Visibility *string `json:"visibility,omitempty"`
+	Visibility *string `json:"visibility,omitempty" enum:"public,private"`
 	// SlackChannels replaces the Slack channel ids the project's credentials may post to, at
 	// most 16, each `C…` or `G…`; [] names none.
 	SlackChannels *[]string `json:"slack_channels,omitempty"`
