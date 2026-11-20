@@ -262,6 +262,22 @@ func withoutEntryTimeKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutPausedKey is a state body with no `paused`, which is what a caller below pauseContract is
+// served of a state (api's withoutPause). It serves the table below as withoutQuietKeys does.
+func withoutPausedKey(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	delete(served, "paused")
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its pause: %v", body, err)
+	}
+	return encoded
+}
+
 // withoutHeldKey is a state body whose admission block carries no `held`, which is what a caller
 // below heldContract is served of a state (api's withoutHeld). It serves the table below as
 // withoutQuietKeys does: a row's baseline is the full state with exactly the keys that row's own
@@ -474,6 +490,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// credential under dispatch_token_broker (dispatchCredentialContract, the contract that
 		// added it), so a pod at it or above is served the object and every older pod is not.
 		credential bool
+		// pause is whether the caller is served the project's pause, `paused` here
+		// (pauseContract, the contract that added it beside `lastPause`), this daemon's own
+		// contract, so a pod at it is served the key and every older pod is not.
+		pause bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -510,18 +530,22 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// too, and the assignments and every key a later row adds are still held back.
 		{name: "a pod at mergeWaitContract", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true},
 		// The band from assignmentsContract to below entryTimesContract: the assignments are
-		// served too, and the entry times and the architect-stalled arms are held back, at the
-		// band's foot and at its top alike.
+		// served too, and the entry times, the architect-stalled arms, the pause and the daemon's
+		// Dispatch credential are held back, at the band's foot and at its top alike.
 		{name: "a pod at assignmentsContract", remote: statePodAddr + ":41000", claims: podClaims(assignmentsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
 		{name: "a pod just below entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true},
-		// The band from entryTimesContract to below dispatchCredentialContract, the last band under
-		// the declared contract: the entry times and the arms are served too, and the daemon's
-		// Dispatch credential is held back, at the band's foot and at its top alike.
+		// The band from entryTimesContract to below pauseContract: the entry times and the arms
+		// are served too, and the pause and the daemon's Dispatch credential are held back.
 		{name: "a pod at entryTimesContract", remote: statePodAddr + ":41000", claims: podClaims(entryTimesContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a pod just below dispatchCredentialContract", remote: statePodAddr + ":41000", claims: podClaims(dispatchCredentialContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, credential: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, credential: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, credential: true},
+		{name: "a pod just below pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true},
+		// The band from pauseContract to below dispatchCredentialContract, the last band under the
+		// declared contract: the pause is served too, and the daemon's Dispatch credential is the
+		// one key held back, at the band's foot and at its top alike.
+		{name: "a pod at pauseContract", remote: statePodAddr + ":41000", claims: podClaims(pauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true},
+		{name: "a pod just below dispatchCredentialContract", remote: statePodAddr + ":41000", claims: podClaims(dispatchCredentialContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true, credential: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true, credential: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, entries: true, held: true, quiet: true, wait: true, assigned: true, times: true, pause: true, credential: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -574,6 +598,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				if !tc.times {
 					want = withoutEntryTimeKeys(t, want)
 				}
+				if !tc.pause {
+					want = withoutPausedKey(t, want)
+				}
 				if !tc.credential {
 					want = withoutDispatchCredentialKey(t, want)
 				}
@@ -620,7 +647,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// with each issue's `assignments` gone, the experiment answers contract 141 added
 			// (withoutAssignments), with each issue's `entryQueuedAt`, `entryConfirmedAt` and
 			// `architectStalls` gone, the three keys entryTimesContract added (withoutEntryTimes),
-			// and with `dispatchCredential` gone, the key dispatchCredentialContract added
+			// with the project's pause gone, the `paused` contract 178 added (withoutPause), and
+			// with `dispatchCredential` gone, the key dispatchCredentialContract added
 			// (withoutDispatchCredential).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and
@@ -636,6 +664,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(want, ClaimsToRefreshField)
 			}
 			delete(want, "contract")
+			delete(want, "paused")
 			delete(want, "dispatchCredential")
 			if !tc.rounds {
 				delete(want["admission"].(map[string]any), "trees")

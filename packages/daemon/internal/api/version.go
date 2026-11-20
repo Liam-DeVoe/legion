@@ -2420,7 +2420,40 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 179: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 182: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
 // identity at the secrets broker for a Dispatch token of its own session, and the daemon names
 // that session, which moves three surfaces this number names. The agent's argv: in a pod that
 // carries the exchange identity (sandbox's launch.trades) the daemon chooses each Oh My Pi role's
@@ -2438,8 +2471,8 @@ package api
 // token, which a deployment waits to see at zero before it removes
 // `dispatch_token_transition_file`. The settings block's `dispatch_token_broker` is a key of the
 // block the plugin parses loosely (35 above), and moves no number.
-// A plugin before 179 reads the state with a strict schema that knows no `dispatchCredential` and
-// refuses the whole body for it, so a caller from a pod whose claims record a contract below 179
+// A plugin before 182 reads the state with a strict schema that knows no `dispatchCredential` and
+// refuses the whole body for it, so a caller from a pod whose claims record a contract below 182
 // is served the state without the key (api's stateFor, withoutDispatchCredential), as a caller
 // below 146 is served the issues without the entry times; 151 moves no strictly parsed shape of
 // the state and narrows nothing.
@@ -2450,15 +2483,16 @@ package api
 // `legion probe-image` hold the daemon to an image built from this contract. A role in a kept pod
 // of an older image carries no exchange identity, so it keeps the argv and the credential it had,
 // and its pod's update round replaces the pod.
-// (This change takes 179, the lowest number above main's 168 that no open pull request declared
-// when the forward merge of 2026-11-19 brought main in at 506395beea, which declares 168 (#4488,
+// (This change takes 182, the lowest number above main's 178 that no open pull request declared
+// when the forward merge of 2026-11-20 brought main in at c7e1cbd532, which declares 178 (#4115,
 // the entry above); it had declared 165, then 175 from the merge that brought main in at
-// a16c218ee3. A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 241 open
-// pull requests, made between 2026-11-19T20:58:43Z and 21:02:20Z, found 169 (#4065), 170 (#4180,
-// #4182, #4193), 171 (#2230, #4049, #4115), 172 (#3659), 173 (#4493), 174 (#3993, #4273), 175
-// (#3712, #4432, #4485, #4495 and this change's own head before this merge), 176 (#4030, #4173),
-// 177 (#4017) and 178 (#3831, #4175) declared, and nothing above 178. Read the base's own number
-// and every open pull request again at the next merge rather than from this line, as
+// a16c218ee3, then 179 from the merge that brought main in at 506395beea. A reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 243 open pull requests, made between
+// 2026-11-20T01:10:11Z and 01:15:26Z, found 176 (#4030, #4173, #4180, #4182, #4193, #4251, #4259,
+// #4261, #4269, #4290), 177 (#4017), 178 (#3831, #4552, #4554), 179 (#4540 and this change's own
+// head before this merge), 180 (#4049, #4175) and 181 (#4553) declared above 175, and nothing
+// above 181. Read the base's own number and every open pull request again at the next merge rather
+// than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 179
+const DaemonAPIVersion = 182

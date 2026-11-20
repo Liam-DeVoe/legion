@@ -94,7 +94,7 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 // dispatchCredentialContract is the contract whose entry in version.go added the key, and this
 // daemon's own contract is never below it: a caller at this contract is served the object.
 func TestTheDispatchCredentialContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedDispatchCredential = 179
+	const addedDispatchCredential = 182
 	if dispatchCredentialContract != addedDispatchCredential {
 		t.Fatalf("dispatchCredentialContract = %d, want %d, the contract whose entry in version.go added `dispatchCredential`",
 			dispatchCredentialContract, addedDispatchCredential)
