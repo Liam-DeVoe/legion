@@ -400,9 +400,9 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // failed finishes the release, asks the runtime nothing and cannot cancel it
 // (store.ReleaseDecision.PodTaken), and its record writes no second row. A step of the runtime
 // that fails comes before the record, and the commit of the runtime's read keeps that release
-// from being cancelled (store.Store.CommitIssueRelease). A record that cannot be written is logged
-// and answered as the teardown's error: the row runs again, and until a record lands, the mark
-// names no release.
+// from being cancelled (store.Store.CommitIssueRelease). A record that cannot be written is
+// answered as the teardown's error, and the row's failure logs it once (settle): the row runs
+// again, and until a record lands, the mark names no release.
 func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role, bundleBytes int) error {
 	if r.supervisor == nil || r.supervisor.store == nil {
 		return nil
@@ -412,14 +412,11 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation 
 		roles = append(roles, string(role))
 	}
 	slices.Sort(roles)
-	if _, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
+	_, err := r.supervisor.store.RecordPodRelease(ctx, store.PodRelease{
 		Project: r.project, Issue: issue, Generation: generation, Roles: roles,
 		At: time.Now().UTC(), BundleBytes: bundleBytes, WakeTask: workflow.ReleasedWakeTask,
-	}); err != nil {
-		r.log.Warn("outbox: could not record an issue pod's release", "issue", issue, "error", err)
-		return err
-	}
-	return nil
+	})
+	return err
 }
 
 // releaseHold is the hold a cancel the store decided is recorded under, and the sentence the

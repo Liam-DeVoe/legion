@@ -170,8 +170,8 @@ type DeliveryWake struct {
 	// StartQueued is a start that brings the role back, queued in the outbox (StartQueued): the
 	// call takes nothing, and that start resumes the role.
 	StartQueued bool
-	// NotReleased is a claim the record no longer holds as suspended by a release: the call took
-	// nothing, since something already brought the role back or took the claim over.
+	// NotReleased is a claim whose row the record does not hold as suspended by a release: the
+	// call took nothing, since something already brought the role back or took the claim over.
 	NotReleased bool
 }
 
@@ -215,18 +215,26 @@ type DeliveryWake struct {
 // The caller read the claim as released from its machine, outside this transaction, and a start
 // can run and finish between that read and the read of the queued starts: the cancel's start
 // resumes the role and is deleted. So the call reads the claim's row too, after the starts, and
-// takes nothing where the record holds the claim but no longer as suspended by `released`. A
-// start that finished before the starts' read has written the claim's resume before it was
-// deleted, so the two reads cannot both miss it. A claim the record does not hold is read from the
-// caller's machine alone, which is the supervisor that writes every claim it holds. The row is
-// read `for update`, so the take and a write of the claim that takes it over (an operator's
-// suspension or resume, a close's or a linger's suspension, each one write of the claim's row) run
-// one after the other: a write that commits first is what this read finds, and one that comes
-// later waits until the take commits. The lock comes after the mark's and the pause row's
-// (PauseOfWake), the order TakePodWake gives for the mark, the pause's row and the writes after
-// them; the stop transaction of a project's pause, which writes a claim's row, takes the mark and
-// the pause's row first too (internal/daemon's projectPause.stopTx). No transaction that writes a
-// claim's row locks the mark or the pause's row after it, so this lock adds no cycle.
+// takes nothing unless the record holds the claim suspended by `released`. A start that finished
+// before the starts' read has written the claim's resume before it was deleted, so the two reads
+// cannot both miss it. A claim the record holds no row of takes nothing either: every claim the
+// caller's supervisor holds has a row. The supervisor writes a new claim's row before it builds
+// the claim's machine (internal/daemon's supervisor.Create, AdmitClaim), and the boot builds each
+// machine from a row (supervisor.restore). Every later write of the claim, the release's
+// suspension of it as `released` among them, is an upsert of that row (upsertClaim), and no path
+// deletes a claim's row. The row is read `for update`, so the take and a write of the claim that
+// takes it over (an operator's suspension or resume, a close's or a linger's suspension, each one
+// write of the claim's row) run one after the other: a write that commits first is what this read
+// finds, and one that comes later waits until the take commits.
+//
+// The claim's lock comes after the mark's and the pause row's (PauseOfWake), the order TakePodWake
+// gives for the mark, the pause's row and the writes after them. The stop transaction of a
+// project's pause, which writes a claim's row, takes the mark and the pause's row first too
+// (internal/daemon's projectPause.stopTx). A project's resume (Resume) takes the pause's row `for
+// update` as its first statement and locks neither the mark nor a claim's row; a take that holds
+// the pause's row makes it wait, and a take that waits for the pause's row holds only the mark,
+// which the resume never asks for. No transaction that writes a claim's row locks the mark or the
+// pause's row after it, so this lock adds no cycle.
 //
 // How long a delivery waits for a queued start is that start's own fate. The start runs on its
 // lane like any row. Its failures, and those of an older row of the issue that it waits behind
@@ -276,7 +284,7 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 		if err != nil {
 			return err
 		}
-		released := true
+		var released bool
 		err = tx.QueryRow(ctx, `select state = 'suspended' and suspended_by = 'released' from claims
 			where project = $1 and token = $2 for update`, project, string(token)).Scan(&released)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
