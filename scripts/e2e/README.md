@@ -1314,7 +1314,7 @@ The stack is `packages/envoy/scripts/dev-stack.sh --callout`: the brokers, the l
 dev-stack.sh restarts natsd (SIGUSR1) and the listener (SIGUSR2) in place, on the ports they served, and natsd on the same JetStream store and callout keys.
 It runs its sessions two ways.
 
-By default, what `e2e.yaml` runs on a hosted runner, they are each plugin's own code under a stand-in host, in processes of their own and with no model:
+By default, what the `nats-callout-sessions` part of `.github/workflows/ci-job-agent-harness.yaml` runs on a hosted runner, they are each plugin's own code under a stand-in host, in processes of their own and with no model:
 the Oh My Pi extension under the stand-in host its own suite drives (`packages/pi-envoy/scripts/role-takeover/omp-client.ts`, whose heartbeat the script ticks before each message, as the host's timer would),
 Claude Code's channel server under a stand-in `claude` that speaks MCP to it and plays the Legion inbox it writes each delivery to (`role-takeover/claude-client.ts --inbox`),
 and the Codex plugin, `@sjawhar/codex-envoy`, built and packed as the release packs it (`scripts/build.ts --codex-out`, `bun pm pack`) and installed where Codex installs it, under a stand-in `codex` (`role-takeover/codex-client.ts`, compiled into a binary named `codex`).
@@ -1356,9 +1356,10 @@ Each exits 1.
 | `NATS_CALLOUT_SESSIONS_CONTROL` | unset | `seedless`, `withhold-ack`, `withhold-ack-codex` or `manifest-drops-nats-auth`, the negative controls |
 | `NATS_CALLOUT_SESSIONS_EVIDENCE_DIR` | a fresh directory under `TMPDIR` | kept and printed: `dev-stack.log`, `stack-logs/` (every server's log, each restarted one's earlier log beside it), `client-logs/` (each client's stdout and stderr and the channel server's stderr), `answers/` (each send's answer, each acking consumer's state and the probe's output) and, with `--real-hosts`, `sessions/` (each host's transcript and logs) |
 
-By default it needs `go` (unless `--binaries`, passed on to dev-stack.sh, names the stack's binaries), `bun` with this checkout's `node_modules`, `psql`, `curl`, `jq` and `python3`, and no model, container or credential, so `e2e.yaml` runs it on a hosted runner; `--real-hosts` needs `npm` and `tmux` too.
+By default it needs `go` (unless `--binaries`, passed on to dev-stack.sh, names the stack's binaries), `bun` with this checkout's `node_modules`, `psql`, `curl`, `jq` and `python3`, and no model, container or credential, so the agent-harness job's `nats-callout-sessions` part runs it on a hosted runner; `--real-hosts` needs `npm` and `tmux` too.
 No `AGENT_SECRETS_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `OMP*`, `PI_*`, `ANTHROPIC_*`, `CLAUDE_*`, `CODEX_*` or `OPENAI_*` variable of the caller reaches anything the run starts; with `--real-hosts` each model key reaches its hosts' environments alone, never an argv.
-Exit status: 0 every check passed; 1 a check failed (`FAIL <check>: …`); 2 refused (an input or tool is missing, a pin does not match, or the stack or a client did not start).
+Each check prints `CHECK <check>: PASS`, with what it read on the line after it, or `CHECK <check>: FAIL: <reason>`.
+Exit status: 0 every check passed; 1 a check failed; 2 refused (an input or tool is missing, a pin does not match, or the stack or a client did not start).
 
 ## lib/loopback-dsn.py
 

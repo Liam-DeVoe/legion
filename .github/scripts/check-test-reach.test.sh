@@ -259,6 +259,32 @@ check "fails" "$(is "$status" 1)"
 check "names the file, the gate's line and the variable" \
   "$(contains "$out" '^check-test-reach: variable: packages/web/unset.test.ts:5: FIXTURE_LIVE: ')"
 
+echo "case: 3 - a file a step's bun test runs by its path, whatever its name"
+root=$(fixture bun-path)
+mkdir -p "$root/packages/web/test"
+cat > "$root/packages/web/test/rig.ts" <<'TS'
+import { expect, test } from "bun:test";
+
+const rig = process.env["FIXTURE_RIG"];
+
+test.skipIf(rig === undefined)("the rig's row", () => {
+  expect(rig).toBeDefined();
+});
+TS
+cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+  rig:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The rig
+        run: bun test ./test/rig.ts
+        working-directory: packages/web
+YAML
+sed -i 's|    needs: \[lint, go, bun\]|    needs: [lint, go, bun, rig]|' "$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the file the step runs by its path, the gate's line and the variable" \
+  "$(contains "$out" '^check-test-reach: variable: packages/web/test/rig.ts:5: FIXTURE_RIG: ')"
+
 echo "case: 3 - an assertion that runs only when such a variable is set"
 root=$(fixture assertion)
 cat > "$root/packages/envoy/unit/measure_test.go" <<'GO'
@@ -484,6 +510,27 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the workflow, the step's line and the step" \
   "$(contains "$out" '^check-test-reach: schedule: .github/workflows/nightly.yaml:10: The nightly suite: ')"
+
+echo "case: 5 - a step whose own if: admits only schedule, in a required job"
+root=$(fixture schedule-step)
+mkdir -p "$root/packages/envoy/weekly"
+printf 'package weekly\n\nimport "testing"\n\nfunc TestWeeklyOnly(t *testing.T) {}\n' \
+  > "$root/packages/envoy/weekly/weekly_test.go"
+sed -i 's|        run: go test -v -count=1 ./...|        run: go test -v -count=1 ./unit/ ./live/|' "$root/.github/workflows/ci.yaml"
+cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+  weekly:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The weekly suite
+        if: github.event_name == 'schedule'
+        run: go test -v -count=1 ./weekly/
+        working-directory: packages/envoy
+YAML
+sed -i 's|    needs: \[lint, go, bun\]|    needs: [lint, go, bun, weekly]|' "$root/.github/workflows/ci.yaml"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "reads the step's if: as running its test on schedule alone" \
+  "$(contains "$out" '^check-test-reach: schedule: .github/workflows/ci.yaml:[0-9]*: The weekly suite: ')"
 
 echo "case: an input the search cannot read"
 root=$(fixture unreadable)

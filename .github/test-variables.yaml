@@ -114,7 +114,7 @@ variables:
     why: Sizes BenchmarkDismissedScaleHoldsTheInboxsReads.
   LEGION_TEST_CLAUDE:
     class: set
-    jobs: [claude-envoy, agent-harness]
+    jobs: [claude-envoy, agent-harness, envoy-session-stall]
     why: The Claude Code binary install-claude-code puts in the job's environment.
   LEGION_TEST_CODEX:
     class: set
@@ -138,7 +138,7 @@ variables:
     why: The NATS service of the job that runs the Oh My Pi extension tests.
   LEGION_TEST_OMP:
     class: set
-    jobs: [daemon-go, plugin-pack, agent-harness, pi-envoy, pi-legion]
+    jobs: [daemon-go, plugin-pack, agent-harness, pi-envoy, pi-legion, envoy-session-stall]
     why: The Oh My Pi binary install-omp puts in the job's environment.
   LEGION_TEST_PG_DSN:
     class: set

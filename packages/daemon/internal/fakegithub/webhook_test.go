@@ -97,3 +97,45 @@ func TestAPushAndAnOpenedPullRequestReachTheWebhookSignedWithItsSecret(t *testin
 		t.Errorf("the second delivery is %s %v, want pull request 7 opened at %s", opened.event, opened.payload, pushed)
 	}
 }
+
+// A second Webhooks call replaces the first: the pull request opened before it reaches the first
+// hook alone, and the one opened after it the second hook alone.
+func TestASecondWebhooksCallReplacesTheFirstHook(t *testing.T) {
+	var mu sync.Mutex
+	took := map[string][]float64{}
+	receiver := func(name string) *httptest.Server {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var payload struct {
+				PullRequest struct {
+					Number float64 `json:"number"`
+				} `json:"pull_request"`
+			}
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &payload)
+			mu.Lock()
+			took[name] = append(took[name], payload.PullRequest.Number)
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(server.Close)
+		return server
+	}
+	first, second := receiver("first"), receiver("second")
+	s := fakegithub.Start(t, fakegithub.Options{})
+	repo := s.NewRepository(t, "acme", "widgets", false)
+	s.Webhooks(first.URL, "first-not-a-secret")
+	s.AddPullRequest(t, repo.Slug(), fakegithub.PullRequest{Number: 1, Title: "one", Head: "one", Base: "main"})
+	s.Webhooks(second.URL, "second-not-a-secret")
+	s.AddPullRequest(t, repo.Slug(), fakegithub.PullRequest{Number: 2, Title: "two", Head: "two", Base: "main"})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for len(s.Deliveries()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(took["first"]) != 1 || took["first"][0] != 1 || len(took["second"]) != 1 || took["second"][0] != 2 {
+		t.Fatalf("the first hook took pull requests %v and the second %v, want [1] and [2]; the server says %q",
+			took["first"], took["second"], s.Deliveries())
+	}
+}

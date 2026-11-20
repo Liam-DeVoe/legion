@@ -41,8 +41,9 @@
 # NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, CODEX_* or OPENAI_* variable of its caller's: a Legion
 # pod exports its deployment's, and none may reach this stack.
 #
-# Each check prints `PASS <name>` or `FAIL <name>: <reason>`, every check runs whatever the one
-# before it did, and the last line says how many passed; the run exits 0 only when all did. A
+# Each check prints `CHECK <name>: PASS`, with what it read on the line after it, or
+# `CHECK <name>: FAIL: <reason>`, every check runs whatever the one before it did, and the last
+# line says how many passed; the run exits 0 only when all did. A
 # message has reached a session when the session's own consumer (`s-<id>`, read from the hub's
 # /jsz) acks the stream sequence it was delivered: the listener acks only on the host's `done`,
 # which a host sends once the message is in its turn (a Codex session's once `codex queue` has
@@ -97,7 +98,8 @@
 #                 the credential in its envoy.json, and the Oh My Pi and Claude Code ones pass.
 #
 # Two kinds of session:
-#   default       what e2e.yaml runs on a hosted runner: each plugin's own code under a stand-in
+#   default       what the nats-callout-sessions part of .github/workflows/ci-job-agent-harness.yaml
+#                 runs on a hosted runner: each plugin's own code under a stand-in
 #                 host, as described above, with no model.
 #   --real-hosts  the hosts themselves: the Oh My Pi binary in RPC mode (`omp --mode rpc`) with this
 #                 checkout's pi-envoy packed as the release packs it (lib/pack-plugin.sh), the
@@ -133,8 +135,8 @@
 #     LEGION_E2E_CODEX_PATH       the codex binary, or the @openai/codex launcher with node on PATH
 #     LEGION_E2E_CODEX_VERSION    the Codex CLI release the deployment pins (tested with 0.154.0),
 #                                 which `codex --version` must print as `codex-cli <version>`
-#                 the first six as envoy-session-states.sh takes them; a missing input refuses the
-#                 run, naming it, and this mode also needs tmux. It runs on a Legion pod, which
+#                 A missing input refuses the run, naming it, and this mode also needs tmux.
+#                 It runs on a Legion pod, which
 #                 carries the pins and its model routes, or any box given them. The switch step
 #                 runs in the default mode alone: it drives each host's /new and /clear through
 #                 the stand-in.
@@ -692,14 +694,17 @@ codex_start
 # ---- the checks ---------------------------------------------------------------------------------
 ran=0
 passed=0
+# pass NAME [DETAIL] and failed NAME REASON: one check's line, `CHECK NAME: PASS` or
+# `CHECK NAME: FAIL: REASON`; a pass's DETAIL, what it read, follows on a line of its own.
 pass() {
   ran=$((ran + 1))
   passed=$((passed + 1))
-  echo "PASS $1"
+  echo "CHECK $1: PASS"
+  [ -z "${2:-}" ] || note "$2"
 }
 failed() {
   ran=$((ran + 1))
-  echo "FAIL $1: $2"
+  echo "CHECK $1: FAIL: $2"
 }
 
 # admitted_as SESSION: the hub's connection list names a connection the auth service admitted as
@@ -830,7 +835,7 @@ message_each() {
       elif ! wait_for 15 received "$label" "$marker"; then
         failed "$step ($label)" "s-$session acked stream sequence $sequence, but $(not_received "$label" "$marker")"
       else
-        pass "$step ($label): s-$session acked stream sequence $sequence, admitted as session/$session"
+        pass "$step ($label)" "s-$session acked stream sequence $sequence, admitted as session/$session"
       fi
     elif received "$label" "$marker"; then
       failed "$step ($label)" "not acked: the host shows the message, but s-$session acked nothing past stream sequence $floor within 45 s"
@@ -936,7 +941,7 @@ mkdir -p "$work/probe-home"
 why=$(probe_served "$omp_session")
 [ -n "$why" ] || why=$(probe_refused "$omp_session" "$claude_session")
 if [ -z "$why" ]; then
-  pass "probe-refused-other-session: served notifications.envoy.deliver.$omp_session, refused: Permissions Violation for Subscription to \"notifications.envoy.deliver.$claude_session\""
+  pass probe-refused-other-session "served notifications.envoy.deliver.$omp_session, refused: Permissions Violation for Subscription to \"notifications.envoy.deliver.$claude_session\""
 else
   failed probe-refused-other-session "$why"
 fi
@@ -950,7 +955,7 @@ for label in "${codex_labels[@]}"; do
   probe_in=""
   [ -n "$why" ] || why=$(probe_refused "$omp_session" "$codex")
   if [ -z "$why" ]; then
-    pass "probe-refused-other-session ($label): in its plugin server's environment, served notifications.envoy.deliver.$codex and refused the Oh My Pi session's; the Oh My Pi session refused notifications.envoy.deliver.$codex"
+    pass "probe-refused-other-session ($label)" "in its plugin server's environment, served notifications.envoy.deliver.$codex and refused the Oh My Pi session's; the Oh My Pi session refused notifications.envoy.deliver.$codex"
   else
     failed "probe-refused-other-session ($label)" "$why"
   fi

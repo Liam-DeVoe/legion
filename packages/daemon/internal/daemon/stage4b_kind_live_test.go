@@ -785,11 +785,6 @@ func stage4bRun(name string, args ...string) error {
 	return nil
 }
 
-// stream is the worker stream the run's file hands the pods now.
-func (r *stage4bLive) stream() string {
-	return fmt.Sprintf("tcp://%s:%d", r.kind.Gateway, r.streamPort)
-}
-
 // restart-mid-tree: the daemon stopped and booted again at the same addresses re-adopts every
 // live claim as it was: the same session, process, pod and container, no generation relaunched a
 // while after, every pod the uid its claim records, and no stale-address replacement logged.
@@ -918,7 +913,7 @@ func (r *stage4bLive) addressMovedEnvSamePod() {
 func (r *stage4bLive) addressMovedStreamNewPod() {
 	r.addressMoved(func() string {
 		old := r.stream()
-		r.apiPort, r.streamPort = r.streamPort, r.apiPort
+		r.swapPorts()
 		return fmt.Sprintf("holds addresses a pod launched now is not handed: --connect %s, now %s", old, r.stream())
 	}, false)
 }

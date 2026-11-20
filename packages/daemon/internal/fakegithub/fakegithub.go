@@ -113,6 +113,11 @@ type Server struct {
 	// came of each delivery made.
 	hook      *webhook
 	delivered []string
+	// hooks is every hook goroutine Webhooks started, hooksContext what cancels their deliveries
+	// and stopHooks its cancel, which the test's end calls (stopWebhooks).
+	hooks        sync.WaitGroup
+	hooksContext context.Context
+	stopHooks    context.CancelFunc
 	// tokenLifetime is how long an installation token lives (SetTokenLifetime); zero is an hour.
 	tokenLifetime time.Duration
 }
@@ -147,6 +152,8 @@ func Start(t testing.TB, options Options) *Server {
 		git: git, root: t.TempDir(), home: t.TempDir(), addr: listener.Addr().String(), http2: options.HTTP2,
 		repos: map[string]*repository{}, tokens: map[string]*grant{}, apps: map[int64]*app{},
 	}
+	s.hooksContext, s.stopHooks = context.WithCancel(context.Background())
+	t.Cleanup(s.stopWebhooks)
 	// http.receivepack serves a push, which git http-backend otherwise serves only to a request
 	// whose REMOTE_USER is set, and Go's CGI host sets none: the server decides who may push
 	// before the backend runs. No configuration of the machine's is read.
@@ -168,6 +175,8 @@ func Start(t testing.TB, options Options) *Server {
 	server.EnableHTTP2 = options.HTTP2
 	server.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}}
 	server.StartTLS()
+	// Registered after stopWebhooks, so it runs first: the server stops taking requests, and so
+	// queueing events, before the hooks are stopped.
 	t.Cleanup(server.Close)
 	return s
 }

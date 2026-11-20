@@ -1850,6 +1850,31 @@ PLUGIN_SMOKE_RUNS = [
                ENVOY, ["./cmd/dispatch"], mode="build"),
 ]
 
+# The agent-harness job's nats-callout-sessions part: scripts/e2e/nats-callout-sessions.sh in its
+# default mode, itself the test and a step of its own. It runs packages/envoy/scripts/dev-stack.sh
+# --callout, whose one go build of the stack's commands (STACK_PACKAGES, dev-stack.sh:244-245) is
+# the go command a run of the step starts, which NATS_CALLOUT_RUNS pins to dev-stack.sh's own
+# line. The script's build of `legion` is --real-hosts' alone, which no step runs.
+AGENT_HARNESS_NATS_CALLOUT = "nats-callout-sessions"
+AGENT_HARNESS_NATS_CALLOUT_SCRIPT = "scripts/e2e/nats-callout-sessions.sh"
+AGENT_HARNESS_NATS_CALLOUT_STEP = "Each session's broker token admits it to its own channel alone"
+DEV_STACK = f"{ENVOY}/scripts/dev-stack.sh"
+DEV_STACK_PACKAGES = ["./cmd/broker", "./cmd/dev-oidc-issuer", "./cmd/dispatch", "./cmd/listener",
+                      "./cmd/agent-secrets", "./cmd/agent-secrets-helper", "./internal/testnats/cmd/natsd",
+                      "./cmd/natsprobe"]
+
+
+def at_nats_callout(step):
+    """A citation of a step of the agent-harness job's nats-callout-sessions part."""
+    return at(AGENT_HARNESS_NATS_CALLOUT, step, AGENT_HARNESS_WORKFLOW)
+
+
+NATS_CALLOUT_RUNS = [
+    script_run(DEV_STACK, 'GOTOOLCHAIN=go1.27.3 go build -o "$BIN_DIR/" "${STACK_PACKAGES[@]}"',
+               f"run by {AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:450, which "
+               f"{at_nats_callout(AGENT_HARNESS_NATS_CALLOUT_STEP)} runs", ENVOY, DEV_STACK_PACKAGES, mode="build"),
+]
+
 # ---------------------------------------------------------------- the kind rig
 # The kind job's tests (.github/workflows/ci-job-kind.yaml): Go tests that run on the kind rig
 # internal/kindtest brings up on the runner - a kind cluster with Agent Sandbox's controller and
@@ -3518,13 +3543,17 @@ GATES = [
     # rig they source, the two stacks and the model stand-in it runs under bun, whose loads BUNDLES
     # holds to this filter too, their go commands (PLUGIN_SMOKE_RUNS) and the pi-envoy they pack
     # through the same scripts/e2e/lib/pack-plugin.sh.
+    # The nats-callout-sessions part adds its own: its script, the lib file and the clients it
+    # sources, the stack it runs (packages/envoy/scripts/dev-stack.sh --callout) and that stack's
+    # go build (NATS_CALLOUT_RUNS), the plugins it runs under their stand-in hosts, and the Codex
+    # plugin it builds and packs as the release does.
     gate("agent_harness", AGENT_HARNESS_JOB, runs=[
         script_run(f"{DAEMON}/internal/daemon/live_agent_proof_test.go",
                    'build := exec.Command("go", "build", "-o", binary, "./cmd/legion")',
                    f"buildProofLegion, which the five tests {at_pane_drivers(AGENT_HARNESS_STEP)} runs and the one "
                    f"{at_tmux_scripts(AGENT_HARNESS_TMUX_STEP)} runs call",
                    DAEMON, [LEGION_BUILD], mode="build"),
-    ] + TMUX_SCRIPT_RUNS + SESSION_SCRIPT_RUNS + PLUGIN_SMOKE_RUNS, exact=[
+    ] + TMUX_SCRIPT_RUNS + SESSION_SCRIPT_RUNS + PLUGIN_SMOKE_RUNS + NATS_CALLOUT_RUNS, exact=[
         pinned_step(AGENT_HARNESS_PANE_DRIVERS, AGENT_HARNESS_STEP, DAEMON, AGENT_HARNESS_SCRIPT, [
             (DAEMON, [f"./{AGENT_HARNESS_PACKAGE}/"], "go test -run over the package the five tests are in", {}),
         ], workflow=AGENT_HARNESS_WORKFLOW),
@@ -3679,6 +3708,23 @@ GATES = [
       + install_omp(AGENT_HARNESS_PLUGIN_SMOKES, AGENT_HARNESS_WORKFLOW)
       + setup_go(AGENT_HARNESS_PLUGIN_SMOKES, f"{ENVOY}/go.mod", AGENT_HARNESS_WORKFLOW)
       + bun_job(AGENT_HARNESS_PLUGIN_SMOKES, AGENT_HARNESS_WORKFLOW)
+      + reads(
+        (AGENT_HARNESS_NATS_CALLOUT_SCRIPT, at_nats_callout(AGENT_HARNESS_NATS_CALLOUT_STEP)),
+        ("scripts/e2e/lib/codex-host.sh", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:230 sources it"),
+        ("packages/pi-envoy/scripts/role-takeover/clients.sh", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:539 sources it"),
+        (DEV_STACK, f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:450 runs it with --callout"),
+        (f"{ENVOY}/scripts/lib/callout-stack.sh", f"{DEV_STACK}:400 sources it"),
+        ("scripts/e2e/lib/held-port.py", f"{DEV_STACK}:151,574 runs it to hold the stack's ports"),
+        ("packages/pi-envoy/**", f"{AGENT_HARNESS_NATS_CALLOUT_SCRIPT}:582 runs the Oh My Pi extension under "
+                                 "role-takeover/omp-client.ts with bun, and scripts/e2e/lib/codex-host.sh:58,269 compiles "
+                                 "role-takeover/codex-client.ts and runs role-takeover/codex-probe.ts"),
+        ("packages/pi-shared/**", "packages/pi-envoy/scripts/role-takeover/host-stub.ts:15 and omp-client.ts:43 import "
+                                  "@legion/pi-shared/*"),
+        ("packages/contracts/**", "the Oh My Pi extension and the channel server the stand-ins run import @legion/contracts"),
+        (".agents/plugins/marketplace.json", "scripts/e2e/lib/codex-host.sh:27 reads the codex-envoy plugin's entry"),
+    ) + CLAUDE_ENVOY_BUILD
+      + setup_go(AGENT_HARNESS_NATS_CALLOUT, f"{ENVOY}/go.mod", AGENT_HARNESS_WORKFLOW)
+      + bun_job(AGENT_HARNESS_NATS_CALLOUT, AGENT_HARNESS_WORKFLOW)
       + CI_SELF + job_self(AGENT_HARNESS_JOB), workflow=CI),
 
     # The kind job: each part of KIND_PARTS runs its tests and each of KIND_TREE_PARTS one test of
@@ -4063,8 +4109,6 @@ GATES = [
          "document every committed recording's body is held to, which this job's test step runs"),
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
-        ("scripts/e2e/lib/process-tree.sh", "packages/dispatch/e2e/acceptance/replace-blocks.sh:109 sources it, and "
-                                            f"e2e/__tests__/replace-blocks-guard.test.ts, which {at('dispatch-ui', 'Test dispatch dashboard')} runs, runs that script"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:4-7 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
     ) + envoy_client_dep("packages/envoy-client/test/fake-dispatch.ts:30 imports ../src/dispatch-http, which the two suites "

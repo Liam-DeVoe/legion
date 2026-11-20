@@ -388,15 +388,15 @@ interface Sighting {
 }
 
 async function sighting(envoyUrl: string, sessionID: string): Promise<Sighting> {
-  const path = `/v1/registry/${encodeURIComponent(sessionID)}?include=unresponsive`;
-  const response = await fetch(`${envoyUrl}${path}`);
+  const route = `/v1/registry/${encodeURIComponent(sessionID)}?include=unresponsive`;
+  const response = await fetch(`${envoyUrl}${route}`);
   const body: unknown = await response.json();
   if (response.ok) {
     const row = SessionRowSchema.parse(body);
     return { state: row.state, lastSeen: row.last_seen };
   }
   if (response.status !== 404) {
-    throw new Error(`GET ${path} answered ${response.status}: ${JSON.stringify(body)}`);
+    throw new Error(`GET ${route} answered ${response.status}: ${JSON.stringify(body)}`);
   }
   const refusal = NoLiveSessionSchema.parse(body);
   return { state: refusal.state, lastSeen: refusal.last_seen ?? 0 };
@@ -441,12 +441,12 @@ type RoleAnswer =
  *  holder's session through (writeBusUnavailable, packages/envoy/cmd/listener/api.go), or the 500
  *  of an unreadable claim - and is thrown with its status and body. */
 async function roleAnswer(envoyUrl: string, role: string): Promise<RoleAnswer> {
-  const path = `/v1/roles/${encodeURIComponent(role)}`;
-  const response = await fetch(`${envoyUrl}${path}`);
+  const route = `/v1/roles/${encodeURIComponent(role)}`;
+  const response = await fetch(`${envoyUrl}${route}`);
   const body: unknown = await response.json();
   if (response.ok) return { status: response.status, holder: RoleHolderSchema.parse(body) };
   if (response.status !== 404) {
-    throw new Error(`GET ${path} answered ${response.status}: ${JSON.stringify(body)}`);
+    throw new Error(`GET ${route} answered ${response.status}: ${JSON.stringify(body)}`);
   }
   return { status: response.status, refusal: RoleRefusalSchema.parse(body) };
 }
@@ -1373,11 +1373,19 @@ describe.skipIf(hostsSkipped)(
         let output = "";
         void (async () => {
           const decoder = new TextDecoder();
+          // A line can reach this read split across two chunks, so a line is counted once its
+          // newline has come: what follows a chunk's last newline waits for the chunks after it,
+          // and is a whole line of its own when the output ends.
+          let partial = "";
+          const result = '"type":"result"';
           for await (const chunk of child.stdout) {
             const text = decoder.decode(chunk, { stream: true });
             output += text;
-            results += text.split("\n").filter((line) => line.includes('"type":"result"')).length;
+            const lines = (partial + text).split("\n");
+            partial = lines.pop() ?? "";
+            results += lines.filter((line) => line.includes(result)).length;
           }
+          if (partial.includes(result)) results += 1;
         })();
         const stderr = new Response(child.stderr).text();
         // groupLives is whether any process of Claude Code's group still runs: kill(2) with signal 0

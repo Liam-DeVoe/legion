@@ -135,7 +135,11 @@ type kindTreeRig struct {
 	model                                            *kindStandin
 	pg                                               kindtest.Postgres
 	githubAPI                                        string
-	apiPort, streamPort                              int
+	// apiPort and streamPort are the daemon's API and worker stream ports. The test's goroutine
+	// alone writes them, and a checkpoint swaps them (swapPorts) while the pod watch's goroutine
+	// reads the stream port (stream), so the swap and that read hold ports.
+	apiPort, streamPort int
+	ports               sync.Mutex
 	// envoyURL is the listener address the current file hands the pods, and configPath the file.
 	envoyURL, configPath string
 	controller           bool
@@ -225,17 +229,35 @@ func (r *kindTreeRig) use(t *testing.T) {
 	}
 }
 
+// stream is the worker stream the run's file hands the pods now.
+func (r *kindTreeRig) stream() string {
+	r.ports.Lock()
+	defer r.ports.Unlock()
+	return fmt.Sprintf("tcp://%s:%d", r.kind.Gateway, r.streamPort)
+}
+
+// swapPorts swaps the daemon's API and worker stream ports, under the lock the pod watch reads
+// the stream port under.
+func (r *kindTreeRig) swapPorts() {
+	r.ports.Lock()
+	defer r.ports.Unlock()
+	r.apiPort, r.streamPort = r.streamPort, r.apiPort
+}
+
 // checkpoint runs body as the subtest name and stops the test at the first one that fails: every
-// checkpoint reads the state the ones before it left.
+// checkpoint reads the state the ones before it left. A failed one's CHECK line gives what the
+// test can say of it: *testing.T hands no failure message back, and the subtest's own messages
+// are the lines go test printed above it.
 func (r *kindTreeRig) checkpoint(name string, body func()) {
+	started := time.Now()
 	if !r.parent.Run(name, func(t *testing.T) {
 		r.use(t)
 		defer r.use(r.parent)
-		started := time.Now()
 		body()
 		fmt.Printf("CHECK %s: PASS (%ds)\n", name, int(time.Since(started).Seconds()))
 	}) {
-		fmt.Printf("CHECK %s: FAIL\n", name)
+		fmt.Printf("CHECK %s: FAIL: the checkpoint failed after %ds; its failure messages are the lines above\n",
+			name, int(time.Since(started).Seconds()))
 		r.parent.FailNow()
 	}
 }
@@ -816,7 +838,7 @@ func startKindPodWatch(t *testing.T, r *kindTreeRig) *kindPodWatch {
 						return s.Name == runtime.IssuePodContainer && s.Ready
 					}) {
 						if _, seen := w.streams[pod.Metadata.UID]; !seen {
-							w.streams[pod.Metadata.UID] = fmt.Sprintf("tcp://%s:%d", r.kind.Gateway, r.streamPort)
+							w.streams[pod.Metadata.UID] = r.stream()
 						}
 						w.pods[pod.Metadata.UID] = pod
 					}

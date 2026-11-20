@@ -3,6 +3,7 @@ package fakegithub
 import (
 	"bytes"
 	"cmp"
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -23,11 +25,16 @@ import (
 // delivery is made after the request that caused it has been answered, in the order the events
 // happened, and Deliveries says what each one was answered.
 
-// webhook is where the server delivers its events, and with what secret.
+// webhook is where the server delivers its events, and with what secret. Its goroutine delivers
+// what queue holds, in order, until the queue is closed (close).
 type webhook struct {
 	url, secret string
 	client      *http.Client
-	queue       chan delivery
+	// mu orders a send against close: a send takes it to queue a delivery, close to close the
+	// queue, so no send meets a closed channel.
+	mu     sync.Mutex
+	closed bool
+	queue  chan delivery
 }
 
 // delivery is one event to deliver.
@@ -39,17 +46,59 @@ type delivery struct {
 }
 
 // Webhooks has every repository of the server deliver its push and pull_request events to url,
-// signed with secret, from now until the test ends.
+// signed with secret, until the test ends or a later call names another hook. A later call
+// replaces this one: every event from then goes to the new hook, and this one delivers what it
+// had already queued and stops. At the test's end the server stops every hook, cancelling a
+// delivery still under way, and waits for each one's goroutine to return.
 func (s *Server) Webhooks(url, secret string) {
 	hook := &webhook{url: url, secret: secret, client: &http.Client{Timeout: 30 * time.Second}, queue: make(chan delivery, 256)}
 	s.mu.Lock()
+	replaced := s.hook
 	s.hook = hook
 	s.mu.Unlock()
-	go func() {
+	if replaced != nil {
+		replaced.close()
+	}
+	s.hooks.Go(func() {
 		for d := range hook.queue {
-			s.record(hook.deliver(d))
+			s.record(hook.deliver(s.hooksContext, d))
 		}
-	}()
+	})
+}
+
+// stopWebhooks ends every hook at the test's end: deliveries still under way or queued are
+// cancelled, and it returns once each hook's goroutine has.
+func (s *Server) stopWebhooks() {
+	s.stopHooks()
+	s.mu.Lock()
+	hook := s.hook
+	s.hook = nil
+	s.mu.Unlock()
+	if hook != nil {
+		hook.close()
+	}
+	s.hooks.Wait()
+}
+
+// enqueue queues d unless the hook is closed, and says whether it did.
+func (h *webhook) enqueue(d delivery) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return false
+	}
+	h.queue <- d
+	return true
+}
+
+// close ends the hook's queue, once: its goroutine delivers what the queue holds and returns.
+func (h *webhook) close() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.closed {
+		h.closed = true
+		close(h.queue)
+	}
 }
 
 // Deliveries is one line per webhook delivery made so far, in order: the event and the account it
@@ -67,31 +116,33 @@ func (s *Server) record(line string) {
 	s.delivered = append(s.delivered, line)
 }
 
-// send queues event, the act of login, with payload for the hook, if there is one.
+// send queues event, the act of login, with payload for the hook, if there is one: the hook of the
+// moment it queues, so an event a replaced hook closed against goes to the hook that replaced it.
 func (s *Server) send(event, login string, payload map[string]any) {
-	s.mu.Lock()
-	hook := s.hook
-	s.mu.Unlock()
-	if hook == nil {
-		return
-	}
 	label := event + " from " + login
 	body, err := json.Marshal(payload)
 	if err != nil {
 		s.record(label + " not delivered: " + err.Error())
 		return
 	}
-	hook.queue <- delivery{event: event, label: label, body: body}
+	for {
+		s.mu.Lock()
+		hook := s.hook
+		s.mu.Unlock()
+		if hook == nil || hook.enqueue(delivery{event: event, label: label, body: body}) {
+			return
+		}
+	}
 }
 
-// deliver posts one event and says what came of it.
-func (h *webhook) deliver(d delivery) string {
+// deliver posts one event, cancelled with ctx, and says what came of it.
+func (h *webhook) deliver(ctx context.Context, d delivery) string {
 	id := make([]byte, 16)
 	_, _ = rand.Read(id)
 	deliveryID := hex.EncodeToString(id)
 	mac := hmac.New(sha256.New, []byte(h.secret))
 	mac.Write(d.body)
-	request, err := http.NewRequest(http.MethodPost, h.url, bytes.NewReader(d.body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, h.url, bytes.NewReader(d.body))
 	if err != nil {
 		return fmt.Sprintf("%s %s: %v", d.label, deliveryID, err)
 	}

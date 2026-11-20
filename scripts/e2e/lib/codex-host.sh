@@ -283,7 +283,7 @@ codex_transcripts_in_evidence() {
     file=${codex_transcript[$label]:-}
     kept=$evidence/sessions/${file##*/}
     if [ -n "$file" ] && [ -s "$kept" ] && head -n 1 "$kept" | grep -qF -- "${codex_session[$label]}"; then
-      pass "transcript-in-evidence ($label): $kept, the transcript of Codex session ${codex_session[$label]}"
+      pass "transcript-in-evidence ($label)" "$kept, the transcript of Codex session ${codex_session[$label]}"
     else
       failed "transcript-in-evidence ($label)" "the evidence the teardown left holds no transcript of Codex session ${codex_session[$label]} (its record named '$file')"
     fi

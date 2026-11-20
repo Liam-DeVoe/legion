@@ -46,10 +46,10 @@ export function ownGroup(argv: readonly string[]): string[] {
 /**
  * untilRunning(pid, program) resolves once pid runs program (its /proc/<pid>/exe, the kernel's
  * record), and rejects naming the pid, the program and what the pid ran instead when it does not
- * within 10 s: the shape and the bound of claude-backend-guards.test.ts's await_child (200 reads,
- * 50 ms apart). A process ownGroup started leads its own group only once its perl has called
- * setpgrp, and runs its program only after that, so a sweep row waits on this before it sweeps:
- * a sweep that stopped the perl before its setpgrp would stop a member of the runner's own group.
+ * within 10 s: 200 reads, 50 ms apart. A process ownGroup started leads its own group only once
+ * its perl has called setpgrp, and runs its program only after that, so a sweep row waits on this
+ * before it sweeps: a sweep that stopped the perl before its setpgrp would stop a member of the
+ * runner's own group.
  */
 export async function untilRunning(pid: number, program: string): Promise<void> {
   const want = realpathSync(hostTool(program) ?? program);

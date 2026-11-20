@@ -135,6 +135,24 @@ name: CI job agent-harness
 # failed step leaves its logs under agent-harness-logs, which the step after them uploads when the
 # part fails.
 #
+# nats-callout-sessions runs scripts/e2e/nats-callout-sessions.sh in its default mode, itself the
+# test, with the same CHECK lines: an Oh My Pi session, a Claude Code session and two Codex CLI
+# sessions, each the plugin's own code under a stand-in host and each with a broker token of its
+# own, are admitted to their own channels on the hub behind the NATS auth service, receive a
+# direct message across a restart of the listener and of natsd, and a probe in one session's
+# environment is refused another's channel. It takes the job's environment alone: the stack of
+# packages/envoy/scripts/dev-stack.sh --callout on two databases of its own on the job's
+# PostgreSQL (LEGION_TEST_PG_DSN), built from this checkout; no model, no container and no
+# credential.
+#
+# What nats-callout-sessions installs is what its script needs: the PostgreSQL client (dev-stack.sh
+# makes and drops its databases with psql) from apt; Bun and a frozen install, for the plugins,
+# their stand-in hosts, the Codex plugin's build and pack and the stand-in `codex` it compiles; and
+# setup-go and the go-envoy-test cache restore, since dev-stack.sh builds the stack's eight
+# commands, all of packages/envoy. curl, jq and python3 are the runner image's own. A failed step
+# leaves its evidence directory under agent-harness-logs, which the step after it uploads when the
+# part fails.
+#
 # Each part's last step reports ci-ok for the caller: on a merge-group run that part's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
@@ -167,7 +185,8 @@ jobs:
     # names it before the runner cancels the job. Around it are the jj, Oh My Pi and Bun
     # installs, the image pull and the Go build of internal/daemon's test binary,
     # which the cache restore makes incremental; 40 minutes leaves that setup the other 20 on a
-    # slow runner.
+    # slow runner. Measured on a runner: the whole part took 10.3 minutes in CI run 44719869512
+    # and 9.9 in run 44635427552.
     timeout-minutes: 40
     services:
       postgres:
@@ -264,12 +283,11 @@ jobs:
 
   tmux-scripts:
     runs-on: ubuntu-24.04
-    # Budget, read from the scripts' own waits and not yet measured on a runner: stage 2 about
-    # eight minutes (its orphan sweep alone waits out a 120 s grace), the controller about four,
-    # the clean stop about four, the Claude Code test about five, each after its own builds of
-    # `legion`, the listener and natsd, which the cache restore makes incremental; together near
-    # the part budget of about 24 minutes. The first runs' times decide whether a script moves to
-    # a part of its own; 45 minutes lets those runs finish and say so rather than be cut off.
+    # Budget: the part took 8.5 minutes in CI run 44635427552, the scripts' builds of `legion`, the
+    # listener and natsd, which the cache restore makes incremental, and the installs included; in
+    # run 44719869512 it failed early, so that run measures nothing. Stage 2's orphan sweep alone
+    # waits out a 120 s grace. 45 minutes, set before any run was measured, leaves a slow runner
+    # room.
     timeout-minutes: 45
     services:
       postgres:
@@ -396,9 +414,8 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget: the script passed end to end in 392 s in a Legion worker pod under gVisor (its builds
     # of the listener, Dispatch, natsd and the SPA, then its 21 checks, whose own waits include the
-    # 45 s command of picker-during-turn and the 65 s of no-answer), under 7 minutes, with about 5
-    # more for the installs: about 12 of the part budget of about 24. 25 minutes leaves the first
-    # runs on a runner room to say what they take.
+    # 45 s command of picker-during-turn and the 65 s of no-answer), and the whole part took 7.2
+    # minutes in CI run 44719869512 and 6.3 in run 44635427552, inside the part budget of about 24.
     timeout-minutes: 25
     services:
       postgres:
@@ -493,13 +510,11 @@ jobs:
 
   session-scripts:
     runs-on: ubuntu-24.04
-    # Budget: envoy-session-delivery.sh ran end to end in 478 s in a Legion worker pod under
-    # gVisor (its builds, then eight windows, each up to a minute's settle and 15 s held for a
-    # repeat), about 8 minutes. dispatch-user-turns.sh has not run outside CI: its own waits
-    # (the spec edit's 30 s quiet window, the 65 s forged frame, the listener's drop of a stopped
-    # session, which waits up to 330 s) put it near 12 minutes. With about 5 minutes of installs
-    # the part is near the budget of about 24; 30 minutes lets a first run finish and say whether
-    # dispatch-user-turns.sh needs a part of its own.
+    # Budget: the part, both scripts and the installs, took 9.7 minutes in CI run 44719869512 and
+    # 9.8 in run 44635427552. dispatch-user-turns.sh's own waits (the spec edit's 30 s quiet
+    # window, the 65 s forged frame, the listener's drop of a stopped session, which waits up to
+    # 330 s) are its longest. 30 minutes, set before any run was measured, leaves a slow runner
+    # room.
     timeout-minutes: 30
     services:
       postgres:
@@ -613,9 +628,8 @@ jobs:
     # omp-roundtrip.sh in 36 s and smoke-registration-stall.sh in 529 s (four arms one after
     # another, each stall arm's watch a 90 s live window and a minute or more past it), each after
     # its own builds of natsd, the listener and, for two of them, Dispatch, which the go-envoy
-    # cache restore makes incremental: about 11 minutes, and about 16 with the installs, inside the
-    # part budget of about 24; 25 minutes leaves the first runs on a runner room to say what they
-    # take.
+    # cache restore makes incremental; the whole part took 11.9 minutes in CI run 44719869512 and
+    # 11.6 in run 44635427552, inside the part budget of about 24.
     timeout-minutes: 25
     services:
       postgres:
@@ -696,6 +710,92 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: agent-harness-plugin-smokes-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/agent-harness-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: agent-harness
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  nats-callout-sessions:
+    runs-on: ubuntu-24.04
+    # Budget, not yet measured on a runner: dev-stack.sh's build of eight commands of
+    # packages/envoy, which the go-envoy-test cache restore makes incremental, then the sessions'
+    # four rounds of a message each, each receive waiting up to 45 s for its ack, and two restarts.
+    # 25 minutes, as session-settings' and plugin-smokes' first runs had, lets the first runs say
+    # what it takes.
+    timeout-minutes: 25
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml):
+        # the image and the shape the daemon-go job declares. Dispatch's migrations create the
+        # pgvector extension in the database dev-stack.sh makes for it.
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # dev-stack.sh makes and drops its two databases with psql.
+      - name: Install the PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          psql --version
+
+      # The plugins, their stand-in hosts, the Codex plugin's build and pack and the stand-in
+      # `codex` run on Bun over the installed workspace.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+
+      # go-envoy-test, restored only, for the reason
+      # .github/ci-notes/dispatch-browser.md#why-the-binaries-job-restores-go-envoy-test gives:
+      # dev-stack.sh builds the Dispatch server, the broker and its commands beside the listener and
+      # natsd, and only that family's entry holds their packages.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-test-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-{1}-', runner.os, runner.arch) }}
+
+      # The script's own variable names its evidence directory, set on the command line rather
+      # than in an env: block, which ci_filter_coverage.py reads as able to change what the go
+      # commands the script starts compile.
+      - name: Each session's broker token admits it to its own channel alone
+        run: NATS_CALLOUT_SESSIONS_EVIDENCE_DIR="$RUNNER_TEMP/agent-harness-logs/nats-callout-sessions" bash scripts/e2e/nats-callout-sessions.sh
+
+      # A failed step's evidence: the stack's logs, each client's output and every answer the
+      # checks read.
+      - name: Upload the NATS auth service sessions proof's logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: agent-harness-nats-callout-sessions-logs-${{ github.run_attempt }}
           path: ${{ runner.temp }}/agent-harness-logs
 
       - name: Report ci-ok when this job decides a merge-group run

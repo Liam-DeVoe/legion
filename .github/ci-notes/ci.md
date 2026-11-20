@@ -972,7 +972,10 @@ stand-ins they run under bun and what those load, their builds of the listener,
 Dispatch, natsd and `legion`, and the SPA two of them build and drive in Playwright's
 Chromium. The plugin-smokes part adds the four live scripts of the Oh My Pi plugin,
 in packages/pi-envoy and packages/dispatch, the rig they source, the two stacks of
-packages/envoy-client/test it starts under bun and the model stand-in it runs.
+packages/envoy-client/test it starts under bun and the model stand-in it runs. The
+nats-callout-sessions part adds scripts/e2e/nats-callout-sessions.sh, the stack of
+packages/envoy/scripts/dev-stack.sh --callout it runs and that stack's build of eight
+commands of packages/envoy, and the Codex plugin it builds and packs.
 
 ## agent_harness: The plugin packs each test runs
 
@@ -1009,6 +1012,14 @@ the page.
 The plugin-smokes part: the rig its four scripts source, which starts the stacks
 and the model stand-in under bun; the scripts are in the two packages above and
 the stacks in packages/envoy-client.
+
+## agent_harness: The nats-callout-sessions part
+
+The nats-callout-sessions part: its script, the lib file it sources for its Codex
+sessions, the stack it runs (packages/envoy/scripts/dev-stack.sh and the lib file
+that sources for the NATS auth service), and the Codex plugin's marketplace entry it
+packs the plugin by. The stack's go build follows them, with its whole closure; the
+plugins and their stand-in hosts are in the packages above.
 
 ## proof_sdk_offline: The proof-sdk-offline job: a frozen install behind a
 

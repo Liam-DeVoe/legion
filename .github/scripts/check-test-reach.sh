@@ -34,8 +34,8 @@
 #      through a script, an action or a `package.json` script it runs, or through a test it runs -
 #      and whose first 15 lines carry neither the tool line (a comment that starts
 #      `legion: tool - `) nor the not-a-test line (`legion: not a test - `);
-#   5. schedule: a step of a workflow, or of a job, that runs only on `schedule` or
-#      `workflow_dispatch` and runs a test command (`go test`, `bun test`, `playwright test`, a
+#   5. schedule: a step of a workflow, of a job, or of its own `if:`, that runs only on `schedule`
+#      or `workflow_dispatch` and runs a test command (`go test`, `bun test`, `playwright test`, a
 #      `bun run` script that runs one, a `.test.sh` harness) that no required job runs with the
 #      same text.
 #
@@ -47,18 +47,18 @@
 # A required job is one ci.yaml's `ci-ok` needs, and `ci-ok` and `pr-title` themselves; a job of
 # a workflow such a job calls is a part of it. A held-back job (`agent-harness` and `kind` run in
 # the merge queue and under the `full-ci` label) is a required job: ci-ok needs it and the merge
-# queue runs it. A part whose `if:` admits only `schedule` or `workflow_dispatch`, and a step that
-# carries `continue-on-error`, run no required test.
+# queue runs it. A part whose `if:` admits only `schedule` or `workflow_dispatch`, a step whose own
+# `if:` does, and a step that carries `continue-on-error`, run no required test.
 #
 # How it reads a step. A `go test` step is read with .github/scripts/go_test_steps.py, the reader
 # go-test-step-expansion.py uses: its packages, `./...` and `go list | grep -Ev | xargs` (resolved
 # here from the tree, the import paths the module's go.mod gives each directory), `for` loops,
 # `-tags`, `-race`, `-run`, `-skip`, `-exec`, and the scripts its AUDITED_SCRIPTS reads
-# (database-skips.sh); a `-run "$pattern"` from .github/scripts/go-tagged-tests.sh is the
-# alternation that script prints, read off the source as it reads it, and race_memory.py is a
-# wrapper. backend-count.sh is read by its own arguments: the packages before `--` and the tests
-# after it; a script of TEST_BINARY_SCRIPTS (pmdoc's differential.sh) by each `<binary>
-# -test.run '<pattern>'` it runs, with the variables it sets for that run. A test file is in a
+# (database-skips.sh, and backend-count.sh by its arguments); a `-run "$pattern"` from
+# .github/scripts/go-tagged-tests.sh is the alternation that script prints, read off the source as
+# it reads it, and race_memory.py is a wrapper. A script of TEST_BINARY_SCRIPTS (pmdoc's
+# differential.sh) is read by each `<binary> -test.run '<pattern>'` it runs, with the variables it
+# sets for that run. A test file is in a
 # step's build when its constraint and its file name hold for linux on the step's runner
 # architecture, with `cgo`, the step's `-tags` and, under `-race`, `race`. A `-run` and a `-skip`
 # are matched against a test's name level by level, as `go test` splits them; only the top level
@@ -95,6 +95,12 @@
 # a test file a required step runs, or a module of the same package such a Bun test imports - by
 # a path whose end is the script's path or by its bare name; a Python script reaches another only
 # through an import.
+#
+# What it cannot see there: a mention is not a run. A test file that names a script counts as
+# running it, so a test that reads a script or lifts its functions out without running the script
+# makes the script read as reached. scripts/e2e/lib/nats-callout-omp-pin.test.ts is one: it reads
+# nats-callout-sessions.sh's functions through script-functions.ts and starts no run of the script,
+# whose own reach is the agent-harness job's nats-callout-sessions part.
 #
 # Files are read from `git ls-files` (tracked and untracked files git does not ignore) where the
 # tree is a git checkout, and by a walk of the tree otherwise.
@@ -253,8 +259,8 @@ EVENT_TERM = re.compile(r"github\.event_name\s*==\s*'([a-z_]+)'")
 
 
 def scheduled_only(condition) -> bool:
-    """Whether a job's `if:` admits only schedule and workflow_dispatch runs: a disjunction of
-    `github.event_name == '…'` terms, each naming one of the two."""
+    """Whether a job's or a step's `if:` admits only schedule and workflow_dispatch runs: a
+    disjunction of `github.event_name == '…'` terms, each naming one of the two."""
     if condition is None:
         return False
     text = str(condition).strip()
@@ -338,6 +344,7 @@ class RunStep:
     env: frozenset[str]
     exported: frozenset[str]
     skipped: bool  # continue-on-error
+    scheduled: bool  # its own `if:`, or its action step's, admits only schedule and workflow_dispatch
 
     @property
     def label(self) -> str:
@@ -374,20 +381,24 @@ def run_steps(part: Part) -> list[RunStep]:
         name = str(step.get("name") or f"step {index + 1}")
         env = frozenset(base | written | set(step.get("env") or {}))
         skipped = bool(step.get("continue-on-error"))
+        scheduled = scheduled_only(step.get("if"))
         if step.get("run"):
             script = str(step["run"])
             found.append(RunStep(part, index, name, getattr(step, "line", 0),
                                  step_workdir(part.document, part.body, step), script, env,
-                                 frozenset(exported(script)), skipped))
-            written |= env_written(script)
+                                 frozenset(exported(script)), skipped, scheduled))
+            if not scheduled:
+                written |= env_written(script)
         elif step.get("uses"):
             for path, inner in action_steps(str(step["uses"])):
                 script = str(inner["run"])
                 inner_env = frozenset(env | set(inner.get("env") or {}))
                 found.append(RunStep(part, index, f"{name} ({path})", getattr(step, "line", 0),
                                      str(inner.get("working-directory") or "."), script, inner_env,
-                                     frozenset(exported(script)), skipped))
-                written |= env_written(script)
+                                     frozenset(exported(script)), skipped,
+                                     scheduled or scheduled_only(inner.get("if"))))
+                if not scheduled:
+                    written |= env_written(script)
     return found
 
 
@@ -417,7 +428,7 @@ def workflows() -> Workflows:
 
 
 def required_steps(flows: Workflows) -> list[RunStep]:
-    return [step for step in flows.steps if step.part.required and not step.skipped]
+    return [step for step in flows.steps if step.part.required and not step.skipped and not step.scheduled]
 
 
 # --------------------------------------------------------------------------------- the Go tree
@@ -822,39 +833,17 @@ def static_answer(tree: GoTree, goarch: str):
     return answer
 
 
-# backend-count.sh runs one `go test -json … -run '^(TEST|…)$' PACKAGE…` from packages/envoy: the
-# packages are its arguments before `--`, the tests those after.
-BACKEND_COUNT = "packages/envoy/scripts/backend-count.sh"
-
-
-def backend_count(step: RunStep, line: str) -> steps.GoTest | None:
-    words = shlex.split(line)
-    if not words or not words[0].endswith("backend-count.sh"):
-        return None
-    if join(step.workdir, words[0]) != BACKEND_COUNT or "--" not in words:
-        raise steps.Refused(f"{step.label}: `{line}` is no call of {BACKEND_COUNT} this search reads")
-    split = words.index("--")
-    packages, names = words[1:split], words[split + 1:]
-    if not packages or not names or not all(steps.NAME.match(name) for name in names):
-        raise steps.Refused(f"{step.label}: `{line}` names no package or no test {BACKEND_COUNT} reads")
-    shared = steps.Step(step.part.workflow, step.part.name, step.name, "packages/envoy", line)
-    return steps.GoTest(shared, line, packages, run="^(" + "|".join(names) + ")$")
-
-
 def go_runs(flows: Workflows, tree: GoTree) -> list[GoRun]:
     by_key = {(s.part.workflow, s.part.name, s.name): s for s in flows.steps if s.part.workflow in flows.documents}
     runs = []
     for shared in steps.steps_of(flows.documents):
         step = by_key.get((shared.workflow, shared.job, shared.name))
-        if step is None or step.skipped or not step.part.required:
+        if step is None or step.skipped or step.scheduled or not step.part.required:
             continue
         for command in steps.commands_of(shared, static_answer(tree, step.part.arch)):
             runs.append(go_run(tree, step, command))
     for step in required_steps(flows):
         for line in commands(step.script):
-            command = backend_count(step, line) if "backend-count.sh" in line else None
-            if command is not None:
-                runs.append(go_run(tree, step, command))
             runs += binary_runs(tree, step, line)
     return runs
 
@@ -2498,11 +2487,13 @@ def schedule_findings(files: list[str], flows: Workflows, reader: BunReader) -> 
         scheduled = triggers(document) <= SCHEDULED and triggers(document)
         for name, body in (document.get("jobs") or {}).items():
             body = body or {}
-            if not (scheduled or scheduled_only(body.get("if"))):
-                continue
+            # A job every step of which runs only on schedule or workflow_dispatch, or else one
+            # whose steps are read one by one for an `if:` of their own that says so. A job that
+            # calls a workflow is read in that workflow's own file for the steps' `if:`.
+            job_scheduled = bool(scheduled) or scheduled_only(body.get("if"))
             uses = str(body.get("uses") or "")
             if uses.startswith(f"./{WORKFLOWS}/"):
-                if uses.removeprefix("./") in called_by_required:
+                if not job_scheduled or uses.removeprefix("./") in called_by_required:
                     continue
                 parts = parts_of(name, path, name, body, document, False, frozenset())
             elif uses:
@@ -2511,6 +2502,8 @@ def schedule_findings(files: list[str], flows: Workflows, reader: BunReader) -> 
                 parts = [Part(name, path, name, body, document, False, "amd64")]
             for part in parts:
                 for step in run_steps(part):
+                    if not (job_scheduled or step.scheduled):
+                        continue
                     for line in script_lines(step.script):
                         if not is_test_command(reader, step.workdir, line):
                             continue
@@ -2542,7 +2535,10 @@ def main() -> int:
     bun = [run for step in required_steps(flows) for run in reader.runs(step)]
     go_gates = GoGates(tree)
     go_gates.analyse()
-    gates = go_gates.gates + ts_gates(TsTree(files), reader.tests)
+    # The test files, and every other TypeScript file a required step's `bun test` runs by its
+    # path (`bun test ./test/rig.ts`), which Bun runs as a test file whatever its name.
+    ts_files = sorted(set(reader.tests) | {path for run in bun for path in run.files if TS_SOURCE.search(path)})
+    gates = go_gates.gates + ts_gates(TsTree(files), ts_files)
     findings = (tag_findings(tree, go) + skip_findings(tree, go)
                 + variable_findings(rows, gates, flows, tree, go, bun)
                 + script_findings(files, flows, tree, go, reader, bun)

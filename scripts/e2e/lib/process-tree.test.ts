@@ -350,8 +350,7 @@ echo "none: status $st: \${why%%:*}"
 );
 
 // The rig helpers' process-scan rows: signalable and stop_tree (lib/process-tree.sh) and the proc_*
-// reads they use each read only the /proc entries of the processes they ask about (the failure note
-// of parked-decision-devbox.sh's wait_for_run_processes is parked-decision-cleanup.test.ts's). Each
+// reads they use each read only the /proc entries of the processes they ask about. Each
 // row puts a stand-in for ps, pgrep and pkill first on PATH that logs every call and runs nothing:
 // those read every process on the machine (procps-ng's `ps -p` included), so a helper that still
 // calls one is named in the log, and the row fails. The traced row, where strace is on the host,
@@ -652,10 +651,11 @@ echo "live: [$(proc_start "$parent")] [$(start_of "$parent")]"
   );
   // A host with no /proc (macOS) answers proc_parent, proc_group and proc_start through ps, which
   // exits 1 for a pid that names no process. Each must still print nothing and succeed there, as it
-  // does on /proc: a caller under `set -e` assigns the answer bare (replace-blocks.sh reads the group
-  // of an instance that may have exited already), and a failure ends that caller with no word of
-  // why. The row makes the helper's own test of /proc/self read false, and the host's ps answers
-  // through a wrapper that counts its calls, so the row shows the fallback was the path taken.
+  // does on /proc: a caller under `set -e` assigns the answer bare (stage2-tmux-supervision.sh
+  // reads the shim's start that way, and the shim may have exited already), and a failure ends
+  // that caller with no word of why. The row makes the helper's own test of /proc/self read false,
+  // and the host's ps answers through a wrapper that counts its calls, so the row shows the
+  // fallback was the path taken.
   test.skipIf(hostTool("ps") === null)(
     "proc_parent, proc_group and proc_start answer through ps where there is no /proc: nothing, and success, for a process that is gone, and a live one's own",
     () => {
