@@ -7,6 +7,7 @@ import { type ReactNode, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { MemoryRouter } from "react-router-dom";
 
+import { nextFrame as oneFrame } from "../../__tests__/frames";
 import { api } from "../../api/client";
 import type { Ask, Comment } from "../../api/types";
 import { useDrawerPage } from "../issue-page/drawer-page";
@@ -135,15 +136,12 @@ function renderCommentLinkLanding(comments: Comment[] = [comment], asks: Ask[] =
   );
 }
 
-/** One rendering frame. happy-dom runs animation frames as immediates, so this is one turn of the
- *  event loop - and a frame is the unit the hold's relayout window counts. Inside `act`, as
- *  `quiet` is, so whatever the reply composer draws in the frame - its field taking focus, a
- *  timer of its own landing - draws inside it. */
+/** One rendering frame (`__tests__/frames.ts`), inside `act`, as `quiet` is, so whatever the
+ *  reply composer draws in the frame - its field taking focus, a timer of its own landing - draws
+ *  inside it. A frame is the unit the hold's relayout window counts. */
 async function nextFrame(): Promise<void> {
   await act(async () => {
-    const done = Promise.withResolvers<void>();
-    requestAnimationFrame(() => done.resolve());
-    await done.promise;
+    await oneFrame();
   });
 }
 
