@@ -147,7 +147,7 @@ var settings = []setting{
 	{Name: "DISPATCH_PRIVATE_HUBS", Required: "no",
 		Description: "Comma-separated NATS URLs of the hubs that serve private projects, in production the clustered hub alone and never the VM hub; each switch to private first proves that every one of them admits Dispatch through the auth callout, and is refused `409 PRIVATE_PROJECTS_UNAVAILABLE` with nothing changed while one does not. Read in the order given, each once. Unset or empty: no hub is proven, and no project can be made private."},
 	{Name: "DISPATCH_HUB_ADMISSION_TOKEN_FILE", Required: "when `DISPATCH_PRIVATE_HUBS` is set",
-		Description: "File holding Dispatch's projected Kubernetes service-account token with the `envoy-k7` audience, which each hub-admission proof connection presents; gcp:Dispatch mounts it at `/var/run/secrets/dispatch-hub-admission/token` whenever `privateHubs` is non-empty. The file is read at each dial, so a rotation needs no restart. A non-empty `DISPATCH_PRIVATE_HUBS` without it refuses startup."},
+		Description: "File holding Dispatch's projected Kubernetes service-account token with the hub-admission audience (`natsgrant.HubAdmissionAudience`), which each hub-admission proof connection presents; gcp:Dispatch mounts it at `/var/run/secrets/dispatch-hub-admission/token` whenever `privateHubs` is non-empty. The file is read at each dial, so a rotation needs no restart. A non-empty `DISPATCH_PRIVATE_HUBS` without it refuses startup."},
 	{Name: "DISPATCH_AGENT_SECRETS_URL", Required: "no",
 		Description: "Base URL of the secrets broker's API, an absolute http(s) URL with no path; set, the credential-request pages are on."},
 	{Name: "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", Required: "when `DISPATCH_AGENT_SECRETS_URL` is set",
