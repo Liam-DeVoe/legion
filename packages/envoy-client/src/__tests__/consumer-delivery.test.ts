@@ -19,7 +19,7 @@ import {
   registerWithRelay,
 } from "../consumer-delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
-import type { DeliveryAnswer } from "../transport";
+import { type DeliveryAnswer, EnvoyApiError } from "../transport";
 
 const SESSION = "ses_a";
 const AGENT = "notifications.agent.ses_a";
@@ -1154,6 +1154,19 @@ describe("one registration", () => {
     };
   }
 
+  /** What a registration hands its host besides the topics: nothing a row below reads. */
+  const quiet = { drop: () => undefined, log: () => undefined } as const;
+
+  /** The listener's refusal of a registration, with this status and body. */
+  function refusal(status: number, body: Record<string, unknown>): EnvoyApiError {
+    return new EnvoyApiError({
+      method: "POST",
+      url: "http://listener.example/v1/interests/subscribe",
+      status,
+      responseBody: JSON.stringify(body),
+    });
+  }
+
   test("carries the topics the listener will store, and takes the answer", async () => {
     const relay = fakeRelay();
     const told: string[] = [];
@@ -1175,6 +1188,7 @@ describe("one registration", () => {
         return Promise.resolve("registered");
       },
       answered: (answer) => answers.push(answer),
+      ...quiet,
     });
 
     expect(sent).toEqual([{ topics: [AGENT, TEAM], epoch: "epoch-1" }]);
@@ -1200,6 +1214,7 @@ describe("one registration", () => {
           return Promise.resolve("registered");
         },
         answered: () => undefined,
+        ...quiet,
       });
 
     await expect(register()).rejects.toThrow("holds no relay subject");
@@ -1224,6 +1239,7 @@ describe("one registration", () => {
       ),
       send: () => Promise.resolve("registered"),
       answered: () => undefined,
+      ...quiet,
     }).catch((error: unknown) => error);
 
     const expected =
@@ -1250,6 +1266,7 @@ describe("one registration", () => {
         ),
         send: () => Promise.reject(new Error("no_grant")),
         answered: (answer: string) => answers.push(answer),
+        ...quiet,
       })
     ).rejects.toThrow("no_grant");
 
@@ -1273,6 +1290,7 @@ describe("one registration", () => {
         send: () =>
           refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
         answered: () => undefined,
+        ...quiet,
       }).catch(() => undefined);
 
     await register();
@@ -1289,5 +1307,88 @@ describe("one registration", () => {
     await register();
     expect(told).toEqual(["no_grant", "restored", "no_grant", "restored"]);
     expect(inboundRestoredNoticeText()).toContain("Envoy inbound restored");
+  });
+
+  test("any other refusal is a refusal as before: nothing dropped, nothing sent again", async () => {
+    // The edge's own refusals that are not a project's: 503 `repositories_unknown` (it could not
+    // read which repositories the session's projects hold; every topic is kept and the heartbeat
+    // asks again) and 403 `token_not_admitted` (the token's fault, on any route). And a 403 whose
+    // reason is not one of the two project refusals though it names topics, and one of those two
+    // that names none. None drops a topic or sends again.
+    for (const [status, body] of [
+      [
+        503,
+        { error: "the project's repositories could not be read", reason: "repositories_unknown" },
+      ],
+      [403, { error: "the token is not admitted here", reason: "token_not_admitted" }],
+      [403, { error: "bound to another session", reason: "session_not_bound", refused: [TEAM] }],
+      [403, { error: "no project", reason: "topic_not_in_project" }],
+    ] as const) {
+      const told: string[] = [];
+      const dropped: (readonly string[])[] = [];
+      const sent: (readonly string[])[] = [];
+      const refused = refusal(status, body);
+
+      const outcome = await registerWithRelay({
+        relay: fakeRelay(),
+        ownAgentSubject: AGENT,
+        followed: [TEAM],
+        outage: inboundUnavailable(
+          (why) => told.push(why),
+          () => told.push("restored")
+        ),
+        send: (topics) => {
+          sent.push(topics);
+          return Promise.reject(refused);
+        },
+        answered: () => undefined,
+        drop: (topics) => dropped.push(topics),
+        log: () => undefined,
+      }).catch((error: unknown) => error);
+
+      // Each case names its refusal, so a failure says which one dropped or sent again.
+      const answer = `${status} ${body.reason}`;
+      expect(outcome).toBe(refused);
+      expect({ answer, sent, dropped, told }).toEqual({
+        answer,
+        sent: [[AGENT, TEAM]],
+        dropped: [],
+        told: [refused.message],
+      });
+    }
+  });
+
+  test("a project refusal that names only the session's own subject drops nothing and is told", async () => {
+    // The session's own agent subject is in every registration (`registrationTopics`): a refusal
+    // naming it, or a topic the registration did not carry, leaves nothing to drop, so the
+    // registration fails as any other refusal does rather than being sent again unchanged.
+    const told: string[] = [];
+    const dropped: (readonly string[])[] = [];
+    const sent: (readonly string[])[] = [];
+    const refused = refusal(403, {
+      error: "no project",
+      reason: "topic_not_in_project",
+      refused: [AGENT, "notifications.slack.alerts"],
+    });
+
+    const outcome = await registerWithRelay({
+      relay: fakeRelay(),
+      ownAgentSubject: AGENT,
+      followed: [TEAM],
+      outage: inboundUnavailable(
+        (why) => told.push(why),
+        () => told.push("restored")
+      ),
+      send: (topics) => {
+        sent.push(topics);
+        return Promise.reject(refused);
+      },
+      answered: () => undefined,
+      drop: (topics) => dropped.push(topics),
+      log: () => undefined,
+    }).catch((error: unknown) => error);
+
+    expect(outcome).toBe(refused);
+    expect([sent, dropped, told]).toEqual([[[AGENT, TEAM]], [], [refused.message]]);
   });
 });
