@@ -1272,9 +1272,11 @@ func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, 
 // is the one handed back, and an older one is checked, and its failed chain logged, only when
 // every newer one was passed over. A pause from the end pass stops at that candidate, as before,
 // so an older grant with no pause is not handed back in its place
-// (TestAPauseOnTheNewestGrantStopsTheReuse): ErrGrantNotLive answers no reusable grant, and any
-// other pause is returned. A matching grant made after the end pass has no check, so it is not
-// handed back and Create asks afresh.
+// (TestAPauseOnTheNewestGrantStopsTheReuse): a pause answers no reusable grant, and Create asks
+// afresh. Every pause the end pass keeps wraps ErrGrantNotLive (recheckLiveGrant), and a pause of
+// any other kind would stop the reuse the same way rather than hand back a paused grant. A
+// matching grant made after the end pass has no check, so it is not handed back and Create asks
+// afresh.
 //
 // An automatic grant a person's pod got as that person is not ended once BROKER_POD_OPERATORS no
 // longer maps the pod's account to that person, but its re-check refuses it (ErrGrantNotLive),
@@ -1297,11 +1299,8 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 		if !wasChecked || !match.reusableFor(lifetime) {
 			continue
 		}
-		if errors.Is(pause, ErrGrantNotLive) {
-			return Request{}, false, nil
-		}
 		if pause != nil {
-			return Request{}, false, pause
+			return Request{}, false, nil
 		}
 		r, err := m.Get(ctx, match.requestID)
 		if err != nil {
