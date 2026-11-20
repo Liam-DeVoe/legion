@@ -69,10 +69,12 @@ const (
 var Kinds = []string{KindAssignedAsk, KindThreadReply, KindDirectReply, KindParticipation, KindMention}
 
 // The shapes of the corpus a run must find before its count proves anything: every kind of row the
-// three reads answer, a person with rows and a person with none, and a reply chain at the walk's
-// bound. Each is counted over the people the run reached, so a person it did not reach adds to no
-// shape. A run that finds none of one names it and refuses: zero differences over a corpus without
-// every shape is no proof the one read answers that shape.
+// three reads answer, every kind of delivery a person sends a session (a direct message, a
+// broadcast's copy and an issue message addressed to a session), a person with rows and a person
+// with none, and a reply chain at the walk's bound. Each is counted over the people the run
+// reached, so a person it did not reach adds to no shape. A run that finds none of one names it and
+// refuses: zero differences over a corpus without every shape is no proof the one read answers
+// that shape.
 const (
 	// ShapeInboxAsk is a row of GET /api/v1/inbox?assignee=me, an open ask that waits on a person.
 	ShapeInboxAsk = "inbox_ask"
@@ -85,6 +87,14 @@ const (
 	// ShapeAgentRow is an Agent row of GET /api/v1/me/replies: a person's one-off message to a
 	// session holding a reply from that session.
 	ShapeAgentRow = "agent_row"
+	// ShapeBroadcastCopy is an Agent row whose root is a broadcast's copy (messages.broadcast_id),
+	// the delivery a person sends many sessions at once, holding the copied session's reply.
+	ShapeBroadcastCopy = "broadcast_copy"
+	// ShapeSessionMessageThread is a Reply row of an issue message thread whose root the person
+	// addressed to a session (messages.target session:<id>), holding a reply by somebody else: the
+	// delivery a person sends a session on an issue, which is a thread of the issue rather than an
+	// Agent row.
+	ShapeSessionMessageThread = "session_message_thread"
 	// ShapeConversationReply is a session's reply under a root a person wrote, in GET
 	// /api/v1/agents/{session_id}/messages.
 	ShapeConversationReply = "conversation_reply"
@@ -101,7 +111,8 @@ const (
 // Shapes is every shape a run requires, in the order it reports them.
 var Shapes = []string{
 	ShapeInboxAsk, ShapeAskThread, ShapeCommentThread, ShapeMessageThread, ShapeAgentRow,
-	ShapeConversationReply, ShapePersonWithRows, ShapePersonWithNone, ShapeReplyChain,
+	ShapeBroadcastCopy, ShapeSessionMessageThread, ShapeConversationReply, ShapePersonWithRows,
+	ShapePersonWithNone, ShapeReplyChain,
 }
 
 // ChainLinks is outbox.maxCommentThreadDepth (outbox/publisher.go), the bound of the walk up a

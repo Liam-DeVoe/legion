@@ -3,6 +3,7 @@ import { setLiveSessions } from "./agents";
 import {
   answerAsk,
   createAsk,
+  createBroadcast,
   createComment,
   createIssue,
   createMessage,
@@ -12,6 +13,7 @@ import {
   getMeInbox,
   markThreadRead,
   patchIssue,
+  replyToMessageDelivery,
   sessionCookie,
 } from "./api";
 import { type BaseServer, baseBuild, bootBuild, stackCommand } from "./base-build";
@@ -23,6 +25,7 @@ import {
   seedAgentThread,
   seedAskThread,
   seedCommentThread,
+  sessionActor,
   THREAD_SESSION,
 } from "./inbox-threads";
 import { sql } from "./psql";
@@ -68,6 +71,28 @@ async function seedCorpus(): Promise<{ issue: string }> {
   await createMessage(issue.key, { body: "I own it.", in_reply_to: root.id }, { login: other });
   // A direct message to a session, with that session's reply.
   await seedAgentThread({ body: "Please check the staging gate.", replies: ["The gate is open."] });
+  // A broadcast's copy to that session, with the session's reply: an Agent row of the copy.
+  const broadcast = await createBroadcast({
+    body: "Confirm the release window.",
+    delivery: "btw",
+    session_ids: [THREAD_SESSION.session_id],
+  });
+  const copy = (broadcast.recipients ?? []).find(
+    (recipient) => recipient.session_id === THREAD_SESSION.session_id
+  );
+  if (copy === undefined) throw new Error("the broadcast made no copy for the thread session");
+  await replyToMessageDelivery(copy.message.id, { attempt: 1, body: "Confirmed." }, sessionActor());
+  // An issue message the reader addressed to that session, with the session's reply.
+  const addressed = await createMessage(issue.key, {
+    body: "Can you take the rollback drill?",
+    delivery: "btw",
+    target: `session:${THREAD_SESSION.session_id}`,
+  });
+  await replyToMessageDelivery(
+    addressed.id,
+    { attempt: 1, body: "I will take it." },
+    sessionActor()
+  );
   // An ask the reader answered, with the session's reply in its thread.
   await seedAskThread(issue.key, "Ship on Friday?", "Friday it is.");
   // A comment by somebody else that names the reader, and one the reader wrote themselves.

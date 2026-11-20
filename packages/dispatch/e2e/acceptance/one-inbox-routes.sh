@@ -26,8 +26,8 @@
 #                     backfill: the comparison names the person, the row, the arm and the kind,
 #                     counts it per person and per arm, and reads the gate not met.
 #   stored_row        the comparison's own stored row for that run, holding its difference count,
-#                     people checked and uncovered and the shapes it covered, and the gate route
-#                     answering those counts and none of the rows.
+#                     people checked and uncovered and every shape the gate requires by name, and
+#                     the gate route answering those counts and none of the rows.
 #   gate_uncovered    a person the comparison is told not to reach, counted uncovered, the gate not
 #                     met however clean the others read.
 #   gate_met          the mismatch cleared and nobody excluded: the gate met over the corpus, with
@@ -35,22 +35,27 @@
 #   old_routes        GET /api/v1/inbox, GET /api/v1/me/replies and GET
 #                     /api/v1/agents/{session_id}/messages answering each seeded person on this
 #                     build with the shape and the rows the base build answers.
-#   default           the Inbox still served by the three reads: no commit of this checkout carries
-#                     the flip's trailer, the dashboard this server serves calls the three reads
-#                     and draws the comparison page, and the gate route answers.
+#   default           the Inbox still served by the three reads unless the reader opts in: no
+#                     commit of this checkout carries the flip's trailer, the dashboard this server
+#                     serves calls the three reads, holds the opt-in and draws the comparison page,
+#                     the gate route answers, and the Inbox page in a browser asks GET
+#                     /api/v1/me/replies for its threads and the one read nothing with no opt-in,
+#                     and the one read for them with the address's one=1 or the preference
+#                     inbox.one_read.
 #   read_then_mention a thread the person wrote in and read, and one they were only mentioned in:
 #                     GET /api/v1/me/replies' default unread state answers neither, and the one
 #                     read answers both.
 #
 # The corpus the gate runs over is the server's own seed and what the run writes through the API
 # beside it: an open ask that waits on the person, a comment thread, an issue message thread and an
-# ask thread they wrote in with somebody else's reply, a direct message to a session with its
-# reply, and a person with no rows. The one shape only the release before could write - a comment
-# reply chain at the outbox walk's bound, 32 links deep, since POST comments climbs reply_to to the
-# thread's head - is written through psql as that release wrote it, and `envoy-dispatch
-# backfill-graph-store` then runs over it, as a deployment's backfill runs before anybody reads the
-# new read. The mismatch is a thread written the same way after the backfill, as a write an older
-# build makes during a roll.
+# ask thread they wrote in with somebody else's reply, every kind of delivery a person sends a
+# session with that session's reply - a direct message, a broadcast's copy and an issue message
+# addressed to the session - and a person with no rows. The one shape only the release before
+# could write - a comment reply chain at the outbox walk's bound, 32 links deep, since POST
+# comments climbs reply_to to the thread's head - is written through psql as that release wrote it,
+# and `envoy-dispatch backfill-graph-store` then runs over it, as a deployment's backfill runs
+# before anybody reads the new read. The mismatch is a thread written the same way after the
+# backfill, as a write an older build makes during a roll.
 #
 # What the store holds and what the release before writes are served by no route, so they are
 # read and written through psql on ISSUE_PREFLIP_DATABASE_URL, as dispatch://INFRA-1149's drivers
@@ -65,7 +70,9 @@
 # fixed `e2e-dev-signin` e2e/run-server.sh gives a one-process server, which the base build must
 # share to start beside it). The comparison and the backfill are this checkout's own
 # envoy-dispatch, packages/envoy/dispatch-e2e, which e2e/run-server.sh built for the server; a
-# missing one is exit 2, as each unmet input is.
+# missing one is exit 2, as each unmet input is. The default section opens the page in Playwright's
+# Chromium, through the @playwright/test that `bun install` put beside packages/dispatch, run by
+# bun; PLAYWRIGHT_BROWSERS_PATH, where set, names where its browsers are.
 #
 # Each passing assertion prints `PASS: <section> <what>`; a failing one prints
 # `FAIL: <section> <what>: <observed>` and ends its section. Every section runs whatever an earlier
@@ -102,7 +109,7 @@ if [[ -z "${BASELINE_SHA:-}" && -z "${BASELINE_BINARY:-}" ]]; then
   usage
   exit 2
 fi
-require_commands base64 curl git go jq psql sed sleep sort tar
+require_commands base64 bun curl git go jq psql sed sleep sort tar
 read_bearer
 
 # shellcheck disable=SC2031 # the DISPATCH_URL lib.sh's `cli` exports is its own; this one is the caller's
@@ -134,6 +141,10 @@ readonly base_dir="${TMPDIR:-/tmp}/base-routes"
 # The depth of the comment reply chain the gate requires: the outbox walk's bound,
 # internal/dispatch/inboxcompare's ChainLinks.
 readonly chain_links=32
+# Every shape a run requires, internal/dispatch/inboxcompare's Shapes: the stored row of each run
+# holds each of them by name.
+readonly shape_names="inbox_ask ask_thread comment_thread message_thread agent_row broadcast_copy
+session_message_thread conversation_reply person_with_rows person_with_none reply_chain_at_bound"
 
 case "$database_url" in
   *@127.0.0.1:* | *@localhost:* | *@\[::1\]:* | *@127.0.0.1/* | *@localhost/*) ;;
@@ -355,6 +366,25 @@ post seed "$person's direct message to $agent" "$person" "/api/v1/agents/$agent/
 readonly direct="$id"
 post seed "$agent's reply to it" agent "/api/v1/messages/$direct/reply" \
   "$(as_agent '{"attempt": 1, "body": "The gate is open."}')"
+# The two other deliveries a person sends a session, each through its own route and each answered
+# by the session through the attempt it was handed: a broadcast, whose copy to the agent is an
+# Agent row of GET /api/v1/me/replies once the agent replies, and an issue message addressed to the
+# agent, which is a thread of the issue, a Reply row, once the agent replies in it. The gate
+# requires a row of each (inboxcompare's broadcast_copy and session_message_thread).
+request "$person" POST /api/v1/broadcasts "$(jq -cn --arg s "$agent" \
+  '{body: "Please confirm the release window.", delivery: "btw", session_ids: [$s]}')"
+[[ "$status" == 201 ]] || fail seed "$person broadcasts to $agent" "HTTP $status: $(body)"
+copy="$(jq -er --arg s "$agent" '.recipients[] | select(.session_id == $s) | .message.id' "$work/body")" ||
+  fail seed "$person broadcasts to $agent" "no copy for $agent: $(body)"
+readonly copy
+pass seed "$person broadcasts to $agent, its copy $copy"
+post seed "$agent's reply to the broadcast's copy" agent "/api/v1/messages/$copy/reply" \
+  "$(as_agent '{"attempt": 1, "body": "The window is confirmed."}')"
+post seed "$person's issue message addressed to $agent" "$person" "/api/v1/issues/$issue/messages" \
+  "$(jq -cn --arg t "session:$agent" '{body: "Can you take the rollback drill?", target: $t, delivery: "btw"}')"
+readonly addressed="$id"
+post seed "$agent's reply to the issue message" agent "/api/v1/messages/$addressed/reply" \
+  "$(as_agent '{"attempt": 1, "body": "I will take it."}')"
 
 # --- route_scan --------------------------------------------------------------------------------
 
@@ -663,16 +693,21 @@ gate_mismatch_section() {
 }
 
 stored_row_section() {
-  local section=stored_row run
+  local section=stored_row run names
   run="$(run_id mismatch)"
   [[ -n "$run" ]] || fail "$section" "read the mismatch run's id" "the comparison printed none"
   query "$section" "read run $run's stored row" "
     select difference_count || ' ' || people_checked || ' ' || people_uncovered || ' '
-           || jsonb_array_length(differences) || ' ' || (select count(*) from jsonb_object_keys(shapes))
+           || jsonb_array_length(differences)
     from inbox_comparison_runs where id = $run"
-  [[ "$answer" == "$(summary mismatch difference_count) $(summary mismatch people_checked) $(summary mismatch people_uncovered) $(summary mismatch difference_count) 9" ]] ||
-    fail "$section" "the stored row holds the run's counts and its nine shapes" "row reads '$answer'"
-  pass "$section" "run $run's row holds its difference count, people checked and uncovered, and the nine shapes it covered"
+  [[ "$answer" == "$(summary mismatch difference_count) $(summary mismatch people_checked) $(summary mismatch people_uncovered) $(summary mismatch difference_count)" ]] ||
+    fail "$section" "the stored row holds the run's counts" "row reads '$answer'"
+  query "$section" "read run $run's stored shapes" "
+    select string_agg(shape, ' ' order by shape collate \"C\")
+    from inbox_comparison_runs, jsonb_object_keys(shapes) shape where id = $run"
+  names="$(tr -s ' \n' '\n' <<<"$shape_names" | LC_ALL=C sort | paste -sd ' ' -)"
+  [[ "$answer" == "$names" ]] || fail "$section" "the stored row holds every shape the gate requires" "row holds '$answer', want '$names'"
+  pass "$section" "run $run's row holds its difference count, people checked and uncovered, and every shape the gate requires: $names"
   query "$section" "read the row's mismatch" "
     select count(*) from inbox_comparison_runs, jsonb_array_elements(differences) d
     where id = $run and d->>'person' = '$person' and d->>'arm' = 'replies' and d->>'row' = 'reply:$mismatch_root'"
@@ -753,8 +788,78 @@ old_routes_section() {
 
 # --- default -----------------------------------------------------------------------------------
 
+# page_loads LOGIN: opens the Inbox page at / of the server under test in Playwright's Chromium,
+# signed in as $person by the cookie their dev sign-in left in their jar, three times: with no
+# opt-in, with the address's one=1, and with the browser preference inbox.one_read on, which the
+# page keeps in localStorage under LOGIN, the login the sign-in read answers. Each load prints one
+# JSON line into $work/page-loads: the read whose answer to the list it waited for, that answer's
+# status (0 where none came within a minute), and every GET of /api/v1/ the page sent, path and
+# query, until three seconds after that answer.
+page_loads() {
+  cat >"$work/page-loads.mjs" <<'SCRIPT'
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+
+const { PAGE_BASE: base, PAGE_JAR: jar, PAGE_LOGIN: login, PAGE_PACKAGE: anchor } = process.env;
+const { chromium } = createRequire(anchor)("@playwright/test");
+// The jar curl wrote: one cookie a line, tab-separated, an HttpOnly cookie's led by #HttpOnly_.
+const cookies = readFileSync(jar, "utf8").split("\n").flatMap((line) => {
+  const text = line.startsWith("#HttpOnly_") ? line.slice("#HttpOnly_".length) : line;
+  const fields = text.split("\t");
+  return text.startsWith("#") || fields.length < 7 ? [] : [{ name: fields[5], value: fields[6], url: base }];
+});
+const loads = [
+  { load: "none", path: "/", read: "/api/v1/me/replies", preference: false },
+  { load: "address", path: "/?one=1", read: "/api/v1/me/inbox", preference: false },
+  { load: "preference", path: "/", read: "/api/v1/me/inbox", preference: true },
+];
+const browser = await chromium.launch();
+try {
+  for (const { load, path, read, preference } of loads) {
+    const context = await browser.newContext();
+    await context.addCookies(cookies);
+    if (preference) {
+      await context.addInitScript((key) => window.localStorage.setItem(key, "on"), `dispatch.inbox.one_read:${login}`);
+    }
+    const page = await context.newPage();
+    const asked = [];
+    page.on("request", (request) => {
+      const url = new URL(request.url());
+      if (request.method() === "GET" && url.pathname.startsWith("/api/v1/")) asked.push(url.pathname + url.search);
+    });
+    const listed = page
+      .waitForResponse((response) => {
+        const url = new URL(response.url());
+        return url.pathname === read && url.searchParams.get("state") === "inbox";
+      }, { timeout: 60_000 })
+      .then((response) => response.status(), () => 0);
+    await page.goto(base + path);
+    const status = await listed;
+    // Every read the list's first draw sets off has been sent a moment after its own answer.
+    await page.waitForTimeout(3_000);
+    console.log(JSON.stringify({ load, read, status, asked }));
+    await context.close();
+  }
+} finally {
+  await browser.close();
+}
+SCRIPT
+  PAGE_BASE="$base" PAGE_JAR="$work/jar-$person" PAGE_LOGIN="$1" \
+    PAGE_PACKAGE="$checkout/packages/dispatch/package.json" \
+    bun "$work/page-loads.mjs" >"$work/page-loads" 2>"$work/page-loads.err"
+}
+
+# asked LOAD PATTERN: whether load LOAD of page_loads sent a GET whose path and query match the
+# regular expression PATTERN. jq matches it, so no reader ends early and no pipe breaks.
+asked() { jq -e --arg l "$1" --arg p "$2" 'select(.load == $l) | any(.asked[]; test($p))' "$work/page-loads" >/dev/null; }
+# The list's own reads: the reader's threads, GET /api/v1/me/replies in the Inbox state, and the
+# one read in that state. Another read of /api/v1/me/replies, the unread count or one owner's
+# threads, is no read of the list's.
+readonly list_threads='^/api/v1/me/replies\?(.*&)?state=inbox(&|$)'
+readonly list_one_read='^/api/v1/me/inbox\?(.*&)?state=inbox(&|$)'
+
 default_section() {
-  local section=default flip assets asset
+  local section=default flip assets asset login load answered
   flip="$(git -C "$checkout" log -1 --format=%H --grep='^Inbox-Default: one-read$' HEAD)" ||
     fail "$section" "read this checkout's history" "git log failed"
   [[ -z "$flip" ]] || fail "$section" "no commit of this checkout flips the default" "$flip carries Inbox-Default: one-read"
@@ -780,9 +885,41 @@ default_section() {
     grep -qF "\"$path\"" "$work/bundle.js" || fail "$section" "the dashboard names $path" "no \"$path\" in its scripts"
   done
   pass "$section" "the dashboard the server serves calls the three reads and draws the comparison page"
+  grep -qF '"inbox.one_read"' "$work/bundle.js" ||
+    fail "$section" "the dashboard holds the opt-in's preference" "no \"inbox.one_read\" in its scripts"
+  pass "$section" "the dashboard holds the opt-in, the preference inbox.one_read beside the address's one=1"
   request "$person" GET /api/v1/inbox/comparison
   [[ "$status" == 200 ]] || fail "$section" "the gate route answers" "HTTP $status: $(body)"
   pass "$section" "the gate route the page reads answers"
+
+  # What the page asks, read in a browser: without the opt-in the Inbox's threads are the reads it
+  # replaces' and the one read is asked nothing; with either opt-in the one read is asked for them.
+  request "$person" GET /api/v1/whoami
+  [[ "$status" == 200 ]] || fail "$section" "read $person's login as the page reads it" "HTTP $status: $(body)"
+  login="$(jq -er '.login' "$work/body")" || fail "$section" "read $person's login as the page reads it" "$(body)"
+  page_loads "$login" || fail "$section" "open the Inbox page in a browser as $person" "$(tail -n 20 "$work/page-loads.err")"
+  for load in none address preference; do
+    answered="$(jq -r --arg l "$load" 'select(.load == $l) | .status' "$work/page-loads")"
+    [[ "$answered" == 200 ]] ||
+      fail "$section" "the $load load's list is answered by $(jq -r --arg l "$load" 'select(.load == $l) | .read' "$work/page-loads")" \
+        "status '${answered:-no load}'; it asked: $(jq -c --arg l "$load" 'select(.load == $l) | .asked' "$work/page-loads")"
+  done
+  asked none "$list_threads" ||
+    fail "$section" "with no opt-in the page asks GET /api/v1/me/replies for the Inbox's threads" "$(jq -c 'select(.load == "none") | .asked' "$work/page-loads")"
+  ! asked none '^/api/v1/me/inbox(\?|$)' ||
+    fail "$section" "with no opt-in the page asks the one read nothing" "$(jq -c 'select(.load == "none") | .asked' "$work/page-loads")"
+  pass "$section" "with no opt-in the Inbox's threads are GET /api/v1/me/replies' and the page asks GET /api/v1/me/inbox nothing"
+  asked address "$list_one_read" ||
+    fail "$section" "with one=1 the page asks the one read for the Inbox's list" "$(jq -c 'select(.load == "address") | .asked' "$work/page-loads")"
+  ! asked address "$list_threads" ||
+    fail "$section" "with one=1 the page asks GET /api/v1/me/replies nothing for the Inbox's threads" "$(jq -c 'select(.load == "address") | .asked' "$work/page-loads")"
+  pass "$section" "with one=1 the Inbox's list is the one read's and GET /api/v1/me/replies is asked nothing for it"
+  # The preference is read once the sign-in read answers (userPreference.ts sets it in an effect),
+  # so the render before that can still ask GET /api/v1/me/replies once; what the list draws from
+  # is the read the page asks once the preference is read, which is the one read.
+  asked preference "$list_one_read" ||
+    fail "$section" "with inbox.one_read on the page asks the one read for the Inbox's list" "$(jq -c 'select(.load == "preference") | .asked' "$work/page-loads")"
+  pass "$section" "with inbox.one_read on the Inbox's list is the one read's"
 }
 
 # --- read_then_mention -------------------------------------------------------------------------

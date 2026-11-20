@@ -347,10 +347,17 @@ func compareOne(ctx context.Context, db DB, servers []*server, login string, old
 	for _, entry := range one.Entries {
 		entries[entry.Node.Kind+":"+entry.Node.ID] = true
 	}
+	roots, err := deliveryRoots(ctx, db, rows)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	shapes := map[string]int{}
 	for _, row := range rows {
 		if row.shape != "" {
 			shapes[row.shape]++
+		}
+		if delivery := deliveryShape(row, roots); delivery != "" {
+			shapes[delivery]++
 		}
 	}
 	return rows, shapes, entries, nil
@@ -413,6 +420,67 @@ func repliesRows(replies []replyRow) ([]oldRow, error) {
 		})
 	}
 	return rows, nil
+}
+
+// deliveryRoot is what the comparison reads of the root message of an Agent row or of an issue
+// message thread: whether it is a broadcast's copy, and whether it is an issue message addressed
+// to a session. Neither is in the row the old read answers, which names the thread and not how
+// its root was sent.
+type deliveryRoot struct {
+	broadcastCopy, toSession bool
+}
+
+// deliveryRoots reads the root message of each Agent row and each issue message thread among rows,
+// in one statement, keyed by the message's id. A root the table no longer holds is no key, and is
+// then no delivery of either kind.
+func deliveryRoots(ctx context.Context, db DB, rows []oldRow) (map[string]deliveryRoot, error) {
+	var ids []string
+	for _, row := range rows {
+		if row.shape == ShapeAgentRow || row.shape == ShapeMessageThread {
+			ids = append(ids, strings.TrimPrefix(row.node, "message:"))
+		}
+	}
+	roots := map[string]deliveryRoot{}
+	if len(ids) == 0 {
+		return roots, nil
+	}
+	read, err := db.Query(ctx, `
+		select id::text, broadcast_id is not null, issue_key is not null and coalesce(target, '') like 'session:%'
+		from messages
+		where id = any($1::uuid[])
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the roots of the Agent rows and the issue message threads: %w", err)
+	}
+	defer read.Close()
+	for read.Next() {
+		var id string
+		var root deliveryRoot
+		if err := read.Scan(&id, &root.broadcastCopy, &root.toSession); err != nil {
+			return nil, fmt.Errorf("read the roots of the Agent rows and the issue message threads: %w", err)
+		}
+		roots[id] = root
+	}
+	if err := read.Err(); err != nil {
+		return nil, fmt.Errorf("read the roots of the Agent rows and the issue message threads: %w", err)
+	}
+	return roots, nil
+}
+
+// deliveryShape is the delivery shape row is a row of besides its own shape, "" for none: an Agent
+// row whose root is a broadcast's copy is ShapeBroadcastCopy, and an issue message thread whose
+// root was addressed to a session is ShapeSessionMessageThread. Each is still a row of its own
+// shape, an Agent row and an issue message thread, so a corpus that holds a copy and no direct
+// message, or a session's thread and no other, still lacks the shape it does not hold.
+func deliveryShape(row oldRow, roots map[string]deliveryRoot) string {
+	root := roots[strings.TrimPrefix(row.node, "message:")]
+	switch {
+	case row.shape == ShapeAgentRow && root.broadcastCopy:
+		return ShapeBroadcastCopy
+	case row.shape == ShapeMessageThread && root.toSession:
+		return ShapeSessionMessageThread
+	}
+	return ""
 }
 
 // conversationSessions is every session login started a conversation with: the session each of

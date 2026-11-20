@@ -24,10 +24,13 @@ import { useDocumentTitle } from "../shell/useDocumentTitle";
 const SHAPE_LABELS: Record<string, string> = {
   agent_row: "a reply from a session to a message that a person sent",
   ask_thread: "a reply in an ask that a person wrote in",
+  broadcast_copy: "a reply from a session to a broadcast that a person sent",
   comment_thread: "a reply in a comment thread that a person wrote in",
   conversation_reply: "a reply from a session in a conversation that a person started",
   inbox_ask: "an open ask that waits on a person",
   message_thread: "a reply in an issue message thread that a person wrote in",
+  session_message_thread:
+    "a reply in an issue message thread whose first message a person sent to a session",
   person_with_none: "a person with no rows",
   person_with_rows: "a person with rows",
   reply_chain_at_bound: "a comment reply chain at the depth where the delivery walk stops",

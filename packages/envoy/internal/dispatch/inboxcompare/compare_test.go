@@ -59,6 +59,44 @@ func TestEachOldRowStandsForItsNode(t *testing.T) {
 	}
 }
 
+// A broadcast's copy and an issue message addressed to a session are deliveries the corpus must
+// hold beside a direct message, and neither is in the row the old read answers: the root message
+// says which a row is. An Agent row whose root is a copy is a broadcast copy, an issue message
+// thread whose root was addressed to a session is a session's message thread, and each stays a row
+// of its own shape too. A direct message, an issue message addressed to nobody, a root the table no
+// longer holds and a row of any other shape are no delivery shape, so a corpus of those alone
+// lacks both.
+func TestADeliveryShapeIsReadFromItsRootMessage(t *testing.T) {
+	rows, err := repliesRows([]replyRow{
+		{ThreadID: "copy", Kind: "agent"}, {ThreadID: "direct", Kind: "agent"}, {ThreadID: "gone", Kind: "agent"},
+		{ThreadID: "addressed", Kind: "message"}, {ThreadID: "open", Kind: "message"}, {ThreadID: "c1", Kind: "comment"},
+	})
+	if err != nil {
+		t.Fatalf("map the Reply rows: %v", err)
+	}
+	roots := map[string]deliveryRoot{
+		"copy":      {broadcastCopy: true},
+		"direct":    {},
+		"addressed": {toSession: true},
+		"open":      {},
+	}
+	var got []string
+	for _, row := range rows {
+		got = append(got, row.row+" "+row.shape+" "+deliveryShape(row, roots))
+	}
+	want := []string{
+		"agent:copy agent_row broadcast_copy",
+		"agent:direct agent_row ",
+		"agent:gone agent_row ",
+		"reply:addressed message_thread session_message_thread",
+		"reply:open message_thread ",
+		"reply:c1 comment_thread ",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("the rows' shapes are\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
 // The gate is met only by a run with no difference, nobody uncovered and a row of every shape, and
 // a run missing a shape is refused as proof: its report prints no zero count as a pass and names
 // the shape. A difference in one arm fails that person's arm and its kind whatever the other arms
@@ -86,6 +124,8 @@ func TestTheGateIsMetOnlyByAWholeCleanRun(t *testing.T) {
 		{"a difference", Run{DifferenceCount: 1, PeopleChecked: 2, Shapes: whole}, false},
 		{"a person uncovered", Run{PeopleChecked: 2, PeopleUncovered: 1, Shapes: whole}, false},
 		{"a shape missing", Run{PeopleChecked: 2, Shapes: without(ShapePersonWithNone)}, false},
+		{"no broadcast copy", Run{PeopleChecked: 2, Shapes: without(ShapeBroadcastCopy)}, false},
+		{"no session's message thread", Run{PeopleChecked: 2, Shapes: without(ShapeSessionMessageThread)}, false},
 	} {
 		if got := c.run.Met(); got != c.met {
 			t.Errorf("%s: Met() = %v, want %v", c.name, got, c.met)
