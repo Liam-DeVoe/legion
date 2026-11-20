@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"testing"
@@ -8,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/store"
 )
 
 // withheldCount is how many names are withheld from enrollment id.
@@ -76,37 +78,54 @@ func TestAnOperatorsRevokeWithholdsFromEveryLiveBoxOfTheSession(t *testing.T) {
 	}
 }
 
-// TestARevokeStartsAgainWhenTheSessionGainsABoxWhileItRuns: a box of the grant's session that an
-// adoption commits after the revoke's transaction locked the session's boxes is not among the
-// locked ones (testRevokeLockedHook commits one there, once). The transaction's last check finds
-// it and gives the transaction up, and the next attempt locks the new box with the rest, so the
-// withhold reaches it too and its AUTO_TOKEN request waits for a person.
-func TestARevokeStartsAgainWhenTheSessionGainsABoxWhileItRuns(t *testing.T) {
+// TestARevokeWaitsForAnAdoptionOfTheSessionInFlight: box A ended its own AUTO_TOKEN grant and
+// holds nothing live. Box N of the same session name and principal is being enrolled: its
+// transaction holds the session's lock (store.LockSession, as enroll.adopt takes it before it
+// reads its predecessors), has written N's session, and found nothing on A to take, since A holds
+// nothing live and no withheld name yet. It has not committed. The operator then revokes the ended
+// grant, which withholds AUTO_TOKEN. The revoke must wait for N, so its lock statement finds N
+// among the session's live boxes once N commits, and withholds the name there too: N's next
+// AUTO_TOKEN request waits for a person. The row fails when the revoke takes no session lock:
+// it commits without N, and N, which read its predecessors before the name was withheld, is
+// granted at once.
+func TestARevokeWaitsForAnAdoptionOfTheSessionInFlight(t *testing.T) {
 	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
 	principal := exchange.PersonPrincipal(fixtureOperator)
-	nameTheSession(t, m, enr, "sess-racing", principal)
+	nameTheSession(t, m, enr, "sess-in-flight", principal)
 	_, grantID := grantOf(t, m, enr, key, "deploy the worker", "AUTO_TOKEN")
-	var late string
-	var lateKey = key
-	m.testRevokeLockedHook = func() {
-		if late != "" {
-			return
-		}
-		late, lateKey = newEnrollment(t, m.Store, "session", "box-late-"+t.Name(), new(fixtureOperator), nil)
-		nameTheSession(t, m, late, "sess-racing", principal)
+	if err := m.RevokeGrant(t.Context(), grantID, enr); err != nil {
+		t.Fatalf("the session's own revoke: %v", err)
 	}
-	if err := m.RevokeByApprover(t.Context(), grantID, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+	n, nKey := newEnrollment(t, m.Store, "session", "box-n-"+t.Name(), new(fixtureOperator), nil)
+	adopting, err := m.Store.Pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = adopting.Rollback(context.Background()) })
+	if err := store.LockSession(t.Context(), adopting, "sess-in-flight", principal); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adopting.Exec(t.Context(), `update enrollments set session_id=$2, carry_principal=$3 where id=$1`, n, "sess-in-flight", principal); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- m.RevokeByApprover(t.Context(), grantID, fixtureOperator, record.HumanActor(fixtureOperator))
+	}()
+	waitBlockedBy(t, m, adopting, done)
+	if err := adopting.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
 		t.Fatalf("the operator's revoke = %v; want it to withhold", err)
 	}
-	if late == "" {
-		t.Fatal("the hook never ran, so no box appeared while the revoke ran and the row proves nothing")
+	if got := withheldCount(t, m, n); got != 1 {
+		t.Errorf("names withheld on box N, whose adoption the revoke waited for = %d; want 1", got)
 	}
-	if got := withheldCount(t, m, late); got != 1 {
-		t.Errorf("names withheld on the box that appeared while the revoke ran = %d; want 1", got)
-	}
-	again, err := m.Create(t.Context(), late, signRequest(t, m, lateKey, "deploy again", "AUTO_TOKEN"), "", nil)
+	again, err := m.Create(t.Context(), n, signRequest(t, m, nKey, "deploy again", "AUTO_TOKEN"), "", nil)
 	if err != nil || again.GrantID != nil {
-		t.Errorf("the late box's AUTO_TOKEN request = %+v, %v; want it waiting for a person", again, err)
+		t.Errorf("box N's AUTO_TOKEN request = %+v, %v; want it waiting for a person", again, err)
 	}
 }
 

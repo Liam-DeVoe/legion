@@ -869,9 +869,12 @@ func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
 // binds the enrollment's session name to its principal (bindSessionName), which is the one other
 // thing that can refuse an attempt outright, and a bind that took the name from the account paired
 // with the enrollment's own is logged once the attempt has committed, and never by one that did
-// not.
+// not. It runs at READ COMMITTED, named rather than left to the database's default, since each of
+// its lock waits is followed by a statement that must read what the transaction it waited on
+// committed: an adoption that waited on the session's lock (store.LockSession) reads the names an
+// operator's revoke withheld, which a snapshot taken before the wait would not hold.
 func (s *Service) createAttempt(ctx context.Context, cred Credential, in Enrollment) (result Enrollment, retry bool, err error) {
-	tx, err := s.Store.Pool.Begin(ctx)
+	tx, err := s.Store.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return Enrollment{}, false, err
 	}
@@ -1254,13 +1257,19 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 //
 // Locks, in the order this transaction takes them: the launcher credential's row (for share,
 // taken by createAttempt before anything else), then the session name's own row
-// (bindSessionName), then the enrollments rows, then the grant,
-// request and withheld rows under them. The predecessors of both rules are taken for update in one
-// statement, in id order, so no end, revoke or sweep moves what they hold while it is moving, and
-// two concurrent adoptions of one pair or one claim cannot hold each other's first row. That is
-// the order every other writer of these tables takes them in — endCredential takes the
-// credential, then its enrollments in id order; Revoke, EndLapsed and EndCarried take an
-// enrollment before the grants and requests under it; and this package's
+// (bindSessionName), then the new enrollment's own row (its insert), then the session's lock
+// (store.LockSession, for an enrollment that carries a principal), then the enrollments rows,
+// then the grant, request and withheld rows under them. The session's lock is what an operator's
+// revoke takes before it locks the session's live enrollments, so an adoption reads its
+// predecessors only once no such revoke is in flight, and takes the names it withheld: without
+// it, a revoke that committed while this adoption had read its predecessors and not yet committed
+// would withhold on boxes the session has left and not on this one. The predecessors of both
+// rules are taken for update in one statement, in id order, so no end, revoke or sweep moves what
+// they hold while it is moving, and two concurrent adoptions of one pair or one claim cannot hold
+// each other's first row. That is the order every other writer of these tables takes them in —
+// endCredential takes the credential, then its enrollments in id order; Revoke, EndLapsed and
+// EndCarried take an enrollment before the grants and requests under it; an operator's revoke
+// takes the session's lock and then its live enrollments in id order; and this package's
 // enrollment-then-request writers take the enrollment first too (ApplyDecision says so itself) —
 // so none of them can deadlock with this one.
 func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, paired []string, actor string) error {
@@ -1270,6 +1279,11 @@ func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, paired []string, actor
 	}
 	if in.carry == nil && claim == nil {
 		return nil
+	}
+	if in.carry != nil {
+		if err := store.LockSession(ctx, tx, *in.SessionID, *in.carry); err != nil {
+			return err
+		}
 	}
 	// The spellings the session rule matches. carries is the pair a grant follows: the
 	// enrollment's own and, for a pod, each paired account's launched by the same login

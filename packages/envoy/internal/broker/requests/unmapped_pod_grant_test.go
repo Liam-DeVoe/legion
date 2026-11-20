@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"crypto/ecdsa"
 	"errors"
 	"slices"
 	"testing"
@@ -129,4 +130,69 @@ func TestAnUnmappedPersonsPodsFormerPersonEndsAGrantTheySeeOnlyAsAnyoneMay(t *te
 		t.Errorf("the approver's revoke of grant %s = %v; want it ended", grantID, err)
 	}
 	requireRevokedBy(t, m, grantID, fixtureOperator)
+}
+
+// TestAPodsAutomaticGrantIsOnThePageOfWhoeverMaySeeIt: a grant a pod took without asking names
+// no approver, so it is on a person's Live grants because of whom the pod acts for. A pod that
+// acts for no person, a service's or a person's pod BROKER_POD_OPERATORS no longer maps, has its
+// grant listed to every signed-in person the person rule shows it to (GrantsForApprover's everyone
+// arm), so a private project's grant is on its people's pages and nobody else's, the unmapped pod's
+// former person among the others. A mapped person's pod acts for its person, so its grant is on
+// that person's page alone. Each pod names its project through its BROKER_EXCHANGE_ACCOUNTS entry.
+// The people asked are dave (the pod's person), sami and carol (PRIV's list), alice (PRIV's owner)
+// and mallory (on neither project).
+func TestAPodsAutomaticGrantIsOnThePageOfWhoeverMaySeeIt(t *testing.T) {
+	const dave = "dave@example.com"
+	everyone := []string{dave, fixtureOperator, insider, otherPerson, outsider}
+	for _, c := range []struct {
+		name            string
+		pod             string
+		project, secret string
+		mapped          bool
+		wantListedTo    []string
+	}{
+		{name: "a service's pod, of PRIV", pod: "service", project: privProject, secret: "PRIV_KEY", wantListedTo: []string{fixtureOperator, insider, otherPerson}},
+		{name: "an unmapped person's pod, of PRIV", pod: "person", project: privProject, secret: "PRIV_KEY", wantListedTo: []string{fixtureOperator, insider, otherPerson}},
+		{name: "a mapped person's pod, of public TEAM", pod: "person", project: teamProject, secret: "SLACK_TOKEN", mapped: true, wantListedTo: []string{dave}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+			var pod string
+			var key *ecdsa.PrivateKey
+			if c.pod == "person" {
+				p := personPod{person: dave, service: "person-dave", account: "system:serviceaccount:people:dave"}
+				set, err := exchange.NewSet([]exchange.AccountEntry{{Account: p.account, Project: c.project, Person: insider}}, nil, nil, nil, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.Exchange = set
+				m.PodOperators = map[string]string{p.account: p.person}
+				pod, key = p.enroll(t, m.Store, "pod-dave-"+c.secret)
+				if !c.mapped {
+					delete(m.PodOperators, p.account)
+				}
+			} else {
+				set, err := exchange.NewSet([]exchange.AccountEntry{{Account: fixtureSubject, Project: c.project, Person: insider}}, nil, nil, nil, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				m.Exchange = set
+				pod, key = newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-svc-"+c.secret)
+			}
+			_, grantID := grantOf(t, m, pod, key, "use the pod's secret", c.secret)
+			var listedTo []string
+			for _, who := range everyone {
+				grants, err := m.GrantsForApprover(t.Context(), who)
+				if err != nil {
+					t.Fatalf("GrantsForApprover(%s): %v", who, err)
+				}
+				if slices.ContainsFunc(grants, func(g ApproverGrant) bool { return g.GrantID == grantID }) {
+					listedTo = append(listedTo, who)
+				}
+			}
+			if !slices.Equal(listedTo, c.wantListedTo) {
+				t.Errorf("the live %s grant %s is on the Live grants of %v; want %v", c.secret, grantID, listedTo, c.wantListedTo)
+			}
+		})
+	}
 }
