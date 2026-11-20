@@ -2555,8 +2555,9 @@ export const dispatchToolSpecs = [
       "after every finding it holds, at an address of its own, dispatch://lens/<uuid>#b-<id>. " +
       "lens is the lens's dispatch://lens/<uuid> address; a lens outside the issue, or one you " +
       "may not see, is 404 NOT_FOUND, a gone lens is 409 NODE_GONE, naming it, and a node that " +
-      "is no lens is 400 INVALID_POINTER. The " +
-      "finding is for whoever the lens is for, unless visibility is author. A pre-mortem's " +
+      "is no lens is 400 INVALID_POINTER. With no visibility the finding is for whoever its " +
+      "lens is for, and project under a lens kept for its author is refused with 400 " +
+      "VISIBILITY_WIDER_THAN_PARENT, naming the finding and the lens. A pre-mortem's " +
       "findings are its risks: write each with dispatch risk. The result names the finding's " +
       `address. ${REASONING_WRITE_RULE} ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
@@ -2565,12 +2566,7 @@ export const dispatchToolSpecs = [
         .string({ min: 1 })
         .describe("The dispatch://lens/<uuid> address of the lens the finding belongs to."),
       text: z.string({ min: 1 }).describe("The finding's text."),
-      visibility: z
-        .enum(NODE_VISIBILITIES)
-        .describe(
-          "author keeps the finding to you alone, and is refused with 403 AUTHOR_NAMES_NOBODY under the deployment's shared agent token, which proves no author. Left out, or project, the finding is for whoever its lens is for."
-        )
-        .optional(),
+      visibility: reasoningVisibility(z, "the finding is"),
     }),
     strict: true,
   },

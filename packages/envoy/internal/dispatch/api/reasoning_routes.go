@@ -506,17 +506,22 @@ type lensFindingInput struct {
 	Actor *model.Actor `json:"actor"`
 	// Text is the finding's text.
 	Text string `json:"text" required:"true"`
-	// Visibility is author to keep the finding to its author; project, or nothing, gives the
-	// finding its lens's visibility, and any other word is 400 INVALID_ATTRIBUTE_VALUE.
+	// Visibility is who the finding is for: author, or project. With none the finding takes its
+	// lens's, so a finding under a lens reserved for its author is reserved for that author too;
+	// project under such a lens is 400 VISIBILITY_WIDER_THAN_PARENT, and any other word is 400
+	// INVALID_ATTRIBUTE_VALUE.
 	Visibility string `json:"visibility" enum:"project,author"`
 }
 
 // addLensFinding is POST /api/v1/issues/{key}/nodes/{id}/findings: one finding added to the lens
-// {id} names, a block node at a random block id under the lens, after every finding it holds. The
-// finding carries its lens's visibility unless the request asks for author. {id} is the lens's
-// store address (FindNodeUnderIssue): a node the caller may not see under the issue is 404
-// NOT_FOUND, and a node the caller sees that is no lens is 400 INVALID_POINTER, since a finding
-// stands under a lens alone and the refusal names nothing the caller could not read.
+// {id} names, a block node at a random block id under the lens, after every finding it holds. A
+// body that names no visibility gives the finding its lens's, and the store writes the visibility
+// a body names as named: `project` under a lens reserved for its author is the store's 400
+// VISIBILITY_WIDER_THAN_PARENT, naming the finding and the lens, and stores nothing, since no
+// write is narrowed in silence. {id} is the lens's store address (FindNodeUnderIssue): a node the
+// caller may not see under the issue is 404 NOT_FOUND, and a node the caller sees that is no lens
+// is 400 INVALID_POINTER, since a finding stands under a lens alone and the refusal names nothing
+// the caller could not read.
 func (s *server) addLensFinding(w http.ResponseWriter, r *http.Request) {
 	var input lensFindingInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -557,10 +562,9 @@ func (s *server) addLensFinding(w http.ResponseWriter, r *http.Request) {
 			"a finding stands under a lens, and %s is %s", cmp.Or(lens.Ref, r.PathValue("id")), graphstore.WithArticle(lens.Kind)))
 		return
 	}
-	visibility := lens.Visibility
-	if input.Visibility == graphstore.VisibilityAuthor {
-		visibility = graphstore.VisibilityAuthor
-	}
+	// A finding with no visibility of its own is no wider than the lens it stands under; one that
+	// names a visibility is written at it, and the store refuses project under an author-only lens.
+	visibility := cmp.Or(input.Visibility, lens.Visibility)
 	written, err := writeReasoningNodes(ctx, tx, reasoningWrite{
 		reasoningCaller: caller, issue: key, at: at,
 		nodes: []reasoningNode{newFinding(lens.ID, visibility, input.Text)},

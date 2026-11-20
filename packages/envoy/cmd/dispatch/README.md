@@ -5321,7 +5321,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   Add one finding to the lens `{id}` names, `{text, visibility?}`: a `block` node under the lens at a random block id, after every finding it holds.
   `{id}` is the lens's store address under the issue (`lens/<uuid>`, or its `dispatch://` address), percent-encoded as one path segment.
-  The finding carries its lens's visibility unless `visibility` is `author`.
+  `visibility: "author"` keeps the finding to its author, and is `403 AUTHOR_NAMES_NOBODY` on a credential that proves no author.
+  With no `visibility` the finding takes its lens's; `visibility: "project"` under a lens reserved for its author is `400 VISIBILITY_WIDER_THAN_PARENT`, naming the finding and the lens, and stores nothing.
   A node the caller may not see under the issue is `404 NOT_FOUND`, a gone one `409 NODE_GONE`, naming it (`findWrittenNode`), a node that is no lens `400 INVALID_POINTER`, and an empty text `400 FINDING_INPUT`.
   Answers `201` with the finding: its address, `id`, `block_id`, its lens's address, `text`, `author`, `created_at`, `state` and `visibility`.
 
