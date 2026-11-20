@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"maps"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -118,7 +120,9 @@ func (i image) install(t *testing.T, name, script string) {
 // PATH that is one bin alone, stubbing every binary the capability check's image rows look for —
 // alone, not ahead of the process's PATH, since a runner's own python3 behind the stubs would
 // answer for one a test removed. No `claude` is among them: the image carries none. The `sh` the
-// probes run their scripts with is linked into that bin from the one on the process's PATH.
+// probes run their scripts with is linked into that bin from the one on the process's PATH. The
+// image's ~/.cache is that HOME's, mode 0755, held to the owner this test made it with
+// (imageCacheHome, cacheHome).
 func inImage(t *testing.T, contract, omp string) image {
 	t.Helper()
 	home := t.TempDir()
@@ -147,6 +151,7 @@ func inImage(t *testing.T, contract, omp string) image {
 	if err := os.Symlink(sh, filepath.Join(roots.bin, "sh")); err != nil {
 		t.Fatal(err)
 	}
+	cacheHome(t, home)
 	t.Setenv("HOME", home)
 	t.Setenv("OMP_PROFILE", "legion")
 	t.Setenv("XDG_DATA_HOME", "")
@@ -154,6 +159,28 @@ func inImage(t *testing.T, contract, omp string) image {
 	t.Setenv("PATH", roots.bin)
 	t.Chdir(t.TempDir())
 	return roots
+}
+
+// cacheHome makes .cache in home, mode 0755, and points the probe's check of the image's ~/.cache
+// at it (imageCacheHome), held to the owner the folder has, this test's, until the test ends.
+func cacheHome(t *testing.T, home string) {
+	t.Helper()
+	path := filepath.Join(home, ".cache")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Mkdir's mode passes through the umask; the folder is the image's only at exactly 0755.
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner := info.Sys().(*syscall.Stat_t)
+	previous := imageCacheHome
+	imageCacheHome = imageFolder{path: path, uid: int(owner.Uid), gid: int(owner.Gid)}
+	t.Cleanup(func() { imageCacheHome = previous })
 }
 
 // capabilityMarks are the OK line's marks after agent-models under a stubbed image whose omp
@@ -192,6 +219,86 @@ func TestProbeImageRefusesANegativeProbeBudget(t *testing.T) {
 	code, stdout, stderr := probeImage("--plugin-root", t.TempDir(), "--envoy-plugin-root", t.TempDir(), "--probe-budget", "-1s")
 	if code != 1 || stdout != "" || !strings.Contains(stderr, "--probe-budget must not be negative") {
 		t.Fatalf("probe-image with a negative budget = %d, stdout %q, stderr %q; want exit 1 naming --probe-budget", code, stdout, stderr)
+	}
+}
+
+// The probe holds the image's ~/.cache, the folder the controller's pod mounts the leak check
+// index's volume in, to what the controller needs there: a directory, not a link to one, owned by
+// the uid and gid every pod runs as, with mode 0755 (imageCacheHome). A folder another user or
+// group owns stands for the root's folder a container runtime makes for a missing parent, which a
+// test cannot make. Each refusal comes before the launch probes, exit 1 with no table, naming what
+// it found and what the image must make; the image's own folder passes, and the OK line follows.
+func TestProbeImageHoldsTheImagesCacheFolderToThePodsUser(t *testing.T) {
+	for name, edit := range map[string]func(t *testing.T, f *imageFolder) (found string){
+		"the image's own folder": func(*testing.T, *imageFolder) string { return "" },
+		"no folder": func(t *testing.T, f *imageFolder) string {
+			if err := os.Remove(f.path); err != nil {
+				t.Fatal(err)
+			}
+			return "is absent"
+		},
+		"another user's folder": func(_ *testing.T, f *imageFolder) string {
+			found := fmt.Sprintf("is a directory owned by %d:%d with mode 0755", f.uid, f.gid)
+			f.uid++
+			return found
+		},
+		"another group's folder": func(_ *testing.T, f *imageFolder) string {
+			found := fmt.Sprintf("is a directory owned by %d:%d with mode 0755", f.uid, f.gid)
+			f.gid++
+			return found
+		},
+		"a folder of mode 0700": func(t *testing.T, f *imageFolder) string {
+			if err := os.Chmod(f.path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return fmt.Sprintf("is a directory owned by %d:%d with mode 0700", f.uid, f.gid)
+		},
+		"a folder of mode 0775": func(t *testing.T, f *imageFolder) string {
+			if err := os.Chmod(f.path, 0o775); err != nil {
+				t.Fatal(err)
+			}
+			return fmt.Sprintf("is a directory owned by %d:%d with mode 0775", f.uid, f.gid)
+		},
+		"a link to the image's folder": func(t *testing.T, f *imageFolder) string {
+			if err := os.Rename(f.path, f.path+".real"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(f.path+".real", f.path); err != nil {
+				t.Fatal(err)
+			}
+			return "is a symbolic link"
+		},
+		"a file": func(t *testing.T, f *imageFolder) string {
+			if err := os.Remove(f.path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.path, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return "is not a directory"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			img := inImage(t, thisBinarysContract, imageOmp(t))
+			folder := imageCacheHome
+			found := edit(t, &folder)
+			imageCacheHome = folder
+
+			code, stdout, stderr := probeImage(img.flags()...)
+			if found == "" {
+				if code != 0 || !strings.HasSuffix(stdout, " daemon-api-version="+thisBinarysContract+"\n") {
+					t.Fatalf("probe-image over the image's own ~/.cache = %d, stdout %q, stderr %q; want the OK line", code, stdout, stderr)
+				}
+				return
+			}
+			want := fmt.Sprintf("legion probe-image: %s %s; the worker image must make it a directory owned by %d:%d with mode 0755 "+
+				"(packages/daemon/docker/worker.Dockerfile, after useradd): the controller's pod mounts the leak check index's volume in it, "+
+				"at /home/legion/.cache/public-leak-check, and a container runtime makes a missing parent of a mount point root's, "+
+				"so the controller could write nothing else there\n", folder.path, found, folder.uid, folder.gid)
+			if code != 1 || stdout != "" || stderr != want {
+				t.Errorf("probe-image over a ~/.cache that %s = %d, stdout %q, stderr %q; want exit 1, no table, and %q", found, code, stdout, stderr, want)
+			}
+		})
 	}
 }
 

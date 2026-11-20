@@ -831,6 +831,14 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # nothing under the root-owned /var/run, so the image makes them. The controller's pod mounts its
 # volumes over the same paths, as it always has. The final step refuses an image where any is not
 # root's or is not empty.
+# /home/legion/.cache is made here, the runtime user's with mode 0755: the controller's pod mounts
+# the leak check index's volume at /home/legion/.cache/public-leak-check (leakCheckIndexDir,
+# packages/daemon/internal/runtime/sandbox/names.go), and a container runtime makes a missing parent
+# of a mount point as root, which would leave the controller, the runtime user, nothing it can write
+# in its own ~/.cache. useradd copies only /etc/skel, so nothing else makes the folder on purpose.
+# `legion probe-image` refuses an image where it is not that (imageCacheHome,
+# packages/daemon/cmd/legion/probe_image.go): in the final step below, and in the daemon's probe
+# Sandbox, which runs a deployment's own image built on this one.
 # /etc/apt/preferences.d/pgdg holds apt.postgresql.org to the PostgreSQL packages. That suite
 # rebuilds packages trixie also carries, and without a pin its versions would win on candidate
 # order for anything the two archives share, so a server upgrade could quietly pull a different
@@ -876,6 +884,7 @@ RUN install -d -m 0755 /etc/apt/keyrings \
     && chmod g-s /usr/bin/ssh-agent \
     && groupadd --gid 1000 legion \
     && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash legion \
+    && install -d -m 0755 -o 1000 -g 1000 /home/legion/.cache \
     && install -d -m 0755 -o root -g root /opt/legion /opt/legion/bin /opt/legion/githooks \
     && install -d -m 0755 -o root -g root /var/run/legion /var/run/legion/gh /var/run/legion/private \
       /var/run/legion/state /var/run/legion/agent-secrets
@@ -1489,7 +1498,8 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # other gate. The Envoy plugin's `dispatch` shim runs its bundled CLI under
 # the image's bun and prints its help, so a pi-envoy packed without bin/ or dist/dispatch.js, or an
 # image without bun, fails here; that the extension puts bin/ first on an agent's PATH is pi-envoy's
-# own test. Then `legion probe-image` runs the three launch probes through
+# own test. Then `legion probe-image` holds /home/legion/.cache to the runtime user's directory of
+# mode 0755 that runtime-base makes, and runs the three launch probes through
 # the daemon's own code, loading the plugins the way a Sandbox pod does (--envoy-plugin-root then
 # --plugin-root: the two explicit extensions, discovery on, so the profile's CodeGraph plugin and a
 # repository's own extensions load beside the two roots; a pi-envoy that loaded twice, a profile

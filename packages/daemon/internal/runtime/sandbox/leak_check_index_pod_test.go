@@ -24,8 +24,9 @@ const (
 
 // Every pod Legion launches, an issue pod and the controller's pod, in each shape the goldens
 // pin, carries the volume the daemon's index pushes land in: an emptyDir on the node's disk of
-// 64Mi, which holds the index and the new one an install writes beside it before its rename, each
-// at most the 16 MiB a push carries. Its launcher container mounts it at the folder that container
+// 64Mi, which holds the index, the new one an install writes beside it before its rename, and one
+// more such file an install that stopped left behind, each at most the 16 MiB a push carries
+// (leakCheckIndexBytes). Its launcher container mounts it at the folder that container
 // holds and tells its launcher that folder (--leak-check-index-dir), so the launcher writes its
 // pushed marker and every index there, and the check in every role finds them at its home's
 // .cache/public-leak-check. A pod whose launcher were told no folder would write no marker, and
@@ -36,8 +37,8 @@ func TestEveryPodMountsTheLeakCheckIndexVolume(t *testing.T) {
 		t.Fatalf("the interface's folder is %s, and the check's own name for it is %s", roleIndexDir, want)
 	}
 	size := resource.MustParse("64Mi")
-	if held := resource.NewQuantity(2*shimwire.MaxLeakCheckIndexBytes, resource.BinarySI); size.Cmp(*held) < 0 {
-		t.Fatalf("the volume's %s cannot hold an index and the new one installed beside it, %s", size.String(), held.String())
+	if held := resource.NewQuantity(3*shimwire.MaxLeakCheckIndexBytes, resource.BinarySI); size.Cmp(*held) < 0 {
+		t.Fatalf("the volume's %s cannot hold an index, the new one installed beside it and one a stopped install left, %s", size.String(), held.String())
 	}
 	r, err := configure(goldenOptions())
 	if err != nil {

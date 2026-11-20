@@ -179,7 +179,7 @@ func (r *Runtime) cachePodTemplate(name string, repo ghrepo.Repository) podTempl
 			// OnRootMismatch, as an issue pod's: the clone on the cache's volume is the pod user's
 			// already, so a restart does not wait for the kubelet to re-own every file of it.
 			SecurityContext: &corev1.PodSecurityContext{
-				RunAsNonRoot: new(true), RunAsUser: new(int64(podUser)), RunAsGroup: new(int64(podUser)), FSGroup: new(int64(podUser)),
+				RunAsNonRoot: new(true), RunAsUser: new(int64(PodUser)), RunAsGroup: new(int64(PodUser)), FSGroup: new(int64(PodUser)),
 				FSGroupChangePolicy: new(corev1.FSGroupChangeOnRootMismatch),
 			},
 			RuntimeClassName:  new(gvisor),

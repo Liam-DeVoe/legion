@@ -120,8 +120,11 @@ const (
 	safeToEvictAnnotation  = "cluster-autoscaler.kubernetes.io/safe-to-evict"
 )
 
-// The pod runs as the image's legion user.
-const podUser = 1000
+// PodUser is the uid and gid every pod runs as: the worker image's user legion (useradd in
+// packages/daemon/docker/worker.Dockerfile). `legion probe-image` holds the image's own
+// /home/legion/.cache to it, the folder the controller's pod mounts the leak check index's volume
+// under (imageCacheHome, cmd/legion/probe_image.go).
+const PodUser = 1000
 
 // runtimeOwned are the main container's variables the runtime sets itself, the whole of each
 // value: with the composed names (composed), whose value the operator begins and the runtime
@@ -861,7 +864,7 @@ func (r *Runtime) podTemplate(l launch) podTemplate {
 		// OnRootMismatch: every file on the pod's disk is already the pod user's, so the kubelet skips
 		// re-owning the whole volume at each mount; on a full volume that walk took about 35 s.
 		SecurityContext: &corev1.PodSecurityContext{
-			RunAsNonRoot: new(true), RunAsUser: new(int64(podUser)), RunAsGroup: new(int64(podUser)), FSGroup: new(int64(podUser)),
+			RunAsNonRoot: new(true), RunAsUser: new(int64(PodUser)), RunAsGroup: new(int64(PodUser)), FSGroup: new(int64(PodUser)),
 			FSGroupChangePolicy: new(corev1.FSGroupChangeOnRootMismatch),
 		},
 		RuntimeClassName:  new(runtimeClass),

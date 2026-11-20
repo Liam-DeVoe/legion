@@ -2,14 +2,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -20,10 +23,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/daemon"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 )
 
@@ -35,6 +40,59 @@ const (
 	imageClaudeRoot    = "/opt/legion/claude-envoy"
 	imageClaudeCodePin = "/opt/legion/claude-code"
 )
+
+// imageCacheHome is the folder of the worker image's home that the controller's pod mounts the leak
+// check index's volume in, /home/legion/.cache (the parent of leakguard.IndexDir under
+// launcher.Home, as internal/runtime/sandbox's leakCheckIndexDir is), with the owner it must have:
+// the uid and gid every pod runs as (sandbox.PodUser). A container runtime makes a missing parent
+// of a mount point as root, so in an image without the folder the controller, which runs as that
+// uid in no namespace of its own, could write nothing else in its ~/.cache. The image makes it
+// (packages/daemon/docker/worker.Dockerfile, after useradd), and the probe holds every image to it
+// (checkImageCacheHome): in the image's build, and in the daemon's probe Sandbox, which runs the
+// deployment's own image. An issue pod needs none of it, since role-init makes each missing parent
+// in the role's own layer. A test points it at a folder of its own.
+var imageCacheHome = imageFolder{
+	path: filepath.Dir(filepath.Join(launcher.Home, leakguard.IndexDir)),
+	uid:  sandbox.PodUser, gid: sandbox.PodUser,
+}
+
+// imageFolder is a directory of the worker image and the owner it must have.
+type imageFolder struct {
+	path     string
+	uid, gid int
+}
+
+// checkImageCacheHome refuses the image's ~/.cache (imageCacheHome) unless it is a directory, not a
+// link to one, owned by the pod's uid and gid, with mode 0755 and no set-id or sticky bit, naming
+// what it found and what the image must make.
+func checkImageCacheHome(f imageFolder) error {
+	var found string
+	info, err := os.Lstat(f.path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		found = "is absent"
+	case err != nil:
+		return fmt.Errorf("read the image's %s: %w", f.path, err)
+	case info.Mode()&fs.ModeSymlink != 0:
+		found = "is a symbolic link"
+	case !info.IsDir():
+		found = "is not a directory"
+	default:
+		owner, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			return fmt.Errorf("read the image's %s: the system names no owner of it", f.path)
+		}
+		mode := uint32(owner.Mode) & 0o7777
+		if int(owner.Uid) == f.uid && int(owner.Gid) == f.gid && mode == 0o755 {
+			return nil
+		}
+		found = fmt.Sprintf("is a directory owned by %d:%d with mode %04o", owner.Uid, owner.Gid, mode)
+	}
+	return fmt.Errorf("%s %s; the worker image must make it a directory owned by %d:%d with mode 0755 "+
+		"(packages/daemon/docker/worker.Dockerfile, after useradd): the controller's pod mounts the leak check index's volume in it, "+
+		"at %s, and a container runtime makes a missing parent of a mount point root's, so the controller could write nothing else there",
+		f.path, found, f.uid, f.gid, filepath.Join(launcher.Home, leakguard.IndexDir))
+}
 
 // digits is what --daemon-api-version accepts before it is read as a number.
 var digits = regexp.MustCompile(`^[0-9]+$`)
@@ -55,6 +113,8 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // can install and verify, exact and checksummed (daemon.ProbeImage, whose verifyClaude says why
 // it reads the pin rather than installing from it); the claude-code capability row checks the
 // same two facts.
+// Before its launch probes it holds the image's ~/.cache to the folder the controller's pod mounts
+// the leak check index's volume in (checkImageCacheHome), and refuses, exit 1, where it is not.
 // It runs the image's launch probes under the image's own environment (daemon.ProbeImage), then
 // the capability check (capabilities.CheckImage) under the same environment and launch: every
 // image-site capability of the list every worker is held to (LEGION-578), with the whole table
@@ -240,6 +300,12 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 		if name, value, ok := strings.Cut(pair, "="); ok {
 			env[name] = value
 		}
+	}
+	// The image's own folders, before its launch probes: the ~/.cache the controller's pod mounts
+	// the leak check index's volume in.
+	if err := checkImageCacheHome(imageCacheHome); err != nil {
+		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
+		return 1
 	}
 	err = daemon.ProbeImage(ctx, daemon.ImageProbe{
 		Omp: invocation, Contract: expected, Env: env, WorkDir: workDir, PluginRoot: f.pluginRoot, EnvoyPluginRoot: f.envoyPluginRoot,

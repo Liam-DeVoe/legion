@@ -626,7 +626,7 @@ ago or more reads it UNKNOWN by its age. Three lines say the index is falling be
   that begin `launcher leak check index:` name, with the launcher a push did not reach.
 - `LEAK CHECK: WARNING: could not refresh the sandbox-line index (<reason>). Scanning with the
   index built <time>.`: on a machine where the check keeps its own index, a tmux pane's rather
-  than a pod's, its download failed or brought no newer index while the one it holds is 2 hours
+  than a pod's, its download failed, or brought no newer index while the one it holds is 2 hours
   old or more. `<reason>` says why. The scan goes on with the index it holds.
 
 **A pod launch whose system prompt is too large for one start frame** is refused before anything

@@ -117,13 +117,20 @@ It carries:
   A pod that holds no index, a new pod before its first push lands or one whose every push failed, reads UNKNOWN for every scan that needs one, naming `no index file at /home/legion/.cache/public-leak-check/sandbox-lines.idx`, and that write exits 2;
   a push to a private or internal repository, a `gh` write whose every target is private or internal, and a `gh` read go on without it.
   From 2 hours old the check warns that the pod's launcher holds no newer index, and from 6 hours old it reads the index UNKNOWN, as it reads a missing one:
-  `docs/site/src/content/docs/legion/troubleshooting.md` gives each line the daemon and the check print for it.
+  `docs/site/src/content/docs/legion/troubleshooting.md` gives each line the daemon and the check print for it;
+
+- `/home/legion/.cache`, a directory owned by `1000:1000` with mode 0755, which the image makes after `useradd`, since nothing else makes it on purpose:
+  the controller's pod mounts the leak check index's volume in it, and a container runtime makes a missing parent of a mount point root's, which would leave the controller nothing it can write in its own `~/.cache`.
+  `legion probe-image` refuses an image where it is not ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)).
+  An issue pod's role-init makes each missing parent in the role's own layer, so there it does not matter.
 
   **Upgrading.**
   This release refuses three things of the operator's pod the release before it took: a `runtime.kubernetes.pod.volume_mounts[].mount_path` at `/home/legion/.cache`, one at or under `/home/legion/.cache/public-leak-check`, and a `runtime.kubernetes.pod.volumes[].name` of `leak-check-index`.
   The loader refuses each in every deployment, as `runtime.kubernetes.pod.volume_mounts[<i>].mount_path <path> overlaps /home/legion/.cache/public-leak-check, which Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's`, or `runtime.kubernetes.pod.volumes[<i>].name leak-check-index is a volume Legion puts in every pod` (`CheckPod`, `packages/daemon/internal/runtime/sandbox/operatorpod.go`).
   A mount beside the folder, such as `/home/legion/.cache/<other>`, stays the operator's, as before.
-  A daemon of this release does not start on a file it refuses, so run this release's `legion start --check-config` on the file before the rollout, and move such a mount or rename such a volume;
+  A daemon of this release does not start on a file it refuses, so run this release's `legion start --check-config` on the file before the rollout, and move such a mount or rename such a volume.
+  A deployment's own image built on the worker image keeps `/home/legion/.cache` as the worker image makes it unless it changes that folder;
+  one whose folder is missing, a link, or not `1000:1000` with mode 0755 fails the daemon's boot probe, naming the folder, so make it as the worker image does;
 
 - `mise` at `/usr/local/bin/mise`, the binary the Dockerfile's `tools` stage checks against `ARG MISE_SHA256` and resolves the Oh My Pi pin with:
   two scripts a role runs, `scripts/e2e/lib/install-plugin-profile.sh` and the skill-scenario rig (`packages/pi-legion/scripts/skill-scenarios/rig.sh`), resolve that pin with `mise where` and `mise x`.
@@ -525,6 +532,9 @@ The lane reads the pin and fetches nothing:
 installing from it would make the publish and every boot probe depend on the npm registry and could not promise a pod's later fetch anyway, so the image proves it is self-consistent and the fetch is proved where it happens, by each Claude launch's start script and by `scripts/e2e/claude-backend-sandbox.sh` (`verifyClaude`, `packages/daemon/internal/daemon/bootgate.go`).
 Each of the lane's refusals names a build of the image from this daemon's commit.
 The two probes the daemon shares hold the Legion plugin to the daemon API contract (`legion.daemonApiVersion`), the Envoy plugin's interface to the one the Legion plugin speaks, and resolve every task agent and skill Legion's prompts name (`task(agent="…")`, `skill://…`) by name through the same launch (the agents and skills each plugin ships are listed below), so a build whose OMP or plugins are broken fails instead of publishing.
+Before those probes, `legion probe-image` holds `/home/legion/.cache` to a directory, not a link to one, owned by `1000:1000` with mode 0755, which the image makes after `useradd` (`imageCacheHome`, `packages/daemon/cmd/legion/probe_image.go`), and exits 1 naming what it found where it is not:
+the controller's pod mounts the leak check index's volume in it ([Worker image](#worker-image)), and a container runtime makes a missing parent of a mount point root's, so the controller could write nothing else there.
+The daemon's probe Sandbox runs the same check on the deployment's own image.
 
 The Legion plugin ships these in `agents/`:
 
@@ -4635,7 +4645,8 @@ A mount at, under or above `/var/run/legion/roles`, `/var/run/legion/home` or `/
 Legion mounts in every pod: a mount may be neither at, under, nor above one of Legion's`.
 Every one of these rules, and the check of the paths Legion mounts and the image owns, compares a mount through the worker image's links to directories (`/var/run` to `/run`, `/var/lock` to `/run/lock`, `/run/shm` to `/dev/shm`, and the merged `/bin`, `/sbin`, `/lib` and `/lib64`), since the kubelet mounts a path spelled through one where the link points:
 `/run/legion/roles` is refused as `/var/run/legion/roles` is, with the refusal naming the spelling it reached, and `/run/operator` is allowed as `/var/run/operator` is.
-A mount under `/home/legion` is allowed, and reaches the role at its own path.
+A mount under `/home/legion` is allowed, and reaches the role at its own path, except one at, under or above a path Legion mounts, reserves or the image owns there, which the loader refuses ([Operator configuration](#operator-configuration)):
+the config home `/home/legion/.config`, `workspace-init`'s state home `/home/legion/.local/state`, the profile's installed plugins `/home/legion/.omp/profiles/legion/plugins` and its `agent/agent.db` and `agent/models.db`, and the leak check index's folder `/home/legion/.cache/public-leak-check`, which refuses a mount at `/home/legion/.cache` too (the "Upgrading" note in [Worker image](#worker-image)).
 
 What a role writes without being told where is not on the node's disk:
 the issue's temporary directory, its cache and data homes and bun's install cache are one set on the issue's volume, every role of the pod told the same four, and the two Go caches are one pair on that volume shared by the issue's roles (below).

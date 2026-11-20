@@ -1390,7 +1390,7 @@ func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) p
 					ServiceAccountName:            r.pod.ServiceAccount,
 					EnableServiceLinks:            new(false),
 					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: new(true), RunAsUser: new(int64(podUser)), RunAsGroup: new(int64(podUser)), FSGroup: new(int64(podUser)),
+						RunAsNonRoot: new(true), RunAsUser: new(int64(PodUser)), RunAsGroup: new(int64(PodUser)), FSGroup: new(int64(PodUser)),
 					},
 					RuntimeClassName:  new(gvisor),
 					NodeSelector:      r.nodeSelector(),
