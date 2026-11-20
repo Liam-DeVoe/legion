@@ -178,7 +178,8 @@ test("the machine-login page lists the viewer's machine logins, and Revoke ends 
   const user = userOnFakeClock();
   let live = [devbox, laptop];
   const getMachineLogins = spyOn(api, "getMachineLogins").mockImplementation(async () => live);
-  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
   const revokeAnswer = Promise.withResolvers<void>();
   const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockImplementation(async (id) => {
     await revokeAnswer.promise;

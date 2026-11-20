@@ -124,15 +124,15 @@ async function markWhatTheShotPagesRead(
         "nothing read and the rows' Agents badge reads a state no baseline holds"
     );
   }
+  if (specId === "") {
+    throw new Error(`seedReviewRoutes: ${issue} has no spec for its Spec tab to read`);
+  }
   // The server lists a document's versions oldest first (`listArtifactVersions`), and the Spec tab
   // shows the spec's latest (`useSpecMarks`): so the mark is the highest number, read from every
   // version, and never the list's first, which is the newest only for a one-version spec.
-  const numbers =
-    specId === "" ? [] : (await listArtifactVersions(specId)).map((version) => version.number);
-  if (specId === "" || numbers.length === 0) {
-    throw new Error(
-      `seedReviewRoutes: ${issue} has no spec with a version for its Spec tab to read`
-    );
+  const numbers = (await listArtifactVersions(specId)).map((version) => version.number);
+  if (numbers.length === 0) {
+    throw new Error(`seedReviewRoutes: ${issue}'s spec has no version for its Spec tab to read`);
   }
   await putDocumentRead(specId, Math.max(...numbers));
 }
