@@ -29,11 +29,18 @@ const (
 	// DefaultListenIdle is how long a listener goes without a proven round trip - the LISTEN that
 	// opened its connection, a notification, a ping - before it pings that connection. A
 	// connection that went half-open (a dropped NAT entry, a failover that left the socket up)
-	// delivers nothing and reports no error; only a round trip finds it.
+	// delivers nothing and reports no error; only a round trip finds it. It is also how long that
+	// ping, and the LISTEN on a new connection, wait for their answer (Listener.PingTimeout): the
+	// listener already trusts a connection for one idle period with no round trip, so a server or
+	// a network that answers within one more is waited for, and the connection kept, rather than
+	// replaced while its answer is on the way. A ping and a LISTEN wait behind no lock, so the
+	// answer is late only when the server or the network stalls; one that has not come in an idle
+	// period is a connection that has gone half-open.
 	DefaultListenIdle = 30 * time.Second
-	// DefaultPingTimeout bounds that ping, the LISTEN statement on a new connection, and the
-	// close of a connection the listener gives up.
-	DefaultPingTimeout = 5 * time.Second
+	// DefaultCloseTimeout bounds the close of a connection a caller gives up: pgx's Terminate
+	// message and the socket's close, which wait for no answer, so it ends only a write the
+	// connection cannot take, as on a half-open connection whose send buffer is full.
+	DefaultCloseTimeout = 5 * time.Second
 	// The default backoff's first wait and its ceiling.
 	backoffFirst = time.Second
 	backoffMax   = 30 * time.Second
@@ -59,8 +66,8 @@ type Listener struct {
 	// Channels are the channels one LISTEN statement names, spliced into it as written: they are
 	// the caller's own package constants, never a value read from the database or a request.
 	Channels []string
-	// ListenIdle and PingTimeout are DefaultListenIdle and DefaultPingTimeout when zero; a test
-	// sets them lower.
+	// ListenIdle is DefaultListenIdle when zero, and PingTimeout, the wait for a ping's and a
+	// LISTEN's answer, is ListenIdle when zero (DefaultListenIdle says why); a test sets them lower.
 	ListenIdle  time.Duration
 	PingTimeout time.Duration
 	// OnConnected runs after the LISTEN succeeds on a new connection, which is where a caller
@@ -178,10 +185,10 @@ func (l *Listener) statement() string {
 	return "listen " + strings.Join(l.Channels, "; listen ")
 }
 
-// close closes conn within the ping timeout, so a half-open connection's Terminate cannot hold
+// close closes conn within DefaultCloseTimeout, so a half-open connection's Terminate cannot hold
 // the listener; closing a connection pgx has already closed does nothing.
 func (l *Listener) close(conn *pgx.Conn) {
-	ctx, cancel := context.WithTimeout(context.Background(), l.pingWait())
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultCloseTimeout)
 	defer cancel()
 	_ = conn.Close(ctx)
 }
@@ -205,7 +212,7 @@ func (l *Listener) owner() string {
 
 func (l *Listener) pingWait() time.Duration {
 	if l.PingTimeout == 0 {
-		return DefaultPingTimeout
+		return l.idle()
 	}
 	return l.PingTimeout
 }

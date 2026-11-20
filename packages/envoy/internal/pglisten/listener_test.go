@@ -206,11 +206,13 @@ func TestTheListenerReconnectsAfterItsBackendIsKilled(t *testing.T) {
 // blindingProxy forwards each TCP connection it accepts to target until blind is called. From then
 // on the connections it already holds forward nothing, and neither side of them is closed, so each
 // looks open to both ends and stays silent: a half-open connection. A connection it accepts after
-// blind forwards as usual.
+// blind forwards as usual. delay, when set, holds back each write from the server to its client by
+// that long, as a server or a network that answers late does.
 type blindingProxy struct {
 	listener net.Listener
 	target   string
 	closed   chan struct{}
+	delay    atomic.Int64
 	mu       sync.Mutex
 	shut     bool
 	gates    []*atomic.Bool
@@ -254,7 +256,9 @@ func (p *blindingProxy) serve() {
 		p.conns = append(p.conns, client, server)
 		p.mu.Unlock()
 		go func() { _, _ = io.Copy(gatedWriter{to: server, gate: gate, closed: p.closed}, client) }()
-		go func() { _, _ = io.Copy(gatedWriter{to: client, gate: gate, closed: p.closed}, server) }()
+		go func() {
+			_, _ = io.Copy(gatedWriter{to: client, gate: gate, closed: p.closed, delay: &p.delay}, server)
+		}()
 	}
 }
 
@@ -280,13 +284,24 @@ func (p *blindingProxy) close() {
 }
 
 // gatedWriter forwards writes until its gate is set, then holds every write until the proxy closes.
+// A write is held back by delay first, when one is set.
 type gatedWriter struct {
 	to     io.Writer
 	gate   *atomic.Bool
 	closed <-chan struct{}
+	delay  *atomic.Int64
 }
 
 func (w gatedWriter) Write(b []byte) (int, error) {
+	if w.delay != nil {
+		if late := time.Duration(w.delay.Load()); late > 0 {
+			select {
+			case <-time.After(late):
+			case <-w.closed:
+				return 0, net.ErrClosed
+			}
+		}
+	}
 	if w.gate.Load() {
 		<-w.closed
 		return 0, net.ErrClosed
@@ -364,6 +379,50 @@ func TestTheListenerReplacesAHalfOpenConnection(t *testing.T) {
 	notifyChannel(t, database, "delivery_changes", "")
 	if note := probe.waitNote(t, "a notification on the replacement"); note != (listenerNote{channel: "delivery_changes"}) {
 		t.Fatalf("notification on the replacement = %+v, want delivery_changes with an empty payload", note)
+	}
+}
+
+// The ping waits for its answer as long as the listener's idle period, PingTimeout's default
+// (DefaultListenIdle), so a connection whose answer comes late is kept, and one that never answers
+// is replaced once that wait has run out. The late answer is held back past the five seconds the
+// ping once had, and inside the idle period.
+func TestTheListenersPingWaitsForALateAnswerAndGivesUpOnNone(t *testing.T) {
+	const idle, late = 8 * time.Second, 6 * time.Second
+	database := storetest.Open(t)
+	proxy := newBlindingProxy(t, databaseAddress(database))
+	probe := newListenerProbe()
+	listener := probe.listener(proxiedDial(database, proxy))
+	listener.ListenIdle = idle
+	runListener(t, probe, listener)
+	probe.waitConnected(t, "first connection")
+	pid := probe.lastConn(t).PgConn().PID()
+
+	// Every byte from the server now reaches the listener late: the ping falls due one idle
+	// period after the LISTEN, and its answer comes late after it.
+	proxy.delay.Store(int64(late))
+	time.Sleep(idle + late + 2*time.Second)
+	var query string
+	if err := database.Pool.QueryRow(context.Background(), `select query from pg_stat_activity where pid = $1`, int(pid)).Scan(&query); err != nil {
+		t.Fatalf("read the listener's backend: %v", err)
+	}
+	if query != "-- ping" {
+		t.Fatalf("the listener's last statement = %q, want its ping, so nothing here waited on a late answer", query)
+	}
+	if dials := probe.dials.Load(); dials != 1 {
+		t.Fatalf("dials after a ping the server answered %s late = %d, want 1: the listener replaced a connection whose answer was on its way", late, dials)
+	}
+
+	// No answer at all: the connection goes half-open, and is replaced once its next ping has
+	// waited the idle period out, and not before.
+	proxy.delay.Store(0)
+	blinded := time.Now()
+	proxy.blind()
+	probe.waitConnected(t, "after its connection went half-open")
+	if took := time.Since(blinded); took < idle {
+		t.Fatalf("the half-open connection was replaced %s after it went silent, before its ping had waited the %s idle period out", took.Round(time.Millisecond), idle)
+	}
+	if dials := probe.dials.Load(); dials != 2 {
+		t.Fatalf("dials after the connection went half-open = %d, want 2", dials)
 	}
 }
 
