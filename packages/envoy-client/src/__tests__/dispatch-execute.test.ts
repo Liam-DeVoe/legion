@@ -3026,8 +3026,9 @@ describe("executeDispatchTool", () => {
       ["offset", "0"],
     ]);
     // A route that reaches nobody is what the owner audit reads, so the row says so; the
-    // progress comes after the claim, each part only when the server counted it.
-    expect(result.text).toContain("ACME-1 [todo] P1 First · 2 open asks · claimed by ");
+    // labels come before the asks, and the progress after the claim, each part only when the
+    // server counted it.
+    expect(result.text).toContain("ACME-1 [todo] P1 First · labels bug · 2 open asks · claimed by ");
     expect(result.text).toContain(
       " · tasks 3/7 · children 2/5 · route role:sre (nobody holds it right now)"
     );

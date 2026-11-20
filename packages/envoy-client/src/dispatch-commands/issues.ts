@@ -636,6 +636,10 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
               const progress = progressText(row.progress, " · ");
               return (
                 `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ${row.title}` +
+                // The help says each row carries its parent and labels: a root names no parent, so
+                // a reader of the text tells the open roots from their children.
+                (row.parent ? ` · child of ${row.parent}` : "") +
+                (row.labels.length === 0 ? "" : ` · labels ${row.labels.join(", ")}`) +
                 (row.open_asks === 0
                   ? ""
                   : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +
