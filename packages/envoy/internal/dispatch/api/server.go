@@ -639,6 +639,9 @@ type server struct {
 	// request id, so a cancel that lands on this process ends that run at once rather than at
 	// its next frame (cancelGoingRequest). startGoingRun adds and removes its own entry.
 	goingCancels sync.Map
+	// quick holds the bounds of the short answers this process answers (going_quick.go): its
+	// slots, and each person's one question in flight.
+	quick goingQuick
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
 	// delivery_run_warnings, which decides which process logs the warning (firstToWarn), once per

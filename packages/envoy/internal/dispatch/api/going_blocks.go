@@ -2,10 +2,15 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/sjawhar/envoy/going"
+	"github.com/sjawhar/envoy/going/agent"
+	"github.com/sjawhar/envoy/going/agentwire"
 )
 
 // block is the block frame of an answer's structured reply, and false where the answer draws
@@ -53,4 +58,66 @@ func (g *goingReadRun) block(ctx context.Context, final *going.Final, words stri
 		return going.BlockData{}, false
 	}
 	return data, true
+}
+
+// blockCall draws the block a run's model asked for (agentwire.KindBlock) from the run's saved
+// tool results and from nothing else (settlement 9, R3): the server parses the spec, which holds
+// no number of the model's (going.ParseRunBlock), reads the saved tool steps it names, and runs
+// its chain over their rows (going.RunBlock.Draw). It answers the block it drew, which the agent
+// shows as the step's block frame, so every number the block shows is the server's. A spec it
+// refuses, or results that are not whole or hold no rows - a result the server cut, a list whose
+// last page no named step read - are refused BLOCK_REFUSED with what to read or write instead.
+func (a *AgentListener) blockCall(ctx context.Context, request agentwire.CallRequest) (agentwire.CallAnswer, *agentwire.Error) {
+	block, err := going.ParseRunBlock(request.Block)
+	if err != nil {
+		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeBlockRefused, "%v", err)
+	}
+	results, err := a.s.goingRunResults(ctx, request.Run, block.StepNumbers())
+	if err != nil {
+		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
+	}
+	drawn, err := block.Draw(results)
+	if err != nil {
+		return agentwire.CallAnswer{}, goingAgentRefusal(agentwire.CodeBlockRefused, "%v", err)
+	}
+	body, err := json.Marshal(drawn)
+	if err != nil {
+		return agentwire.CallAnswer{}, goingAgentFailed(agentwire.CallCall, err)
+	}
+	return agentwire.CallAnswer{Status: http.StatusOK, Body: body, ContentType: "application/json"}, nil
+}
+
+// goingRunResults is the saved tool result of each of steps of run, as the agent saved it
+// (agent.ReadSavedResult): a step that holds no call's answer is a result saying why, and a step
+// the run did not save is none.
+func (s *server) goingRunResults(ctx context.Context, run string, steps []int) ([]going.Result, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select step, body from going_run_steps where run_id = $1::uuid and kind = $2 and step = any($3::int[]) order by step
+	`, run, agentwire.StepTool, steps)
+	if err != nil {
+		return nil, fmt.Errorf("read the saved tool steps of run %s: %w", run, err)
+	}
+	defer rows.Close()
+	var results []going.Result
+	for rows.Next() {
+		var step int
+		var body []byte
+		if err := rows.Scan(&step, &body); err != nil {
+			return nil, err
+		}
+		saved, err := agent.ReadSavedResult(body)
+		if err != nil {
+			results = append(results, going.Result{Step: step, Call: 1, Unread: err.Error()})
+			continue
+		}
+		result := going.Result{Step: step, Call: saved.Call, Tool: saved.Tool, Arguments: saved.Arguments, Status: saved.Status, Body: saved.Body}
+		switch {
+		case saved.Cut:
+			result.NotWhole = fmt.Sprintf("was cut by the server at %d bytes, and what it held past them is not saved", agentwire.CallBodyLimit)
+		case saved.Shortened:
+			result.NotWhole = "holds only the first bytes of it you were given, which is all the step saved"
+		}
+		results = append(results, result)
+	}
+	return results, rows.Err()
 }

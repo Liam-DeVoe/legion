@@ -82,8 +82,8 @@ type goingRunState struct {
 
 // recordGoingRequest records one question: the asking actor, the project it was asked under (the
 // empty string for every project, as search reads its own filter) and the words of the question,
-// and answers the stored row. ends_at is created_at plus contracts.GoingRunWindow: both come
-// from one now(), the transaction's own, so the window is exactly that long.
+// and answers the stored row. ends_at is created_at plus goingQuickTime (going_quick.go): both
+// come from one now(), the transaction's own, so the window is exactly that long.
 //
 // The insert is made in a transaction of the shared pool rather than as a bare statement, because
 // the POST that calls it is a keyed write: the commit step marks the request's Idempotency-Key
@@ -102,7 +102,7 @@ func (s *server) recordGoingRequest(ctx context.Context, author model.Actor, pro
 	request, err := scanGoingRequest(tx.QueryRow(ctx, `
 		insert into going_requests (author, project, words, ends_at)
 		values ($1::jsonb, $2::text, $3::text, now() + make_interval(secs => $4))
-		returning `+goingRequestColumns, stored, project, words, contracts.GoingRunWindow.Seconds()))
+		returning `+goingRequestColumns, stored, project, words, goingQuickTime.Seconds()))
 	if err != nil {
 		return goingRequest{}, err
 	}

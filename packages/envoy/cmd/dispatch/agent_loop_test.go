@@ -1207,3 +1207,127 @@ func requireTheClaimGate(t *testing.T) {
 	}
 	server.requireServing(t)
 }
+
+// requireTheShortAnswersBounds: the short answer of R3, the model call that stays in the server
+// with Jev's (R15), keeps its bounds in a real server: a person's new question ends the call of the
+// one before; a stream past 4 MiB fails the answer, and one within it does not; an answer the model
+// has not written at 30 s fails; and of 33 questions at once the 33rd waits for a free slot. Jev's
+// call is made in the same run, inside the same bounds, which internal/dispatch/api's
+// TestTheShortAnswerAndJevAreBoundedInTheServer holds with a decision model; this server names
+// none.
+func requireTheShortAnswersBounds(t *testing.T) {
+	var mu sync.Mutex
+	replies := map[string]agenttest.Reply{}
+	// The answer asks the question as "question: <words>" on a line of its own.
+	question := func(words string) string { return "question: " + words + "\n" }
+	fake := agenttest.NewTLS(t, func(request *agenttest.Request) agenttest.Reply {
+		mu.Lock()
+		defer mu.Unlock()
+		for words, reply := range replies {
+			if strings.Contains(request.Text(), question(words)) {
+				return reply
+			}
+		}
+		return agenttest.Reply{Text: "No row of this test asks that."}
+	})
+	server := startAgentServer(t, modelEnv(t, fake))
+	ask := func(t *testing.T, login, words string, reply agenttest.Reply) string {
+		t.Helper()
+		mu.Lock()
+		replies[words] = reply
+		mu.Unlock()
+		body, _ := json.Marshal(map[string]any{"words": words})
+		answer := server.send(t, http.MethodPost, "/api/v1/going/requests", string(body), asUser(login))
+		var run struct {
+			ID string `json:"id"`
+		}
+		if answer.status != http.StatusCreated || json.Unmarshal(answer.body, &run) != nil {
+			t.Fatalf("%s asked %q: %d %s", login, words, answer.status, answer.body)
+		}
+		return run.ID
+	}
+	asked := func(words string) []*agenttest.Request { return fake.Matching(question(words)) }
+	// ending waits up to within for run's terminal frame, and answers its name and data.
+	ending := func(t *testing.T, run string, within time.Duration) (string, string) {
+		t.Helper()
+		var name, data string
+		server.eventually(t, within, "the ending of run "+run, func() bool {
+			err := server.database.Pool.QueryRow(context.Background(), `
+				select name, data::text from going_events where request_id = $1::uuid and name in ('end', 'error') limit 1
+			`, run).Scan(&name, &data)
+			return err == nil
+		})
+		return name, data
+	}
+
+	t.Run("a person's new question ends the call of the one before", func(t *testing.T) {
+		hold := make(chan struct{})
+		defer close(hold)
+		ask(t, "alice", "the words alice typed", agenttest.Reply{Hold: hold, Text: "An answer to words nobody reads now."})
+		server.eventually(t, 30*time.Second, "the call of alice's first question", func() bool { return len(asked("the words alice typed")) == 1 })
+		ask(t, "alice", "the words alice typed next", agenttest.Reply{Text: "An answer."})
+		server.eventually(t, 10*time.Second, "the call of alice's first question to be left", func() bool {
+			_, left := asked("the words alice typed")[0].Left()
+			return left
+		})
+	})
+
+	t.Run("a stream past 4 MiB fails, and one within it does not", func(t *testing.T) {
+		const past, within = "stream past the limit", "stream within the limit"
+		if name, data := ending(t, ask(t, "alice", past, agenttest.Reply{Padding: 4<<20 + 64<<10, Text: "An answer."}), 30*time.Second); name != "error" ||
+			!strings.Contains(data, "ANSWER_FAILED") || len(asked(past)) != 1 {
+			t.Errorf("a stream past 4 MiB ended %s %s after %d calls, want ANSWER_FAILED after the one", name, data, len(asked(past)))
+		}
+		if name, data := ending(t, ask(t, "alice", within, agenttest.Reply{Padding: 4<<20 - 512<<10, Text: "An answer."}), 30*time.Second); name != "end" {
+			t.Errorf("a stream within 4 MiB ended %s %s, want answered", name, data)
+		}
+	})
+
+	t.Run("an answer not written at 30 s fails", func(t *testing.T) {
+		never := make(chan struct{})
+		defer close(never)
+		started := time.Now()
+		name, data := ending(t, ask(t, "alice", "a question nobody answers", agenttest.Reply{Hold: never}), 45*time.Second)
+		if took := time.Since(started); name != "error" || !strings.Contains(data, "ANSWER_DID_NOT_ARRIVE") || took < 29*time.Second || took > 36*time.Second {
+			t.Errorf("an answer the model never wrote ended %s %s after %s, want ANSWER_DID_NOT_ARRIVE at its 30 s", name, data, took)
+		}
+	})
+
+	t.Run("the 33rd question waits for a free slot", func(t *testing.T) {
+		holds := make([]chan struct{}, 33)
+		words := make([]string, 33)
+		for asker := range holds {
+			holds[asker], words[asker] = make(chan struct{}), fmt.Sprintf("the question of asker %02d", asker)
+		}
+		released := make([]bool, 33)
+		defer func() {
+			for asker, hold := range holds {
+				if !released[asker] {
+					close(hold)
+				}
+			}
+		}()
+		for asker := range holds {
+			ask(t, fmt.Sprintf("asker-%02d", asker), words[asker], agenttest.Reply{Hold: holds[asker], Text: "An answer."})
+		}
+		waiting := func() []int {
+			var none []int
+			for asker := range words {
+				if len(asked(words[asker])) == 0 {
+					none = append(none, asker)
+				}
+			}
+			return none
+		}
+		server.eventually(t, 30*time.Second, "32 of the 33 questions to call the model", func() bool { return len(waiting()) == 1 })
+		time.Sleep(time.Second)
+		last := waiting()
+		if len(last) != 1 {
+			t.Fatalf("questions %v have not called the model, want the one the 32 slots leave", last)
+		}
+		freed := (last[0] + 1) % len(holds)
+		close(holds[freed])
+		released[freed] = true
+		server.eventually(t, 30*time.Second, "the 33rd question to call the model once one was answered", func() bool { return len(waiting()) == 0 })
+	})
+}

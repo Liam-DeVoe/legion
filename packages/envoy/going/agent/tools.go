@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -33,6 +35,10 @@ const (
 	toolGitHubRead = "github_read"
 	toolWebRead    = "web_read"
 )
+
+// toolDrawBlock is the block call_tool draws beside the run's answer (agentwire.KindBlock): the
+// server draws it from the run's saved tool results, and the step that asked for it shows it.
+const toolDrawBlock = "draw_block"
 
 // The tools of Dispatch the search and the read call, by their spec's names.
 const (
@@ -70,6 +76,54 @@ var outsideReads = []contracts.DispatchTool{
 		Arguments: []contracts.ToolField{
 			{Name: "url", Kind: contracts.ToolFieldString, Required: true, Description: "The address, as the person's words or a tool result wrote it."},
 		},
+	},
+}
+
+// drawBlockTool is draw_block's spec, as find_tools answers it beside the specs of Dispatch's own
+// tools: the arguments are going.RunBlock's, which the server reads.
+var drawBlockTool = contracts.DispatchTool{
+	Name: toolDrawBlock,
+	Description: "Draw a table, a chart or one number (a metric) beside your answer. The server makes every number in it: name the tool results of this run it reads, " +
+		"each by the step and call it names (\"step 4, call 1\"), and a chain of steps the server runs over their rows - filter, group, count, sum, mean, min, max and sort - " +
+		"then the columns of the chain's answer the block draws. Write no number in these arguments but those steps and calls. A result that was cut, or a list whose later pages you did not read " +
+		"and name, is refused as not whole: read the rest and call draw_block again.",
+	Arguments: []contracts.ToolField{
+		{Name: "kind", Kind: contracts.ToolFieldEnum, Required: true, Values: []string{"chart", "table", "metric"}, Description: "What the block is drawn as."},
+		{Name: "title", Kind: contracts.ToolFieldString, Required: true, Description: "What the block shows, with no number in it."},
+		{Name: "steps", Kind: contracts.ToolFieldArray, Required: true, Description: "The tool results the block reads, in order: each page of a list read.", Item: &contracts.ToolField{
+			Kind: contracts.ToolFieldObject, Fields: []contracts.ToolField{
+				{Name: "step", Kind: contracts.ToolFieldNumber, Required: true, Description: "The step its result names."},
+				{Name: "call", Kind: contracts.ToolFieldNumber, Required: true, Description: "The call its result names."},
+				{Name: "rows", Kind: contracts.ToolFieldString, Description: "The field of the result that holds its rows, such as issues; empty where the result is the list, or holds one."},
+			},
+		}},
+		{Name: "chain", Kind: contracts.ToolFieldArray, Required: true, Description: "The steps run over the rows, in order. A field is a field of the rows, a.b for a field within one.", Item: &contracts.ToolField{
+			Kind: contracts.ToolFieldObject, Fields: []contracts.ToolField{
+				{Name: "op", Kind: contracts.ToolFieldEnum, Required: true, Values: []string{"filter", "group", "count", "sum", "mean", "min", "max", "sort"},
+					Description: "filter keeps the rows that meet one condition; group makes one row of each value of field (per a period for a time), whose column is named as, else per, else field; " +
+						"count, sum, mean, min and max write how many rows each group holds, or that of field's numbers, in a column named as, else the step (before a group, of all rows); " +
+						"sort orders the rows by field."},
+				{Name: "field", Kind: contracts.ToolFieldString, Description: "The field the step reads; count takes none."},
+				{Name: "is", Kind: contracts.ToolFieldString, Description: "filter: the field's value, as text, is this."},
+				{Name: "is_not", Kind: contracts.ToolFieldString, Description: "filter: the field's value is not this."},
+				{Name: "in", Kind: contracts.ToolFieldArray, Item: &contracts.ToolField{Kind: contracts.ToolFieldString}, Description: "filter: the field's value is one of these."},
+				{Name: "has", Kind: contracts.ToolFieldString, Description: "filter: the field is a list holding this."},
+				{Name: "since", Kind: contracts.ToolFieldString, Description: "filter: the field is a time at or after this one, such as 2026-11-16."},
+				{Name: "before", Kind: contracts.ToolFieldString, Description: "filter: the field is a time before this one."},
+				{Name: "present", Kind: contracts.ToolFieldBoolean, Description: "filter: the field holds a value (true), or is null or missing (false)."},
+				{Name: "per", Kind: contracts.ToolFieldEnum, Values: []string{"day", "week", "month", "year"}, Description: "group: the period a time field is grouped by."},
+				{Name: "as", Kind: contracts.ToolFieldString, Description: "The name of the column the step writes."},
+				{Name: "order", Kind: contracts.ToolFieldEnum, Values: []string{"asc", "desc"}, Description: "sort: asc, the default, or desc."},
+			},
+		}},
+		{Name: "x", Kind: contracts.ToolFieldString, Description: "chart: the column along the axis."},
+		{Name: "y", Kind: contracts.ToolFieldString, Description: "chart: the column of numbers it plots."},
+		{Name: "mark", Kind: contracts.ToolFieldEnum, Values: []string{"bar", "line"}, Description: "chart: bar, the default, or line."},
+		{Name: "columns", Kind: contracts.ToolFieldArray, Item: &contracts.ToolField{Kind: contracts.ToolFieldString}, Description: "table: the columns it shows, in order."},
+		{Name: "field", Kind: contracts.ToolFieldString, Description: "metric: the column of its one row it shows."},
+		{Name: "label", Kind: contracts.ToolFieldString, Description: "metric: what the number counts."},
+		{Name: "compare", Kind: contracts.ToolFieldString, Description: "metric: another column it is shown beside, or empty."},
+		{Name: "compare_label", Kind: contracts.ToolFieldString, Description: "metric: what that column counts."},
 	},
 }
 
@@ -163,9 +217,9 @@ func (w *worker) read(ctx context.Context, step int, input json.RawMessage) (str
 	return w.callServer(ctx, agentwire.CallRequest{Step: step, Call: 1, Kind: agentwire.KindRoute, Tool: dispatchRead, Arguments: input})
 }
 
-// findTools answers the specs that fit the model's need: each tool of Dispatch, and the two reads
-// outside it, scored by how many of the need's words its name and description hold, the best
-// foundTools of them.
+// findTools answers the specs that fit the model's need: each tool of Dispatch, the two reads
+// outside it and draw_block, scored by how many of the need's words its name and description
+// hold, the best foundTools of them.
 func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (string, bool) {
 	var arguments struct {
 		Need string `json:"need"`
@@ -179,7 +233,7 @@ func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (str
 		score int
 	}
 	var found []scored
-	for _, tool := range append(slices.Clone(contracts.DispatchTools), outsideReads...) {
+	for _, tool := range append(append(slices.Clone(contracts.DispatchTools), outsideReads...), drawBlockTool) {
 		text := strings.ToLower(tool.Name + " " + strings.ReplaceAll(tool.Name, "_", " ") + " " + tool.Description)
 		score := 0
 		for _, word := range words {
@@ -207,8 +261,8 @@ func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (str
 }
 
 // callTool runs one read by a tool's name, as the person: a tool of Dispatch through the
-// server's route table, or a GitHub or web read the server makes. The server refuses a tool that
-// changes something.
+// server's route table, or a GitHub or web read the server makes; or draws a block (drawBlock).
+// The server refuses a tool that changes something.
 func (w *worker) callTool(ctx context.Context, step int, input json.RawMessage) (string, bool) {
 	var arguments struct {
 		Tool      string          `json:"tool"`
@@ -239,10 +293,28 @@ func (w *worker) callTool(ctx context.Context, step int, input json.RawMessage) 
 			return "web_read takes url", true
 		}
 		call.Kind, call.URL = agentwire.KindWeb, read.URL
+	case toolDrawBlock:
+		call.Kind, call.Block = agentwire.KindBlock, arguments.Arguments
+		return w.drawBlock(ctx, call)
 	default:
 		call.Kind, call.Tool, call.Arguments = agentwire.KindRoute, arguments.Tool, arguments.Arguments
 	}
 	return w.callServer(ctx, call)
+}
+
+// drawBlock asks the server to draw the block call names from the run's saved tool results, and
+// keeps the block it drew for the step's block frame (toolRun), so the frame carries the server's
+// rows as they were answered. The model is told the block as a result, or the server's refusal,
+// which says what to read or write instead.
+func (w *worker) drawBlock(ctx context.Context, call agentwire.CallRequest) (string, bool) {
+	answer, told, refused := w.serverCall(ctx, call)
+	if told != "" {
+		return told, refused
+	}
+	if answer.Status/100 == 2 && json.Valid(answer.Body) {
+		w.drawn.Store(call.Step, json.RawMessage(answer.Body))
+	}
+	return resultText(call, answer), answer.Status/100 != 2
 }
 
 // planChange is one change of a proposed plan: a tool of Dispatch that changes something, its
@@ -309,7 +381,7 @@ func (w *worker) callServer(ctx context.Context, call agentwire.CallRequest) (st
 	if told != "" {
 		return told, refused
 	}
-	return resultText(answer), answer.Status/100 != 2
+	return resultText(call, answer), answer.Status/100 != 2
 }
 
 // serverCall makes call of the run at the server and answers its answer, or, where it has none,
@@ -357,11 +429,21 @@ func (w *worker) serverCall(ctx context.Context, call agentwire.CallRequest) (ag
 	}
 }
 
-// resultText is what the model is told of a call's answer: that it is data, its status, and at
-// most modelResultLimit bytes of its body, with a note that names the rest.
-func resultText(answer agentwire.CallAnswer) string {
+// What resultText writes around a call's answer, which ReadSavedResult reads back: the line that
+// names the call by its step and its number within the step, which a block names it by
+// (draw_block), with its status; and the notes after a body the model was given only the first
+// bytes of, or that the server cut.
+const (
+	resultHead    = "step %d, call %d: status %d\n"
+	shortenedNote = "\n[This answer holds %d bytes and you were given the first %d: read the rest with another call, a narrower one or one with an offset or a limit, or do without it.]"
+	serverCutNote = "\n[The server cut this answer at %d bytes: what it holds past them is not here.]"
+)
+
+// resultText is what the model is told of call's answer: that it is data, the call and its
+// status, and at most modelResultLimit bytes of its body, with a note that names the rest.
+func resultText(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
 	var out strings.Builder
-	fmt.Fprintf(&out, "%s\nstatus %d\n", storedDataNote, answer.Status)
+	fmt.Fprintf(&out, "%s\n"+resultHead, storedDataNote, call.Step, call.Call, answer.Status)
 	body := answer.Body
 	if len(body) > modelResultLimit {
 		cut := modelResultLimit
@@ -369,14 +451,79 @@ func resultText(answer agentwire.CallAnswer) string {
 			cut--
 		}
 		out.Write(body[:cut])
-		fmt.Fprintf(&out, "\n[This answer holds %d bytes and you were given the first %d: read the rest with another call, a narrower one or one with an offset or a limit, or do without it.]", len(body), cut)
+		fmt.Fprintf(&out, shortenedNote, len(body), cut)
 	} else {
 		out.Write(body)
 	}
 	if answer.Cut {
-		fmt.Fprintf(&out, "\n[The server cut this answer at %d bytes: what it holds past them is not here.]", agentwire.CallBodyLimit)
+		fmt.Fprintf(&out, serverCutNote, agentwire.CallBodyLimit)
 	}
 	return out.String()
+}
+
+// resultHeadLine and shortenedStart read back resultHead and the start of shortenedNote.
+var (
+	resultHeadLine = regexp.MustCompile(`^step (\d+), call (\d+): status (\d+)$`)
+	shortenedStart = regexp.MustCompile(`^\n\[This answer holds (\d+) bytes and you were given the first (\d+):`)
+)
+
+// SavedResult is what a saved tool step of a run holds of its call's answer, as resultText told
+// the model it: the tool it called and the arguments it called it with (call_tool's own tool and
+// arguments), the call's number within its step, its status and its body, and whether that body
+// is whole: Shortened where the model was given only its first bytes, all the step saved of it,
+// and Cut where the server cut the answer at agentwire.CallBodyLimit.
+type SavedResult struct {
+	Tool      string
+	Arguments json.RawMessage
+	Call      int
+	Status    int
+	Body      []byte
+	Shortened bool
+	Cut       bool
+}
+
+// ReadSavedResult reads the call's answer a saved tool step's body holds, and an error where it
+// holds none - a refusal, or a tool's own words, such as find_tools' - which says what it holds.
+func ReadSavedResult(body json.RawMessage) (SavedResult, error) {
+	var step toolBody
+	if err := json.Unmarshal(body, &step); err != nil {
+		return SavedResult{}, fmt.Errorf("the step does not read as a tool step: %w", err)
+	}
+	text, answered := strings.CutPrefix(step.Result, storedDataNote+"\n")
+	head, rest, _ := strings.Cut(text, "\n")
+	numbers := resultHeadLine.FindStringSubmatch(head)
+	if !answered || numbers == nil {
+		return SavedResult{}, fmt.Errorf("it holds no call's answer, but %q", note(step.Result))
+	}
+	saved := SavedResult{Tool: step.Call.Tool, Arguments: step.Call.Arguments}
+	saved.Call, _ = strconv.Atoi(numbers[2])
+	saved.Status, _ = strconv.Atoi(numbers[3])
+	rest, saved.Cut = strings.CutSuffix(rest, fmt.Sprintf(serverCutNote, agentwire.CallBodyLimit))
+	if at := strings.LastIndex(rest, "\n[This answer holds "); at >= 0 {
+		if sizes := shortenedStart.FindStringSubmatch(rest[at:]); sizes != nil {
+			total, _ := strconv.Atoi(sizes[1])
+			given, _ := strconv.Atoi(sizes[2])
+			if rest[at:] == fmt.Sprintf(shortenedNote, total, given) {
+				rest, saved.Shortened = rest[:at], true
+			}
+		}
+	}
+	saved.Body = []byte(rest)
+	switch step.Call.Tool {
+	case toolCallTool:
+		var inner struct {
+			Tool      string          `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+		}
+		if json.Unmarshal(step.Call.Arguments, &inner) == nil && inner.Tool != "" {
+			saved.Tool, saved.Arguments = inner.Tool, inner.Arguments
+		}
+	case toolSearch:
+		saved.Tool = dispatchSearch
+	case toolRead:
+		saved.Tool = dispatchRead
+	}
+	return saved, nil
 }
 
 // schemaOf is the JSON schema of a tool's arguments, as the model is given it.

@@ -282,7 +282,10 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.detached.goDetached(func() { s.startGoingRun(answering, request, start) })
+	// Taken here, in the order the POSTs land, so the newest question of a person is the one in
+	// flight whichever detached run starts first (going_quick.go).
+	turn := s.quick.take(goingQuickPerson(actor))
+	s.detached.goDetached(func() { s.startGoingRun(answering, request, start, turn) })
 	WriteJSON(w, http.StatusCreated, request)
 }
 
@@ -335,12 +338,17 @@ func goingRunLogin(caller model.Actor) string {
 // a run reaching its deadline is stored at the moment the deadline passes and a context that
 // ended with the run could not store it.
 //
+// The run is bounded as going_quick.go says: it is its person's one question in flight until a
+// newer one of theirs takes its turn, which ends it as its author's cancel does; it asks a model
+// only in one of the server's slots, which it waits for within its window; and its window is
+// goingQuickTime.
+//
 // A run with a decider decides first and stores the decision frame before the answer is asked
 // anything, so the answer is told the actions the decision offered; once the answer
 // has written, the proposal frame carries their arguments, before the frame that ends the stream.
 // The run's record (going_runs) is written as the run starts and filled as it goes: a run its
 // author cancels keeps what it reached and reads unfinished.
-func (s *server) startGoingRun(ctx context.Context, request goingRequest, start goingRunStart) {
+func (s *server) startGoingRun(ctx context.Context, request goingRequest, start goingRunStart, turn *goingQuickTurn) {
 	storing, endStoring := context.WithDeadline(ctx, request.EndsAt.Add(goingStreamGrace))
 	defer endStoring()
 	// The run's own cancel, which a cancel landing on this process calls (cancelGoingRequest):
@@ -352,6 +360,20 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 		s.goingCancels.Delete(request.ID)
 		cancel()
 	}()
+	// A newer question of the run's person ends this run as a cancel does: its record marked
+	// cancelled, so it stores no further frame, and then its answer stopped, so a run that has
+	// stopped reads cancelled. The mark is made on a context of its own, since the run's own ends
+	// as it returns, with a connection mark of its own, since the run may hold one under its own.
+	defer s.quick.leave(turn)
+	superseded := context.AfterFunc(turn.ctx, func() {
+		defer cancel()
+		marking, done := context.WithTimeout(store.ForConcurrentWorker(context.WithoutCancel(storing)), goingStreamGrace)
+		defer done()
+		if _, err := s.cancelGoingRun(marking, request.ID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("dispatch going: mark a run a newer question of its person ended", "request", request.ID, "error", err)
+		}
+	})
+	defer superseded()
 
 	run := s.beginGoingRun(storing, running, request, start)
 	if s.deps.Answerer == nil {
@@ -363,6 +385,18 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 	}
 	answering, endAnswering := context.WithDeadline(running, request.EndsAt)
 	defer endAnswering()
+	release, slotted := s.quick.slot(answering)
+	if !slotted {
+		// Its window ended while it waited for a slot, or a cancel ended it: a run past its
+		// window ends as a reader at its deadline ends it.
+		if running.Err() == nil {
+			if _, err := s.endGoingRun(storing, request.ID, going.Fault(contracts.GoingErrorAnswerDidNotArrive)); err != nil {
+				slog.Warn("dispatch going: end a run that waited out its window for a slot", "request", request.ID, "error", err)
+			}
+		}
+		return
+	}
+	defer release()
 
 	decision, err := run.decide(answering)
 	if err != nil || running.Err() != nil {

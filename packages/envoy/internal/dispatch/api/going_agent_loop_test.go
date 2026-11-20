@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
@@ -501,4 +503,74 @@ func TestARunKeepsItsBoundsAndItsRecord(t *testing.T) {
 			t.Errorf("the run made %d model calls, want none after the refused call", calls)
 		}
 	})
+}
+
+// TestARunsBlockIsDrawnFromItsSavedResults: a run's model asks for a block through call_tool's
+// draw_block, naming the step and call of the list read it made and a chain over its rows, and
+// the server draws the block from that saved result alone (settlement 9, R3): the run's events
+// hold the block frame with the server's count, and none of the number the model wrote. A spec
+// that holds a number of the model's is refused back to the model, BLOCK_REFUSED, and draws
+// nothing.
+func TestARunsBlockIsDrawnFromItsSavedResults(t *testing.T) {
+	rig := newGoingAgentRig(t, nil)
+	loop := newGoingLoop(t, rig)
+	const words = "chart how many issues DEMO holds"
+	spec := func(title string) map[string]any {
+		return map[string]any{"tool": "draw_block", "arguments": map[string]any{
+			"kind": "metric", "title": title, "steps": []map[string]any{{"step": 2, "call": 1}},
+			"chain": []map[string]any{{"op": "count"}}, "field": "count",
+		}}
+	}
+	loop.script.set(words, func(n int) agenttest.Reply {
+		switch n {
+		case 1:
+			return toolCall("call_tool", map[string]any{"tool": "dispatch_issues", "arguments": map[string]any{"project": "DEMO"}})
+		case 2:
+			return toolCall("call_tool", spec("The 7 issues of DEMO"))
+		case 3:
+			return toolCall("call_tool", spec("The issues of DEMO"))
+		}
+		return answered("DEMO holds 7 issues.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done", record.state, record.reason)
+	}
+	results := rig.toolResults(t, run)
+	if len(results) != 3 || !strings.Contains(results[0], "step 2, call 1: status 200") {
+		t.Fatalf("the run saved the tool results %q, want the list read as step 2, call 1, then two draws", results)
+	}
+	if !strings.Contains(results[1], agentwire.CodeBlockRefused) || !strings.Contains(results[1], "holds no number") {
+		t.Errorf("the draw whose title held a number was told %q, want %s for the number", results[1], agentwire.CodeBlockRefused)
+	}
+	var body []byte
+	if err := rig.database.Pool.QueryRow(context.Background(), `select body from going_run_steps where run_id = $1::uuid and step = 2`, run).Scan(&body); err != nil {
+		t.Fatalf("read the saved list read: %v", err)
+	}
+	saved, err := agent.ReadSavedResult(body)
+	var listed []map[string]any
+	if err != nil || json.Unmarshal(saved.Body, &listed) != nil || len(listed) == 0 || len(listed) == 7 {
+		t.Fatalf("the saved list read reads as %d issues (%v), want the rig's issues, which are not 7", len(listed), err)
+	}
+	rows, err := rig.database.Pool.Query(context.Background(), `select data from going_run_events where run_id = $1::uuid and name = 'block' order by sequence`, run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blocks []going.BlockData
+	for rows.Next() {
+		var data []byte
+		var block going.BlockData
+		if err := rows.Scan(&data); err != nil || json.Unmarshal(data, &block) != nil {
+			t.Fatalf("read a block frame: %v %s", err, data)
+		}
+		blocks = append(blocks, block)
+	}
+	rows.Close()
+	want := fmt.Sprintf(`[{"count":%d}]`, len(listed))
+	if len(blocks) != 1 {
+		t.Fatalf("the run's events hold %d block frames, want the one the server drew", len(blocks))
+	}
+	if got, _ := json.Marshal(blocks[0].Rows); string(got) != want || blocks[0].Kind != going.BlockMetric || blocks[0].Title != "The issues of DEMO" {
+		t.Errorf("the block frame is %s %q with rows %s, want the metric with the server's count %s", blocks[0].Kind, blocks[0].Title, got, want)
+	}
 }

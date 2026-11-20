@@ -33,6 +33,18 @@ const charsPerToken = 4
 // first sentence. A reply past it ends the run with agentloop.FaultLength.
 const answerOutputTokens = 4096
 
+// answerStreamLimit is the most bytes of one answer call's response stream the run reads
+// (agentloop.Request.StreamLimit): a call past it is cut there and the run fails, so a model that
+// streams without end costs the server 4 MiB and no more (R15, R16). It is the bound the answer's
+// stream had before the agent's runs (chatStreamLimit).
+const answerStreamLimit = 4 << 20
+
+// answerQuotaShare is the server's share of the chat deployment's tokens a minute
+// (DISPATCH_AZURE_CHAT_TOKENS_PER_MINUTE), which its short answers are paced to: the agent's runs
+// take the other 75% with a pacer of their own (going/agent), so a deployment with a smaller quota
+// keeps the same split.
+const answerQuotaShare = 0.25
+
 // answerRules is the system message every run sends: the rules an answer keeps, stated once
 // because they never change between runs. It names the bounds and the tool from contracts, so the
 // rules the model is given and the bounds the server enforces cannot drift apart. Every item, every
@@ -169,8 +181,8 @@ type AnswererConfig struct {
 	// Model is the model that answers, at its endpoint; required. Its endpoint's Token is
 	// read for every HTTP attempt, after the quota paced it.
 	Model agentloop.Model
-	// TokensPerMinute is the deployment's quota, which paces this process's calls. Zero or less
-	// is no pacing: the endpoint form names no quota.
+	// TokensPerMinute is the deployment's quota, of which this process's calls are paced to
+	// answerQuotaShare. Zero or less is no pacing: the endpoint form names no quota.
 	TokensPerMinute int
 	// Now replaces time.Now; a test drives the pacer with it.
 	Now func() time.Time
@@ -193,8 +205,9 @@ func NewAnswerer(cfg AnswererConfig) (*Answerer, error) {
 	}
 	if cfg.TokensPerMinute > 0 {
 		// One rate.Limiter, as embed.RateLimitedEmbedder paces the embedder, sized at the
-		// tokens a minute with a burst of a minute's quota.
-		answerer.limiter = rate.NewLimiter(rate.Limit(float64(cfg.TokensPerMinute)/60), cfg.TokensPerMinute)
+		// server's share of the tokens a minute with a burst of a minute's share.
+		share := int(float64(cfg.TokensPerMinute) * answerQuotaShare)
+		answerer.limiter = rate.NewLimiter(rate.Limit(float64(share)/60), share)
 	}
 	return answerer, nil
 }
@@ -294,9 +307,10 @@ func (a *Answerer) Run(ctx context.Context, request Request, emit func(Event) er
 	run.stop = stopCalls
 	run.input = run.ask(items)
 	call := agentloop.Request{
-		Model:  a.paced(run),
-		System: answerRules,
-		Tools:  append([]agentloop.Tool{run.searchTool()}, run.readTools()...),
+		Model:       a.paced(run),
+		System:      answerRules,
+		Tools:       append([]agentloop.Tool{run.searchTool()}, run.readTools()...),
+		StreamLimit: answerStreamLimit,
 	}
 
 	outcome := Outcome{StructuredOutput: StructuredOutputRefused}
@@ -450,7 +464,7 @@ func (a *Answerer) faultCode(ctx context.Context, run *answerRun, result agentlo
 		slog.Warn("going: the model service refused the run", "status", result.Status, "detail", result.Detail)
 		return contracts.GoingErrorAnswerFailed
 	default:
-		// A reply cut at answerOutputTokens, or a refusal.
+		// A reply cut at answerOutputTokens, a stream cut at answerStreamLimit, or a refusal.
 		slog.Warn("going: the model gave no answer the run could use", "fault", result.Fault)
 		return contracts.GoingErrorAnswerFailed
 	}

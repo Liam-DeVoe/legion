@@ -45,7 +45,7 @@ const (
 	CallEnd   = "end"
 )
 
-// The five kinds of call (CallRequest.Kind).
+// The six kinds of call (CallRequest.Kind).
 const (
 	// KindRoute is one read or write of Dispatch: a tool by its name and its arguments, run
 	// through the server's route table as the run's person. A write runs only as a row of the
@@ -63,6 +63,10 @@ const (
 	// (CallRequest.Asked): the rows the person's words ask for. The server lets through those of
 	// them its mode policy lets through, and answers the rows to run now (ReviewAnswer).
 	KindReview = "review"
+	// KindBlock asks the server to draw a block of the run (CallRequest.Block, going.RunBlock)
+	// from the run's saved tool results: the server runs the block's chain over their rows and
+	// answers the block it drew (going.BlockData), or refuses it BLOCK_REFUSED, saying why.
+	KindBlock = "block"
 )
 
 // PlanProposal is the plan a run's model proposed: what it does, in one or two sentences, and
@@ -279,6 +283,10 @@ const (
 	CodeCallPanicked = "CALL_PANICKED"
 	// CodeCallFailed is a call that failed in the server for another reason, named in the message.
 	CodeCallFailed = "CALL_FAILED"
+	// CodeBlockRefused is a block call whose block the server does not draw: a spec that holds a
+	// number or does not fit going.RunBlock, or saved results that are not whole or hold no rows
+	// its chain reads. The message says why, and what to read or write instead.
+	CodeBlockRefused = "BLOCK_REFUSED"
 	// CodeGrantEnded is a call of a run whose grant no longer names its person; Reason says why
 	// (a sign-out, an expired sign-in, a revoked token, a lost membership), and the run stops.
 	CodeGrantEnded = "GRANT_ENDED"
@@ -456,7 +464,7 @@ type StepAnswer struct {
 
 // CallRequest is one call of a run, keyed by the run, its step and the call's number within the
 // step: a second try of the same key sends again only what its first try did not land. Kind
-// says which of the three it is, and the fields of that kind are set.
+// says which kind of call it is, and the fields of that kind are set.
 type CallRequest struct {
 	Run        string `json:"run"`
 	LeaseToken string `json:"lease_token"`
@@ -477,6 +485,8 @@ type CallRequest struct {
 	Path       string `json:"path,omitempty"`
 	// URL is a web read's address.
 	URL string `json:"url,omitempty"`
+	// Block is a block call's spec, as the run's model wrote it (going.RunBlock).
+	Block json.RawMessage `json:"block,omitempty"`
 }
 
 // CallAnswer is what a call answered: the status, at most CallBodyLimit bytes of the body and

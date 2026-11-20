@@ -774,8 +774,7 @@ var sectionFiveRows = []string{
 // TestEachBoundOfABackgroundRun: each limit of section 5 of the background-runs design is crossed
 // once, and the run waits or stops with the reason the section names (check c22). It fails on a
 // row of the section with no subtest. The readers of a run's events are the run stream's (t14),
-// and the short answer's bounds the short answer's (t12); each of those is skipped until its task
-// lands.
+// which is skipped until its task lands.
 func TestEachBoundOfABackgroundRun(t *testing.T) {
 	skip := func(owner, why string) func(*testing.T) {
 		return func(t *testing.T) { t.Skip(owner + ": " + why) }
@@ -798,7 +797,7 @@ func TestEachBoundOfABackgroundRun(t *testing.T) {
 		"A lease":                                          requireAStoppedOwnerLosesItsRun,
 		"One claim":                                        requireOneClaim,
 		"A restart of the agent":                           requireTheRestartBound,
-		"The short answer and Jev's call, in the API":      skip("t12", "the short answer's bounds are its own task's"),
+		"The short answer and Jev's call, in the API":      requireTheShortAnswersBounds,
 	}
 	for _, row := range sectionFiveRows {
 		test, ok := subtests[row]

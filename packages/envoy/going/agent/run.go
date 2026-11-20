@@ -47,6 +47,9 @@ const (
 	frameTool = "tool"
 	// frameReply is one model reply: replyFrame.
 	frameReply = "reply"
+	// frameBlock is the block a draw_block call drew, as the server answered it
+	// (going.BlockData), shown beside the run's answer.
+	frameBlock = "block"
 )
 
 // toolFrame is the data of a tool frame: the step, the tool, its one-line note and whether it
@@ -105,6 +108,9 @@ type worker struct {
 	lost       atomic.Bool
 	proposed   atomic.Bool
 	plan       atomic.Pointer[agentwire.PlanAnswer]
+	// drawn is the block the server drew for a draw_block call (going.BlockData), by the step
+	// of the call, until that step is saved with it as its block frame.
+	drawn sync.Map
 }
 
 // newWorker is the worker of run, its context ctx's, its slot freed by release.
@@ -419,7 +425,11 @@ func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, ste
 			}
 			line := note(fmt.Sprintf("%s %s: %s", tool, input, result))
 			frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused})
-			w.save(agentwire.StepRequest{Step: step, Kind: agentwire.StepTool, Note: line, Frames: []agentwire.Frame{{Name: frameTool, Data: frame}}},
+			frames := []agentwire.Frame{{Name: frameTool, Data: frame}}
+			if block, drew := w.drawn.LoadAndDelete(step); drew {
+				frames = append(frames, agentwire.Frame{Name: frameBlock, Data: block.(json.RawMessage)})
+			}
+			w.save(agentwire.StepRequest{Step: step, Kind: agentwire.StepTool, Note: line, Frames: frames},
 				toolBody{Call: toolCall{ID: call.ID, Tool: tool, Arguments: input}, Result: result, Error: refused})
 		}
 		defer func() {

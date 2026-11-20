@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -493,4 +494,240 @@ func fillTimeline(rows []map[string]any) ([]map[string]any, error) {
 		drawn = drawn[len(drawn)-timelineEventMax:]
 	}
 	return drawn, nil
+}
+
+// RunBlockKinds are the kinds a block of a run is drawn as: a chart, a table, or one number.
+var RunBlockKinds = []string{BlockChart, BlockTable, BlockMetric}
+
+// RunBlock is a block of a run (settlement 9 of the plan): its kind and title, the saved tool
+// results of the run it reads, each by its step and its call's number within the step, the chain
+// the server runs over their rows (transform.go), and the columns of the chain's answer it draws
+// - a chart's x, y and mark, a table's columns, a metric's field and label and the field it is
+// compared with. The model writes it as the arguments of draw_block, and the server draws it from
+// the run's saved results alone (Draw).
+type RunBlock struct {
+	Kind         string    `json:"kind"`
+	Title        string    `json:"title"`
+	Steps        []StepRef `json:"steps"`
+	Chain        Chain     `json:"chain"`
+	X            string    `json:"x,omitempty"`
+	Y            string    `json:"y,omitempty"`
+	Mark         string    `json:"mark,omitempty"`
+	Columns      []string  `json:"columns,omitempty"`
+	Field        string    `json:"field,omitempty"`
+	Label        string    `json:"label,omitempty"`
+	Compare      string    `json:"compare,omitempty"`
+	CompareLabel string    `json:"compare_label,omitempty"`
+}
+
+// StepRef names one saved tool result of a run: its step, its call's number within the step, and
+// where its rows are in its answer, empty for the answer itself where it is a list, or its one
+// field that holds a list.
+type StepRef struct {
+	Step int    `json:"step"`
+	Call int    `json:"call"`
+	Rows string `json:"rows,omitempty"`
+}
+
+// standaloneNumber matches a number written on its own in text a block draws, such as "42" or
+// "3.5%": a number of the model's, which a title or a label may not carry. A digit inside a word,
+// as in P0 or Q3, is part of a name.
+var standaloneNumber = regexp.MustCompile(`(^|[^\p{L}\p{N}_])[+-]?\p{Nd}[\p{Nd},.]*%?($|[^\p{L}\p{N}_])`)
+
+// ParseRunBlock holds the spec a run's model wrote to RunBlock's schema. A spec that holds a
+// number is refused - a JSON number anywhere but a step's step and call, or a number written on
+// its own in the title or a label - so every number the block shows is the server's. So is a
+// spec of a kind no block of a run is, one naming a field RunBlock has not, one that names no
+// step or the same step twice, one whose chain refuses a step, and one that names no column to
+// draw.
+func ParseRunBlock(spec json.RawMessage) (RunBlock, error) {
+	decoder := json.NewDecoder(bytes.NewReader(spec))
+	decoder.UseNumber()
+	var fields map[string]any
+	if err := decoder.Decode(&fields); err != nil || fields == nil {
+		return RunBlock{}, errors.New("going: a block spec is one JSON object")
+	}
+	if at, number, held := numberIn(fields); held {
+		return RunBlock{}, fmt.Errorf("going: a block spec holds no number, and its %s holds %s: every number a block shows is one the server's chain makes from the run's saved results, so name the steps and the chain that make it", at, number)
+	}
+	var block RunBlock
+	strict := json.NewDecoder(bytes.NewReader(spec))
+	strict.DisallowUnknownFields()
+	if err := strict.Decode(&block); err != nil {
+		return RunBlock{}, fmt.Errorf("going: the block spec does not fit draw_block's arguments: %v", err)
+	}
+	block.Title = strings.TrimSpace(block.Title)
+	for _, drawn := range []struct{ name, text string }{{"title", block.Title}, {"label", block.Label}, {"compare_label", block.CompareLabel}} {
+		if number := standaloneNumber.FindString(drawn.text); number != "" {
+			return RunBlock{}, fmt.Errorf("going: a block spec holds no number, and its %s writes %q: every number a block shows is the server's, so write the %s without it", drawn.name, strings.TrimSpace(number), drawn.name)
+		}
+	}
+	if !slices.Contains(RunBlockKinds, block.Kind) {
+		return RunBlock{}, fmt.Errorf("going: a block of a run is a %s, not %q", strings.Join(RunBlockKinds, ", a "), block.Kind)
+	}
+	if len(block.Steps) == 0 {
+		return RunBlock{}, errors.New("going: a block spec names the steps whose saved results it reads, and this one names none")
+	}
+	for index := range block.Steps {
+		ref := &block.Steps[index]
+		ref.Call = cmp.Or(ref.Call, 1)
+		if ref.Step < 1 || ref.Call < 1 {
+			return RunBlock{}, fmt.Errorf("going: step %d, call %d is no step of a run: each counts from 1", ref.Step, ref.Call)
+		}
+		if slices.ContainsFunc(block.Steps[:index], func(other StepRef) bool { return other.Step == ref.Step && other.Call == ref.Call }) {
+			return RunBlock{}, fmt.Errorf("going: the block spec names step %d, call %d twice, which would read its rows twice", ref.Step, ref.Call)
+		}
+	}
+	if err := block.Chain.check(); err != nil {
+		return RunBlock{}, err
+	}
+	switch block.Kind {
+	case BlockChart:
+		block.Mark = cmp.Or(strings.TrimSpace(block.Mark), MarkBar)
+		switch {
+		case block.Mark != MarkBar && block.Mark != MarkLine:
+			return RunBlock{}, fmt.Errorf("going: a chart is drawn as %s or %s, not %q", MarkBar, MarkLine, block.Mark)
+		case strings.TrimSpace(block.X) == "" || strings.TrimSpace(block.Y) == "":
+			return RunBlock{}, errors.New("going: a chart's spec names x and y, the columns of the chain's answer it draws")
+		}
+	case BlockTable:
+		if len(block.Columns) == 0 || slices.Contains(block.Columns, "") {
+			return RunBlock{}, errors.New("going: a table's spec names its columns, the columns of the chain's answer it draws")
+		}
+	case BlockMetric:
+		if strings.TrimSpace(block.Field) == "" {
+			return RunBlock{}, errors.New("going: a metric's spec names its field, the column of the chain's answer it draws")
+		}
+		block.Label = cmp.Or(strings.TrimSpace(block.Label), block.Field)
+		block.CompareLabel = ""
+		if block.Compare != "" {
+			block.CompareLabel = cmp.Or(strings.TrimSpace(block.CompareLabel), block.Compare)
+		}
+	}
+	return block, nil
+}
+
+// numberIn is the first JSON number of a spec, in its fields' order, with where it is, outside
+// the two places a spec writes one: each step's step and call.
+func numberIn(spec map[string]any) (string, json.Number, bool) {
+	var walk func(value any, at string) (string, json.Number, bool)
+	walk = func(value any, at string) (string, json.Number, bool) {
+		switch value := value.(type) {
+		case json.Number:
+			return at, value, true
+		case []any:
+			for index, element := range value {
+				if where, number, held := walk(element, fmt.Sprintf("%s[%d]", at, index)); held {
+					return where, number, true
+				}
+			}
+		case map[string]any:
+			for _, name := range slices.Sorted(maps.Keys(value)) {
+				if where, number, held := walk(value[name], at+"."+name); held {
+					return where, number, true
+				}
+			}
+		}
+		return "", "", false
+	}
+	for _, name := range slices.Sorted(maps.Keys(spec)) {
+		if steps, isList := spec[name].([]any); name == "steps" && isList {
+			for index, step := range steps {
+				ref, isObject := step.(map[string]any)
+				if !isObject {
+					continue
+				}
+				for _, field := range slices.Sorted(maps.Keys(ref)) {
+					if _, isNumber := ref[field].(json.Number); isNumber && (field == "step" || field == "call") {
+						continue
+					}
+					if where, number, held := walk(ref[field], fmt.Sprintf("steps[%d].%s", index, field)); held {
+						return where, number, true
+					}
+				}
+			}
+			continue
+		}
+		if where, number, held := walk(spec[name], name); held {
+			return where, number, true
+		}
+	}
+	return "", "", false
+}
+
+// StepNumbers is the number of each step the block reads.
+func (b RunBlock) StepNumbers() []int {
+	steps := make([]int, 0, len(b.Steps))
+	for _, ref := range b.Steps {
+		steps = append(steps, ref.Step)
+	}
+	return steps
+}
+
+// Draw draws the block from results, the run's saved tool results, and from nothing else: the
+// rows of each step it names, refused unless they are the whole of what their reads list
+// (readPage, wholeRows), through its chain, cut to the columns it draws. Every number the block
+// holds is one a result held or a step of the chain made. An error is a refusal the model can act
+// on: it names what to read, or what to write instead; where the data was not whole it says so.
+func (b RunBlock) Draw(results []Result) (BlockData, error) {
+	pages := make([]resultPage, 0, len(b.Steps))
+	for _, ref := range b.Steps {
+		at := slices.IndexFunc(results, func(result Result) bool { return result.Step == ref.Step && result.Call == ref.Call })
+		if at < 0 {
+			return BlockData{}, fmt.Errorf("going: the run saved no tool result at step %d, call %d: name each result by the step and call it names", ref.Step, ref.Call)
+		}
+		page, err := readPage(ref, results[at])
+		if err != nil {
+			return BlockData{}, err
+		}
+		pages = append(pages, page)
+	}
+	rows, err := wholeRows(pages)
+	if err != nil {
+		return BlockData{}, err
+	}
+	answer, err := b.Chain.Run(rows)
+	if err != nil {
+		return BlockData{}, err
+	}
+	var drawn []map[string]any
+	switch b.Kind {
+	case BlockChart:
+		drawn, err = fillChart(blockSpec{X: b.X, Y: b.Y}, flattened(answer, b.X, b.Y))
+	case BlockTable:
+		drawn, err = project(flattened(answer, b.Columns...), b.Columns, tableRowMax, nil)
+	case BlockMetric:
+		drawn, err = fillMetric(blockSpec{Table: "the chain's answer", Field: b.Field, Compare: b.Compare}, flattened(answer, b.Field, b.Compare))
+	}
+	if err != nil {
+		return BlockData{}, err
+	}
+	if len(drawn) == 0 {
+		return BlockData{}, fmt.Errorf("going: the %s block's chain answers no row to draw", b.Kind)
+	}
+	spec, err := json.Marshal(b)
+	if err != nil {
+		return BlockData{}, err
+	}
+	return BlockData{Kind: b.Kind, Title: b.Title, Spec: spec, Rows: drawn}, nil
+}
+
+// flattened is rows with each of columns that names a nested field (a.b) set to that field's
+// value, so a block draws it as one column; rows themselves are left as they are.
+func flattened(rows []map[string]any, columns ...string) []map[string]any {
+	nested := slices.DeleteFunc(slices.Clone(columns), func(column string) bool { return !strings.Contains(column, ".") })
+	if len(nested) == 0 {
+		return rows
+	}
+	out := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		copied := maps.Clone(row)
+		for _, column := range nested {
+			if value, held := fieldValue(row, column); held {
+				copied[column] = value
+			}
+		}
+		out = append(out, copied)
+	}
+	return out
 }
