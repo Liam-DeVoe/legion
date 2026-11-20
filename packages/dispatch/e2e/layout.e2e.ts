@@ -329,6 +329,7 @@ interface Edges {
 
 /** The box `locator` draws, which the row has already waited to see drawn. */
 async function edgesOf(locator: Locator, what: string): Promise<Edges> {
+  // The row's wait drew each box before it asks, and a drawn element has a box, so it is there.
   const box = await locator.boundingBox();
   if (box === null) throw new Error(`${what} is not drawn`);
   return { bottom: box.y + box.height, left: box.x, right: box.x + box.width, top: box.y };
