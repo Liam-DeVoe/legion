@@ -5646,6 +5646,71 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
+# T14. A sleep in a loop whose passes the gate reads, around a fetch, written in a form other than
+# a bare `sleep <digits>`. Each step below runs r44-fetch.sh, 300 s, in three passes that each
+# sleep 300 s, so bash waits 3 x 300 + 3 x 300 = 1800 s, which `timeout-minutes: 29`, 1740 s, does
+# not exceed. At f470f13261 the gate charges each of these sleeps 0 s and passes all five steps:
+# `sleep 5m` (GNU sleep's minutes), `sleep 100 200` (two arguments, which sleep sums),
+# `sleep 299.9` (a decimal; bash waits 1799.7 s), `command sleep 300` (a sleep behind a wrapper)
+# and a function the body calls whose own body sleeps. A sleep the gate prices exactly is priced,
+# and one it cannot is refused by name (INFRA-1310's architect, dispatch://INFRA-1545, the
+# tester's round 44). Each step asks only to be named in a refusal, so a charged figure or a
+# refusal by name both pass it.
+echo "case: r45 T14 a sleep in a priced loop that is no bare sleep of whole seconds is not charged nothing"
+root=$(fixture r45-T14-unpriced-sleeps)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sleep in minutes
+        timeout-minutes: 29
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 5m
+          done
+      - name: Sleep two arguments
+        timeout-minutes: 29
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 100 200
+          done
+      - name: Sleep a decimal
+        timeout-minutes: 29
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 299.9
+          done
+      - name: Sleep behind command
+        timeout-minutes: 29
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            command sleep 300
+          done
+      - name: Sleep in a function the loop calls
+        timeout-minutes: 29
+        run: |
+          nap() { sleep 300; }
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            nap
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for r45_step in "Sleep in minutes" "Sleep two arguments" "Sleep a decimal" "Sleep behind command" \
+  "Sleep in a function the loop calls"; do
+  check "refuses or charges '$r45_step'" "$(contains "$out" "^::error file=.github/workflows/case.yaml,line=[0-9]*::step '$r45_step' ")"
+done
+
 # A loop's own waits are each `sleep <n>` of its body, charged as bash runs it (sleep_of;
 # dispatch://INFRA-1545, round 44). Two sleeps written as commands of their own both run after
 # every pass: the first step runs r44-fetch.sh, 300 s, in three passes that each sleep 100 s and
