@@ -2,8 +2,14 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -156,7 +163,6 @@ runtime:
       pi_legion: 10.4.0
       pi_envoy: https://legion:fixture-plugin-password@plugins.internal.example/pi-envoy-10.4.0.tgz?token=fixture-plugin-token
     setup: [/bin/sh, -c, 'echo fixture-setup']
-    skills_repository: acme/agent-skills
     repository_cache:
       volume: 40Gi
       refresh_minutes: 15
@@ -169,6 +175,12 @@ runtime:
         floor_percent: 15
         wait_seconds: 8
         interval_milliseconds: 250
+    volume_trim:
+      enabled: true
+      high_percent: 90
+      low_percent: 60
+      min_age_minutes: 120
+      interval_seconds: 30
 `
 
 // minimalSettingsFile is the smallest tmux legion.yaml that loads: every other setting is a
@@ -217,6 +229,8 @@ func populatedState(t *testing.T) State {
 	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
 	// When LEGION-207's linger runs out: its work finished and its tree lingers until then.
 	lingerUntil := time.Date(2026, 9, 22, 10, 10, 12, 0, time.UTC)
+	// When the controller paused the project, nine minutes before the state was read.
+	pausedSince := time.Date(2026, 9, 22, 9, 9, 0, 0, time.UTC)
 	// The two flags the line's members write: LEGION-212 kept the slot it took when the daemon
 	// started it and waits for no other (record.KeepsSlot), and LEGION-211's tree has not been
 	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
@@ -353,7 +367,8 @@ func populatedState(t *testing.T) State {
 							},
 							// The pod's update round, which every claim of that pod shares: the round
 							// asks each role, and the daemon replaces the pod once every asked role has
-							// answered and no turn runs, or at the round's bound
+							// answered, no turn runs and no claim's activity report holds it
+							// (internal/daemon's roundEnd.holding), or at the round's bound
 							// (pod_update_grace_minutes) whatever the roles answered, an operator's
 							// suspension excepted. This one has answered, and reported the head it
 							// pushed. The reasons are the round's own, so every claim of the pod
@@ -500,7 +515,7 @@ func populatedState(t *testing.T) State {
 							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
 						},
 						PendingCause:   supervise.CauseDied,
-						LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found",
+						LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of example-org/deployment at leak-check-v3 with HTTP 404: Not Found",
 					}, Pass: 1, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no
@@ -864,6 +879,24 @@ func populatedState(t *testing.T) State {
 		// the pacing is holding now, which is the pair a reader of a running wave needs
 		// (contract 73).
 		ClaimsToRefresh: 4,
+		// The controller paused the project nine minutes before this read (decision 25 of
+		// dispatch://INFRA-3759), built through pausedViewOf from the store's own rows as the
+		// state's read builds it (PauseStateTx). LEGION-208's implementer is still in the turn the
+		// pause found it in, so the pause waits on its stop. Two rows are held for the pause: the
+		// start of LEGION-211's released implementer that a wake queued, which names its claim, and
+		// a notice for LEGION-209's architect, which names none (the tree walk routes a notice at
+		// run time), so it carries no `claim`.
+		Paused: pausedViewOf(store.Pause{
+			ID: 7, Project: "LEGION", Since: pausedSince, Reason: "the model provider is refusing every turn",
+			By: store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"},
+		}, []store.PauseStop{{
+			ID: 31, Pause: 7, Claim: "legion-legion-legion-208-implementer", Issue: "LEGION-208",
+			Role: claim.RoleImplementer, AskedAt: pausedSince,
+		}}, []record.PauseHeldRow{
+			{OutboxRow: record.OutboxRow{ID: 811, Kind: record.OutboxKindSupervise, Issue: "LEGION-211"},
+				Claim: "legion-legion-legion-211-implementer", WaitedSeconds: 412},
+			{OutboxRow: record.OutboxRow{ID: 814, Kind: record.OutboxKindNotice, Issue: "LEGION-209"}, WaitedSeconds: 95},
+		}),
 		ControllerLocator: &ControllerLocator{
 			Runtime:      "kubernetes",
 			External:     true,
@@ -881,23 +914,30 @@ func populatedState(t *testing.T) State {
 			Decided:        map[capabilities.Name]string{capabilities.Secrets: "pods are enrolled with the secrets broker once dispatch://LEGION-205 lands; until then no pod reads a secret"},
 			UnreservedPods: []capabilities.Pod{capabilities.PodIssue},
 		}.Report()),
-		// The project maps three repositories of two owners; the review App is not installed on one,
-		// which the daemon leaves out. acme/widgets' cache is Ready and its last health read
-		// answered, zeta/tools' could not be read, and acme/legacy, mapped no longer, keeps its cache
-		// until its retention ends.
+		// Four repositories of two owners: two the daemon serves, both role Apps being installed
+		// on them; one the review App is not installed on, which the daemon leaves out saying what
+		// GitHub answered of each App; and one whose implement App read GitHub did not answer,
+		// left out for now with no answer of the Apps at all, since GitHub gave it none.
+		// zeta/tools stands for a repository only a record names, which the daemon serves exactly
+		// as a mapped one and which is the project's default in no mapping (INFRA-2543 R6).
+		// acme/widgets' cache is Ready and its last health read answered, zeta/tools' could not be
+		// read, and acme/legacy, served no longer, keeps its cache until its retention ends.
 		Repositories: RepositoriesView{
 			Owners: []string{"acme", "zeta"},
 			Mapped: []MappedRepositoryView{
-				{Repo: "acme/widgets", Default: true, Cache: &CacheView{
+				{Repo: "acme/widgets", Default: true, Apps: AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
 					Repo: "acme/widgets", Sandbox: "legion-legion-cache-acme-widgets-d782c874", State: "ready", Ready: true, Address: "http://legion-legion-cache-acme-widgets-d782c874.legion.svc:8418",
 					Head: "34a7ac80e9c3389ffbc1bbeece371ccacc043992", LastFetchAt: time.Date(2026, 10, 16, 19, 20, 30, 0, time.UTC), Bytes: 6612345678,
 				}},
-				{Repo: "zeta/tools", Cache: &CacheView{
+				{Repo: "zeta/tools", Apps: AppInstallationsView{Implement: true, Review: true}, Cache: &CacheView{
 					Repo: "zeta/tools", Sandbox: "legion-legion-cache-zeta-tools-1b2c3d4e", State: "failing",
 					Reason: "container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
 				}},
 			},
-			Refused: []RefusedRepositoryView{{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets"}},
+			Refused: []RefusedRepositoryView{
+				{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets", Apps: &AppInstallationsView{Implement: true}},
+				{Repo: "zeta/archive", Reason: "the implement App's installation on zeta/archive could not be read: GitHub answered 502; Legion reads it again"},
+			},
 			// Dispatch's GitHub App is not installed on zeta/tools, which is served all the same.
 			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}},
 			Caches: []CacheView{{
@@ -1130,6 +1170,142 @@ func TestStateOperatorClaimGolden(t *testing.T) {
 	})
 }
 
+// goldenPauseSince is when the goldens' pause began, and goldenPauseEnded when its resume ended it.
+var (
+	goldenPauseSince = time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	goldenPauseEnded = time.Date(2026, 11, 15, 9, 41, 30, 0, time.UTC)
+)
+
+// goldenPause is the goldens' pause: the operator paused LEGION for a provider's outage, and, once
+// ended, the controller resumed it from its session.
+func goldenPause(ended bool) store.Pause {
+	p := store.Pause{ID: 7, Project: "LEGION", Since: goldenPauseSince, By: store.PauseActor{Kind: store.PauseByOperator},
+		Reason: "the model provider is refusing every turn"}
+	if ended {
+		p.EndedAt, p.EndedBy = goldenPauseEnded, store.PauseActor{Kind: store.PauseByController, Session: "ses_controller"}
+	}
+	return p
+}
+
+// While the project runs after a pause has ended, the state names that pause and who ended it
+// (`lastPause`, decision 25 of dispatch://INFRA-3759) and carries no `paused`; populatedState
+// carries the other key, the pause that stands. A state carries one of the two at most, so each has
+// a state of its own, built as the state's read builds it (pauseViewOf).
+func TestStateLastPauseGolden(t *testing.T) {
+	last := pauseViewOf(goldenPause(true))
+	golden(t, "state-last-pause.json", State{
+		Daemon: DaemonInfo{
+			Project:       "LEGION",
+			SchemaVersion: 3,
+			Boots:         5,
+			FirstBootAt:   time.Date(2026, 11, 2, 14, 3, 27, 0, time.UTC),
+			StartedAt:     time.Date(2026, 11, 15, 8, 30, 0, 0, time.UTC),
+		},
+		Admission:           Admission{Cap: 2, Active: []string{}, Waiting: []string{}},
+		PendingStatusWrites: []PendingStatusWrite{},
+		LastPause:           &last,
+		Settings:            SettingsOf(minimalSettingsConfig(t)),
+	})
+}
+
+// stubPauses is a pause service that answers what a golden asks of it: the pause routes are held
+// to the real service by TestPauseRoutes, and these goldens pin what the routes write of each
+// answer and each refusal, through the routes themselves.
+type stubPauses struct {
+	pause, resumed      store.Pause
+	pauseErr, resumeErr error
+	released            int
+	open, last          store.Pause
+	openFound           bool
+	lastFound           bool
+	paused              int64
+}
+
+func (s stubPauses) Pause(context.Context, store.PauseActor, string) (store.Pause, error) {
+	return s.pause, s.pauseErr
+}
+
+func (s stubPauses) Resume(context.Context, store.PauseActor) (store.Pause, []record.PauseHeldRow, error) {
+	return s.resumed, make([]record.PauseHeldRow, s.released), s.resumeErr
+}
+
+func (s stubPauses) OpenPause(context.Context) (store.Pause, bool, error) {
+	return s.open, s.openFound, nil
+}
+
+func (s stubPauses) LastEndedPause(context.Context) (store.Pause, bool, error) {
+	return s.last, s.lastFound, nil
+}
+
+func (s stubPauses) Paused() (int64, bool) { return s.paused, s.paused != 0 }
+
+// pauseRouteAnswer is what the operator's route at target answers with svc behind it (nil for a
+// daemon with no pause service), held to want and decoded strictly into into, so a key the Go type
+// does not name fails here before it reaches a fixture.
+func pauseRouteAnswer(t *testing.T, svc PauseService, target string, body any, want int, into any) {
+	t.Helper()
+	quiet := slog.New(slog.NewTextHandler(io.Discard, nil))
+	handler := NewServer("127.0.0.1", 8437, Options{Project: testProject, OperatorToken: testOperatorToken, Pause: svc, Log: quiet}).Handler
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reader = bytes.NewReader(encoded)
+	}
+	req := httptest.NewRequest(http.MethodPost, target, reader)
+	req.Header.Set("Authorization", "Bearer "+testOperatorToken)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+	if recorder.Code != want {
+		t.Fatalf("POST %s = %d, want %d; body %s", target, recorder.Code, want, recorder.Body)
+	}
+	decodeInto(t, recorder, into)
+}
+
+// Every answer and refusal of the pause routes has a fixture (dispatch://INFRA-3759), written
+// from what the route itself writes: the pause it began; the pause a resume ended, with how many
+// held rows it let out; a blank reason; a daemon whose configuration cannot hold a pause, naming
+// the setting; a daemon with no workflow, which names no setting; a second pause, naming the pause
+// that stands; a resume of a running project, naming the last pause; and a turn refused while the
+// project is paused (PROJECT_PAUSED, here the operator's spawn), naming the pause that stands.
+func TestPauseRouteGoldens(t *testing.T) {
+	const pauseRoute, resumeRoute = "/legion/v1/operator/project/pause", "/legion/v1/operator/project/resume"
+	reason := OperatorPauseRequest{Reason: goldenPause(false).Reason}
+
+	var paused ProjectPauseResponse
+	pauseRouteAnswer(t, stubPauses{pause: goldenPause(false)}, pauseRoute, reason, http.StatusOK, &paused)
+	golden(t, "project-pause.json", paused)
+
+	var resumed ProjectResumeResponse
+	pauseRouteAnswer(t, stubPauses{resumed: goldenPause(true), released: 3}, resumeRoute, nil, http.StatusOK, &resumed)
+	golden(t, "project-resume.json", resumed)
+
+	var blank Failure
+	pauseRouteAnswer(t, stubPauses{pauseErr: pause.ErrReasonRequired}, pauseRoute, OperatorPauseRequest{}, http.StatusBadRequest, &blank)
+	golden(t, "project-pause-reason-required.json", blank)
+
+	for name, tc := range map[string]struct {
+		svc    PauseService
+		target string
+		body   any
+	}{
+		"project-pause-unavailable.json": {stubPauses{pauseErr: &pause.UnavailableError{Setting: pause.SettingTmux}}, pauseRoute, reason},
+		"project-pause-no-workflow.json": {nil, pauseRoute, reason},
+		"project-pause-refused.json": {stubPauses{pauseErr: fmt.Errorf("pause LEGION: %w",
+			&store.AlreadyPausedError{Standing: goldenPause(false)})}, pauseRoute, reason},
+		"project-resume-refused.json": {stubPauses{resumeErr: &store.NotPausedError{Project: "LEGION"},
+			last: goldenPause(true), lastFound: true}, resumeRoute, nil},
+		"project-paused.json": {stubPauses{paused: 7, open: goldenPause(false), openFound: true}, "/legion/v1/operator/claims",
+			SpawnRequest{Tree: "LEGION-208", Issue: "LEGION-209", Role: claim.RoleImplementer}},
+	} {
+		var refused PauseFailure
+		pauseRouteAnswer(t, tc.svc, tc.target, tc.body, http.StatusConflict, &refused)
+		golden(t, name, refused)
+	}
+}
+
 // golden pins one response's wire shape: Go writes it (`-update`), and
 // `packages/contracts/src/legion-api.test.ts` parses it through the schema of the response it is
 // and holds the parse equal to the file. A fixture that differs from what Go now writes is stale.
@@ -1217,7 +1393,7 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 // than a literal. The store's `Project` is no field of the wire — the route answers one
 // project's records — so the rows carry only what is served.
 //
-// Two rows of each list, because one row of each pins less than the shape:
+// Two rows of each list, because one row of each pins less than the shape, and a third resume:
 //   - the releases are a release that suspended two roles and saved a bundle, and one whose
 //     stops suspended no claim and whose workspace held nothing unpushed (recordPodRelease
 //     counts only the claims this release's own stops suspended, and the store reads an empty
@@ -1226,7 +1402,9 @@ func TestReadyForUpdateRequestGolden(t *testing.T) {
 //   - the resumes are a wake whose pod was Ready and whose role took its first turn, which is
 //     the row that fills both optional stamps, and a wake of a pod with no release row recorded
 //     for it (`release` is 0) that went ten minutes with no turn, so it is `stuck` and its
-//     `firstTurnAt` is left out until something observes it;
+//     `firstTurnAt` is left out until something observes it; and a wake a project pause held
+//     (decision 15 of dispatch://INFRA-3759), which pairs with no release and names its pause in
+//     `pause`, the key every other resume leaves out;
 //   - the holds are a background-work streak over eleven passes with the kinds its session
 //     reported in `detail`, and a teardown's overtaken hold, which reads a hold and not the view
 //     behind it and so carries no detail at all (outbox.recordPodHold).
@@ -1244,6 +1422,9 @@ func TestReleaseRecordsResponseGolden(t *testing.T) {
 				FirstTurnAt: released.Add(32 * time.Minute)},
 			{ID: 202, Issue: "LEGION-207", Role: "architect", Kind: "backstop",
 				At: released.Add(45 * time.Minute), PodReadyAt: released.Add(46 * time.Minute), Stuck: true},
+			{ID: 203, Issue: "LEGION-210", Role: "implementer", Kind: "pause",
+				At: released.Add(50 * time.Minute), PodReadyAt: released.Add(80 * time.Minute),
+				FirstTurnAt: released.Add(81 * time.Minute), Pause: 7},
 		},
 		Holds: []store.PodHold{
 			{ID: 301, Issue: "LEGION-210", Reason: "background_work", Detail: "subagent,async-job",
@@ -1320,7 +1501,7 @@ func TestControllerSecretResponseGolden(t *testing.T) {
 }
 
 // What `legion controller start` fetches for the review App's read-only tokens, one per owner,
-// each rendered as the two files `gh` reads.
+// each rendered as the two files `gh` reads, with the owner accounts that App is installed on.
 func TestControllerCredentialResponseGolden(t *testing.T) {
 	expiresAt := time.Date(2026, 9, 22, 10, 15, 2, 0, time.UTC)
 	acme := ghconfig.Render("ghs_placeholder_acme_token", "review", expiresAt)
@@ -1333,6 +1514,7 @@ func TestControllerCredentialResponseGolden(t *testing.T) {
 		Default:   "acme",
 		App:       "review",
 		ExpiresAt: expiresAt.UTC().Format(timeFormat),
+		Installed: []string{"acme", "sjawhar"},
 	})
 }
 

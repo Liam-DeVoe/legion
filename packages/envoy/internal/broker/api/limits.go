@@ -64,11 +64,10 @@ var DefaultTokenLimit = ratelimit.Limit{Every: 500 * time.Millisecond, Burst: 60
 
 // DefaultAccountLimit bounds, per source address, every route a caller's ServiceAccount token
 // authenticates, the approval page's own routes and the public GET /signin/status, in one bucket
-// they all share: the ten Dispatch's server relays a person's pages and decisions through, POST
-// /v1/oauth/revoke among them and the two decide routes, which spend it in their own handler
-// (accountAuthAfterRecordKind, decideRecord), POST /v1/oauth/introspect, the page's routes a
-// sign-in authenticates, which spend it in authenticate's authSignIn case, and GET
-// /signin/status, which spends it in its own handler. It is a burst of 200 and fifty a second,
+// they all share: the twelve Dispatch's server relays a person's pages and decisions through,
+// POST /v1/oauth/revoke and the two decide routes among them, POST /v1/oauth/introspect, the
+// page's routes a sign-in authenticates, which spend it in authenticate's authSignIn case, and
+// GET /signin/status, which spends it in its own handler. It is a burst of 200 and fifty a second,
 // per process, so a fleet of N broker pods allows N times it. Each request spends it before the
 // caller's token is verified, as a token login spends its address's bucket, since a token signed
 // under a key the broker does not hold makes the verifier fetch the issuer's keys again, and the
@@ -410,13 +409,13 @@ func clientAddress(r *http.Request, trustedProxyHeader string) string {
 
 // refuseAddress writes 429 RATE_LIMITED and reports refused when r's source address has no request
 // left in its bucket: POST /v1/launcher-credentials/token's first limit, spent before the token is
-// verified. Otherwise it answers giveBack, which returns the request to the bucket: tokenLogin
-// calls it only for a login whose token verified and that the broker then could not complete
-// (5xx); a token that does not verify always keeps the request it spent.
+// verified. Otherwise it answers giveBack, which returns the request to the bucket at the time it
+// is called: tokenLogin calls it only for a login whose token verified and that the broker then
+// could not complete (5xx); a token that does not verify always keeps the request it spent.
 func (l *launcherLimiter) refuseAddress(w http.ResponseWriter, r *http.Request) (giveBack func(), refused bool) {
-	giveBack, ok := l.perAddress.TakeAt(clientAddress(r, l.trustedProxyHeader), time.Now())
+	giveBackAt, ok := l.perAddress.TakeAt(clientAddress(r, l.trustedProxyHeader), time.Now())
 	if ok {
-		return giveBack, false
+		return func() { giveBackAt(time.Now()) }, false
 	}
 	refuseWithRetryAfter(w, l.perAddress.Every(), "too many launcher credential requests; try again later")
 	return nil, true
@@ -425,15 +424,15 @@ func (l *launcherLimiter) refuseAddress(w http.ResponseWriter, r *http.Request) 
 // refuseAccount writes 429 RATE_LIMITED and reports refused when subject, an account a token login
 // has just verified, has no login left in its account:<subject> bucket. Only a verified token
 // spends it, after its address's bucket. Otherwise it answers giveBack, which returns the login to
-// the bucket: tokenLogin calls it only for a login the broker could not complete (5xx), such as
-// one the database was away for. The Legion daemon retries such a login every few seconds through
-// a database outage, and the broker decided nothing about its token, so there is no guessing to
-// slow; spent, those retries would empty the bucket and refuse the daemon's first login after the
-// outage 429. A refused credential (any 4xx) keeps its login spent.
+// the bucket at the time it is called: tokenLogin calls it only for a login the broker could not
+// complete (5xx), such as one the database was away for. The Legion daemon retries such a login
+// every few seconds through a database outage, and the broker decided nothing about its token, so
+// there is no guessing to slow; spent, those retries would empty the bucket and refuse the
+// daemon's first login after the outage 429. A refused credential (any 4xx) keeps its login spent.
 func (l *launcherLimiter) refuseAccount(w http.ResponseWriter, subject string) (giveBack func(), refused bool) {
-	giveBack, ok := l.perLogin.TakeAt("account:"+subject, time.Now())
+	giveBackAt, ok := l.perLogin.TakeAt("account:"+subject, time.Now())
 	if ok {
-		return giveBack, false
+		return func() { giveBackAt(time.Now()) }, false
 	}
 	refuseWithRetryAfter(w, l.perLogin.Every(), "too many token logins for this ServiceAccount; try again later")
 	return nil, true
@@ -460,11 +459,11 @@ func (s *server) accountAddressAllows(r *http.Request) bool {
 
 // refuseAccountAddress writes 429 RATE_LIMITED and reports true when r's source address has no
 // request left in the bucket (DefaultAccountLimit): authenticate's first step for the
-// accountAuth class and the decide routes' own first step, spent before the caller's token is
-// verified. Its words name the ServiceAccount token those callers really send. The approval
-// page's routes and GET /signin/status spend the same bucket and answer their own refusals,
-// since no browser and no caller of a public route sent a token to be told about
-// (approval.Page.WriteRateLimited, signInStatus).
+// accountAuth class and the service class, spent before the caller's token is verified. Its words
+// name the ServiceAccount token those callers really send. The approval page's routes and GET
+// /signin/status spend the same bucket and answer their own refusals, since no browser and no
+// caller of a public route sent a token to be told about (approval.Page.WriteRateLimited,
+// signInStatus).
 func (s *server) refuseAccountAddress(w http.ResponseWriter, r *http.Request) bool {
 	if s.accountAddressAllows(r) {
 		return false

@@ -258,7 +258,7 @@ func roleList() string {
 // It is three operator commands in a row, and nothing else: `legion claims suspend` for a claim
 // that runs an agent and for the one no process stands behind, then `legion claims
 // forget-session`, then the start — `legion claims resume` for a suspended claim, and the retry
-// for one that failed or an operator stopped, which a resume is refused for (supervise's table).
+// for one that failed or retired, which a resume is refused for (supervise's table).
 // A phase worker is started through its issue's phase whichever of those two started it, since
 // that is what hands the relaunched role the phase's task (restartWorkedPhase). The new session
 // also puts the claim's run of provider-error turns back to zero
@@ -351,6 +351,10 @@ func roleList() string {
 // what makes that claim reachable at all: the daemon's own report of the dead process is
 // memory a restart forgets, and the record a restart leaves reads exactly as a claim in a turn
 // does.
+//
+// While the project is paused, every other claim is refused PROJECT_PAUSED before anything is
+// asked of it, at both doors, and nothing of it changes: the start this operation ends in is a
+// launch the pause holds (refusedWhilePaused, decision 20 of dispatch://INFRA-3759).
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (status int, notRestarted string, started, ok bool) {
 	c := m.Claim()
 	if c.Role == claim.RoleController {
@@ -362,6 +366,9 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		writeFailure(w, http.StatusConflict, "NOT_THE_CONTROLLER", fmt.Sprintf(
 			"%s is the project's controller: %s is what starts it — it launches a queued controller, resumes one the daemon suspended, and retries one that failed or retired — so the controller is left to that keeper, whatever state it is in, and no fresh session is run on it here",
 			token, controllerKeeperName))
+		return 0, "", false, false
+	}
+	if s.refusedWhilePaused(w, r, "fresh session", c) {
 		return 0, "", false, false
 	}
 	view := m.View()

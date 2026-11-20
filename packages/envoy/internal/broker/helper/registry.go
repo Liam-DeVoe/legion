@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"sort"
 	"sync"
@@ -16,6 +17,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/proof"
 )
+
+// RecordsNamed is how every message names the records file: by the setting that names it, never
+// by its path. A named session's record holds that session's signing key, and the default path
+// sits beside the machine file, so its path repeats AGENT_SECRETS_MACHINE_FILE's value.
+const RecordsNamed = "the session records AGENT_SECRETS_STATE_FILE names (default sessions.json beside the machine file)"
 
 // Session is one registered host process and the broker identity the helper holds for it. Key
 // never leaves this process beyond the records file, which holds it only for a session that has
@@ -76,10 +82,9 @@ type Session struct {
 	// not reach the broker rather than reading it as a refusal — a blip between a record and
 	// the broker must not cost the session the grants that record exists to keep — so those
 	// retries last as long as the outage does, and a register that waited on them would burn
-	// its whole wait on every launch for all that time, the per-launch stall the `Secrets
-	// broker` section of packages/envoy/AGENTS.md promises against at "`register --wait N`
-	// answers at once while the helper holds no launcher credential". A later register waits
-	// for nothing it did not see start.
+	// its whole wait on every launch for all that time. A register on a helper with no launcher
+	// credential waits only while an inherited enrollment's first confirming renew runs, and at
+	// most DefaultFirstConfirmBound. A later register waits for nothing it did not see start.
 	//
 	// Every write is under s.mu: newSession installs a CLOSED channel, since a session that
 	// has inherited nothing has no confirmation to wait for; inheritLocked installs a fresh
@@ -530,14 +535,15 @@ func nonEmpty(ids ...string) []string {
 
 // PrivateKey reads a record's signing key, nil when it has none and an error when what it has is
 // not a P-256 PKCS#8 key (a records file edited or truncated): the caller then makes a fresh key,
-// as it did before records carried one at all.
+// as it did before records carried one at all. The error is this package's own words, never the
+// base64 or x509 parser's, since the key is the records file's content.
 func (rec Record) PrivateKey() (*ecdsa.PrivateKey, error) {
 	if rec.Key == "" {
 		return nil, nil
 	}
 	parsed, err := decodeKeyDER(rec.Key)
 	if err != nil {
-		return nil, fmt.Errorf("session %s: key: %w", rec.RuntimeID, err)
+		return nil, fmt.Errorf("session %s: its recorded key is not a base64 PKCS#8 key", rec.RuntimeID)
 	}
 	key, ok := parsed.(*ecdsa.PrivateKey)
 	if !ok {
@@ -829,38 +835,51 @@ func (r *Registry) List() []*Session {
 	return out
 }
 
-// Root is the session pid belongs to: the one registered for pid itself or for one of its
-// ancestors. nil when pid is in no session, or when a walk could not tell, which sign,
-// sign-request and unregister refuse (resolveDescendant) and register treats as a new root.
+// Root is the session pid belongs to: the one registered for pid itself or, failing that, for the
+// nearest of its ancestors. nil when pid is in no session, or when a walk could not tell, which
+// sign, sign-request and unregister refuse (resolveDescendant) and register treats as a new root.
 func (r *Registry) Root(pid int) *Session {
 	sess, _ := r.RootOrUnknown(pid)
 	return sess
 }
 
 // RootOrUnknown is Root for a caller that must show pid is in no session: beside a nil session
-// it answers an error when some walk from pid ended short of init (descendsFrom: an unreadable
-// parent, a loop, the hop limit), since pid may then be inside that session.
+// it answers an error when the walk from pid ended short of init (nearestAncestor: an unreadable
+// parent, a loop, the hop limit), since pid may then be inside a session.
 func (r *Registry) RootOrUnknown(pid int) (*Session, error) {
-	var unknown error
-	for _, s := range r.List() {
-		in, err := descendsFrom(pid, s.PID, r.parent)
-		if in {
-			return s, nil
-		}
-		if err != nil && unknown == nil {
-			unknown = err
-		}
+	r.mu.Lock()
+	roots := maps.Clone(r.byPID)
+	r.mu.Unlock()
+	return nearestRoot(pid, roots, r.parent)
+}
+
+// nearestRoot is the session of roots rooted at pid itself or at the nearest of pid's ancestors
+// (nearestAncestor's walk, with its error when the walk ends short of a root and of init). The
+// nearest, never merely one: a pid inside two sessions' trees belongs to the one rooted nearer
+// it, so a root above another session's — which a restart re-pins from records, or which held
+// none of it when it registered — never takes that session's sign calls and requests.
+func nearestRoot(pid int, roots map[int]*Session, parent func(int) (int, error)) (*Session, error) {
+	if len(roots) == 0 {
+		return nil, nil
 	}
-	return nil, unknown
+	at, in, err := nearestAncestor(pid, parent, func(p int) bool { _, ok := roots[p]; return ok })
+	if !in {
+		return nil, err
+	}
+	return roots[at], nil
 }
 
 // admission is what AdmitRoot decided about one registration.
 type admission struct {
 	// Session is the session the pid belongs to now: the newly inserted one when Won, else the
-	// one it turned out to be inside already, or the live holder of the name when Held.
+	// one it turned out to be inside already, the live holder of the name when Held, or a live
+	// session whose root descends from pid when Covers.
 	Session *Session
 	Won     bool // build's session was inserted; it is the pid's root from now on
 	Held    bool // another live session already holds sessionID, and nothing was changed
+	// Covers: a live session's root descends from pid, so a session rooted at pid would hold
+	// that session's processes too; nothing was changed.
+	Covers bool
 	// Draining: the registry is about to be restarted and took nothing.
 	Draining bool
 	// Unidentified: commit refused the registration, and nothing was changed.
@@ -874,11 +893,12 @@ type admission struct {
 
 // AdmitRoot makes pid a session root, deciding the whole registration under the registry mutex
 // in ONE step: that the registry is not draining, that pid is inside no live session already,
-// that no live session holds sessionID, that the peer still names pid, that the dormant record
-// kept for sessionID is consumed, and that the new session is inserted. Each of those split
-// into its own lock is a race a registration can lose: two roots both finding a name free and
-// both taking it, two registrations for one unregistered pid both winning, or a record consumed
-// by a registration that then does not happen.
+// that no live session's root is inside pid's tree, that no live session holds sessionID, that
+// the peer still names pid, that the dormant record kept for sessionID is consumed, and that the
+// new session is inserted. Each of those split into its own lock is a race a registration can
+// lose: two roots both finding a name free and both taking it, two registrations for one
+// unregistered pid both winning, or a record consumed by a registration that then does not
+// happen.
 //
 // build turns the dormant record — and whether there was one — into the session to insert. It
 // runs under the mutex and must touch nothing else of the registry. Its error is returned
@@ -897,16 +917,24 @@ func (r *Registry) AdmitRoot(pid int, sessionID string, build func(rec Record, k
 	if r.draining {
 		return admission{Draining: true}
 	}
+	if s, _ := nearestRoot(pid, r.byPID, r.parent); s != nil {
+		// This walk is as much the kernel's to invalidate as the one before the insert:
+		// the pid may have been reused since the caller's own Root walk, and the session
+		// found is then a STRANGER's, which must not be handed the name — or the dormant
+		// identity — this registration asked for.
+		if commit != nil && !commit() {
+			return admission{Unidentified: true}
+		}
+		return admission{Session: s}
+	}
+	// A root above a live session's root would hold that session's processes in its own tree:
+	// named from outside both (a register from another window of the tmux server above them,
+	// say), it would take the processes of a session that is not its caller's. A walk from a
+	// live root that cannot be read (one that exited and is not yet retired) does not refuse:
+	// the lookup's nearest-root rule already keeps that session's processes its own.
 	for _, s := range r.byPID {
-		if in, _ := descendsFrom(pid, s.PID, r.parent); in {
-			// This walk is as much the kernel's to invalidate as the one before the insert:
-			// the pid may have been reused since the caller's own Root walk, and the session
-			// found is then a STRANGER's, which must not be handed the name — or the dormant
-			// identity — this registration asked for.
-			if commit != nil && !commit() {
-				return admission{Unidentified: true}
-			}
-			return admission{Session: s}
+		if below, _ := descendsFrom(s.PID, pid, r.parent); below {
+			return admission{Session: s, Covers: true}
 		}
 	}
 	if sessionID != "" {
@@ -1015,7 +1043,8 @@ func (r *Registry) record(s *Session, cur identity) (Record, error) {
 
 // Save writes every live session's record and every dormant one, atomically, 0600 in a directory
 // it makes 0700: a record of a named session holds that session's signing key, so nothing but
-// this user may read the file or list the directory. After Close it writes nothing.
+// this user may read the file or list the directory. After Close it writes nothing. A write that
+// fails is an error naming the file as RecordsNamed.
 //
 // Live and dormant are snapshotted under ONE registry lock. Read in two, a retire landing
 // between them would put the same session in the file twice — live and dormant at once, so a
@@ -1057,7 +1086,10 @@ func (r *Registry) Save() error {
 	if err != nil {
 		return err
 	}
-	return writeFileOwnerOnly(r.path, data)
+	if err := writeFileOwnerOnly(r.path, data); err != nil {
+		return fileError("write", RecordsNamed, err)
+	}
+	return nil
 }
 
 // LoadDormant takes the dormant records out of recs and keeps them, so a session that comes back
@@ -1084,18 +1116,20 @@ func (r *Registry) Close() {
 	r.closed = true
 }
 
-// LoadRecords reads what Save wrote; no file means no sessions.
+// LoadRecords reads what Save wrote; no file means no sessions. An error names the file as
+// RecordsNamed, and holds neither path nor the decoder's words about the file's content (a time
+// error quotes the value it could not read).
 func LoadRecords(path string) ([]Record, error) {
 	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, fileError("read", RecordsNamed, err)
 	}
 	var recs []Record
 	if err := json.Unmarshal(data, &recs); err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s do not read as a JSON list of session records", RecordsNamed)
 	}
 	return recs, nil
 }

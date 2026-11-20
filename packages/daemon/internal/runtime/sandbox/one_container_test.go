@@ -35,10 +35,8 @@ func rolesLocator(token claim.Token, uid string) runtime.Locator {
 // private, state and agent-secrets key directories its own — and none at the fixed paths a role
 // reads them at, which role-init binds inside the role's namespaces; the role homes volume is a
 // disk emptyDir at /var/run/legion/roles/.homes; the shared mounts are mounted once. The container
-// and both init containers carry the one issue-pod reservation — the third init container a
-// `skills_repository` adds carries it too, which TestASkillsRepositoryAddsTheSkillsInitContainer
-// proves — by default the six roles' former sum: 3 CPU and 19Gi, each requested in full, and an
-// 80Gi disk limit over a 6Gi request.
+// and both init containers carry the one issue-pod reservation, by default the six roles' former
+// sum: 3 CPU and 19Gi, each requested in full, and an 80Gi disk limit over a 6Gi request.
 func TestAnIssuePodRunsEveryRoleInOneContainer(t *testing.T) {
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
@@ -863,13 +861,13 @@ func TestTheBootCensusPassesBothIssuePodLayouts(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			sandboxes := newDynamic(t, sandboxRunning(t, "legion-legion-legion-208", issue, containers...)).Resource(sandboxGVR).Namespace(testNamespace)
-			if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, slogTo(io.Discard)); err != nil {
+			if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, testOptions().IssueDisks(), slogTo(io.Discard)); err != nil {
 				t.Fatalf("census = %v, want none", err)
 			}
 		})
 	}
 	sandboxes := newDynamic(t, sandboxRunning(t, "legion-legion-legion-208", issue, "roles", "tester")).Resource(sandboxGVR).Namespace(testNamespace)
-	if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, slogTo(io.Discard)); err == nil || !strings.Contains(err.Error(), "legion-legion-legion-208") {
+	if err := rejectLegacyIssueSandboxes(t.Context(), sandboxes, testProject, testOptions().IssueDisks(), slogTo(io.Discard)); err == nil || !strings.Contains(err.Error(), "legion-legion-legion-208") {
 		t.Fatalf("census of an issue pod running roles and a role container = %v, want it refused by name", err)
 	}
 }

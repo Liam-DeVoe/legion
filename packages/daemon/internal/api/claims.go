@@ -136,6 +136,12 @@ func (s *server) promptAgentsList() []string {
 // ready: what the report says is never a reason to refuse the ready — the daemon runs the session
 // and reports what it lacks — and a row the table has no live row for is dropped and logged by its
 // name cleaned as a detail is (capabilities.Normalize).
+//
+// A ready that carries no report — a boot's, or a role-regain's — first queues the publication of
+// the issue's role sessions to Dispatch (Options.RoleHoldersChanged), before the machine takes the
+// ready and sends the first task; the daemon queues none for an issue of another project, whose
+// rows only that project's daemon runs. A queue the daemon could not write refuses the ready with
+// 503, so no task goes before the publication is queued, and the plugin tries the ready again.
 func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	var req claim.ReadyRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
@@ -153,6 +159,16 @@ func (s *server) ready(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, decided := s.decision(r, req.ClaimToken)
 	defer decided()
+	if req.Capabilities == nil && s.roleHoldersChanged != nil {
+		if c := m.Claim(); c.Issue != "" && c.Role != claim.RoleController {
+			if err := s.roleHoldersChanged(ctx, c); err != nil {
+				s.log.Warn("api: refused a ready: the daemon could not queue the publication of its issue's role sessions",
+					"claim", c.Token, "issue", c.Issue, "error", err)
+				writeJSON(w, http.StatusServiceUnavailable, errorBody("the daemon could not queue the role publication; try the ready again"))
+				return
+			}
+		}
+	}
 	err := m.Handle(ctx, supervise.RequestReady{
 		Claim: req.ClaimToken, Generation: req.Generation, Session: req.SessionID,
 	})
@@ -417,6 +433,10 @@ type ReleaseRecord struct {
 // release row is recorded for it), the role the wake was for and what woke it, when the wake
 // reached the daemon, when the replacement pod was Ready and when the woken role took its first
 // turn — each absent until it is observed — and whether the wake went ten minutes with no turn.
+// Pause is the project pause that held the wake (store.PodResume.Pause), absent for a wake no
+// pause held: a held wake pairs with no release, and its wait to the first turn measures the
+// pause, so a reader of the release measurements counts it apart (decision 15 of
+// dispatch://INFRA-3759).
 type ResumeRecord struct {
 	ID          int64  `json:"id"`
 	Release     int64  `json:"release"`
@@ -427,6 +447,7 @@ type ResumeRecord struct {
 	PodReadyAt  string `json:"podReadyAt,omitempty"`
 	FirstTurnAt string `json:"firstTurnAt,omitempty"`
 	Stuck       bool   `json:"stuck"`
+	Pause       int64  `json:"pause,omitempty"`
 }
 
 // HoldRecord is one streak of the idle rule keeping a pod past the idle period, with the rule's
@@ -531,7 +552,7 @@ func releaseRecordsBody(records store.PodReleaseRecords) ReleaseRecordsResponse 
 	for _, resume := range records.Resumes {
 		body.Resumes = append(body.Resumes, ResumeRecord{ID: resume.ID, Release: resume.Release, Issue: resume.Issue,
 			Role: resume.Role, Kind: resume.Kind, At: recordedAt(resume.At), PodReadyAt: recordedAt(resume.PodReadyAt),
-			FirstTurnAt: recordedAt(resume.FirstTurnAt), Stuck: resume.Stuck})
+			FirstTurnAt: recordedAt(resume.FirstTurnAt), Stuck: resume.Stuck, Pause: resume.Pause})
 	}
 	for _, hold := range records.Holds {
 		body.Holds = append(body.Holds, HoldRecord{ID: hold.ID, Issue: hold.Issue, Reason: hold.Reason,
@@ -594,8 +615,9 @@ func capabilityHash(secret string) []byte {
 // decodeJSON decodes r's body (bounded by maxRequestBytes) into into once: strict disallows a
 // member the route does not read, lenient ignores it (the register route, and the lenient
 // identity read of an undecodable body). It reports "more than one JSON value" for trailing
-// bytes either way. The raw bytes are returned too, so a strict failure can be retried leniently
-// for a route family's identity.
+// bytes either way, and a string anywhere in the body that holds U+0000, which PostgreSQL's text
+// and jsonb cannot hold, naming where it stands (unstorableJSON). The raw bytes are returned too,
+// so a strict failure can be retried leniently for a route family's identity.
 func decodeJSON(w http.ResponseWriter, r *http.Request, into any, strict bool) ([]byte, error) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
@@ -611,7 +633,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, into any, strict bool) (
 	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
 		return body, errors.New("more than one JSON value")
 	}
-	return body, nil
+	return body, unstorableJSON(body)
 }
 
 // refuseBadBody is the 400 every undecodable body gets that names no stale caller: the decoder's

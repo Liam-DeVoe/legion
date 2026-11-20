@@ -6,21 +6,21 @@ import (
 	"time"
 )
 
-// MintRequest is one release's input to a minter: the secret's stored value, its name, its kind
+// MintRequest is one release's input to a minter: the secret's stored value, its name, its type
 // and whether the policy snapshot checked for this release holds it as human tier. The Azure
-// minter requires that name to match its configured secret and HumanTier to be true. Kind is the
-// secret's kind tag, which the HTTP minters count their attempts under
+// minter requires that name to match its configured secret and HumanTier to be true. Type is the
+// secret's type tag, which the HTTP minters count their attempts under
 // (broker_mint_attempts_total).
 // GitHubOwners is a github-app secret's github-owners tag as lowercase logins; every other
-// kind leaves it nil. GitHubNarrowing is the narrowing a release asked for, nil for the
+// type leaves it nil. GitHubNarrowing is the narrowing a release asked for, nil for the
 // owner-wide tokens; only the github-app minter reads it. GoogleScopes is a
 // google-service-account secret's scopes tag as the whole OAuth scope URLs
 // policy.Secret.ScopeURLs answers, and nil both for such a secret that names no scopes and for
-// every other kind; the service-account minter then asks Google for the cloud-platform scope
+// every other type; the service-account minter then asks Google for the cloud-platform scope
 // alone, which is what it asked for before the tag existed.
 type MintRequest struct {
 	Name            string
-	Kind            string
+	Type            string
 	HumanTier       bool
 	Value           string
 	GitHubOwners    []string
@@ -29,21 +29,31 @@ type MintRequest struct {
 
 	// Check asks the minter whether it could serve this request, without serving it; only the
 	// github-app minter reads it. A check of a narrowing that names repositories or read-only
-	// mints exactly what a release would mint, by the same calls in the same order, and releases
-	// no token: it revokes every token GitHub answers it with as soon as GitHub answers, holding
-	// none past that moment, and answers Minted{} with the error the release would have answered,
-	// nil where the release would have succeeded. A check of a narrowing to its owner alone mints
-	// nothing: it lists the App's installations and answers from that list alone, the refusal of
-	// an account with no installation or nil, since GitHub's answer to a token request with no
-	// access_tokens body can refuse the App but never the narrowing (GitHubApp.Mint). So a
-	// caller learns the verdict before it spends anything on the release itself. Check without
-	// GitHubNarrowing is a programming error: there is nothing to find out about a release the
-	// broker already makes owner-wide, and the minter refuses it before it asks GitHub anything.
+	// mints exactly what a release would mint, by the same calls in the same order but for a
+	// token request that may have reached GitHub and failed, which it does not send again where a
+	// release does, so such a request that GitHub served leaves one token live at GitHub, which
+	// nothing can name, until it lapses; a token request known to have failed before a connection
+	// (a name that did not resolve, a failed dial, a proxy's refused tunnel, a certificate the
+	// broker did not trust) is sent again. It releases no token: it sends GitHub the revoke of
+	// every token GitHub answers it with as soon as GitHub answers, among them a token whose
+	// answer it cannot use (cut off, past its cap, undecodable, with no expiry) wherever the part
+	// that arrived names it, and answers Minted{} with the error the release would have answered,
+	// nil where the release would have succeeded. The revoke of a whole answer's token runs under
+	// the caller's context; the revoke of a token whose answer it cannot use runs to a bound of its
+	// own, as a release's does, since the check's own bound is the likeliest thing to have cut that
+	// answer off. A revoke GitHub does not confirm is logged and leaves its token live until it
+	// lapses. A check of a narrowing to its owner alone mints nothing: it lists the App's
+	// installations and answers from that list alone, the refusal of an account with no
+	// installation or nil, since GitHub's answer to a token request with no access_tokens body can
+	// refuse the App but never the narrowing (GitHubApp.Mint). So a caller learns the verdict
+	// before it spends anything on the release itself. Check without GitHubNarrowing is a
+	// programming error: there is nothing to find out about a release the broker already makes
+	// owner-wide, and the minter refuses it before it asks GitHub anything.
 	Check bool
 }
 
 // Minted is one minted token: the value a release hands over, and when it stops working, zero
-// when the kind's upstream does not say. The airlock's proxy mints again five minutes before
+// when the type's upstream does not say. The airlock's proxy mints again five minutes before
 // Expires, so no call starts on a token about to end.
 type Minted struct {
 	Value   string
@@ -54,9 +64,10 @@ type Minted struct {
 // it, to named repositories of that account, to read access, or to both: GitHub's
 // POST /app/installations/{id}/access_tokens body. It can only narrow what the release would give
 // without it: Owner must be an account the secret's github-owners lists, and the only permissions
-// it names are contents: read, metadata: read, pull_requests: read and actions: read, which
-// GitHub refuses past what the installation holds; an installation that does not hold actions
-// gets the other three (githubapp.go's optionalReadOnlyPermission).
+// it names are contents, metadata, pull_requests, actions, checks and statuses, each at read,
+// which GitHub refuses past what the installation holds; an installation that does not hold
+// actions, checks or statuses is asked for the others (githubapp.go's
+// optionalReadOnlyPermissions).
 // policy.ParseGitHubNarrowing builds it from a caller's input.
 type GitHubNarrowing struct {
 	// Owner is the lowercase login of the one account whose installation the release mints for.
@@ -67,9 +78,9 @@ type GitHubNarrowing struct {
 	// whose body names no permissions all of the App's. Empty leaves the token every repository
 	// the installation reaches.
 	Repositories []string
-	// ReadOnly limits the token to contents: read, metadata: read, pull_requests: read and
-	// actions: read, less the Actions grant an installation does not hold. A machine that must
-	// only read needs it, with or without Repositories.
+	// ReadOnly limits the token to contents, metadata, pull_requests, actions, checks and
+	// statuses, each at read, less each of the last three the installation does not hold. A
+	// machine that must only read needs it, with or without Repositories.
 	ReadOnly bool
 }
 
@@ -77,7 +88,7 @@ type GitHubNarrowing struct {
 // access_tokens body takes 500, but its answer carries a full repository object for each one,
 // about 5 KB, and the minter reads that answer to a cap sized for this many
 // (accessTokensResponseLimit): a token GitHub minted whose answer the minter cannot read whole
-// cannot be released or revoked.
+// cannot be released, and its revoke is sent only where the part it read names the token.
 const MaxNarrowedRepositories = 100
 
 // The classes of a minter's failure. Every error a minter returns wraps exactly one, so the

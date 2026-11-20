@@ -19,7 +19,6 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -27,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -99,9 +99,10 @@ func (in *Intake) Run(ctx context.Context) {
 // route dispatches one envelope payload by its kind field: a pull request to
 // handlePullRequestEnvelope, a workflow run to routeWorkflowEnvelope, any other kind nowhere. It is
 // the whole filter: the durable is handed every GitHub notification on the bus
-// (githubIntakeSubject), CI settlements, comments and the events Envoy builds no payload for among
-// them. The payload is decoded once, into its fields. An empty payload, or one of a kind route does
-// not handle, is discarded before any GitHub call or write, whatever its other fields hold (a CI
+// (githubIntakeSubject), CI settlements and comments among them, and an envelope with no payload
+// that a caller of the listener's publish route can still put there. The payload is decoded once,
+// into its fields. An empty payload, or one of a kind route does not handle, is discarded before
+// any GitHub call or write, whatever its other fields hold (a CI
 // settlement's hold arrays, cistore.Summary); only a pull request's or a workflow run's string
 // fields are read, as the flat string map its handler takes (flatPayload), and every other member
 // is skipped. handled reports whether the kind is one route hands to a handler, whatever that
@@ -551,7 +552,7 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 		return false, nil
 	}
 
-	owner, repo, err := splitRepo(repoFull)
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return false, err
 	}
@@ -654,7 +655,7 @@ func (in *Intake) handleWorkflowEnvelope(ctx context.Context, settings DeliveryS
 		return false, nil
 	}
 	repoFull := payload["repo"]
-	owner, repo, err := splitRepo(repoFull)
+	owner, repo, err := refs.SplitGitHubRepo(repoFull)
 	if err != nil {
 		return false, err
 	}
@@ -799,15 +800,6 @@ func mapJobConclusion(raw *string) *DeliveryJobConclusion {
 	default:
 		return nil
 	}
-}
-
-// splitRepo splits "owner/repo" into its two segments.
-func splitRepo(repoFull string) (owner, repo string, err error) {
-	parts := strings.SplitN(repoFull, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("malformed repository %q: want owner/repo", repoFull)
-	}
-	return parts[0], parts[1], nil
 }
 
 // containsString reports whether values contains s, exactly.

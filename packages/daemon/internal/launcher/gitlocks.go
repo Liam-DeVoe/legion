@@ -59,11 +59,13 @@ var gitLockRecheck = 2 * time.Second
 // worktree entry's gitdir that is a fifo among them (internal/workspace's readGitdir).
 var gitLockRemove = os.Remove
 
-// gitLockProc is the /proc newGitLockSweep gives the sweep (gitLockSweep.proc), the container's
-// own, which the holder read walks to keep every lock a process holds open. It is a variable for
-// the rows that start a real launcher (useSweepingLauncher): the machine's /proc holds processes
-// such a row knows nothing of, and one git among them whose open files the row cannot read makes
-// the sweep keep every lock.
+// gitLockProc is the /proc newGitLockSweep gives the sweep (gitLockSweep.proc): the container's
+// own, where PID 1 of the container sees every process that may hold a lock. It is a variable for
+// the rows that drive a real launcher, which builds its sweep here and so takes no field of its
+// own. Such a row points it at a /proc of its own (useSweepingLauncher), as it points the memory
+// guard at a pod of its own: the /proc of the machine a test runs on lists processes the row knows
+// nothing of, and on a machine several users share, any git or jj of another user is one whose
+// open files the test cannot read, which keeps every lock the row planted (holders).
 var gitLockProc = "/proc"
 
 // gitLockFirstPassBound is how long the launcher's first pass may spend between the locks it
@@ -174,8 +176,8 @@ type gitLockSweep struct {
 }
 
 // serveGitLockSweep is the pod's one sweep of the clone's stale git locks: it builds the sweep
-// (newGitLockSweep), gives it to every role manager, runs its first pass and its clock (serve), and
-// answers the channel serve answers, closed once its ticker has returned.
+// (newGitLockSweep), gives it to every role manager, runs its first pass and its clock (serve),
+// and answers the channel serve answers, closed once its ticker has returned.
 //
 // The sweep runs only where the launcher is the container's first process (containerInit), as
 // the memory guard does (serveMemoryGuard). A pass keeps a lock that a process holds open and may
@@ -222,11 +224,11 @@ func serveGitLockSweep(ctx context.Context, managers []*manager) <-chan struct{}
 // would not walk and why.
 //
 // The two numbers a test shortens, the interval and the recheck, the removal a test holds and the
-// /proc a test names are read here, in the caller's own goroutine, and never inside the ticker's:
-// they are package variables, and a goroutine still reading one after the test restored it is a
-// data race the race detector fails the test for (serveTestPG reads its interval the same way).
-// The guard and the first pass's bound are constants nothing writes; a test that varies the guard
-// writes the sweep's own field.
+// /proc a test points the sweep at are read here, in the caller's own goroutine, and never inside
+// the ticker's: they are package variables, and a goroutine still reading one after the test
+// restored it is a data race the race detector fails the test for (serveTestPG reads its
+// interval the same way). The guard and the first pass's bound are constants nothing writes; a
+// test that varies the guard writes the sweep's own field.
 func newGitLockSweep(log func(format string, args ...any)) *gitLockSweep {
 	s := &gitLockSweep{
 		proc: gitLockProc, guard: gitLockGuard, interval: gitLockInterval, recheck: gitLockRecheck,

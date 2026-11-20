@@ -187,7 +187,7 @@ func burstableLiveRuntime(ctx context.Context, cfg config.Config, rc *rest.Confi
 // request reaches GitHub.
 func serveLiveLeakCheck(t *testing.T) string {
 	t.Helper()
-	lease, err := outboxTokens{}.ReadToken(context.Background(), appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
+	lease, err := outboxTokens{}.ReadToken(context.Background(), appauth.Implement, leakguard.CheckRepository.Owner())
 	if err != nil {
 		t.Fatal(err)
 	}
