@@ -380,16 +380,16 @@ type Options struct {
 	// .repository_cache, whose defaults the daemon's configuration supplies): required for
 	// supervision, which sweeps and refreshes caches.
 	RepositoryCache RepositoryCache
-	// Mapped is, despite its name, more than the mapping: the repositories the project works
-	// now, read at every orphan sweep, which are those Dispatch's mapping names and those of the
-	// project's live issue records, a set the daemon holds and answers without I/O
-	// (daemon's cacheRepositories). An issue of any project may name any repository both role
-	// Apps are installed on, so a repository no mapping names gets its cache — one volume and one
-	// pod — from the moment a record names it. The sweep makes or repairs each member's cache
+	// CacheRepositories is the cache set: the repositories the project works now, read at every
+	// orphan sweep, which are those of the project's live issue records and those a launch
+	// worked since the daemon last read the records, a set the daemon holds and answers without
+	// I/O (daemon's cacheRepositories). An issue may name any repository both role Apps are
+	// installed on, so a repository gets its cache — one volume and one pod — from the moment a
+	// record or a launch names it. The sweep makes or repairs each member's cache
 	// (EnsureRepositoryCache), and retires the cache of a repository the set no longer holds,
-	// which is one no live record and no mapping names, once that cache's retention passes.
-	// Required for supervision.
-	Mapped func() []ghrepo.Repository
+	// which is one no live record and no launch since the last read names, once that cache's
+	// retention passes. Required for supervision.
+	CacheRepositories func() []ghrepo.Repository
 	// SavedWorkspaceBundle takes what an issue holds of its workspace for a new pod, and
 	// WorkspaceBundleRestored is the confirmation that keeps whichever copy the new pod's
 	// launcher put back as that pod's own running copy, named by the launcher session's pod uid
