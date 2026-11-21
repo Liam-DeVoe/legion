@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // A handshake hold finds the INFO and CONNECT lines across TCP reads: a client whose CONNECT
@@ -20,7 +22,7 @@ import (
 // The control is the hold matching "CONNECT " inside one read: the channel Hold returns never
 // closes.
 func TestAHandshakeHoldFindsItsLinesAcrossReads(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -148,7 +150,7 @@ func startHeldConnection(t *testing.T, hold *HandshakeHold, listener net.Listene
 // The control is each wait ending at Ended as well, the first held connection's end: the later
 // connection's answer passes at once, never waits, and the row fails at the test's deadline.
 func TestAHandshakeHoldHoldsEachConnectionUntilReleaseOrItsOwnEnd(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // ReplyHold relays a client's TCP connections to a NATS server and can hold the replies to the
@@ -79,14 +81,15 @@ func (r *HeldReplies) Withheld() <-chan struct{} { return r.withheld }
 func (r *HeldReplies) Flushed() <-chan struct{} { return r.flushed }
 
 // StartReplyHold relays to the NATS server at target, a client URL such as URL returns, on a
-// loopback port of its own until the test ends. URL is the same server through the hold.
+// loopback port and address of its own (testport.LoopbackIP) until the test ends. URL is the same
+// server through the hold.
 func StartReplyHold(t testing.TB, target string) *ReplyHold {
 	t.Helper()
 	server, err := url.Parse(target)
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the hold relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the reply hold: %v", err)
 	}
