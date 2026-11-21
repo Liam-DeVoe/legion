@@ -3073,7 +3073,7 @@ package api
 // on dispatch://INFRA-3136. That is a reading and never the rule: read main's own number and
 // every open head again at the next forward merge rather than from this line.)
 //
-// 207: dispatch://INFRA-2040 -- a phase worker declares that it waits on something outside its
+// 213: dispatch://INFRA-2040 -- a phase worker declares that it waits on something outside its
 // own work, until a time it names, and the record shows each wait that stands. Two claim routes
 // are added, each authenticated by the registration's secret as `POST /legion/v1/claims/activity`
 // is and held to the session the claim records. `POST /legion/v1/claims/wait` (`api.WaitRequest`:
@@ -3087,7 +3087,7 @@ package api
 // `{ended: false, updateAsk: true}` for a key of the claim's own update ask, which ends nothing
 // and records nothing (record.IsUpdateAskKey). Each refuses a stale plugin's claim with the
 // stale-contract 409 as every claim route does (refuseIfStaleClaim), and neither refuses a caller
-// by a contract of its own: a plugin below 207 knows neither route and sends neither.
+// by a contract of its own: a plugin below 213 knows neither route and sends neither.
 // Every claim view of `GET /legion/v1/state` gains `wait` (`api.WaitView`, the four keys the
 // declaration's answer named) while its worker's wait stands (workflow.WaitStands): declared and
 // not ended, in the session, phase, generation and phase entry it was declared at, of a claim
@@ -3098,24 +3098,24 @@ package api
 // The claim view of a merger also gains `hold` (`api.HoldView`: `step`, `artifactId` and
 // `version`) while the closed design gate holds that merger (workflow.HeldByDesignGate), so
 // `read_record` carries it, and the plain `legion state` prints one `holds:` line naming each.
-// A caller below 207 — at the contract its `Legion-Plugin-Contract` header states, else at the
+// A caller below 213 — at the contract its `Legion-Plugin-Contract` header states, else at the
 // contract its pod's claims record — is served every claim view without the two keys, on the
 // state and on `GET /legion/v1/issues/{key}/record` alike (shaping.go's band of `waitContract`,
 // withoutWaitAndHold), as a caller below 193 is served them without `updateState` and `wake`;
-// the bands compose, and every reader from 207 on takes each key as optional
+// the bands compose, and every reader from 213 on takes each key as optional
 // (`packages/contracts/src/legion-api.ts`). `hold.step` is a design step, which a reader
-// enumerates, and its three words arrived with the key at 207 (answers.go's holdSteps), so no
+// enumerates, and its three words arrived with the key at 213 (answers.go's holdSteps), so no
 // value strip is owed. The answer of `POST /legion/v1/claims/owed` (`api.OwedResponse`, 206's
 // claim route) gains the same two keys, read by the same two rules: `wait` while the claim's
 // wait stands and `hold` while the closed design gate holds the claim, each named whether or
 // not the claim owes, so a plugin can stop reminding a worker that waits or a merger the gate
-// holds. A caller below 207 is served that answer without either key (shapeAnswer's row of
+// holds. A caller below 213 is served that answer without either key (shapeAnswer's row of
 // AnswerOwed, withoutOwedWaitAndHold); every plugin that knows the route states its contract
 // in the header, so the header alone places it. `hold.step` of that answer is a row of
 // answers.go's EnumeratedFields too, so the owed answer's record at 206 carries its empty domain.
-// The two routes' answers arrived with their routes at 207, so no contract
+// The two routes' answers arrived with their routes at 213, so no contract
 // below records them (answers.go's AnswerWait and AnswerWaitNews), and their requests are
-// recorded from 207 on (`request-shapes.json`). 207's records are 206's under its own number,
+// recorded from 213 on (`request-shapes.json`). 213's records are 206's under its own number,
 // with the key paths of `wait` and `hold` under every claim view of the state and of the record
 // and on the owed answer, and the two new answers.
 // The change carries two store migrations beside it: `20261119055500_claim_waits`, the table
@@ -3131,19 +3131,22 @@ package api
 // carried INFRA-4108's 189, and kept it at the forward merge of that day that brought main in at
 // 8a9540682d8a, which carried #3659's 193. It took 204 at the forward merge of 2026-11-21 that
 // brought main in at 0d3786da5367, which carried #4495's 199, and 207 at the forward merge of that
-// day that brought main in at a86c31c9fd62, which carried #4493's 202. It keeps 207 at the merge
-// of that day that stacks this change on cybermonklabs/legion#3712 (legion/INFRA-3136 at
-// b40a08ba6f52), which carries INFRA-3136's 206, the entry right above. A renumber moves `waitContract` in shaping.go with it, and that one constant alone: it
-// is the number the two keys of this entry are served down below, the arrival answers.go gives
-// the two answers and the three words of `hold.step`, and the last number of answers.go's
+// day that brought main in at a86c31c9fd62, which carried #4493's 202. It kept 207 at the merge
+// of that day that stacked this change on cybermonklabs/legion#3712 (legion/INFRA-3136 at
+// b40a08ba6f52), which carries INFRA-3136's 206, the entry right above, and takes 213 at the push
+// of Stage B that day. A renumber moves `waitContract` in shaping.go with it, and that one constant
+// alone: it is the number the two keys of this entry are served down below, the arrival answers.go
+// gives the two answers and the three words of `hold.step`, and the last number of answers.go's
 // SupportedContracts.
-// A reading of `const DaemonAPIVersion` at the head of each of the 340 open pull requests, listed
-// at 2026-11-21T03:13:33Z and read by 03:29:26Z, gave 202, main's own number, to 8 heads, and
-// above 202: 203 to #2230, #3993, #4065, #4175, #4553, #4592 and #4661; 204 to #3831 as well as
-// this change; 205 to #4573; and 206 to #4540. So this entry takes 207, the lowest number above
-// main's 202 that no other open pull request declares. Each of those is the number that head
-// declared at that reading and no head's for good. Read the base's own number and every open head
-// again at the last push rather than from this line, as
+// A reading of `const DaemonAPIVersion` at the head of each of the 406 open pull requests, listed
+// at 2026-11-21T13:26:59Z and read by 13:35:36Z, gave 202, main's own number, to the heads that
+// carry main's, and above it: 203 to #4175; 204 to #4173 and #4193; 205 to #4573; 206 to #3712 and
+// #4539; 207 to #3831, #3993, #4273, #4392, #4432, #4590, #4596, #4682, #4723 and #4805 as well as
+// this change; 208 to #2230; 209 to #4049, #4540, #4553 and #4580; 210 to #4661; 211 to #4611; and
+// 212 to #4065, #4592 and #4771. So this entry takes 213, the lowest number above #3712's 206 that
+// no other open pull request declares. Each of those is the number that head declared at that
+// reading and no head's for good. Read the base's own number and every open head again at the
+// last push rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 207
+const DaemonAPIVersion = 213

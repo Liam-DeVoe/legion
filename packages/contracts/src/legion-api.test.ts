@@ -156,7 +156,7 @@ const schemas: Record<string, z.ZodType> = {
   "release-records.json": LegionReleaseRecordsResponse,
   // What a session reads at the end of its turn of what its claim owes now (`api.OwedResponse`):
   // the reminder renders the `work` phrase and names no work of its own. The second carries the
-  // two keys contract 207 added, the wait that stands and the design gate's hold, each of which
+  // two keys contract 213 added, the wait that stands and the design gate's hold, each of which
   // the daemon names alone and this golden names together.
   "owed.json": LegionOwedResponse,
   "owed-wait-hold.json": LegionOwedResponse,
@@ -1748,12 +1748,12 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
-// Contract 207: a claim whose worker declared a wait that stands carries it on its view of the
+// Contract 213: a claim whose worker declared a wait that stands carries it on its view of the
 // state, which is what `read_record` reads an issue's record from: the id the daemon minted, what
 // the wait waits on, its time, and when the daemon recorded the declaration, to the microsecond.
 // The schema must name the key, since a key it does not name is stripped and the seat never sees
 // it: the golden carries it on LEGION-208's implementer alone, and this reads it before the parse
-// and after. A daemon narrows it away for a caller below 207 (`api.withoutWaitAndHold`), so a claim
+// and after. A daemon narrows it away for a caller below 213 (`api.withoutWaitAndHold`), so a claim
 // without it parses, and a wait with no text — which the daemon never records — is refused.
 test("a claim carries its standing wait", () => {
   const state = fixture("state.json") as {
@@ -1786,12 +1786,12 @@ test("a claim carries its standing wait", () => {
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
 });
 
-// Contract 207: a merger the closed design gate holds carries the hold on its view of the state,
+// Contract 213: a merger the closed design gate holds carries the hold on its view of the state,
 // which is what `read_record` reads an issue's record from: the gated step whose row holds it, the
 // document registered for that step, and the version of it that is with its reviewer. The schema
 // must name the key, since a key it does not name is stripped and the seat never sees it: the
 // golden carries it on LEGION-215's merger alone, and this reads it before the parse and after. A
-// daemon narrows it away for a caller below 207 (`api.withoutWaitAndHold`), so a claim without it parses,
+// daemon narrows it away for a caller below 213 (`api.withoutWaitAndHold`), so a claim without it parses,
 // and a hold that names no gated step, or a version below 1, is refused.
 test("a held merger carries the design gate's hold", () => {
   const state = fixture("state.json") as {
@@ -2789,8 +2789,8 @@ test("a reader at the previous contract parses the state body this daemon serves
 // `owners` and `mapped` are the ones both role Apps are installed on, under the name each is
 // served under, every `default` false; `refused` is each other entry with why; `withoutWebhookApp`
 // is this contract's own list.
-/** `body` with no claim view carrying `wait` or `hold`, the two keys contract 207 added, as the
- * daemon serves a caller below 207 (`api.withoutWaitAndHold`): every issue's architect and every
+/** `body` with no claim view carrying `wait` or `hold`, the two keys contract 213 added, as the
+ * daemon serves a caller below 213 (`api.withoutWaitAndHold`): every issue's architect and every
  * worker's claim. The body it is given is left as it was. */
 function withoutWaitAndHold<T extends Record<string, unknown>>(body: T): T {
   const copy = structuredClone(body);
@@ -2871,7 +2871,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
   // fixture does not hold. Three bands stand above 199: the repositories block's, at 202; the
   // repository correction's (dispatch://INFRA-3136), at 206, which serves each issue without its
   // `repoBefore`, `repoCorrectedAt`, `repoChangePending` and `repoChangeReason`; and the wait's
-  // (dispatch://INFRA-2040), at 207, which serves each claim view without its `wait` and `hold`
+  // (dispatch://INFRA-2040), at 213, which serves each claim view without its `wait` and `hold`
   // (`api.withoutWaitAndHold`). So the golden's issues are compared with those keys taken off,
   // and nothing else beside the block moves.
   const { daemonApiVersion } = z
