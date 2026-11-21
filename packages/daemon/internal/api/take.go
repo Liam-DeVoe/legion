@@ -46,10 +46,10 @@ func (s *server) task(w http.ResponseWriter, r *http.Request) {
 	current, err := m.CurrentTask(r.Context())
 	if err != nil {
 		s.logRequestFailure(r, err, "api: read a claim's task value", "claim", token)
-		writeFailure(w, http.StatusInternalServerError, "TASK_VALUE_UNAVAILABLE", "task read failed: the daemon could not read the task bucket")
+		s.writeFailure(w, r, http.StatusInternalServerError, "TASK_VALUE_UNAVAILABLE", "task read failed: the daemon could not read the task bucket")
 		return
 	}
-	writeJSON(w, http.StatusOK, taskResponseOf(current))
+	s.writeAnswer(w, r, AnswerTask, http.StatusOK, taskResponseOf(current))
 }
 
 // taskResponseOf is the claim's current task as the wire carries it.
@@ -75,7 +75,7 @@ func (s *server) taskSeen(w http.ResponseWriter, r *http.Request) {
 		Claim: token, Generation: req.Generation, Session: callerSession(caller),
 		Number: req.Number, Revision: supervise.TaskRevision{Epoch: req.Epoch, Revision: req.Revision},
 	}); err != nil {
-		s.taskRefusal(w, "seen report", token, err)
+		s.taskRefusal(w, r, "seen report", token, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -105,10 +105,10 @@ func (s *server) take(w http.ResponseWriter, r *http.Request) {
 		Number: req.Number, Revision: supervise.TaskRevision{Epoch: req.Epoch, Revision: req.Revision},
 	})
 	if answer.Outcome == "" {
-		s.taskRefusal(w, "take", token, err)
+		s.taskRefusal(w, r, "take", token, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, claim.TakeResponse{Outcome: string(answer.Outcome), Text: answer.Text, Hold: answer.Hold})
+	s.writeAnswer(w, r, AnswerTake, http.StatusOK, claim.TakeResponse{Outcome: string(answer.Outcome), Text: answer.Text, Hold: answer.Hold})
 }
 
 // callerSession is the session a worker's request names, which the machine holds to the claim's
@@ -124,12 +124,12 @@ func callerSession(caller claim.Caller) string {
 // taskCaller is a task route's claim and its machine once its body is decoded: the generation is
 // required, and the caller resolved (claimCaller), each refused in the coded shape (Failure).
 func (s *server) taskCaller(w http.ResponseWriter, r *http.Request, request string, caller claim.Caller, generation uint64) (claim.Token, *supervise.Machine, bool) {
-	if !requireTaskGeneration(w, generation) {
+	if !s.requireTaskGeneration(w, r, generation) {
 		return "", nil, false
 	}
 	token, m, refusal := s.claimCaller(r, request, caller, generation)
 	if refusal != nil {
-		writeFailure(w, refusal.status, refusal.code, refusal.message)
+		s.writeFailure(w, r, refusal.status, refusal.code, refusal.message)
 		return "", nil, false
 	}
 	return token, m, true
@@ -141,16 +141,16 @@ func (s *server) taskCaller(w http.ResponseWriter, r *http.Request, request stri
 func (s *server) readTaskBody(w http.ResponseWriter, r *http.Request, into any) bool {
 	if _, err := decodeJSON(w, r, into, true); err != nil {
 		s.log.Warn("api: refused an undecodable request body", "route", r.URL.Path, "error", err)
-		writeFailure(w, http.StatusBadRequest, "INVALID_BODY", "invalid request body: "+err.Error())
+		s.writeFailure(w, r, http.StatusBadRequest, "INVALID_BODY", "invalid request body: "+err.Error())
 		return false
 	}
 	return true
 }
 
 // requireTaskGeneration is requireGeneration in the coded shape (Failure).
-func requireTaskGeneration(w http.ResponseWriter, generation uint64) bool {
+func (s *server) requireTaskGeneration(w http.ResponseWriter, r *http.Request, generation uint64) bool {
 	if generation == 0 {
-		writeFailure(w, http.StatusBadRequest, "MISSING_FIELD", "generation is required")
+		s.writeFailure(w, r, http.StatusBadRequest, "MISSING_FIELD", "generation is required")
 		return false
 	}
 	return true
@@ -160,18 +160,18 @@ func requireTaskGeneration(w http.ResponseWriter, generation uint64) bool {
 // and sentence (refusalCode names it), a request the claim's state does not allow with 409 and the
 // machine's reason, and anything else — the store refusing a write — with a 500 that says what
 // failed and nothing the caller could use.
-func (s *server) taskRefusal(w http.ResponseWriter, request string, token claim.Token, err error) {
+func (s *server) taskRefusal(w http.ResponseWriter, r *http.Request, request string, token claim.Token, err error) {
 	var refusal claim.Refusal
 	if errors.As(err, &refusal) {
 		s.log.Info("api: refused a claim request", "request", request, "claim", token, "reason", err)
-		writeFailure(w, refusal.Status, refusalCode(refusal), refusal.Message)
+		s.writeFailure(w, r, refusal.Status, refusalCode(refusal), refusal.Message)
 		return
 	}
 	var refused *supervise.RefusedError
 	if errors.As(err, &refused) {
-		writeFailure(w, http.StatusConflict, "CLAIM_STATE_REFUSED", refused.Error())
+		s.writeFailure(w, r, http.StatusConflict, "CLAIM_STATE_REFUSED", refused.Error())
 		return
 	}
 	s.logFailure("api: a claim request failed", "request", request, "claim", token, "error", err)
-	writeFailure(w, http.StatusInternalServerError, "CLAIM_WRITE_FAILED", request+" failed: the daemon could not record it")
+	s.writeFailure(w, r, http.StatusInternalServerError, "CLAIM_WRITE_FAILED", request+" failed: the daemon could not record it")
 }

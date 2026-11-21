@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -393,7 +394,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "worker_rpc_timeout_seconds", RequiredBy: "no",
-			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also bounds how long the end of a task's turn waits for the worker's report of it before the end frame finishes the task, for a worker whose plugin is below daemon API contract 196 and names no task in its reports (a current worker's task is finished by its report alone), and how long a finish the store refused waits before it is made again; and it sizes how long the intake gives one fact's handling.",
+			Description: "How long each request on the worker stream waits for its answer, the one reconnect that judges a dead worker among them; it also bounds how long the end of a task's turn waits for the worker's report of it before the end frame finishes the task, for a worker whose plugin is below daemon API contract 203 and names no task in its reports (a current worker's task is finished by its report alone), and how long a finish the store refused waits before it is made again; and it sizes how long the intake gives one fact's handling.",
 			Positive:    &positiveKey{Value: 5, Duration: func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
 		},
 		{
@@ -701,7 +702,9 @@ var nestedKeys = []memberGroup{
 		{Name: "user", Default: "none: the block is refused without it", RequiredBy: "yes",
 			Description: "The IAM login each pod signs in to that database as."},
 		{Name: "impersonate_service_account", Default: "each pod signs in as itself", RequiredBy: "no",
-			Description: "The email of the Google service account that each pod's session proxy impersonates with the pod's own credentials and signs in as; `user` must then be that account's IAM login, its email without `.gserviceaccount.com`."},
+			Description: "The email of the Google service account that each pod's session proxy impersonates and signs in as, with the pod's own credentials or, where `writer_audience` is set, with the launcher's writer token; `user` must then be that account's IAM login, its email without `.gserviceaccount.com`."},
+		{Name: "writer_audience", Default: "the session proxy signs in with the pod's own credentials", RequiredBy: "no",
+			Description: "The audience of a projected ServiceAccount token that only each pod's launcher reads, which is a workload identity provider's full resource name, " + ompsessions.WriterAudienceForm + "; the session proxy exchanges that token at Google's security token service and impersonates `impersonate_service_account` with it in place of the pod's own credentials, so `impersonate_service_account` is required with it, and it must differ, in both its own form and its `https:` form, from `agent_secrets.audience` and `agent_secrets.exchange_audience`, whose tokens every role of a pod reads, and from the audience of every projected `service_account_token` of `pod.volumes`, mounted or not, since every pod carries the operator's pod volumes and a `volume_mounts` entry shows one to every role of the pod."},
 	}},
 	{Path: podKey, Members: []member{
 		{Name: "env", Default: "a pod's Oh My Pi is told only what the runtime tells it", RequiredBy: "no",

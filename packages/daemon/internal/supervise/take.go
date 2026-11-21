@@ -26,15 +26,16 @@ import (
 // sent it (dispatch://INFRA-2811): the contract whose entry in internal/api's version.go brings
 // the take, task and task-seen routes, and the one whose state body first carries
 // `unseenTaskValues` (R5's claims whose value nobody reported seeing). internal/api serves a
-// caller in a pod whose claims record a contract below it the state without that key (stateFor,
-// withoutUnseenTaskValues), and a claim whose plugin declares a contract below it cannot take a
-// task at all.
+// caller below it the state without that key and with `never_reconnected` served as
+// `never_registered`, and the registration without `task` and `finished` (shaping.go's
+// stateNarrowings, valueStrips and shapeAnswer), and a claim whose plugin declares a contract
+// below it cannot take a task at all.
 //
 // It lives here rather than beside DaemonAPIVersion because internal/api imports this package,
 // as PodUpdateContract does, and internal/api's own test pins the two to one number
 // (TestTaskTakeContractIsTheContractThatIntroducedTheTake): a merge that renumbers this change
 // moves both together.
-const TaskTakeContract = 196
+const TaskTakeContract = 203
 
 // TakesNoTask is whether a plugin that declared contract takes no task: it is below
 // TaskTakeContract, so its worker waits for a prompt this daemon never sends and never asks to

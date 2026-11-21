@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -11,11 +12,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
-
-// neverReconnectedDropped is what the daemon's log names for the narrowing of
-// supervise.TaskTakeContract that rewrites the failure cause never_reconnected, named here as a
-// literal so a row that drifted from it fails the narrowing tests that read it.
-const neverReconnectedDropped = "the failure cause never_reconnected in the claim views' failure and pendingCause, served as never_registered"
 
 // neverReconnectedIssue is an issue whose two claims carry the failure cause
 // supervise.TaskTakeContract added: its architect failed under it, the relaunches after a daemon
@@ -61,28 +57,41 @@ func neverReconnectedCauses(t *testing.T, body []byte) (failure, pending string)
 // strict enum of the causes it was built with, so never_reconnected, the word that contract added,
 // would refuse the whole state body at it, every claim of the project included. Such a caller is
 // served never_registered in its place in both keys — the nearest cause it knows, a process that
-// never said hello — and the daemon logs the narrowing; a caller at the contract is served the
-// word, and the state the source answered keeps it for the next caller.
+// never said hello — by the value strip of the failure cause (shaping.go's withoutNeverReconnected),
+// and the daemon logs the strip; a caller at the contract is served the word, and the state the
+// source answered keeps it for the next caller. The caller below is read both ways a caller is
+// placed: a pod whose claims record the newest contract a pod's reading counts (podContracts
+// counts none from shapedAnswersContract up), and a caller that states the contract right below
+// in its header.
 //
-// The negative control is the table without the row (stateNarrowings' never_reconnected row): the
-// caller below the contract is then served never_reconnected.
+// The negative control is valueStrips without the strip's row: the caller below the contract is
+// then served never_reconnected.
 func TestNeverReconnectedIsServedAsNeverRegisteredBelowItsContract(t *testing.T) {
 	state := narrowingState(t)
+	const podBelow = shapedAnswersContract - 1
 
-	below, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(supervise.TaskTakeContract-1))
-	if failure, pending := neverReconnectedCauses(t, below); failure != string(supervise.CauseNeverRegistered) ||
-		pending != string(supervise.CauseNeverRegistered) {
-		t.Errorf("a caller at %d is served failure.cause %q and pendingCause %q, want %q in both: its plugin's enum names no %q",
-			supervise.TaskTakeContract-1, failure, pending, supervise.CauseNeverRegistered, supervise.CauseNeverReconnected)
+	below, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(podBelow))
+	stated := stateStating(t, shapedServer(t, state, podClaims(podBelow), &bytes.Buffer{}, true), "192.0.2.1:41000", supervise.TaskTakeContract-1)
+	for _, served := range []struct {
+		caller string
+		body   []byte
+	}{{"a pod at " + strconv.Itoa(podBelow), below}, {"a caller stating " + strconv.Itoa(supervise.TaskTakeContract-1), stated}} {
+		if failure, pending := neverReconnectedCauses(t, served.body); failure != string(supervise.CauseNeverRegistered) ||
+			pending != string(supervise.CauseNeverRegistered) {
+			t.Errorf("%s is served failure.cause %q and pendingCause %q, want %q in both: its plugin's enum names no %q",
+				served.caller, failure, pending, supervise.CauseNeverRegistered, supervise.CauseNeverReconnected)
+		}
+		if bytes.Contains(served.body, []byte(supervise.CauseNeverReconnected)) {
+			t.Errorf("the body served to %s names %q: %s", served.caller, supervise.CauseNeverReconnected, served.body)
+		}
 	}
-	if bytes.Contains(below, []byte(supervise.CauseNeverReconnected)) {
-		t.Errorf("the body served to a caller at %d names %q: %s", supervise.TaskTakeContract-1, supervise.CauseNeverReconnected, below)
-	}
-	if !slices.ContainsFunc(narrowings, func(l narrowingLine) bool { return l.Dropped == neverReconnectedDropped }) {
-		t.Errorf("the daemon wrote %+v for a caller at %d, want a line saying it dropped %q", narrowings, supervise.TaskTakeContract-1, neverReconnectedDropped)
+	if !slices.ContainsFunc(narrowings, func(l narrowingLine) bool {
+		return l.Dropped == droppedFailureCause && l.Follows == followsRestore
+	}) {
+		t.Errorf("the daemon wrote %+v for a pod at %d, want a value line saying it dropped %q", narrowings, podBelow, droppedFailureCause)
 	}
 
-	at := stateFrom(t, state, statePodAddr+":41000", podClaims(supervise.TaskTakeContract))
+	at := stateStating(t, shapedServer(t, state, podClaims(podBelow), &bytes.Buffer{}, true), "192.0.2.1:41000", supervise.TaskTakeContract)
 	if failure, pending := neverReconnectedCauses(t, at); failure != string(supervise.CauseNeverReconnected) ||
 		pending != string(supervise.CauseNeverReconnected) {
 		t.Errorf("a caller at %d is served failure.cause %q and pendingCause %q, want %q in both", supervise.TaskTakeContract,
@@ -91,6 +100,6 @@ func TestNeverReconnectedIsServedAsNeverRegisteredBelowItsContract(t *testing.T)
 	source := state.Issues["LEGION-214"]
 	if source.Architect.Failure.Cause != supervise.CauseNeverReconnected ||
 		source.Workers[claim.RoleImplementer].Claim.PendingCause != supervise.CauseNeverReconnected {
-		t.Errorf("the narrowing wrote through to the state the source answered: %+v", source)
+		t.Errorf("the strip wrote through to the state the source answered: %+v", source)
 	}
 }

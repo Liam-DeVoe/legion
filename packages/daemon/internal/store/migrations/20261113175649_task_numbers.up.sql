@@ -242,7 +242,7 @@
 -- 0, and rewrites no kind list,
 -- and 20261120055717_dispatch_issue_value_sequences adds seven columns of dispatch_issues, an
 -- index on dispatch_issues.parent and the table dispatch_issue_refills, and rewrites no kind list.
--- The release before this one, contract 189, carries all eighteen, so the rollback to it runs
+-- The release before this one, contract 199, carries all eighteen, so the rollback to it runs
 -- this block alone and leaves the eighteen standing. A rollback to contract 188, the release
 -- before 20261120042902_claim_agent_resume_generation, runs this block and then the way back in
 -- that migration's own header, its last paragraph, which deletes the queued session-forgotten

@@ -450,7 +450,9 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     read: (reading) => {
       if (closed) return;
       finished = Math.max(finished, reading.finished);
-      if (reading.task !== null) hold(reading.task);
+      // The value the reading names, field by field, as `relayed` builds one from a relayed write.
+      const task = reading.task;
+      if (task !== null) hold({ number: task.number, epoch: task.epoch, revision: task.revision });
       settle();
     },
     relayed: (value) => {

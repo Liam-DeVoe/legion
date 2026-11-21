@@ -633,7 +633,7 @@ Two notes on what the script had to learn about its own surface:
 On every pull request whose diff selects them, the `typecheck` job of `.github/workflows/ci.yaml` runs `go vet -tags e2e ./...` (which also compiles the e2e-tagged Stage 4a harness) in `packages/daemon`, and its `daemon-go` job installs `tmux` — the tmux runtime's tests drive a real tmux server and skip without one, and the daemon refuses to start without it
 — and the pinned `jj` (through mise, as the pi-legion job does)
 — the workspace tests drive a real jj, and the daemon resolves jj at boot and refuses to start without it
-— then runs `go test ./...` against its Postgres service (`LEGION_TEST_PG_DSN`, and `BROKER_TEST_DATABASE_URL` for the real broker that `internal/agentsecrets`'s contract tests drive, which fail there rather than skip without it), then this script with `LEGION_E2E_PG_DSN` pointing at the same service, so the script runs no docker of its own there.
+— then runs `go test ./...` against its Postgres service (`LEGION_TEST_PG_DSN`, and `BROKER_TEST_DATABASE_URL` for the real broker that `internal/cipher`'s contract tests drive, which fail there rather than skip without it), then this script with `LEGION_E2E_PG_DSN` pointing at the same service, so the script runs no docker of its own there.
 `daemon-go` is the Go daemon's own job: that suite left the `test` job in dispatch://INFRA-1413, where one filter had to cover both it and the shell-script harnesses.
 
 ## stage2-tmux-supervision.sh
@@ -1717,7 +1717,7 @@ Each item below names an input and its default, then what it means.
 
 - `LEGION_E2E_AGENT_SECRETS_BIN` — `$work/agent-secrets` (built by the script; not read from the environment)
 
-  the checkout's `agent-secrets` CLI (`packages/envoy/cmd/agent-secrets`), run directly from the devbox for the `secrets-old-uid-and-revocation` check's before/after-revocation reads
+  the checkout's `agent-secrets` CLI (`packages/envoy/cmd/cipher`), run directly from the devbox for the `secrets-old-uid-and-revocation` check's before/after-revocation reads
 
 **Why the production broker, with dummy secrets, and not a development slot.**
 A dispatch-project development slot cannot host this proof, for three reasons Plan D established:
@@ -2197,7 +2197,7 @@ Its project names no `production_check`, so the role its checks are handed to is
 Its instructions tell each look to ask for its next one an hour on, which falls at or past that bound and so names no look of its own:
 the first look and the bound's last are the only two, which is what the root's pod reads between them need.
 
-Since daemon API contract 196 a worker takes its task from a value the Envoy listener relays out of the task bucket `legion_tasks` on NATS, and this is the only `elsewhere` script that drives tasks through a production listener ([`.github/e2e-scripts.json`](../../.github/e2e-scripts.json)).
+Since daemon API contract 203 a worker takes its task from a value the Envoy listener relays out of the task bucket `legion_tasks` on NATS, and this is the only `elsewhere` script that drives tasks through a production listener ([`.github/e2e-scripts.json`](../../.github/e2e-scripts.json)).
 So a run of a branch at that contract passes only once production carries the bucket: its NATS grants (the envoy-infra release) and a listener image that runs the relay, the first two steps of dispatch://INFRA-3388.
 The run's daemon inherits the operator's environment, and it connects as a daemon's own NATS user only where that environment names one (`NATS_DAEMON_NKEY_SEED_FILE` or `NATS_DAEMON_NKEY_SEED`):
 on the agents' seed (`NATS_NKEY_SEED_FILE`) it refuses to boot, since that user holds no grant on the bucket, and with the grants but a listener older than the relay a worker reads its value only at its registration, right after its ready, at each regain of its role and at each new epoch of its relay.
@@ -2972,7 +2972,7 @@ Each item below names a checkpoint, then what it holds; an item that names no ch
   the check's bound (`production_check_hours: 0.25`, 15 minutes after the close) starts its last look, the only wake left after the first look asked for one past that bound:
   `last_look_started` reads a look open with `lookOpen: true`, `lastWake.kind: bound`, `last: true` (or the check already closed by a tester that reported it first) within 900 s of the checkpoint's start (what remains of the 15 minutes after `done`;
   a bound deferred by a look still open when it came due, by the look's own two-hour bound, fails here by name rather than hanging), the root's Sandbox, made afresh by the wake, reads `Running` and a pod of tree 1 is back within 900 s (the relaunch took 1 to 3 minutes in acceptance runs), and the tester is resumed on its kept session, in a pod whose disk is that pod's own.
-  Its task names the last look and its rule, which leaves that look's `pending` to production not carrying the merge alone, as here, and makes a requirement still unobserved a `fail` only where production carries the merge (the proof sends the closed issue nothing), so it writes on the pull request that the check did not run because production did not carry the merge within the bound and reports `pending`:
+  Its task names the last look and its rule, which keeps that look's `pending` only for an issue with no requirement that only the deploy can show, as here, and makes a requirement still unobserved at the last look a `fail` whether or not production carries the merge (the proof sends the closed issue nothing), so it writes on the pull request why the check did not run within the bound and reports `pending`:
   the check closes as `not_run` within 600 s (`check_closed`:
   the state omits `check`, the issue `done`;
   `last_look_logged` finds `workflow: production check look started` with `cause: bound`, `last: true` and `check_closed_as` finds `workflow: production check closed` with `outcome: not_run` in the daemon log), the tester's claim is `retired` beside the five `suspended` claims (`claim_states_are`), and within 600 s the root again has no Sandbox, no pod and no disk, the disk read inside the same wait.
@@ -3737,7 +3737,7 @@ bash scripts/e2e/multi-repo-acceptance.sh negative repo-edit after <run id> <chi
 
 Every input above is required and is an operator value, never a literal in the script:
 an absent or malformed observation name or argument count is refused with `usage:` and exit 2 before any environment variable, tool, or network read, and so is an issue key that is not shaped `PROJECT-123` (each goes into an evidence file name and an API path);
-then it refuses naming the first required variable that is unset, refuses a value that is not an `owner/name` repository shape, refuses two of `LEGION_E2E_REPO_{T,C,X,O}` naming the same repository (case-insensitively), refuses `LEGION_E2E_REPO_T` and `LEGION_E2E_REPO_O` sharing an owner (the second-owner observation needs two), and refuses a `LEGION_E2E_DAEMON_URL` whose `GET /healthz` does not answer `{"status":"ok"}`.
+then it refuses naming the first required variable that is unset, refuses a value that is not an `owner/name` repository shape, refuses two of `LEGION_E2E_REPO_{T,C,X,O}` naming the same repository (case-insensitively), refuses `LEGION_E2E_REPO_T` and `LEGION_E2E_REPO_O` sharing an owner (the second-owner observation needs two), and refuses a `LEGION_E2E_DAEMON_URL` whose `GET /healthz` does not answer 200 with a JSON body whose `.status` is `ok` (the body is typed, and the check reads that one field, so a daemon that adds a key to it still passes).
 `gh`, `jq` and `curl` must be on `PATH`; `second-owner` and `cache` also need `kubectl`.
 `second-owner` also needs `python3` on the pod's own `PATH`, never the operator's:
 the worker image the `roles` container runs is checked for it at boot (`internal/capabilities/image.go`), so it is never an operator dependency to install.

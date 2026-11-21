@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { LegionStateResponse } from "@legion/contracts/legion-api"
 import {
   EnvoyApiError,
   type PublishInput,
@@ -10,6 +11,7 @@ import {
 import { type ActivityInput, createLegionDaemonClient } from "@legion/pi-shared/daemon-client"
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
 import { REMINDER } from "@legion/pi-shared/phase-stall"
+import { legion } from "../package.json" with { type: "json" }
 import {
   createPhaseHookEndpoint,
   PHASE_HOOK_REFUSAL,
@@ -65,6 +67,8 @@ interface Harness {
   readonly record: () => Promise<unknown>
   /** The record as it stood when the daemon answered the record check. */
   readonly recordAtDaemonRead: () => unknown
+  /** Every route this endpoint asked the daemon for, in order. */
+  readonly daemonPaths: readonly string[]
   /** The lines this endpoint wrote into the bridge's inbox, in order. */
   readonly inbox: readonly string[]
   /** Every message published to the Envoy listener, in order. */
@@ -101,10 +105,12 @@ async function harness(
   const directory = await mkdtemp(join(tmpdir(), "claude-envoy-phase-hook-"))
   const file = phaseStallFile(directory, SESSION)
   if (options.record !== undefined) await writeFile(file, options.record)
-  const state = JSON.parse(
-    await readFile(
-      resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/state.json"),
-      "utf8",
+  const state = LegionStateResponse.parse(
+    JSON.parse(
+      await readFile(
+        resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/state.json"),
+        "utf8",
+      ),
     ),
   ) as { issues: Record<string, { workers: Record<string, { claim: { state: string } }> }> }
   const implementerClaim = state.issues["LEGION-208"]?.workers["implementer"]?.claim
@@ -116,11 +122,27 @@ async function harness(
     return raw === undefined ? undefined : JSON.parse(raw)
   }
   let atRead: unknown
-  const fetchStub = (async (_input, _init) => {
+  const paths: string[] = []
+  // The reminder's record check reads one issue's record, never the whole project
+  // (dispatch://INFRA-2694): the stub answers that route from the state golden's own issues.
+  const fetchStub = (async (input, _init) => {
+    const path = new URL(input.toString()).pathname
+    paths.push(path)
     atRead = await record()
-    return Response.json(state)
+    const named = /^\/legion\/v1\/issues\/([^/]+)\/record$/.exec(path)
+    if (named === null) return Response.json(state)
+    const held = state.issues[decodeURIComponent(named[1] ?? "")]
+    return held === undefined
+      ? Response.json(
+          { code: "RECORD_NOT_FOUND", error: `The daemon has no record for ${named[1]}` },
+          { status: 404 },
+        )
+      : Response.json(held)
   }) as typeof fetch
-  const daemon = createLegionDaemonClient("http://daemon.test", fetchStub)
+  const daemon = createLegionDaemonClient("http://daemon.test", {
+    pluginContract: legion.daemonApiVersion,
+    fetch: fetchStub,
+  })
   const lines: string[] = []
   const inbox: string[] = []
   const published: PublishInput[] = []
@@ -130,7 +152,7 @@ async function harness(
     stateFile: file,
     claim: () => options.claim,
     booted: booted.promise,
-    readState: (signal) => daemon.state({ signal }),
+    readRecord: (issue, signal) => daemon.record(issue, { signal }),
     reportActivity: async (input) => {
       reports.push(input)
       if (options.reportActivityFails === true) throw new Error("the daemon refused the report")
@@ -155,6 +177,7 @@ async function harness(
     record,
     recordAtDaemonRead: () => atRead,
     inbox,
+    daemonPaths: paths,
     published,
     reports,
     boot: booted.resolve,
@@ -175,7 +198,7 @@ test("the tool names itself Claude Code's hook endpoint and tells the model not 
 })
 
 test("a turn settling on an open phase is blocked once, with the reminder, and the count is recorded before the answer", async () => {
-  const { endpoint, record, recordAtDaemonRead, inbox, close } = await harness({
+  const { endpoint, record, recordAtDaemonRead, inbox, daemonPaths, close } = await harness({
     record: recorded("open", 0),
     claim: implementer,
   })
@@ -193,6 +216,9 @@ test("a turn settling on an open phase is blocked once, with the reminder, and t
     const said = { reported: false, lastMessage: "I pushed the branch." }
     expect(recordAtDaemonRead()).toEqual({ state: "open", count: 0, ...said })
     expect(await record()).toEqual({ state: "open", count: 1, ...said })
+    // The check reads this issue's record and never the whole project
+    // (dispatch://INFRA-2694), which is what the channel server wires it to.
+    expect(daemonPaths).toEqual(["/legion/v1/issues/LEGION-208/record"])
 
     // The second settle of the run lets the turn end and carries its reminder from the timer, so
     // the daemon sees the turn end and the idle worker can take a task the daemon wrote for it.

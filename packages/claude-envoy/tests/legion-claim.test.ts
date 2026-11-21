@@ -10,6 +10,7 @@ import { legion } from "../package.json" with { type: "json" }
 import type { RoleRegainHook } from "../src/envoy-channel-server"
 import {
   legionPane,
+  paneDaemonClient,
   ROLE_CLAIM_RETRY_MS,
   ROLE_CLAIM_WAIT_MS,
   SAVED_MARKER_SUFFIX,
@@ -147,7 +148,10 @@ test("registers once the transcript exists, hands the bridge the registration's 
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input): Promise<SetRoleResult> => {
@@ -288,7 +292,10 @@ test("a read of the claim's value after the ready that fails is logged and write
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input): Promise<SetRoleResult> => {
@@ -352,7 +359,10 @@ test("hands the bridge every value as it is handed it — each one relayed for i
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", stub),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch: stub,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (): Promise<SetRoleResult> => ({
@@ -424,7 +434,10 @@ test("a registration the daemon refuses logs the refusal, stops the pane, and cl
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "spent", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input) => {
@@ -464,7 +477,10 @@ test("a role another live session holds stops the pane after it has said it is r
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: { setRole: async () => ({ claimed: false, holder: "ses_other" }) },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
@@ -514,7 +530,10 @@ test("a claim refused by a standing claim under this session's own id is asked a
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input): Promise<SetRoleResult> => {
@@ -598,7 +617,10 @@ test("the wait asks on its own interval until the live window passes, and the gr
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input): Promise<SetRoleResult> => {
@@ -674,7 +696,10 @@ test("a claim under this session's own id that is never granted stops the pane o
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (input) => {
@@ -722,7 +747,10 @@ test("a registration the daemon failed (5xx) is logged and leaves the pane to th
   const claim = startLegionClaim({
     pane: { daemonUrl: "http://daemon.test", bootToken: "boot-1", configDir, launcherSaves: false },
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: { setRole: async () => ({ claimed: false, holder: "x" }) },
     session: { rememberRole: async () => undefined, onRoleRegained: () => undefined },
@@ -772,7 +800,10 @@ async function bootOn(env: Record<string, string>): Promise<{
   const claim = startLegionClaim({
     pane,
     sessionID: SESSION,
-    daemon: createLegionDaemonClient("http://daemon.test", fetch),
+    daemon: createLegionDaemonClient("http://daemon.test", {
+      pluginContract: legion.daemonApiVersion,
+      fetch,
+    }),
     clientInstanceID: INSTANCE,
     client: {
       setRole: async (): Promise<SetRoleResult> => ({
@@ -818,4 +849,26 @@ test("a pane no launcher keeps registers once the transcript exists, waiting for
     "/legion/v1/claims/task",
   ])
   expect(posted[0]?.body["ompSessionFile"]).toBe(transcript)
+})
+
+// dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract
+// describes, and reads that contract from a request header. The client the channel server makes
+// for a Legion pane (`paneDaemonClient`) states this build's own manifest number on every
+// request it makes, a GET included.
+test("the pane's daemon client states this build's own daemon API contract on every request", async () => {
+  const stated: (string | null)[] = []
+  const live = globalThis.fetch
+  globalThis.fetch = (async (_input, init) => {
+    stated.push(new Headers(init?.headers).get("Legion-Plugin-Contract"))
+    return Response.json({ status: "ok", project: "legion" })
+  }) as typeof fetch
+  try {
+    const client = paneDaemonClient("http://daemon.test")
+    await client.health()
+    await client.daemonContract()
+  } finally {
+    globalThis.fetch = live
+  }
+
+  expect(stated).toEqual([String(legion.daemonApiVersion), String(legion.daemonApiVersion)])
 })

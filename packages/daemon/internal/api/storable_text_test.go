@@ -170,10 +170,11 @@ func TestNoRouteTakesABodyStringHoldingANul(t *testing.T) {
 	noString := nulRow{body: unread, refusal: `json: unknown field "note"`}
 	noBody := nulRow{body: unread}
 	rows := map[string]nulRow{
-		"/":                    noBody,
-		"GET /legion/v1/state": noBody,
-		"GET /healthz":         noBody,
-		"GET /readyz":          noBody,
+		"/":                                  noBody,
+		"GET /legion/v1/state":               noBody,
+		"GET /legion/v1/issues/{key}/record": noBody,
+		"GET /healthz":                       noBody,
+		"GET /readyz":                        noBody,
 
 		"POST /legion/v1/claims/register":                        reads("bootToken"),
 		"POST /legion/v1/claims/ready":                           reads("sessionId"),
