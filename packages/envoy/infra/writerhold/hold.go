@@ -372,9 +372,11 @@ func sameDisks(step, what string, want, read map[string]string) error {
 // disk the latest done prove records for it, and every other target on its step-1 disk
 // (holdrecord.Expected); a refusal of that check writes a stop entry, which keeps the completion.
 // Its PUT moves the row to released, and its done entry after it ends the hold: from then the
-// table admits no command in it (holdrecord's EndIsFinal). Run again on a row already released
-// under its hold id, it sends no PUT, and writes the done entry a release killed between its PUT
-// and its done left unwritten.
+// table admits no command in it (holdrecord's EndIsFinal). In hub-restore it reads the disks once
+// more after the move, as abort does: a restore that lands between its check and its move is a
+// restore outside any hold (the model's assumption A1), which it names, exiting 1 with the hold
+// released. Run again on a row already released under its hold id, it sends no PUT, and writes the
+// done entry a release killed between its PUT and its done left unwritten.
 func release(ctx context.Context, records *holdrecord.Client, op *Operator, o options, stdout io.Writer) error {
 	row, err := records.Row(ctx)
 	if err != nil {
@@ -420,10 +422,17 @@ func release(ctx context.Context, records *holdrecord.Client, op *Operator, o op
 	if err != nil {
 		return err
 	}
+	var changed error
+	if w == holdrecord.WorkflowHubRestore {
+		changed = onExpectedDisks(ctx, op, d)
+	}
 	if err := records.AppendDone(ctx, o.holdID, holdrecord.CommandRelease, nil); err != nil {
 		return fmt.Errorf("hold %s is released (row gen %d), and its done entry was not written: run hold release --hold %s again: %w", o.holdID, moved.Gen, o.holdID, err)
 	}
 	fmt.Fprintf(stdout, "released hold %s: row gen %d; the record's hold_gen is %d\n", o.holdID, moved.Gen, d.HoldGen)
+	if changed != nil {
+		return fmt.Errorf("the hold is released, and a disk changed after release's last check, outside any hold: %w", changed)
+	}
 	return nil
 }
 

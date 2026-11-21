@@ -54,7 +54,7 @@ record) or `held`.
 | `hold prepare --workflow W --reason R --minters-report F` | Checks the minter report against `envoy-operator/envoy-operator-accepted-minters`, moves the row to `prepare` under a new hold id, and starts the hold's journal. It prints the id. |
 | `hold set (--hold ID \| --workflow W --reason R) --minters-report F` | Runs §3a's steps, listed below, and moves the row to `held`. |
 | `hold abort --hold ID --reason R` | The way out of a hold: see "Abort" below. |
-| `hold release --hold ID --reason R` | Ends a hold whose stops all left nothing changed, or whose workflow is complete. In hub-restore, each claim must first be on its expected disk. |
+| `hold release --hold ID --reason R` | Ends a hold whose stops all left nothing changed, or whose workflow is complete. In hub-restore, each claim must first be on its expected disk, and after its row move it reads the disks again: a disk that changed between its check and its move (a restore outside any hold) is named, and it exits 1 with the hold released. |
 | `hold restore [--bootstrap \| --hold ID] --reason R` | Writes a lost row back. See "Restore" below. |
 | `hold prove --hold ID --restored T=D...` | hub-restore's proof of the disks a restore landed on: a restart of the hub by eviction, with step 4's proof of each restored server. |
 | `hold keygen --signing-key-secret projects/P/secrets/operator-only-envoy-hold-signing` | Makes the operator's hold signing key and prints its public half. |
