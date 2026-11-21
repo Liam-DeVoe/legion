@@ -4,7 +4,7 @@
 // minting Dispatch access tokens. It keeps the device codes, the access and refresh token
 // sessions, DPoP proof replay records and nonces, the provider's HMAC secret, which identity
 // holds a session name, and the exchange's replay records, in the tables migrations 0016 and
-// 0018 create, and the tokens a trade narrowed to reading in the table migration 0040 creates.
+// 0018 create, and the tokens a trade narrowed to reading in the table migration 0041 creates.
 //
 // A stored request is the JSON of its oauth2.Request fields plus its client's id; reading it back
 // re-hydrates the client with GetClient and the session into the kind the caller hands it, an
@@ -579,7 +579,7 @@ func sessionJSON(request oauth2.Requester) ([]byte, *oauth2.DefaultSession, any,
 }
 
 // CreateAccessTokenSession stores an access token's session: a token a trade narrowed to reading
-// (NarrowedRequest) in oauth_narrowed_access_tokens, which no broker build before migration 0040
+// (NarrowedRequest) in oauth_narrowed_access_tokens, which no broker build before migration 0041
 // reads, and every other one in oauth_access_tokens.
 //
 // A read token, which is any token granted oauthwire.ScopeRead (a narrowed one, and a read
@@ -757,7 +757,7 @@ const NarrowedLive = `n.active and n.expires_at > now()
 // oauth_access_tokens is live while its row is active. A narrowed token is live while
 // NarrowedLive holds, which is decided again at every read, an introspection's among them, rather
 // than written onto the narrowed row when its credential or its subject ends: a revoke, a retire
-// or a sweep made by a broker build before migration 0040, which never touches this table, ends
+// or a sweep made by a broker build before migration 0041, which never touches this table, ends
 // it too, and the broker rolls one replica at a time.
 func (s *Store) GetAccessTokenSession(ctx context.Context, signature string, session oauth2.Session) (oauth2.Requester, error) {
 	return s.getToken(ctx, `select request, active from oauth_access_tokens where signature = $1
@@ -1002,7 +1002,7 @@ func keyHoldsLauncherCredential(ctx context.Context, db Querier, thumbprint stri
 // KeyHoldsReadToken takes the key's lock (lockKey) in the transaction db runs in and reports
 // whether a read token is bound to thumbprint: an active, unexpired narrowed token, read through
 // its key's index, or an active, unexpired read entry's token, whose project scope is none, read
-// through the partial expression index migration 0040 adds to oauth_access_tokens. A read entry's
+// through the partial expression index migration 0041 adds to oauth_access_tokens. A read entry's
 // token an older broker minted is covered too, since its row has the same shape. A narrowed row
 // counts while it is active and unexpired even if what it was traded from has ended
 // (NarrowedLive): that refuses a credential on its key a little longer than it must, until the
