@@ -771,13 +771,13 @@ func fetchCommitMessagesWithToken(ctx context.Context, client *githubapp.Client,
 // sessionTrailers is every `Omp-Session:` commit trailer across messages (LEGION-294's rule,
 // ported from the prototype's `session_ids`), first-seen order, no repeats.
 func sessionTrailers(messages []string) []string {
-	sessions := []string{}
+	sessions := newUniqueStrings()
 	for _, message := range messages {
 		for _, match := range ompSessionTrailer.FindAllStringSubmatch(message, -1) {
-			sessions = appendUnique(sessions, match[1])
+			sessions.add(match[1])
 		}
 	}
-	return sessions
+	return sessions.list
 }
 
 // mapRunConclusion maps GitHub's raw run conclusion to this schema's narrower check constraint
