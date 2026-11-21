@@ -3275,6 +3275,38 @@ test("a comparison the run's remote cannot resolve is 404, as GitHub answers it"
   expect(call.stderr.toString()).toContain("gh: Not Found (HTTP 404)");
 });
 
+// Catches: a stand-in with no answer for `gh api repos/<o>/<r>/commits/<sha>`, GitHub's read of
+// one commit. In INFRA-764's round 29 (run 94caf2e09844, threads-closed correct base, at 446a02fb)
+// the reviewer read the commit the implementer pushed that way, to see its author and parents,
+// and the stand-in answered `gh: Not Found (HTTP 404)` for a commit the run's own remote holds,
+// which the world-health check refused. GitHub answers that read with the commit, its parents,
+// files and stats, for a full SHA and for a short one alike, and answers 422 `No commit found
+// for SHA` for one the repository does not hold — measured on 2026-11-21, `gh api
+// repos/cybermonklabs/legion/commits/bbf69791…` exited 0 with one parent and 3 files, the same
+// call naming `bbf69791` answered the full SHA, and one naming forty `deadbeef` digits exited 1
+// with that 422.
+test("a commit is read from the run's own remote, as GitHub answers one", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const read = (ref: string) =>
+    answer(dir, [
+      "api",
+      `repos/example/widgets/commits/${ref}`,
+      "--jq",
+      "[.sha, (.parents | length), .parents[0].sha, (.files | length), .files[0].filename] | @tsv",
+    ]);
+  const want = [second, 1, first, 1, "docs.md"].join("\t");
+  expect(read(second)).toBe(want);
+  expect(read(second.slice(0, 8))).toBe(want);
+  const missing = spawnChecked(
+    ["bun", STANDIN, "gh", "api", `repos/example/widgets/commits/${"deadbeef".repeat(5)}`],
+    { env: callEnv(dir) }
+  );
+  expect(missing.exitCode).toBe(1);
+  expect(missing.stderr.toString()).toContain(
+    `gh: No commit found for SHA: ${"deadbeef".repeat(5)} (HTTP 422)`
+  );
+});
+
 // Catches: a comparison read off the path alone, whatever verb the call names. The comparison
 // is GitHub's read of two refs, and a call that writes to that path is another call: GitHub
 // serves no write there and the world models none, so it is GitHub's 404, and a stand-in that
