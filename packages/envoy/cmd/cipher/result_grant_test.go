@@ -173,9 +173,11 @@ func TestResultGrantRunsTheCommandWithThePlaceholderAndTheProxy(t *testing.T) {
 }
 
 // TestResultGrantRefusesADispatchURLOutsideTheGrant: a DISPATCH_URL whose host the grant does not
-// bind would send the command's writes around the proxy with the placeholder in them, so nothing
-// runs. A host is bound as the proxy binds one: exactly, or one label or more under a `*.` entry,
-// so `evilexample.test` is not under `*.example.test`, and `dispatch.example.test` is, which runs.
+// bind, or that is not https on port 443, would send the command's writes around the proxy with the
+// placeholder in them (the child's HTTPS_PROXY covers https alone, and the proxy reads a bound host
+// on 443 alone), so nothing runs. A host is bound as the proxy binds one: exactly, or one label or
+// more under a `*.` entry, so `evilexample.test` is not under `*.example.test`, and
+// `dispatch.example.test` is, which runs.
 func TestResultGrantRefusesADispatchURLOutsideTheGrant(t *testing.T) {
 	for _, c := range []struct {
 		name, dispatchURL, host string
@@ -183,6 +185,9 @@ func TestResultGrantRefusesADispatchURLOutsideTheGrant(t *testing.T) {
 	}{
 		{"another host", "https://dispatch.elsewhere.test", "dispatch.elsewhere.test", nil},
 		{"a name that ends in a wildcard entry's domain without its dot", "https://evilexample.test", "evilexample.test", []string{"*.example.test"}},
+		{"the bound host over plain http", "http://" + resultHost, resultHost, nil},
+		{"the bound host over plain http on 443", "http://" + resultHost + ":443", resultHost, nil},
+		{"the bound host on another port", "https://" + resultHost + ":8443", resultHost, nil},
 	} {
 		broker := startResultBroker(t, http.StatusOK, placeholderGrant(t, c.bound...))
 		stdout, stderr, exit := runResultGrant(t, broker, "DISPATCH_URL="+c.dispatchURL)
