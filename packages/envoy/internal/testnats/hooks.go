@@ -306,12 +306,14 @@ func Hook(t testing.TB) *Hooks {
 }
 
 // report is the hook itself: it records the event, and parks the calling goroutine when the
-// event is the first to meet a hold's matches. A server's ServerShutdown releases the holds that
-// park its goroutines, and none of its goroutines is parked until its ServerDown. A ServerShutdown
-// of a run already down, reported late, changes nothing.
+// event is the first to meet a live hold's matches. A hold released before it was reached parks
+// nothing and takes no event from a live hold: the first event to meet its matches marks it
+// reached and goes on to the next hold. A server's ServerShutdown releases the holds that park
+// its goroutines, and none of its goroutines is parked until its ServerDown. A ServerShutdown of
+// a run already down, reported late, changes nothing.
 func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	e := eventOf(me)
-	var released []*Hold
+	var released, passed []*Hold
 	h.mu.Lock()
 	e.N = len(h.events) + 1
 	h.events = append(h.events, e)
@@ -330,10 +332,16 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	var parked *Hold
 	if !h.stoppingLocked(e.Store) {
 		for _, hold := range h.holds {
-			if !hold.fired && accepts(e, hold.point, hold.match) {
-				hold.fired, hold.event, parked = true, e, hold
-				break
+			if hold.fired || !accepts(e, hold.point, hold.match) {
+				continue
 			}
+			hold.fired, hold.event = true, e
+			if hold.Released() {
+				passed = append(passed, hold)
+				continue
+			}
+			parked = hold
+			break
 		}
 	}
 	close(h.changed)
@@ -341,6 +349,9 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 	h.mu.Unlock()
 	for _, hold := range released {
 		hold.Release()
+	}
+	for _, hold := range passed {
+		close(hold.reached)
 	}
 	if parked != nil {
 		close(parked.reached)
@@ -456,9 +467,9 @@ func (hold *Hold) wasReached() bool {
 	}
 }
 
-// Release lets the parked goroutine go on, or, for a hold not yet reached, disarms it: whatever
-// reaches it later passes. It may be called more than once. A shutdown of the held server calls
-// it too.
+// Release lets the parked goroutine go on, or, for a hold not yet reached, disarms it: the first
+// event to meet its matches marks it reached and goes on, to park on a live hold armed after it
+// if one matches. It may be called more than once. A shutdown of the held server calls it too.
 func (hold *Hold) Release() { hold.once.Do(func() { close(hold.release) }) }
 
 // Released reports whether the hold has been released: by Release, by the test's end, or by a

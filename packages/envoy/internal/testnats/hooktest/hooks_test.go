@@ -484,6 +484,56 @@ func TestForcedOrderTwoRunsOnOneStoreKeepTheirOwnShutdowns(t *testing.T) {
 	}
 }
 
+// A hold released before anything reached it parks nothing, and takes no event away from a live
+// hold armed after it: the first matching event parks on the live hold. The test sends the hook
+// the publishes itself. Its control is the same publish with one live hold and no released one.
+// Before a released hold stepped aside, it took the first event, which passed through it, and
+// the live hold parked only the second.
+func TestForcedOrderAReleasedHoldTakesNoEventFromTheNextHold(t *testing.T) {
+	const subject = "released.hold"
+	for _, released := range []bool{false, true} {
+		name := "one live hold parks the first event"
+		if released {
+			name = "a released hold, then a live one: the first event parks on the live one"
+		}
+		t.Run(name, func(t *testing.T) {
+			hooks := testnats.Hook(t)
+			report := *natsserver.MeasureHook.Load()
+			if released {
+				hooks.Hold(testnats.ClientPublish, testnats.Subject(subject)).Release()
+			}
+			live := hooks.Hold(testnats.ClientPublish, testnats.Subject(subject))
+			publish := func() <-chan struct{} {
+				returned := make(chan struct{})
+				go func() {
+					report(&natsserver.MeasureEvent{Point: string(testnats.ClientPublish), Subject: subject})
+					close(returned)
+				}()
+				return returned
+			}
+			returned := publish()
+			escaped := false
+			select {
+			case <-returned:
+				// Send a second publish, so the live hold is reached and the test fails on the
+				// escape rather than on a hold armed and never reached.
+				escaped, returned = true, publish()
+			case <-time.After(held):
+			}
+			t.Logf("held %s", live.Reached(t))
+			live.Release()
+			select {
+			case <-returned:
+			case <-time.After(reachWithin):
+				t.Fatal("the released publish did not return")
+			}
+			if escaped {
+				t.Fatal("the first publish passed the live hold: the released hold took it")
+			}
+		})
+	}
+}
+
 func TestForcedOrderHoldsAPublishBeforeItIsMatched(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	hooks := testnats.Hook(t)
