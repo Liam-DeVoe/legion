@@ -45,13 +45,18 @@ type Answer struct {
 	Status int
 	Body   string
 	Stall  bool
+	// resource is the user SetUser gave, written for each read by the fields it asks for (partial).
+	resource map[string]any
 }
 
-// User is a Directory user as users.get answers for it: 200 with these three fields.
+// User is a Directory user as users.get answers for it: 200 with these four fields, beside the
+// resource's kind and etag, each written only when the read's fields parameter names it or the
+// read names no fields, as Google's partial response writes a resource.
 type User struct {
 	ID           string
 	PrimaryEmail string
 	Suspended    bool
+	Archived     bool
 }
 
 // Sign is one signJwt request: the service account it named, and the claims it asked IAM to sign.
@@ -75,8 +80,8 @@ type Read struct {
 // Google is the three hosts. Its zero answers: signJwt signs any payload; the token endpoint
 // trades a JWT it signed for an access token when every scope the JWT asks for is granted, and
 // refuses it 401 unauthorized_client otherwise, as Google does for a scope the delegation does not
-// grant; users.get answers each user SetUser gave it and 404 for any other key, and 401 for a
-// token it did not issue for the Directory scope.
+// grant; users.get answers each user SetUser gave it, with the fields its fields parameter names,
+// and 404 for any other key, and 401 for a token it did not issue for the Directory scope.
 type Google struct {
 	client  *http.Client
 	release chan struct{}
@@ -136,14 +141,10 @@ func (g *Google) ClientOptions() []option.ClientOption {
 
 // SetUser makes users.get answer key with u.
 func (g *Google) SetUser(key string, u User) {
-	body, err := json.Marshal(map[string]any{
+	g.AnswerUser(key, Answer{Status: http.StatusOK, resource: map[string]any{
 		"kind": "admin#directory#user", "id": u.ID, "primaryEmail": u.PrimaryEmail, "suspended": u.Suspended,
-		"etag": `"` + Planted + `"`,
-	})
-	if err != nil {
-		panic(err)
-	}
-	g.AnswerUser(key, Answer{Status: http.StatusOK, Body: string(body)})
+		"archived": u.Archived, "etag": `"` + Planted + `"`,
+	}})
 }
 
 // AnswerUser makes users.get answer key with a.
@@ -450,7 +451,29 @@ func (g *Google) serveDirectory(w http.ResponseWriter, r *http.Request) {
 		g.write(w, r, Answer{Status: http.StatusUnauthorized, Body: googleError(http.StatusUnauthorized, "Request had invalid authentication credentials.")})
 	case !known:
 		g.write(w, r, Answer{Status: http.StatusNotFound, Body: googleError(http.StatusNotFound, "Resource Not Found: userKey")})
-	default:
+	case answer.resource == nil:
 		g.write(w, r, answer)
+	default:
+		g.write(w, r, Answer{Status: answer.Status, Body: partial(answer.resource, r.URL.Query().Get("fields"))})
 	}
+}
+
+// partial is resource as Google's partial response writes it for a fields parameter: the whole
+// resource for no fields, and otherwise only the fields it names, comma separated. The fake reads
+// top-level names alone, and leaves out a name the resource does not hold.
+func partial(resource map[string]any, fields string) string {
+	selected := resource
+	if fields != "" {
+		selected = map[string]any{}
+		for _, name := range strings.Split(fields, ",") {
+			if value, ok := resource[name]; ok {
+				selected[name] = value
+			}
+		}
+	}
+	body, err := json.Marshal(selected)
+	if err != nil {
+		panic(err)
+	}
+	return string(body)
 }

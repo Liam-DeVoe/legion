@@ -64,6 +64,9 @@ func TestDirectoryCheckExitsOnlyOnTheExpectedVerdicts(t *testing.T) {
 		{name: "a suspended held login is Held too", code: 0, answer: func(g *directorytest.Google) {
 			g.SetUser(directoryCheckHeld, directorytest.User{ID: "u-leaver", PrimaryEmail: directoryCheckHeld, Suspended: true})
 		}, stdout: directoryCheckActive + ": Active\n" + directoryCheckHeld + ": Held\n" + refusedProbe},
+		{name: "an archived held login, not suspended, is Held too", code: 0, answer: func(g *directorytest.Google) {
+			g.SetUser(directoryCheckHeld, directorytest.User{ID: "u-leaver", PrimaryEmail: directoryCheckHeld, Archived: true})
+		}, stdout: directoryCheckActive + ": Active\n" + directoryCheckHeld + ": Held\n" + refusedProbe},
 		{name: "the active login Held", code: 1, answer: func(g *directorytest.Google) {
 			g.SetUser(directoryCheckActive, directorytest.User{ID: "u-ada", PrimaryEmail: directoryCheckActive, Suspended: true})
 		}, stdout: directoryCheckActive + ": Held\n" + directoryCheckHeld + ": Held\n" + refusedProbe},

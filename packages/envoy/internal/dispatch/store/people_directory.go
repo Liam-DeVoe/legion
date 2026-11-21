@@ -16,12 +16,12 @@ import (
 // changed by none of them, and none makes a row.
 
 // RecordDirectoryActive records an Active outcome of email's Directory check: the person's own
-// account answered as not suspended. It sets directory_confirmed_at and directory_checked_at to
-// now, not_held_until to now plus 24 hours, after which a not-held answer is no longer served, and
-// held_since to null, which releases a recorded hold; it stores userID, the answer's Directory
-// user id, in directory_user_id when that is null and keeps a stored one otherwise, so later
-// answers are compared with the id of the first. It answers the deadline it fixed, the zero time
-// for a login with no row.
+// account answered as neither suspended nor archived. It sets directory_confirmed_at and
+// directory_checked_at to now, not_held_until to now plus 24 hours, after which a not-held answer
+// is no longer served, and held_since to null, which releases a recorded hold; it stores userID,
+// the answer's Directory user id, in directory_user_id when that is null and keeps a stored one
+// otherwise, so later answers are compared with the id of the first. It answers the deadline it
+// fixed, the zero time for a login with no row.
 func (s *PgPeopleStore) RecordDirectoryActive(ctx context.Context, email, userID string) (notHeldUntil time.Time, err error) {
 	err = s.pool.QueryRow(ctx, `
 		update people set directory_user_id = coalesce(directory_user_id, $2),
@@ -41,9 +41,9 @@ func (s *PgPeopleStore) RecordDirectoryActive(ctx context.Context, email, userID
 }
 
 // RecordDirectoryHeld records a Held outcome of email's Directory check: the account is suspended,
-// missing, or another person's. It sets directory_checked_at to now and records a hold, held_since
-// set to now when it is null, so a held row keeps the time of its first Held outcome. It leaves
-// directory_confirmed_at and not_held_until as they are.
+// archived, missing, or another person's. It sets directory_checked_at to now and records a hold,
+// held_since set to now when it is null, so a held row keeps the time of its first Held outcome.
+// It leaves directory_confirmed_at and not_held_until as they are.
 func (s *PgPeopleStore) RecordDirectoryHeld(ctx context.Context, email string) error {
 	if _, err := s.pool.Exec(ctx, `
 		update people set directory_checked_at = checked.at, held_since = coalesce(held_since, checked.at)

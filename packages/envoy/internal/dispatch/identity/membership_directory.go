@@ -174,7 +174,7 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 			slog.Warn("dispatch: a Workspace Directory check answered Held, and its write failed; the check is Failed", "email", email, "error", err)
 			return RefreshFailed, err
 		}
-		slog.Info("dispatch: the Workspace Directory reports a person's account suspended, missing or another's; their credentials are held", "email", email)
+		slog.Info("dispatch: the Workspace Directory reports a person's account suspended, archived, missing or another's; their credentials are held", "email", email)
 		return RefreshHeld, nil
 	}
 	slog.Warn("dispatch: a Workspace Directory check failed; the person's confirmation, deadline and hold stay as they were", "email", email, "error", err)
