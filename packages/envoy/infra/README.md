@@ -3970,8 +3970,7 @@ transforms, and then publish on a subject the deny allows. The stream stores tha
 Dispatch's lane or GitHub's, and the daemon trusts it there. No other session can:
 `SessionPermissions`, the hub's shared session user, and `natsgrant.Session`, the grant of a
 session the auth service admits, hold no stream call. The gap stays open for a host's sessions
-until they connect through the auth service in place of the shared host user
-(dispatch://INFRA-840).
+until they connect through the auth service in place of the shared host user.
 
 It subscribes to `_INBOX.>`, and to the role lanes in the queue group every listener shares,
 `notifications.role.> envoy-roles`, so each role message is forwarded once whichever machine's
@@ -4028,8 +4027,8 @@ a listener connecting as this user can give its sessions no consumer, so it refu
 registrations `no_grant`. Its publish direction keeps the base entries' deny of Dispatch's lane
 and GitHub's lane, so no session on the host publishes directly on either. A session on the host
 can still have a message stored under either lane, by a stream update that adds a subject
-transform, until the host's sessions connect through the auth service (dispatch://INFRA-840; see
-the base entries' deny above). A
+transform, until the host's sessions connect through the auth service (see the base entries'
+deny above). A
 `gcp:NatsHub` user with `machineId` holds it, and a hub's own `listener` holds
 `ListenerPermissions` for the hub's hostname. Sharing one user makes the host one
 trust domain: any process that reaches the server as it, a listener's own process or any session on
