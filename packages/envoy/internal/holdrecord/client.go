@@ -340,7 +340,9 @@ func (c *Client) PutRecord(ctx context.Context, holdID, kind, key string, expect
 	return record, nil
 }
 
-// DeleteCohort deletes the cohort record, for `hold abort` from `prepare`.
+// DeleteCohort deletes the cohort record, for `hold abort` from `prepare`. The broker keeps each
+// delete, signed, beside the records, so after a delete that committed every replica reads the
+// cohort as absent, and the abort's rerun, served by any of them, deletes nothing and answers nil.
 func (c *Client) DeleteCohort(ctx context.Context, holdID string) error {
 	if len(c.cfg.SigningKey) == 0 {
 		return errNoSigningKey

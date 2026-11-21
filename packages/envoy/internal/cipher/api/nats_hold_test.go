@@ -425,8 +425,9 @@ func TestThePrepareOperatorWritesTheCohort(t *testing.T) {
 }
 
 // A record moves only from the gen it names, a second insert of one is 409 gen_mismatch, and the
-// cohort's delete, hold abort's, deletes the cohort alone, while the journal stays; a delete naming
-// another hold id, or another kind, deletes nothing.
+// cohort's delete, hold abort's, deletes the cohort alone, while the journal stays, and keeps its
+// signed delete in nats_hold_record_deletes; a delete naming another hold id, or another kind,
+// deletes nothing and keeps nothing.
 func TestARecordMovesByItsGenAndTheAbortDeletesTheCohortAlone(t *testing.T) {
 	rig := newHoldRig(t)
 	rig.bootstrap()
@@ -448,10 +449,25 @@ func TestARecordMovesByItsGenAndTheAbortDeletesTheCohortAlone(t *testing.T) {
 		require(t, "a cohort delete naming another hold id", http.StatusConflict, "hold_mismatch")
 	rig.do(http.MethodDelete, rig.signedDelete("hold-a", "done", "hold", 2), op, nil).
 		require(t, "a delete of the journal", http.StatusBadRequest, "bad_request")
-	rig.do(http.MethodDelete, rig.signedDelete("hold-a", "cohort", "cohort", 1), op, nil).require(t, "the cohort's delete", http.StatusNoContent, "")
+	deleteCohort := rig.signedDelete("hold-a", "cohort", "cohort", 1)
+	rig.do(http.MethodDelete, deleteCohort, op, nil).require(t, "the cohort's delete", http.StatusNoContent, "")
 	if cohorts, journals := rig.count(`select count(*) from nats_hold_records where kind = 'cohort'`),
 		rig.count(`select count(*) from nats_hold_records where kind = 'done'`); cohorts != 0 || journals != 1 {
 		t.Fatalf("after the cohort's delete %d cohort and %d journal records remain, want 0 and 1", cohorts, journals)
+	}
+	// The delete keeps the request's own signature, over the gen it deleted, for every replica's read.
+	deleted, err := url.Parse(deleteCohort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gen int64
+	var sig string
+	if err := rig.pool.QueryRow(context.Background(), `select gen, sig from nats_hold_record_deletes where hold_id = 'hold-a' and kind = 'cohort' and key = 'cohort'`).Scan(&gen, &sig); err != nil ||
+		gen != 1 || sig != deleted.Query().Get("sig") {
+		t.Fatalf("the cohort's delete kept gen %d and sig %q (%v), want gen 1 and the request's sig", gen, sig, err)
+	}
+	if kept := rig.count(`select count(*) from nats_hold_record_deletes`); kept != 1 {
+		t.Fatalf("the refused deletes and the cohort's delete kept %d delete rows, want 1", kept)
 	}
 }
 
@@ -608,12 +624,12 @@ func TestASeenRecordDeletedOutsideTheRoutesReadsAsUnknown(t *testing.T) {
 	}
 }
 
-// holdTables is every row of the hold's four tables, as text, for a test that requires a refused
+// holdTables is every row of the hold's five tables, as text, for a test that requires a refused
 // call to change none.
 func (r *holdRig) holdTables() string {
 	r.t.Helper()
 	var out strings.Builder
-	for _, table := range []string{"nats_hold", "nats_hold_log", "nats_hold_records", "nats_cutover"} {
+	for _, table := range []string{"nats_hold", "nats_hold_log", "nats_hold_records", "nats_hold_record_deletes", "nats_cutover"} {
 		rows, err := r.pool.Query(context.Background(), `select t::text from `+table+` t order by 1`)
 		if err != nil {
 			r.t.Fatal(err)

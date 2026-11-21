@@ -424,7 +424,9 @@ type holdRecords struct {
 // reads as unknown. A read that meets the floor is made once more first, since a write that
 // committed while it read moves the floor past what it read; an older record put back, or a record
 // deleted outside the routes, meets it again. Only a record whose signature verifies raises its
-// floor; one that does not is answered as it is, and the client refuses it by its signature.
+// floor; one that does not is answered as it is, and the client refuses it by its signature. The
+// deletes the routes kept are read in the same snapshot as the records, and only one whose
+// signature verifies is the routes' delete.
 func (s *server) readNATSHoldRecords(w http.ResponseWriter, r *http.Request, _ string) {
 	holdID, kind := r.URL.Query().Get("hold_id"), r.URL.Query().Get("kind")
 	if holdID == "" || !natshold.RecordKind(kind) {
@@ -434,15 +436,19 @@ func (s *server) readNATSHoldRecords(w http.ResponseWriter, r *http.Request, _ s
 	verified := func(rec natshold.Record) bool {
 		return signedrecord.Verify(s.deps.NATSHold.Keys, rec.Sig, signedrecord.Record(holdID, kind, rec.Key, rec.Gen, rec.Value)) == nil
 	}
+	deletedByRoutes := func(d natshold.Deletion) bool {
+		return signedrecord.Verify(s.deps.NATSHold.Keys, d.Sig, signedrecord.RecordDelete(holdID, kind, d.Key, d.Gen)) == nil
+	}
 	var records []natshold.Record
 	for attempt := 1; ; attempt++ {
+		var deletions []natshold.Deletion
 		var err error
-		records, err = s.holdStore().Records(r.Context(), holdID, kind)
+		records, deletions, err = s.holdStore().Records(r.Context(), holdID, kind)
 		if err != nil {
 			writeUnavailable(w, "DATABASE_UNAVAILABLE", "read the hold records", err)
 			return
 		}
-		refusal := s.holdFloors.serve(holdID, kind, records, verified)
+		refusal := s.holdFloors.serve(holdID, kind, records, deletions, verified, deletedByRoutes)
 		if refusal == "" {
 			break
 		}
@@ -466,11 +472,14 @@ func (s *server) readNATSHoldRecords(w http.ResponseWriter, r *http.Request, _ s
 // operator signed, which does, or delete one: the floor answers either as unknown (GET's 409
 // below_floor) and refuses a write that would store a gen at or below it again (409
 // gen_mismatch), so the operator's commands never act on a journal a command has moved past. A
-// record the floor has seen and the routes did not delete is a tombstone once it is absent, since
-// the absence is a database writer's; a record the routes deleted (the cohort, at the gen its
-// delete was signed over) is absent as it should be, and reads as unknown if it comes back. Only a
-// record whose signature verifies raises its floor, so a writer's unsigned record at a high gen
-// moves nothing.
+// record the floor has seen is a tombstone once it is absent, since the absence is a database
+// writer's, unless the routes deleted it. The DELETE route keeps the operator's signed delete (the
+// cohort's, signed over the gen it deleted) in the delete's own statement, in
+// nats_hold_record_deletes, and every replica reads it beside the records: on each, a record whose
+// delete verifies at or above its floor is absent as it should be, and reads as unknown if it
+// comes back. A delete that does not verify, or one signed over a gen below the floor, deletes
+// nothing the floor has seen. Only a record whose signature verifies raises its floor, so a
+// writer's unsigned record at a high gen moves nothing.
 //
 // The residuals, which the hold's design accepts:
 //
@@ -536,11 +545,20 @@ func (f *recordFloors) deleted(k recordFloorKey, gen uint64) {
 
 // serve checks the records one read of holdID's kind answered against their floors, and answers
 // why the read reads as unknown, or "" and raises the floor of every record verified accepts to
-// its gen. A read reads as unknown when a record is below its floor, when a record the routes
-// deleted is back, and when a record the floor has seen, and the routes did not delete, is absent.
-func (f *recordFloors) serve(holdID, kind string, records []natshold.Record, verified func(natshold.Record) bool) string {
+// its gen. A delete among deletions that deletedByRoutes verifies, at or above its record's floor,
+// first marks that floor deleted at its gen, as the replica that served the delete marked its own.
+// A read reads as unknown when a record is below its floor, when a record the routes deleted is
+// back, and when a record the floor has seen, and the routes did not delete, is absent.
+func (f *recordFloors) serve(holdID, kind string, records []natshold.Record, deletions []natshold.Deletion,
+	verified func(natshold.Record) bool, deletedByRoutes func(natshold.Deletion) bool) string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	for _, d := range deletions {
+		k := recordFloorKey{holdID, kind, d.Key}
+		if floor := f.gens[k]; d.Gen >= floor.gen && deletedByRoutes(d) {
+			f.gens[k] = recordFloor{gen: d.Gen, deleted: true}
+		}
+	}
 	present := map[string]bool{}
 	for _, rec := range records {
 		present[rec.Key] = true
@@ -585,7 +603,7 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the record's delete at the gen it names", nil)
 		return
 	}
-	err = s.holdStore().DeleteCohort(r.Context(), holdID, key, gen)
+	err = s.holdStore().DeleteCohort(r.Context(), holdID, key, gen, query.Get("sig"))
 	var conflict *natshold.Conflict
 	switch {
 	case err == nil:
@@ -603,7 +621,8 @@ func (s *server) deleteNATSHoldCohort(w http.ResponseWriter, r *http.Request, _ 
 		return
 	}
 	// The floor stays at the deleted gen, marked deleted: its absence is the route's, and a write
-	// or a database writer putting an older signed cohort back is refused.
+	// or a database writer putting an older signed cohort back is refused. Every other replica
+	// marks its own once it reads the delete the store kept.
 	s.holdFloors.deleted(recordFloorKey{holdID: holdID, kind: kind, key: key}, gen)
 	w.WriteHeader(http.StatusNoContent)
 }

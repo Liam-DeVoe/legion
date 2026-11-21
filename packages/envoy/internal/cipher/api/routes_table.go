@@ -618,13 +618,15 @@ func routes() []apiRoute {
 		{http.MethodPut, "/v1/nats-hold/records", operatorAuth((*server).putNATSHoldRecord)},
 		// List one hold's records of one kind (?hold_id= and ?kind=), each with its gen, when it
 		// was stored and its signature; a record below its floor, or one the floor has seen that
-		// is now absent though no route deleted it, is 409 below_floor.
+		// is now absent with no signed delete of it that verifies, is 409 below_floor.
 		{http.MethodGet, "/v1/nats-hold/records", operatorAuth((*server).readNATSHoldRecords)},
 		// Delete the cohort record of the hold the row names (?hold_id=, ?kind=cohort, ?key=,
 		// ?gen=, ?sig=), for hold abort from prepare, which deletes it before it writes released:
 		// signed over the record's current gen (400 bad_signature otherwise), only while the row
 		// is prepare with that hold id (409 hold_mismatch otherwise), and only at that gen (409
-		// gen_mismatch otherwise). No other kind is deleted, so the journal outlives an abort.
+		// gen_mismatch otherwise). The same statement keeps the signed delete beside the records,
+		// so every replica reads the cohort as deleted. No other kind is deleted, so the journal
+		// outlives an abort.
 		{http.MethodDelete, "/v1/nats-hold/records", operatorAuth((*server).deleteNATSHoldCohort)},
 		// Write one family's cutover row, done by the hold's conversion or rolled_back by its
 		// rollback, with hold_gen the hold row's current gen, only while the row is held with the

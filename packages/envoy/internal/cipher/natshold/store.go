@@ -88,6 +88,17 @@ type Record struct {
 	Sig               string
 }
 
+// Deletion is a record the routes deleted (nats_hold_record_deletes): its hold id, kind and key,
+// the gen it was deleted at, when, and the operator's signature over the delete
+// (signedrecord.RecordDelete), the one the delete's request carried. Every broker replica reads it
+// beside the records, so each can verify that a record is gone by the operator's delete.
+type Deletion struct {
+	HoldID, Kind, Key string
+	Gen               uint64
+	DeletedAt         time.Time
+	Sig               string
+}
+
 // Cutover is one family's cutover row: its state, and the hold id and hold row gen it was written
 // under.
 type Cutover struct {
@@ -116,7 +127,12 @@ func (s Store) table(name string) string { return pgx.Identifier{s.Schema, name}
 
 // in runs fn in one transaction under the hold's search path, committing when fn answers nil.
 func (s Store) in(ctx context.Context, access pgx.TxAccessMode, fn func(pgx.Tx) error) error {
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: access})
+	return s.inTx(ctx, pgx.TxOptions{AccessMode: access}, fn)
+}
+
+// inTx is in with the transaction's options whole, its isolation level among them.
+func (s Store) inTx(ctx context.Context, options pgx.TxOptions, fn func(pgx.Tx) error) error {
+	tx, err := s.Pool.BeginTx(ctx, options)
 	if err != nil {
 		return fmt.Errorf("natshold: begin: %w", err)
 	}
@@ -352,25 +368,43 @@ func (s Store) PutRecord(ctx context.Context, rec Record, expectedGen uint64) (R
 	return stored, err
 }
 
-// Records reads every record of holdID's of kind, by key.
-func (s Store) Records(ctx context.Context, holdID, kind string) ([]Record, error) {
-	var out []Record
-	err := s.in(ctx, pgx.ReadOnly, func(tx pgx.Tx) error {
+// Records reads every record of holdID's of kind, by key, and every Deletion of one, by key, in one
+// snapshot (repeatable read), so a delete that commits while it reads is seen whole, its record
+// gone and its deletion there, or not at all.
+func (s Store) Records(ctx context.Context, holdID, kind string) ([]Record, []Deletion, error) {
+	var records []Record
+	var deletions []Deletion
+	err := s.inTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		rows, err := tx.Query(ctx, `select `+recordColumns+` from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 order by key`, holdID, kind)
 		if err != nil {
 			return fmt.Errorf("natshold: read the records: %w", err)
 		}
-		defer rows.Close()
-		for rows.Next() {
-			rec, err := scanRecord(rows, holdID, kind)
-			if err != nil {
-				return err
-			}
-			out = append(out, rec)
+		records, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (Record, error) { return scanRecord(row, holdID, kind) })
+		if err != nil {
+			return fmt.Errorf("natshold: read the records: %w", err)
 		}
-		return rows.Err()
+		rows, err = tx.Query(ctx, `select key, gen, deleted_at, sig from `+s.table("nats_hold_record_deletes")+` where hold_id = $1 and kind = $2 order by key`, holdID, kind)
+		if err != nil {
+			return fmt.Errorf("natshold: read the record deletes: %w", err)
+		}
+		deletions, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (Deletion, error) {
+			d := Deletion{HoldID: holdID, Kind: kind}
+			var gen int64
+			if err := row.Scan(&d.Key, &gen, &d.DeletedAt, &d.Sig); err != nil {
+				return Deletion{}, err
+			}
+			if gen < 1 {
+				return Deletion{}, fmt.Errorf("natshold: a hold record delete's gen is %d", gen)
+			}
+			d.Gen = uint64(gen)
+			return d, nil
+		})
+		if err != nil {
+			return fmt.Errorf("natshold: read the record deletes: %w", err)
+		}
+		return nil
 	})
-	return out, err
+	return records, deletions, err
 }
 
 // DeleteCohort deletes holdID's cohort record of key at gen, for hold abort from prepare, its one
@@ -378,15 +412,23 @@ func (s Store) Records(ctx context.Context, holdID, kind string) ([]Record, erro
 // prepare with holdID (ErrHoldMismatch otherwise), holding the row so no move commits between the
 // check and the delete, and only the record whose gen is gen (ErrGenMismatch otherwise), the gen
 // the route verified the operator's signature over, so an old signature cannot delete a newer
-// record. It deletes no record of another kind, so the journal outlives an abort.
-func (s Store) DeleteCohort(ctx context.Context, holdID, key string, gen uint64) error {
+// record. The same statement keeps the delete in nats_hold_record_deletes with sig, that
+// signature, so every broker replica reads the record as the operator's delete (Records). It
+// deletes no record of another kind, so the journal outlives an abort.
+func (s Store) DeleteCohort(ctx context.Context, holdID, key string, gen uint64, sig string) error {
 	return s.in(ctx, pgx.ReadWrite, func(tx pgx.Tx) error {
 		current, err := s.heldBy(ctx, tx, holdID, string(natsgrant.OperatorPhasePrepare))
 		if err != nil {
 			return err
 		}
-		deleted, err := tx.Exec(ctx, `delete from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3 and gen = $4`,
-			holdID, KindCohort, key, int64(gen))
+		deleted, err := tx.Exec(ctx, `with deleted as (
+				delete from `+s.table("nats_hold_records")+` where hold_id = $1 and kind = $2 and key = $3 and gen = $4
+				returning hold_id, kind, key, gen
+			)
+			insert into `+s.table("nats_hold_record_deletes")+` (hold_id, kind, key, gen, deleted_at, sig)
+			select hold_id, kind, key, gen, now(), $5 from deleted
+			on conflict (hold_id, kind, key) do update set gen = excluded.gen, deleted_at = excluded.deleted_at, sig = excluded.sig`,
+			holdID, KindCohort, key, int64(gen), sig)
 		if err != nil {
 			return fmt.Errorf("natshold: delete the cohort: %w", err)
 		}

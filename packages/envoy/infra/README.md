@@ -4104,6 +4104,15 @@ done prove and then the reconcile over every store, trusting nothing the killed 
 The residual: on this path clients reach the restored and proven hub before its census, until a
 `streams-census` hold runs clean.
 
+**A hold record a broker replica has seen.** Each broker replica keeps a floor of each hold record
+it has written or served (`recordFloors` in `internal/cipher/api`): an older signed record put
+back, or a record gone that no route deleted, reads as unknown, and the command that reads it stops.
+The one record the routes delete, the cohort that `hold abort` from `prepare` deletes, goes with the
+operator's signed delete kept beside the records in the same statement
+(`nats_hold_record_deletes`), so every replica reads it as deleted and the abort's rerun passes on
+whichever replica serves it. A cohort gone with no delete that verifies, or with one signed over an
+earlier gen than a replica saw, reads as unknown on each replica that saw it.
+
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
 shell it runs in, requests no credential, and lists each principal that is not a person and can
