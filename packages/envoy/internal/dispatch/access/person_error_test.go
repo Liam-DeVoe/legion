@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 var errDatabaseGone = errors.New("the database is not answering")
@@ -157,6 +158,15 @@ func TestNoAccessErrorNamesAPerson(t *testing.T) {
 			return err
 		}},
 		{"DeleteGroup", func(tx pgx.Tx) error { _, err := DeleteGroup(ctx, tx, broker, "crew", by); return err }},
+		// The person's machine-login approval lock, the record of a revocation of their machine
+		// logins and an approval's hold of their lock, which a removal and an approve reach and
+		// whose errors the handler's error line writes.
+		{"store.LockMachineLoginApprovals", func(tx pgx.Tx) error { return store.LockMachineLoginApprovals(ctx, tx, hiddenEmail) }},
+		{"store.RecordMachineLoginRevocation", func(tx pgx.Tx) error { return store.RecordMachineLoginRevocation(ctx, tx, hiddenEmail) }},
+		{"store.HoldMachineLoginApprovals", func(tx pgx.Tx) error {
+			_, err := store.HoldMachineLoginApprovals(ctx, tx, hiddenEmail)
+			return err
+		}},
 		// A removal's read before its locks, and the approval lock of the person it takes off, which
 		// it takes where that read finds the list names them and they are a restricted member: the
 		// step makes the person one that PRIV lists, and comes last, since SetOwner and PutGroup above
