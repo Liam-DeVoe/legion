@@ -1,7 +1,9 @@
 /**
  * The skill-cuts runner's command line (plan, R5 `cli.ts`). Every command that calls a model takes
  * `--config <skill-cuts.json>` (config.ts: the gateway's address), `--key-file <file>` (the gateway
- * key, read inside gateway.ts and never printed, logged or written), and `--out` (where it writes).
+ * key, read inside gateway.ts and never printed, logged or written), and `--out` (where it writes;
+ * `behaviour` and `load` write session text there, so they refuse an `--out` inside a git or jj
+ * checkout).
  * The runner needs no GitHub token: it reads skill texts from two directories, cases from a file,
  * and the key from a file.
  *
@@ -125,13 +127,14 @@ import { parseArgs } from "node:util";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
+import { outRefusal } from "../skill-scenarios/production-dispatch";
 import { type Arm, type ArmDirs, type ArmName, buildArm } from "./arms";
 import { main as attributeMain, type ModelCount, ModelCountFile, modelId } from "./attribute";
 import { main as buildMain } from "./build";
-import { type Capture, captureBody, capturePaths, gatewayHints } from "./capture";
+import { type Capture, captureBody, capturePaths, gatewayHints, savedCapture } from "./capture";
 import { type Case, loadCases, Thinking } from "./cases";
 import { loadConfig, type SkillCutsConfig } from "./config";
-import { ghSource, localSource } from "./context";
+import { ghSource, localSource, type RepoSource } from "./context";
 import { main as copiesMain, spawnGh } from "./copies";
 import { main as countSqlMain } from "./countsql";
 import {
@@ -256,6 +259,15 @@ function readJson(file: string, what: string): unknown {
     return JSON.parse(text);
   } catch (error) {
     throw new Refused(`${what} ${file} is not JSON: ${messageFor(error)}`);
+  }
+}
+
+/** The configuration in `file`. Throws a refusal naming why it is none. */
+function configFrom(file: string): SkillCutsConfig {
+  try {
+    return loadConfig(file);
+  } catch (error) {
+    throw new Refused(messageFor(error));
   }
 }
 
@@ -469,7 +481,7 @@ async function readCommand(argv: readonly string[], io: CliIo): Promise<number> 
       `the ${name} reader's input ${given.in} is refused: ${issueText(checked.error)}`
     );
   }
-  const config = loadConfig(given.config);
+  const config = configFrom(given.config);
   const settings = loadPrompt(name).settings;
   const { gateway } = openGateway({
     config,
@@ -600,7 +612,7 @@ async function controlCommand(argv: readonly string[], io: CliIo): Promise<numbe
   } catch (error) {
     throw new Refused(`the ${kind} control cannot be planted: ${messageFor(error)}`);
   }
-  const config = loadConfig(given.config);
+  const config = configFrom(given.config);
   const { gateway } = openGateway({
     config,
     keyFile: given["key-file"],
@@ -747,9 +759,19 @@ export function textDigest(dir: string): string {
   return hash.digest("hex").slice(0, 16);
 }
 
-/** Where the captures of `arm` are saved under `out`: one directory per arm and text. */
-export function armCaptureDir(out: string, arm: Arm): string {
-  const text = arm.skillDir === undefined ? "none" : textDigest(arm.skillDir);
+/** Where the captures of `arm` are saved under `out`: one directory per arm and text. `texts` are
+ *  the digests of `--old` and `--new` (`textDigest`), so only `minus`'s copy is hashed here. */
+export function armCaptureDir(
+  out: string,
+  arm: Arm,
+  texts: { readonly old: string; readonly new: string }
+): string {
+  const text =
+    arm.skillDir === undefined
+      ? "none"
+      : arm.name === "old" || arm.name === "new"
+        ? texts[arm.name]
+        : textDigest(arm.skillDir);
   return path.join(out, "captures", `${arm.name}-${text}`);
 }
 
@@ -848,7 +870,8 @@ interface Behaviour {
 }
 
 /** What a stage command runs with. `gateway` counts the spend; `replays`, `judge` and the capture
- *  send through it, each logged. */
+ *  send through it, each logged. `source` reads the context's repositories, and counts its GitHub
+ *  reads. */
 interface Runner extends Behaviour {
   readonly dirs: ArmDirs;
   readonly texts: { readonly old: string; readonly new: string };
@@ -856,9 +879,50 @@ interface Runner extends Behaviour {
   readonly gateway: Gateway;
   readonly replays: Gateway;
   readonly judge: Gateway;
+  readonly source: RepoSource;
   capture(c: Case, arm: Arm): Promise<Capture>;
   readonly afterCase: string | undefined;
   readonly afterCaseFailures: string[];
+}
+
+/** The milliseconds of the phases of one case's stage, from `startedAt` (`performance.now()`), for
+ *  its line (`phaseWords`): its judge controls, each arm's capture, the context builds within them
+ *  and the GitHub reads made in those (how many, and the milliseconds one ran), its replays, its
+ *  judgements, and its result writes. */
+interface Phases {
+  readonly startedAt: number;
+  controlsMs: number;
+  readonly captureMs: Partial<Record<ArmName, number>>;
+  contextMs: number;
+  github: { readonly calls: number; readonly ms: number };
+  replaysMs: number;
+  judgeMs: number;
+  writeMs: number;
+}
+
+/** The phases of a case's stage that starts now, none of them run yet. */
+function newPhases(): Phases {
+  return {
+    startedAt: performance.now(),
+    controlsMs: 0,
+    captureMs: {},
+    contextMs: 0,
+    github: { calls: 0, ms: 0 },
+    replaysMs: 0,
+    judgeMs: 0,
+    writeMs: 0,
+  };
+}
+
+/** The seconds of `p`, as a case's line ends them: each phase, the rest, and the total so far. */
+function phaseWords(p: Phases): string {
+  const s = (ms: number) => (ms / 1000).toFixed(1);
+  const total = performance.now() - p.startedAt;
+  const arms = Object.entries(p.captureMs);
+  const captures = arms.reduce((sum, [, ms]) => sum + ms, 0);
+  const named = p.controlsMs + captures + p.replaysMs + p.judgeMs + p.writeMs;
+  const each = arms.map(([arm, ms]) => `${arm} ${s(ms)}`).join(", ") || "none";
+  return `seconds: judge controls ${s(p.controlsMs)}, captures ${s(captures)} (${each}; context ${s(p.contextMs)}; ${p.github.calls} GitHub reads, ${s(p.github.ms)}), replays ${s(p.replaysMs)}, judge ${s(p.judgeMs)}, write ${s(p.writeMs)}, other ${s(Math.max(0, total - named))}, total ${s(total)}`;
 }
 
 /** Writes one line of the command's progress. */
@@ -887,10 +951,12 @@ function readResults(b: Behaviour): Map<string, CaseResult> {
   return results;
 }
 
-/** Writes `result` whole. Returns its file. */
-function writeResult(b: Behaviour, result: CaseResult): string {
+/** Writes `result` whole, its time counted in `phases` when given. Returns its file. */
+function writeResult(b: Behaviour, result: CaseResult, phases?: Phases): string {
+  const started = performance.now();
   const file = caseResultFile(b.out, result.caseId);
   writeWhole(file, json(result));
+  if (phases !== undefined) phases.writeMs += performance.now() - started;
   return file;
 }
 
@@ -925,15 +991,21 @@ function screenUnfinished(
   return undefined;
 }
 
-/** The results of `b`'s cases and the skill's score, once its screen is finished. Throws a refusal
+/** The results of `b`'s cases that `keep` names of the skill's score, and the score, once its
+ *  screen is finished: the other cases' results are read for the score only. Throws a refusal
  *  before that. */
-function screened(b: Behaviour): { results: Map<string, CaseResult>; score: SkillScore } {
+function screened(
+  b: Behaviour,
+  keep: (score: SkillScore) => readonly (string | undefined)[]
+): { results: Map<string, CaseResult>; score: SkillScore } {
   const results = readResults(b);
   const score = scoreSkill(runRecords(results.values()));
   const unfinished = screenUnfinished(b, results, score);
   if (unfinished !== undefined) {
     throw new Refused(`the screen is not finished: ${unfinished}; run behaviour screen first`);
   }
+  const kept = new Set(keep(score));
+  for (const id of results.keys()) if (!kept.has(id)) results.delete(id);
   return { results, score };
 }
 
@@ -1032,8 +1104,10 @@ async function runRound(
   toStart: Partial<Record<ArmName, number>>,
   made: readonly Run[],
   round: number,
-  seed: string
+  seed: string,
+  phases: Phases
 ): Promise<{ runs: Run[]; budgetSpent: boolean }> {
+  const replaysStarted = performance.now();
   const replayed = await Promise.all(
     [...arms].map(async ([name, { arm, capture }]) => {
       const n = toStart[name] ?? 0;
@@ -1054,7 +1128,10 @@ async function runRound(
         : []
     )
   );
+  const judgeStarted = performance.now();
+  phases.replaysMs += judgeStarted - replaysStarted;
   const judged = replies.length === 0 ? [] : (await judgeBlind(c, replies, r.judge, seed)).judged;
+  phases.judgeMs += performance.now() - judgeStarted;
   const judgements = new Map(judged.map((j) => [`${j.arm}:${j.run}`, j]));
   let budgetSpent = false;
   const runs: Run[] = [];
@@ -1107,9 +1184,16 @@ async function runRound(
 /**
  * Runs `stage` of case `c` until score.ts's `stageOutcome` says its runs are counted or
  * unscreened, round by round, from the runs `result` holds already. Each round's runs are saved
- * when it ends. Throws Stopped, after saving, when the budget refused a call.
+ * when it ends; the stage's last state is returned unsaved, for `finishCase` to write. Each phase's
+ * time is counted in `phases`. Throws Stopped, after saving, when the budget refused a call.
  */
-async function runStage(r: Runner, c: Case, stage: Stage, result: CaseResult): Promise<CaseResult> {
+async function runStage(
+  r: Runner,
+  c: Case,
+  stage: Stage,
+  result: CaseResult,
+  phases: Phases
+): Promise<CaseResult> {
   const existing = result.stages[stage];
   if (existing !== undefined) checkSameTexts(r, c.id, stage, existing);
   let state: StageResult = existing ?? {
@@ -1123,12 +1207,15 @@ async function runStage(r: Runner, c: Case, stage: Stage, result: CaseResult): P
   };
   let spentAt = r.gateway.spend().usd;
   let current = result;
-  const save = (next: StageResult): string => {
+  const update = (next: StageResult): void => {
     const now = r.gateway.spend().usd;
     state = { ...next, usd: next.usd + now - spentAt };
     spentAt = now;
     current = { ...current, stages: { ...current.stages, [stage]: state } };
-    return writeResult(r, current);
+  };
+  const save = (next: StageResult): string => {
+    update(next);
+    return writeResult(r, current, phases);
   };
 
   const scratch = path.join(
@@ -1138,22 +1225,32 @@ async function runStage(r: Runner, c: Case, stage: Stage, result: CaseResult): P
   );
   const arms = new Map<ArmName, { arm: Arm; capture: Capture }>();
   const captures = { ...state.captures };
+  const readsBefore = r.source.reads?.() ?? { calls: 0, ms: 0 };
   for (const name of STAGE_ARMS[stage]) {
+    const started = performance.now();
     const arm = buildArm(c, name, r.dirs, scratch);
     const capture = await r.capture(c, arm);
-    arms.set(name, { arm, capture });
+    phases.captureMs[name] = performance.now() - started;
+    if (capture.made) phases.contextMs += capture.record.timings.contextMs;
+    // Only the capture reads the arm's messages: the replays and the judge need none.
+    arms.set(name, { arm: { ...arm, messages: [] }, capture });
     captures[name] = {
       bodyFile: path.relative(r.out, capture.bodyFile),
       captureDigest: capture.record.captureDigest ?? null,
       sessionDigest: c.sessionDigest,
     };
   }
+  const readsAfter = r.source.reads?.() ?? { calls: 0, ms: 0 };
+  phases.github = {
+    calls: readsAfter.calls - readsBefore.calls,
+    ms: readsAfter.ms - readsBefore.ms,
+  };
   save({ ...state, captures });
 
   for (;;) {
     const outcome = stageOutcome(state.runs, c.id, stage);
     if (outcome.state !== "running") {
-      save({ ...state, state: outcome.state });
+      update({ ...state, state: outcome.state });
       return current;
     }
     const seed = newSeed();
@@ -1165,7 +1262,8 @@ async function runStage(r: Runner, c: Case, stage: Stage, result: CaseResult): P
       outcome.toStart,
       state.runs,
       state.seeds.length + 1,
-      seed
+      seed,
+      phases
     );
     const file = save({
       ...state,
@@ -1180,13 +1278,23 @@ async function runStage(r: Runner, c: Case, stage: Stage, result: CaseResult): P
   }
 }
 
-/** Ends case `result`'s stage: records the peak memory, writes the result, runs `--after-case`,
- *  and stops the run when the peak is above MEMORY_LIMIT_BYTES. */
-async function finishCase(r: Runner, result: CaseResult, stage: Stage): Promise<void> {
+/** Ends case `result`'s stage: records the peak memory, writes the result, says the case's line
+ *  (its stage, the peak and the seconds of each phase of `phases`), runs `--after-case`, and stops
+ *  the run when the peak is above MEMORY_LIMIT_BYTES. Returns the result as written. */
+async function finishCase(
+  r: Runner,
+  result: CaseResult,
+  stage: Stage,
+  phases: Phases
+): Promise<CaseResult> {
   const peak = Math.max(r.io.peakRssBytes(), result.peakRssBytes ?? 0);
-  const file = writeResult(r, { ...result, peakRssBytes: peak });
+  const written = { ...result, peakRssBytes: peak };
+  const file = writeResult(r, written, phases);
   const what = result.dropped === null ? stageLine(result, stage) : `dropped: ${result.dropped}`;
-  say(r, `case ${result.caseId}: ${what}; peak memory ${mib(peak)} MiB; written to ${file}`);
+  say(
+    r,
+    `case ${result.caseId}: ${what}; peak memory ${mib(peak)} MiB; ${phaseWords(phases)}; written to ${file}`
+  );
   if (r.afterCase !== undefined) {
     const child = Bun.spawn(["sh", "-c", `${r.afterCase} "$1"`, "after-case", file], {
       stdin: "ignore",
@@ -1204,6 +1312,7 @@ async function finishCase(r: Runner, result: CaseResult, stage: Stage): Promise<
       `the runner's peak resident memory, ${mib(peak)} MiB, is above 1 GiB, so the run stops after case ${result.caseId}, whose results are written to ${file}`
     );
   }
+  return written;
 }
 
 /** `behaviour screen`. */
@@ -1212,7 +1321,15 @@ async function screenCommand(r: Runner): Promise<void> {
     r,
     `${r.cases.length} cases of the skill ${r.cases[0]?.skill} in ${r.casesFile}; old text ${r.texts.old}, new text ${r.texts.new}`
   );
+  // Each case's run records, read once here and kept as each case ends (only this process
+  // writes <out>/cases/), for the score that says when screening stops.
+  const records = new Map<string, RunRecord[]>();
+  for (const [id, result] of readResults(r)) records.set(id, runRecords([result]));
+  const finished = async (result: CaseResult, phases: Phases): Promise<void> => {
+    records.set(result.caseId, runRecords([await finishCase(r, result, "screen", phases)]));
+  };
   for (const c of r.cases) {
+    const phases = newPhases();
     let result = readResult(r, c.id);
     if (result !== undefined && result.dropped !== null) {
       say(r, `case ${c.id}: dropped before, skipped: ${result.dropped}`);
@@ -1223,7 +1340,7 @@ async function screenCommand(r: Runner): Promise<void> {
       continue;
     }
     if (result === undefined) {
-      const score = scoreSkill(runRecords(readResults(r).values()));
+      const score = scoreSkill([...records.values()].flat());
       if (screeningDone(score)) {
         say(
           r,
@@ -1234,26 +1351,30 @@ async function screenCommand(r: Runner): Promise<void> {
       result = newResult(c);
       if (servedModel(c.model, r.servedModels) === undefined) {
         const dropped = `${MODEL_NOT_SERVED}: its model ${c.model} is none the gateway serves (the configuration's servedModels: ${r.servedModels.join(", ") || "none"})`;
-        await finishCase(r, { ...result, dropped }, "screen");
+        await finished({ ...result, dropped }, phases);
         continue;
       }
     }
     if (result.controls === null) {
+      const controlsStarted = performance.now();
       result = await judgeTheControls(r, c, result);
+      phases.controlsMs = performance.now() - controlsStarted;
       if (result.dropped !== null) {
-        await finishCase(r, result, "screen");
+        await finished(result, phases);
         continue;
       }
-      writeResult(r, result);
+      writeResult(r, result, phases);
     }
-    await finishCase(r, await runStage(r, c, "screen", result), "screen");
+    await finished(await runStage(r, c, "screen", result, phases), phases);
   }
   say(r, "every case of the file is screened");
 }
 
 /** `behaviour confirm`. */
 async function confirmCommand(r: Runner): Promise<void> {
-  const { results, score } = screened(r);
+  const { results, score } = screened(r, (s) =>
+    s.cases.filter((each) => each.flagged).map((each) => each.caseId)
+  );
   const why = noVerdict(score);
   if (why !== undefined) {
     say(r, `no confirm runs: the skill gets no verdict: ${why}`);
@@ -1262,6 +1383,7 @@ async function confirmCommand(r: Runner): Promise<void> {
   const flagged = score.cases.filter((each) => each.flagged).map((each) => each.caseId);
   say(r, `${flagged.length} flagged cases${flagged.length === 0 ? "" : `: ${flagged.join(", ")}`}`);
   for (const id of flagged) {
+    const phases = newPhases();
     const c = r.cases.find((each) => each.id === id);
     const result = results.get(id);
     if (c === undefined || result === undefined) throw new Error(`no case ${id} in ${r.casesFile}`);
@@ -1269,13 +1391,14 @@ async function confirmCommand(r: Runner): Promise<void> {
       say(r, `case ${id}: confirmed before, skipped`);
       continue;
     }
-    await finishCase(r, await runStage(r, c, "confirm", result), "confirm");
+    await finishCase(r, await runStage(r, c, "confirm", result, phases), "confirm", phases);
   }
 }
 
 /** `behaviour control`. */
 async function controlStageCommand(r: Runner): Promise<void> {
-  const { results, score } = screened(r);
+  const phases = newPhases();
+  const { results, score } = screened(r, (s) => [s.controlCase]);
   if (score.informative < MIN_INFORMATIVE_CASES) {
     say(
       r,
@@ -1296,7 +1419,7 @@ async function controlStageCommand(r: Runner): Promise<void> {
     say(r, `case ${c.id}: control runs made before, skipped`);
     return;
   }
-  await finishCase(r, await runStage(r, c, "control", result), "control");
+  await finishCase(r, await runStage(r, c, "control", result, phases), "control", phases);
 }
 
 // `behaviour report`.
@@ -1590,7 +1713,10 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       : ["config", "key-file", "out", "old", "new", "cases"],
     BEHAVIOUR_USAGE
   );
-  const config = loadConfig(given.config);
+  // A stage command writes the cases' session text under --out; `report` writes nothing.
+  const inCheckout = report ? undefined : outRefusal(given.out);
+  if (inCheckout !== undefined) throw new Refused(inCheckout);
+  const config = configFrom(given.config);
   let cases: Case[];
   try {
     cases = loadCases(given.cases, given.old);
@@ -1644,7 +1770,8 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   }
   // Only a command given --models can make a capture, so only it needs Oh My Pi; without it every
   // capture is read back, and Oh My Pi does not run.
-  const omp = values.models === undefined ? undefined : requiredOmp(values.omp);
+  const models = values.models;
+  const omp = models === undefined ? undefined : requiredOmp(values.omp);
   const { gateway } = openGateway({
     config,
     keyFile: given["key-file"],
@@ -1656,6 +1783,7 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   const plantedLine = values["planted-line"];
   const source = values.repos === undefined ? ghSource() : localSource(values.repos);
   const hints = gatewayHints(loggedGateway(gateway, log, "hint"));
+  const texts = { old: textDigest(given.old), new: textDigest(given.new) };
   const runner: Runner = {
     ...behaviour,
     dirs: {
@@ -1663,30 +1791,33 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
       new: given.new,
       ...(plantedLine === undefined ? {} : { plantedLine }),
     },
-    texts: { old: textDigest(given.old), new: textDigest(given.new) },
+    texts,
     scratch,
     gateway,
     replays: loggedGateway(gateway, log, "replay"),
     judge: loggedGateway(gateway, log, "judge"),
-    capture: (c, arm) => {
-      const outDir = armCaptureDir(given.out, arm);
-      const files = capturePaths(outDir, c.id, arm.name);
-      if (values.models === undefined && !(existsSync(files.body) && existsSync(files.record))) {
-        throw new Error(
-          `case ${c.id} has no capture of its ${arm.name} arm in ${outDir}, and no --models is given to make one`
-        );
+    source,
+    capture: async (c, arm) => {
+      const outDir = armCaptureDir(given.out, arm, texts);
+      if (models === undefined || omp === undefined) {
+        const saved = savedCapture(capturePaths(outDir, c.id, arm.name));
+        if (saved === undefined) {
+          throw new Error(
+            `case ${c.id} has no capture of its ${arm.name} arm in ${outDir}, and no --models is given to make one`
+          );
+        }
+        return saved;
       }
       // A case runs on the served model that serves it: an Anthropic model behind another
       // gateway prefix as the served `anthropic/<id>`, so the capture finds its provider.
       const model = servedModel(c.model, config.servedModels) ?? c.model;
       return captureBody({ ...c, model }, arm, {
-        // Undefined only without --models, where the capture is read back and Oh My Pi not run.
-        omp: omp ?? "",
+        omp,
         outDir,
         scratchDir: path.join(scratch, "captures"),
         cacheDir: values["cache-dir"] ?? path.join(tmpdir(), "skill-cuts-cache"),
         source,
-        models: values.models ?? "",
+        models,
         hints,
         ...(values["hint-model"] === undefined ? {} : { hintModel: values["hint-model"] }),
         configFiles: values["omp-config"] ?? [],
@@ -1753,6 +1884,9 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
     ["config", "key-file", "skill", "tasks", "host", "out"],
     LOAD_USAGE
   );
+  // The load test writes the tasks' session text under --out.
+  const inCheckout = outRefusal(given.out);
+  if (inCheckout !== undefined) throw new Refused(inCheckout);
   const host = Host.safeParse(given.host);
   if (!host.success) throw new Refused(`--host ${given.host} is no host: omp or claude`);
   const thinking = Thinking.safeParse(values.thinking ?? LOAD_THINKING[host.data]);
@@ -1769,7 +1903,7 @@ async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> 
   if (!statSync(given.skill, { throwIfNoEntry: false })?.isDirectory()) {
     throw new Refused(`--skill ${given.skill} is not a directory`);
   }
-  const config = loadConfig(given.config);
+  const config = configFrom(given.config);
   const { gateway } = openGateway({
     config,
     keyFile: given["key-file"],

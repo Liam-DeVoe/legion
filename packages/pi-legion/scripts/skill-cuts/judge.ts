@@ -30,9 +30,11 @@
  *
  * `judgeBlind` shuffles the replies of all arms of a case with a seed (`blindOrder`), names each by
  * an opaque id that depends on the seed and its place alone, and starts their judgements in that
- * order. The caller records the seed, so the order and the ids can be made again. `judgeControls`
- * runs a case's three controls (CONTROLS): its real step must pass, and both its violating step
- * (written by the case reader before any run) and the reply NOTHING_REPLY must fail.
+ * order: the first alone, then the rest at once, so that they read the case's part from the cache
+ * the first one wrote rather than each write it. The caller records the seed, so the order and the
+ * ids can be made again. `judgeControls` runs a case's three controls (CONTROLS), the real step's
+ * first and alone in the same way: its real step must pass, and both its violating step (written
+ * by the case reader before any run) and the reply NOTHING_REPLY must fail.
  */
 import { createHash, randomBytes } from "node:crypto";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -211,18 +213,29 @@ export interface JudgeInput {
   readonly reply: string;
 }
 
-/** The request body of one judgement: the case's part first, marked for the prompt cache, then the
- *  step. */
-export function judgeBody(input: JudgeInput): MessagesBody {
-  const shared = [
+/** The case's part of a judgement's request: its criterion, its line and the messages before the
+ *  step, the same text for every reply of the case. */
+function sharedText(input: Omit<JudgeInput, "reply">): string {
+  return [
     `<criterion>\nPass: ${input.criterion.pass}\nFail: ${input.criterion.fail}\n</criterion>`,
     `<line>\n${input.line}\n</line>`,
     `<before>\n${input.before}\n</before>`,
   ].join("\n\n");
+}
+
+/** The request body of the judgement of `reply` whose case's part is `shared` (`sharedText`):
+ *  that part first, marked for the prompt cache, then the step. */
+function bodyOf(shared: string, reply: string): MessagesBody {
   return promptBody(loadPrompt("judge"), [
     { text: shared, cache: true },
-    { text: `<step>\n${input.reply}\n</step>` },
+    { text: `<step>\n${reply}\n</step>` },
   ]);
+}
+
+/** The request body of one judgement: the case's part first, marked for the prompt cache, then the
+ *  step. */
+export function judgeBody(input: JudgeInput): MessagesBody {
+  return bodyOf(sharedText(input), input.reply);
 }
 
 /** A judgement: its verdict, null when no judgement parsed or the call failed; the judge's reason
@@ -233,11 +246,11 @@ export interface Judged {
   readonly spent: readonly Spent[];
 }
 
-/** The judgement of one reply. A judgement that does not parse is asked for again, JUDGE_TRIES
- *  times in all, then gives the verdict null. Rejects when a send does. */
-export async function judgeReply(input: JudgeInput, gateway: Gateway): Promise<Judged> {
+/** The judgement that `body` asks for. A judgement that does not parse is asked for again,
+ *  JUDGE_TRIES times in all, then gives the verdict null. Rejects when a send does. */
+async function askJudge(body: MessagesBody, gateway: Gateway): Promise<Judged> {
   const asked = await ask(
-    judgeBody(input),
+    body,
     (text) => parsedAnswer(Judgement, answerJson(text)),
     gateway,
     JUDGE_TRIES
@@ -252,23 +265,26 @@ export async function judgeReply(input: JudgeInput, gateway: Gateway): Promise<J
   return { verdict: asked.answer.verdict, reason: asked.answer.reason, spent: asked.spent };
 }
 
-/** The part of a judgement every reply of case `c` shares. */
-function caseInput(c: Case): Omit<JudgeInput, "reply"> {
-  return { criterion: c.criterion, line: c.line.text, before: beforeText(c) };
+/** The judgement of one reply. A judgement that does not parse is asked for again, JUDGE_TRIES
+ *  times in all, then gives the verdict null. Rejects when a send does. */
+export function judgeReply(input: JudgeInput, gateway: Gateway): Promise<Judged> {
+  return askJudge(judgeBody(input), gateway);
 }
 
 /** A case's judge controls (CONTROLS): each one's judgement, the controls whose verdict is not the
- *  one wanted (a null verdict is not), in CONTROLS' order, and whether none is. Rejects when a send
- *  does. */
+ *  one wanted (a null verdict is not), in CONTROLS' order, and whether none is. The real step is
+ *  judged alone first and the other two after it, so they read the case's part from the cache it
+ *  wrote. Rejects when a send does. */
 export async function judgeControls(
   c: Case,
   gateway: Gateway
 ): Promise<Record<ControlName, Judged> & { failed: ControlName[]; hold: boolean }> {
-  const shared = caseInput(c);
-  const [realStep, violating, nothing] = await Promise.all([
-    judgeReply({ ...shared, reply: stepText(c.realStep.content ?? []) }, gateway),
-    judgeReply({ ...shared, reply: stepText(c.violatingStep.content ?? []) }, gateway),
-    judgeReply({ ...shared, reply: stepText([{ type: "text", text: NOTHING_REPLY }]) }, gateway),
+  const shared = sharedText({ criterion: c.criterion, line: c.line.text, before: beforeText(c) });
+  const judge = (content: readonly Block[]) => askJudge(bodyOf(shared, stepText(content)), gateway);
+  const realStep = await judge(c.realStep.content ?? []);
+  const [violating, nothing] = await Promise.all([
+    judge(c.violatingStep.content ?? []),
+    judge([{ type: "text", text: NOTHING_REPLY }]),
   ]);
   const judged: Record<ControlName, Judged> = { realStep, violating, nothing };
   const failed = ControlName.options.filter(
@@ -317,18 +333,22 @@ export interface BlindJudged extends Judged {
 }
 
 /** The judgements of `replies`, the replies of all arms of case `c`, in the order `blindOrder`
- *  gives them under `seed`. A call that fails gives the verdict null with its reason. */
+ *  gives them under `seed`: the first alone, then the rest at once in that order, so they read the
+ *  case's part from the cache the first wrote. A call that fails gives the verdict null with its
+ *  reason. */
 export async function judgeBlind(
   c: Case,
   replies: readonly ArmReply[],
   gateway: Gateway,
   seed: string
 ): Promise<{ seed: string; judged: BlindJudged[] }> {
-  const shared = caseInput(c);
+  const shared = sharedText({ criterion: c.criterion, line: c.line.text, before: beforeText(c) });
   const order = blindOrder(replies, seed);
-  const settled = await Promise.allSettled(
-    order.map(({ item }) => judgeReply({ ...shared, reply: stepText(item.content) }, gateway))
-  );
+  const judge = ({ item }: { item: ArmReply }) =>
+    askJudge(bodyOf(shared, stepText(item.content)), gateway);
+  const [head, ...rest] = order;
+  const first = head === undefined ? [] : await Promise.allSettled([judge(head)]);
+  const settled = [...first, ...(await Promise.allSettled(rest.map(judge)))];
   const judged = order.map(({ id, item }, place): BlindJudged => {
     const outcome = settled[place];
     const named = { id, arm: item.arm, run: item.run };

@@ -44,8 +44,10 @@ skill's cases (`cases.ts`), one JSON object per line.
   (exit 2): it gets no verdict, with the reason `too few sessions on served models` and its served
   and total counts, and the walk of the cut's ranking goes on to the next skill.
 - `confirm`: 40 fresh runs of old and new for each flagged case.
-- `control`: 40 runs of `minus` (old without the case's line, or without `--planted-line`) and 40
-  fresh runs of old, on the skill's control case.
+- `control`: 40 runs of `minus` (old without each line of the case's file that is the case's line,
+  trimmed, or without each line that is `--planted-line`; a rule written twice is still the rule,
+  so every copy goes; a link in the old directory is copied as the file it names) and 40 fresh
+  runs of old, on the skill's control case.
 - `report`: each case's passes per arm and stage, the skill's verdict and its reason (`keeps`
   prints as "no loss detected by the registered rule"), the drops per judge control, an estimate
   of the procedure's false-loss chance at the cases run (exact binomial under identical old and

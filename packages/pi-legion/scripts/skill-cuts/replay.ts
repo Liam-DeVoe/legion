@@ -196,18 +196,19 @@ function answered(
   };
 }
 
-/** Sends `body` for `arm`, answers its skill reads, and returns the judged step. Rejects when a
- *  send does (the gateway's `BudgetSpent` among them). */
-export async function replayOnce(
-  body: RequestBody,
+/** Sends `sent` for `arm`: the body with its cache breakpoint as `replayOnce` makes it (see the
+ *  file's header); answers its skill reads, and returns the judged step. `sent` is never changed,
+ *  so runs at once can share it. */
+async function replaySent(
+  sent: RequestBody,
   arm: Arm,
   gateway: Gateway,
-  { maxSkillRounds = MAX_SKILL_ROUNDS, headers }: ReplayOptions = {}
+  { maxSkillRounds = MAX_SKILL_ROUNDS, headers }: ReplayOptions
 ): Promise<Replayed> {
-  let sent: RequestBody = isResponsesBody(body) ? body : withCacheBreakpoint(body);
+  let body = sent;
   const usage: Spent[] = [];
   for (let rounds = 0; ; rounds += 1) {
-    const reply = await gateway.send(sent, { headers });
+    const reply = await gateway.send(body, { headers });
     usage.push(reply.spent);
     const calls = toolCalls(reply.message.content);
     const reads = calls.map((call) => skillRead(call, arm));
@@ -218,15 +219,28 @@ export async function replayOnce(
     ) {
       return { step: reply, rounds, usage };
     }
-    sent = answered(sent, reply.message.content, reads, arm);
+    body = answered(body, reply.message.content, reads, arm);
   }
+}
+
+/** Sends `body` for `arm`, answers its skill reads, and returns the judged step. Rejects when a
+ *  send does (the gateway's `BudgetSpent` among them). */
+export function replayOnce(
+  body: RequestBody,
+  arm: Arm,
+  gateway: Gateway,
+  options: ReplayOptions = {}
+): Promise<Replayed> {
+  const sent = isResponsesBody(body) ? body : withCacheBreakpoint(body);
+  return replaySent(sent, arm, gateway, options);
 }
 
 /**
  * `n` replays of `body` for `arm`, each as `replayOnce`, each one's outcome kept whether it was a
  * step or a failure, in the order started. The first goes alone and the rest after it, all at
  * once (the gateway bounds how many are in flight): the bodies are the same, so the cache the
- * first one writes serves the others' shared prefix.
+ * first one writes serves the others' shared prefix. The body to send is made once for all `n`,
+ * so the runs that wait for a place hold no copy of it.
  */
 export async function replay(
   body: RequestBody,
@@ -238,9 +252,10 @@ export async function replay(
   if (!Number.isInteger(n) || n < 1) {
     throw new Error(`a replay runs a whole number of times, 1 or more, not ${n}`);
   }
-  const first = await Promise.allSettled([replayOnce(body, arm, gateway, options)]);
+  const sent = isResponsesBody(body) ? body : withCacheBreakpoint(body);
+  const first = await Promise.allSettled([replaySent(sent, arm, gateway, options)]);
   const rest = await Promise.allSettled(
-    Array.from({ length: n - 1 }, () => replayOnce(body, arm, gateway, options))
+    Array.from({ length: n - 1 }, () => replaySent(sent, arm, gateway, options))
   );
   return [...first, ...rest];
 }

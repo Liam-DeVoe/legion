@@ -100,6 +100,22 @@ test("a case of F1 loads", () => {
   expect(cases[0]?.messages[2]?.content?.[0]?.text).toStartWith("[Skill file: /");
 });
 
+test("a case file is read line by line: a case longer than one read, and the line numbers after it", () => {
+  const base = alphaDir("base-long");
+  // A user message of more than 2 MiB, of characters of 2, 3 and 4 bytes, so a line spans reads.
+  const long = f1Case("c-long");
+  const words = "é ✓ 𝄞 ".repeat(Math.ceil((5 * 2 ** 19) / 14));
+  long.messages = [{ role: "user", content: [{ type: "text", text: words }] }, ...long.messages];
+  long.skillReads = long.skillReads.map((index) => index + 1);
+  const file = path.join(scratch, "long.jsonl");
+  writeFileSync(file, `${JSON.stringify(long)}\n\nnot json\n${JSON.stringify(f1Case("c2"))}`);
+  expect(() => loadCases(file, base)).toThrow(`refused cases:\n${file}:3 is not JSON: `);
+  writeFileSync(file, `${JSON.stringify(long)}\r\n\n${JSON.stringify(f1Case("c2"))}`);
+  const cases = loadCases(file, base);
+  expect(cases.map((c) => c.id)).toEqual(["c-long", "c2"]);
+  expect(cases[0]?.messages[0]?.content?.[0]?.text).toBe(words);
+});
+
 test("a case with the builder's evidence loads, and an evidence entry with no source is refused", () => {
   const base = alphaDir("base-evidence");
   const evidence = [

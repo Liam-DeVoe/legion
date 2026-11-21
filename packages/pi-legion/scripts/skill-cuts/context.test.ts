@@ -689,3 +689,37 @@ test("a blob a batch does not give whole, binary or no UTF-8, is read alone over
     expect([...readFileSync(at)]).toEqual([...file.bytes]);
   }
 });
+
+test("a tree read that failed is not kept: the next context at that commit reads it again, and the source counts each gh call", async () => {
+  const bytes = new TextEncoder().encode("---\nname: again\ndescription: Made-up again.\n---\n");
+  const inner = standinRepoGh("gh-again-inner", [{ path: "skills/again/SKILL.md", bytes }]);
+  const root = path.join(dir, "again");
+  const failedOnce = path.join(root, "tree-failed-once");
+  // A gh whose first tree read fails for good (a 404); every other call goes to the stand-in.
+  writeTree(root, {
+    gh: `#!/bin/sh
+case "$*" in *git/trees/*)
+  if [ ! -e ${JSON.stringify(failedOnce)} ]; then
+    : > ${JSON.stringify(failedOnce)}
+    echo 'gh: Not Found (HTTP 404)' >&2
+    exit 1
+  fi;;
+esac
+exec ${JSON.stringify(inner.gh)} "$@"
+`,
+  });
+  chmodSync(path.join(root, "gh"), 0o755);
+  const { c, arm } = batchCase(root, ["skills/again"]);
+  const source = ghSource(path.join(root, "gh"));
+  const options = { source, cacheDir: path.join(root, "cache"), root: path.join(root, "scratch") };
+  const first = await buildContext(c, arm, options).then(
+    () => "built",
+    (error: unknown) => String(error)
+  );
+  expect(first).toContain("gh: Not Found (HTTP 404)");
+  const built = await buildContext(c, arm, options);
+  expect([...readFileSync(path.join(built.skillsDir, "again/SKILL.md"))]).toEqual([...bytes]);
+  expect(callsOf(inner.log)).toEqual({ tree: 1, graphql: 1, blob: 0, other: 0 });
+  // The failed tree read, the tree read again and one GraphQL batch.
+  expect(source.reads?.().calls).toBe(3);
+});

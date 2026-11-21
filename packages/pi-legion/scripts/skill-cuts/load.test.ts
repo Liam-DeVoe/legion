@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -9,8 +9,10 @@ import { skillHeaderPath } from "../skill-scenarios/transcript";
 import { armPromptBlocks, type CaptureRecord, renamedListingBlocks, skillListing } from "./capture";
 import { pathHash } from "./cases";
 import { type CliIo, main } from "./cli";
+import { localSource } from "./context";
 import {
   ContentBlock,
+  createGateway,
   ReplyMessage,
   responseMessage,
   streamedMessage,
@@ -20,10 +22,14 @@ import {
   claudeListing,
   firstMessageLoad,
   type Host,
+  LOAD_MODEL,
   LoadRun,
+  LoadStopped,
   loadCapturePaths,
   loadRunFile,
   renamedSkill,
+  runLoad,
+  skillName,
   skillOutcome,
   type TestedSkill,
   taskOutcome,
@@ -757,6 +763,16 @@ describe("skill-cuts load with saved captures", () => {
     expect(ran.stdout).toMatch(
       /task need-1 \(need, from a session\): loaded in 2 of 3 runs \(.*\): no fault/
     );
+    // Each task's line ends with the seconds of each phase; its capture is read back, and no
+    // GitHub read is made.
+    for (const id of ["need-1", "near-1"]) {
+      expect(ran.stdout).toMatch(
+        new RegExp(
+          `^load: task ${id} \\([^)]*\\): loaded in [^\\n]*; seconds: capture \\d+\\.\\d \\(context 0\\.0; 0 GitHub reads, 0\\.0\\), runs \\d+\\.\\d, write \\d+\\.\\d, other \\d+\\.\\d, total \\d+\\.\\d$`,
+          "m"
+        )
+      );
+    }
     expect(ran.stdout).toMatch(
       /task near-1 \(near-miss, written\): loaded in 2 of 3 runs \(.*\): a fault: a near-miss task loads it in more than 1 of 3 runs/
     );
@@ -895,6 +911,117 @@ describe("skill-cuts load with saved captures", () => {
     );
     expect(recorder.requests.length).toBe(before);
   });
+
+  test("a task whose capture and runs are saved but which the summary no longer lists is refused under another text", async () => {
+    const before = recorder.requests.length;
+    // A run of need-1 alone: its summary then lists need-1 only.
+    const alone = path.join(dir, "need-alone.jsonl");
+    writeFileSync(alone, `${readFileSync(tasks, "utf8").split("\n")[0]}\n`);
+    const only = await cli(args.map((arg) => (arg === tasks ? alone : arg)));
+    expect({ code: only.code, stderr: only.stderr }).toEqual({ code: 0, stderr: "" });
+    // near-1 under a new text: its saved capture and runs were made for the old one.
+    const changed = path.join(dir, "near-changed.jsonl");
+    writeFileSync(
+      changed,
+      `${JSON.stringify({ id: "near-1", text: `${NEAR} Twice.`, label: "near-miss", source: "written" })}\n`
+    );
+    const refused = await cli(args.map((arg) => (arg === tasks ? changed : arg)));
+    expect(refused.code).toBe(2);
+    expect(refused.stderr).toContain(
+      `${out} holds a capture or runs of task near-1, which its summary does not list`
+    );
+    expect(recorder.requests.length).toBe(before);
+  });
+});
+
+test("the skill's name is read as Oh My Pi reads its frontmatter: a value that holds ': ' does not stop the read", () => {
+  const named = path.join(scratch, "colon", "folder");
+  writeTree(named, {
+    "SKILL.md": "---\nname: lookup\ndescription: Use when: you need a lookup\n---\n\n# Lookup\n",
+  });
+  expect(skillName(named)).toBe("lookup");
+  const unnamed = path.join(scratch, "colon", "unnamed");
+  writeTree(unnamed, { "SKILL.md": "---\ndescription: Use when: you need a lookup\n---\n" });
+  expect(skillName(unnamed)).toBe("unnamed");
+});
+
+describe("skill-cuts load refuses or stops on its own rules", () => {
+  test("an openai/<id> model on Oh My Pi with no --hint-model and no saved capture is refused before any model call", async () => {
+    const dir = path.join(scratch, "openai-no-hint");
+    const { common } = hostInputs(dir);
+    const profile = path.join(dir, "profile.json");
+    writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+    const before = recorder.requests.length;
+    const ran = await cli([
+      "load",
+      ...common,
+      ...["--host", "omp", "--profile", profile, "--model", "openai/gpt-6.1-sol"],
+    ]);
+    expect(ran.code).toBe(2);
+    expect(ran.stderr).toContain(
+      "--model openai/gpt-6.1-sol is given with no --hint-model, so the hint model is openai/gpt-6.1-sol"
+    );
+    expect(recorder.requests.length).toBe(before);
+  });
+
+  test("a task that ends above the memory limit stops the test, the message naming that limit", async () => {
+    const dir = path.join(scratch, "memory");
+    const made = setup(dir);
+    const skill = path.join(dir, "alpha");
+    writeTree(skill, { "SKILL.md": ALPHA_SKILL, "references/x.md": ALPHA_X });
+    const tasks = path.join(dir, "tasks.jsonl");
+    const task = { id: "need-1", text: NEED, label: "need", source: "written" };
+    writeFileSync(tasks, `${JSON.stringify(task)}\n`);
+    const profile = path.join(dir, "profile.json");
+    writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+    const out = path.join(dir, "out");
+    const files = loadCapturePaths(out, "omp", "need-1");
+    writeTree(path.dirname(files.body), {
+      [path.basename(files.body)]: JSON.stringify({
+        ...F2,
+        messages: [{ role: "user", content: [{ type: "text", text: NEED }] }],
+      }),
+      [path.basename(files.record)]: JSON.stringify({
+        listing: [{ name: "alpha", hint: "Use for the alpha checklist." }],
+        requestHeaders: { "anthropic-version": "2023-06-01" },
+        hintCalls: [],
+      }),
+    });
+    answer = () => TEXT;
+    const stopped = await runLoad({
+      io: { out: () => {}, err: () => {}, peakRssBytes: () => 3 * 2 ** 20 },
+      host: "omp",
+      skillDir: skill,
+      skillDigest: "a-made-up-digest",
+      tasksFile: tasks,
+      profileFile: profile,
+      runs: 1,
+      out,
+      model: LOAD_MODEL,
+      thinking: "off",
+      gateway: createGateway({
+        baseUrl: recorder.url,
+        keyFile: made.keyFile,
+        concurrency: 2,
+        timeoutMs: 60_000,
+      }),
+      hints: async () => {
+        throw new Error("no hint is written here");
+      },
+      source: localSource(dir),
+      scratch: path.join(dir, "scratch"),
+      cacheDir: path.join(dir, "cache"),
+      omp: "",
+      configFiles: [],
+      claude: "claude",
+      requestLog: path.join(dir, "requests.jsonl"),
+      memoryLimitBytes: 2 ** 20,
+    }).catch((caught: unknown) => caught);
+    expect(stopped).toBeInstanceOf(LoadStopped);
+    expect(String(stopped)).toContain(
+      "the runner's peak resident memory, 3 MiB, is above its limit of 1 MiB, so the test stops after task need-1"
+    );
+  });
 });
 
 /** Made-up repositories (skills alpha, beta and gamma), the tested skill's `tested` files (alpha's
@@ -988,6 +1115,35 @@ describe.skipIf(omp === undefined)("skill-cuts load on the pinned Oh My Pi", () 
       expect(ran.stdout).toContain(
         "no verdict: R6's rule is of 3 runs a task, and this test runs 1"
       );
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  test(
+    "a hint call the budget refuses stops the test at once (exit 3): the capture ends with the gateway's BudgetSpent, not a wait for the hint",
+    async () => {
+      const dir = path.join(scratch, "omp-budget");
+      const { out, common } = hostInputs(dir);
+      const models = path.join(dir, "models.yml");
+      writeFileSync(models, ANTHROPIC_MODELS);
+      const profile = path.join(dir, "profile.json");
+      writeFileSync(profile, JSON.stringify(BETA_PROFILE));
+      const started = performance.now();
+      const ran = await cli([
+        "load",
+        ...common,
+        ...["--host", "omp", "--profile", profile, "--omp", String(omp), "--models", models],
+        ...["--budget-usd", "0"],
+      ]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({
+        code: 3,
+        stderr:
+          "skill-cuts: stopped: the budget is spent, so no new model call starts, and task need-1 has no capture; " +
+          `the runs so far are saved under ${out}\n`,
+      });
+      // Well within the 180 s the hint run's turn waits for a hint it is owed.
+      expect(performance.now() - started).toBeLessThan(120_000);
+      expect(existsSync(loadCapturePaths(out, "omp", "need-1").body)).toBe(false);
     },
     HOST_ROW_TIMEOUT_MS
   );

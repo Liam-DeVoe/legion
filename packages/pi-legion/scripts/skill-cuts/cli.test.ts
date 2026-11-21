@@ -16,6 +16,7 @@ import {
   lossChance,
   main,
   ompBinary,
+  textDigest,
 } from "./cli";
 import { loadConfig } from "./config";
 import { countSql } from "./countsql";
@@ -627,6 +628,7 @@ function recordCaptures(
   const f2 = readFileSync(F2, "utf8");
   const f8 = readFileSync(F8, "utf8");
   const dirs = { old: s.old, new: s.new, ...(plantedLine === undefined ? {} : { plantedLine }) };
+  const texts = { old: textDigest(s.old), new: textDigest(s.new) };
   for (const c of s.cases) {
     const responses = c.model.startsWith("openai/");
     for (const name of arms) {
@@ -643,7 +645,7 @@ function recordCaptures(
         if (name === "none") body.messages = [body.messages[0]];
         else body.messages[2].content[0].content[0].text = read;
       }
-      const files = capturePaths(armCaptureDir(out, arm), c.id, name);
+      const files = capturePaths(armCaptureDir(out, arm, texts), c.id, name);
       mkdirSync(path.dirname(files.body), { recursive: true });
       writeFileSync(files.body, JSON.stringify(body));
       writeFileSync(
@@ -901,8 +903,21 @@ describe("behaviour", () => {
     expect(early.stderr).toContain("the screen is not finished: case c04 is not screened yet");
 
     let from = recorder.requests.length;
-    expect((await cli(behaviour("screen", s))).code).toBe(0);
+    const screen = await cli(behaviour("screen", s));
+    expect(screen.code).toBe(0);
     expect(requestsSince(from)).toHaveLength(2 * 63);
+    // Each case's line ends with the seconds of each of its phases; its captures are read back,
+    // and no GitHub read is made.
+    const sec = "\\d+\\.\\d";
+    const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    for (const id of ["c04", "c05"]) {
+      expect(screen.stdout).toMatch(
+        new RegExp(
+          `^behaviour screen: case ${id}: screen: [^\\n]*; peak memory \\d+ MiB; seconds: judge controls ${sec}, captures ${sec} \\(old ${sec}, new ${sec}, none ${sec}; context 0\\.0; 0 GitHub reads, 0\\.0\\), replays ${sec}, judge ${sec}, write ${sec}, other ${sec}, total ${sec}; written to ${escaped(caseResultFile(s.out, id))}$`,
+          "m"
+        )
+      );
+    }
     const c04 = readFileSync(caseResultFile(s.out, "c04"), "utf8");
 
     from = recorder.requests.length;
@@ -1377,4 +1392,65 @@ describe("behaviour", () => {
     expect(point).toBeLessThan(0.21);
     expect(() => lossChance({ old: 0, cut: 0, none: 0.1 })).toThrow("no case is informative");
   });
+});
+
+describe("refusals before any model call", () => {
+  test("a --config that is not a configuration is refused (exit 2) by read, control, behaviour and load", async () => {
+    const { keyFile } = setup();
+    const bad = path.join(scratch, "bad-skill-cuts.json");
+    writeFileSync(bad, "{ not json");
+    const input = path.join(scratch, "bad-config-in.json");
+    writeFileSync(
+      input,
+      JSON.stringify({ skill: "alpha", files: [{ path: "SKILL.md", text: SKILL_MD }] })
+    );
+    const s = scenario("bad-config", LOSS_SKILL(), [{ id: "c04" }]);
+    const tasks = path.join(s.dir, "tasks.jsonl");
+    writeFileSync(tasks, "");
+    const from = recorder.requests.length;
+    for (const args of [
+      ["read", "--prompt", "attack", "--in", input, "--out", path.join(s.dir, "read.json")],
+      ["control", "attack", "--in", input, "--out", path.join(s.dir, "control.json")],
+      [
+        "behaviour",
+        "screen",
+        ...["--out", s.out, "--old", s.old, "--new", s.new, "--cases", s.casesFile],
+      ],
+      ["load", "--skill", s.old, "--tasks", tasks, "--host", "omp", "--out", s.out],
+    ]) {
+      const ran = await cli([...args, "--config", bad, "--key-file", keyFile]);
+      expect({ command: args[0], code: ran.code }).toEqual({ command: args[0], code: 2 });
+      expect(ran.stderr).toContain(`skill-cuts: the configuration ${bad} is not JSON`);
+    }
+    expect(requestsSince(from)).toHaveLength(0);
+  }, 60_000);
+
+  test("behaviour and load refuse an --out inside a git or jj checkout (exit 2), since they write session text there", async () => {
+    const { config, keyFile } = setup();
+    const s = scenario("in-checkout", LOSS_SKILL(), [{ id: "c04" }]);
+    recordCaptures(s, ["old", "new", "none"]);
+    answer = behaviourStandIn;
+    const tasks = path.join(s.dir, "tasks.jsonl");
+    writeFileSync(tasks, "");
+    const from = recorder.requests.length;
+    for (const marker of [".git", ".jj"]) {
+      const checkout = path.join(s.dir, `checkout${marker}`);
+      mkdirSync(path.join(checkout, marker), { recursive: true });
+      const out = path.join(checkout, "results", "out");
+      for (const args of [
+        ["behaviour", "screen", "--old", s.old, "--new", s.new, "--cases", s.casesFile],
+        ["load", "--skill", s.old, "--tasks", tasks, "--host", "omp"],
+      ]) {
+        const ran = await cli([...args, "--config", config, "--key-file", keyFile, "--out", out]);
+        expect({ command: args[0], code: ran.code }).toEqual({ command: args[0], code: 2 });
+        expect(ran.stderr).toContain(`is inside the checkout ${checkout}`);
+        expect(existsSync(out)).toBe(false);
+      }
+    }
+    expect(requestsSince(from)).toHaveLength(0);
+    // `report` writes nothing, so it reads an --out inside a checkout.
+    const inCheckout = path.join(s.dir, "checkout.git", "results", "out");
+    const reported = await cli(report(s).map((arg) => (arg === s.out ? inCheckout : arg)));
+    expect({ code: reported.code, stderr: reported.stderr }).toEqual({ code: 0, stderr: "" });
+  }, 60_000);
 });

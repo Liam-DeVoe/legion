@@ -490,6 +490,77 @@ test("bounds the calls in flight", async () => {
   expect(most).toBe(2);
 });
 
+test("makes a body's text only once its call has a place, and a call the budget refuses makes none", async () => {
+  // Each body's text is made by its toJSON, which notes the body; the JSON sent is BODY's.
+  const texts: string[] = [];
+  const noted = (name: string): MessagesBody => ({
+    ...BODY,
+    toJSON: () => {
+      texts.push(name);
+      return BODY;
+    },
+  });
+  const releases: (() => void)[] = [];
+  let arrived: (() => void) | undefined;
+  const { gateway, sent } = world(
+    async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      releases.push(resolve);
+      arrived?.();
+      await promise;
+      return f5("skill-read");
+    },
+    { concurrency: 1 }
+  );
+  const until = async (calls: number) => {
+    while (releases.length < calls) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      arrived = resolve;
+      await promise;
+    }
+  };
+  const both = Promise.all([gateway.send(noted("first")), gateway.send(noted("second"))]);
+  await until(1);
+  // The second call waits for the one place: its text is not made yet.
+  expect(texts).toEqual(["first"]);
+  releases[0]?.();
+  await until(2);
+  expect(texts).toEqual(["first", "second"]);
+  releases[1]?.();
+  await both;
+  expect(sent.map((one) => one.body)).toEqual([BODY, BODY]);
+
+  const spent = world(() => f5("skill-read"), { budgetUsd: 0.02 });
+  await spent.gateway.send(BODY);
+  const refused = await spent.gateway.send(noted("refused")).catch((caught: unknown) => caught);
+  expect(refused).toBeInstanceOf(BudgetSpent);
+  expect(texts).toEqual(["first", "second"]);
+});
+
+test("postMessages keeps the status of an answer whose body fails after its headers", async () => {
+  const failed = await postMessages({
+    url: "http://gateway.test",
+    key: async () => fixtureSecret("gw"),
+    body: "{}",
+    fetch: async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.error(new Error("the made-up connection was reset"));
+          },
+        }),
+        { status: 503 }
+      ),
+    sleep: async () => {},
+    tries: 2,
+    timeoutMs: 5_000,
+    accept: (text) => text,
+  }).catch((caught: unknown) => caught);
+  expect(failed).toBeInstanceOf(MessagesApiError);
+  expect(failed).toMatchObject({ status: 503 });
+  expect(String(failed)).toContain("the made-up connection was reset, on each of 2 tries");
+});
+
 test("the key file's text is in no error, log line or thrown message", async () => {
   const key = fixtureSecret("gw");
   const keyFile = keyFileHolding(key);

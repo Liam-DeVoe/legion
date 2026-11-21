@@ -372,12 +372,14 @@ export interface CaptureRecord {
   };
 }
 
-/** A saved capture: the body, its record, and their files. */
+/** A saved capture: the body, its record, and their files; `made` is true when this call made it,
+ *  false when it read a saved one back. */
 export interface Capture {
   readonly body: RequestBody;
   readonly record: CaptureRecord;
   readonly bodyFile: string;
   readonly recordFile: string;
+  readonly made: boolean;
 }
 
 /** A hint in the runner's cache. */
@@ -399,6 +401,30 @@ export function capturePaths(
 ): { readonly body: string; readonly record: string } {
   const stem = path.join(outDir, `${encodeURIComponent(caseId)}.${arm}`);
   return { body: `${stem}.body.json`, record: `${stem}.capture.json` };
+}
+
+/** The capture saved at `files` (`capturePaths`), read back, or undefined when either file is
+ *  missing. */
+export function savedCapture(files: {
+  readonly body: string;
+  readonly record: string;
+}): Capture | undefined {
+  let record: string;
+  let body: string;
+  try {
+    record = readFileSync(files.record, "utf8");
+    body = readFileSync(files.body, "utf8");
+  } catch (error) {
+    if (Reflect.get(Object(error), "code") === "ENOENT") return undefined;
+    throw error;
+  }
+  return {
+    body: JSON.parse(body) as RequestBody,
+    record: JSON.parse(record) as CaptureRecord,
+    bodyFile: files.body,
+    recordFile: files.record,
+    made: false,
+  };
 }
 
 /** The texts of a body's system prompt, in order: a Messages body's `system` blocks; a Responses
@@ -668,8 +694,9 @@ export type CaptureCase = Pick<
 
 /**
  * Captures the request body of `c`'s arm `arm`, or reads back the capture saved already. Throws
- * when Oh My Pi fails or sends no turn, when a hint cannot be written, or when the body does not
- * list exactly the arm's installed skills under their hints.
+ * when Oh My Pi fails or sends no turn, when a hint cannot be written (the error `options.hints`
+ * threw, as it is, the moment it throws: the gateway's BudgetSpent stays one), or when the body
+ * does not list exactly the arm's installed skills under their hints.
  */
 export async function captureBody(
   c: CaptureCase,
@@ -681,14 +708,8 @@ export async function captureBody(
   const pane = role !== undefined && role.role !== "controller" ? role : undefined;
   const issue = pane?.isRoot === true ? CAPTURE_TREE : CAPTURE_ISSUE;
   const files = capturePaths(options.outDir, c.id, arm.name);
-  if (existsSync(files.body) && existsSync(files.record)) {
-    return {
-      body: JSON.parse(readFileSync(files.body, "utf8")) as RequestBody,
-      record: JSON.parse(readFileSync(files.record, "utf8")) as CaptureRecord,
-      bodyFile: files.body,
-      recordFile: files.record,
-    };
-  }
+  const saved = savedCapture(files);
+  if (saved !== undefined) return saved;
   const started = performance.now();
   const model = qualified(c.model);
   const hintModel = qualified(options.hintModel ?? c.model);
@@ -754,6 +775,11 @@ export async function captureBody(
   const otherRequests: CaptureRecord["otherRequests"][number][] = [];
   const turns: { readonly body: string; readonly headers: Record<string, string> }[] = [];
   let hintRun = false;
+  // The first error a hint write gave. It ends the capture at once as itself (a BudgetSpent stays
+  // one), so that neither Oh My Pi nor the hint wait is blamed for it: the turn waits no more and
+  // the run in flight (`ompRun`) is ended.
+  let hintFailure: { readonly error: unknown } | undefined;
+  let ompRun: { kill(signal: "SIGKILL"): void } | undefined;
   const route = async (request: RecordedRequest): Promise<Response | undefined> => {
     // The stand-in daemon: a made-up registration and its ready, and an empty turn outcome.
     // Every other route of every endpoint is refused.
@@ -838,6 +864,9 @@ export async function captureBody(
           })
         );
       } catch (error) {
+        hintFailure ??= { error };
+        allWritten.resolve();
+        ompRun?.kill("SIGKILL");
         return new Response(`the hint could not be written: ${messageFor(error)}`, {
           status: 502,
         });
@@ -956,10 +985,13 @@ export async function captureBody(
         stderr: Bun.file(err),
       }
     );
+    ompRun = child;
     const timeoutMs = options.timeoutMs ?? RUN_TIMEOUT_MS;
     const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
     const code = await child.exited;
     clearTimeout(timer);
+    ompRun = undefined;
+    if (hintFailure !== undefined) throw hintFailure.error;
     stderr = existsSync(err) ? readFileSync(err, "utf8") : "";
     const ended = `${child.signalCode ?? `exit ${code}`}${child.signalCode === "SIGKILL" ? ` after ${timeoutMs} ms` : ""}`;
     const tail = stderr.trim().split("\n").slice(-6).join("\n");
@@ -1180,7 +1212,7 @@ export async function captureBody(
     };
     await writeWhole(files.body, turn.body);
     await writeWhole(files.record, `${JSON.stringify(record, null, 2)}\n`);
-    return { body, record, bodyFile: files.body, recordFile: files.record };
+    return { body, record, bodyFile: files.body, recordFile: files.record, made: true };
   } finally {
     await recorder.close();
     nats.stop(true);

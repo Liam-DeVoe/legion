@@ -81,6 +81,9 @@ export interface RepoSource {
   /** Reads ahead, in as few calls as it can, the files of `repo` at `commit` under each of `dirs`,
    *  so the `tree` calls for them that follow need no read of their own. Optional. */
   prefetch?(repo: string, commit: string, dirs: readonly string[]): Promise<void>;
+  /** The reads this source has made of GitHub so far: how many `gh` calls, and the milliseconds
+   *  in which at least one of them was running. Absent for a source that reads no GitHub. */
+  reads?(): { readonly calls: number; readonly ms: number };
 }
 
 /** One build the context needed: what it is, its cache key, whether the cache held it already,
@@ -350,14 +353,19 @@ async function mustRun(
   return ran;
 }
 
-/** One entry of a git tree, as `git/trees?recursive=1` lists it. */
+/** One blob entry of a git tree, as `git/trees?recursive=1` lists it: the fields the reads use. */
 interface TreeEntry {
   readonly path: string;
   readonly mode: string;
-  readonly type: string;
   readonly sha: string;
   readonly size?: number;
 }
+
+/** How many commits' tree listings `ghSource` keeps, the one used longest ago dropped first. One
+ *  context reads ahead every repository and commit its skills come from before it writes any of
+ *  them, so the bound is well above the groups of one profile; across cases the listings of old
+ *  commits are dropped. */
+const TREE_LISTINGS = 16;
 
 /** Writes a blob of `mode` (git's: 100755 executable, 120000 a link) at `file`. */
 function writeBlob(file: string, mode: string, bytes: Uint8Array): void {
@@ -453,23 +461,43 @@ async function ghRetried<T>(
 
 /**
  * The repositories as GitHub serves them, read with `gh api` reads only: a file from its contents,
- * a directory from the commit's recursive tree (read once per repository and commit) and its
- * blobs, the whole repository from its tarball. A tree GitHub cuts short (`truncated`) is read
- * from the tarball instead. `prefetch` reads the blobs of many directories of one commit in
+ * a directory from the commit's recursive tree and its blobs, the whole repository from its
+ * tarball. A tree is read once per repository and commit while it is among the last TREE_LISTINGS
+ * used, and only its blob entries' path, mode, id and size are kept; a tree read that failed is
+ * not kept, so the next case at that commit reads it again. A tree GitHub cuts short (`truncated`)
+ * is read from the tarball instead. `prefetch` reads the blobs of many directories of one commit in
  * GraphQL batches, `object(oid: …)` up to BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes a call, with
  * `-f owner=<owner> -f name=<repo>` so the pod's gh sends it with that owner's token (as copies.ts
  * does); a blob a batch does not give whole (binary, truncated, missing, in a batch that failed,
  * or a text whose bytes are not the blob's, checked by its git blob id) is read alone over REST.
- * Each read is tried again on a transient failure (`ghRetried`), so one network error stops no
- * screen.
+ * A blob a batch gave is kept until each file of those directories that holds it is written. Each
+ * read is tried again on a transient failure (`ghRetried`), so one network error stops no screen.
+ * `reads()` counts the `gh` calls made and the time in which one ran.
  */
 export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
-  const trees = new Map<string, Promise<{ entries: TreeEntry[]; truncated: boolean }>>();
+  type Listing = { readonly entries: readonly TreeEntry[]; readonly truncated: boolean };
+  const trees = new Map<string, Promise<Listing>>();
+  // The gh calls made so far, and the milliseconds in which at least one was running.
+  let calls = 0;
+  let running = 0;
+  let busyFrom = 0;
+  let busyMs = 0;
+  const counted = async <T>(call: () => Promise<T>): Promise<T> => {
+    calls += 1;
+    if (running === 0) busyFrom = performance.now();
+    running += 1;
+    try {
+      return await call();
+    } finally {
+      running -= 1;
+      if (running === 0) busyMs += performance.now() - busyFrom;
+    }
+  };
+  const ghRun = (argv: readonly string[]) =>
+    counted(() => run(argv, { timeoutMs: GH_READ_TIMEOUT_MS }));
   // When the rate limit resets, in seconds since the epoch, or undefined when it cannot be read.
   const rateReset = async (): Promise<number | undefined> => {
-    const ran = await run([gh, "api", "--method", "GET", "rate_limit"], {
-      timeoutMs: GH_READ_TIMEOUT_MS,
-    });
+    const ran = await ghRun([gh, "api", "--method", "GET", "rate_limit"]);
     try {
       const reset: unknown = JSON.parse(new TextDecoder().decode(ran.stdout))?.resources?.core
         ?.reset;
@@ -484,7 +512,7 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
     return ghRetried(
       argv.join(" "),
       async () => {
-        const ran = await run(argv, { timeoutMs: GH_READ_TIMEOUT_MS });
+        const ran = await ghRun(argv);
         return { code: ran.code, stderr: ran.stderr, value: ran.stdout };
       },
       options,
@@ -498,24 +526,25 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
       const argv = [gh, "api", "--method", "GET", `repos/${repo}/tarball/${commit}`];
       await ghRetried(
         argv.join(" "),
-        async () => {
-          const child = Bun.spawn(argv, {
-            stdin: "ignore",
-            stdout: Bun.file(archive),
-            stderr: "pipe",
-            timeout: GH_TARBALL_TIMEOUT_MS,
-          });
-          const [stderr, code] = await Promise.all([
-            new Response(child.stderr).text(),
-            child.exited,
-          ]);
-          const ended = child.signalCode !== null;
-          return {
-            code,
-            stderr: ended ? `${stderr}\ntimed out after ${GH_TARBALL_TIMEOUT_MS} ms` : stderr,
-            value: undefined,
-          };
-        },
+        () =>
+          counted(async () => {
+            const child = Bun.spawn(argv, {
+              stdin: "ignore",
+              stdout: Bun.file(archive),
+              stderr: "pipe",
+              timeout: GH_TARBALL_TIMEOUT_MS,
+            });
+            const [stderr, code] = await Promise.all([
+              new Response(child.stderr).text(),
+              child.exited,
+            ]);
+            const ended = child.signalCode !== null;
+            return {
+              code,
+              stderr: ended ? `${stderr}\ntimed out after ${GH_TARBALL_TIMEOUT_MS} ms` : stderr,
+              value: undefined,
+            };
+          }),
         options,
         rateReset
       );
@@ -524,29 +553,43 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
       rmSync(archive, { force: true });
     }
   };
-  // The commit's recursive tree, read once per repository and commit.
-  const listingOf = (
-    repo: string,
-    commit: string
-  ): Promise<{ entries: TreeEntry[]; truncated: boolean }> => {
+  // The commit's recursive tree, its blob entries only, read once while it is among the last
+  // TREE_LISTINGS used. A read that failed is dropped, so the next one reads again.
+  const listingOf = (repo: string, commit: string): Promise<Listing> => {
     const id = `${repo}@${commit}`;
-    let listing = trees.get(id);
-    if (listing === undefined) {
-      listing = api(`repos/${repo}/git/trees/${commit}?recursive=1`, false).then((bytes) => {
-        const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
-          tree: TreeEntry[];
-          truncated: boolean;
-        };
-        return { entries: parsed.tree, truncated: parsed.truncated };
-      });
-      trees.set(id, listing);
+    const kept = trees.get(id);
+    if (kept !== undefined) {
+      // Used again: it goes to the end, the last to be dropped.
+      trees.delete(id);
+      trees.set(id, kept);
+      return kept;
+    }
+    const listing = api(`repos/${repo}/git/trees/${commit}?recursive=1`, false).then((bytes) => {
+      const parsed = JSON.parse(new TextDecoder().decode(bytes)) as {
+        tree: (TreeEntry & { readonly type: string })[];
+        truncated: boolean;
+      };
+      const entries = parsed.tree
+        .filter((entry) => entry.type === "blob")
+        .map((entry) => ({ path: entry.path, mode: entry.mode, sha: entry.sha, size: entry.size }));
+      return { entries, truncated: parsed.truncated };
+    });
+    listing.catch(() => {
+      if (trees.get(id) === listing) trees.delete(id);
+    });
+    trees.set(id, listing);
+    for (const old of trees.keys()) {
+      if (trees.size <= TREE_LISTINGS) break;
+      trees.delete(old);
     }
     return listing;
   };
-  // Each blob a GraphQL batch gave whole, by its id, as bytes.
-  const blobs = new Map<string, Uint8Array>();
+  // Each blob a GraphQL batch gave whole, by its id: its bytes, and how many files of the
+  // directories read ahead are still to be written from it. It is dropped once the last is.
+  const blobs = new Map<string, { readonly bytes: Uint8Array; waiting: number }>();
   return {
     name: "gh",
+    reads: () => ({ calls, ms: busyMs + (running > 0 ? performance.now() - busyFrom : 0) }),
     file: (repo, commit, file) => {
       const route = file.split("/").map(encodeURIComponent).join("/");
       return api(`repos/${repo}/contents/${route}?ref=${encodeURIComponent(commit)}`, true);
@@ -555,17 +598,21 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
       const { entries, truncated } = await listingOf(repo, commit);
       if (truncated) return;
       const prefixes = dirs.map((dir) => `${dir.replace(/\/+$/, "")}/`);
-      const wanted = new Map<string, TreeEntry>();
+      // Each blob to read, and how many files under `dirs` hold it.
+      const wanted = new Map<string, { entry: TreeEntry; files: number }>();
       for (const entry of entries) {
-        if (entry.type !== "blob" || blobs.has(entry.sha) || !/^[0-9a-f]{40}$/.test(entry.sha)) {
-          continue;
-        }
-        if (prefixes.some((prefix) => entry.path.startsWith(prefix))) wanted.set(entry.sha, entry);
+        if (!/^[0-9a-f]{40}$/.test(entry.sha)) continue;
+        if (!prefixes.some((prefix) => entry.path.startsWith(prefix))) continue;
+        const held = blobs.get(entry.sha);
+        const want = wanted.get(entry.sha);
+        if (held !== undefined) held.waiting += 1;
+        else if (want !== undefined) want.files += 1;
+        else wanted.set(entry.sha, { entry, files: 1 });
       }
       // Batches of at most BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes.
       const batches: TreeEntry[][] = [];
       let bytes = 0;
-      for (const entry of wanted.values()) {
+      for (const { entry } of wanted.values()) {
         const last = batches.at(-1);
         if (
           last === undefined ||
@@ -594,9 +641,7 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
           const stdout = await ghRetried(
             `${argv.join(" ")} -f query=<${batch.length} blobs>`,
             async () => {
-              const ran = await run([...argv, "-f", `query=${query}`], {
-                timeoutMs: GH_READ_TIMEOUT_MS,
-              });
+              const ran = await ghRun([...argv, "-f", `query=${query}`]);
               return { code: ran.code, stderr: ran.stderr, value: ran.stdout };
             },
             options,
@@ -623,7 +668,9 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
           }
           // Kept only when its bytes are the blob's: a text GraphQL decoded with a loss reads alone.
           const bytes = new TextEncoder().encode(text);
-          if (gitBlobId(bytes) === entry.sha) blobs.set(entry.sha, bytes);
+          if (gitBlobId(bytes) === entry.sha) {
+            blobs.set(entry.sha, { bytes, waiting: wanted.get(entry.sha)?.files ?? 1 });
+          }
         });
       }
     },
@@ -644,14 +691,16 @@ export function ghSource(gh = "gh", options: GhOptions = {}): RepoSource {
         }
         return;
       }
-      const files = entries.filter(
-        (entry) => entry.type === "blob" && entry.path.startsWith(prefix)
-      );
+      const files = entries.filter((entry) => entry.path.startsWith(prefix));
       if (files.length === 0) throw new Error(`${repo} at ${commit} holds no file under ${dir}`);
       await eachLimited(files, 4, async (entry) => {
-        const bytes =
-          blobs.get(entry.sha) ?? (await api(`repos/${repo}/git/blobs/${entry.sha}`, true));
+        const held = blobs.get(entry.sha);
+        const bytes = held?.bytes ?? (await api(`repos/${repo}/git/blobs/${entry.sha}`, true));
         writeBlob(path.join(dest, entry.path.slice(prefix.length)), entry.mode, bytes);
+        if (held !== undefined) {
+          held.waiting -= 1;
+          if (held.waiting <= 0 && blobs.get(entry.sha) === held) blobs.delete(entry.sha);
+        }
       });
     },
   };
@@ -921,6 +970,10 @@ async function composeParts(
   }
 }
 
+/** The git blob id of PROMPTS_GO in each `<repo>@<commit>` a source has read it from: a commit's
+ *  file never changes, so it is read once per source. A read that failed is not kept. */
+const promptsBlobs = new WeakMap<RepoSource, Map<string, string>>();
+
 /** The role prompt of `c`'s Legion context and its record: the parts Compose names at the commit
  *  of the plugin repository that holds PROMPTS_GO, joined as `ComposePrompt` joins them. */
 async function rolePrompt(
@@ -936,14 +989,21 @@ async function rolePrompt(
   const repositories = [
     ...new Map(c.profile.plugins.map((p) => [`${p.repo}@${p.commit}`, p])).values(),
   ];
+  let known = promptsBlobs.get(source);
+  if (known === undefined) {
+    known = new Map();
+    promptsBlobs.set(source, known);
+  }
   for (const { repo, commit } of repositories) {
-    let promptsGo: Uint8Array;
-    try {
-      promptsGo = await source.file(repo, commit, PROMPTS_GO);
-    } catch {
-      continue;
+    let promptsBlob = known.get(`${repo}@${commit}`);
+    if (promptsBlob === undefined) {
+      try {
+        promptsBlob = gitBlobId(await source.file(repo, commit, PROMPTS_GO));
+      } catch {
+        continue;
+      }
+      known.set(`${repo}@${commit}`, promptsBlob);
     }
-    const promptsBlob = gitBlobId(promptsGo);
     const key = `${promptsBlob}-${role.role}${role.isRoot ? "-root" : ""}`;
     const where = await builds.entry("compose", key, async (dest) => {
       const tree = await checkout(builds, source, repo, commit);

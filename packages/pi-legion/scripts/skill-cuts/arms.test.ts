@@ -1,5 +1,5 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
@@ -230,6 +230,43 @@ test("minus removes the case's line, or the planted line when one is given", () 
   expect(readFileSync(path.join(dir, "references/x.md"), "utf8")).toBe(f1File(4));
   expect(() => arm("minus", "A line no file holds.")).toThrow(
     `case c1: the minus arm would equal old: the planted line is in no file of ${oldDir}`
+  );
+});
+
+test("minus copies each link of the old directory as the file it names, so its edit never writes through a link, and leaves out every copy of the line", () => {
+  // The old SKILL.md is a link to a file outside the directory, its reference a relative link.
+  const shared = skillDir("linked-shared", { "alpha.md": f1File(2), "x.md": f1File(4) });
+  const linked = path.join(scratch, "linked-old");
+  mkdirSync(path.join(linked, "references"), { recursive: true });
+  symlinkSync(path.join(shared, "alpha.md"), path.join(linked, "SKILL.md"));
+  symlinkSync("../../linked-shared/x.md", path.join(linked, "references", "x.md"));
+  const dirs = { old: linked, new: newDir };
+  const minus = buildArm(f1Case, "minus", dirs, path.join(scratch, "scratch-linked"));
+  const dir = minus.skillDir ?? "";
+  expect(lstatSync(path.join(dir, "SKILL.md")).isSymbolicLink()).toBe(false);
+  expect(readFileSync(path.join(dir, "SKILL.md"), "utf8")).toBe(f1File(2).replace(`${LINE}\n`, ""));
+  expect(readFileSync(path.join(dir, "references/x.md"), "utf8")).toBe(f1File(4));
+  // The files the links name keep their text.
+  expect(readFileSync(path.join(shared, "alpha.md"), "utf8")).toBe(f1File(2));
+  const planted = buildArm(
+    f1Case,
+    "minus",
+    { ...dirs, plantedLine: f1File(4).trimEnd().split("\n").at(-1) ?? "" },
+    path.join(scratch, "scratch-linked-planted")
+  );
+  expect(readFileSync(path.join(planted.skillDir ?? "", "references/x.md"), "utf8")).not.toBe(
+    f1File(4)
+  );
+  expect(readFileSync(path.join(shared, "x.md"), "utf8")).toBe(f1File(4));
+
+  // A rule written twice is still the rule: minus leaves out each line that is the case's line.
+  const twice = skillDir("twice-old", {
+    "SKILL.md": f1File(2).replace(`${LINE}\n`, `${LINE}\n${LINE}\n`),
+    "references/x.md": f1File(4),
+  });
+  const less = buildArm(f1Case, "minus", { old: twice, new: newDir }, path.join(scratch, "twice"));
+  expect(readFileSync(path.join(less.skillDir ?? "", "SKILL.md"), "utf8")).toBe(
+    f1File(2).replace(`${LINE}\n`, "")
   );
 });
 

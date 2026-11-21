@@ -67,10 +67,15 @@
  * profile file and that SHA-256 too), and `captures/` (each task's body and its record). A task
  * whose run file holds its runs is skipped, so a command started again goes on from what was
  * saved; an `--out` written by a test of other settings (another skill text, name, host, model,
- * thinking level or run count), or holding a capture or runs of a task of the same id with
- * another text or under a profile of other bytes, is refused. The verdicts are score.ts's: a
- * task's is `taskFault` and the skill's `descriptionFault`, given only once every task has its
- * runs and they are LOAD_RUNS.
+ * thinking level, run count or hint model), or holding a capture or runs of a task of the same id
+ * with another text, under a profile of other bytes, or that its summary does not list (so the
+ * text they were made for is not known), is refused. So is an `openai/<id>` model on Oh My Pi
+ * with no `--hint-model` when no task's capture is saved: the hint model would be that model,
+ * and hints are written on the Messages route only. The verdicts are score.ts's: a task's is
+ * `taskFault` and the skill's `descriptionFault`, given only once every task has its runs and
+ * they are LOAD_RUNS. Each task's line ends with the seconds of its phases: its capture (its
+ * context build, and the GitHub reads in it with their count), its runs, its writes, the rest,
+ * and the total.
  */
 import { createHash } from "node:crypto";
 import {
@@ -88,12 +93,14 @@ import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
 import type { Arm } from "./arms";
 import {
+  type Capture,
   type CaptureCase,
   type CaptureRecord,
   captureBody,
   capturePaths,
   type HintWriter,
   renamedListingBlocks,
+  savedCapture,
 } from "./capture";
 import { Case, Profile, type ProfileSkill, type Thinking } from "./cases";
 import {
@@ -101,6 +108,7 @@ import {
   type ContextRecord,
   cacheKey,
   type RepoSource,
+  readFrontmatter,
   skillFrontmatter,
 } from "./context";
 import {
@@ -441,12 +449,11 @@ function taskProfiles(
   return profiled;
 }
 
-/** The frontmatter `name` of the skill in `dir`, or the directory's own name when it gives none. */
+/** The frontmatter `name` of the skill in `dir`, read as Oh My Pi reads a skill's frontmatter
+ *  (context.ts's `readFrontmatter`, which repairs a plain value that holds `: `), or the
+ *  directory's own name when it gives none. */
 export function skillName(dir: string): string {
-  const text = readFileSync(path.join(dir, "SKILL.md"), "utf8");
-  const block = FRONTMATTER.exec(text)?.[1];
-  const parsed: unknown = block === undefined ? undefined : Bun.YAML.parse(block);
-  const name = typeof parsed === "object" && parsed !== null ? Reflect.get(parsed, "name") : null;
+  const name = readFrontmatter(readFileSync(path.join(dir, "SKILL.md"), "utf8")).name;
   return typeof name === "string" && name.trim() !== "" ? name.trim() : path.basename(dir);
 }
 
@@ -672,29 +679,46 @@ export interface ClaudeCaptureRecord {
   readonly runMs: number;
 }
 
-/** A task's captured body, the headers it goes with, and what the host lists for the skill. */
+/** A task's captured body, the headers it goes with, what the host lists for the skill, and the
+ *  milliseconds its context build took (0 when the capture was read back, or the context was
+ *  built for an earlier task). */
 interface Captured {
   readonly body: RequestBody;
   readonly headers: Readonly<Record<string, string>>;
   readonly listed: string;
+  readonly contextMs: number;
 }
 
 /** The scratch Claude Code home of one test: the environment each run gets, the working
- *  directory, the appended system prompt, Claude Code's version, and the context's record. */
+ *  directory, the appended system prompt, Claude Code's version, the context's record, and the
+ *  milliseconds its context build took. */
 interface ClaudeSetup {
   readonly env: Record<string, string>;
   readonly workspace: string;
   readonly prompt: string | undefined;
   readonly version: string;
   readonly context: ContextRecord;
+  readonly contextMs: number;
 }
 
-/** A task's runs after `runTask`: every run saved, and each run that failed or that the budget
- *  refused. */
+/** The milliseconds each phase of a task took: its capture (made or read back), the context
+ *  build within it, the GitHub reads made in it (how many, and the milliseconds one ran), its
+ *  runs, and the writes of its run file and the summary. */
+interface TaskPhases {
+  readonly captureMs: number;
+  readonly contextMs: number;
+  readonly github: { readonly calls: number; readonly ms: number };
+  readonly runsMs: number;
+  writeMs: number;
+}
+
+/** A task's runs after `runTask`: every run saved, each run that failed or that the budget
+ *  refused, and the time of each phase. */
 interface TaskRuns {
   readonly runs: LoadRun[];
   readonly failures: string[];
   readonly budgetSpent: boolean;
+  readonly phases: TaskPhases;
 }
 
 /** What a load test reads and writes beside its inputs. */
@@ -873,28 +897,38 @@ class LoadTest {
   /** Task `task`'s body through Oh My Pi in the context of `profile`, captured or read back. */
   async ompCapture(task: Task, profile: TaskProfile): Promise<Captured> {
     const files = loadCapturePaths(this.o.out, "omp", task.id);
-    if (this.o.models === undefined && !(existsSync(files.body) && existsSync(files.record))) {
+    const { models } = this.o;
+    let capture: Capture | undefined;
+    if (models === undefined) capture = savedCapture(files);
+    else {
+      const { c, arm } = this.caseOf(task.id, task.text, profile.profile);
+      capture = await captureBody(c, arm, {
+        omp: this.o.omp,
+        outDir: path.dirname(files.body),
+        scratchDir: path.join(this.root, "captures"),
+        cacheDir: this.o.cacheDir,
+        source: this.o.source,
+        models,
+        hints: this.o.hints,
+        ...(this.o.hintModel === undefined ? {} : { hintModel: this.o.hintModel }),
+        configFiles: this.o.configFiles,
+        ...(this.o.timeoutMs === undefined ? {} : { timeoutMs: this.o.timeoutMs }),
+      });
+    }
+    if (capture === undefined) {
       throw new Error(
         `it has no capture in ${path.dirname(files.body)}, and no --models is given to make one`
       );
     }
-    const { c, arm } = this.caseOf(task.id, task.text, profile.profile);
-    const capture = await captureBody(c, arm, {
-      omp: this.o.omp,
-      outDir: path.dirname(files.body),
-      scratchDir: path.join(this.root, "captures"),
-      cacheDir: this.o.cacheDir,
-      source: this.o.source,
-      models: this.o.models ?? "",
-      hints: this.o.hints,
-      ...(this.o.hintModel === undefined ? {} : { hintModel: this.o.hintModel }),
-      configFiles: this.o.configFiles,
-      ...(this.o.timeoutMs === undefined ? {} : { timeoutMs: this.o.timeoutMs }),
-    });
     const { name } = profile.tested;
     const listed = capture.record.listing.find((entry) => entry.name === name)?.hint;
     if (listed === undefined) throw new Error(`its capture does not list ${name}`);
-    return { body: capture.body, headers: capture.record.requestHeaders, listed };
+    return {
+      body: capture.body,
+      headers: capture.record.requestHeaders,
+      listed,
+      contextMs: capture.made ? capture.record.timings.contextMs : 0,
+    };
   }
 
   /** The scratch Claude Code home of `profile` (ClaudeSetup), made once per profile: its skills
@@ -910,11 +944,13 @@ class LoadTest {
       rmSync(root, { recursive: true, force: true });
       const { c, arm } = this.caseOf("claude-profile", "", profile.profile);
       // Oh My Pi's plugins are no Claude Code plugins: only the skills and context files go in.
+      const contextStarted = performance.now();
       const context = await buildContext({ ...c, profile: { ...c.profile, plugins: [] } }, arm, {
         source: this.o.source,
         cacheDir: this.o.cacheDir,
         root: path.join(root, "context"),
       });
+      const contextMs = Math.round(performance.now() - contextStarted);
       const plugins = layout.plugins.map((plugin) => ({ ...plugin, skills: [...plugin.skills] }));
       const own = plugins.find((plugin) => plugin.name === layout.skillPlugin);
       if (own === undefined) {
@@ -983,6 +1019,7 @@ class LoadTest {
             : readFileSync(context.appendSystemPrompt, "utf8"),
         version,
         context: context.record,
+        contextMs,
       };
     })();
     this.claudeSetups.set(profile.digest, setup);
@@ -999,8 +1036,11 @@ class LoadTest {
         body: JSON.parse(readFileSync(files.body, "utf8")) as MessagesBody,
         headers: record.requestHeaders,
         listed: record.listed,
+        contextMs: 0,
       };
     }
+    // The context is built by the first task of its profile, which counts its time.
+    const setUpNow = !this.claudeSetups.has(profile.digest);
     const setup = await this.claudeSetup(profile);
     const { thinking } = this.settings;
     const model = this.settings.model.replace(/^anthropic\//, "");
@@ -1093,7 +1133,12 @@ class LoadTest {
     };
     writeWhole(files.body, turn.body);
     writeWhole(files.record, json(record));
-    return { body, headers: record.requestHeaders, listed };
+    return {
+      body,
+      headers: record.requestHeaders,
+      listed,
+      contextMs: setUpNow ? setup.contextMs : 0,
+    };
   }
 
   /** The runs task `id` has saved. Throws a LoadRefused when its file holds a line that is not
@@ -1152,15 +1197,21 @@ class LoadTest {
    *  the rest after it at once (the body is the same, so the cache the first one writes serves
    *  the others), and saves its run file when they end. */
   async runTask(task: Task, saved: readonly LoadRun[], profile: TaskProfile): Promise<TaskRuns> {
+    const readsBefore = this.o.source.reads?.() ?? { calls: 0, ms: 0 };
+    const captureStarted = performance.now();
     const captured =
       this.o.host === "omp"
         ? await this.ompCapture(task, profile)
         : await this.claudeCapture(task, profile);
+    const captureMs = performance.now() - captureStarted;
+    const readsAfter = this.o.source.reads?.() ?? { calls: 0, ms: 0 };
+    const runsStarted = performance.now();
     const send = () => this.o.gateway.send(captured.body, { headers: captured.headers });
     const opening = await Promise.allSettled([send()]);
     const others = await Promise.allSettled(
       Array.from({ length: this.settings.runs - saved.length - 1 }, send)
     );
+    const runsMs = performance.now() - runsStarted;
     const runs = [...saved];
     const failures: string[] = [];
     let budgetSpent = false;
@@ -1170,12 +1221,32 @@ class LoadTest {
       } else if (result.reason instanceof BudgetSpent) budgetSpent = true;
       else failures.push(`task ${task.id}: a run failed: ${messageFor(result.reason)}`);
     }
+    const writeStarted = performance.now();
     writeWhole(
       loadRunFile(this.o.out, task.id),
       runs.map((run) => `${JSON.stringify(run)}\n`).join("")
     );
-    return { runs, failures, budgetSpent };
+    const phases: TaskPhases = {
+      captureMs,
+      contextMs: captured.contextMs,
+      github: {
+        calls: readsAfter.calls - readsBefore.calls,
+        ms: readsAfter.ms - readsBefore.ms,
+      },
+      runsMs,
+      writeMs: performance.now() - writeStarted,
+    };
+    return { runs, failures, budgetSpent, phases };
   }
+}
+
+/** The seconds of the phases of a task that took `totalMs` in all, as its line ends them: its
+ *  capture (the context build and the GitHub reads within it apart), its runs, its writes, and
+ *  the rest. */
+function phaseWords(phases: TaskPhases, totalMs: number): string {
+  const s = (ms: number) => (ms / 1000).toFixed(1);
+  const other = Math.max(0, totalMs - phases.captureMs - phases.runsMs - phases.writeMs);
+  return `seconds: capture ${s(phases.captureMs)} (context ${s(phases.contextMs)}; ${phases.github.calls} GitHub reads, ${s(phases.github.ms)}), runs ${s(phases.runsMs)}, write ${s(phases.writeMs)}, other ${s(other)}, total ${s(totalMs)}`;
 }
 
 /** Task `task`'s verdict in words. */
@@ -1236,6 +1307,21 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   }
   const tasks = loadTasks(o.tasksFile);
   const profiled = taskProfiles(tasks, o, name);
+  // With no --hint-model the hint model is the model itself, and Oh My Pi's hints are written on
+  // the Messages route only, so each capture to be made would fail.
+  if (
+    o.host === "omp" &&
+    provider === "openai" &&
+    o.hintModel === undefined &&
+    !tasks.some((task) => {
+      const files = loadCapturePaths(o.out, "omp", task.id);
+      return existsSync(files.body) && existsSync(files.record);
+    })
+  ) {
+    throw new LoadRefused(
+      `--model ${o.model} is given with no --hint-model, so the hint model is ${o.model}, and Oh My Pi's hints are written on the Anthropic Messages route only: each task's capture would fail. Give --hint-model anthropic/<id>`
+    );
+  }
   const settings: Settings = {
     skillText: o.skillDigest,
     name,
@@ -1273,6 +1359,11 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       const made =
         existsSync(loadCapturePaths(o.out, o.host, task.id).body) ||
         existsSync(loadRunFile(o.out, task.id));
+      if (made && before === undefined) {
+        throw new LoadRefused(
+          `${o.out} holds a capture or runs of task ${task.id}, which its summary does not list, so the text and the profile they were made for cannot be checked: give the task another id, or use another --out`
+        );
+      }
       if (made && before !== undefined && before.profileDigest !== profile.digest) {
         throw new LoadRefused(
           `${o.out} holds task ${task.id} made under a profile of other bytes (SHA-256 ${before.profileDigest ?? "not recorded"}) than ${profile.file} (SHA-256 ${profile.digest}): give the task that profile again, or use another --out`
@@ -1296,6 +1387,16 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   );
   const outcomeOf = (task: Task): TaskOutcome => outcomes.get(task.id) as TaskOutcome;
   let peak = 0;
+  // Each task's hint dollars, from its capture's record: read at the start, and again when the
+  // task has run, since its capture may have been made then.
+  const hintDollars = new Map<string, number>();
+  const readHintDollars = (task: Task): void => {
+    if (o.host !== "omp") return;
+    const record = loadCapturePaths(o.out, "omp", task.id).record;
+    if (!existsSync(record)) return;
+    hintDollars.set(task.id, hintUsd(JSON.parse(readFileSync(record, "utf8")) as CaptureRecord));
+  };
+  for (const task of tasks) readHintDollars(task);
   /** Writes the summary as the runs stand; returns the skill's verdict and the test's dollars so
    *  far at list price, its runs' and its hints'. */
   const writeSummary = (): { verdict: LoadVerdict; usd: number } => {
@@ -1306,12 +1407,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     const runs = [...runsOf.values()].flat();
     const runsUsd = runs.reduce((sum, run) => sum + run.usage.usd, 0);
     let hintsUsd = 0;
-    for (const task of o.host === "omp" ? tasks : []) {
-      const record = loadCapturePaths(o.out, "omp", task.id).record;
-      if (existsSync(record)) {
-        hintsUsd += hintUsd(JSON.parse(readFileSync(record, "utf8")) as CaptureRecord);
-      }
-    }
+    for (const usd of hintDollars.values()) hintsUsd += usd;
     writeWhole(
       summaryFile,
       json({
@@ -1366,6 +1462,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
   const failures: string[] = [];
   const listedSaid = new Set<string>();
   for (const { task, profile } of profiled) {
+    const taskStarted = performance.now();
     const saved = runsOf.get(task.id) ?? [];
     const what = `task ${task.id} (${task.label}, ${task.source === "session" ? "from a session" : "written"})`;
     if (saved.length >= o.runs) {
@@ -1380,6 +1477,15 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
       ran = await test.runTask(task, saved, profile);
     } catch (error) {
       if (error instanceof LoadRefused) throw error;
+      // The budget refused a hint call of the task's capture: the test stops as it does when it
+      // refuses a run.
+      if (error instanceof BudgetSpent) {
+        peak = Math.max(peak, o.io.peakRssBytes());
+        writeSummary();
+        throw new LoadStopped(
+          `the budget is spent, so no new model call starts, and task ${task.id} has no capture; the runs so far are saved under ${o.out}`
+        );
+      }
       failures.push(`task ${task.id}: ${messageFor(error)}`);
       o.io.err(`load: ${what}: ${messageFor(error)}`);
       continue;
@@ -1387,6 +1493,11 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     runsOf.set(task.id, ran.runs);
     const outcome = taskOutcome(task.label, ran.runs, o.runs);
     outcomes.set(task.id, outcome);
+    readHintDollars(task);
+    peak = Math.max(peak, o.io.peakRssBytes());
+    const summaryStarted = performance.now();
+    writeSummary();
+    ran.phases.writeMs += performance.now() - summaryStarted;
     const listed = ran.runs[0]?.listed;
     if (listed !== undefined && !listedSaid.has(profile.digest)) {
       listedSaid.add(profile.digest);
@@ -1398,14 +1509,12 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     }
     const each = ran.runs.map((run) => `run ${run.run} ${run.loaded ? "loads" : "does not"}`);
     test.say(
-      `${what}: loaded in ${outcome.loads} of ${outcome.made} runs (${each.join(", ")}): ${verdictWords(task, outcome, o.runs)}`
+      `${what}: loaded in ${outcome.loads} of ${outcome.made} runs (${each.join(", ")}): ${verdictWords(task, outcome, o.runs)}; ${phaseWords(ran.phases, performance.now() - taskStarted)}`
     );
     for (const failure of ran.failures) {
       failures.push(failure);
       o.io.err(`load: ${failure}`);
     }
-    peak = Math.max(peak, o.io.peakRssBytes());
-    writeSummary();
     if (ran.budgetSpent) {
       throw new LoadStopped(
         `the budget is spent, so no new model call starts; the runs so far are saved under ${o.out}`
@@ -1413,7 +1522,7 @@ export async function runLoad(o: LoadOptions): Promise<LoadResult> {
     }
     if (peak > o.memoryLimitBytes) {
       throw new LoadStopped(
-        `the runner's peak resident memory, ${Math.round(peak / 2 ** 20)} MiB, is above 1 GiB, so the test stops after task ${task.id}; its runs are saved under ${o.out}`
+        `the runner's peak resident memory, ${Math.round(peak / 2 ** 20)} MiB, is above its limit of ${Math.round(o.memoryLimitBytes / 2 ** 20)} MiB, so the test stops after task ${task.id}; its runs are saved under ${o.out}`
       );
     }
   }

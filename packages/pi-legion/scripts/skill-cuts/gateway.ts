@@ -18,8 +18,8 @@
  *   call. A Responses body goes with no header of the caller's: one given is refused by name.
  * - A 429 or a 5xx, a failed connection, a try past `timeoutMs` (its body read included; the try is
  *   ended) and a reply that does not read as a reply of the body's API are tried again, after the
- *   `retry-after` wait or the back-off (1 s, 2 s, 4 s, ...), up to GATEWAY_TRIES tries in all. Any
- *   other status, a 400 among them, throws at once.
+ *   longer of the `retry-after` wait and the back-off (1 s, 2 s, 4 s, ...), up to GATEWAY_TRIES
+ *   tries in all. Any other status, a 400 among them, throws at once.
  * - At most `concurrency` calls are in flight; the others wait their turn, in the order sent.
  * - A body that sets `stream` gets a streamed (SSE) reply, read whole before it counts
  *   (`streamedMessage`; `streamedResponse` for a Responses reply, F9); any other gets one JSON
@@ -28,11 +28,13 @@
  * - `spend()` sums each reply's usage (input not read from the cache, output, cache read, cache
  *   write, and a Responses reply's reasoning tokens) per model, and its dollars at list price
  *   (PRICES, or `prices` for a model the table lacks). A body whose model has no price is refused
- *   before any call, since its dollars could not be counted. A try that failed is not counted: no
- *   usage came back for it.
+ *   before any call, since its dollars could not be counted. Only a reply read whole is counted.
+ *   A try that failed is not, even a streamed Messages reply that failed after its
+ *   `message_start` had sent its input tokens: the gateway can bill such a try and this count
+ *   leaves it out, so the spend can fall short of the bill by the tries that failed mid-stream.
  * - Once the dollars reach `budgetUsd`, no new call starts: `send` rejects with `BudgetSpent`, which
  *   says so. A call already in flight finishes and is counted, so the spend can pass the budget by
- *   at most the calls in flight.
+ *   at most the calls in flight, and the bill by those and the tries that failed mid-stream.
  */
 import { holdSecret, scrubError } from "@legion/contracts/held-secrets";
 import { z } from "zod";
@@ -724,7 +726,6 @@ export function createGateway(options: GatewayOptions): Gateway {
         `no list price for the model ${body.model}, so its dollars cannot be counted: add it to PRICES in gateway.ts from ${PRICE_SOURCE}, or pass its price`
       );
     }
-    const text = JSON.stringify(body);
     const streamed = body.stream === true;
     // A call's turn: one of `concurrency` places, in the order asked. A call that ends hands its
     // place to the first one waiting, so `running` stays the count of calls in flight.
@@ -738,6 +739,9 @@ export function createGateway(options: GatewayOptions): Gateway {
       if (budgetUsd !== undefined && totalUsd >= budgetUsd) {
         throw new BudgetSpent(budgetUsd, totalUsd);
       }
+      // The body's text is made once its call has a place, so at most `concurrency` texts are
+      // held, and a call the budget refuses makes none.
+      const text = JSON.stringify(body);
       const started = performance.now();
       const { message, requestId } = await postMessages({
         url: baseUrl,

@@ -129,11 +129,21 @@ export function toolCalls(entries: SessionEntry[]) {
   );
 }
 
-/** Every `read` call the session made, in order: its id and the path or URL it read. */
+/** Every `read` call the session made whose `path` is a string, in order: its id and the path or
+ * URL it read. */
 export function readCalls(entries: SessionEntry[]): { id: string; target: string }[] {
-  return toolCalls(entries)
-    .filter((call) => call.tool === "read")
-    .map((call) => ({ id: call.id, target: call.path }));
+  const reads: { id: string; target: string }[] = [];
+  for (const entry of entries) {
+    if (entry.message?.role !== "assistant") continue;
+    for (const part of entry.message.content ?? []) {
+      if (part.type !== "toolCall" || part.name !== "read") continue;
+      const args = part.arguments;
+      const target =
+        typeof args === "object" && args !== null ? Reflect.get(args, "path") : undefined;
+      if (typeof target === "string") reads.push({ id: part.id ?? "", target });
+    }
+  }
+  return reads;
 }
 
 /** The line the pinned Oh My Pi puts before the text of a file it read by a `skill://` URL,

@@ -15,6 +15,7 @@ import { type Case, pathHash } from "./cases";
 import {
   type ContentBlock,
   createGateway,
+  type Gateway,
   type MessagesBody,
   ReplyMessage,
   responseMessage,
@@ -28,6 +29,7 @@ import {
   blindOrder,
   JUDGE_TRIES,
   judgeBlind,
+  judgeBody,
   judgeControls,
   judgeReply,
   MESSAGE_CHARS,
@@ -554,6 +556,49 @@ test("the controls: the real step must pass, and the violating step and the repl
     hold: false,
     failed: ["realStep", "violating", "nothing"],
   });
+});
+
+test("a case's first judgement goes alone and the rest after it at once, in the blind order; the controls' real step goes first", async () => {
+  const reply = await world(() => sse(PASS)).gateway.send(
+    judgeBody({ criterion: f1Case.criterion, line: LINE, before: "", reply: "r" })
+  );
+  const events: string[] = [];
+  const bodies: MessagesBody[] = [];
+  // A gateway that notes when each call starts and ends, and answers each with a pass.
+  const gateway: Gateway = {
+    async send(body) {
+      bodies.push(body as MessagesBody);
+      const n = bodies.length;
+      events.push(`start ${n}`);
+      await Promise.resolve();
+      events.push(`end ${n}`);
+      return reply;
+    },
+    spend: () => ({ models: {}, usd: 0 }),
+  };
+  const replies = armReplies(["old", "new", "none"]);
+  const blind = await judgeBlind(f1Case, replies, gateway, "seed-first");
+  expect(blind.judged.map((each) => each.verdict)).toEqual(replies.map(() => "pass"));
+  const rest = replies.length - 1;
+  expect(events.slice(0, 2 + rest)).toEqual([
+    "start 1",
+    "end 1",
+    ...Array.from({ length: rest }, (_, index) => `start ${index + 2}`),
+  ]);
+  expect(bodies.map(stepOf)).toEqual(
+    blindOrder(replies, "seed-first").map(({ item }) => stepText(item.content))
+  );
+  expect(new Set(bodies.map((body) => blocksOf(body)[0])).size).toBe(1);
+
+  events.length = 0;
+  bodies.length = 0;
+  await judgeControls(f1Case, gateway);
+  expect(events.slice(0, 4)).toEqual(["start 1", "end 1", "start 2", "start 3"]);
+  expect(bodies.map(stepOf)).toEqual([
+    stepText(f1Case.realStep.content ?? []),
+    stepText(f1Case.violatingStep.content ?? []),
+    NOTHING_REPLY,
+  ]);
 });
 
 test("on F5: the gateway's judge reply gives its verdict and reason", async () => {

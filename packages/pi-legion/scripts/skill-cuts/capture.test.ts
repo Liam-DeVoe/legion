@@ -18,6 +18,7 @@ import {
 } from "./capture";
 import { type Case, pathHash } from "./cases";
 import { localSource, skillFrontmatter } from "./context";
+import { BudgetSpent } from "./gateway";
 import { END_TURN_REPLY, messageSse, sseResponse, startRecorder } from "./recorder";
 import { BLOCK_REASON, MESSAGES_VARIABLE } from "./replay-hook";
 
@@ -1022,6 +1023,37 @@ export default function bootProbe(pi) {
         ]),
       });
       expect(record.runs).toBe(1);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  test(
+    "a hint write that fails ends the capture at once with its own error: a BudgetSpent stays one, and neither Oh My Pi nor the hint wait is blamed",
+    async () => {
+      await captures();
+      const refusedHint: HintWriter = async () => {
+        throw new BudgetSpent(0, 0);
+      };
+      const c = f1Case("budget-1");
+      const started = performance.now();
+      const failed = await captureBody(
+        c,
+        buildArm(c, "old", { old: path.join(dir, "old"), new: path.join(dir, "new") }, dir),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out-budget"),
+          scratchDir: path.join(dir, "scratch"),
+          // A cache of its own, so every hint is owed and the hint run asks for it.
+          cacheDir: path.join(dir, "cache-budget"),
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints: refusedHint,
+        }
+      ).catch((caught: unknown) => caught);
+      expect(failed).toBeInstanceOf(BudgetSpent);
+      // Well within the 180 s the hint run's turn waits for a hint it is owed.
+      expect(performance.now() - started).toBeLessThan(120_000);
+      expect(existsSync(path.join(dir, "out-budget"))).toBe(false);
     },
     ROW_TIMEOUT_MS
   );

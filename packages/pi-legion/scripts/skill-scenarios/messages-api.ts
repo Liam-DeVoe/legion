@@ -23,9 +23,10 @@
  *   throws at once. It returns what `accept` returns for the first ok answer it takes. A failure
  *   throws `MessagesApiError`, whose message is the last try's reason (`the model answered
  *   <status> <type>: <message>`, `the model call failed: <why>`, or `accept`'s own message),
- *   followed by `, on each of <n> tries` when every try failed, and whose `status` is the last
- *   answer's HTTP status, or undefined when no answer came. `accept` gets the body whole as text:
- *   a streamed (SSE) reply is read to its end before it.
+ *   followed by `, on each of <n> tries` when every try failed, and whose `status` is the HTTP
+ *   status of the last try's answer (its headers came, even when its body then failed), or
+ *   undefined when the last try got no answer. `accept` gets the body whole as text: a streamed
+ *   (SSE) reply is read to its end before it.
  */
 import { messageFor } from "@legion/envoy-client/errors";
 import { backoffMs, type Fetch, type Sleep, transient } from "./production-dispatch";
@@ -119,6 +120,7 @@ export async function postMessages<T>(call: MessagesCall<T>): Promise<T> {
   for (let attempt = 1; attempt <= call.tries; attempt++) {
     if (attempt > 1) await call.sleep(Math.max(wait, backoffMs(attempt - 1)));
     wait = 0;
+    status = undefined;
     let response: Response;
     let text: string;
     try {
@@ -136,14 +138,14 @@ export async function postMessages<T>(call: MessagesCall<T>): Promise<T> {
         body: call.body,
         signal: AbortSignal.timeout(call.timeoutMs),
       });
+      // The answer came: its status stands even when its body fails below.
+      status = response.status;
       // A connection that fails while the body arrives is a failed call, as one before the headers.
       text = await response.text();
     } catch (error) {
       last = `the model call failed: ${messageFor(error)}`;
-      status = undefined;
       continue;
     }
-    status = response.status;
     if (!response.ok) {
       last = modelError(response.status, text);
       if (transient(response.status)) {

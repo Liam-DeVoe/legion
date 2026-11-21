@@ -1,9 +1,11 @@
 /**
  * The four arms of a case (plan, R5 `arms.ts`): `old` (the skill's base text, `--old`), `new` (the
- * cut text, `--new`), `none` (no skill) and `minus` (a copy of the old directory less the case's
- * line, or less `--planted-line` when one is given). Only the skill's directory differs between
- * arms: the messages are the case's own but for the text of the skill's files in its read
- * results, and the profile is the case's own but for the skill, which `none` leaves out.
+ * cut text, `--new`), `none` (no skill) and `minus` (a copy of the old directory less every line
+ * of the case's baseFile that is the case's line, trimmed, or less every line of any of its files
+ * that is `--planted-line`, trimmed, when one is given: a rule written twice is still the rule, so
+ * each copy of it goes). Only the skill's directory differs between arms: the messages are the
+ * case's own but for the text of the skill's files in its read results, and the profile is the
+ * case's own but for the skill, which `none` leaves out.
  *
  * In each arm but `none`, each read result of a file of the skill (the case's `skillReads`) is
  * answered from the arm's file the way the pinned Oh My Pi 18.18.6 answers a `skill://` read: one
@@ -133,14 +135,16 @@ function removeLine(file: string, line: string): number {
   return lines.length - kept.length;
 }
 
-/** The `minus` directory: a copy of `old` under `scratch`, less the case's line in its baseFile, or
- * less `plantedLine` in each file of the copy that holds it. Throws when no line is left out. */
+/** The `minus` directory: a copy of `old` under `scratch`, less each line of its baseFile that is
+ * the case's line (trimmed), or less each line that is `plantedLine` in each file of the copy that
+ * holds it. Each symbolic link of `old` is copied as the file or directory it names, so an edit of
+ * the copy never writes through a link into `old` or elsewhere. Throws when no line is left out. */
 function minusDirectory(c: Case, dirs: ArmDirs, scratch: string): string {
   const old = directory(dirs.old, "old");
   if (dirs.plantedLine?.trim() === "") throw new Error("the planted line is blank");
   const dir = path.resolve(scratch, "minus");
   rmSync(dir, { recursive: true, force: true });
-  cpSync(old, dir, { recursive: true });
+  cpSync(old, dir, { recursive: true, dereference: true });
   const { plantedLine } = dirs;
   const removed =
     plantedLine === undefined

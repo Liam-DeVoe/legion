@@ -12,7 +12,7 @@
  * the skill that way gives no case, since that read's base text would stay in every arm.
  */
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, statSync } from "node:fs";
 import path from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 import { z } from "zod";
@@ -151,16 +151,15 @@ export function textLines(text: string): string[] {
   return text.replace(/\n$/, "").split("\n");
 }
 
-/** Why `c` cannot run against the base text in `baseDir`, or undefined when it can. */
-function refusal(c: Case, baseDir: string): string | undefined {
+/** Why `c` cannot run against the base text in `baseDir`, whose file `c.baseFile` holds `lines`
+ *  (undefined when it cannot be read), or undefined when it can. */
+function refusal(
+  c: Case,
+  baseDir: string,
+  lines: readonly string[] | undefined
+): string | undefined {
   const file = path.join(baseDir, c.baseFile);
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return `its baseFile ${c.baseFile} is not a file of ${baseDir}`;
-  }
-  const lines = textLines(text);
+  if (lines === undefined) return `its baseFile ${c.baseFile} is not a file of ${baseDir}`;
   const wanted = c.line.text.trim();
   if (!lines.some((line) => line.trim() === wanted)) {
     return `its line is not a whole line of ${file}: ${JSON.stringify(c.line.text)}`;
@@ -198,6 +197,33 @@ function refusal(c: Case, baseDir: string): string | undefined {
   return undefined;
 }
 
+/** The lines of `file` as `String.split("\n")` gives them from its whole text, the one after the
+ *  last newline included, read a chunk at a time so that the whole text is never held. */
+function* fileLines(file: string): Generator<string> {
+  const fd = openSync(file, "r");
+  try {
+    const chunk = Buffer.alloc(1 << 20);
+    let start: Buffer[] = [];
+    for (;;) {
+      const size = readSync(fd, chunk, 0, chunk.length, null);
+      if (size === 0) break;
+      const read = chunk.subarray(0, size);
+      let from = 0;
+      for (let end = read.indexOf(10); end !== -1; end = read.indexOf(10, from)) {
+        start.push(read.subarray(from, end));
+        yield Buffer.concat(start).toString("utf8");
+        start = [];
+        from = end + 1;
+      }
+      // A line the next chunk ends: its start is copied, since the next read reuses `chunk`.
+      if (from < size) start.push(Buffer.from(read.subarray(from)));
+    }
+    yield Buffer.concat(start).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
 /** The cases of `file`, each checked against the base text of its skill, the directory `baseDir`
  * (the skill's own directory, SKILL.md at its top). Throws one error that names each case it
  * refuses and why: a line that is no case, a missing realStep or violatingStep, a line.text that
@@ -211,10 +237,25 @@ export function loadCases(file: string, baseDir: string): Case[] {
   }
   const cases: Case[] = [];
   const refusals: string[] = [];
-  const lines = readFileSync(file, "utf8").split("\n");
-  for (const [index, text] of lines.entries()) {
+  // Each base file's lines, read once for all the cases that name it; undefined when unreadable.
+  const baseLines = new Map<string, string[] | undefined>();
+  const linesOf = (baseFile: string): string[] | undefined => {
+    if (!baseLines.has(baseFile)) {
+      let lines: string[] | undefined;
+      try {
+        lines = textLines(readFileSync(path.join(baseDir, baseFile), "utf8"));
+      } catch {
+        lines = undefined;
+      }
+      baseLines.set(baseFile, lines);
+    }
+    return baseLines.get(baseFile);
+  };
+  let number = 0;
+  for (const text of fileLines(file)) {
+    number += 1;
     if (text.trim() === "") continue;
-    const where = `${file}:${index + 1}`;
+    const where = `${file}:${number}`;
     let raw: unknown;
     try {
       raw = JSON.parse(text);
@@ -245,7 +286,7 @@ export function loadCases(file: string, baseDir: string): Case[] {
       refusals.push(`${name} is not a case: ${issues.join("; ")}`);
       continue;
     }
-    const why = refusal(parsed.data, baseDir);
+    const why = refusal(parsed.data, baseDir, linesOf(parsed.data.baseFile));
     if (why !== undefined) {
       refusals.push(`${name}: ${why}`);
       continue;

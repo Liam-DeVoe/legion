@@ -390,6 +390,44 @@ test("replay runs n replays, the first alone, and keeps each one's outcome", asy
   await expect(replay(BODY, arm, gateway, 0)).rejects.toThrow("1 or more, not 0");
 });
 
+test("replay makes the body it sends once for all its runs, the bytes replayOnce sends for one", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  /** A gateway whose fake fetch answers `answer` and keeps each body's text as sent. */
+  const recording = (answer: () => Response) => {
+    const texts: string[] = [];
+    const keyFile = path.join(scratch, `key-${Math.random()}`);
+    writeFileSync(keyFile, fixtureSecret("gw"), { mode: 0o600 });
+    const gateway = createGateway({
+      baseUrl: "http://gateway.test",
+      keyFile,
+      concurrency: 2,
+      timeoutMs: 5_000,
+      fetch: async (_url, init) => {
+        texts.push(String(init.body));
+        return answer();
+      },
+      sleep: async () => {},
+    });
+    return { gateway, texts };
+  };
+  for (const [body, answer] of [
+    [BODY, () => f5("text")],
+    [RESPONSES_BODY, () => f9("text")],
+  ] as const) {
+    const one = recording(answer);
+    await replayOnce(body, arm, one.gateway);
+    expect(one.texts).toHaveLength(1);
+    const runs = recording(answer);
+    const settled = await replay(body, arm, runs.gateway, 6);
+    expect(settled.map((run) => run.status)).toEqual(Array(6).fill("fulfilled"));
+    expect(runs.texts).toEqual(Array(6).fill(one.texts[0]));
+  }
+  // The bytes are the body with its cache breakpoint, as each run made them before.
+  const one = recording(() => f5("text"));
+  await replay(BODY, arm, one.gateway, 2);
+  expect(one.texts).toEqual(Array(2).fill(JSON.stringify(withCacheBreakpoint(BODY))));
+});
+
 test("withCacheBreakpoint puts one breakpoint on the last block and changes nothing else", () => {
   const before = JSON.stringify(BODY);
   // F2 holds two breakpoints, on its tools and its system prompt, and none in its messages.
