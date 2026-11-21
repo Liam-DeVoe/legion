@@ -636,16 +636,6 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 		message.finalize(false)
 		return
 	}
-	// A Legion role named under a project it does not work for reaches no holder
-	// (roleLaneProjectError): its claim is keyed on the bare name, so the lane of another project
-	// naming it would hand that project's message to the role's own project's holder.
-	lane := strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)
-	if err := roleLaneProjectError(lane); err != nil {
-		cfg.logger.Warn("listener role lane refused a role named under a project it does not work for; no holder is sent it",
-			slog.String("topic", item.Topic), slog.String("event_id", item.EventID), slog.String("error", err.Error()))
-		message.finalize(false)
-		return
-	}
 	if forward, ok := resolveRoleForward(cfg, item); ok {
 		cfg.roleForwards.enqueue(forward)
 	}
@@ -658,8 +648,16 @@ func roleTopicDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessag
 // forward to make, stamped with when its resolution started (roleForward.resolvedAt), and whether
 // to make one. The lane names its role in either form; the claim it resolves is the one that name
 // is keyed by (roleOfLaneTopic, store.RoleClaimKeyOf): the bare name, or <project>.<role> for a
-// free-form role under a project.
+// free-form role under a project. A Legion role named under a project it does not work for
+// reaches no holder (roleLaneProjectError): its claim is keyed on the bare name, so the lane of
+// another project naming it would hand that project's message to the role's own project's holder.
 func resolveRoleForward(cfg listenerDeliveryHandlerConfig, item contracts.Envelope) (roleForward, bool) {
+	lane := strings.TrimPrefix(item.Topic, contracts.RoleTopicPrefix)
+	if err := roleLaneProjectError(lane); err != nil {
+		cfg.logger.Warn("listener role lane refused a role named under a project it does not work for; no holder is sent it",
+			slog.String("topic", item.Topic), slog.String("event_id", item.EventID), slog.String("error", err.Error()))
+		return roleForward{}, false
+	}
 	role, _ := roleOfLaneTopic(item.Topic)
 	resolvedAt := cfg.now()
 	sessionID, holder, ok := resolveCoreRoleHolder(cfg, item, role)

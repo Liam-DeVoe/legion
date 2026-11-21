@@ -678,9 +678,9 @@ func keepForNextHolder(cfg listenerDeliveryHandlerConfig, role string, item cont
 	return kept, nil
 }
 
-// errRoleNotKeepable is keepForNextHolder's answer for a role token no claim can be keyed by
+// errRoleNotKeepable is keepForNextHolder's answer for a role no claim can be keyed by
 // (roles.ValidClaimKey), which it keeps nothing for.
-var errRoleNotKeepable = errors.New("no claim can name this role token, so nothing is kept for it")
+var errRoleNotKeepable = errors.New("no claim can be keyed by this role, so nothing is kept for it")
 
 // errEdgeKeepsNothing is keepForNextHolder's answer on an edge listener, whose grant publishes no
 // kept role lane (natsgrant.Edge), so it keeps nothing for any role.

@@ -104,19 +104,57 @@ The broker reads each typed secret’s value once for each new version or type, 
 
 - `docs` — architecture, constraints, external repo touchpoints
 
+## Development
+
+Run the Go commands from `packages/envoy`:
+
+```bash
+go build ./cmd/dispatch ./cmd/listener
+go test -timeout 20m ./...
+go test -count=1 -run '^TestName$' ./internal/bus/
+gofmt -l .
+go vet ./...
+```
+
+`internal/dispatch/api` alone takes close to `go test`'s ten-minute default deadline, so a
+run that includes it passes `-timeout 20m` (`docs/testing.md` at the repository root, "Go's
+package deadline").
+
+`./...` here does not build `infra/`, a Go module of its own that imports packages of this
+one (`internal/bus` and `internal/contracts` among them): after a change to one of them,
+vet `infra/` too (`infra/README.md`, "Changing the module").
+
+The Postgres-backed tests read `DISPATCH_TEST_DATABASE_URL` (Dispatch) and
+`BROKER_TEST_DATABASE_URL` (the secrets broker). Without them most of those tests skip, and
+`go test` still prints `ok`. `scripts/dev-postgres.sh` starts a pgvector Postgres and
+prints its URL, and `scripts/database-skips.sh` (`scripts/README.md`) fails a run on any
+skip.
+
+Build tags hold the slow and live suites, which `go test ./...` does not build: among them
+`natslive` (a NATS image, so it needs Docker), `smoke` (the listener image),
+`multiprocess` (Dispatch and the broker), and Dispatch's `twobuild` and `memory`
+(`cmd/dispatch/README.md`, "Tests"). The `ci-job-*.yaml` files in `.github/workflows/` at
+the repository root show how CI runs each.
+
+`internal/dispatch/pmdoc` tests compare with the browser editor through bun scripts in
+`pmdoc/gen`: they need `bun` and a `bun install` at the repository root. Without `bun` they
+skip, except where `CI` is set, where they fail.
+
 ## The edge listener
 
 `ENVOY_EDGE_PROJECTS` makes a listener the edge listener, the one an outside person's agents reach Envoy through.
 It names the projects the edge serves: project keys separated by commas or white space, read as a broker token's own list is (`parseEdgeProjects`, `internal/config/config.go`).
-A list that no token could carry refuses the start, naming the variable.
-Unset or blank, the listener serves as every other listener does, and nothing in this section applies.
+A list that no token could carry refuses the start, naming the variable, and so does a set value that names no project, such as a lone comma or white space.
+Unset or empty, the listener serves as every other listener does, and nothing in this section applies.
 
 The edge holds each session to the projects of the broker token that admitted it, also in a deployment where each project is public.
-It gives a session no message of no project, except the GitHub events of its projects' repositories.
-The header of `cmd/listener/project_scope.go` lists the rules and the function that holds each, and `cmd/listener/edge_mode_test.go` tests each:
+It follows, stores and shows a session no topic of no project, except the GitHub topics of its projects' repositories, and it releases at each registration every claim the session holds of another project's role.
+A role message the role lane forwarded to the session's own agent subject before that registration, or after a later claim another writer made for the session, travels on that subject: the relay's check of each frame's topic, which the edge needs before it opens, is what holds those frames to the token's projects.
+The header of `cmd/listener/project_scope.go` lists the rules and the function that holds each; `cmd/listener/edge_mode_test.go` and `cmd/listener/edge_repositories_test.go` test each:
 
-- **Start**: the edge refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, `ENVOY_WEBHOOKS` or a webhook secret, and without the broker-token settings (`ENVOY_AGENT_SECRETS_URL`, `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` or `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`, and `ENVOY_PUBLIC_URL`).
+- **Start**: the edge refuses to start beside `ENVOY_API_TOKEN`, any `ENVOY_OIDC_*` setting, `ENVOY_DISPATCH_PRINCIPAL`, `ENVOY_WEBHOOKS` or a webhook secret, and without the broker-token settings (`ENVOY_AGENT_SECRETS_URL`, `ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE` or `ENVOY_AGENT_SECRETS_GOOGLE_AUDIENCE`, and `ENVOY_PUBLIC_URL`).
   Each refusal names the variable (`validateEdgeMode`).
+  Dispatch sends its role-marked messages through a shared listener, and no session of the edge sends as Dispatch, so the edge names no principal whose send may carry a role mark.
 
 - **Admission**: `/v1` admits a broker token alone, of project scope `named` or `person`, that lists at least one project and only projects the edge serves (`EdgeAdmits`).
   Any other session's broker token gets `403` with the reason `token_not_admitted`, logged as `listener: edge listener refused a broker token`.
@@ -135,14 +173,20 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   It acknowledges any other GitHub event undelivered and counts it in `envoy_edge_github_withheld_total`:
   under `reason="not_in_project"`, or under `reason="answer_unknown"` while a project of the session has no fresh answer.
   In that second case the session's next frame carries `Envoy-Gap: true` with `Envoy-Gap-Reason: repository_withheld`, and every frame that is not GitHub's is delivered as before.
+  The mark is kept for the session until a frame carrying it is published: across the session's relay runs on this listener, and on the session's entry in `envoy_sessions` (`session.SessionEntry.RepositoryGap`), which the next listener to relay the session reads after a move or a restart.
   A gap mark with no reason is the stream's own retention gap, and a frame that marks both carries no reason.
   A refresh removes a session's interest in a repository that left its projects.
 
 - **Publishes**: `POST /v1/messages/publish` takes only a role subject in the form that names the project, `notifications.role.<KEY>.<role>`, of one of the token's projects and for a role that works for that project;
   anything else gets `403 topic_not_published` (`edgePublishRefusal`).
 
+- **Senders**: `POST /v1/messages/send` and `POST /v1/messages/publish` take only a message from the session itself: `source` `agent` or left out, and `source_session` the token's session.
+  Any other gets `403 sender_not_session` (`edgeSenderRefusal`), so no edge session sends a message under another source, such as a Dispatch event or a person's message, or under no session.
+
 - **Roles**: `POST /v1/roles/set` and `GET /v1/roles/{role}` take only a role that works for one of the token's projects, else `403 role_not_in_project` (`edgeRoleRefusal`).
-  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title and capabilities (`edgeRoleHolder`).
+  `GET /v1/roles/{role}` names a holder whose registering token listed none of the token's projects without its directory, machine, host, title, client instance and capabilities (`edgeRoleHolder`).
+  Each registration first releases every claim the session holds of another project's role, which another listener granted it or a token that listed more did, and the answer's `warnings` name it (`store.Registry.ReleaseRefusedRoleClaims`); a release that fails refuses the registration with the retryable `503`, and nothing of it is stored. It renews only the session's claims of roles of its token's projects.
+  A claimant made live again is handed the kept messages of its token's projects' roles alone.
 
 - **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
   Any other target gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`).
@@ -195,42 +239,6 @@ Every other listener answers the path `404`, an upgrade included, so no shared l
 
 - **Tests**: `cmd/listener/relay_socket_test.go` runs the socket in one process with a stand-in broker, on the rig of `relay_socket_fixture_test.go`.
   `cmd/listener/relay_socket_live_test.go` (build tag `natslive`) runs two edge listeners under `natsgrant.Edge` on the hub's NATS image, with the real broker of `internal/cipher/ciphertest` and 30-second tokens; its binary checks every second (`-ldflags "-X main.relaySocketCheckBuild=1s"`).
-
-## Development
-
-Run the Go commands from `packages/envoy`:
-
-```bash
-go build ./cmd/dispatch ./cmd/listener
-go test -timeout 20m ./...
-go test -count=1 -run '^TestName$' ./internal/bus/
-gofmt -l .
-go vet ./...
-```
-
-`internal/dispatch/api` alone takes close to `go test`'s ten-minute default deadline, so a
-run that includes it passes `-timeout 20m` (`docs/testing.md` at the repository root, "Go's
-package deadline").
-
-`./...` here does not build `infra/`, a Go module of its own that imports packages of this
-one (`internal/bus` and `internal/contracts` among them): after a change to one of them,
-vet `infra/` too (`infra/README.md`, "Changing the module").
-
-The Postgres-backed tests read `DISPATCH_TEST_DATABASE_URL` (Dispatch) and
-`BROKER_TEST_DATABASE_URL` (the secrets broker). Without them most of those tests skip, and
-`go test` still prints `ok`. `scripts/dev-postgres.sh` starts a pgvector Postgres and
-prints its URL, and `scripts/database-skips.sh` (`scripts/README.md`) fails a run on any
-skip.
-
-Build tags hold the slow and live suites, which `go test ./...` does not build: among them
-`natslive` (a NATS image, so it needs Docker), `smoke` (the listener image),
-`multiprocess` (Dispatch and the broker), and Dispatch's `twobuild` and `memory`
-(`cmd/dispatch/README.md`, "Tests"). The `ci-job-*.yaml` files in `.github/workflows/` at
-the repository root show how CI runs each.
-
-`internal/dispatch/pmdoc` tests compare with the browser editor through bun scripts in
-`pmdoc/gen`: they need `bun` and a `bun install` at the repository root. Without `bun` they
-skip, except where `CI` is set, where they fail.
 
 ## Local end-to-end
 
