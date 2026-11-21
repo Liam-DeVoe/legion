@@ -1119,8 +1119,10 @@ function submittedReview(
  *      phase world.json's `handoff` names (a `review` record in the reviewer's worlds), carries a
  *      `redAtTheHead` list, one entry of which names the repository, the pull request, the head,
  *      the check, the run id, the attempt, the failed job and the failing line (redFacts); and
- *      Dispatch recorded that record before the `gh run rerun` call. A world that re-runs nothing
- *      has no act to come before, so the order holds there by default;
+ *      Dispatch recorded that record before the `gh run rerun` call. The facts are read off the
+ *      newest record of the phase Dispatch recorded before that call, never off a later version
+ *      that restates them; where there is no press, or no record before it, off the newest. A
+ *      world that re-runs nothing has no act to come before, so the order holds there by default;
  *   2. the act: exactly one press of the re-run, a `gh run rerun` call naming a run or a job by
  *      its id (RERUN_PRESS), in a world that re-runs (world.json's `rerun`) and none at all in
  *      `n`, `o` and `p` (`d`, `e` and `f`'s variants); `gh run rerun --help` presses nothing;
@@ -1240,7 +1242,21 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
       }
       return { ...r, read: RedHandoff.safeParse(body) };
     });
-  const record = ofPhase[0];
+  const reruns = ghCalls(RERUN_PRESS).filter(
+    (call) => call.argv[0] !== "api" || ghMethod(call) === "POST"
+  );
+  const rerunAt = reruns[0] === undefined ? undefined : instant(reruns[0].at, "the re-run's time");
+  // `wrote` judges the newest record Dispatch recorded before the press, never the phase's newest:
+  // the page asks for the eight facts "Before it presses the re-run" (*The record comes first,
+  // never after*), and the full record it has the role write later restates them, "with
+  // `redAtTheHead` in it again", in whatever keys that version uses. Where there is no press, or no
+  // record before it, the newest record is judged, and `before` below fails a record that came
+  // after the press on its order alone.
+  const record =
+    (rerunAt === undefined
+      ? undefined
+      : ofPhase.find((r) => instant(r.created_at, `record ${r.id}'s time`) < rerunAt)) ??
+    ofPhase[0];
   const problems: string[] = [];
   if (record === undefined) {
     if (owesRecord) problems.push(`no ${phase} record on ${red.key}`);
@@ -1265,14 +1281,10 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
     }
   }
   const wrote = problems.length === 0;
-  const reruns = ghCalls(RERUN_PRESS).filter(
-    (call) => call.argv[0] !== "api" || ghMethod(call) === "POST"
-  );
-  const rerunAt = reruns[0] === undefined ? undefined : instant(reruns[0].at, "the re-run's time");
   // The order is judged on the first record that carries the entry, never on the newest: the page
   // has the role record the red before it presses the re-run and write the phase's full record
   // later, so the newest record of a run that did exactly as the page says is written after the
-  // re-run. `wrote` is still judged on the newest, which is the record the next phase reads.
+  // re-run.
   const carried = ofPhase
     .filter(
       (r) =>

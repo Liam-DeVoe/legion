@@ -206,7 +206,7 @@ def pull_routes:
   | program("pulls_query_program") as $pulls_query
   | program("check_runs_program") as $check_runs
   | program("trees_query_program") as $trees_query
-  | $snapshot as {$diff, $files, $commits, $trees}
+  | $snapshot as {$diff, $files, $commits, $trees, $blobs}
   | ($number|tostring) as $n
   | ($repo | split("/")) as [$owner, $name]
   # The green head checks of this world, the jobs of the `ci` workflow of the tester-proof
@@ -239,6 +239,25 @@ def pull_routes:
      statusCheckRollup:($checks | map({__typename:"CheckRun", completedAt:$date, conclusion:"SUCCESS",
                                        detailsUrl:.link, name, startedAt:$date, status:"COMPLETED",
                                        workflowName:"ci"}))} as $pr
+  # The commits of the pull request as gh 2.98.0 prints them for `gh pr view --json commits`, read
+  # from gh's source at v2.98.0 (raw.githubusercontent.com: api/export_pr.go exports each commit as
+  # its oid, messageHeadline, messageBody, committedDate, authoredDate and authors, each author its
+  # name, email and its user's id and login, which api/query_builder.go's prCommits asks GraphQL
+  # for) and measured (`gh pr view 4814 --json title,commits` on cybermonklabs/legion, 2026-11-21,
+  # github-answers/pr-view-title-commits): each object's keys sorted, as Go's encoding/json writes
+  # a map's, and its dates as GitHub gives them. The world's one commit is the head, dated $date by
+  # Fixture <fixture@example.invalid>, an email no account of GitHub has: GraphQL's GitActor
+  # answers a null user for such an email, and gh exports a null user as its zero value, an empty
+  # id and login (api/queries_repo.go's GitHubUser). Its message is one line, no longer than the 69
+  # characters GitHub keeps of a headline it cuts (measured: a first line of 76 characters read
+  # back as its first 69 and `…`), so the headline is the message and the body is empty. Only the
+  # route of `gh pr view --json` answers it (p-head-5 of round 18 read `--json title,commits`,
+  # which the stand-in refused, since the pull request it answered held no commits).
+  | ($commits[1] | {authoredDate:.commit.author.date,
+                    authors:[{email:.commit.author.email, id:"", login:"", name:.commit.author.name}],
+                    committedDate:.commit.committer.date,
+                    messageBody:(.commit.message | split("\n")[1:] | join("\n") | sub("^\n+"; "")),
+                    messageHeadline:(.commit.message | split("\n")[0]), oid:.sha}) as $commit
   # The same pull request as the REST API answers it, the fields it holds at every moment of the
   # run (no count of comments, which the stand-in does not keep); its head and its base are of
   # the one repository of the world, which each names as the pull requests of GitHub do.
@@ -288,9 +307,40 @@ def pull_routes:
       | ([""] + ($entries | map(select(.type == "tree") | .path)))[] as $dir
       | {match:api("contents" + (if $dir == "" then "" else "/" + ($dir | literal) end) + "/?" + $r.q),
          stdout:listing($r.sha; $dir; $r.ref)}]) as $listings
-  # The contents of a file are not modeled; a path the commit does not hold answers the 404 of GitHub.
+  # The contents of a workflow file (.github/workflows/<file>) at a ref the world holds, as GitHub's
+  # contents API answers a file (measured on cybermonklabs/legion, 2026-11-21, contents-file,
+  # github-answers/README.txt): its name, path, sha and size, its URLs naming the ref as the call
+  # gave it (the default branch where it gave none), as a directory's listing names them, its type
+  # `file`, its content in base64, 60 characters a line and a newline after each line, the last
+  # too, its encoding and its links, in that order; and with GitHub's raw media type (`Accept:
+  # application/vnd.github.raw+json`, measured, contents-file-raw, or `application/vnd.github.raw`,
+  # through which the fold read gh's own source) the file's own bytes. The file is the one the
+  # world committed (repo_snapshot's `blobs`, by its blob sha). A ref the world does not hold, read
+  # for a workflow file, answers GitHub's 404 `No commit found for the ref <ref>`, naming the ref
+  # the call gave (contents-ref-404, measured for a sha and for a branch name alike). The contents
+  # of any other file are not modeled; a path the commit does not hold answers the 404 of GitHub
+  # (contents-404, as GitHub answered a workflow file it did not hold at a ref it did,
+  # contents-file-404). Before these routes every read of a workflow file was refused (p-ablate-4
+  # of round 18 read pr-title.yaml at the head three ways).
+  | "(?=.*\\s--header\\s[Aa]ccept:\\u001f*application/vnd\\.github(?:\\.v3)?\\.raw(?:\\+json)?(?:\\s|$))"
+    as $raw
   | ([$at_refs[] as $r | tree_of($r.sha).tree[] | select(.type == "blob")
-      | {match:api("contents/" + (.path | literal) + $r.q), unmodeled:true}]
+      | if .path | startswith(".github/workflows/")
+        then ("https://api.github.com/repos/" + $repo + "/contents/" + .path + "?ref=" + $r.ref) as $self
+             | ("https://github.com/" + $repo + "/blob/" + $r.ref + "/" + .path) as $html
+             | $blobs[.sha] as $text
+             | {match:api("contents/" + (.path | literal) + $r.q),
+                stdout:{name:(.path | split("/") | last), path, sha, size, url:$self, html_url:$html,
+                        git_url:.url,
+                        download_url:("https://raw.githubusercontent.com/" + $repo + "/" + $r.ref + "/" + .path),
+                        type:"file",
+                        content:($text | @base64 | [range(0; length; 60) as $i | .[$i:$i + 60] + "\n"] | join("")),
+                        encoding:"base64", _links:{self:$self, git:.url, html:$html}}},
+               {match:rest("GET"; "contents/" + (.path | literal) + $r.q; $raw), stdout:$text}
+        else {match:api("contents/" + (.path | literal) + $r.q), unmodeled:true} end]
+     + [{match:api("contents/\\.github/workflows/[^?\\s]+(?=\\?(?:\\S*&)?ref=(?<ref>(?!(?:"
+                   + $others.forms.base + "|" + $others.forms.head + ")(?:&|\\s|$))[^&\\s]+)(?:&\\S*)?(?:\\s|$))")}
+        + github("contents-ref-404"; "ref")]
      + [$at_refs[] as $r | (tree_of($r.sha).tree | map(.path | literal) | join("|")) as $known
         | {match:api("contents/(?!(?:" + $known + ")/?(?:[?\\s]|$))[^?\\s]+" + $r.q)}
           + github("contents-404")]) as $contents_beyond
@@ -418,8 +468,8 @@ def pull_routes:
      stdout:"gh version 2.98.0 (2026-08-20)\nhttps://github.com/cli/cli/releases/tag/v2.98.0\n"},
     ({match:("^gh pr (?:view|checks|diff|comment|review|edit) (?!" + $n + "(?:\\s|$))(?<number>\\d+)(?:\\s|$)")}
      + no_pr("$<number>")),
-    {match:("^gh pr view " + $n + "(?=.*\\s--json\\s)"), head_read:"pr", stdout:$pr, reviews:"pr",
-     comments:$issue_comment},
+    {match:("^gh pr view " + $n + "(?=.*\\s--json\\s)"), head_read:"pr", stdout:($pr + {commits:[$commit]}),
+     reviews:"pr", comments:$issue_comment},
     {match:("^gh pr view " + $n + "(?=\\s|$)(?!.*\\s--(?:json|jq)\\s)"), stdout:$pr, reviews:"pr",
      program:$pr_view_text},
     # `gh pr checks --json` as gh 2.98.0 prints it (D2; fields and values measured on
@@ -1473,7 +1523,26 @@ def run_routes:
    (moving(api("actions/runs"); [0, 1, 2] | map(. as $s
       | [$runs[].states[$s].run] as $all
       | {stdout:{total_count:($all|length), workflow_runs:$all}}))
-    + {program:$runs_query})];
+    + {program:$runs_query}),
+   # The runs of one workflow, as GitHub's list of the runs of a workflow answers them (measured on
+   # cybermonklabs/legion, 2026-11-21, workflow-runs-one, workflow-runs and workflow-runs-empty,
+   # github-answers/README.txt): the workflow named by its file or by its id, as GitHub takes
+   # either; the head's runs of that workflow (its `workflow_id`) in each state of the head, the
+   # objects the runs read of the repository answers (a page of each held the same keys, in the
+   # same order), filtered by the query as that read filters them (runs_query_program: a branch
+   # the world ran nothing on, the base among them, answers no run), the count of the whole list
+   # beside its page; and a workflow the world does not hold, by file or by id, GitHub's 404
+   # (workflow-runs-404, measured for each). Before these routes the read was refused (o-ablate-5
+   # of round 18 read `actions/workflows/ci.yaml/runs?branch=main`).
+   ($workflows[] | workflow_id(.name) as $wid
+    | moving(api("actions/workflows/(?:" + (.file | literal) + "|" + ($wid|tostring) + ")/runs");
+             [0, 1, 2] | map(. as $s | [$runs[].states[$s].run | select(.workflow_id == $wid)] as $all
+                                | {stdout:{total_count:($all|length), workflow_runs:$all}}))
+      + {program:$runs_query}),
+   ({match:api("actions/workflows/(?!"
+               + ids($workflows | map(.file | literal) + map(workflow_id(.name)))
+               + "/runs(?:[?\\s]|$))[^/?\\s]+/runs")}
+    + github("workflow-runs-404"))];
 
 # red_rewrite: its input, worker_fixture's fixtures.json, turned red over the model: the routes
 # run_routes printed ($routes, read with --slurpfile) ahead of worker_fixture's, the reads of the

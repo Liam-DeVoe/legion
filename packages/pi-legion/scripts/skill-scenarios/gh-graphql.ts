@@ -23,14 +23,25 @@
 // GitHub's empty page, no node and `endCursor` null (measured, github-answers/README.txt).
 // GitHub refuses some requests before it reads anything, and its body is then the errors alone
 // (measured, github-answers/graphql-*): a variable of a type `T!` given no value or null, a
-// String given for an Int (in a variable or written in the query), and a variable the query
-// declares and does not use; parse holds them in the document's `errors`. A variable the call
-// gives and the query does not declare is ignored, as GitHub ignores it (measured). A
-// repository's owner and name match without regard to case, as GitHub's do (measured): a tree
-// holds them in lower case.
+// String given for an Int (in a variable or written in the query), a variable the query
+// declares and does not use, and a query that ends where a selection or its `}` goes, after a
+// selection of its set (a `}` left off: trial-t-head-2 of round 18 sent its review threads query
+// one `}` short); parse holds them in the document's `errors`. GitHub parses the query before it
+// reads anything else, so that last answers its parse error alone, `Expected NAME, actual: (none)
+// ("") at [<line>, <column>]` at the line and the column the last token of the query starts at,
+// whatever else the query holds (measured on 2026-11-21 for five such queries, a `}` and a field
+// name last, on one line and over four, and with blanks after the last token:
+// github-answers/graphql-parse-end and README.txt). A query that ends anywhere else is not
+// modeled. A variable the call gives and the query does not declare is ignored, as GitHub ignores
+// it (measured). A repository's owner and name match without regard to case, as GitHub's do
+// (measured): a tree holds them in lower case.
 
 /** A request the rig does not model, which the stand-in refuses as such. */
 export class Unmodeled extends Error {}
+
+/** A query that ends where a selection or its `}` goes, after a selection of its set: parse
+ * answers GitHub's parse error for it (the header). */
+class EndsEarly extends Error {}
 
 type Scalar = null | boolean | number | string;
 /** An argument's value with its variables put in: an enum value stays a name of its own. */
@@ -230,6 +241,7 @@ export function parse(text: string, variables: Record<string, unknown>): Documen
     expect("{");
     const out: Selection[] = [];
     while (peek()?.text !== "}") {
+      if (peek() === undefined && out.length > 0) throw new EndsEarly();
       const t = next();
       if (t.kind === "punct" && t.text === "...") {
         const on = next();
@@ -322,7 +334,25 @@ export function parse(text: string, variables: Record<string, unknown>): Documen
     if (fit === undefined) throw new Unmodeled(`a value the rig cannot type as ${held.type}`);
     if (!fit) invalid(given, `Could not coerce value ${render(given)} to ${base}`);
   }
-  const document = { selections: selections(anonymous ? [] : null), errors };
+  let selected: Selection[];
+  try {
+    selected = selections(anonymous ? [] : null);
+  } catch (error) {
+    if (!(error instanceof EndsEarly)) throw error;
+    // GitHub's parse error alone, whatever else the query holds, at the place the query's last
+    // token starts (the header); the document selects nothing.
+    const last = ts[ts.length - 1] as Token;
+    return {
+      selections: [],
+      errors: [
+        {
+          message: `Expected NAME, actual: (none) ("") at [${last.line}, ${last.column}]`,
+          locations: [{ line: last.line, column: last.column }],
+        },
+      ],
+    };
+  }
+  const document = { selections: selected, errors };
   if (at !== ts.length) throw new Unmodeled("a second definition");
   // A variable the operation declares and the query does not use: GitHub's error (measured).
   for (const [name, held] of declared)

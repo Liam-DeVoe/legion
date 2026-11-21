@@ -61,12 +61,11 @@ The record is a handoff record of the role's own phase, written with
 entry per red, each entry naming all eight facts above. That record is a version of its own: the
 role writes the phase's full record later, with `redAtTheHead` in it again, and `handoff_complete`
 reports the newest version. A re-run pressed before Dispatch has recorded the first version loses
-the failure, which is what this page exists to keep.
-
-The reviewer writes that handoff record before the re-run as the implementer does, and repeats
-it in the body of the one review it submits at the end of the round, since the reviewer's one
-review ends its round. No file under `packages/daemon/internal/prompts/roles/` names that
-field. This page is where the implementer and the reviewer read it.
+the failure, which is what this page exists to keep. The reviewer writes that handoff record before
+the re-run as the implementer does, and repeats it in the body of the one review it submits at the
+end of the round, since the reviewer's one review ends its round. No file under
+`packages/daemon/internal/prompts/roles/` names that field. This page is where the implementer and
+the reviewer read it.
 
 ## Which red is the change's
 
@@ -135,25 +134,26 @@ gh api "repos/<o>/<r>/actions/runs?head_sha=<head>&event=pull_request&per_page=1
   --jq '.workflow_runs[] | [.id,.name,.run_attempt,.conclusion] | @tsv'
 ```
 
-A run of that head whose `run_attempt` is above 1 is a re-run somebody already pressed. Whether
-it spent the head's one re-run is read on each earlier attempt of that run, `<n>` from 1 to one
-below the run's `run_attempt`:
+Read every `pull_request` run of the head, not only the one that failed: the failing run on its
+first attempt says nothing, since another run's second attempt spends the head's one re-run too. A
+run of that head whose `run_attempt` is above 1 is a re-run somebody already pressed. Whether it
+spent the head's one re-run is read on each earlier attempt of that run, `<n>` from 1 to one below
+the run's `run_attempt`:
 
 ```bash
 gh api --paginate "repos/<o>/<r>/actions/runs/<run-id>/attempts/<n>/jobs?per_page=100" \
   --jq '.total_count, (.jobs[] | [.name,.conclusion] | @tsv)'
 ```
 
-Count the jobs it returned against `total_count`, because a run can hold more than 100 jobs; a
-count that falls short is a read to make again, never a decision.
-
-The re-run after an earlier attempt spends nothing only when every job of that attempt that did not
-succeed or skip is `cancelled`, or is an aggregate that failed over such a lane. Any other
-conclusion spends it, one this page does not name included. A lane GitHub cancelled at two attempts
-of the same run is read as `failure`, so a cancelled lane gets one re-run that spends nothing, and
-the head's one re-run is still left after it. That bound is what holds a hung job: GitHub cancels a
-job that runs past its `timeout-minutes`, so a lane that hangs again reads `cancelled` again.
-`event=pull_request` keeps the by-hand `workflow_dispatch` runs out, as the counted set does.
+Count the jobs it returned against `total_count`, because a run can hold more than 100 jobs; a count
+that falls short is a read to make again, never a decision. The re-run after an earlier attempt
+spends nothing only when every job of that attempt that did not succeed or skip is `cancelled`, or
+is an aggregate that failed over such a lane. Any other conclusion spends it, one this page does not
+name included. A lane GitHub cancelled at two attempts of the same run is read as `failure`, so a
+cancelled lane gets one re-run that spends nothing, and the head's one re-run is still left after
+it. That bound is what holds a hung job: GitHub cancels a job that runs past its `timeout-minutes`,
+so a lane that hangs again reads `cancelled` again. `event=pull_request` keeps the by-hand
+`workflow_dispatch` runs out, as the counted set does.
 
 An aggregate is resolved to its lane, as step 2 of *Which red is the change's* says, before the
 spend is judged. The reviewer's existing re-run of a cancelled or absent required check, which its

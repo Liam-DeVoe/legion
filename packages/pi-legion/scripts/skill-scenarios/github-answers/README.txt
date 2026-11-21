@@ -61,6 +61,12 @@ graphql-variable-null     gh api graphql -f query='query($n:Int!){repository(own
 graphql-variable-coerce   the same query with -f n=1003 (a String for Int!)
 graphql-literal-type      gh api graphql -f query='query{repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:"1003"){number}}}'
 graphql-variable-unused   gh api graphql -F n=1003 -f query='query($n:Int!,$u:String){repository(owner:"cybermonklabs",name:"legion"){pullRequest(number:$n){number}}}'
+graphql-parse-end         gh api graphql -f query='query{repository(owner:"example",name:"widgets"){pullRequest(number:1002){reviewThreads(first:100){nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}'   (trial-t-head-2's query of round 18, one `}` short; GitHub parses before it resolves a name, so it answers this query of the rig's repository as it answers any; measured on 2026-11-21, line 21 of that day's log, below)
+  The same day the same error answered four more queries that end where a selection or its `}`
+  goes, each at the line and the column the query's last token starts at: `query{viewer{login}`
+  at [1, 19] (line 23), `query{viewer{login` at [1, 14] (line 25),
+  `query {\n  viewer {\n    login\n  }\n` at [4, 3] (line 27), and `query{viewer{login}` with
+  two blanks after it at [1, 19] (line 29).
 Stated rather than measured (INFRA-1303, 2026-11-20): a write the measuring token, read-only,
 cannot make. The file pair holds what gh 2.98.0 prints for it, in the shape of the measured
 errors above (the message, the documentation URL of the endpoint, the status as a string; gh's
@@ -72,6 +78,22 @@ review-dismiss-422   gh api -X PUT repos/<owner>/<repo>/pulls/<n>/reviews/<id of
   COMMENTED review (the one archived dismissal, trial-i-head-4's, dismisses review 6002, which
   is APPROVED), so the text decides no run; the documentation URL: that docs section's anchor,
   as review-404 names its own.
+Measured the same way on 2026-11-21 for INFRA-1303's round-18 fixes, through the same read-only
+measure-gh.sh, into a request log of that day's own, whose line each entry names:
+contents-ref-404    gh api repos/cybermonklabs/legion/contents/.github/workflows/tests-closed.yaml?ref=1111111111111111111111111111111111111111   (exit 1; line 5; with ?ref=no-such-ref-infra-1303, line 7, the same bytes but for the ref they name)
+workflow-runs-404   gh api repos/cybermonklabs/legion/actions/workflows/no-such-workflow-infra-1303.yaml/runs   (exit 1; line 15; the workflow id 1, which the repository holds no workflow of, the same bytes, line 35)
+(A workflow file the repository does not hold, at a ref it does,
+`contents/.github/workflows/no-such-file-infra-1303.yaml?ref=8b339a1020aced4bbc126a7a774aa23312cb2a71`,
+line 9, answered contents-404's bytes.) These reads answered with exit 0, each <name>.stdout what gh
+printed and <name>.stderr empty:
+contents-file           gh api repos/cybermonklabs/legion/contents/.github/workflows/tests-closed.yaml?ref=8b339a1020aced4bbc126a7a774aa23312cb2a71   (line 1; its content decodes to the blob d2fb956e… byte for byte)
+contents-file-raw       the same read with -H 'Accept: application/vnd.github.raw+json'   (line 3; the blob's own bytes)
+workflow-runs-main      gh api 'repos/cybermonklabs/legion/actions/workflows/tests-closed.yaml/runs?branch=main&per_page=1'   (line 11; with ?branch=no-such-branch-infra-1303, line 13, the same)
+pr-view-title-commits   gh pr view 4814 --repo cybermonklabs/legion --json title,commits   (line 33)
+With no file, since the page holds the runs of the repository: `actions/workflows/ci.yaml/runs?
+branch=main&per_page=1` (line 17) and `actions/runs?branch=main&per_page=1` (line 19) each answered
+a page whose run holds the same 35 keys in the same order, the run of the workflow list in the
+shape the runs list gives one.
 
 What GitHub answered to the reads below, measured the same way on 2026-11-18, which the rig's
 answers follow (no file: each is stated here and in the comment of the code that follows it):

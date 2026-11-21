@@ -661,6 +661,12 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		// holds no phase, so its re-run of a red holds only while it holds `reviewing` (INFRA-1303's
 		// review round 3).
 		{"go/reviewer.md", "and one the change did not make takes the head's one re-run first while you hold `reviewing`"},
+		// Before any re-run of a red the reviewer reads the spend over every `pull_request` run of
+		// the head, as the red-at-the-head page says: round 18 of INFRA-1303's batch (o-head-1, 2, 4
+		// and 5) read the failing run's attempts alone, saw attempt 1, and pressed at a head whose
+		// one re-run another run's attempt 2 had already spent, and the cancelled-or-absent sentence
+		// below points at that run alone.
+		{"go/reviewer.md", "Before any re-run of a red, read whether the head's one re-run is already spent on every `pull_request` run of the head, as that page says, never on the failing run alone: that run on its first attempt says nothing, since another run's second attempt spends the head's one re-run too."},
 		// A check the counted set does not list yet while a run at the head holds its failed job is
 		// unreported, not absent: it is waited for and gets no re-run, while main's re-run of a
 		// cancelled or absent check stays, absent meaning a run at the head holds its job while the

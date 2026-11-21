@@ -578,16 +578,17 @@ describe("red_fixture", () => {
   // d-head-1, d-head-5, e-head-4) read the field as missing, `pr view --json files` (d-head-2)
   // exited 1 in the one world where the files decide attribution, and `run view --json
   // runAttempt` (a-head-1, a-head-4, b-head-3, b-head-4, c-head-1, c-head-2), a field gh refuses,
-  // exited 0. Each such read must give the field a value, or be refused. The commits read names a
-  // field the world does not hold, so it is the one that reaches the picker's missing-field case
-  // on a rig that holds the rest: with only the other three, a picker set back to drop a missing
-  // field passed this row (the tester's mutation at 76cc2379).
+  // exited 0. Each such read must give the field a value, or be refused. The headRepository read
+  // names a field the world does not hold, so it is the one that reaches the picker's
+  // missing-field case on a rig that holds the rest: with only the other three, a picker set back
+  // to drop a missing field passed this row (the tester's mutation at 76cc2379). That read was of
+  // `commits` until round 18, whose p-head-5 had the world answer the pull request's commits.
   test("a --json read answers every field it names, or is refused", async () => {
     const run = redFixture("a");
     const reads = [
       ["pr", "view", String(RED_PR), "--repo", RED_REPO, "--json", "mergeStateStatus"],
       ["pr", "view", String(RED_PR), "--repo", RED_REPO, "--json", "files"],
-      ["pr", "view", String(RED_PR), "--repo", RED_REPO, "--json", "commits"],
+      ["pr", "view", String(RED_PR), "--repo", RED_REPO, "--json", "headRepository"],
       ["run", "view", String(RED_RUN_ID), "--repo", RED_REPO, "--json", "status,runAttempt"],
     ];
     for (const args of reads) {
@@ -3114,6 +3115,209 @@ describe("the world's repository, workflows and reads", () => {
         readFileSync(path.join(import.meta.dir, "github-answers/compare-404.stderr"), "utf8"),
         1,
       ],
+    });
+  });
+
+  // INFRA-1303, round 18's four reads, each refused as unmodeled in a run that stands. The first:
+  // p-head-5 read `gh pr view --json title,commits`, and the stand-in refused it, since the pull
+  // request it answered held no commits. Catches: commits refused beside any field gh lists, or in
+  // a shape other than gh 2.98.0's (api/export_pr.go; measured, github-answers/
+  // pr-view-title-commits): each object's keys sorted, the head the one commit, its author
+  // Fixture, whom no account of GitHub holds, so an empty id and login, its one line the headline.
+  test("gh pr view --json answers the pull request's commits beside any field, as gh prints them", async () => {
+    const run = redFixture("a");
+    const { head } = world(run);
+    const date = await gh(run, [
+      "api",
+      `repos/${RED_REPO}/commits/${head}`,
+      "--jq",
+      ".commit.committer.date",
+    ]);
+    const headline = `feat: greet(), a greeting helper for the widgets CLI (${RED_KEY})`;
+    const commit = {
+      authoredDate: date.stdout.trim(),
+      authors: [{ email: "fixture@example.invalid", id: "", login: "", name: "Fixture" }],
+      committedDate: date.stdout.trim(),
+      messageBody: "",
+      messageHeadline: headline,
+      oid: head,
+    };
+    const asked = await gh(run, [
+      "pr",
+      "view",
+      String(RED_PR),
+      "-R",
+      RED_REPO,
+      "--json",
+      "title,commits",
+      "--jq",
+      "{title:.title, commits:[.commits[].messageHeadline]}",
+    ]);
+    expect({
+      asked: [JSON.parse(asked.stdout), asked.stderr, asked.exit],
+      whole: await read(run, ["pr", "view", String(RED_PR), "--json", "commits,number,title"]),
+    }).toEqual({
+      asked: [{ title: RED_TITLE, commits: [headline] }, "", 0],
+      whole: [
+        `${JSON.stringify({ commits: [commit], number: RED_PR, title: RED_TITLE })}\n`,
+        "",
+        0,
+      ],
+    });
+  });
+
+  // The second: trial-t-head-2 read the review threads with a query one `}` short. GitHub parses a
+  // query before it resolves anything in it, and answers this one its parse error at the place the
+  // query's last token starts (github-answers/graphql-parse-end, measured for that very query; the
+  // line and column of a query over four lines, measured too, README.txt). Catches: such a query
+  // refused as unmodeled, the error at another place, and the same query with its `}` refused
+  // where the world's review threads answer it, none before a review with a line comment.
+  test("a GraphQL query one `}` short answers GitHub's parse error, and the whole query the world's threads", async () => {
+    const run = redFixture("a");
+    const threads = (number: number) =>
+      `query{repository(owner:"example",name:"widgets"){pullRequest(number:${number}){reviewThreads(first:100){nodes{id isResolved comments(last:1){nodes{author{login} body}}}}}}`;
+    const error = (line: number, column: number) => [
+      JSON.stringify({
+        errors: [
+          {
+            message: `Expected NAME, actual: (none) ("") at [${line}, ${column}]`,
+            locations: [{ line, column }],
+          },
+        ],
+      }),
+      `gh: Expected NAME, actual: (none) ("") at [${line}, ${column}]\n`,
+      1,
+    ];
+    expect({
+      short: await read(run, ["api", "graphql", "-f", `query=${threads(1002)}`]),
+      lines: await read(run, [
+        "api",
+        "graphql",
+        "-f",
+        "query=query {\n  viewer {\n    login\n  }\n",
+      ]),
+      whole: await read(run, ["api", "graphql", "-f", `query=${threads(RED_PR)}}`]),
+    }).toEqual({
+      short: githubAnswer("graphql-parse-end"),
+      lines: error(4, 3),
+      whole: [
+        JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } }),
+        "",
+        0,
+      ],
+    });
+    expect(githubAnswer("graphql-parse-end")).toEqual(error(1, 166));
+  });
+
+  // The third: o-ablate-5 read `actions/workflows/ci.yaml/runs?branch=main`. Catches: the runs of a
+  // workflow refused, answered with another workflow's runs or a branch's the world ran nothing on,
+  // or a workflow the world does not hold answered other than GitHub's 404 (measured,
+  // github-answers/workflow-runs-main and workflow-runs-404). World `e` holds two workflows, `ci`
+  // and `e2e`, id 1 and 3, each with a run of the head.
+  test("a workflow's runs answer the head's runs of that workflow, by file or id, and GitHub's 404 for another", async () => {
+    const e = redFixture("e");
+    const runs = JSON.parse(
+      (await gh(e, ["api", `repos/${RED_REPO}/actions/runs?head_sha=${world(e).head}`])).stdout
+    ).workflow_runs as { path: string }[];
+    const of = (file: string) => {
+      const mine = runs.filter((run) => run.path === `.github/workflows/${file}`);
+      return { total_count: mine.length, workflow_runs: mine };
+    };
+    expect({
+      main: await read(e, [
+        "api",
+        `repos/${RED_REPO}/actions/workflows/ci.yaml/runs?branch=main&per_page=10`,
+        "--jq",
+        ".workflow_runs[] | [.id, .head_sha[0:12], .event, .status, .conclusion] | @tsv",
+      ]),
+      ci: JSON.parse(
+        (await gh(e, ["api", `repos/${RED_REPO}/actions/workflows/ci.yaml/runs`])).stdout
+      ),
+      e2e: JSON.parse(
+        (
+          await gh(e, [
+            "api",
+            `repos/${RED_REPO}/actions/workflows/3/runs?branch=legion/${RED_KEY}`,
+          ])
+        ).stdout
+      ),
+      unknown: await read(e, ["api", `repos/${RED_REPO}/actions/workflows/nope.yaml/runs`]),
+      unknownId: await read(e, ["api", `repos/${RED_REPO}/actions/workflows/9/runs`]),
+    }).toEqual({
+      main: ["", "", 0],
+      ci: of("ci.yaml"),
+      e2e: of("e2e.yaml"),
+      unknown: githubAnswer("workflow-runs-404"),
+      unknownId: githubAnswer("workflow-runs-404"),
+    });
+    expect([of("ci.yaml").total_count, of("e2e.yaml").total_count]).toEqual([1, 1]);
+  });
+
+  // The fourth: p-ablate-4 read a workflow file at the head (`contents/.github/workflows/
+  // pr-title.yaml?ref=<head>`), its content through --jq, raw, and whole. Catches: the file
+  // refused, its content other than the bytes the world committed or in another base64 than
+  // GitHub's (60 characters a line, a newline after each), its keys in another order than
+  // GitHub's, its URLs naming another ref than the call's, and a ref or a file the world does not
+  // hold answered other than GitHub's 404 (measured, github-answers/contents-file,
+  // contents-file-raw, contents-ref-404 and contents-404).
+  test("a workflow file's contents answer the file at the ref, raw too, and GitHub's 404 for another ref or file", async () => {
+    const run = redFixture("a");
+    const { head, base } = world(run);
+    const src = path.join(run, "src");
+    const file = ".github/workflows/ci.yaml";
+    const text = Bun.spawnSync(["git", "-C", src, "show", `${head}:${file}`]).stdout.toString();
+    const sha = Bun.spawnSync(["git", "-C", src, "rev-parse", `${head}:${file}`])
+      .stdout.toString()
+      .trim();
+    const content = (
+      Buffer.from(text)
+        .toString("base64")
+        .match(/.{1,60}/g) ?? []
+    )
+      .map((line) => `${line}\n`)
+      .join("");
+    const at = (ref: string) => {
+      const url = `https://api.github.com/repos/${RED_REPO}/contents/${file}?ref=${ref}`;
+      const html = `https://github.com/${RED_REPO}/blob/${ref}/${file}`;
+      const blob = `https://api.github.com/repos/${RED_REPO}/git/blobs/${sha}`;
+      return JSON.stringify({
+        name: "ci.yaml",
+        path: file,
+        sha,
+        size: Buffer.byteLength(text),
+        url,
+        html_url: html,
+        git_url: blob,
+        download_url: `https://raw.githubusercontent.com/${RED_REPO}/${ref}/${file}`,
+        type: "file",
+        content,
+        encoding: "base64",
+        _links: { self: url, git: blob, html },
+      });
+    };
+    const contents = `repos/${RED_REPO}/contents/${file}`;
+    expect({
+      whole: await read(run, ["api", `${contents}?ref=${head}`]),
+      field: await read(run, ["api", `${contents}?ref=${head}`, "--jq", ".content"]),
+      raw: await read(run, [
+        "api",
+        `${contents}?ref=${head}`,
+        "-H",
+        "Accept: application/vnd.github.raw+json",
+      ]),
+      noRef: await read(run, ["api", contents]),
+      unknownRef: await read(run, ["api", `${contents}?ref=nope`]),
+      unknownFile: await read(run, [
+        "api",
+        `repos/${RED_REPO}/contents/.github/workflows/nope.yaml?ref=${head}`,
+      ]),
+    }).toEqual({
+      whole: [at(head), "", 0],
+      field: [`${content}\n`, "", 0],
+      raw: [text, "", 0],
+      noRef: [at(base), "", 0],
+      unknownRef: githubAnswer("contents-ref-404", "nope"),
+      unknownFile: githubAnswer("contents-404"),
     });
   });
 

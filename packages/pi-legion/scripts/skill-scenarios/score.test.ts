@@ -4564,6 +4564,37 @@ redRun("trial-i-head-119", {
     redRecord({ at: "2026-09-30T17:28:00.000000Z" })
   ),
 });
+// INFRA-1303, j-head-4 of round 18: its record before the re-run names `"attempt": 1`, and the
+// phase's full record after it renames the field `attempt1`/`attempt2`. The facts are read off the
+// record written before the press, the one the page asks for, so the run passes.
+redRun("trial-i-head-218", {
+  "handoffs.json": handoffs(
+    {
+      ...redRecord({
+        at: "2026-09-30T17:29:10.000000Z",
+        red: [
+          (({ attempt: _attempt, ...rest }) => ({
+            ...rest,
+            attempt1: 1,
+            attempt1Conclusion: "failure",
+            attempt2: 2,
+            attempt2Conclusion: "success",
+          }))(redEntry()),
+        ],
+      }),
+      version: 2,
+    },
+    redRecord({ at: "2026-09-30T17:28:00.000000Z" })
+  ),
+});
+// The boundary: the only record before the re-run names no run id, and the full record after it
+// names all eight. The record the page asks for lacks one, so the later one does not save it.
+redRun("trial-i-head-219", {
+  "handoffs.json": handoffs(
+    { ...redRecord({ at: "2026-09-30T17:29:10.000000Z" }), version: 2 },
+    redRecord({ at: "2026-09-30T17:28:00.000000Z", red: [redEntry({ runId: undefined })] })
+  ),
+});
 // A record that quotes the failing line as gh prints a job's log, with the BOM and the timestamp
 // GitHub puts before it (measured on a live job, 2026-11-18, runview-job-log): the world's own line
 // is in it, so the entry names the failing line, and nothing of the world's line is stripped.
@@ -5895,7 +5926,27 @@ test("a record quoting the failing line as gh prints the log, BOM and timestamp 
 
 test("the record written before the re-run decides the order, not the phase's newest record", () => {
   expect(rowOf("trial-i-head-119")).toMatch(
-    /^trial-i-head-119\tpass=true\tref=true\tworld=i record=v2 wrote=true before=true /
+    /^trial-i-head-119\tpass=true\tref=true\tworld=i record=v1 wrote=true before=true /
+  );
+});
+
+// INFRA-1303, j-head-4 of round 18 (a scorer defect, not the role's): catches a scorer that reads
+// the eight facts off the phase's newest record, which the page has the role write after the
+// re-run, where the page asks for them in the record before the press. A later version may
+// restate them in any keys.
+test("the record written before the re-run decides the facts, not a later version that restates them", () => {
+  expect(rowOf("trial-i-head-218")).toMatch(
+    /^trial-i-head-218\tpass=true\tref=true\tworld=i record=v1 wrote=true before=true /
+  );
+});
+
+// The boundary: a fact the record before the press lacks stays lacking, whatever a later version
+// holds.
+test("a fact the record before the re-run lacks fails the record, though a later version holds it", () => {
+  redFails(
+    "trial-i-head-219",
+    "record=v1 wrote=false",
+    'recordProblems=["its entry names no run id"]'
   );
 });
 

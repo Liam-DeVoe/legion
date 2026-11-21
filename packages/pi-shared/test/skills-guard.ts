@@ -1057,6 +1057,16 @@ const COUNTED_SET_IS_NEVER_REQUIRED =
   "Never with `--required`, which prints the checks the base requires and no other, so a lane under an aggregate such as `ci-ok` and a check the base does not require are never in it, and on a base that requires nothing it prints that no required checks are reported and exits 1.";
 
 /**
+ * The sentence of `## One re-run belongs to the head` that reads the spend over every run of the
+ * head, pinned whole and literally, right after the `actions/runs` read. Round 18 of INFRA-1303's
+ * batch (o-head-1, 2, 4 and 5) read only the failing run's attempts, saw attempt 1, and pressed at
+ * a head whose one re-run another run's attempt 2 had already spent. A reader that lost it takes
+ * the failing run's first attempt for an unspent head.
+ */
+const EVERY_RUN_OF_THE_HEAD_IS_READ =
+  "Read every `pull_request` run of the head, not only the one that failed: the failing run on its first attempt says nothing, since another run's second attempt spends the head's one re-run too.";
+
+/**
  * The exit statuses of the ancestry read, pinned literally. The sentence read "1 is not carried
  * and anything else is cannot compare" until INFRA-1303's review round 3, so exit 0, carried, fell
  * under "cannot compare" and a role following it never concluded the base carries the fix.
@@ -1279,6 +1289,11 @@ export function redAtTheHeadFaults(pages: {
           sentence: COUNTED_SET_IS_NEVER_REQUIRED,
           because:
             "a role that reads the counted set with `--required` sees no lane under `ci-ok` and no check the base does not require, and takes a base that requires nothing for a failed read",
+        },
+        {
+          sentence: EVERY_RUN_OF_THE_HEAD_IS_READ,
+          because:
+            "a role that reads only the failing run's attempts sees attempt 1 and presses at a head whose one re-run another run already spent",
         },
         {
           sentence: RECORD_BEFORE_THE_PRESS,

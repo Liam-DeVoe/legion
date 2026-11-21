@@ -199,9 +199,11 @@ checks_lines() {
 
 # repo_snapshot SRC C0 C1 DATE prints what the repository at SRC holds, as GitHub answers it from
 # the remote worker_fixture pushed it to, as one JSON object: the pull request's diff and its
-# files (C0..C1), the two commits, each dated DATE, and the tree of each.
+# files (C0..C1), the two commits, each dated DATE, the tree of each, and the text of each
+# workflow file of either commit by its blob sha, read whole (`jq -Rs`, so its last newline
+# stays), which the contents routes answer (routes.jq's pull_routes).
 repo_snapshot() {
-  local src=$1 c0=$2 c1=$3 date=$4 diff files commits trees
+  local src=$1 c0=$2 c1=$3 date=$4 diff files commits trees blobs
   local g=(git -C "$src")
   diff=$("${g[@]}" diff "$c0" "$c1")
   files=$("${g[@]}" diff --name-status "$c0" "$c1" | while IFS=$'\t' read -r status name; do
@@ -244,8 +246,13 @@ repo_snapshot() {
                  + {url:($git + (if .type == "blob" then "blobs/" else "trees/" end) + .sha)})),
          truncated:false}'
   done | jq -sc .)
+  blobs=$(for c in "$c0" "$c1"; do "${g[@]}" ls-tree -r "$c" -- .github/workflows; done |
+    awk '{print $3}' | sort -u | while read -r blob; do
+      "${g[@]}" cat-file blob "$blob" | jq -Rsc --arg blob "$blob" '{($blob): .}'
+    done | jq -sc 'add // {}')
   jq -nc --arg diff "$diff" --argjson files "$files" --argjson commits "$commits" \
-    --argjson trees "$trees" '{diff:$diff, files:$files, commits:$commits, trees:$trees}'
+    --argjson trees "$trees" --argjson blobs "$blobs" \
+    '{diff:$diff, files:$files, commits:$commits, trees:$trees, blobs:$blobs}'
 }
 
 # The tester's frozen world under $R, on the run's own issue <key> (seed.ts tester-proof, which
