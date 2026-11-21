@@ -2400,7 +2400,9 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // answer to a later send of the task took the task back unconfirmed while this prompt was still
 // outstanding, and the claim was recorded working for the turn the agent named — and the stop
 // then runs as it does after the other no-turn answers (noTurnAnswered). The task can also stand
-// confirmed here with a send of it in flight, whose own answer decides it.
+// confirmed here with a send of it in flight: while the turn that confirmed it runs, that send's
+// own answer decides it; where that turn has ended and a pause's stop is held over the idle claim,
+// the stop runs here, and its let-go fences that answer out (letGo).
 //
 // busy is whether the answer is Oh My Pi's busy answer (agentBusy): the agent is in a prompt now,
 // so this is one more of the places the daemon learns that its session is busy, and a ready or
