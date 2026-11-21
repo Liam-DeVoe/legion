@@ -1077,7 +1077,7 @@ and a member the mapping does not model is refused by name (`readSessionStore` a
 The loader refuses a value of it that is not a Google service account's email:
 `runtime.kubernetes.session_database.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com` (the value is not quoted, since a key pasted there would print).
 When the member is set, the loader also refuses a `user` that is not that account's IAM login:
-`runtime.kubernetes.session_database.user "<user>" must be "<login>": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`.
+`runtime.kubernetes.session_database.user must be "<login>": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com` (the value is not quoted, since a token pasted there would print).
 Both checks use `ompsessions.ServiceAccountLogin` (`internal/ompsessions/store.go`), and the pod's proxy holds to the same rule.
 
 **What a pod signs in as, and what a deployment grants for it.**

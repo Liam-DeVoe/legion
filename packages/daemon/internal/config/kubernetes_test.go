@@ -1288,7 +1288,16 @@ func TestLoadForValidationRefusesUnderKubernetes(t *testing.T) {
 			body: withSessionStore("    session_store: cloudsql-iam\n" +
 				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: other@example-project.iam," +
 				" impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com}\n"),
-			want: `runtime.kubernetes.session_database.user "other@example-project.iam" must be "legion-sessions@example-project.iam": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`,
+			want: `runtime.kubernetes.session_database.user must be "legion-sessions@example-project.iam": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`,
+		},
+		{
+			// A made-up token pasted where the login goes: the refusal names the key and the login
+			// the account takes, never the value.
+			name: "session_database signing in as a pasted token",
+			body: withSessionStore("    session_store: cloudsql-iam\n" +
+				"    session_database: {instance: example-project:us-central1:example-instance, name: legion_sessions, user: madeUpPastedLoginToken0123456789," +
+				" impersonate_service_account: legion-sessions@example-project.iam.gserviceaccount.com}\n"),
+			want: `runtime.kubernetes.session_database.user must be "legion-sessions@example-project.iam": Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com`,
 		},
 		{
 			name: "daemon_url empty",

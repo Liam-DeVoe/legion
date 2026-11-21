@@ -2111,7 +2111,7 @@ func readSessionDatabase(value *yaml.Node) (ompsessions.Database, error) {
 		return ompsessions.Database{}, fmt.Errorf("%s.impersonate_service_account must be a Google service account's email, such as <name>@<project>.iam.gserviceaccount.com", sessionDatabaseKey)
 	}
 	if database.User != login {
-		return ompsessions.Database{}, fmt.Errorf("%s.user %q must be %q: Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com", sessionDatabaseKey, database.User, login)
+		return ompsessions.Database{}, fmt.Errorf("%s.user must be %q: Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com", sessionDatabaseKey, login)
 	}
 	return database, nil
 }

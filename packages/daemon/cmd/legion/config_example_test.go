@@ -329,7 +329,7 @@ func TestShippedLegionYAMLExamplesSessionDatabasePassesCheckConfigOnlyWithTheAcc
 		{name: "user as another login",
 			edit: [][2]string{{"user: legion-sessions@example-project.iam ", "user: other@example-project.iam "}},
 			code: 1,
-			stderr: `legion config check: runtime.kubernetes.session_database.user "other@example-project.iam" must be "legion-sessions@example-project.iam":` +
+			stderr: `legion config check: runtime.kubernetes.session_database.user must be "legion-sessions@example-project.iam":` +
 				" Cloud SQL's IAM login for the service account impersonate_service_account names is its email without .gserviceaccount.com\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
