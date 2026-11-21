@@ -237,6 +237,14 @@ func (s *server) resumeOwedDeliveries(ctx context.Context) error {
 // sender died before it recorded a resolution - names no session yet, and a session its author may
 // not see is answered "no live session" (resolveDeliveryTarget), so the sweep sends it nothing. The
 // lane a held send is handed to resolves as that author too (mentionSend.reader).
+//
+// That read is made for every swept mention attempt, with no private project too, where the
+// author's answer is the one the server's own reader would give (R9 is about answers, and the
+// sweep answers alike: TestWithNoPrivateProjectTheSweepResolvesAMentionAsBefore). It is one
+// statement per attempt in a background pass. A pass-wide reading of whether a project is private
+// would save it, but could be a pass old by the time an attempt is resumed: a project made private
+// during the pass would then have a stranded mention resolved as the server, which is the reach
+// past its author's sight that this read exists to stop.
 func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) error {
 	if owed.commentID != "" {
 		comment, err := s.loadComment(ctx, s.deps.Store.Pool, everyReader, owed.commentID)

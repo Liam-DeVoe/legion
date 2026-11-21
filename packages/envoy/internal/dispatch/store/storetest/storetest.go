@@ -29,9 +29,15 @@
 // database whose test ended waits, with the others, until a test asks for a database while no
 // test of the package holds one, and dropBatch of them are waiting: that test drops them all
 // before its own is made, and no other test can make one meanwhile (held). Main drops the rest
-// once the package's tests end. Drops made together share one checkpoint, so the package's clock
-// carries one checkpoint for every dropBatch tests, and the disk holds at most dropBatch spare
-// databases, plus those of the subtests of a test that still holds its own.
+// once the package's tests end. Drops made together share one checkpoint, so the drops add one
+// checkpoint for every dropBatch tests to the package's clock, and the disk holds at most
+// dropBatch spare databases, plus those of the subtests of a test that still holds its own.
+//
+// The harness batches drops, not creates. A create takes a transaction id the same way, when it
+// inserts the new database's row, and keeps it across both checkpoints a file copy forces, and
+// creates run side by side with the package's other tests (hold runs create outside held's lock):
+// so each test's create adds two checkpoints to the package's clock, and holds the live views of
+// the tests running beside it while they run.
 package storetest
 
 import (

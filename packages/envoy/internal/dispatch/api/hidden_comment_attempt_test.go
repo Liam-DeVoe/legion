@@ -149,6 +149,56 @@ func TestACommentMentionOfAHiddenSessionNeverLeavesAnAttemptOwed(t *testing.T) {
 	}
 }
 
+// TestWithNoPrivateProjectTheSweepResolvesAMentionAsBefore (R9): the delivery sweep resolves a
+// stranded mention attempt as the comment's author (resumeOwedDelivery, attemptWriter), one read
+// per attempt, and with no private project that author sees every session, so the sweep answers
+// the attempt as it did before projects could be private, when it resolved as the server: once
+// PRIV is public again, alice's mention of privateSession on PUB's issue, its attempt 1 put back as
+// a lookup cut short by its bound leaves it, is sent to privateSession.
+//
+// Control: resumeOwedDelivery resolving as the closed viewer (closedViewer) in place of the
+// author; the sweep then answers the attempt "no live session" and sends nothing, and the row
+// fails.
+func TestWithNoPrivateProjectTheSweepResolvesAMentionAsBefore(t *testing.T) {
+	walk := seedHiddenWrites(t)
+	ctx := context.Background()
+	walk.setVisibility(t, seedPrivate, model.ProjectPublic)
+	target := "session:" + privateSession
+	commentID := createdID(t, walk.request(t, callerAlice, http.MethodPost, "/api/v1/issues/"+walk.issue[seedPublic]+"/comments",
+		map[string]any{"body": "@" + privateSession + " look", "delivery": "btw", "mentions": []map[string]string{{"target": target}}}))
+	awaitBackgroundWrites(t, walk.server)
+	if _, err := walk.database.Pool.Exec(ctx, `
+		update comment_deliveries
+		set state = 'pending', error = null, envelope_id = null, duplicate = false, session_id = null, resolve_error = null,
+		    claimed_at = now() - interval '10 minutes', created_at = now() - interval '10 minutes'
+		where comment_id = $1::uuid and target = $2 and attempt = 1`, commentID, target); err != nil {
+		t.Fatalf("put attempt 1 back as a lookup cut short by its bound leaves it: %v", err)
+	}
+	walk.calls.take()
+	if err := walk.server.resumeOwedDeliveries(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	awaitBackgroundWrites(t, walk.server)
+	var state string
+	var session, failure *string
+	if err := walk.database.Pool.QueryRow(ctx, `
+		select state, session_id, error from comment_deliveries where comment_id = $1::uuid and target = $2 and attempt = 1`,
+		commentID, target).Scan(&state, &session, &failure); err != nil {
+		t.Fatalf("read attempt 1: %v", err)
+	}
+	if (state != model.DeliveryStateSent && state != "queued") || session == nil || *session != privateSession {
+		t.Errorf("PRIV public: the sweep answers alice's stranded attempt 1 %s to %v (error %v), want it sent to %s, as before",
+			state, session, failure, privateSession)
+	}
+	sent := false
+	for _, call := range walk.calls.take() {
+		sent = sent || strings.HasPrefix(call, "POST /v1/messages/send")
+	}
+	if !sent {
+		t.Errorf("PRIV public: the sweep asked the listener for no send of alice's stranded attempt 1")
+	}
+}
+
 // TestARetryResumesNoAttemptPinnedToASessionItsCallerMayNotSee: carol mentions a role alice may
 // read on PUB's issue, and the mention's attempt 1 is left pending by a sender that never came
 // back, its claim lapsed, pinned to privateSession, which alice may not see. alice's Retry of the

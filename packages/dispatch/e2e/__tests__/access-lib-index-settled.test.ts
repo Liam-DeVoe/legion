@@ -167,8 +167,9 @@ interface Run {
   readonly code: number;
   readonly stdout: string;
   readonly stderr: string;
-  /** How long the run took, in seconds. */
-  readonly seconds: number;
+  /** How many times the wait read the servers before it failed the run, from its own words
+   *  ("timed out after Ns (P polls)"), and undefined where it did not fail so. */
+  readonly timedOutPolls: number | undefined;
   /** The servers whose window markers the stand-in psql was asked for, in order. */
   readonly markerReads: readonly string[];
 }
@@ -199,7 +200,6 @@ async function drive(
   }
   writeFileSync(join(work, "statuses"), "");
   writeFileSync(join(work, "differences"), "");
-  const started = performance.now();
   const run = await runBounded({
     argv: [
       "bash",
@@ -216,9 +216,10 @@ async function drive(
     bound: "short",
     from: import.meta.url,
   });
+  const timedOut = run.stderr.match(/timed out after \d+s \((\d+) polls\)/);
   return {
     ...run,
-    seconds: (performance.now() - started) / 1000,
+    timedOutPolls: timedOut ? Number(timedOut[1]) : undefined,
     markerReads: readFileSync(join(markerDirectory, "reads"), "utf8").split("\n").filter(Boolean),
   };
 }
@@ -270,10 +271,16 @@ test(
   "a server that never settles fails the run within the bound, naming it and what it still lacks",
   async () => {
     arm([report(1), report(3)], [report(0), report(1, 1)]);
-    const run = await drive("2");
+    const limit = 2;
+    const run = await drive(String(limit));
     expect(run.code).toBe(1);
-    expect(run.seconds).toBeLessThan(2 + 10);
-    expect(run.stderr).toContain("FAIL: timed out after 2s");
+    expect(run.stderr).toContain(`FAIL: timed out after ${limit}s`);
+    // The wait's bound is read off the wait's own count of polls, not a wall clock, which a
+    // loaded box stretches: each poll after the first follows a sleep of at least half a second,
+    // and the wait gives up at the first check that finds the bound passed, so it polls at most
+    // twice a second of its bound and once more, however slowly each poll runs.
+    expect(run.timedOutPolls).toBeGreaterThanOrEqual(1);
+    expect(run.timedOutPolls).toBeLessThanOrEqual(2 * limit + 1);
     expect(run.stderr).toContain(
       "twin: its coverage route counts 3 items, 1 current, 1 lacking, 1 failed in all: document_block 2 items, 0 current, 1 lacking, 1 failed"
     );

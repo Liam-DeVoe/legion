@@ -171,7 +171,8 @@ type Service struct {
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
 	// rosterRefresh is the API's refresh of the stored listener answer (SetRosterRefresh), run
-	// before each ask of a socket's rule (socketStillReads); nil refreshes nothing.
+	// once before each read of which rooms a person still reads (readableRooms,
+	// refreshRosterForReader); nil refreshes nothing.
 	rosterRefresh atomic.Pointer[func(context.Context)]
 	// accessEpoch counts the access changes this process has heard, on which its document
 	// sockets ask their rule again (socketAsk), and projectsPrivate is the last read of whether a

@@ -163,10 +163,10 @@ func (e *accessEpoch) stamp() (moves uint64, kept bool) {
 	return e.moves.Load(), true
 }
 
-// SetRosterRefresh sets what refreshes the stored listener answer before a socket's ask
-// (socketStillReads): the session content rule, which a session's documents follow, reads a
-// listener list only from a stored answer that has not passed its expires_at. The API sets it
-// once, as it mounts the sockets.
+// SetRosterRefresh sets what refreshes the stored listener answer before a read of which rooms a
+// person still reads (readableRooms, through refreshRosterForReader): the session content rule,
+// which a session's documents follow, reads a listener list only from a stored answer that has
+// not passed its expires_at. The API sets it once, as it mounts the sockets.
 func (s *Service) SetRosterRefresh(refresh func(context.Context)) {
 	s.rosterRefresh.Store(&refresh)
 }
@@ -225,9 +225,10 @@ type socketAnswer struct {
 // the epoch reads again (the sockets' heartbeat moves it at least every beat). A switch to private
 // is an access change, on which the access lane's pass (recheckAccess) reads every socket's person
 // again and closes the sockets of a person it cannot read. Once a project is private, the rule
-// decides: before its read it refreshes the stored listener answer (SetRosterRefresh), which the
-// rule reads only while it is fresh, and a read of the rule that fails closes the socket with the
-// revocation's code, on which the provider reconnects and the reconnect's admission reads again.
+// decides: its read (readableRooms) refreshes the stored listener answer first, once
+// (refreshRosterForReader), since the rule reads a listener list only while that answer is fresh,
+// and a read of the rule that fails closes the socket with the revocation's code, on which the
+// provider reconnects and the reconnect's admission reads again.
 func (s *Service) socketStillReads(ctx context.Context, admission *schemaAdmission, ask *socketAnswer) bool {
 	if ask.open {
 		if private, err := s.anyProjectPrivate(ctx); err == nil {
@@ -236,9 +237,6 @@ func (s *Service) socketStillReads(ctx context.Context, admission *schemaAdmissi
 		if ask.public {
 			return true
 		}
-	}
-	if refresh := s.rosterRefresh.Load(); refresh != nil {
-		(*refresh)(ctx)
 	}
 	readable, err := s.readableRooms(ctx, admission.person, []*schemaAdmission{admission})
 	if err == nil && readable[admission.key.room] {
