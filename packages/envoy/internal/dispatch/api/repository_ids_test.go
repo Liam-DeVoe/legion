@@ -192,14 +192,15 @@ func requireStatus(t *testing.T, what string, response *httptest.ResponseRecorde
 // No route moves an issue into another project (TestEveryWriteDeclaresItsColumns: only the issue
 // create writes issues.project_key), so no row moves one.
 //
-// Controls, each run on its own: drop the id read from the default write (the default records
+// Controls, each run on its own: drop the id read from the default write (OTHER's default records
 // none); read the id again for a stored name (the patch after the reuse records 9010); read the id
-// for a stored name that has none (the re-saved OTHER issue records 9003, and carol reads
-// acme/privnew2). Each time the test fails naming it.
+// for a stored name that has none (carol's re-saved OTHER issue asks GitHub, and is refused the
+// repository PRIV holds by that id). Each time the test fails naming it.
 func TestEveryRepositoryWriteRecordsItsID(t *testing.T) {
 	github := newIDGitHub(map[string]repositoryIdentity{
 		"acme/priv": {9101, "acme/priv"}, "acme/privpatched": {9102, "acme/privpatched"}, "acme/privdefault": {9103, "acme/privdefault"},
-		"acme/privold2": {9003, "acme/privnew2"}, "acme/privnew2": {9003, "acme/privnew2"},
+		"acme/pubdefault": {9104, "acme/pubdefault"},
+		"acme/privold2":   {9003, "acme/privnew2"}, "acme/privnew2": {9003, "acme/privnew2"},
 		"acme/pubparent": {9201, "acme/pubparent"}, "acme/pubx": {9202, "acme/pubx"},
 	})
 	handler, database := newPrivateProjectsServer(t, github.options(t, testServerOptions{privateProjects: []string{"PRIV"}}), &recordingAdmission{})
@@ -235,6 +236,12 @@ func TestEveryRepositoryWriteRecordsItsID(t *testing.T) {
 	patch("alice", written, map[string]any{"repo": "acme/privpatched"}, http.StatusOK)
 	if id := issueRepoID(t, database, written); id == nil || *id != 9102 {
 		t.Errorf("a patch of %s to acme/privpatched recorded %s, want GitHub's 9102", written, idOf(id))
+	}
+	// A public project's default records its id, where no guard would refuse a write with none; then
+	// a private project's.
+	putDefault("acme/pubdefault", "OTHER", http.StatusOK)
+	if id, found := defaultRepoID(t, database, "OTHER"); !found || id == nil || *id != 9104 {
+		t.Errorf("OTHER's default write of acme/pubdefault recorded %s (a default: %t), want GitHub's 9104", idOf(id), found)
 	}
 	putDefault("acme/privdefault", "PRIV", http.StatusOK)
 	if id, found := defaultRepoID(t, database, "PRIV"); !found || id == nil || *id != 9103 {
@@ -277,9 +284,10 @@ func TestEveryRepositoryWriteRecordsItsID(t *testing.T) {
 		t.Errorf("PRIV's confirmation left %s holding %s, want 9003", unconfirmed, idOf(id))
 	}
 	before = github.reads()
-	patch("carol@example.com", elsewhere, map[string]any{"repo": "acme/privnew2"}, http.StatusOK)
-	if id, asked := issueRepoID(t, database, elsewhere), github.reads()-before; id != nil || asked != 0 {
-		t.Errorf("carol's patch of %s carrying its stored acme/privnew2 left %s and asked GitHub %d times, want no id and GitHub asked nothing", elsewhere, idOf(id), asked)
+	resaved := send("PATCH /api/v1/issues/{key}", "/api/v1/issues/"+elsewhere, map[string]any{"repo": "acme/privnew2"}, "carol@example.com")
+	if id, asked := issueRepoID(t, database, elsewhere), github.reads()-before; resaved.Code != http.StatusOK || id != nil || asked != 0 {
+		t.Errorf("carol's patch of %s carrying its stored acme/privnew2 answered %d %s, left %s and asked GitHub %d times, want 200, no id and GitHub asked nothing",
+			elsewhere, resaved.Code, strings.TrimSpace(resaved.Body.String()), idOf(id), asked)
 	}
 	if shownBy(t, database, "carol@example.com", "acme/privnew2", 9003) {
 		t.Errorf("carol, who sees OTHER and not PRIV, reads acme/privnew2 (9003) through the GitHub proxy: PRIV's owner did not share it")
