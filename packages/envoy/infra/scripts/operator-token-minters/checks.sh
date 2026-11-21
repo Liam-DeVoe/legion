@@ -82,6 +82,7 @@ iam_verdict() {
       ;;
   esac
   if service_agent "$member"; then VERDICT=ok; return; fi
+  NOTE="$AGENT_NOTE"
   case "$check" in
     gsa)
       if [ "$member" = "$WI_MEMBER" ]; then VERDICT=ok; return; fi

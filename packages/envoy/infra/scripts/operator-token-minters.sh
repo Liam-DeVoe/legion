@@ -34,10 +34,13 @@
 #                     stream of objects) is read as the RBAC authorizer reads it, and each binding
 #                     that gives a right below to a subject that is not a person, a system
 #                     namespace's, a system component or the operator's own Google service account
-#                     is a finding. A rule limited by resourceNames on impersonate, escalate or bind,
-#                     or on a patch or update of a binding, is a finding naming the names
-#                     (impersonating the group system:masters by name is cluster-admin, and RBAC
-#                     lets one who may bind a role by name write a binding to it). A binding to a
+#                     is a finding. A rule limited by resourceNames on any right the live steps ask
+#                     (the list below, the guard rights, the certificate chain's and the admission
+#                     rights) is a finding naming the names: impersonating the group system:masters
+#                     by name is cluster-admin, RBAC lets one who may bind a role by name write a
+#                     binding to it, and an update of one webhook configuration or a patch of one
+#                     Deployment by name is the unnamed right's path. RBAC never limits a create of
+#                     a whole object or a deletecollection by name. A binding to a
 #                     role the render does not hold (other than the
 #                     built-in cluster-admin, which gives every right, and view, which gives none)
 #                     or to an aggregated ClusterRole is UNKNOWN: its rights are not in the render.
@@ -106,7 +109,13 @@
 #                     on every binding's role and patch and update on every binding (RBAC lets one
 #                     who may bind a role by name write a binding to it), and update and patch on
 #                     each role bound to a reviewed principal (named-rights.jq); every other cluster
-#                     of the pool is asked them too. A
+#                     of the pool is asked them too. A rule limited by name on any other right asked
+#                     never answers a review that names nothing, so every cluster's Roles and
+#                     ClusterRoles (`kubectl get roles,clusterroles -A`) are read against its bindings
+#                     as the code step reads a render: a rule whose resourceNames limit a right asked
+#                     is a finding naming the names for a subject that is not a person (an approval
+#                     of certificate signing requests by name, whose name the requester picks, joins
+#                     the certificate chain), and a refused list is UNKNOWN. A
 #                     review without the groups would miss every grant made to a group. Its witness
 #                     is a review for the group the built-in
 #                     cluster-admin binding names, system:masters, which must be allowed: an API
@@ -147,16 +156,22 @@
 #                     fleet memberships list`, which drops the answer's `unreachable` locations: a
 #                     listing that could not reach a location reads complete there. A refused
 #                     listing, one with an unreachable location, and one that lists no membership
-#                     (which cannot be told from one that saw nothing) are UNKNOWN. Each fleet scope
-#                     (`gcloud container fleet scopes list`) is UNKNOWN too: its namespaces and RBAC
+#                     (which cannot be told from one that saw nothing) are UNKNOWN, unless --fleet
+#                     none says the pool project has no fleet: then an empty listing passes and each
+#                     membership listed is a finding naming it. Each fleet scope (the API's
+#                     projects/<pool>/locations/-/scopes, every page; `gcloud container fleet scopes
+#                     list` asks locations/global alone) is UNKNOWN too: its namespaces and RBAC
 #                     role bindings reach every member cluster bound to it, the operator's namespace
 #                     and member included, and this check does not analyse them; a refused listing
 #                     is UNKNOWN. A member that is a GKE cluster is read
 #                     through `gcloud container clusters get-credentials` in its own project, any
 #                     other through `gcloud container fleet memberships get-credentials` (the
-#                     Connect gateway); the operator's cluster, and a cluster the project step read,
-#                     are not read twice. GKE authorizes IAM beside RBAC, so for each GKE member in
-#                     a project other than --project, Policy Analyzer's holders on that project of
+#                     Connect gateway); such a member is UNKNOWN besides, since its own cloud's
+#                     authorizers and token issuer may grant beside the RBAC read here, unless
+#                     --rbac-only-member names it. The operator's cluster, and a cluster the project
+#                     step read, are not read twice. GKE authorizes IAM beside RBAC, so for each GKE
+#                     member in a project other than --project, Policy Analyzer's holders on that
+#                     project of
 #                     each guard right's container.* permission (container.namespaces.create,
 #                     serviceAccounts.create and pods.create; clusters.impersonate, clusterRoles.bind
 #                     and escalate, clusterRoleBindings.create and update, roles.bind and escalate,
@@ -232,19 +247,40 @@
 # UNKNOWN when it is on. A system: User or Group other than these is a Kubernetes component and
 # allowed.
 #
+# Admission power outside the admission objects (admission-backends.sh), asked on every cluster of
+# the pool as the other rights are: for each mutating or validating webhook whose namespaceSelector
+# can match a guarded namespace (read against kubernetes.io/metadata.name alone, which no one can
+# change), the writes to its backend Service, its Endpoints and EndpointSlices, its Secrets (the TLS
+# key) and the pods and pod controllers in that Service's namespace; a webhook that calls a URL
+# outside the cluster is UNKNOWN. Create, update and patch of each cluster-scoped resource of a
+# policy engine (a CRD of kyverno.io, gatekeeper.sh or its subgroups, or a group whose name holds
+# "policy"), as a Kyverno ClusterPolicy or a Gatekeeper Assign mutates pods. And the writes to each
+# parameter object an admission policy's binding names (paramRef, of the policy's paramKind,
+# resolved through the API server's discovery): create, and update and patch by name. A refused
+# list of webhook configurations, CRDs or admission policies, and a parameter kind the discovery
+# does not resolve, is UNKNOWN.
+#
 # Cluster settings outside RBAC. Legacy ABAC authorizes requests by its own policies beside RBAC, and
 # the identity service for GKE takes users and groups from an outside identity provider, so no
 # review sees who either lets in: on each GKE cluster of the pool, read from the cluster list
 # (legacyAbac, identityServiceConfig) or `gcloud container clusters describe`, either one on is
 # UNKNOWN on that cluster's step, and so is a describe that was refused. container.clusters.update,
-# by which a holder turns legacy ABAC on, is asked through IAM beside the rights' permissions.
+# by which a holder turns legacy ABAC on, is asked through IAM beside the rights' permissions. The
+# operator's cluster must be Autopilot (autopilot.enabled in the cluster list): GKE Standard runs a
+# privileged or hostPath pod, which on the operator's node reads the kubelet's credentials and the
+# operator's ServiceAccount token, a node escape no review sees, so Standard is UNKNOWN.
 #
 # In every IAM step a `user:` member is a person and allowed; a group the analysis expands is judged
-# by its members, and one it does not expand is a finding; Google's own service agents
-# (service-<number>@gcp-sa-*.iam.gserviceaccount.com, ...@container-engine-robot and
-# ...@compute-system) are allowed; every other member is a finding. A Policy Analyzer answer that
-# lists no holder, or that was not fully explored, is UNKNOWN: a resource always has holders (its
-# project's owners at least), so an answer listing none saw nothing. The analysis runs over the
+# by its members, and one it does not expand is a finding; the Google service agents the deployment
+# needs are allowed: GKE's (service-<number>@container-engine-robot), GKE Hub's
+# (service-<number>@gcp-sa-gkehub) and Compute Engine's (service-<number>@compute-system) of a
+# project the check reads (--project, the pool project and each fleet member's project, each number
+# read from its project), and each --service-agent; every other member is a finding, such an agent
+# of another project (named with its number: it acts for whoever owns that project) and another
+# product's service-<number>@gcp-sa-* agent included. A Policy Analyzer
+# answer that lists no holder, or that was not fully explored, is UNKNOWN: a resource always has
+# holders (its project's owners at least), so an answer listing none saw nothing. The analysis runs
+# over the
 # project's top ancestor (`gcloud projects get-ancestors`), or --analysis-scope: a scope at the
 # project does not see a grant made on its folder or its organization.
 #
@@ -327,6 +363,15 @@ usage: operator-token-minters.sh [flags]
   --pool-project ID          the project whose workload pool (ID.svc.id.goog) the operator's and
                              the broker's ServiceAccounts are in, and whose fleet's member clusters
                              share it (default --project)
+  --fleet none               the pool project has no fleet: an empty membership listing passes, and
+                             each membership listed is a finding (without it, an empty listing is
+                             UNKNOWN, since it cannot be told from one that saw nothing)
+  --rbac-only-member ID      a member of the pool project's fleet that is no GKE cluster and whose
+                             cloud grants nothing beside its RBAC; repeatable (without it, such a
+                             member is UNKNOWN)
+  --service-agent EMAIL      a Google service agent the deployment needs beside GKE's, GKE Hub's
+                             and Compute Engine's, allowed in the IAM steps; repeatable (any other
+                             service-<number>@gcp-sa-* account is judged as any account is)
   --namespace NS             the operator's namespace (default envoy-operator)
   --service-account NAME     the operator's Kubernetes ServiceAccount (default envoy-operator)
   --guarded NS/NAME          one more namespace and ServiceAccount the pool's Workload Identity binds
@@ -371,8 +416,8 @@ for ((arg = 1; arg <= $#; arg++)); do
   esac
 done
 PROJECT="" CLUSTER="" LOCATION="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
-SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT=""
-AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=()
+SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT="" FLEET=""
+AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=() SERVICE_AGENTS=()
 while [ "$#" -gt 0 ]; do
   flag="$1"
   shift
@@ -383,7 +428,8 @@ while [ "$#" -gt 0 ]; do
   case "$flag" in
     --project | --cluster | --location | --pool-project | --namespace | --service-account | --gsa | --agent-namespace | --broker-account | \
       --broker-workload | --sql-instance | --db-secret | --broker-state | --signing-secret | --secret | \
-      --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded)
+      --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded | --fleet | --rbac-only-member | \
+      --service-agent)
       [ "$#" -gt 0 ] || usage_error "$flag needs a value"
       value="$1"
       shift
@@ -412,9 +458,13 @@ while [ "$#" -gt 0 ]; do
     --credentials-arg) CREDENTIALS_ARGS+=("$value") ;;
     --report) REPORT="$value" ;;
     --guarded) GUARDED_FLAGS+=("$value") ;;
+    --fleet) FLEET="$value" ;;
+    --rbac-only-member) RBAC_ONLY_MEMBERS+=("$value") ;;
+    --service-agent) SERVICE_AGENTS+=("$value") ;;
   esac
 done
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
+case "$FLEET" in "" | none) ;; *) usage_error "--fleet takes none, not $FLEET" ;; esac
 # The guarded pairs: the operator's first, then the broker's (--broker-workload), then each
 # --guarded, each once.
 GUARDED=("$NAMESPACE/$KSA")
@@ -459,9 +509,9 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-token-minters"
 # before output.sh defines its report, or leave a step that needs it unread.
 missing=""
 for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-rbac.sh step-code-iam.sh \
-  step-clusters.sh reviews.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh step-workload-identity.sh step-live-iam.sh \
-  step-admin-tag.sh analysis.jq become-rights.jq code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq \
-  guard-rights.jq named-rights.jq rec.jq review-answer.jq review-request.jq; do
+  step-clusters.sh reviews.sh admission-backends.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh step-workload-identity.sh \
+  step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq \
+  guard-rights.jq named-rights.jq rec.jq review-answer.jq review-request.jq webhook-backends.jq; do
   [ -r "$LIB/$part" ] || missing="${missing:+$missing, }$part"
 done
 if [ -n "$missing" ]; then
@@ -481,6 +531,10 @@ fi
 . "$LIB/principals.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/checks.sh
 . "$LIB/checks.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/reviews.sh
+. "$LIB/reviews.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/admission-backends.sh
+. "$LIB/admission-backends.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-permission-names.sh
 . "$LIB/step-permission-names.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-rbac.sh
@@ -489,8 +543,6 @@ fi
 . "$LIB/step-code-iam.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-clusters.sh
 . "$LIB/step-clusters.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/reviews.sh
-. "$LIB/reviews.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/iam-analysis.sh
 . "$LIB/iam-analysis.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-gke-iam.sh
