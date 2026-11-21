@@ -92,12 +92,12 @@ that a live launcher credential is bound to, with `invalid_request` that names t
 refuses to mint or move a launcher credential onto a key that a live read token is bound to, as it
 refuses a key that another live credential holds. A launcher proof signed with a read token's key
 is refused `401 LAUNCHER_INVALID`. A read trade whose DPoP proof is signed with a launcher
-credential's key, such as a person's box key or the key in a machine login's `machine.json`, sends
-a second proof of the same request in the `DPoP-Holder` header. That proof is signed with a key
-made for the token's holder, and the broker binds the token to that key. A person's read trade
-must always send one. This departs from RFC 9449, which binds a token to the key of the request's
-DPoP proof (`packages/envoy/internal/cipher/oauthstore/store.go`, `CreateAccessTokenSession` and
-`KeyHoldsReadToken`).
+credential's key, such as a person's box key, the key in a machine login's `machine.json` or a
+device login's key, sends a second proof of the same request in the `DPoP-Holder` header. That
+proof is signed with a key made for the token's holder, and the broker binds the token to that
+key. A person's read trade must always send one. This departs from RFC 9449, which binds a token
+to the key of the request's DPoP proof (`packages/envoy/internal/cipher/oauthstore/store.go`,
+`CreateAccessTokenSession` and `KeyHoldsReadToken`).
 
 An enrollment is leased for `BROKER_LEASE_SECONDS` and renewed while its session runs: the helper
 renews the sessions it registered, `agent-secrets renew` renews a box, and Legion's pod shim renews

@@ -19,10 +19,11 @@
 //    broker, and the access token the poll answered with its expiry.
 //
 // A trade, every time a session needs a broker token: the login's access token is the subject of
-// the RFC 8693 exchange, under RFC 8693's own `access_token` type, with no actor, and every proof
-// is signed with the login's key, since the broker binds a trade of a machine login's token to
-// that token's key. An access token about to lapse is first refreshed, which rotates the refresh
-// token and moves the credential's expiry.
+// the RFC 8693 exchange, under RFC 8693's own `access_token` type, with no actor, and its proof is
+// signed with the login's key, since the broker binds a trade of a machine login's token to that
+// token's key; a read trade binds its token to a holder key of its own instead (`environment.ts`).
+// An access token about to lapse is first refreshed, which rotates the refresh token and moves
+// the credential's expiry.
 //
 // Why a lock, and why it covers the trade too: a refresh revokes every access token the login
 // answered before (`oauthstore.Store.RotateRefreshToken`), and a refresh token presented again

@@ -295,8 +295,11 @@ export interface ReadTrade {
  * {@link tradeSession}'s, else {@link deviceLoginSessionName}'s. It names the projects
  * {@link PROJECTS_VAR} lists, which the broker names only when Dispatch says the login's person
  * may see each one, and sends no launcher credential parameter: a trade of a machine login's
- * token mints no launcher credential. A machine with no login yet, or whose login file cannot be
- * read, is an error naming `dispatch login --device`. A process that turns the person trade off
+ * token mints no launcher credential. Where `read` is given, it asks for the scope read and the
+ * cut too, and sends a holder key of its own (`holderKey`), as a person's read trade does: the
+ * login's key signs the machine login's launcher proofs, and a key that signs launcher proofs is
+ * bound to no read token. A machine with no login yet, or whose login file cannot be read, is
+ * an error naming `dispatch login --device`. A process that turns the person trade off
  * ({@link PERSON_TRADE_VAR} set to `off`) is refused one: the broker mints its trade as the
  * login's person, so a controller would act on Dispatch and Envoy in its operator's name, and
  * there is no machine identity to trade in its place.
@@ -312,6 +315,7 @@ export async function brokerTokenClient(
   // Not quoted: every trade's text names this URL, and a value that is none may be a token pasted
   // into the variable.
   if (!isHttpUrl(brokerUrl)) throw new Error(`${BROKER_URL_VAR} is not an http or https URL`);
+  const narrowed = read === undefined ? {} : { scope: SCOPE_READ, asOf: read.asOf };
   if (machine instanceof DeviceLoginIdentity) {
     if (personTradeOff(env)) {
       throw new Error(
@@ -324,11 +328,12 @@ export async function brokerTokenClient(
       subject: machine,
       session: tradeSession(env, own) || deviceLoginSessionName(await machine.thumbprint()),
       projects: tradeProjects(env),
+      ...narrowed,
+      ...(read === undefined ? {} : { holderKey: await newDpopKey() }),
     });
     return { client, signIn: undefined };
   }
   const record = await chooseSignIn(env);
-  const narrowed = read === undefined ? {} : { scope: SCOPE_READ, asOf: read.asOf };
   if (record === undefined) {
     const client = new BrokerTokenClient({
       brokerUrl,

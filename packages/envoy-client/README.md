@@ -966,17 +966,18 @@ the login's P-256 key as base64 PKCS#8 DER, its launcher credential's `credentia
 its `access_expires_at`. The file is refused when its group or anyone else may read it, when its
 directory lets them write to it, or when another user owns either. A trade presents that access
 token as the subject, under RFC 8693's own `urn:ietf:params:oauth:token-type:access_token`, with
-no actor, and every proof is signed with the login's key. A login made at another broker than
-`AGENT_SECRETS_URL` names is refused, and so is a broker on `http` off this machine's loopback:
-the login's tokens cross that connection. It names the projects `AGENT_SECRETS_PROJECTS` lists,
-and its session is the caller's own, else `AGENT_SECRETS_SESSION`, else
-`device-login-<thumbprint>`, the first 12 characters of the key's thumbprint. The login is the
-person's own credential, so no `agent-secrets login` sign-in on the machine is read beside it, and
-a process with `PERSON_SIGNIN_TRADE=off` (the controller `legion controller start` launches) is
-refused it, since the broker mints its trade as that person. Only this client trades a device
-login. The Go tools that read `AGENT_SECRETS_MACHINE_IDENTITY` (`agent-secrets`, the helper,
-`legion controller start`) refuse `device-login`, naming it as the TypeScript client's alone, so a
-machine that sets it for its sessions sets it for them, not for those tools.
+no actor, and every proof is signed with the login's key, but for a read trade's: its token is bound
+to a holder key of its own, which signs every proof Dispatch sees. A login made at another broker
+than `AGENT_SECRETS_URL` names is refused, and so is a broker on `http` off this machine's loopback:
+the login's tokens cross that connection. It names the projects `AGENT_SECRETS_PROJECTS` lists, and
+its session is the caller's own, else `AGENT_SECRETS_SESSION`, else `device-login-<thumbprint>`, the
+first 12 characters of the key's thumbprint. The login is the person's own credential, so no
+`agent-secrets login` sign-in on the machine is read beside it, and a process with
+`PERSON_SIGNIN_TRADE=off` (the controller `legion controller start` launches) is refused it, since
+the broker mints its trade as that person. Only this client trades a device login. The Go tools that
+read `AGENT_SECRETS_MACHINE_IDENTITY` (`agent-secrets`, the helper, `legion controller start`)
+refuse `device-login`, naming it as the TypeScript client's alone, so a machine that sets it for its
+sessions sets it for them, not for those tools.
 
 A refresh rotates the login's refresh token and revokes every access token the login answered
 before, and the broker revokes the whole login when a rotated refresh token is presented again
@@ -1162,6 +1163,9 @@ since both refuse a read-only token and a session's inbound messages must keep w
 person's read trade sends no `launcher_credential`, which the broker reads as declined. It makes a
 P-256 key of its own for the process and sends it as the holder key (`DPoP-Holder`) beside the box
 key's DPoP proof. That key signs every proof Dispatch sees, so the box key signs the trade alone.
+A device login's read trade also sends a holder key of its own beside the login key's DPoP proof,
+because the login's key signs the machine login's launcher proofs and a key that signs launcher
+proofs is bound to no read token.
 The machine's own trade already proves a key the process made, which holds no launcher credential,
 so it sends no holder key. A person's read trade is refused once the sign-in's launcher credential
 lapses, until one ordinary trade renews it (the token files, below).
