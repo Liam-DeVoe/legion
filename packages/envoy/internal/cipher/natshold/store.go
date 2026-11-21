@@ -269,12 +269,14 @@ func (s Store) Move(ctx context.Context, expectedGen uint64, next Row, accept fu
 // Restore writes the hold row when it is absent, the first row or one a database admin deleted,
 // at next.Gen, which must be one above the highest gen nats_hold_log holds (1 for an empty log),
 // so a restored row's gen exceeds every earlier one; the insert and its log row are one
-// statement. It restores held with a hold id, and released, with or without one, unless the log's
-// latest entry is held: a released row restored after a held entry would free every client
-// mid-hold, while a command may run, but after a prepare entry it frees nobody, since a prepare row
-// refuses no client. It refuses with a Conflict: ErrBadTransition for another phase and for
-// released after a held entry, ErrRowExists while the row is there, and ErrGenMismatch naming the
-// gen to carry (RestoreGen).
+// statement. It restores released, with or without a hold id, unless the log's latest entry is
+// held: a released row restored after a held entry would free every client mid-hold, while a
+// command may run, but after a prepare entry it frees nobody, since a prepare row refuses no
+// client. It restores held only after a prepare or held entry of the same hold id: a hold the log
+// shows ended (a release, or abort from prepare, which leaves no journal entry for the operator's
+// client to read) is not held again. It refuses with a Conflict: ErrBadTransition for another
+// phase, for released after a held entry and for held after any other entry, ErrRowExists while
+// the row is there, and ErrGenMismatch naming the gen to carry (RestoreGen).
 func (s Store) Restore(ctx context.Context, next Row) (Row, error) {
 	switch next.Phase {
 	case string(natsgrant.OperatorPhaseReleased):
@@ -288,13 +290,17 @@ func (s Store) Restore(ctx context.Context, next Row) (Row, error) {
 	var restored Row
 	err := s.in(ctx, pgx.ReadWrite, func(tx pgx.Tx) error {
 		var err error
-		restored, err = scanRow(tx.QueryRow(ctx, `with next as (
+		restored, err = scanRow(tx.QueryRow(ctx, `with latest as (
+				select phase, hold_id from `+s.table("nats_hold_log")+` order by gen desc limit 1
+			), next as (
 				select coalesce(max(gen), 0) + 1 as gen,
-					coalesce((select phase from `+s.table("nats_hold_log")+` order by gen desc limit 1), 'released') as latest
+					coalesce((select phase from latest), 'released') as latest,
+					coalesce((select hold_id from latest), '') as latest_hold
 				from `+s.table("nats_hold_log")+`
 			), restored as (
 				insert into `+s.table("nats_hold")+` (id, gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig)
-				select 1, next.gen, $2, $3, $4, now(), $5, $6, $7 from next where next.gen = $1 and ($2 <> 'released' or next.latest <> 'held')
+				select 1, next.gen, $2, $3, $4, now(), $5, $6, $7 from next where next.gen = $1 and
+					case when $2 = 'released' then next.latest <> 'held' else next.latest in ('prepare', 'held') and next.latest_hold = $3 end
 				on conflict (id) do nothing
 				returning `+rowColumns+`
 			), logged as (
@@ -314,14 +320,19 @@ func (s Store) Restore(ctx context.Context, next Row) (Row, error) {
 			return &Conflict{Err: ErrRowExists, Current: &current}
 		}
 		var want int64
-		var latest string
-		if err := tx.QueryRow(ctx, `select coalesce(max(gen), 0) + 1,
-				coalesce((select phase from `+s.table("nats_hold_log")+` order by gen desc limit 1), 'released')
-			from `+s.table("nats_hold_log")).Scan(&want, &latest); err != nil {
+		var latest, latestHold string
+		if err := tx.QueryRow(ctx, `with latest as (
+				select phase, hold_id from `+s.table("nats_hold_log")+` order by gen desc limit 1
+			)
+			select coalesce(max(gen), 0) + 1, coalesce((select phase from latest), 'released'), coalesce((select hold_id from latest), '')
+			from `+s.table("nats_hold_log")).Scan(&want, &latest, &latestHold); err != nil {
 			return fmt.Errorf("natshold: read the log's highest gen: %w", err)
 		}
 		if want != int64(next.Gen) {
 			return &Conflict{Err: ErrGenMismatch, RestoreGen: uint64(want)}
+		}
+		if next.Phase == string(natsgrant.OperatorPhaseHeld) {
+			return &Conflict{Err: fmt.Errorf("%w: the log's latest entry is %s with hold id %q, and a held row is restored only after a prepare or held entry of its own hold", ErrBadTransition, latest, latestHold)}
 		}
 		return &Conflict{Err: fmt.Errorf("%w: the log's latest entry is %s, and a released row restored after it would free every client mid-hold; restore the row held with its hold id", ErrBadTransition, latest)}
 	})
