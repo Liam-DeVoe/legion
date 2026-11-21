@@ -564,7 +564,7 @@ describe("the stopped agents' conversations", () => {
     expect(run(`conversation_holds empty '"type":"compaction"'`).code).toBe(1);
   });
 
-  // Proof run 43996451813 (theorem-labs/agent-infra, at cb8eb857): A15 and A7 under postgres read
+  // Proof run 43996451813 (the deployment repository, at cb8eb857): A15 and A7 under postgres read
   // "the conversation holds" as no, each beside `jq: error: writing output failed: Broken pipe`. A
   // conversation read from the session table is one jq string; grep -q stops at its first match,
   // and under the rig's pipefail jq's write into the closed pipe fails the whole read. A read that
@@ -1010,7 +1010,7 @@ describe("the recording proxy's records", () => {
     expect(read("call_organization 'not a record'")).toEqual({ code: 0, text: "" });
   });
 
-  // Proof run 44095624771 (theorem-labs/agent-infra, at 73cbecf0): under the files store six
+  // Proof run 44095624771 (the deployment repository, at 73cbecf0): under the files store six
   // answers strictly alternated two organizations, A10-1 5fd73c3e, A10-2 d0529c17, A10-2r1
   // 5fd73c3e and so on, and each read the cache its own organization's answer before it wrote:
   // A10-2r1 read the 3184 tokens A10-1 wrote. A pairing of neighbours found none and failed the

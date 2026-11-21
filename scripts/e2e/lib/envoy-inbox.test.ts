@@ -77,7 +77,7 @@ test("writes an envelope's dedupe key once, and each other envelope on its own l
   ]);
 });
 
-// Proof run 43996451813 (theorem-labs/agent-infra, at cb8eb857): the listener accepted twelve
+// Proof run 43996451813 (the deployment repository, at cb8eb857): the listener accepted twelve
 // notices on notifications.legion.alp22215.controller and the controller stand-in, registered for
 // that lane, recorded one. Each daemon keys a notice by its own outbox row (legion-outbox:<row>), and
 // the run's two daemons have a database each, so the second one's keys repeat the first one's on

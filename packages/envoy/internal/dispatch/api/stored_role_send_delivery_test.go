@@ -11,7 +11,7 @@ import "testing"
 // holder, the same for a role message and a role mention. Recording it queued would tell the
 // person it reached the role while it sits on a dead session's subject until it expires.
 //
-// sjawhar/legion#2230's proof run 43920318131 (theorem-labs/agent-infra) showed it under A13
+// sjawhar/legion#2230's proof run 43920318131 (in the deployment repository) showed it under A13
 // with answers removed: the branch recorded the role message queued for the finished architect's
 // session, where the base commit recorded it failed, no holder for role.
 func TestARoleMessageTheListenerOnlyStoresForAFinishedSessionKeepsTheNoHolderFailure(t *testing.T) {
