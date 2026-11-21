@@ -27,9 +27,10 @@ import (
 // key does, so the listener drops a frame that did land (DELIVERY_DUPLICATE_WINDOW_MS in
 // packages/contracts).
 //
-// An attempt is owed when it is its message's latest attempt, or its mention's to send still -
-// no later attempt of that mention stands in its place, every later one having failed
-// (model.MentionAttemptStandsSQL) - and it is pending, its claim lapsed, and opened over a lease
+// An attempt is owed when it is its message's or its mention's to send still - no later attempt
+// stands in its place, every later one having failed (model.MentionAttemptStandsSQL; for a message,
+// one failed in another mode that may have landed stands too, owedMessageAttempt) - and it is
+// pending, its claim lapsed, and opened over a lease
 // ago: an unclaimed attempt the write itself opened (a broadcast recipient's) is its live
 // sender's for the first minute, and a comment mention's attempt is claimed from the moment its
 // comment commits and stays claimed while its send waits on its recipient's lane (mentionSender),
@@ -89,10 +90,20 @@ const (
 // predicates, while owedCommentAttempt carries its own window (model.MentionSweepWindow). A var
 // block, not a const one, because each is built from the claim lease's interval at init.
 var (
+	// owedMessageAttempt stands a message attempt in as a mention's does (model.MentionAttemptStandsSQL):
+	// no later attempt of its message stands in its place, every later one having failed. A
+	// message's attempts are keyed by mode (deliverMessageResuming), not by one key as a mention's
+	// are, so a later attempt that failed in another mode with a cause that says its send may have
+	// landed (possiblyDeliveredCausesSQL) stands in its place too: resending the earlier one could
+	// hand its session the message a second time, as a mode change says it does. A Retry whose
+	// caller does not see the session an earlier attempt is pinned to opens its own beside it
+	// (messageDeliveryRoute), and that earlier attempt stays this sweep's.
 	owedMessageAttempt = `d.state = 'pending' and ` + model.DeliveryClaimFreeSQL + `
 		and d.created_at < now() - ` + model.DeliveryClaimLapseInterval + `
 		and d.created_at > now() - make_interval(secs => $1)
-		and d.attempt = (select max(attempt) from message_deliveries l where l.message_id = d.message_id)`
+		and not exists (select 1 from message_deliveries later
+			where later.message_id = d.message_id and later.attempt > d.attempt
+			  and (later.state <> 'failed' or (later.delivery <> d.delivery and later.error in ` + possiblyDeliveredCausesSQL + `)))`
 	// owedCommentAttempt is model.OwedMentionAttemptSQL, built from the same lease the outbox's
 	// split of a pending attempt reads (model.MentionResumedSQL, which counts beside the attempts
 	// this sweep sends every attempt past that lease that is not abandoned - one queued behind a

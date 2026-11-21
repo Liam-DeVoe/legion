@@ -1200,27 +1200,11 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
 		return
 	}
-	rows, err := s.deps.Store.Pool.Query(r.Context(), `
-		select target from comment_mentions where comment_id = $1 order by target
-	`, comment.ID)
+	targets, err := s.retryableMentionTargets(r.Context(), s.deps.Store.Pool, who, comment)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	targets := []string{}
-	for rows.Next() {
-		var target string
-		if err := rows.Scan(&target); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		targets = append(targets, target)
-	}
-	if err := rows.Err(); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	rows.Close()
 	if len(targets) == 0 {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment has no mentions")
 		return
@@ -1270,6 +1254,30 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		s.mentions.enqueue(context.WithoutCancel(r.Context()), held.send(created, actor, s.newTakeoverRetry()))
 	}
 	WriteJSON(w, http.StatusCreated, attempt)
+}
+
+// retryableMentionTargets is the targets of comment's mentions, in target order, as who reads them
+// in the comment (loadCommentMentions, leaveOutHiddenCommentSessions): a mention who does not see -
+// its target, or the session it resolved to - is left out, as every read of the comment leaves it
+// out. So a Retry answers a target who does not see exactly as a target the comment does not
+// mention, counts only the mentions who reads for its one-mention default and its target-required
+// refusal, and answers a comment whose every mention who does not see as one with none. Its read of
+// what who sees is made whatever the comment mentions, so a comment with a hidden mention costs
+// what one without it costs; a reader that sees every object reads nothing more, as before (R9).
+func (s *server) retryableMentionTargets(ctx context.Context, q queryer, who model.Actor, comment model.Comment) ([]string, error) {
+	mentions, err := s.loadCommentMentions(ctx, q, who, []string{comment.ID})
+	if err != nil {
+		return nil, err
+	}
+	read := []model.Comment{{ID: comment.ID, Mentions: mentions[comment.ID]}}
+	if err := leaveOutHiddenCommentSessions(ctx, q, who, read); err != nil {
+		return nil, err
+	}
+	targets := make([]string, 0, len(read[0].Mentions))
+	for _, mention := range read[0].Mentions {
+		targets = append(targets, mention.Target)
+	}
+	return targets, nil
 }
 
 // commentReplyInput is the body of POST /api/v1/comments/{id}/reply.

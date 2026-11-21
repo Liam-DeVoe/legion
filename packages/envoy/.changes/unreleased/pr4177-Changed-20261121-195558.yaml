@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+    `POST /api/v1/comments/{id}/deliveries` reads a comment's mentions as the caller reads them in the comment: a mention of a session, or of a role of a private project, the caller does not see, or one that reached a session the caller does not see, is a target the comment does not mention, and only the mentions the caller reads count for the one-mention default and the "target is required" refusal. `POST /api/v1/messages/{id}/deliveries` answers a message whose target the caller does not see as a message with no target, 404 MESSAGE_NOT_FOUND, and leaves a pending attempt pinned to a session the caller does not see as it stands, opening an attempt of its own. The delivery sweep sends a message's stranded attempt while no later attempt stands in its place, as it sends a mention's: a later attempt that failed no longer takes the send over, unless it failed in another mode with a cause that says it may have landed. With no private project an open viewer is answered as before.
+time: 2026-11-21T19:55:58.327432718Z
+custom:
+    Issue: pr4177

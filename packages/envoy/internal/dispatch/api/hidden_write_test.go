@@ -437,8 +437,8 @@ func TestNoBodyNamesAHiddenPersonOrSession(t *testing.T) {
 			}
 			if reference.writes && reference.object == probeSession && strings.HasSuffix(reference.row, "/messages") {
 				walk.assertNothingQueuedOn(t, name+" as "+string(caller.who), hiddenID)
-				// The Retry of each (POST /api/v1/messages/{id}/deliveries) resolves the target
-				// again as its caller, and answers the two as one too.
+				// The Retry of each (POST /api/v1/messages/{id}/deliveries) reads the target as its
+				// caller reads it, and answers the two as one too.
 				retry := func(message *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 					return walk.request(t, caller.who, http.MethodPost, "/api/v1/messages/"+createdID(t, message)+"/deliveries",
 						json.RawMessage(`{`+probeActor+`,"delivery":"btw"}`))
