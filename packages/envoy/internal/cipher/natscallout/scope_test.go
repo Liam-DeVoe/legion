@@ -245,10 +245,7 @@ func TestAnAdmissionNeverWaitsOnDispatch(t *testing.T) {
 	asks, stop := context.WithCancel(t.Context())
 	t.Cleanup(stop)
 	go deps.held.refresh(asks)
-	testwait.Eventually(t, "the first answer about PUB held", func() bool {
-		_, _, known := deps.held.read(entryPerson, []string{"PUB"})
-		return known[0]
-	})
+	testwait.Eventually(t, "the first answer about PUB held", func() bool { return deps.held.known("PUB", entryPerson) })
 	go deps.held.refresh(asks) // its ask about PUB waits on release
 	asked := func() int {
 		dispatch.mu.Lock()

@@ -88,5 +88,6 @@ func TestARevocationBesideARefusalOfTheBrokersTokenIsKept(t *testing.T) {
 	dispatch.mu.Unlock()
 	deps.held.refresh(t.Context())
 	_, err = Decide(t.Context(), deps, services, serviceRequest("pub-token"))
+	require.Error(t, err, "PUB's daemon was admitted on its answer from before the revocation: PUB")
 	requireRefused(t, err, labelProjectNotVisible, "project not visible to the account's person: PUB")
 }

@@ -38,24 +38,32 @@ import (
 // whose consumers are the ones a Legion daemon opens once it opens its consumers per project, and
 // which holds a daemon to those consumers by name, not by their filter. So no deployment may list
 // a daemon entry with "-" until the plan's precondition holds. Here it is word for word, with
-// each plan task it names written as what it does, in brackets:
+// each plan task it names written as what it does and each note of ours in brackets:
 //
 //	Held until `daemon-release-gate.sh --listeners <the commit that landed [the daemon that
 //	opens its consumers per project]>` and `daemon-release-gate.sh <the commit that landed [the
 //	daemon that opens its consumers per project]>` both print `GATE OPEN`, each read once and
 //	quoted where this step is turned on, and the stored-wake read below finds nothing a
-//	`legion-go-<P>-ready` consumer created then would deliver but `listener_ready`.
+//	`legion-go-<P>-ready` consumer created then would deliver but `listener_ready`. The step
+//	also waits on `daemon-running-gate.sh --deployment <owner/repo> <the deploy-4 commit>`
+//	printing that every running daemon is at or after deploy 4, and on the consumer-filter read
+//	below; the pin gates alone read the repository, not the daemons running, and are extra
+//	evidence only.
 //
 //	And the consumer-filter read, [that daemon's] deploy-4 production read, quoted where this
 //	step is turned on: every daemon durable `legion-go-<P>-{dispatch,wake,ready,github}` carries
 //	exactly its kind's filter set (`-dispatch` and `-wake` the project's own lane, `-ready` the
-//	shared wake subject's `listener_ready` only, `-github` `notifications.github.>`), none on
-//	`notifications.dispatch.issue.>` or the whole shared wake subject, and every daemon runs a
-//	build at or after deploy 4 (`daemon-release-gate.sh` prints `GATE OPEN` for that commit), so
-//	no static-grant daemon can widen one again; a failed read prints UNKNOWN and holds the step.
+//	shared wake subject's `listener_ready` only [the filter is the subject
+//	notifications.legion.wake itself, which carries only listener_ready once every listener
+//	publishes each project's wakes on that project's lane], `-github` `notifications.github.>`),
+//	none on `notifications.dispatch.issue.>` or the whole shared wake subject [for -dispatch and
+//	-wake], and every daemon runs a build at or after deploy 4 (`daemon-release-gate.sh` prints
+//	`GATE OPEN` for that commit), so no static-grant daemon can widen one again; a failed read
+//	prints UNKNOWN and holds the step.
 //
-// Both commands are in packages/envoy/scripts. The change that lists daemon entries with "-"
-// waits on that precondition, with those readings quoted in its pull request.
+// daemon-release-gate.sh is in packages/envoy/scripts; daemon-running-gate.sh comes with the
+// change that lands the daemon that opens its consumers per project. The change that lists daemon
+// entries with "-" waits on that precondition, with those readings quoted in its pull request.
 func scopeGrant(deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (natsgrant.Permissions, error) {
 	if entry.AllProjects {
 		return grant, nil
@@ -70,26 +78,8 @@ func scopeGrant(deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (nat
 	case len(projects) == 0:
 		return natsgrant.Permissions{}, refuse(labelNoProjects, "account's exchange entry names no project to hold it to: "+entry.Account)
 	}
-	refused, held, known := deps.held.read(person, projects)
-	if refused {
-		// The token exchange refuses every trade that asks Dispatch while it refuses the broker's
-		// token (oauth's refusedByDispatch), so every held connection is refused too, whichever
-		// question of the refresh Dispatch refused.
-		return natsgrant.Permissions{}, refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so what the account's person may see is not known: service "+entry.name())
-	}
-	for i, project := range projects {
-		switch {
-		case !known[i]:
-			// No refresh has answered about this project yet (the first is still running, or
-			// Dispatch was down from the start); the client retries.
-			return natsgrant.Permissions{}, refuse(labelProjectAccessUnknown, "project access not yet known: "+project)
-		case held[i].notFound:
-			return natsgrant.Permissions{}, refuse(labelProjectNotFound, "project not found: "+project)
-		case !held[i].visible:
-			// The token exchange refuses this entry's token the same way (projectaccess.Visible):
-			// its person cannot see the project, so neither may the connection.
-			return natsgrant.Permissions{}, refuse(labelProjectNotVisible, "project not visible to the account's person: "+project)
-		}
+	if err := deps.held.refusal(entry, person, projects); err != nil {
+		return natsgrant.Permissions{}, err
 	}
 	scoped, err := natsgrant.WithinProjects(grant, natsgrant.Scope{Projects: projects, Identity: entry.Account})
 	if err != nil {
@@ -249,18 +239,49 @@ func (h *heldAccess) refresh(ctx context.Context) {
 	}
 }
 
-// read is, under one lock, whether the last refresh that decided it found Dispatch refusing the
-// broker's own account token, and the answer held about each of projects for person, each with
-// whether a refresh has answered it yet: no refusal and no answers on a nil heldAccess.
-func (h *heldAccess) read(person string, projects []string) (refused bool, held []heldAnswer, known []bool) {
-	held, known = make([]heldAnswer, len(projects)), make([]bool, len(projects))
+// refusal is entry's refusal by the answers held for person about projects, decided under one
+// read lock, and nil when they admit it: Dispatch refusing the broker's own account token in the
+// last refresh that decided it, before any project; then the first project no refresh has answered
+// yet, one Dispatch does not hold, or one the person cannot see. projects is not empty. On a nil
+// heldAccess no project has an answer.
+func (h *heldAccess) refusal(entry ServiceEntry, person string, projects []string) error {
 	if h == nil {
-		return false, held, known
+		return refuse(labelProjectAccessUnknown, "project access not yet known: "+projects[0])
 	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-	for i, project := range projects {
-		held[i], known[i] = h.answers[heldKey{project: project, person: person}]
+	if h.brokerRefused {
+		// The token exchange refuses every trade that asks Dispatch while it refuses the broker's
+		// token (oauth's refusedByDispatch), so every held connection is refused too, whichever
+		// question of the refresh Dispatch refused.
+		return refuse(labelAccessRefused, "Dispatch refuses the broker's own account token (BROKER_PROJECT_ACCESS_TOKEN_FILE), so what the account's person may see is not known: service "+entry.name())
 	}
-	return h.brokerRefused, held, known
+	for _, project := range projects {
+		held, known := h.answers[heldKey{project: project, person: person}]
+		switch {
+		case !known:
+			// No refresh has answered about this project yet (the first is still running, or
+			// Dispatch was down from the start); the client retries.
+			return refuse(labelProjectAccessUnknown, "project access not yet known: "+project)
+		case held.notFound:
+			return refuse(labelProjectNotFound, "project not found: "+project)
+		case !held.visible:
+			// The token exchange refuses this entry's token the same way (projectaccess.Visible):
+			// its person cannot see the project, so neither may the connection.
+			return refuse(labelProjectNotVisible, "project not visible to the account's person: "+project)
+		}
+	}
+	return nil
+}
+
+// known reports whether a refresh has answered whether person may see project: false on a nil
+// heldAccess.
+func (h *heldAccess) known(project, person string) bool {
+	if h == nil {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	_, ok := h.answers[heldKey{project: project, person: person}]
+	return ok
 }
