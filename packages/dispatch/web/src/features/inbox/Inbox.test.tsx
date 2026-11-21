@@ -3494,11 +3494,13 @@ test("a bulk Snooze deep in a long list hands the focus to the row that moves up
 const LAID_ROW_PX = 100;
 
 /** Lays the Inbox's rows down a page the window scrolls, as happy-dom does not: each row and its
- *  mark `LAID_ROW_PX` tall, stacked from the page's top in the order the list draws them, less
- *  `window.scrollY`. That starts at `scrollY`, and `window.scrollBy` moves it, so a row the list's
- *  own scroll keeping (`ViewportAnchor`) holds in place moves the window. Every other element keeps
- *  happy-dom's own box. Answers the function that gives happy-dom its own boxes and scroll back. */
-function layRowsDown(scrollY: number): () => void {
+ *  mark `LAID_ROW_PX` tall, stacked in the order the list draws them below `above()`, the height
+ *  of what stands above the rows now, less `window.scrollY`. The list's own box (the anchor's
+ *  root) starts where the rows do. `window.scrollY` starts at `scrollY`, and `window.scrollBy`
+ *  moves it, so a row the list's own scroll keeping (`ViewportAnchor`) holds in place moves the
+ *  window. Every other element keeps happy-dom's own box. Answers the function that gives
+ *  happy-dom its own boxes and scroll back. */
+function layRowsDown(scrollY: number, above: () => number = () => 0): () => void {
   const real = Element.prototype.getBoundingClientRect;
   const scrollYWas = Object.getOwnPropertyDescriptor(window, "scrollY");
   const scrollByWas = window.scrollBy;
@@ -3512,12 +3514,16 @@ function layRowsDown(scrollY: number): () => void {
   const rect = spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
     this: Element
   ) {
+    const rows = [...document.querySelectorAll("[data-inbox-row]")];
+    if (this.matches('[data-testid="inbox-list"] > *')) {
+      return new DOMRect(0, above() - window.scrollY, 200, rows.length * LAID_ROW_PX);
+    }
     const row = this.matches('[data-inbox-row], input[type="checkbox"]')
       ? this.closest("[data-inbox-row]")
       : null;
     if (row === null) return real.call(this);
-    const index = [...document.querySelectorAll("[data-inbox-row]")].indexOf(row);
-    return new DOMRect(0, index * LAID_ROW_PX - window.scrollY, 200, LAID_ROW_PX);
+    const top = above() + rows.indexOf(row) * LAID_ROW_PX - window.scrollY;
+    return new DOMRect(0, top, 200, LAID_ROW_PX);
   });
   return () => {
     rect.mockRestore();
@@ -3539,12 +3545,13 @@ function markOf(id: string): HTMLElement {
   return mark;
 }
 
-/** Lists `count` comment threads in the Inbox and nothing else, each card's issue and comments
+/** Lists `count` comment threads in the Inbox, and `asks`, each card's issue, comments and thread
  *  answered, which no case here asserts. Answers the function that puts the reads back. */
-function listThreads(count: number): () => void {
+function listThreads(count: number, asks: readonly InboxRow[] = []): () => void {
   const threads = Array.from({ length: count }, (_, index) => replyRow(`c${index + 1}`));
   const mocks = [
-    spyOn(api, "getInbox").mockResolvedValue([]),
+    spyOn(api, "getInbox").mockResolvedValue([...asks]),
+    mockAskReads(asks),
     spyOn(api, "listMyReplies").mockResolvedValue({
       as_of: "2026-10-12T00:00:00Z",
       limit: 200,
@@ -3636,6 +3643,60 @@ test("a bulk Dismiss of marked threads that all stood above the view hands the f
     expect(moves.focused.at(-1)?.options).toEqual({ preventScroll: true });
     expect(landing.getBoundingClientRect().top).toBe(0);
     expect(window.scrollY).toBe(5 * LAID_ROW_PX);
+    expect(moves.scrolled.length).toBe(0);
+  } finally {
+    await act(async () => {
+      settle.resolve({ dismissed: 2 });
+    });
+    unmount();
+    moves.restore();
+    laidOut();
+    reads();
+  }
+});
+
+// The bar's Dismiss over the list's last two unread threads, on a phone. **Mark all read** is
+// offered only while the list holds an unread thread, so it goes in the commit that takes the
+// threads away, and below `sm` the header's line it stood on goes with it: 52 px, the button's 44
+// and the row's 8 px gap. That shrink is the press's doing as much as the threads' going, so the
+// rows after them move up by both: the window stays where it was, and the focused row stands in
+// sight.
+test("a bulk Dismiss of the last unread threads, whose going takes Mark all read's line out of the header, scrolls nothing", async () => {
+  const user = userEvent.setup();
+  // Six questions newer than the threads and six older, so the threads stand between them.
+  const asks = Array.from({ length: 12 }, (_, index) =>
+    inboxIssue(`ask-${index + 1}`, `CORE-${index + 1}`, `Question ${index + 1}?`, {
+      created_at: index < 6 ? `2026-10-13T0${index}:00:00Z` : `2026-10-0${index - 5}T00:00:00Z`,
+    })
+  );
+  const reads = listThreads(2, asks);
+  const settle = Promise.withResolvers<{ dismissed: number }>();
+  answerInboxDismisses().mockReturnValue(settle.promise);
+  const MARK_ALL_LINE = 52;
+  // Five rows above the window. The rows stand below the header's Mark all read line while it is
+  // drawn.
+  const laidOut = layRowsDown(5 * LAID_ROW_PX, () =>
+    document.querySelector("[data-inbox-mark-all]") === null ? 0 : MARK_ALL_LINE
+  );
+  const moves = watchMoves();
+  const { unmount } = renderInbox("/?group=none");
+  try {
+    await waitFor(() => expect(rowIds()).toHaveLength(14));
+    const order = rowIds();
+    const marked = order.slice(6, 8);
+    expect(marked).toEqual(["reply:c1", "reply:c2"]);
+    expect(document.querySelector("[data-inbox-mark-all]")).not.toBeNull();
+    // The upper thread is marked last, as a reader marking upward does.
+    for (const id of [...marked].reverse()) await user.click(markOf(id));
+    await screen.findByText("2 selected");
+
+    await user.click(screen.getByRole("button", { name: "Dismiss selected threads" }));
+    await waitFor(() => expect(rowIds()).toEqual(order.filter((id) => !marked.includes(id))));
+    expect(document.querySelector("[data-inbox-mark-all]")).toBeNull();
+    const landing = markOf(order[8] as string);
+    await waitFor(() => expect(landing).toHaveFocus());
+    expect(window.scrollY).toBe(5 * LAID_ROW_PX);
+    expect(landing.getBoundingClientRect().top).toBe(LAID_ROW_PX);
     expect(moves.scrolled.length).toBe(0);
   } finally {
     await act(async () => {

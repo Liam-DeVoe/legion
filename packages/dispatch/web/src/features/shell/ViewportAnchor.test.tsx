@@ -38,6 +38,7 @@ function CommitProbe(): null {
 }
 
 function List({
+  banner = false,
   enabled,
   groups,
   headings,
@@ -45,6 +46,9 @@ function List({
   rows,
   scroller,
 }: {
+  /** Whether a banner BANNER_HEIGHT tall stands above the list, as the Inbox's header stands
+   *  above its rows. */
+  banner?: boolean;
   enabled?: () => boolean;
   /** A row's group; rows default to one shared group. */
   groups?: Readonly<Record<string, string>>;
@@ -77,24 +81,34 @@ function List({
       <CommitProbe />
     </ViewportAnchor>
   );
+  const page = (
+    <>
+      {banner ? <div data-banner="" /> : null}
+      {list}
+    </>
+  );
   return scroller === undefined ? (
-    list
+    page
   ) : (
     <div data-scroller="" ref={scroller}>
-      {list}
+      {page}
     </div>
   );
 }
 
-// A fixed geometry: rows, and the headings between them, are ROW_HEIGHT tall, stacked from
-// `listTop` in DOM order, in a VIEWPORT_HEIGHT window that scrolls through `window.scrollY` - or,
+// A fixed geometry: rows, and the headings between them, are ROW_HEIGHT tall, stacked from the
+// list's top in DOM order, in a VIEWPORT_HEIGHT window that scrolls through `window.scrollY` - or,
 // where the list is rendered in a scroller, through that element's `scrollTop`, the scroller
-// itself filling the window and never moving. A row's own button is drawn in the row's box.
-// `listTop` starts at LIST_TOP; a test lowers it to shrink content above the rows without moving
-// what scrolls them, which is what a card collapsing in a commit of its own does.
+// itself filling the window and never moving. A row's own button is drawn in the row's box. The
+// list's top is `listTop`, BANNER_HEIGHT lower while the banner is drawn. `listTop` starts at
+// LIST_TOP; a test lowers it to shrink content above the rows without moving what scrolls them,
+// which is what a card collapsing in a commit of its own does.
 const laidOut = () => [...document.querySelectorAll<HTMLElement>("[data-row], [data-heading]")];
 const viewportTop = (id: string) =>
   document.querySelector(`[data-row="${id}"]`)?.getBoundingClientRect().top;
+const BANNER_HEIGHT = 52;
+const listStart = () =>
+  listTop + (document.querySelector("[data-banner]") === null ? 0 : BANNER_HEIGHT);
 
 let listTop = LIST_TOP;
 let contentLeft = 0;
@@ -135,8 +149,8 @@ beforeEach(() => {
     const top = isScroller
       ? 0
       : item !== null
-        ? listTop + all.indexOf(item as HTMLElement) * ROW_HEIGHT - offset
-        : listTop - offset;
+        ? listStart() + all.indexOf(item as HTMLElement) * ROW_HEIGHT - offset
+        : listStart() - offset;
     const height = isScroller
       ? VIEWPORT_HEIGHT
       : item !== null
@@ -157,7 +171,7 @@ beforeEach(() => {
   const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
     if (_x < 0 || _x > 100) return null;
     const offset = scrollerRef.current?.scrollTop ?? window.scrollY;
-    const index = Math.floor((offset + y - listTop) / ROW_HEIGHT);
+    const index = Math.floor((offset + y - listStart()) / ROW_HEIGHT);
     return laidOut()[index] ?? null;
   });
   restoreSpies = [() => rect.mockRestore(), () => point.mockRestore()];
@@ -542,6 +556,63 @@ test("a live update that takes rows away above the view keeps the rows in view w
     expect(inView()).toEqual(seen);
     expect(window.scrollY).toBe(275 - 2 * ROW_HEIGHT);
     expect(anchoringSeen.at(-1)).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The reader's press takes the last rows of a kind away, and a control the page offers only while
+// such rows are listed goes with them: below `sm` the Inbox's header loses the line its Mark all
+// read stood on. That shrink is the press's doing as much as the rows' going, so the rows move up
+// by both and the view does not scroll.
+test("content above the list that shrinks in the commit in which named rows leave moves the rows up too, with no scroll", () => {
+  const going = (id: string) => id === "r3" || id === "r4";
+  const view = render(<List banner leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r6").focus();
+    const before = viewportTop("r6") ?? 0;
+
+    view.rerender(<List leaving={going} rows={ids(12).filter((id) => !going(id))} />);
+    expect(window.scrollY).toBe(100);
+    expect(viewportTop("r6")).toBe(before - 2 * ROW_HEIGHT - BANNER_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The same banner goes with no row of the reader's press leaving above the focused row: a live
+// update took it. The rows in view stay where they were.
+test("content above the list that shrinks with no named row leaving above the focused row is compensated, and the rows in view stay", () => {
+  const going = (id: string) => id === "r9";
+  const view = render(<List banner leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r6").focus();
+    const inView = () => ["r5", "r6", "r7"].map((id) => viewportTop(id));
+    const seen = inView();
+
+    view.rerender(<List leaving={going} rows={ids(12)} />);
+    expect(inView()).toEqual(seen);
+    expect(window.scrollY).toBe(100 - BANNER_HEIGHT);
+  } finally {
+    view.unmount();
+  }
+});
+
+// Content that grows above the list in the commit in which named rows leave is no going of the
+// press's: it is compensated, so the rows move up by the named rows' space alone.
+test("content above the list that grows in the commit in which named rows leave is still compensated", () => {
+  const going = (id: string) => id === "r3" || id === "r4";
+  const view = render(<List leaving={going} rows={ids(12)} />);
+  try {
+    setScrollY(100);
+    buttonOf("r6").focus();
+    const before = viewportTop("r6") ?? 0;
+
+    view.rerender(<List banner leaving={going} rows={ids(12).filter((id) => !going(id))} />);
+    expect(viewportTop("r6")).toBe(before - 2 * ROW_HEIGHT);
+    expect(window.scrollY).toBe(100 + BANNER_HEIGHT);
   } finally {
     view.unmount();
   }
