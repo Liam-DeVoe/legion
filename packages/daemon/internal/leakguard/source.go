@@ -177,14 +177,13 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 			s.Forget()
 		}
 		// GitHub's message, or a stand-in's words, print as the rule reads them, with the token the
-		// read carried redacted (oauth2call.Answer.Decode, Words): the message alone where the
-		// answer is GitHub's JSON refusal, whose documentation URL in compact JSON the rule cannot
-		// read as clean, and the answer's words otherwise. A read its bound cut, or that ended on an
-		// error, can stop inside a URL before its "@", which redact.Read drops rather than quote.
+		// read carried redacted (oauth2call.Answer.Decode into oauth2call.GitHubRefusal, Words): the
+		// message alone where the answer is GitHub's JSON refusal, whose documentation URL in compact
+		// JSON the rule cannot read as clean, and the answer's words otherwise. A read its bound cut,
+		// or that ended on an error, can stop inside a URL before its "@", which redact.Read drops
+		// rather than quote.
 		refused, readErr := oauth2call.ReadAnswer(response, refusalBodyBytes)
-		var github struct {
-			Message oauth2call.RemoteText `json:"message"`
-		}
+		var github oauth2call.GitHubRefusal
 		said := refused.Words()
 		if refused.Decode(&github) == nil && !github.Message.IsEmpty() {
 			said = github.Message

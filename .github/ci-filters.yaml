@@ -2334,6 +2334,7 @@ envoy_smoke:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/oauth2call/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
   # END generated
@@ -2723,6 +2724,7 @@ envoy_go_race:
   - '!packages/envoy/migrationid/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/oauth2call/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
   # END generated
@@ -3071,6 +3073,7 @@ envoy_go_claim_model:
   - '!packages/envoy/natscred/**/*_test.go'
   - '!packages/envoy/natsgrant/**/*_test.go'
   - '!packages/envoy/natsversion/**/*_test.go'
+  - '!packages/envoy/oauth2call/**/*_test.go'
   - '!packages/envoy/roleholder/**/*_test.go'
   - '!packages/envoy/steprecord/**/*_test.go'
   # END generated

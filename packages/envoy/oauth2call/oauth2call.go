@@ -51,6 +51,14 @@ type Answer = redact.Answer
 // an answer's member into (Answer.Decode) and prints only as the rule reads them.
 type RemoteText = redact.RemoteText
 
+// GitHubRefusal is the JSON GitHub refuses a request with, as a module outside this one decodes
+// it (Answer.Decode): its message is GitHub's words, or a stand-in's, and prints only as the rule
+// reads them, with the credentials the request carried redacted. It is declared here, beside the
+// box, so its print test is this module's (holders_print_test.go).
+type GitHubRefusal struct {
+	Message RemoteText `json:"message"`
+}
+
 // ErrAnswerTooLarge is redact.ErrAnswerTooLarge.
 var ErrAnswerTooLarge = redact.ErrAnswerTooLarge
 

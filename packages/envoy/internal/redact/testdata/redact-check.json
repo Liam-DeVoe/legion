@@ -209,6 +209,10 @@
         "test": "print-delivery.searchError"
       },
       {
+        "holder": "github.com/sjawhar/envoy/oauth2call.GitHubRefusal",
+        "test": "print-oauth2call.GitHubRefusal"
+      },
+      {
         "holder": "github.com/sjawhar/envoy/internal/dispatch/embed.azureErrorResponse",
         "test": "print-embed.azureErrorResponse"
       },
@@ -4338,6 +4342,13 @@
       "package": "./internal/dispatch/delivery",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/delivery.searchError",
       "production": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchError: every printer at every placement"
+    },
+    {
+      "id": "print-oauth2call.GitHubRefusal",
+      "requirement": "r2-held",
+      "package": "./oauth2call",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/oauth2call.GitHubRefusal",
+      "production": "github.com/sjawhar/envoy/oauth2call.GitHubRefusal: every printer at every placement"
     },
     {
       "id": "print-embed.azureErrorResponse",
