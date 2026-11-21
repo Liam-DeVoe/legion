@@ -6208,8 +6208,8 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
     {
       // Opened with `c` over the issue page, whose project it starts on, and read once its title
       // has the focus the dialog gives it on opening. The focus is taken off the list read before
-      // this one first: a list's trigger takes a page's single keys as the select it replaced did,
-      // so `c` pressed on it opens nothing (`isEditableTarget`).
+      // this one first: a character typed on a list's closed trigger is the list's search, so `c`
+      // pressed on it opens that list rather than the dialog (`MultiSelect`).
       name: "the Create issue dialog's Project",
       reach: async () => {
         await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
@@ -6286,11 +6286,11 @@ function pickLists(page: Page, seed: PickListSeed, step: number): PickList[] {
 // leaves is not the value the list starts on, the word leaves only the options it matches,
 // Escape picks nothing and changes no value, Tab out of the text box (Shift+Tab at the second
 // width) picks nothing and leaves the reader on the trigger, `?` pressed then on the closed
-// trigger opens no Keyboard shortcuts, since the trigger takes a page's single keys as the select
-// or the text box it replaced did (`isEditableTarget` in `features/shell/keymap.ts`), and Enter
-// picks the option the word left - the trigger shows it with the focus back on it, or where the
-// pick takes the trigger away the panel hands the focus on. A list that holds no text box is named
-// and the row goes on, so one run names every such list.
+// trigger opens the list with `?` in its text box and no Keyboard shortcuts, since a character
+// typed on a closed trigger is the list's search (`MultiSelect`), and Enter picks the option the
+// word left - the trigger shows it with the focus back on it, or where the pick takes the trigger
+// away the panel hands the focus on. A list that holds no text box is named and the row goes on,
+// so one run names every such list.
 // It runs in Chromium alone. What an engine decides here is one component's, the same in every
 // list, and two rows read it in Firefox and WebKit at a fraction of this row's cost: the keys the
 // list's text box takes, as each engine delivers them, in `keyboard-agents-picker`'s rows of the
@@ -6410,8 +6410,8 @@ test("every list of options a reader picks from holds a text box that narrows it
       await expect(list.trigger, `${at}: ${tab} left the focus elsewhere`).toBeFocused();
       expect(await list.value(), `${at}: ${tab} changed the list's value`).toBe(before);
 
-      // A single key of the page, pressed on the closed trigger, is the list's as it was the
-      // select's or the text box's: the shell's `?` opens no Keyboard shortcuts over it.
+      // A single key of the page, pressed on the closed trigger, is the list's: it opens the list
+      // with that character in its text box, and the shell's `?` opens no Keyboard shortcuts.
       await page.keyboard.press("?");
       await nextFrames(page);
       // One read after the press's frames is the answer: the shell draws Keyboard shortcuts in
@@ -6421,6 +6421,22 @@ test("every list of options a reader picks from holds a text box that narrows it
         await page.keyboard.press("Escape");
         await expect(shortcuts, `${at}: Escape left the Keyboard shortcuts open`).toHaveCount(0);
         await list.trigger.focus();
+      } else {
+        const typed = listOf(list.trigger).locator(TEXT_BOXES);
+        await expect(
+          typed,
+          `${at}: ? on the closed trigger is not in its list's text box`
+        ).toHaveValue("?");
+        await expect(
+          typed,
+          `${at}: ? on the closed trigger left the focus off its list`
+        ).toBeFocused();
+        await page.keyboard.press("Escape");
+        await expect(list.trigger, `${at}: Escape left the list ? opened open`).toHaveAttribute(
+          "aria-expanded",
+          "false"
+        );
+        expect(await list.value(), `${at}: ? and Escape changed the list's value`).toBe(before);
       }
 
       // Enter picks the option the word left.

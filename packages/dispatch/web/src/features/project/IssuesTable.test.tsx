@@ -1825,7 +1825,7 @@ test.each([
 
 // B2: a closed `<select>` commits on an arrow key in Chrome on Linux. Neither of the table's
 // two destructive lists, Move to epic and Merge into another epic, may write on one, so each
-// stages a value for a button to commit.
+// stages a value for a button to commit. An arrow key on the closed trigger opens its list.
 test("an arrow key on the move or merge list's trigger writes nothing", async () => {
   const user = userEvent.setup();
   const send = spyOn(api, "send").mockResolvedValue(savedIssue("CORE-3") as never);
@@ -1844,6 +1844,7 @@ test("an arrow key on the move or merge list's trigger writes nothing", async ()
   const merge = screen.getByRole("button", { name: pickNamed("Merge into another epic") });
   merge.focus();
   await user.keyboard("{ArrowDown}");
+  expect(merge).toHaveAttribute("aria-expanded", "true");
   expect(send).not.toHaveBeenCalled();
   expect(screen.queryByRole("dialog", { name: "Merge this epic?" })).toBeNull();
   await user.keyboard("{Escape}");
@@ -1852,9 +1853,9 @@ test("an arrow key on the move or merge list's trigger writes nothing", async ()
   const move = screen.getByRole("button", { name: pickNamed("Move to epic") });
   move.focus();
   await user.keyboard("{ArrowDown}");
+  expect(move).toHaveAttribute("aria-expanded", "true");
   expect(send).not.toHaveBeenCalled();
   // The staged value is committed by its own button, and only then is anything written.
-  await user.click(move);
   await user.click(screen.getByRole("option", { name: "Target" }));
   expect(send).not.toHaveBeenCalled();
   await user.click(screen.getByRole("button", { name: /^Move$/ }));

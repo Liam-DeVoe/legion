@@ -200,6 +200,10 @@ export type MultiSelectProps = MultipleProps | SingleProps;
  * names the panel holding it (`aria-controls`), the text box and the listbox both. The trigger
  * ends in a chevron, as a `<select>` ends in its arrow, unless its host draws a look of its own
  * (`chevron`).
+ *
+ * The closed trigger opens the list on the keys the WAI-ARIA select-only combobox opens it on:
+ * Enter and Space, which press it, ArrowDown and ArrowUp, with Alt or without, and a typed
+ * character, which goes into the text box and narrows the list by it.
  */
 export function MultiSelect(props: MultiSelectProps): ReactNode {
   const {
@@ -250,6 +254,8 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
   const wasOpen = useRef(false);
   // What an open reads of this render: the value it starts on.
   const opensOn = useRef<string | undefined>(undefined);
+  // What the next open puts in the text box: the character typed on the closed trigger, if any.
+  const opensWith = useRef("");
 
   const searchText = query.trim();
   const needle = fold(searchText);
@@ -316,24 +322,44 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     }
   };
 
-  // Opening starts a fresh search on the value a single pick holds; the panel hands the focus to
-  // the search unless the host hands it in itself (`focusOnOpen`). Closing returns the focus to
-  // the trigger when the close left it nowhere - the list that held it is gone - and leaves a
-  // focus that is somewhere. A focus still on the text box the close took away is nowhere
-  // (`focusLost`): an engine that moves the focus off a removed element only at its next
-  // rendering update still names the box focused when this effect runs, before that update, and a
-  // Tab out of the box would otherwise leave the focus there to the page's rescue rather than on
-  // the trigger. A press outside moves the focus after this runs, so the focus ends where that
-  // press put it.
+  // Opening starts a fresh search on the value a single pick holds, with the character typed on
+  // the closed trigger in the text box, if one opened it; the panel hands the focus to the search
+  // unless the host hands it in itself (`focusOnOpen`). Closing returns the focus to the trigger
+  // when the close left it nowhere - the list that held it is gone - and leaves a focus that is
+  // somewhere. A focus still on the text box the close took away is nowhere (`focusLost`): an
+  // engine that moves the focus off a removed element only at its next rendering update still
+  // names the box focused when this effect runs, before that update, and a Tab out of the box
+  // would otherwise leave the focus there to the page's rescue rather than on the trigger. A
+  // press outside moves the focus after this runs, so the focus ends where that press put it.
   useEffect(() => {
     if (open) {
-      setQuery("");
+      setQuery(opensWith.current);
       setActiveValue(opensOn.current);
     } else if (wasOpen.current && focusLost()) {
       triggerRef.current?.focus();
     }
+    opensWith.current = "";
     wasOpen.current = open;
   }, [open]);
+
+  // ArrowDown and ArrowUp, with Alt or without, open the closed list as a click does. A typed
+  // character opens it with that character in the text box, and the caret after it. The key's
+  // own typing is cancelled, so the character is not typed a second time into the text box the
+  // focus moves to. Space is left to the button, which opens the list with an empty search. A
+  // disabled or busy trigger opens on none of these keys, and a key held with Ctrl or Meta is
+  // the browser's.
+  const handleTriggerKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (open || disabled || ariaDisabled || event.ctrlKey || event.metaKey) return;
+    const arrow = event.key === "ArrowDown" || event.key === "ArrowUp";
+    const typed = !event.altKey && event.key.length === 1 && event.key !== " ";
+    if (!arrow && !typed) return;
+    event.preventDefault();
+    if (typed) {
+      opensWith.current = event.key;
+      onQueryChange?.(event.key);
+    }
+    onOpenChange(true);
+  };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     // A key that ends or moves an IME composition is the input method's: Enter commits the
@@ -421,6 +447,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
           if (open) onOpenChange(false, "trigger");
           else onOpenChange(true);
         }}
+        onKeyDown={handleTriggerKeyDown}
         ref={triggerRef}
         type="button"
       >

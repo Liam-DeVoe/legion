@@ -31,16 +31,22 @@ function Host({ onCreate, options }: { onCreate?: (value: string) => void; optio
 /** A single pick as a host draws one: the value it holds, every value the list handed it, what
  *  closed it each time, and a control outside the list to press, whose own action closes it. */
 function SingleHost({
+  ariaDisabled,
+  disabled,
   focusOnOpen,
   initial,
   marks,
   onCreate,
+  onQueryChange,
   options,
 }: {
+  ariaDisabled?: boolean;
+  disabled?: boolean;
   focusOnOpen?: boolean;
   initial?: string;
   marks?: ListMarks;
   onCreate?: (value: string) => boolean;
+  onQueryChange?: (query: string) => void;
   options: string[];
 }) {
   const [open, setOpen] = useState(false);
@@ -50,7 +56,9 @@ function SingleHost({
   return (
     <>
       <MultiSelect
+        ariaDisabled={ariaDisabled}
         createLabel={(typed) => `Use "${typed}"`}
+        disabled={disabled}
         emptyMessage="Nothing here."
         focusOnOpen={focusOnOpen}
         label="Epic"
@@ -65,6 +73,7 @@ function SingleHost({
           setValue(picked);
           setHanded((before) => [...before, picked]);
         }}
+        onQueryChange={onQueryChange}
         open={open}
         options={options}
         searchLabel="Search epics"
@@ -724,6 +733,132 @@ test("a single pick opens with its picked value active, so Enter keeps it and th
       "aria-activedescendant",
       screen.getByRole("option", { name: "frontend" }).id
     );
+  } finally {
+    view.unmount();
+  }
+});
+
+/** Checks that the single pick stands open as a click on its trigger opens it: the focus in its
+ *  text box, the search empty, and the picked value `active` the active option. */
+function openedAsClicked(active: string): void {
+  const search = screen.getByRole("combobox", { name: "Search epics" });
+  expect(search).toHaveFocus();
+  expect((search as HTMLInputElement).value).toBe("");
+  expect(search).toHaveAttribute(
+    "aria-activedescendant",
+    screen.getByRole("option", { name: active }).id
+  );
+}
+
+// The closed trigger opens on the keys the WAI-ARIA select-only combobox opens its list on,
+// beside Enter and Space: ArrowDown, Alt+ArrowDown (Option+ArrowDown on a Mac) and ArrowUp each
+// open it as a click does, and move no option.
+test.each([
+  ["ArrowDown", "{ArrowDown}"],
+  ["Alt+ArrowDown", "{Alt>}{ArrowDown}{/Alt}"],
+  ["ArrowUp", "{ArrowUp}"],
+])("%s on the closed trigger opens the list as a click does", async (_name, keys) => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="docs" options={["api", "docs", "frontend"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+    act(() => trigger.focus());
+    await user.keyboard(keys);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+    openedAsClicked("docs");
+  } finally {
+    view.unmount();
+  }
+});
+
+// A character typed on the closed trigger opens the list with that character in its text box,
+// typed once, so the options are already narrowed by it and the next character follows it. Shift
+// makes a character of its own.
+test("a character typed on the closed trigger opens the list with it in the search, the options narrowed by it", async () => {
+  const user = userEvent.setup();
+  const queries: string[] = [];
+  const view = render(
+    <SingleHost
+      onQueryChange={(query) => queries.push(query)}
+      options={["api", "docs", "frontend"]}
+    />
+  );
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    act(() => trigger.focus());
+    await user.keyboard("p");
+    const search = screen.getByRole("combobox", { name: "Search epics" }) as HTMLInputElement;
+    expect(search).toHaveFocus();
+    expect(search.value).toBe("p");
+    expect([search.selectionStart, search.selectionEnd]).toEqual([1, 1]);
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["api"]);
+    await user.keyboard("i");
+    expect(search.value).toBe("pi");
+    expect(queries).toEqual(["p", "pi"]);
+
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    await user.keyboard("{Shift>}D{/Shift}");
+    expect((screen.getByRole("combobox", { name: "Search epics" }) as HTMLInputElement).value).toBe(
+      "D"
+    );
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+      "docs",
+      "frontend",
+    ]);
+    expect(screen.getByTestId("handed").textContent).toBe("");
+  } finally {
+    view.unmount();
+  }
+});
+
+// Space presses the trigger, as a click does, and types nothing into the search, even after a
+// typed character opened the list before.
+test("Space on the closed trigger still opens the list with an empty search", async () => {
+  const user = userEvent.setup();
+  const view = render(<SingleHost initial="docs" options={["api", "docs", "frontend"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: pickNamed("Epic") });
+    act(() => trigger.focus());
+    await user.keyboard("f");
+    expect((screen.getByRole("combobox", { name: "Search epics" }) as HTMLInputElement).value).toBe(
+      "f"
+    );
+    await user.keyboard("{Escape}");
+    expect(trigger).toHaveFocus();
+    await user.keyboard(" ");
+    openedAsClicked("docs");
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+  } finally {
+    view.unmount();
+  }
+});
+
+// A busy trigger (`aria-disabled`) and a disabled one open on none of the keys, whether or not the
+// engine leaves the focus on them. The same keys open the trigger once it is enabled again.
+test("a disabled or busy trigger opens on none of the keys that open an enabled one", async () => {
+  const user = userEvent.setup();
+  const keys = ["{ArrowDown}", "{Alt>}{ArrowDown}{/Alt}", "{ArrowUp}", "d"];
+  const view = render(<SingleHost options={["api", "docs"]} />);
+  try {
+    const trigger = screen.getByRole("button", { name: "Epic" });
+    for (const state of [{ ariaDisabled: true }, { disabled: true }]) {
+      view.rerender(<SingleHost {...state} options={["api", "docs"]} />);
+      for (const key of keys) {
+        act(() => trigger.focus());
+        await user.keyboard(key);
+        expect(screen.queryByRole("listbox"), key).not.toBeInTheDocument();
+        expect(trigger, key).toHaveAttribute("aria-expanded", "false");
+      }
+    }
+
+    view.rerender(<SingleHost options={["api", "docs"]} />);
+    for (const key of keys) {
+      act(() => trigger.focus());
+      await user.keyboard(key);
+      expect(screen.queryByRole("listbox"), key).toBeInTheDocument();
+      await user.keyboard("{Escape}");
+    }
   } finally {
     view.unmount();
   }

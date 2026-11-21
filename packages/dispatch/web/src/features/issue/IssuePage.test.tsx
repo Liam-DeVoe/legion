@@ -879,11 +879,12 @@ test("IssuePage's `e` opens the title's editor through the Edit title button", a
   }
 });
 
-// The issue header's Assignee was a `<select>`, which takes a page's single keys as its own; its
-// list's trigger is a button, and the keymap reads it as the select it replaced, so a digit
-// pressed on it writes no priority. The same keys pressed on the page write it, which shows the
-// binding was there to fire.
-test("IssuePage writes no priority from a digit pressed on the Assignee trigger, and writes it from the page", async () => {
+// The issue header's Assignee was a `<select>`, which takes a page's single keys as its own. Its
+// list's trigger opens the list on a typed character, with that character as the list's search,
+// so a digit or a letter of a page binding typed on the closed trigger does nothing else on the
+// page: no priority, no title editor, no labels list, no pin, no tab chord. The same digit
+// pressed on the page writes the priority, which shows the binding was there to fire.
+test("IssuePage takes a digit or a binding's letter typed on the closed Assignee trigger as the list's search, and the digit writes the priority from the page", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: 3 });
@@ -896,7 +897,23 @@ test("IssuePage writes no priority from a digit pressed on the Assignee trigger,
     // Focused with no press, so the trigger's list stays shut: a closed trigger is the case.
     await act(async () => assignee.focus());
     expect(document.activeElement === assignee).toBe(true);
-    await user.keyboard("2");
+    for (const [keys, typed] of [
+      ["2", "2"],
+      ["e", "e"],
+      ["l", "l"],
+      ["t", "t"],
+      ["{Shift>}P{/Shift}", "P"],
+    ] as const) {
+      await user.keyboard(keys);
+      const search = await screen.findByRole("combobox", { name: "Search people" });
+      expect((search as HTMLInputElement).value, typed).toBe(typed);
+      expect(screen.queryByRole("textbox", { name: "Issue title" }), typed).toBeNull();
+      expect(screen.queryByRole("combobox", { name: "Search or create label" }), typed).toBeNull();
+      await user.keyboard("{Escape}");
+      expect(document.activeElement === assignee, typed).toBe(true);
+    }
+    expect(screen.getByRole("button", { name: "Pin issue" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Spec", selected: true })).toBeTruthy();
     await act(async () => assignee.blur());
     await user.keyboard("3");
 

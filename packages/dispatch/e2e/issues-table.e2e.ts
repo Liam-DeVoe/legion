@@ -1165,7 +1165,8 @@ test("a status the bundle does not know leaves the whole page standing", async (
 });
 
 // B2: a closed `<select>` commits on an arrow key in Chrome on Linux and Windows. The merge
-// list stages a target instead, and the confirmation is what sends anything.
+// list stages a target instead, and the confirmation is what sends anything. An arrow key on the
+// closed trigger opens the list, and picks nothing.
 test("an arrow key on the merge list's trigger closes no epic, and the confirmed merge does", async ({
   browser,
 }) => {
@@ -1184,6 +1185,7 @@ test("an arrow key on the merge list's trigger closes no epic, and the confirmed
     const trigger = page.getByRole("button", { name: "Merge into another epic" });
     await trigger.focus();
     await page.keyboard.press("ArrowDown");
+    await expect(trigger).toHaveAttribute("aria-expanded", "true");
     // Nothing must follow the keystroke: a merge the arrow key had started would leave the page
     // in that keypress's own task, so this window is where its write and its dialog would show.
     await page.waitForTimeout(500);
@@ -1191,8 +1193,8 @@ test("an arrow key on the merge list's trigger closes no epic, and the confirmed
     expect((await getIssue(child.key)).parent).toBe(source.key);
     await expect(page.getByRole("dialog", { name: "Merge this epic?" })).toHaveCount(0);
 
-    // The confirmed path still merges, and says what it is about to do first.
-    await trigger.click();
+    // The confirmed path still merges, and says what it is about to do first. The list the arrow
+    // opened is the one the target is picked from.
     await page.getByRole("option", { name: target.title, exact: true }).click();
     await page.getByRole("button", { name: "Merge…" }).click();
     const asked = page.getByRole("dialog", { name: "Merge this epic?" });
