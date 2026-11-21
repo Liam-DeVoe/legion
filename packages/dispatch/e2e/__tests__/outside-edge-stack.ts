@@ -15,12 +15,14 @@
  *    the owner took her off OWN.
  *  - `secondProject`: bob, on OWN and OTHER: the run must fail step 1 naming OTHER.
  *  - `silentPeer`: dave, on OWN alone, sending to a peer that never answers: step 3 must fail by
- *    timeout, naming that peer.
+ *    timeout, naming that peer. Then `t5` with his kept passkey and a cookie Dispatch refuses,
+ *    while he is still listed: the passkey must sign him in, the positive control of carol's
+ *    refused one.
  *  - `oneRequest`: erin, on OWN alone, with the listener's threshold of a minute set to 1: step 4
  *    must fail, naming the host.
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,9 +62,10 @@ export interface StackRuns {
   readonly keptCredential: string;
   readonly listedAfterRevoke: readonly string[];
   /** `t5` while the person is still listed (its deadline comes first), then after the owner took
-   *  them off OWN, each with the TSV it wrote. */
+   *  them off OWN, and dave's, still listed, with a refused cookie, each with the TSV it wrote. */
   readonly t5Listed: DriverRun & { readonly tsv: string };
   readonly t5Delisted: DriverRun & { readonly tsv: string };
+  readonly t5StillListed: DriverRun & { readonly tsv: string };
   readonly secondProject: DriverRun;
   readonly silentPeer: DriverRun;
   readonly oneRequest: DriverRun;
@@ -251,11 +254,11 @@ if (import.meta.main) {
         const listedAfterRevoke = await edge.listed(people.pass);
         // The delisting window's browser half: first while the person is still on OWN, which its
         // deadline must end UNKNOWN, then after the owner takes them off it.
-        const window = async (name: string, seconds: number) => {
+        const window = async (name: string, seconds: number, at = state) => {
           const tsv = join(scratch, `${name}.tsv`);
           const deadline = String(Math.floor(Date.now() / 1000) + seconds);
           const ran = await drive(["t5"], {
-            ...state,
+            ...at,
             OUTSIDE_T5_DEADLINE: deadline,
             OUTSIDE_T5_TSV: tsv,
           });
@@ -269,6 +272,18 @@ if (import.meta.main) {
           `/api/v1/projects/OWN/access/people/${people.pass}`
         );
         const t5Delisted = await window("t5-delisted", 90);
+        const silentPeerRun = await run("silentPeer", { OUTSIDE_PEER_SESSION: silentPeer });
+        // dave's kept passkey and origin, beside a cookie that names no session, so `t5` goes
+        // straight on to the passkey while the owner still lists him.
+        const stillListed = join(scratch, "t5-still-listed");
+        mkdirSync(stillListed, { mode: 0o700 });
+        for (const name of ["origin", "passkey.json"]) {
+          copyFileSync(join(scratch, "silentPeer", name), join(stillListed, name));
+        }
+        writeFileSync(join(stillListed, "cookie"), "dsession=no-such-session", { mode: 0o600 });
+        const t5StillListed = await window("t5-still-listed", 90, {
+          OUTSIDE_EDGE_STATE: stillListed,
+        });
         const runs: StackRuns = {
           pass,
           tailnetCode,
@@ -279,8 +294,9 @@ if (import.meta.main) {
           listedAfterRevoke,
           t5Listed,
           t5Delisted,
+          t5StillListed,
           secondProject: await run("secondProject"),
-          silentPeer: await run("silentPeer", { OUTSIDE_PEER_SESSION: silentPeer }),
+          silentPeer: silentPeerRun,
           oneRequest: await run("oneRequest", { OUTSIDE_EDGE_LIMITS: oneRequestLimits }),
           outsideHost,
           edgeHost,

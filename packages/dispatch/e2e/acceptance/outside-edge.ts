@@ -9,7 +9,7 @@
  *                 `e2e/virtual-passkey.ts`), which signs the person in at the link's origin, the
  *                 outside origin; then `GET /api/v1/projects` must list exactly OUTSIDE_PROJECT
  *                 (row `projects`, which names each project too many or missing).
- *    2. device login  the broker client (`@legion/broker-client/device-login`) asks
+ *    2. device login  the broker client (`@legion/cipher-client/device-login`) asks
  *                 OUTSIDE_BROKER_URL for a device login of this machine for the signed-in person,
  *                 whose page must be on the outside origin; the browser types the code on that
  *                 page and approves it, and the poll must answer a DPoP-bound pair (row
@@ -62,9 +62,11 @@
  *  and revokes each credential `approved.tsv` holds (`POST /api/v1/machine-logins/{id}/revoke`),
  *  a row each, `revoke-<credential id>`, printed and written to OUTSIDE_EDGE_REVOCATIONS
  *  (`<state>/outside-edge-revocations.tsv` when unset). A credential the list does not hold
- *  fails its row: the person's own list is where they end it. OUTSIDE_EDGE_REVOKE_KEEP names one
- *  approved code whose login it leaves live, with no row: the login a delisting window measures
- *  ending, which the person's removal ends and not this revoke.
+ *  fails its row: the person's own list is where they end it. A row passes only when the list,
+ *  read again after the revoke answered 2xx, no longer holds the credential; a list that gave no
+ *  answer, before or after, reads UNKNOWN. OUTSIDE_EDGE_REVOKE_KEEP names one approved code whose
+ *  login it leaves live, with no row: the login a delisting window measures ending, which the
+ *  person's removal ends and not this revoke.
  *
  *  `t5` is the browser's half of a delisting window: with OUTSIDE_T5_DEADLINE (Unix seconds) and
  *  OUTSIDE_T5_TSV, it asks `/auth/whoami` with the kept cookie at most every 5 s until it is
@@ -74,9 +76,14 @@
  *  Output: each row as `row<TAB>want<TAB>got<TAB>PASS|FAIL|UNKNOWN` on stdout and in the TSV
  *  file, then the verdict: `PASS` (exit 0) when every row passed, `FAIL: <rows>` (exit 1) when
  *  any failed, else `UNKNOWN: <rows>` (exit 2). It prints no token, cookie or link, and no name
- *  of the machine it runs on: its output can be posted where anyone reads it.
+ *  of the machine it runs on: its output can be posted where anyone reads it. The link's token
+ *  is withheld from every row even where a browser's error or a page's text names it, as an
+ *  error of a page that did not load names the URL it was loading.
  */
 
+// First, before any module that takes `fetch` or `WebSocket`: importing it wraps both, and the
+// relay client takes its WebSocket constructor when its module loads (its header says why).
+import "./outside-edge-count";
 import { randomBytes } from "node:crypto";
 import {
   appendFileSync,
@@ -93,7 +100,7 @@ import {
   deviceLoginHost,
   finishDeviceLogin,
   startDeviceLogin,
-} from "@legion/broker-client/device-login";
+} from "@legion/cipher-client/device-login";
 import { EnvelopeSchema, legacyAgentSubject } from "@legion/contracts";
 import { brokerCredential } from "@legion/envoy-client/broker-credential";
 import {
@@ -105,7 +112,6 @@ import { connectListenerRelay, type ListenerRelay } from "@legion/envoy-client/l
 import { createEnvoyClient } from "@legion/envoy-client/transport";
 import { type BrowserContext, chromium, type Page } from "@playwright/test";
 import { addVirtualPasskey } from "../virtual-passkey";
-// First: it wraps fetch and WebSocket before any module below takes either (its header says why).
 import { count, counted } from "./outside-edge-count";
 import {
   judgeLimits,
@@ -128,17 +134,32 @@ const LOGIN_MS = 5 * 60_000;
 /** A run that cannot start: what it could not read, which is UNKNOWN. */
 class Refused extends Error {}
 
-/** Prints and keeps the rows of one run, writing each to `tsv` as it is made. */
+/** What a row writes in place of a secret it would otherwise carry. */
+const WITHHELD = "<withheld>";
+
+/** Prints and keeps the rows of one run, writing each to `tsv` as it is made. Every field of a
+ *  row is written with each of `withheld` replaced by WITHHELD. */
 class Rows {
   readonly rows: Row[] = [];
-  constructor(readonly tsv: string | undefined) {
+  constructor(
+    readonly tsv: string | undefined,
+    private readonly withheld: readonly string[] = []
+  ) {
     if (tsv !== undefined) writeFileSync(tsv, "", { mode: 0o600 });
   }
 
-  add(row: Row): Row {
-    const line = [row.row, row.want, row.got, row.verdict]
-      .map((field) => field.replaceAll(/[\t\r\n]+/g, " "))
-      .join("\t");
+  add(made: Row): Row {
+    const field = (text: string) =>
+      this.withheld
+        .reduce((at, secret) => at.replaceAll(secret, WITHHELD), text)
+        .replaceAll(/[\t\r\n]+/g, " ");
+    const row: Row = {
+      row: field(made.row),
+      want: field(made.want),
+      got: field(made.got),
+      verdict: made.verdict,
+    };
+    const line = [row.row, row.want, row.got, row.verdict].join("\t");
     console.log(line);
     if (this.tsv !== undefined) appendFileSync(this.tsv, `${line}\n`);
     this.rows.push(row);
@@ -737,6 +758,10 @@ async function relay(inputs: RunInputs, rows: Rows): Promise<void> {
           plugin: { name: "outside-edge-e2e", version: "1" },
         }),
       answered: (result) => delivery.answered(result.delivery),
+      // The session follows no topic, so a project refusal has nothing of it to drop: one that
+      // names only its own agent subject fails the registration, which is this row's FAIL.
+      drop: () => undefined,
+      log,
     });
     await client.send({
       sourceSessionID: session,
@@ -800,7 +825,16 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
     });
     return rows.finish();
   }
-  const rows = new Rows(inputs.tsv);
+  // The link's token, as the URL holds it and decoded, which no row carries: a page that did not
+  // load fails with an error naming the URL it was loading.
+  const token = inputs.invite.hash.slice(1);
+  let decoded = token;
+  try {
+    decoded = decodeURIComponent(token);
+  } catch {
+    // A malformed escape: the token is withheld as the URL holds it.
+  }
+  const rows = new Rows(inputs.tsv, [token, decoded]);
   console.log(`outside-edge: origin ${inputs.origin}`);
   console.log(`outside-edge: time ${new Date().toISOString()}`);
   const browser = await chromium.launch();
@@ -828,6 +862,15 @@ async function run(env: NodeJS.ProcessEnv): Promise<number> {
         );
       else await relay(inputs, rows);
     }
+  } catch (error) {
+    // An error no step read, such as a page closed under a step: the run judged nothing more, and
+    // its text goes through the rows, which withhold the token.
+    rows.add({
+      row: "stopped",
+      want: "every step judged",
+      got: `the run stopped: ${messageOf(error)}`,
+      verdict: "UNKNOWN",
+    });
   } finally {
     await browser.close();
   }
@@ -910,27 +953,38 @@ async function revoke(env: NodeJS.ProcessEnv): Promise<number> {
     (env.OUTSIDE_EDGE_REVOCATIONS ?? "").trim() || join(state, "outside-edge-revocations.tsv")
   );
   const headers = { Accept: "application/json", Cookie: cookie, Origin: origin };
-  let listed: readonly string[] | undefined;
-  let why = "";
-  try {
-    const answer = await fetch(`${origin}/api/v1/machine-logins`, { headers });
-    const credentials = member(await answer.json().catch(() => undefined), "credentials");
-    if (answer.ok && Array.isArray(credentials)) {
-      listed = credentials.map((one) => String(member(one, "credential_id")));
-    } else {
-      why = `GET /api/v1/machine-logins answered ${answer.status}`;
+  /** The person's machine-logins list: the credential ids it holds, or why it gave none, UNKNOWN
+   *  where the request reached nobody (`unreached`) and FAIL where it was answered otherwise. */
+  const readList = async (): Promise<
+    | { readonly listed: readonly string[] }
+    | { readonly why: string; readonly verdict: "FAIL" | "UNKNOWN" }
+  > => {
+    try {
+      const answer = await fetch(`${origin}/api/v1/machine-logins`, {
+        headers,
+        signal: AbortSignal.timeout(PAGE_MS),
+      });
+      const credentials = member(await answer.json().catch(() => undefined), "credentials");
+      if (answer.ok && Array.isArray(credentials)) {
+        return { listed: credentials.map((one) => String(member(one, "credential_id"))) };
+      }
+      return { why: `GET /api/v1/machine-logins answered ${answer.status}`, verdict: "FAIL" };
+    } catch (error) {
+      return {
+        why: `GET /api/v1/machine-logins got no answer: ${messageOf(error)}`,
+        verdict: unreached(error) ? "UNKNOWN" : "FAIL",
+      };
     }
-  } catch (error) {
-    why = `GET /api/v1/machine-logins got no answer: ${messageOf(error)}`;
-  }
+  };
+  const before = await readList();
   for (const [code = "", credential = ""] of approvals) {
     const row = `revoke-${credential}`;
     const want = `the login of ${code} is on the person's machine-logins list and is revoked there`;
-    if (listed === undefined) {
-      rows.add({ row, want, got: why, verdict: "FAIL" });
+    if (!("listed" in before)) {
+      rows.add({ row, want, got: before.why, verdict: before.verdict });
       continue;
     }
-    if (!listed.includes(credential)) {
+    if (!before.listed.includes(credential)) {
       rows.add({
         row,
         want,
@@ -939,6 +993,7 @@ async function revoke(env: NodeJS.ProcessEnv): Promise<number> {
       });
       continue;
     }
+    let status: number;
     try {
       const answer = await fetch(
         `${origin}/api/v1/machine-logins/${encodeURIComponent(credential)}/revoke`,
@@ -946,20 +1001,45 @@ async function revoke(env: NodeJS.ProcessEnv): Promise<number> {
           method: "POST",
           headers: { ...headers, "Content-Type": "application/json" },
           body: JSON.stringify({ approver: person }),
+          signal: AbortSignal.timeout(PAGE_MS),
         }
       );
-      rows.add({
-        row,
-        want,
-        got: `listed; the revoke answered ${answer.status}`,
-        verdict: answer.ok ? "PASS" : "FAIL",
-      });
+      status = answer.status;
+      if (!answer.ok) {
+        rows.add({ row, want, got: `listed; the revoke answered ${status}`, verdict: "FAIL" });
+        continue;
+      }
     } catch (error) {
       rows.add({
         row,
         want,
         got: `listed; the revoke got no answer: ${messageOf(error)}`,
         verdict: "UNKNOWN",
+      });
+      continue;
+    }
+    // A 2xx is the route's word alone: the list, read again, is what shows the login ended.
+    const after = await readList();
+    if (!("listed" in after)) {
+      rows.add({
+        row,
+        want,
+        got: `listed; the revoke answered ${status}, then the list read again: ${after.why}`,
+        verdict: after.verdict,
+      });
+    } else if (after.listed.includes(credential)) {
+      rows.add({
+        row,
+        want,
+        got: `listed; the revoke answered ${status}, and the list read again still holds it`,
+        verdict: "FAIL",
+      });
+    } else {
+      rows.add({
+        row,
+        want,
+        got: `listed; the revoke answered ${status}, and the list read again no longer holds it`,
+        verdict: "PASS",
       });
     }
   }
@@ -1005,6 +1085,21 @@ function storedPasskey(text: string): StoredPasskey {
   };
 }
 
+/** The passkey sign-in's last request. Its answer, and not the page's alert, says whether the
+ *  passkey itself was refused: the page alerts on every failure alike. */
+const PASSKEY_FINISH = "/auth/passkey/login/finish";
+
+/** The answers of `POST /auth/passkey/login/finish` that refuse the passkey because its person is
+ *  gone, each code with its status, as Dispatch writes them (`passkeyRefusals` and
+ *  `writePasskeyRefusal` of packages/envoy/internal/dispatch/routes/passkey.go): 401
+ *  PASSKEY_UNKNOWN, the passkey deleted with the person's listing, and 403 NOT_LISTED, no access
+ *  list names the person any more. Any other answer proves no such refusal: a 404 is the edge's
+ *  own deny too, a 429 its rate limit, a 5xx or MEMBERSHIP_UNREADABLE trouble in Dispatch. */
+const PASSKEY_REFUSED: Readonly<Record<string, number>> = {
+  PASSKEY_UNKNOWN: 401,
+  NOT_LISTED: 403,
+};
+
 /**
  * `t5`: the browser's half of the public leg's delisting window. It reads the person's cookie,
  * origin and passkey from OUTSIDE_EDGE_STATE, as `run` kept them, and until OUTSIDE_T5_DEADLINE
@@ -1012,8 +1107,9 @@ function storedPasskey(text: string): StoredPasskey {
  * 401, it tries the passkey sign-in in a fresh browser at the same origin, with the same
  * credential. Two rows go to OUTSIDE_T5_TSV and to stdout, each `got` naming `at=<Unix seconds>`:
  * `T5-cookie`, PASS on the 401 and UNKNOWN when the deadline came first; and `T5-passkey`, PASS
- * when the sign-in was refused, FAIL when it signed the person in again after the 401, and
- * UNKNOWN when it was not tried or showed neither.
+ * only when `POST /auth/passkey/login/finish` answered one of PASSKEY_REFUSED, FAIL when the
+ * page signed the person in again or that request answered 2xx, and UNKNOWN otherwise: not tried,
+ * an alert with no answer to that request, or any other answer.
  */
 async function t5(env: NodeJS.ProcessEnv): Promise<number> {
   const tsv = (env.OUTSIDE_T5_TSV ?? "").trim();
@@ -1101,6 +1197,19 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
       authenticatorId: passkey.authenticatorId,
       credential,
     });
+    // Each answer of the sign-in's last request, read as it comes: the page shows its alert only
+    // after it, so one the page asked is in by the time the alert is read.
+    const finishes: Promise<{ readonly status: number; readonly code: unknown }>[] = [];
+    page.on("response", (response) => {
+      if (response.request().method() !== "POST") return;
+      if (new URL(response.url()).pathname !== PASSKEY_FINISH) return;
+      finishes.push(
+        response.json().then(
+          (body: unknown) => ({ status: response.status(), code: member(body, "code") }),
+          () => ({ status: response.status(), code: undefined })
+        )
+      );
+    });
     const bound = () => Math.max(1_000, Math.min(PAGE_MS, left()));
     await page.goto(`${origin}/`, { timeout: bound() });
     const button = page.getByRole("button", { name: "Sign in with a passkey" });
@@ -1109,19 +1218,53 @@ async function t5(env: NodeJS.ProcessEnv): Promise<number> {
     const signedIn = page.getByText(/^Signed in as /);
     const alert = page.getByRole("alert");
     await signedIn.or(alert).first().waitFor({ timeout: bound() });
-    if (await signedIn.isVisible()) {
+    const at = seconds();
+    const said = (await signedIn.isVisible())
+      ? undefined
+      : (await alert.first().innerText()).trim();
+    const answer = (await Promise.all(finishes)).at(-1);
+    const answered =
+      answer === undefined
+        ? ""
+        : `POST ${PASSKEY_FINISH} answered ${answer.status} ${typeof answer.code === "string" ? answer.code : "with no code"}`;
+    if (said === undefined) {
       rows.add({
         row: "T5-passkey",
         want: wantPasskey,
-        got: `the passkey signed the person in again at=${seconds()}, after the cookie's 401`,
+        got: `the passkey signed the person in again at=${at}, after the cookie's 401`,
         verdict: "FAIL",
+      });
+    } else if (answer === undefined) {
+      rows.add({
+        row: "T5-passkey",
+        want: wantPasskey,
+        got: `no answer to POST ${PASSKEY_FINISH} at=${at}, so no refusal of the passkey was read; the page said: ${said}`,
+        verdict: "UNKNOWN",
+      });
+    } else if (answer.status >= 200 && answer.status < 300) {
+      rows.add({
+        row: "T5-passkey",
+        want: wantPasskey,
+        got: `${answered} at=${at}, a sign-in after the cookie's 401; the page said: ${said}`,
+        verdict: "FAIL",
+      });
+    } else if (
+      typeof answer.code === "string" &&
+      Object.hasOwn(PASSKEY_REFUSED, answer.code) &&
+      PASSKEY_REFUSED[answer.code] === answer.status
+    ) {
+      rows.add({
+        row: "T5-passkey",
+        want: wantPasskey,
+        got: `refused at=${at}: ${answered}; the page said: ${said}`,
+        verdict: "PASS",
       });
     } else {
       rows.add({
         row: "T5-passkey",
         want: wantPasskey,
-        got: `refused at=${seconds()}: ${(await alert.first().innerText()).trim()}`,
-        verdict: "PASS",
+        got: `${answered} at=${at}, which is no refusal of the passkey itself; the page said: ${said}`,
+        verdict: "UNKNOWN",
       });
     }
   } catch (error) {

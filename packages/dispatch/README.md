@@ -844,7 +844,7 @@ step before it failed is `UNKNOWN`, never run on nothing:
 1. The owner's link enrolls a passkey on Chromium's virtual authenticator
    (`e2e/virtual-passkey.ts`), which signs the person in at the link's origin, and
    `GET /api/v1/projects` must list exactly `OUTSIDE_PROJECT`; a project beside it is named.
-2. The broker client (`@legion/broker-client/device-login`) asks the broker for a device login of
+2. The broker client (`@legion/cipher-client/device-login`) asks the broker for a device login of
    this machine, and the browser approves its code on the outside origin's machine-login page,
    with `OUTSIDE_TAILNET_USER_CODE` beside it when set (`APPROVED <code>`).
 3. The device login's broker credential opens the session's relay socket at the listener
@@ -860,18 +860,29 @@ step before it failed is `UNKNOWN`, never run on nothing:
 `bun e2e/acceptance/outside-edge.ts approve <code>` approves one more code in the browser state
 the run kept in `OUTSIDE_EDGE_STATE` (another check that starts a device login of its own calls
 it), and `revoke` ends each recorded device login on the person's own machine-logins list, a row
-each, but the one `OUTSIDE_EDGE_REVOKE_KEEP` names. `t5` is the browser's half of a delisting
-window: until `OUTSIDE_T5_DEADLINE` it asks `/auth/whoami` with the kept cookie, and once that is
-answered 401 it tries the kept passkey in a fresh browser, writing the rows `T5-cookie` and
-`T5-passkey` to `OUTSIDE_T5_TSV`. The driver prints no token, cookie or link, and no name of the
-machine it runs on.
+each, but the one `OUTSIDE_EDGE_REVOKE_KEEP` names: a row passes only when the list, read again
+after the revoke, no longer holds the login, and reads `UNKNOWN` when the list gave no answer.
+`t5` is the browser's half of a delisting window: until `OUTSIDE_T5_DEADLINE` it asks
+`/auth/whoami` with the kept cookie, and once that is answered 401 it tries the kept passkey in a
+fresh browser, writing the rows `T5-cookie` and `T5-passkey` to `OUTSIDE_T5_TSV`. `T5-passkey`
+passes only on the sign-in's own refusal of the passkey, `POST /auth/passkey/login/finish`
+answered 401 `PASSKEY_UNKNOWN` or 403 `NOT_LISTED`; any other answer, or an alert with none, is
+`UNKNOWN`, and a sign-in is `FAIL`. The driver prints no token, cookie or link, and no name of the
+machine it runs on: the link's token is withheld from every row even where a browser's error or
+a page names it.
 
 `bun run test:harness e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts`
-drives it. The input rows run anywhere. The stack rows start one stack of the harness under
-`DISPATCH_E2E_SIGNIN=google` (`e2e/__tests__/outside-edge-stack.ts`), with an edge stand-in that
-serves the broker's device grant and the listener on envoy-client's relay socket stand-in
-(`e2e/__tests__/outside-edge-stand-in.ts`), and run the driver once per case: a person on one
-project passes, `approve`, `revoke` and `t5` before and after the owner takes them off; a person
+drives it. The input rows run anywhere. The control rows run the driver against an outside origin
+stand-in (`e2e/__tests__/outside-edge-origin-stand-in.ts`): `t5` against each answer of the
+passkey sign-in that is not its refusal (no answer, 404, 429, another code), `revoke` against a
+revoke that ends nothing and a list that gives no answer, the run against a link whose page does
+not load or names the link, and the request counter against the relay client's socket. Those
+that start Chromium skip where Playwright's Chromium is not installed. The stack rows start one
+stack of the harness under `DISPATCH_E2E_SIGNIN=google` (`e2e/__tests__/outside-edge-stack.ts`),
+with an edge stand-in that serves the broker's device grant and the listener on envoy-client's
+relay socket stand-in (`e2e/__tests__/outside-edge-stand-in.ts`), and run the driver once per
+case: a person on one project passes, `approve`, `revoke` and `t5` before and after the owner
+takes them off, and `t5` for a person still listed, whose restored passkey signs them in; a person
 on a second project fails step 1 naming it; a peer that never answers fails step 3 naming the
 peer; a threshold of 1 fails step 4 naming the host. They need
 `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, Chromium and the built dashboard
