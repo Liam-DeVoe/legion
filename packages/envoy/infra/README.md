@@ -4008,7 +4008,7 @@ exception lane. A message on a role lane of its own project that
 names a role of another project is the shared listeners' role lane to refuse, which it does once
 the edge mode of #4657 is in. It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
 `ENVOY_NOTIFICATIONS` or of any bucket's stream (`KV_<bucket>`), and no `$JS.API.DIRECT.GET` of any
-bucket, so it can change no stream's subjects, limits or republish, and delete no stream:
+bucket, so it can change no stream's subjects, limits or republish:
 
 - A republish to a `$JS.API.…` subject is a JetStream API request in the stream's account, with
   the stored value as its body. On the hub's image an empty value republished to a stream delete
@@ -4020,6 +4020,12 @@ bucket, so it can change no stream's subjects, limits or republish, and delete n
   stream delete deletes it. So an edge listener reads its buckets with stream message gets
   (`$JS.API.STREAM.MSG.GET.KV_<bucket>`). Their answer is the API's own, and aimed at the API it
   takes no action there, nor does a stream info answer or a stored publish's acknowledgement.
+- It can, though, delete any stream of its account without changing it: a `no_wait` pull on a
+  consumer with nothing to deliver is answered a `404 No Messages` status, and a synchronous ack
+  an empty reply, each with no body on whatever reply subject it names and needing no other
+  client, so one aimed at `$JS.API.STREAM.DELETE.<s>` deletes stream `<s>` on the hub's nats-server
+  (2.15.1). That reach is availability only - no message of any project crosses it - accepted for
+  day one until the hub's nats-server is raised to 2.15.3, which refuses a reply into `$JS.API.`.
 
 An edge listener reads the stream and its start ends, naming the stream, on a server that has
 none. It finds each bucket it opens: the interest, role, session and DPoP-proof buckets end its
@@ -4131,6 +4137,10 @@ the edge's update of a bucket's stream, and its control has an administrator's r
 empty value delete a stream. `TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI` has a
 listener's direct gets aimed at the API change one stream and delete another, the edge's refused,
 and its stream message get, stream info and key write aimed the same way take no action.
+`TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream` has a `no_wait` pull's `404 No Messages`
+status and a synchronous ack's empty reply, each aimed at the stream-delete API, delete a scratch
+stream with no subscriber, the edge's own direct delete refused and the same pull and ack answered
+on its inbox as controls (nats-server 2.15.1; the deletes are refused once the hub runs 2.15.3).
 `cmd/listener/edge_live_test.go` runs the listener under the set: it starts, relays a send, is
 reached by a role message through a shared listener, takes a role another session holds and is
 relayed a role message of a role another session holds, with no refusal, and its start ends,
