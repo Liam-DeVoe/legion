@@ -98,8 +98,9 @@ func parentStatusFixWriter() issueWriter {
 	return issueWriter{actor: parentStatusRuleActor, system: true}
 }
 
-// issueWritePlan is a write of the status, the parent or the labels of one or more issues, step
-// by step, as refuseIssueWritePlan judges it before the first step writes.
+// issueWritePlan is a write of one or more issues, step by step, as refuseIssueWritePlan judges it
+// before the first step writes. A step may write the status, the parent, the labels, or none of
+// them (the plan of a PATCH that writes the title alone).
 type issueWritePlan struct {
 	steps []issueWriteStep
 	// includeChildren is that the call moves the open issues under the issue it names with that
@@ -249,7 +250,8 @@ func (call *issueWriteCall) unlinkFrom(parent string) {
 }
 
 // refuseIssueWritePlan is the one check of a plan, which its caller runs before the plan's first
-// write, with the owner lock of each step's issue and of each step's current and new parent held.
+// write, with the owner lock of each step's issue held, and for a step that writes a status or a
+// parent, the locks of its current and new parent too.
 // It refuses with an error R26's refusal, while its setting is on, and what no setting lets
 // through. Then it answers the conflict with R24 (parentStatusConflictOf), or nil when the plan
 // keeps the rule. An unjudged plan answers nil without R24's read, since its caller refuses no
@@ -293,8 +295,9 @@ type plannedIssue struct {
 // each issue whose status a step changes) and writes each step's status and parent over them. A
 // status change judges the issue with its parent and with each direct child. A change of parent
 // judges the issue with its new parent. A pair that no step changes is not judged, so a plan that
-// changes no pair reads nothing. The issues are listed in the order of the steps, a parent before
-// the children, and the children in the order of their numbers.
+// changes no pair reads nothing. Every writer of a pair holds the parent's owner lock, so two
+// writes of one pair are judged one after the other. The issues are listed in the order of the
+// steps, a parent before the children, and the children in the order of their numbers.
 func parentStatusConflictOf(ctx context.Context, q pgx.Tx, plan issueWritePlan) (*parentStatusConflict, error) {
 	var judged []issueWriteStep
 	var parentsOfChildren []string

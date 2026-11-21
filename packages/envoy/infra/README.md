@@ -1346,22 +1346,15 @@ in every mode that runs Dispatch, right after `DISPATCH_PARENT_STATUS_RULE` (or 
 variable would be). The three writes are a write of the issue's status, the removal of its
 `legion` label, and a move that leaves it under no labelled issue. With it Dispatch refuses
 them to a credential that holds neither the `person` scope nor `legion-status`. A Legion issue
-carries the `legion` label, in any letter case, or is under an issue that carries it. Its row in
-`packages/envoy/cmd/dispatch/settings.go` gives the whole procedure. Before an operator sets it,
-deploy the secrets broker release that grants `legion-status` and wait one broker access-token
-lifetime (`BROKER_ACCESS_TOKEN_SECONDS`), then deploy the Dispatch release that reads the setting.
-Set it only once all four of these hold. First, each project's Legion daemon writes with its own
-broker token (`dispatch_token_broker` on), from a broker account entry whose fixed session is
-`legion-daemon:<PROJECT>` of its own project. Second, each project's daemon runs the release that
-carries `close_child` and `park_child`'s `status`. Third, the deployment's instructions have each
-Legion controller admit an issue through the daemon's `set_status` and write no `todo` itself.
-Fourth, each project's daemon, and then its controller, has started since those instructions
-were applied. The refusal needs no one-time step and no crossing: a pod with the
-setting off beside one with it on takes those writes until the roll ends. Unset, nothing is
-rendered, so a deployment that leaves it unset renders the pod it always had. An `envoyImage`
-whose `envoy-dispatch` predates the setting ignores it, as it ignores every variable its settings
-table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Setting or unsetting it replaces
-the app's pods as any change to its pod template does.
+carries the `legion` label, in any letter case, or is under an issue that carries it. The setting's
+row in `packages/envoy/cmd/dispatch/settings.go`, which `envoy-dispatch settings` prints, is the one
+place of the procedure: which releases to deploy first, and the four conditions on each project's
+Legion daemon and controller under which an operator sets the input. The refusal needs no
+one-time step and no crossing: a pod with the setting off beside one with it on takes those writes
+until the roll ends. Unset, nothing is rendered, so a deployment that leaves it unset renders the
+pod it always had. An `envoyImage` whose `envoy-dispatch` predates the setting ignores it, as it
+ignores every variable its settings table (`packages/envoy/cmd/dispatch/settings.go`) does not
+list. Setting or unsetting it replaces the app's pods as any change to its pod template does.
 
 `priorityClassName`, `appPdbMinAvailable`, `frontDoorPdbMinAvailable` and
 `listenerPdbMinAvailable` protect the pods from being displaced; with none set the component
