@@ -133,6 +133,10 @@ func tlsPositiveControlsLine(sites []tlsSite) string {
 	return line.String()
 }
 
+// tlsSkippedLine is what `legion probe-image --skip-tls` prints in place of the TLS check, so the
+// log of a build that skipped it says so.
+const tlsSkippedLine = "probe-image: TLS check not run (--skip-tls): no public site reached"
+
 // verifyTLSPositiveControls runs probe at each site with its pinned root, which must be accepted,
 // and at the isolation endpoint with that root, which must be refused. Every other outcome fails,
 // the run's own limit included, since a positive control gets no second run: curl is small, and a

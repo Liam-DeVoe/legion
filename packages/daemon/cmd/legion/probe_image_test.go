@@ -402,6 +402,35 @@ func TestProbeImageWithSkipBrowserPassesAnImageWithNoBrowser(t *testing.T) {
 	}
 }
 
+// With --skip-tls the probe runs neither the positive controls nor a TLS client, so an image whose
+// client accepts a compromised chain, which it refuses without the flag, passes, and its log says
+// the check was not run. Only the kind job's build of the image passes the flag.
+func TestProbeImageWithSkipTLSRunsNoTLSCheck(t *testing.T) {
+	omp := imageOmp(t)
+	img := inImage(t, thisBinarysContract, omp)
+	accepting := fakeTLSClient{clientName: "node", outcomes: map[string]tlsOutcome{
+		emSignTLSSite.name:  {status: tlsConnectionAccepted, detail: "HTTP 200"},
+		aaaTLSSite.name:     {status: tlsCertificateRefused, detail: "CERT_REVOKED"},
+		controlTLSSite.name: {status: tlsConnectionAccepted, detail: "HTTP 200"},
+	}}
+	controls := 0
+	countingControls := func(context.Context, []string) error { controls++; return nil }
+
+	code, stdout, stderr := probeImageWith(theseTLSClients(accepting), countingControls, img.flags()...)
+	if code != 1 || !strings.Contains(stderr, "node accepts the emSign chain") {
+		t.Fatalf("probe-image without --skip-tls = %d %q %q, want exit 1 on node's acceptance", code, stdout, stderr)
+	}
+
+	controls = 0
+	code, stdout, stderr = probeImageWith(theseTLSClients(accepting), countingControls, img.flags("--skip-tls")...)
+	if code != 0 || !strings.Contains(stdout, "\n"+bootprobe.OKPrefix+" (") {
+		t.Fatalf("probe-image --skip-tls = %d %q %q, want exit 0 and the OK line", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, tlsSkippedLine+"\n") || strings.Contains(stdout, "probe-image: TLS client ") || controls != 0 {
+		t.Errorf("probe-image --skip-tls printed %q with %d positive-control runs, want %q, no TLS client line and no control run", stdout, controls, tlsSkippedLine)
+	}
+}
+
 // The OK line's model-fallback mark is what the image's Oh My Pi answers for retry.modelFallback
 // under the probe's environment: off by default, on when the operator's configuration turns it
 // on, and "unread" when Oh My Pi cannot answer at all — the probe does not refuse the run for

@@ -1550,9 +1550,15 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # from the build context, so the image keeps no copy), or the release version a release passes
 # (PI_ENVOY_VERSION, PI_LEGION_VERSION): an image whose plugin roots name any other version, or no
 # version, fails here.
+# LEGION_PROBE_SKIP_TLS, when set, has the probe run no TLS check (`--skip-tls`). Only the kind
+# job's build of the image under test sets it: that build runs in every merge group, and its TLS
+# check would reach the check's public sites from the runner, where the kind tests' pods meet the
+# rig's stand-ins instead. The worker-image job's build and the release's set nothing and run the
+# check against the real authorities.
 ARG LEGION_REVISION
 ARG PI_LEGION_VERSION
 ARG PI_ENVOY_VERSION
+ARG LEGION_PROBE_SKIP_TLS
 RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/pi-envoy.json \
     --mount=type=bind,source=packages/pi-legion/package.json,target=/tmp/source/pi-legion.json \
     set -eu; \
@@ -1606,7 +1612,7 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
       expected="$(printf '%s\nplugins @sjawhar/pi-legion %s @sjawhar/pi-envoy %s' "$expected" "$PI_LEGION_VERSION" "$PI_ENVOY_VERSION")"; \
     fi; \
     test "$version" = "$expected"; \
-    legion probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code --skip-agent-models; \
+    legion probe-image --plugin-root /opt/legion/pi-legion --envoy-plugin-root /opt/legion/pi-envoy --claude-root /opt/legion/claude-envoy --claude-code-pin /opt/legion/claude-code --skip-agent-models ${LEGION_PROBE_SKIP_TLS:+--skip-tls}; \
     test ! -e /home/legion/.config/gcloud; test ! -e /home/legion/.azure; \
     test ! -e /home/legion/.cache/mise; test ! -e /home/legion/.local/share/mise; \
     agent-secrets --help >/dev/null; \

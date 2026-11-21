@@ -144,8 +144,11 @@ jobs:
           outputs: type=docker,dest=${{ runner.temp }}/worker-image.tar
           tags: legion-worker:kind
           cache-from: type=gha,scope=worker-image
+          # LEGION_PROBE_SKIP_TLS has the build's final probe run no TLS check, which reaches public
+          # sites: the kind tests' pods meet the rig's stand-ins for them (worker.Dockerfile's ARG).
           build-args: |
             LEGION_REVISION=${{ github.sha }}
+            LEGION_PROBE_SKIP_TLS=1
           secrets: |
             github_token=${{ secrets.GITHUB_TOKEN }}
 
