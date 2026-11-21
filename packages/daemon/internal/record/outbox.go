@@ -700,10 +700,13 @@ type FailureBudget struct {
 // the holds an architect placed, the architect that owns the held claim (the daemon's
 // tellUpdateStalled). Round is the round's identity (supervise.Claim.UpdateRound), Pod the pod it
 // was opened over, and Reasons the drift the round was opened for, as the ask states it. Waiting is
-// every claim the round asked, each with its role, its state and whether it answered, so the
-// reader finds the claims the round asked, and which of them are suspended, without reading the
-// whole claims list; the notice's Reason names who holds each held claim and who may resume it.
-// What each entry says is UpdateWaiting's. The notice's issue is the outbox row's own.
+// every claim of the issue with a session that has not failed (the daemon's noticeClaims), each
+// with its role, its state and whether it answered. A claim the daemon suspended is listed too,
+// although the round neither asks it nor waits for it, unless a project's pause stopped it and
+// still owes that role a launch (internal/daemon's podHolds.owes). So the reader finds the claims
+// in the round, and which of them are suspended, without reading the whole claims list; the
+// notice's Reason names who holds each held claim and who may resume it. What each entry says is
+// UpdateWaiting's. The notice's issue is the outbox row's own.
 //
 // Reasons is one string, never a list: a single reason carries ", " inside it already — a moved
 // address reads `<where> <held>, now <handed>`, a pod-shape drift `image <was>, now <now>`, and a
@@ -718,10 +721,12 @@ type UpdateStalled struct {
 	Waiting []UpdateWaiting `json:"waiting"`
 }
 
-// UpdateWaiting is one claim an update round asked: its token, the role it holds, the state it
-// is in (supervise.ClaimState — a suspended claim waits for a resume by whoever may lift its
-// suspension, which the notice's Reason names; a pod round lists no `failed` claim, since it asks
-// none), and Answered for a claim that has already answered this round.
+// UpdateWaiting is one claim the notice lists (UpdateStalled.Waiting): its token, the role it
+// holds, the state it is in (supervise.ClaimState — a claim under a suspension that holds waits
+// for a resume by whoever may lift that suspension, which the notice's Reason names, and the round
+// waits for no other suspended claim but one a project's pause stopped while the pause still owes
+// that role a launch, internal/daemon's podHolds.owes; a pod round lists no `failed` claim, whose
+// machine records no round), and Answered for a claim that has already answered this round.
 //
 // The contract the claim's plugin records is not here. A plugin with no ready_for_update op is
 // asked like any other, on its role's own topic (UpdateAsk), and the round ends at its bound
@@ -897,9 +902,14 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // of the two the controller runs its prioritization pass and its deployment's intake. A tick is
 // the daemon's periodic wake, whose issue is the project key. An update-stalled notice names an
 // issue whose update round has passed its bound (`pod_update_grace_minutes` after it opened)
-// while something still holds it: a holding suspension of a role the round asks, a
-// ReplacePod the runtime refused, no claim recording a process in the round's pod (or in any
-// pod), or claims recording two pods. It is told once per round (the daemon's
+// while something still holds it: a holding suspension of a role the round asks, a pod
+// replacement the runtime refused (ReplacePod, or ReplaceIssuePod for a pod with no role process
+// in it), no claim recording a process in the round's pod (or in any pod), claims recording two
+// pods, or a pod the runtime cannot read. No process in the round's pod holds the round past its
+// bound only where a suspension that holds (an operator's, the controller's or an architect's)
+// holds a role of it, where the runtime cannot say which pod the issue's Sandbox holds, or where
+// the replacement by issue is refused or not offered (runtime.IssuePodReplacer): otherwise the
+// daemon replaces that pod by issue at the bound. It is told once per round (the daemon's
 // reconcilePodUpdates). The holds an architect placed are told instead to the architect that
 // owns the held claim, in a notice row of the same kind, unless no architect can act on one:
 // that architect's claim has failed or retired or is one this daemon does not supervise, or the
@@ -1655,9 +1665,10 @@ func (p HookPrompt) Message(issue string) string {
 //
 // The ask is best effort: the round ends at its bound whether or not the role reads it. So a
 // row whose role no live session holds finishes undelivered, and a row whose round the claim no
-// longer records finishes without a publish (the daemon's updateAsk). The daemon marks a claim
-// asked only once its row's publish reached a session, so an ask that finished undelivered is
-// lost, not given, and the daemon's sweep writes the claim a new row of this kind at a later tick.
+// longer records, or whose claim the daemon suspended after the row was queued, finishes without
+// a publish (the daemon's updateAsk). The daemon marks a claim asked only once its row's publish
+// reached a session, so an ask that finished undelivered is lost, not given, and the daemon's
+// sweep writes the claim a new row of this kind at a later tick.
 type UpdateAsk struct {
 	Role  claim.Role `json:"role"`
 	Round string     `json:"round"`

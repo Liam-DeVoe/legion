@@ -3081,11 +3081,16 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // The machine asks the role nothing. The sweep enqueues the round's ask to the role's own Envoy
 // topic once the claim records the round (internal/daemon's openPodUpdate, record.UpdateAsk), and
 // the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
-// an ask that reached none marks nothing, so a later sweep asks again. A claim whose process is
-// suspended or released is not revived for the ask: if no ask has reached it, the sweep asks it
-// once its agent is ready again, and the round ends at its bound whether or not the role answers,
-// unless a suspension that holds (the operator's, the controller's or an architect's) is over the
-// claim, which keeps the round open until a resume lifts it.
+// an ask that reached none marks nothing, so a later sweep asks again. A suspended claim is not
+// revived for the ask, and its machine records the round all the same. A suspension by the daemon
+// itself (Claim.PassedOverByRound) takes the claim out of the round's ask and out of its wait: the
+// sweep asks it nothing and the round does not wait for its answer (internal/daemon's roundAsks,
+// dispatch://INFRA-4109 R1). The one exception is a claim a project's pause stopped, while the
+// daemon's podHolds.owes in internal/daemon holds (internal/daemon's roundClock.passesOver). A
+// suspension that holds (the operator's, the controller's or an architect's, Claim.RuleHolds)
+// leaves the claim in both: if no ask has reached it, the sweep asks it once its agent is ready
+// again, and the round stays open whatever its bound until a resume lifts that suspension
+// (dispatch://INFRA-2981 R5).
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an

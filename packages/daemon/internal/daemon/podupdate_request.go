@@ -42,6 +42,12 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //     interval before it asks again.
 //   - no such claim: refused (api.PodUpdateNoClaim). An issue of another project is one, since
 //     this daemon runs no claim of it.
+//   - a round this daemon has ended whose end a claim of the issue has not taken yet
+//     (podUpdateEnded): the issue is read as that end leaves it, as the sweep reads it
+//     (podUpdateSweep.asEnded, reconcileIssuePodUpdate). Where no claim then records another
+//     round, refused, the pod is changing (api.PodUpdatePodChanging): what the claims record of
+//     the pod can still be the pod the ended round was opened over, and a round opened from it
+//     would be the ended round again.
 //   - a round open over the issue's pod: that round, opened nothing new. A round over the pod the
 //     claims record, a round whose claims record no pod at all (podlessRound carries it) and a
 //     round whose claims record two pods (a replacement in flight) are each the one this issue's
@@ -51,8 +57,8 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //     Opened over the pod in its place, the round would write over the record of the round before
 //     it that the sweep reads to say what that pod took with it (podWentWithoutItsRound).
 //   - no claim records a pod: refused (api.PodUpdateNoPod).
-//   - no claim the round could ask — none has a session, or every one that has has failed, so no
-//     claim would record the round: refused (api.PodUpdateNoPod).
+//   - no claim whose machine would record the round (noticeClaims) — none has a session, or every
+//     one that has has failed: refused (api.PodUpdateNoPod).
 //   - a project's pause holds the issue's pod (store's project_pause_pod_holds, read as the
 //     sweep reads it, podPauseHolds): refused (api.PodUpdatePauseHeld). No round opens over
 //     such a pod whoever asks for it, so the opening step the sweep and this request share
@@ -104,8 +110,8 @@ func (s *supervision) requestPodUpdate(ctx context.Context, issue string) (api.P
 // (podUpdateWalk), and the post of the round it decides on. It waits for that turn while ctx lives
 // and at most roundRecordBound, and where neither gives it the turn refuses the request as busy
 // (api.PodUpdateBusy), naming which ended the wait and the bound. It answers the round and the
-// claims the post asks (askedClaims), whose record of it the answer then waits for; none where the
-// claims record the round already.
+// claims whose machines record the round once the post lands (noticeClaims), whose record of it
+// the answer then waits for; none where the claims record the round already.
 func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) (api.PodUpdateResponse, []claim.Token, error) {
 	turn := s.podUpdateWalkTurn()
 	bound := s.roundRecordBound()
@@ -140,6 +146,15 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 		return refusePodUpdate(api.PodUpdateNoClaim,
 			"this daemon supervises no claim of %s that has not retired, so it runs no pod of that issue", issue)
 	}
+	now := s.plan.clock.Now()
+	sweep := s.beginPodUpdateSweep(now, byIssue)
+	if ended := sweep.ended[issue]; ended != "" {
+		group = sweep.asEnded(issue, group)
+		if openPodRound(group) == "" {
+			return refusePodUpdate(api.PodUpdatePodChanging,
+				"the update round %s of %s has ended, and a claim of the issue records it until that claim's machine takes the end; a sweep then reads the issue afresh. Nothing was opened; ask again then", ended, issue)
+		}
+	}
 	pod, split := groupPod(group)
 	open := openPodRound(group)
 	if open != "" && (split || pod == "" || open == supervise.PodRound(pod)) {
@@ -157,7 +172,7 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 			"no claim of %s records a process in a pod: each one is suspended or between launches, or runs in no pod at all. Nothing was opened; ask again once a claim of the issue runs in its pod", issue)
 	}
 	live := s.liveGroup(group)
-	asked := askedClaims(live)
+	asked := noticeClaims(live)
 	if len(asked) == 0 {
 		return refusePodUpdate(api.PodUpdateNoPod,
 			"no claim of %s runs a worker in its pod %s that an update round could ask: none has a session, or each one that has has failed. Nothing was opened; retry a failed claim, or ask again once a claim of the issue has registered its agent", issue, pod)
@@ -167,13 +182,11 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 		tokens[i] = c.Token
 	}
 	round := supervise.PodRound(pod)
-	now := s.plan.clock.Now()
 	holds, err := s.podPauseHolds(ctx, group, now)
 	if err != nil {
 		return api.PodUpdateResponse{}, nil, fmt.Errorf("read whether a project's pause holds the pod of %s: %w", issue, err)
 	}
 	clock := s.roundClockAt(now, holds[issue])
-	sweep := s.beginPodUpdateSweep(now, byIssue)
 	step := s.openPodUpdateUnderLimits(ctx, &sweep, issue, live, pod, requestedPodUpdateReasons, clock)
 	if step.pauseHeld {
 		return refusePodUpdate(api.PodUpdatePauseHeld,
@@ -184,7 +197,7 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 	}
 	if step.opened {
 		s.log.Info("supervise: the project's controller asked for the replacement of this issue's pod; its update round is posted",
-			"issue", issue, "round", round, "pod", pod, "roles", namesOf(blockingClaims(live)))
+			"issue", issue, "round", round, "pod", pod, "roles", namesOf(sessionClaims(live)))
 	}
 	return api.PodUpdateResponse{Round: round, Reasons: step.reasons, Opened: step.opened}, tokens, nil
 }
