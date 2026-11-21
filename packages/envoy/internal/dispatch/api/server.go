@@ -140,11 +140,11 @@ type Deps struct {
 	// handler reads a row (serviceTokenActor). Empty admits every verified subject of the issuer
 	// and audience, as a deployment that names none always did.
 	OIDCAccounts []string
-	// AccessAccounts are the service-account subjects that may read the membership answer (GET
-	// /api/v1/access/projects/{key}, GET /api/v1/access/person and GET
-	// /api/v1/access/private-projects; cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS). A caller with no
-	// credential, or one whose credential does not verify, is refused there as every route refuses
-	// it (401 NO_IDENTITY for none), and every other caller is 403 ACCESS_ACCOUNT_REQUIRED.
+	// AccessAccounts are the service-account subjects that may read the routes of the read class
+	// accessAccount (cmd/dispatch: DISPATCH_ACCESS_ACCOUNTS, whose README paragraph lists them). A
+	// caller with no credential, or one whose credential does not verify, is refused there as
+	// every route refuses it (401 NO_IDENTITY for none), and every other caller is 403
+	// ACCESS_ACCOUNT_REQUIRED.
 	AccessAccounts []string
 	// RestrictedAdmission is the sign-in rule's own answer to whether a restricted member would
 	// be signed in now (identity.SignInRule's AdmitsRestricted; cmd/dispatch hands the router its
