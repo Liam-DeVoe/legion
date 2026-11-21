@@ -85,10 +85,11 @@ import { expectLoadSettled, watchApiRequests } from "./traffic";
  *   within 32 characters, the cut of a long answered question, and the view's width.
  * - **the address the view draws no row for**, one row: "an address the view draws no row for
  *   draws the outline's line for it in the view's place, with the focus on that line": under
- *   Verification a comment of the issue, which the view draws as a row of its own, and a comment
- *   the issue holds none of; under Decisions a comment the issue holds none of, a block no node
- *   carries and a comment id written short that names none. Each is named on the view's
- *   address, and each that names nothing draws part I's line for it where the view was.
+ *   Verification a comment of the issue, which the view draws as a row of its own, a comment
+ *   the issue holds none of, and a plan task under a statement, which the view draws no row for
+ *   and the outline lands on in its place; under Decisions a comment the issue holds none of, a
+ *   block no node carries and a comment id written short that names none. Each is named on the
+ *   view's address, and each that names nothing draws part I's line for it where the view was.
  *
  * Each row's first reading waits out the page's load under a message of its own, before G's
  * `expectIssuePageDrawn`: on a build whose slot draws nothing, every row fails on what the view
@@ -881,20 +882,25 @@ const FALLBACK_LINES = {
 // outline, with the focus on the view's tab stop, which is the issue's row by the view's own rule.
 // A comment id of the right shape that no comment of the issue has draws part I's line. A node
 // the view keeps but draws no row for - one the tree places under a statement that is no check,
-// such as a plan task that serves it, since the view draws a statement's checks alone - answers
-// false as that gone comment does, and the outline lands on it. This row opens no such address;
-// a case of `web/src/features/issue-page/decisions-filter/view-decisions-slot.test.tsx` reads it.
+// since the view draws a statement's checks alone - answers false as that gone comment does, and
+// the outline drawn in the view's place lands on the node's row as the conversation's address
+// does, with the focus on that row. A plan task that serves a statement stands for such a node
+// here: the tree places a comment under what it answers and never under the block it is anchored
+// to (`tree-drafts.ts`'s `addTurns`), so the seed holds no comment under a statement.
 //
-// Then the Decisions view, with three such addresses, each opened by a load of its own: the gone
-// comment, a `#b-` fragment naming a block no node carries, and that comment id written short.
+// Then the Decisions view, with three addresses that name nothing the issue holds, each opened by
+// a load of its own: the gone comment, a `#b-` fragment naming a block no node carries, and that
+// comment id written short.
 //
 // Each view is read first at its own address, so each line is drawn where the view drew its
-// rows; its gone comment comes next, so a stage that keeps the view fails on the words of that
-// comment's line, and the Verification view comes first, so such a stage fails there. Each
-// project at its own width: `chromium` the desktop's and `iphone` the phone's.
-// SLOW(>=2s): the whole issue seeded with three more writes, then seven loads: one waited on
-// until the view settles, one until the page goes quiet, and three until the item's read, which
-// the page asks again before it says the item is missing, has settled.
+// rows; its gone comment is the first address read whose node the view draws no row for, so a
+// stage that keeps the view fails on the words of that comment's line, and the Verification view
+// comes first, so such a stage fails there. Each project at its own width: `chromium` the
+// desktop's and `iphone` the phone's.
+// SLOW(>=2s): the whole issue seeded with three more writes, then eight loads: one waited on
+// until the view settles, one until the page goes quiet, one until the outline puts the focus on
+// the plan task's row, and three until the item's read, which the page asks again before it says
+// the item is missing, has settled.
 test("an address the view draws no row for draws the outline's line for it in the view's place, with the focus on that line @phone", async ({
   browser,
 }) => {
@@ -945,6 +951,34 @@ test("an address the view draws no row for draws the outline's line for it in th
       verificationBody(page),
       `a gone comment under Verification ${at}`
     );
+    // A plan task that serves the spec's first statement, which the tree places under that
+    // statement, where the view draws its checks alone: the outline is drawn in the view's place
+    // and lands on the task's row, as the conversation's address does.
+    const [{ slug: planSlug }, { slug: specSlug }] = await Promise.all([
+      getArtifact(seeded.planArtifactId),
+      getArtifact(seeded.specArtifactId),
+    ]);
+    const taskBlock = seeded.planTasks[0] ?? "";
+    const task = blockNodeId(planSlug, taskBlock);
+    await gotoIssue(page, `${verification}#b-${taskBlock}`);
+    await expect
+      .poll(() => outlineRows(page).count(), {
+        message: `a plan task under a statement draws no outline in the Verification view's place ${at}`,
+      })
+      .toBeGreaterThan(0);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: `a plan task under a statement leaves the focus off its row of the outline, on the page's body or elsewhere ${at}`,
+      })
+      .toBe(task);
+    expect(
+      await parentOfRow(page, task),
+      `the plan task the address names stands under no statement ${at}`
+    ).toBe(blockNodeId(specSlug, seeded.requirements[0] ?? ""));
+    await expect(
+      verificationBody(page),
+      `a plan task under a statement draws the Verification view beside the outline ${at}`
+    ).toHaveCount(0);
 
     await openPreset(page, seeded.key, "decisions");
     // The Decisions view's first reading: it draws its rows at its own address.
