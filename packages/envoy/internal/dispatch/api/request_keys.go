@@ -696,8 +696,8 @@ func (m *boundaryMask) flush() {
 
 // heldRequestKey is the row a repeat found under its key. Its headers column holds the first
 // answer's headers and, under storedSuccessorValue, the values its handler recorded for a /api/v1
-// answer's Link (withSuccessorValues); the read splits them (splitSuccessorValues), so headers
-// holds headers alone and linkValues those values, by path value name.
+// answer's Link (withSuccessorValues); the read takes them out of headers (takeSuccessorValues), so
+// headers holds headers alone and linkValues those values, by path value name.
 type heldRequestKey struct {
 	digest     string
 	method     string
@@ -901,7 +901,7 @@ func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (hel
 	if err != nil {
 		return held, false, fmt.Errorf("read an idempotency key: %w", err)
 	}
-	held.headers, held.linkValues = splitSuccessorValues(held.headers)
+	held.linkValues = takeSuccessorValues(held.headers)
 	return held, true, nil
 }
 

@@ -61,7 +61,7 @@ func successorValue(r *http.Request, name, value string) {
 // its handler recorded under (withSuccessorValues), one name per path value: a replay of that
 // answer runs no handler, so it records them again from there (recordStoredSuccessorValues), and
 // links what the first answer linked. It holds a space, so no header a handler sets is one of them,
-// and the read of the row takes them out of the stored headers (splitSuccessorValues), so no
+// and the read of the row takes them out of the stored headers (takeSuccessorValues), so no
 // reader of those headers meets one.
 const storedSuccessorValue = "successor value "
 
@@ -82,11 +82,13 @@ func withSuccessorValues(r *http.Request, headers http.Header) http.Header {
 	return stored
 }
 
-// splitSuccessorValues splits stored, a keyed write's stored answer headers as its row holds them
-// (withSuccessorValues), into the headers that answer carried and the values its handler recorded,
-// by path value name without the prefix; values is nil where it recorded none. The names it moves
-// are taken out of stored itself, which the row's scan made for this read alone.
-func splitSuccessorValues(stored http.Header) (headers http.Header, values map[string][]string) {
+// takeSuccessorValues takes out of stored, a keyed write's stored answer headers as its row holds
+// them (withSuccessorValues), the values its handler recorded, and returns them by path value name
+// without the prefix; nil where it recorded none. stored is left holding the headers that answer
+// carried alone: the names are deleted from it in place, since the row's scan made it for this
+// read alone.
+func takeSuccessorValues(stored http.Header) map[string][]string {
+	var values map[string][]string
 	for key, recorded := range stored {
 		name, kept := strings.CutPrefix(key, storedSuccessorValue)
 		if !kept {
@@ -98,11 +100,11 @@ func splitSuccessorValues(stored http.Header) (headers http.Header, values map[s
 		values[name] = recorded
 		delete(stored, key)
 	}
-	return stored, values
+	return values
 }
 
 // recordStoredSuccessorValues records on r, a replay of a keyed write, each value the first
-// answer's handler recorded, as the read of its row split them out (splitSuccessorValues).
+// answer's handler recorded, as the read of its row took them out (takeSuccessorValues).
 func recordStoredSuccessorValues(r *http.Request, values map[string][]string) {
 	for name, recorded := range values {
 		for _, value := range recorded {

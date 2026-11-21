@@ -74,12 +74,12 @@ func (s *server) v2CredentialRows() []routeRow {
 			Description: "Revoke a credential grant as the caller, as the secrets broker decides: its approver, or the " +
 				"person its enrollment acts for, ends it whatever project it touches, and a revoke has no way back. 204. " +
 				"A grant revoked by someone it does not name is 404 CREDENTIAL_GRANT_NOT_FOUND when it belongs to a " +
-				"private project the caller may not see, as an id the broker holds no grant of, and 503 " +
+				"private project the caller may not see, as is an id the broker holds no grant of, and 503 " +
 				"PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch; of the grants they may see, they end one " +
 				"whose approver is anyone, and any other is 403 NOT_APPROVER. A grant the broker saw move to another box " +
 				"each time it read it, three times in a row, is 409 GRANT_MOVING, revoking nothing; the same revoke " +
 				"succeeds once it stays put. Needs the person and approve scopes; a credential scoped to one project is " +
-				"refused. 404 CREDENTIAL_GRANT_NOT_FOUND for an id the broker holds no grant of, and " + brokerRelayText + ".",
+				"refused. " + brokerRelayText + ".",
 			Handler:  s.revokeCredentialGrantV2,
 			Resource: "credential-grants", Kind: kindItem, Key: "{id}",
 			Shape:       routeShape{Status: http.StatusNoContent},
@@ -120,11 +120,10 @@ func (s *server) v2CredentialRows() []routeRow {
 				"(403 NOT_APPROVER), a request that can still be decided is 409 RECORD_PENDING, and one that was " +
 				"decided, or cancelled before its deadline, is 409 RECORD_TERMINAL; a request already dismissed is " +
 				"answered the dismissal the broker holds, and nothing is written. Whichever the state, a secret request " +
-				"of a private project the caller may not see is 404 CREDENTIAL_REQUEST_NOT_FOUND, as an id the broker " +
+				"of a private project the caller may not see is 404 CREDENTIAL_REQUEST_NOT_FOUND, as is an id the broker " +
 				"holds no request of, and 503 PROJECT_ACCESS_UNAVAILABLE while the broker cannot ask Dispatch. Deciding " +
 				"needs the person and approve scopes, dismissing the person scope; a credential scoped to one project is " +
-				"refused. 404 CREDENTIAL_REQUEST_NOT_FOUND for an id the broker holds no request of, and " +
-				brokerRelayText + ".",
+				"refused. " + brokerRelayText + ".",
 			Handler:  s.putCredentialRequestStateV2,
 			Resource: "state", Kind: kindState,
 			Body: requestBody{Kind: bodyStateUnion, Arms: map[string]any{

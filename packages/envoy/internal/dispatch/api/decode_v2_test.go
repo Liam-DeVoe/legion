@@ -745,3 +745,15 @@ func TestEveryListThatRendersItsRowsSaysItsPage(t *testing.T) {
 		}
 	}
 }
+
+// includedPageLimitText words a list's page from the bounds it is handed: every list that renders
+// its rows declares listBounds{} today, so the walk above passes whether it reads them or not. A
+// made-up list bounded at 10 and 100 says its own limit, 1 to 100 (default 10), and the page with
+// the member that renders each listed row its own default under includedPageMax, 1 to 20 (default
+// 10) (includedPageDefault).
+func TestIncludedPageLimitTextWordsTheBoundsItIsHanded(t *testing.T) {
+	const want = "limit 1 to 100 (default 10), and 1 to 20 (default 10) with include=mark, and offset;"
+	if said := includedPageLimitText(listBounds{Default: 10, Max: 100}, renderedWidgetQuery{}); said != want {
+		t.Errorf("includedPageLimitText(listBounds{Default: 10, Max: 100}, renderedWidgetQuery{}) = %q, want %q", said, want)
+	}
+}

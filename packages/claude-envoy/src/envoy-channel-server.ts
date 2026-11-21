@@ -547,10 +547,9 @@ export async function postDispatchReply(
 export function createChannelDelivery(input: {
   readonly identity: SessionIdentity
   readonly notifier: ChannelNotifier
-  /** The session's envoy.json, which a rejected Dispatch frame's reply reads. */
-  readonly configFile: SessionConfigFile
-  /** The program that answers a rejected Dispatch frame on Dispatch (`postDispatchReply`). */
-  readonly userAgent: string
+  /** The session's answer to a delivery on Dispatch (`postDispatchReply`), which a rejected
+   *  Dispatch frame is answered with. */
+  readonly reply: UserTurnRouterOptions["reply"]
   /** What a person's own message, command, pick or BTW becomes; omitted, every frame is a card. */
   readonly router?: () => UserTurnRouter | undefined
 }): ChannelDeliveryPath {
@@ -623,13 +622,7 @@ export function createChannelDelivery(input: {
         process.stderr.write(
           `envoy-channel: rejecting malformed Dispatch targeted delivery ${rejected.id}\n`,
         )
-        return postDispatchReply(
-          input.identity,
-          input.configFile,
-          rejected,
-          { error: "Invalid Dispatch targeted delivery frame" },
-          input.userAgent,
-        ).then(
+        return input.reply(rejected, { error: "Invalid Dispatch targeted delivery frame" }).then(
           () => false,
           (error: unknown) => {
             process.stderr.write(
@@ -833,15 +826,15 @@ export async function startChannelSession(options: ChannelSessionOptions): Promi
    *  and so the live view can read which Dispatch message a row is (`messageOf`). */
   let turns: UserTurnState | undefined
   /** The program this session answers Dispatch as (`ChannelSessionOptions.userAgent`), and its
-   *  answer to a delivery, which the router posts (`ChannelSessionOptions.router`). */
+   *  answer to a delivery: a rejected frame's (`createChannelDelivery`), and every reply the
+   *  router posts (`ChannelSessionOptions.router`). */
   const userAgent = options.userAgent ?? CLAUDE_ENVOY_USER_AGENT
   const reply: UserTurnRouterOptions["reply"] = (target, result) =>
     postDispatchReply(identity, options.configFile, target, result, userAgent)
   const delivery = createChannelDelivery({
     identity,
     notifier: options.notifier,
-    configFile: options.configFile,
-    userAgent,
+    reply,
     router: () => router,
   })
   const userTopics = new Set<string>()
