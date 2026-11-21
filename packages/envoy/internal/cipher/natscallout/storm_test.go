@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -84,8 +85,8 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // session connections has been refused once, every one of them is admitted again, each presenting
 // a proof over its new connection's nonce, every decision the service makes is inside its budget,
 // the service answers every request the server sends it, and each connection it admits is the one
-// its client holds, unless the server had given up on that request before the answer reached it
-// (decidedNonces.unheld, hubRecord).
+// its client holds, unless the server had given up on that request before it read the service's
+// answer to it (decidedNonces.unheld, hubRecord).
 //
 // The service is held off for that fact, not for a span: the service is a client of the same
 // server, so a restart drops its own connection too, and every client that comes back before it is
@@ -107,15 +108,17 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 // service subscribed is a request the server sent that service: one it never decided is one it
 // dropped without a word, which neither the server's log nor its decided nonces could show.
 //
-// An admission the server gave up on is not one the row counts. The server waits two seconds for
-// an answer from the moment it queues the request, and the hub, the service and the five hundred
-// clients share this one process: in one run on two CPUs with eight busy loops on them, the server
-// gave up on 27 requests the service had decided 0.39 to 1.04 s after their sending, before it had
-// read their answers. Which requests it gave up on is the server's to say, so the row reads that
-// from the server's own record of each one (hubRecord), and fails on every other admission no
-// client holds. So a late answer alone does not fail this row: a decision, or its wait for a slot,
-// past the service's budget still does (backLog, slowest), and a hold-up in the delivery of
-// requests to the service fails TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout.
+// An admission the server gave up on is not one the row counts when the service's answer to it
+// reached the server. The server waits two seconds for an answer from the moment it queues the
+// request, and the hub, the service and the five hundred clients share this one process: in one
+// run on two CPUs with eight busy loops on them, the server gave up on 27 requests the service had
+// decided 0.39 to 1.04 s after their sending. Which requests the server gave up on, and which
+// answers reached it, is the server's to say, so the row reads both from the server's own record
+// (hubRecord), and fails on every other admission no client holds: an answer the server refused, a
+// connection it admitted and then lost, and an admission the service decided whose answer never
+// reached the server. A decision, or its wait for a slot, past the service's budget fails the row
+// too (backLog, slowest), and a hold-up in the delivery of requests to the service fails
+// TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout.
 func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	connections := 500
 	if raceEnabled {
@@ -217,15 +220,16 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		"the slowest of %d decisions took %s, at or past the %s budget", decided.Load(), time.Duration(slowest.Load()), decideBudget)
 
 	// Every client is connected, so every request the server sent back has been answered or given
-	// up on, and back's Close writes its reporter's last line.
-	back.Close()
+	// up on. The record is read once back has closed, and back's Close writes its reporter's last
+	// line.
+	verdicts := record.read(t, server, connectionName, back.Close)
 	require.Empty(t, backLog.String(), "back dropped, refused or could not answer requests the server sent it")
 	unheld, held := backDecided.unheld(clients)
 	require.Equal(t, connections, held, "only %d of %d clients are connected on a request back decided: the nonces do not show the connections", held, connections)
-	gaveUp, lost := record.read(t).gaveUpOn(unheld)
-	t.Logf("reconnects=%d decided=%d slowest-decision=%s; back's admissions the server had given up on, by its record: %d",
+	gaveUp, lost := verdicts.gaveUpOn(unheld)
+	t.Logf("reconnects=%d decided=%d slowest-decision=%s; back's admissions the server gave up on and whose answer reached it, by its record: %d",
 		reconnected.Load(), decided.Load(), time.Duration(slowest.Load()), len(gaveUp))
-	require.Empty(t, lost, "back admitted %d requests that no client is connected on and the server did not give up on", len(lost))
+	require.Empty(t, lost, "back admitted %d requests that no client is connected on, other than ones the server gave up on whose answer reached it", len(lost))
 	undecided := backDecided.undecidedSince(clients, backUp)
 	require.Empty(t, undecided, "back did not decide %d requests the server sent it after it subscribed: it dropped them without answering, refusing or counting them", len(undecided))
 
@@ -233,14 +237,15 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		// Each client's first request is decided half a second past the server's authorization
 		// timeout, inside a budget raised past it, so it is admitted after the server has refused
 		// that client; each request after it is decided at once. The nonces see each of those
-		// admissions, and the server's record names each as one it gave up on.
+		// admissions, and the server's record names each as one it gave up on whose answer reached
+		// it.
 		hubTimeout := testnats.CalloutAuthTimeout * time.Second
 		was := decideBudget
 		decideBudget = 2 * hubTimeout
 		t.Cleanup(func() { decideBudget = was })
 		keys := testnats.NewCalloutKeys(t)
 		recordUser, recordSeed := newHubRecordUser(t)
-		_, url := testnats.StartWithCalloutServer(t, keys, recordUser)
+		server, url := testnats.StartWithCalloutServer(t, keys, recordUser)
 		record := recordHub(t, url, recordSeed, keys)
 		const control = 5
 		controls := sessionsNamed(t, "ses_late", control)
@@ -267,11 +272,11 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 			connected := allConnected(conns)()
 			return connected, connected
 		})
-		late.Close()
+		verdicts := record.read(t, server, connectionName, late.Close)
 		unheld, held := decidedHere.unheld(clientsHere)
 		require.Equal(t, control, held, "the control clients are not connected on requests the service decided")
 		require.Len(t, unheld, control, "the check above cannot see an admission the server stopped waiting for")
-		gaveUp, other := record.read(t).gaveUpOn(unheld)
+		gaveUp, other := verdicts.gaveUpOn(unheld)
 		require.Len(t, gaveUp, control, "the server's record does not show the give-ups the row leaves out: %v", other)
 	})
 
@@ -284,7 +289,7 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		// server did with it, but one the server gave up on, which a loaded machine can make it do.
 		keys := testnats.NewCalloutKeys(t)
 		recordUser, recordSeed := newHubRecordUser(t)
-		_, url := testnats.StartWithCalloutServer(t, keys, recordUser)
+		server, url := testnats.StartWithCalloutServer(t, keys, recordUser)
 		record := recordHub(t, url, recordSeed, keys)
 		const control = 6
 		controls := sessionsNamed(t, "ses_lost", control)
@@ -318,11 +323,11 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 			}
 			return signed, true
 		})
-		lost.Close()
+		verdicts := record.read(t, server, connectionName, lost.Close)
 		unheld, held := decidedHere.unheld(clientsHere)
 		require.Equal(t, control, held, "the control clients are not connected on requests the service decided")
 		require.Len(t, unheld, control, "the nonces do not show the admissions the server did not keep")
-		gaveUp, other := record.read(t).gaveUpOn(unheld)
+		gaveUp, other := verdicts.gaveUpOn(unheld)
 		outcomes := map[hubOutcome]int{}
 		for _, each := range other {
 			outcomes[each.outcome]++
@@ -331,6 +336,69 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 			"the server's record does not hold each admission the server did not keep: %v", other)
 		require.Positive(t, outcomes[hubRefused], "the row's check does not name an admission the server refused: %v", other)
 		require.Positive(t, outcomes[hubKept], "the row's check does not name an admission the server took and then lost: %v", other)
+	})
+
+	t.Run("control: admissions the service decided and never answered", func(t *testing.T) {
+		// A stand-in for the service in its queue group decides every request it is sent and does
+		// not answer each client's first: it admits each one after it. The server gives up on each
+		// first request at its timeout, refusing with no reason as it does for an answer it read
+		// late, and the client is admitted on a later nonce. No answer to a first request ever
+		// reached the server, so the row's check names each one as unanswered, and none as a
+		// give-up it excuses.
+		keys := testnats.NewCalloutKeys(t)
+		recordUser, recordSeed := newHubRecordUser(t)
+		server, url := testnats.StartWithCalloutServer(t, keys, recordUser)
+		record := recordHub(t, url, recordSeed, keys)
+		issuer, err := nkeys.FromSeed([]byte(keys.IssuerSeed))
+		require.NoError(t, err)
+		xkey, err := nkeys.FromSeed([]byte(keys.XKeySeed))
+		require.NoError(t, err)
+		const control, standInName = 5, "silent-stand-in"
+		controls := sessionsNamed(t, "ses_silent", control)
+		decidedHere, clientsHere := newDecidedNonces(), newLastNonces()
+		standIn, err := testnats.ConnectSeed(t, url, keys.ServiceSeed, nats.Name(standInName))
+		require.NoError(t, err)
+		var seen sync.Map
+		_, err = standIn.QueueSubscribe(authSubject, queueGroup, func(msg *nats.Msg) {
+			claims, serverXKey, err := openRequest(xkey, msg)
+			if err != nil {
+				return
+			}
+			decidedHere.add(claims.ClientInformation.Nonce)
+			if _, again := seen.LoadOrStore(claims.ConnectOptions.Token, true); !again {
+				return
+			}
+			if out, err := admitUnchecked(issuer, xkey, claims, serverXKey, []string{"_INBOX.>"}, []string{"_INBOX.>"}); err == nil {
+				_ = msg.Respond(out)
+			}
+		})
+		require.NoError(t, err)
+		require.NoError(t, standIn.Flush())
+		conns := make([]*nats.Conn, control)
+		for index, s := range controls {
+			nc, err := reconnectingSession(t, url, s, false, clientsHere.signer(s.id), nats.RetryOnFailedConnect(true))
+			require.NoError(t, err)
+			conns[index] = nc
+		}
+		testwait.Until(t, "every control client admitted on a later request", func() (map[string]int, bool) {
+			signed := clientsHere.signedSince(time.Time{})
+			for index, s := range controls {
+				if signed[s.id] < 2 || !conns[index].IsConnected() {
+					return signed, false
+				}
+			}
+			return signed, true
+		})
+		verdicts := record.read(t, server, standInName, standIn.Close)
+		unheld, held := decidedHere.unheld(clientsHere)
+		require.Equal(t, control, held, "the control clients are not connected on requests the stand-in decided")
+		require.Len(t, unheld, control, "the nonces do not show the admissions the stand-in never answered")
+		gaveUp, other := verdicts.gaveUpOn(unheld)
+		require.Empty(t, gaveUp, "the row's check excuses admissions the service never answered as ones the server gave up on")
+		for _, each := range other {
+			require.Equal(t, hubUnanswered, each.outcome, "the row's check does not name an admission the service never answered as one: %v", each)
+		}
+		require.Len(t, other, control, "the row's check does not name each admission the service never answered: %v", other)
 	})
 
 	t.Run("control: clients that give up on a refused credential", func(t *testing.T) {
@@ -486,6 +554,13 @@ type decidedNonces struct {
 }
 
 func newDecidedNonces() *decidedNonces { return &decidedNonces{nonces: map[string]bool{}} }
+
+// add keeps nonce as one a stand-in for the service decided.
+func (d *decidedNonces) add(nonce string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.nonces[nonce] = true
+}
 
 // wrap is decide, keeping the nonce of each request it decides with no error.
 func (d *decidedNonces) wrap(decide decideFunc) decideFunc {
