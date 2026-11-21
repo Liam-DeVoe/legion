@@ -3194,13 +3194,18 @@ workflows, so its done entry completes the record that `hold release` needs.
 
 - `check`, run by each deploy, unattended, as the measurement job: it reads each declared stream
   and prints `FAIL` for one that is missing, one with fewer copies than the deployment's count,
-  and each other setting that differs from the build's, and sends no create and no update. Its
-  reads ask for no stored subjects.
+  and each other setting that differs from the build's, and sends no create and no update. A
+  missing stream is read from the account's stream names, not asked for its info, so it is a fast,
+  named result even while a cluster elects its meta leader; a missing copied bucket's line names
+  `envoy-infra buckets create`. Its reads ask for no stored subjects.
 - `update` (the writer hold's, inside a `streams-update` hold): it makes each missing protected
   stream, and `ENVOY_MEASURE`, with the build's configuration and raises each by a start's own
   rules (subjects only added, limits only raised, copies raised, `envoy_stream_id` kept), and
-  stops, naming the stream and the setting, at any other difference. So every stream `check`
-  reports missing or below its copies has its repair here.
+  stops, naming the stream and the setting, at any other difference. A copied bucket (the
+  interest, role-claim, session, known-session and CI state buckets, each of which a listener
+  keeps a watcher-fed copy of) it raises but never makes: a missing one is reported, naming
+  `envoy-infra buckets create`, which alone makes one, inside its own held workflows. Every other
+  stream `check` reports missing or below its copies has its repair here.
 - `census` (the writer hold's, inside a hold whose workflow names it), once every family has a
   cutover row in state `done`: it lists every stream and consumer, removes a stream outside the
   declared set and a consumer that matches no declared shape by its whole configuration, and puts a
