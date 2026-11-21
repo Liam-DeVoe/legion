@@ -183,7 +183,9 @@ beforeAll(async () => {
  *  focus on a view's load and moves it on as a failed read's line that held it leaves. The
  *  page's provider of the Contents list's requests stands above the body, so `request` is taken
  *  as the page takes it; `redraw(false)` takes the body off the page and `redraw(true)` draws a
- *  new one under the same provider and reads, as the view turned off and on again does. */
+ *  new one under the same provider and reads, as the view turned off and on again does, and
+ *  `redraw(true, issue)` draws the body and the reads over `issue` from then on, as the page
+ *  does once the issue read answers anew. */
 function drawBody(
   tree: TreeNode,
   made: readonly Decision[] = [],
@@ -227,7 +229,7 @@ function drawBody(
 ): {
   client: QueryClient;
   read: Reads;
-  redraw: (drawn: boolean) => void;
+  redraw: (drawn: boolean, issue?: IssueDetails) => void;
   view: RenderResult;
 } {
   const base = issueDetails();
@@ -302,12 +304,12 @@ function drawBody(
       for (const spy of Object.values(spies)) spy.mockRestore();
     },
   };
-  const body = (
+  const bodyOf = (over: IssueDetails): ReactNode => (
     <SpecFilterBody
       context={context}
       emptyLine={EMPTY_STATE_LINES.spec}
       holdsEscape={false}
-      issue={issue}
+      issue={over}
       reader={reader}
       {...(request === undefined ? {} : { request })}
       {...(reveal === undefined ? {} : { reveal })}
@@ -315,6 +317,8 @@ function drawBody(
       view={presetView(tree, "spec", "", new Set(named)).root}
     />
   );
+  let shown: IssueDetails = issue;
+  let body = bodyOf(shown);
   const page = (drawn: boolean): ReactNode => (
     <QueryClientProvider client={client}>
       <ReferenceNamesProvider>
@@ -327,7 +331,7 @@ function drawBody(
                     <IssueScope />
                     <FocusedProbe />
                     <LocationProbe />
-                    <TreeReads issue={issue} />
+                    <TreeReads issue={shown} />
                     {drawn ? stage ? <ViewStage>{body}</ViewStage> : body : null}
                   </FocusedNodeProvider>
                 </OutlineRequestProvider>
@@ -339,7 +343,18 @@ function drawBody(
     </QueryClientProvider>
   );
   const view = render(page(true));
-  return { client, read, redraw: (drawn) => view.rerender(page(drawn)), view };
+  return {
+    client,
+    read,
+    redraw: (drawn, other) => {
+      if (other !== undefined) {
+        shown = other;
+        body = bodyOf(other);
+      }
+      view.rerender(page(drawn));
+    },
+    view,
+  };
 }
 
 /** The text of every element matching `selector`, in the order they are drawn. */
@@ -1989,6 +2004,42 @@ test("a line's alert is said again for a new refusal of one read where another o
     ).not.toBe(first);
   } finally {
     notifications?.tell();
+    view.unmount();
+    read.mockRestore();
+  }
+});
+
+// A line's alert is said again for a refusal new to the line where one of its reads changes key.
+// The statements line stands on the spec's refused blocks; the issue then names a spec document of
+// another id, whose blocks read was refused too before - another view read it under the same key
+// - so the line stands on that read at once. Each blocks read was refused once, so a count that
+// took the read under the new key for the read before it would add nothing; the line adds the new
+// query's refusal. The page's read of the new spec's blocks then stays out, so only the change of
+// key can say the alert again.
+test("a line's alert is said again where the issue names a spec of another id whose blocks read was refused too", async () => {
+  const { client, read, redraw, view } = drawBody(issueTree([statement("r1")]), [], {
+    blocks: "failed",
+  });
+  const other = artifact("artifact-spec-2", "spec-2", true);
+  const blocks = artifactBlocksQuery(other.id);
+  try {
+    const line = await waitFor(() => alertSaying(view, STATE_LINES.statements_unreadable));
+    const first = within(line).getByRole("alert");
+    await act(() => client.prefetchQuery(blocks));
+    expect(client.getQueryState(blocks.queryKey)?.errorUpdateCount).toBe(1);
+    read.blocks.mockReturnValue(new Promise<never>(() => {}));
+    const base = issueDetails();
+    redraw(true, {
+      ...base,
+      artifacts: [other, ...base.artifacts.filter(({ primary }) => !primary)],
+      primary_artifact_id: other.id,
+    });
+    expect(alertSaying(view, STATE_LINES.statements_unreadable)).toBe(line);
+    expect(
+      within(line).getByRole("alert"),
+      "the refusal of the new spec's blocks was not said again"
+    ).not.toBe(first);
+  } finally {
     view.unmount();
     read.mockRestore();
   }

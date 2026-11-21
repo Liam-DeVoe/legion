@@ -340,6 +340,38 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
   }
 });
 
+// A names read moved to a set of addresses whose query already failed holds no answer there, and
+// the failure that query holds is new to the names line, which says it again (`useLineRefusals`).
+test("a names read moved to a set of addresses whose query already failed says its failure again", async () => {
+  // Where set, a names read stays out until it settles; every one of them fails.
+  let out: Promise<void> | undefined;
+  const stubs = stubTreeReads(async () => {
+    await out;
+    throw new Error("the names read failed");
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const held = Promise.withResolvers<void>();
+  try {
+    const view = renderHook(() => useIssueTree(issue).namesFailure, { wrapper });
+    await waitFor(() => expect(view.result.current?.failure).toBe(1));
+    // A comment arrives, and the names read of the tree's new set fails too.
+    await act(async () => client.setQueryData(["comments", KEY], [comment]));
+    await waitFor(() => expect(view.result.current?.failure).toBe(2));
+    // The comment goes: the read moves back to the first set, whose query failed, and is out.
+    out = held.promise;
+    await act(async () => client.setQueryData(["comments", KEY], []));
+    await waitFor(() => expect(view.result.current?.retrying).toBe(true));
+    expect(view.result.current?.failure, "the first set's failure was not said again").toBe(3);
+    view.unmount();
+  } finally {
+    held.resolve();
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
 /** What the batched name read answers for `refs`: the plan task's words for its address, and
  *  words of their own for every other. */
 function namedTargets(refs: readonly string[]): { targets: ReferenceTarget[] } {

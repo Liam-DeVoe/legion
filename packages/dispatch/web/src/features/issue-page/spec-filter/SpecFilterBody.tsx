@@ -1,4 +1,4 @@
-import { hashKey, useQuery } from "@tanstack/react-query";
+import { hashKey, type QueryKey, useQuery } from "@tanstack/react-query";
 import {
   Fragment,
   type KeyboardEvent,
@@ -74,6 +74,7 @@ import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder } from "../tree-keys";
 import { issueAsksQuery, type NamesFailure } from "../useIssueTree";
+import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { CAP } from "../verification-filter/VerificationFilterBody";
 import {
@@ -228,39 +229,41 @@ export function SpecFilterBody({
   // words for those two reads. A line stays, its Retry busy, while a read of it that stands
   // failed runs again, until the read answers. A line's Retry asks again the reads of that line
   // that stand failed (`failed`), and no other, and none of them while it is read again already.
-  // Each line carries how many times its reads have been refused since it last stood
-  // (`useLineRefusals`), which keys its alert, and the hash of each of its reads' keys, in the
-  // order of its reads, which that count reads.
+  // Each read of a line is paired with its key's hash (`lineRead`), and each line carries how
+  // many times its reads have been refused since it last stood (`useLineRefusals`), which keys
+  // its alert.
   // The names reads' line (`namesFailure`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
-  const unreadable = useLineRefusals([
+  const lines = [
     {
-      hashes: [hashKey(coverageQuery.queryKey), hashKey(specBlocksQuery.queryKey)],
       line: "statements",
       message: STATE_LINES.statements_unreadable,
-      reads: [coverageRead, specBlocksRead],
+      reads: [lineRead(coverageQuery, coverageRead), lineRead(specBlocksQuery, specBlocksRead)],
     },
     {
-      hashes: [hashKey(resultsQuery.queryKey), hashKey(checksQuery.queryKey)],
       line: "results",
       message: STATE_LINES.spec_results_unreadable,
-      reads: [resultsRead, checksRead],
+      reads: [lineRead(resultsQuery, resultsRead), lineRead(checksQuery, checksRead)],
     },
     {
-      hashes: [hashKey(decisionsQuery.queryKey)],
       line: "decisions",
       message: STATE_LINES.issue_decisions_unreadable,
-      reads: [decisionsRead],
+      reads: [lineRead(decisionsQuery, decisionsRead)],
     },
     {
-      hashes: [hashKey(asksQuery.queryKey)],
       line: "asks",
       message: STATE_LINES.asks_unreadable,
-      reads: [asksRead],
+      reads: [lineRead(asksQuery, asksRead)],
     },
-  ] as const)
-    .map((group) => ({ ...group, failed: group.reads.filter(standsFailed) }))
+  ] as const;
+  const counts = useLineRefusals(lines.map(({ reads }) => reads));
+  const unreadable = lines
+    .map((group, at) => ({
+      ...group,
+      failed: group.reads.flatMap(({ failing, read }) => (failing ? [read] : [])),
+      refusals: counts[at],
+    }))
     .filter(({ failed }) => failed.length > 0);
   // How a reference a plain line cites is named - in the three sentences, a quote, a question,
   // a group's heading - read once over the whole tree (`referenceStandIns`), and how this issue
@@ -503,13 +506,10 @@ export function SpecFilterBody({
         <FailedReadLine
           // Which failure the line says, which keys its alert: how many times the line's reads
           // that stand failed have been refused since the line last stood (`useLineRefusals`).
-          // That count rises by one for each new refusal and never falls while the line stands,
-          // so the line says its failure again exactly for a new refusal, and a run that ends
-          // with no new refusal, as one paused while the browser is offline does, says it no
-          // more. The sum of the failed reads' `errorUpdateCount` would not do: where one read
-          // of the line answers as another is refused again in the same render, the refusals
-          // the answered read takes out of the sum can equal the one the other adds, and the
-          // new refusal would go unsaid.
+          // That count rises by one for each refusal new to the line and never falls while the
+          // line stands, so the line says its failure again exactly for a new refusal, and a run
+          // that ends with no new refusal, as one paused while the browser is offline does, says
+          // it no more.
           failure={refusals}
           key={line}
           message={message}
@@ -644,75 +644,21 @@ export function SpecFilterBody({
   );
 }
 
-/** A read of a failed-read line, by the state `standsFailed` reads (TanStack Query's). */
-type LineRead = Parameters<typeof standsFailed>[0];
-
-/** A failed-read line as `useLineRefusals` counts it: its reads, and the hash of each one's key
- *  (`hashKey`), in the same order. */
-interface LineReads {
-  readonly hashes: readonly string[];
-  readonly reads: readonly LineRead[];
-}
-
-/** What `useLineRefusals` kept of one line at the last draw. */
-interface LineCount {
-  /** How many times the line's reads had been refused since it last stood. */
-  readonly refusals: number;
-  /** Each of the line's reads, in the line's order: its `errorUpdateCount`, and its key's hash. */
-  readonly seen: readonly { readonly errorUpdateCount: number; readonly hash: string }[];
-}
-
 /**
- * Each failed-read line with how many times its reads that stand failed (`standsFailed`) have
- * been refused since the line last stood (`refusals`), which keys the line's alert
- * (`FailedReadLine`'s `failure`). A read's `errorUpdateCount` rises by one with each refusal of
- * it, and an answer leaves it as it was: it is 0 only for a query made afresh or reset. Every
- * read's count and its key's hash (`hashes`) are kept at every draw, a read that holds an answer
- * included, so a draw adds, for each read of the line that stands failed, what its count rose by
- * since the draw before. A read seen for the first time adds the whole of its count, and so does
- * a read whose key's hash is not the one seen at its place at the draw before: a read under
- * another key - the spec's blocks once the issue names a spec of another id - is a query of its
- * own, whose count says nothing of the count of the read it replaced. A refusal is counted once,
- * at the first draw that sees it, and the count never falls while the line stands: a read that
- * answers takes nothing out of it, so a new refusal of another read of the line in the same
- * render is still said. A read that holds an answer and whose refresh is refused adds nothing,
- * as `standsFailed` counts it as no failure: what the line says has not changed. A line no read
- * stands failed on is drawn no more, and its count starts again from 0 the next time it stands.
- * `lines` are the same lines, each with the same reads in the same order, on every render. The
- * ref is written during render, as `useNamesFailures`' is (`useIssueTree.ts`), with the reads'
- * state in that render, so a second render of the same state counts nothing more.
+ * A read of a failed-read line as `useLineRefusals` counts it, paired with its key's hash
+ * (`hashKey`) in one object: it is failing while it stands failed (`standsFailed`). `read` is the
+ * read itself, which the line's Retry asks again.
  */
-function useLineRefusals<Line extends LineReads>(
-  lines: readonly Line[]
-): (Line & { readonly refusals: number })[] {
-  const last = useRef<readonly LineCount[] | undefined>(undefined);
-  const before = last.current;
-  const counts: LineCount[] = [];
-  const counted = lines.map((line, at) => {
-    const was = before?.[at];
-    let refusals = 0;
-    if (line.reads.some(standsFailed)) {
-      refusals = was?.refusals ?? 0;
-      for (const [index, read] of line.reads.entries()) {
-        if (!standsFailed(read)) continue;
-        const seen = was?.seen[index];
-        refusals +=
-          seen === undefined || seen.hash !== line.hashes[index]
-            ? read.errorUpdateCount
-            : Math.max(0, read.errorUpdateCount - seen.errorUpdateCount);
-      }
-    }
-    counts.push({
-      refusals,
-      seen: line.reads.map((read, index) => ({
-        errorUpdateCount: read.errorUpdateCount,
-        hash: line.hashes[index],
-      })),
-    });
-    return { ...line, refusals };
-  });
-  last.current = counts;
-  return counted;
+function lineRead<Read extends Parameters<typeof standsFailed>[0]>(
+  options: { readonly queryKey: QueryKey },
+  read: Read
+): LineRead & { readonly read: Read } {
+  return {
+    errorUpdateCount: read.errorUpdateCount,
+    failing: standsFailed(read),
+    hash: hashKey(options.queryKey),
+    read,
+  };
 }
 
 /** A link inside a line of words, which the hair-coloured underline marks as one. */
