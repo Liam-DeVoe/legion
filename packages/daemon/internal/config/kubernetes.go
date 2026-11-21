@@ -20,6 +20,8 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 
+	"github.com/sjawhar/envoy/natsurl"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -571,20 +573,36 @@ func readPluginSource(value *yaml.Node, key string) (string, error) {
 		if u.Host == "" {
 			return "", noHost
 		}
+		if pluginUserinfoPastHost(u) {
+			return "", fmt.Errorf("%s cannot be read: %s", key, natsurl.UserinfoPastHostReason)
+		}
 		return u.String(), nil
 	}
 	if !pluginVersion.MatchString(source) {
-		// The source is quoted only when it can hold no credential, a word or a range with no "/",
-		// ":", "@", "?" or "#": one with userinfo or a signed query is a URL whose credential
-		// url.Parse may not read as such (one with no scheme, or one it cannot parse), and `legion
-		// stop` prints this refusal as it is.
-		got := ""
-		if !strings.ContainsAny(source, "/:@?#") {
-			got = fmt.Sprintf("; got %q", source)
-		}
-		return "", fmt.Errorf("%s must be an exact version (N.N.N), an absolute tarball path, or an http(s) URL — never an npm dist-tag or a range: the pair must be one release's exact versions%s", key, got)
+		// It quotes nothing of the source: a bare token pasted into the version slot is a word with
+		// none of "/", ":", "@", "?" or "#", and `legion stop` prints this refusal as it is.
+		return "", fmt.Errorf("%s must be an exact version (N.N.N), an absolute tarball path, or an http(s) URL — never an npm dist-tag or a range: the pair must be one release's exact versions", key)
 	}
 	return source, nil
+}
+
+// pluginUserinfoPastHost reports whether u, a plugin source's http(s) URL, holds an "@" after its
+// host: in its query, its fragment, or a path segment anywhere but at its first character. That is
+// where a token holding a "/" written as the user lands (`https://<head>/<tail>@cache/x.tgz` parses
+// with <head> as the host), which the daemon's boot log and the state's settings print. An "@" that
+// opens a segment is a scoped package's, as a registry tarball URL holds it
+// (`/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz`), and is kept; natsurl.UserinfoPastHost, which
+// refuses any "@" in the path, is for URLs that name a server, never a package.
+func pluginUserinfoPastHost(u *url.URL) bool {
+	if strings.Contains(u.RawQuery, "@") || strings.Contains(u.Fragment, "@") {
+		return true
+	}
+	for _, segment := range strings.Split(u.Path, "/") {
+		if len(segment) > 1 && strings.Contains(segment[1:], "@") {
+			return true
+		}
+	}
+	return false
 }
 
 // isLoopbackHost is localhost, with or without the root's trailing dot, or a loopback IP address.

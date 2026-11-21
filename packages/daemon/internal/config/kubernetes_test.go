@@ -2191,29 +2191,40 @@ func TestPluginsBlockRefusals(t *testing.T) {
 }
 
 // A plugin source that carries a credential is refused naming the key alone: no refusal quotes
-// it. A source with userinfo and no http(s) scheme, one with a signed query and no host, and a
-// scheme-relative one with userinfo each carry a made-up credential here. The control is a dist-tag,
-// which carries none and is quoted.
+// it. A source with userinfo and no http(s) scheme, one with a signed query and no host, a
+// scheme-relative one with userinfo, an http(s) one whose user is a token holding a "/" (so the
+// "@" lands in the path), and one with an "@" in its query or fragment each carry a made-up
+// credential here. A bare token in the version slot is quoted no more either, nor is a dist-tag.
+// A registry tarball URL whose path opens a segment with "@", a scoped package's, still loads.
 func TestAPluginSourceRefusalQuotesNoCredential(t *testing.T) {
 	const madeUp = "madeUpPluginCredential0123"
 	for name, source := range map[string]string{
 		"userinfo with another scheme":       "s3://legion:" + madeUp + "@bucket/pi-legion.tgz",
 		"a signed query with no host":        "https:///pi-legion.tgz?signature=" + madeUp,
 		"a scheme-relative source with user": "//legion:" + madeUp + "@cache/pi-legion.tgz",
+		"a token holding a / as the user":    "https://" + madeUp + "/rest@cache.example/pi-legion.tgz",
+		"an @ in the query":                  "https://cache.example/pi-legion.tgz?by=" + madeUp + "@x",
+		"an @ in the fragment":               "https://cache.example/pi-legion.tgz#" + madeUp + "@x",
+		"a bare token in the version slot":   madeUp,
+		"a dist-tag":                         "latest",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+source+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
 			if err == nil || !strings.Contains(err.Error(), "runtime.kubernetes.plugins.pi_legion") {
 				t.Fatalf("err %v, want a refusal naming runtime.kubernetes.plugins.pi_legion", err)
 			}
-			if strings.Contains(err.Error(), madeUp) {
-				t.Fatalf("the refusal quotes the source's credential: %v", err)
+			if strings.Contains(err.Error(), source) || strings.Contains(err.Error(), madeUp) || strings.Contains(err.Error(), "got") {
+				t.Fatalf("the refusal quotes the source: %v", err)
 			}
 		})
 	}
-	_, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: latest\n      pi_envoy: 9.6.1\n"), noEnv)
-	if err == nil || !strings.HasSuffix(err.Error(), `; got "latest"`) {
-		t.Fatalf("err %v, want the dist-tag quoted", err)
+	scoped := "https://registry.example/@sjawhar/pi-legion/-/pi-legion-9.6.1.tgz"
+	cfg, err := LoadForValidation(writeConfigFile(t, kubernetesFile+"    plugins:\n      pi_legion: \""+scoped+"\"\n      pi_envoy: 9.6.1\n"), noEnv)
+	if err != nil {
+		t.Fatalf("a scoped package's registry tarball URL was refused: %v", err)
+	}
+	if got := cfg.Runtime.Kubernetes.Plugins.PiLegion; got != scoped {
+		t.Fatalf("PiLegion = %q, want %q", got, scoped)
 	}
 }
 
