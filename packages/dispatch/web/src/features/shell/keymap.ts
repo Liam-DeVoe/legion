@@ -285,9 +285,9 @@ export function commitsOnBlur(element: Element): boolean {
  * (`takesText`), a `<select>`, the trigger of an option list, or anything at all inside an open
  * panel.
  *
- * A panel - the display menu, a filter panel and the lists opened from it, a column filter -
- * stands over the page in place of the selects it replaced, and its keys are its own whatever
- * control of it holds the focus: Tab and Shift+Tab walk it, the arrows walk a group of radios,
+ * A panel - the display menu, a filter panel and the lists opened from it, a column filter, a
+ * control's own list such as Edit labels' - stands over the page, and its keys are its own
+ * whatever control of it holds the focus: Tab and Shift+Tab walk it, the arrows walk a group of radios,
  * Space ticks a box, and Escape closes it (`AnchoredPanel` takes Escape before this registry
  * hears it). A radio or a checkbox takes no text, so without this rule `j` on the display menu's
  * radio would walk the table behind the panel, and the Inbox's single keys would act on its
