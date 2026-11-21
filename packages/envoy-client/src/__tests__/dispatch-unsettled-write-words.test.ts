@@ -1,11 +1,11 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { type AddressInfo, createServer, type Socket } from "node:net";
 import * as path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
 import { executeDispatchTool } from "../dispatch-execute";
-import { type DispatchWriteRetry, forgetKeyedLayerMemory } from "../dispatch-http";
+import type { DispatchWriteRetry } from "../dispatch-http";
 import { messageFor } from "../errors";
 
 // A `dispatch` write that may have reached Dispatch prints the words the command prints for such an
@@ -26,9 +26,10 @@ type Reply =
 
 /**
  * A Dispatch on a real socket that reads each request whole and replies as `reply` says for its
- * `<METHOD> <path>`. One that runs the keyed layer (`keyed`) carries a write's key back on every
- * answer, a 5xx included, as Dispatch's keyed layer does, and says so on `/healthz`; one that does
- * not echoes no key, and its `/healthz` drops the connection, so a client can learn no layer from it.
+ * `<METHOD> <path>`, recording each request it read. One that runs the keyed layer (`keyed`)
+ * carries a write's key back on every answer, a 5xx included, as Dispatch's keyed layer does; one
+ * that does not echoes no key. Neither serves `/healthz`: a client that asked it would show the
+ * request among the recorded ones.
  */
 async function stubDispatch(options: {
   readonly keyed: boolean;
@@ -59,11 +60,6 @@ async function stubDispatch(options: {
       read = true;
       const [method, target] = (lines[0] ?? "").split(" ");
       const pathname = (target ?? "").split("?")[0];
-      if (pathname === "/healthz") {
-        if (options.keyed) answer(socket, 200, { status: "ok", idempotency_keys: true });
-        else socket.destroy();
-        return;
-      }
       const request = `${method} ${pathname}`;
       requests.push(request);
       const reply = options.reply(request);
@@ -179,9 +175,6 @@ describe("the words a dispatch write that may have landed prints", () => {
     return made;
   };
 
-  // What a process learned of an origin's keyed layer outlives a call, and every stub is a new
-  // origin, but a row must not lean on that.
-  beforeEach(forgetKeyedLayerMemory);
   afterEach(() => {
     for (const made of opened.splice(0)) made.close();
   });
@@ -238,15 +231,17 @@ describe("the words a dispatch write that may have landed prints", () => {
     );
   });
 
-  // No layer was seen, so the write is asked once and nothing says Dispatch finishes it.
-  test("a keyed upload a Dispatch without a keyed layer answers 500 is asked once and may or may not have taken effect", async () => {
+  // Every Dispatch that carries `b1c42d1d7d` runs the keyed layer on every write route, so a 500
+  // that carries no key back is asked again under the key all the same, with nothing asked first,
+  // and the words say Dispatch finishes an attempt it received.
+  test("a keyed upload Dispatch answers 500 with no key carried back is asked again and may or may not have taken effect", async () => {
     const dispatch = await dispatchOn(false, () => internal);
 
     const text = await upload(dispatch.url);
 
-    expect(dispatch.requests).toEqual([UPLOAD]);
+    expect(dispatch.requests).toEqual([UPLOAD, UPLOAD, UPLOAD]);
     expect(text).toBe(
-      `INTERNAL: the write failed (its only attempt), and ${DISPATCH_FAILED}${CHECK_FIRST}`
+      `INTERNAL: the write failed (the last of 3 attempts), and ${DISPATCH_FAILED}${READ_IT_BACK}`
     );
   });
 

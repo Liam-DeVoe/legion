@@ -78,7 +78,8 @@ func addressesSessions(body requestBody) bool {
 	return slices.ContainsFunc(bodyTypes(body), func(typ reflect.Type) bool { return typ.Implements(sessionAddressingType) })
 }
 
-// gateV2Authorities refuses a request to a /api/v2 route whose credential lacks a scope one of its
+// gateV2Authorities refuses a request to a decoded route (a /api/v2 route, or the /api/v1 path of a
+// row served in both versions: apiRoute.decoded) whose credential lacks a scope one of its
 // values needs (the row's Authorities), and a write whose body names a session the credential may
 // not write into (sessionAddressing). register wraps it after the decoder has read the query and
 // the body, and outside the keyed layer, so a refused write claims no idempotency key: the person

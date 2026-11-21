@@ -17,7 +17,6 @@ import {
   DispatchGatewayError,
   DispatchNoRouteError,
   DispatchWriteUnsettledError,
-  forgetKeyedLayerMemory,
   type SearchOptions,
 } from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
@@ -883,7 +882,8 @@ describe("DispatchClient", () => {
     expect(badGateway.message).toBe(
       `${request}502 Bad Gateway with a body that is not Dispatch's error JSON ("502 Bad Gateway")` +
         `${gateway} (its only attempt), and an attempt of the write may have reached Dispatch, so ` +
-        "it may or may not have taken effect: check whether it did before retrying it."
+        "it may or may not have taken effect. Dispatch finishes an attempt it received whatever this " +
+        "command does, so read the write back before you send it again: a new command sends it under a new key."
     );
     expect((badGateway as DispatchWriteUnsettledError).last).toEqual(
       expect.objectContaining({ mayHaveReachedDispatch: true })
@@ -1093,7 +1093,9 @@ describe("DispatchClient", () => {
     expect(messages[5]).toBe(
       `POST ${shown} made no progress for 0.02 s, so it ` +
         "was cut off (its only attempt), and an attempt of the write may have reached Dispatch, " +
-        "so it may or may not have taken effect: check whether it did before retrying it."
+        "so it may or may not have taken effect. Dispatch finishes an attempt it received " +
+        "whatever this command does, so read the write back before you send it again: a new " +
+        "command sends it under a new key."
     );
     for (const message of messages) {
       expect(message).not.toContain(user);
@@ -2046,16 +2048,13 @@ describe("the User-Agent", () => {
       }),
       secret: () => "secret",
     };
-    // A read, then a write whose first attempt fails in transport, so the write asks `/healthz`
-    // whether Dispatch runs its keyed layer and then asks again under its key, which Dispatch's
-    // answer carries back as it does for every keyed write.
-    forgetKeyedLayerMemory();
+    // A read, then a write whose first attempt fails in transport, so the write asks again under
+    // its key, with nothing asked first, and Dispatch's answer carries the key back as it does for
+    // every keyed write.
     const requests: RecordedRequest[] = [];
     let posts = 0;
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push({ url: String(input), init: init ?? {} });
-      const { pathname } = new URL(String(input));
-      if (pathname === "/healthz") return jsonResponse({ status: "ok", idempotency_keys: true });
       if (init?.method !== "POST") return jsonResponse([]);
       posts += 1;
       if (posts === 1) throw new TypeError("fetch failed");
@@ -2071,19 +2070,18 @@ describe("the User-Agent", () => {
     await client.listAllIssues({});
     await client.message("DSP-1", { body: "Shipped.", actor });
 
+    // The resend names the program as the first attempt does.
     expect(
       requests.map((request) => [new URL(request.url).pathname, userAgentOf(request)])
     ).toEqual([
       ["/api/v1/issues", "example-program/1.2.3"],
       ["/api/v1/issues/DSP-1/messages", "example-program/1.2.3"],
-      ["/healthz", "example-program/1.2.3"],
       ["/api/v1/issues/DSP-1/messages", "example-program/1.2.3"],
     ]);
-    // The credential's other headers still go out where it presents; the `/healthz` probe
-    // presents none (`#probeKeyedLayer`), and names the program all the same.
+    // The credential's other headers still go out where it presents.
     expect(
       requests.map((request) => new Headers(request.init.headers).get("authorization"))
-    ).toEqual(["Bearer secret", "Bearer secret", null, "Bearer secret"]);
+    ).toEqual(["Bearer secret", "Bearer secret", "Bearer secret"]);
   });
 
   test("a client made with no program named sends envoy-client's own name and version", async () => {
