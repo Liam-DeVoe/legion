@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -27,18 +29,19 @@ import (
 // digits meet an underscore, so a run of `a_` cost time quadratic in its length: 64 KiB of it saved
 // in 46 s. search_text (migration 0056) breaks a run after its sixteenth underscore-joined segment.
 // The parser's work reaches no count a test can read; its input does. The row's server runs on
-// connections whose search_path finds a recording function ahead of each of pg_catalog's parser
-// functions (recordPathologicalParserInput), so each save is read as the parser received it,
-// whatever trigger or function handed it the text by a bare name: every save must hand the parser
-// exactly parserCallsPerSave texts, at least as many characters as the text it saved, and no run
-// of more than searchTextSegments segments. With search_text answering its input unchanged, the
-// 1 KiB document of `a_` hands it a run of 507; a trigger that parses the text once more, or once
-// for every so many characters of it, makes more calls. A call that does not resolve a bare name
-// through the session's search_path is not recorded: the database must keep none of the kinds it
-// can hold (assertParserReachedByBareName), and a call by the qualified name in a function's text
-// is not held at all. A run joined again after search_text, as the ask-block removal of the
-// documents trigger can join one, is held by the row of the change that moves that removal ahead
-// of search_text, not by this one: no document here holds an ask block.
+// connections whose search_path puts a schema of recording functions ahead of pg_catalog, one for
+// each form pg_proc lists of the functions parserFunctionNames names
+// (recordPathologicalParserInput). A call that names one of those functions by its bare name, and
+// resolves it through the connection's search_path when it is planned, passes the recorder first:
+// every save must hand the recorder exactly parserCallsPerSave texts, at least as many characters
+// as the text it saved, and no run of more than searchTextSegments segments. Beside that, the
+// catalogs assertParserReachedByBareName scans must keep no call of the parser. Those two are what
+// the row holds of the parser's input, and all it holds. With search_text answering its input
+// unchanged, the 1 KiB document of `a_` hands it a run of 507; a trigger that parses the text once
+// more, or once for every so many characters of it, makes more calls. A run joined again after
+// search_text, as the ask-block removal of the documents trigger can join one, is held by the row
+// of the change that moves that removal ahead of search_text, not by this one: no document here
+// holds an ask block.
 //
 // pmdoc's Update wrote each new block with its own insert, and ygo walks a fragment from its first
 // child to the index each insert or delete names, so replacing a quote of n headings with a quote
@@ -46,10 +49,11 @@ import (
 // limit allows of it, against 0.68 to 0.69 s with one insert for the run (2026-11-21). Update reads
 // and changes a fragment's children through one struct as it writes them, and the row reads each
 // call it makes (pmdoc.RecordChildEditsForTest): every read of a fragment's children and every
-// positional delete and insert, in the order ygo receives them. Each write of the replacement must
-// make exactly the positional calls seedChanges and replacementChanges name, and as many reads at
-// 5,461 and 21,842 blocks as at 682. A write that deletes or inserts the run one block at a time,
-// or reads the quote's children once for each block, makes a call for each block.
+// positional delete and insert, in the order ygo receives them. Each of its two writes, the seed
+// and the replacement, must make exactly the positional calls seedChanges and replacementChanges
+// name, and as many reads at 5,461 and 21,842 blocks as at 682. A write that deletes or inserts the
+// run one block at a time, or reads the quote's children once for each block, makes a call for
+// each block.
 //
 // The largest save of each ladder is the most a caller can send: a mebibyte of document,
 // contracts.DispatchBlockUnits characters of comment, and 21,844 blocks in the replaced quote. Each
@@ -62,35 +66,41 @@ import (
 // What no count here holds: a change inside ygo; a change in pmdoc that reaches the fragment around
 // that struct, or makes more than one ygo call inside one of its methods, among them the read of
 // the whole document a write makes when it would create an element this build may not create yet
-// (heldInFragment), which none of these writes makes; a parser call by the qualified name in a
-// function's text; and a save that costs more CPU without making another call or handing the
-// parser another text or a longer run, in Go or in Postgres. The count that load cannot move for
-// that last is the instructions the save executes, and this box gives a test no hardware counter
-// (kernel.perf_event_paranoid is 4).
+// (heldInFragment), which none of these writes makes; a parser call whose name is resolved other
+// than through the connection's search_path - by a qualified name, after the search_path changes
+// at run time (set_config, SET LOCAL), or as an operator's function - or that is stored in a
+// catalog the check does not scan; a parser entry point parserFunctionNames does not name, such as
+// the text @@ operators, whose C functions call the parser directly; and a save that costs more CPU
+// without making another call or handing the parser another text or a longer run, in Go or in
+// Postgres. The count that load cannot move for that last is the instructions the save executes,
+// and this box gives a test no hardware counter (kernel.perf_event_paranoid is 4).
 //
 // Settlement is held off, so no settlement writes a document while a save is read; the test
-// server's shutdown settles each document still loaded, after every count is read. No test in this
-// package calls t.Parallel, so no other write runs beside the one read.
+// server's shutdown settles each document still loaded, after every count is read. A related-terms
+// refresh runs on the recorded pool during the first save ("search term statistics refreshed for a
+// project the related-item check found without them") and hands the parser nothing today; a
+// refresh that called a recorded function during a save would change that save's count and fail
+// it. No test in this package calls t.Parallel, so no other test writes beside the one read.
 func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 	database := storetest.Open(t)
 	assertParserReachedByBareName(t, database)
 	recorded, parsed := recordPathologicalParserInput(t, database)
 	handler, _, _ := newTestServer(t, testServerOptions{settle: time.Hour, store: recorded})
 	issue := createArtifactIssue(t, handler)
-	// save runs one save and holds what it handed the parser (parserInput) against what it saved,
-	// the newest text of table's column.
-	save := func(t *testing.T, what, table, column string, write func()) {
+	// save runs one save and holds what it handed the parser (parserInput) against the text it
+	// saved, read back from the row the save's 201 answer names (savedRow).
+	save := func(t *testing.T, what string, write func() savedRow) {
 		t.Helper()
-		input := parsed(write)
+		var row savedRow
+		input := parsed(func() { row = write() })
 		var saved int64
-		if err := database.Pool.QueryRow(context.Background(), fmt.Sprintf(
-			`select length(%s) from %s where %[1]s is not null order by created_at desc limit 1`, column, table)).Scan(&saved); err != nil {
+		if err := database.Pool.QueryRow(context.Background(), row.query, row.args...).Scan(&saved); err != nil {
 			t.Fatalf("read the length of what %s saved: %v", what, err)
 		}
 		t.Logf("%s saved %d characters and handed the parser %s", what, saved, input)
 		switch {
 		case input.calls != parserCallsPerSave:
-			t.Fatalf("%s handed the parser %d texts, want %d: search_vector parses the vector's head and its body once each, and a save that reached the parser by no bare name hands it none this row can read",
+			t.Fatalf("%s handed the parser %d texts, want %d: search_vector parses the vector's head and its body once each, and a save that reached the parser by no recorded call hands it none this row can read",
 				what, input.calls, parserCallsPerSave)
 		case input.characters < saved:
 			t.Fatalf("%s handed the parser %d characters, fewer than the %d it saved: the text was parsed by a route this row does not read",
@@ -115,11 +125,12 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 				body := fence + strings.Repeat(test.shape, (size-2*len(fence)-1)/len(test.shape)) + "\n" + fence
 				documents++
 				fields := map[string]string{"name": fmt.Sprintf("pathological-%d.md", documents)}
-				save(t, fmt.Sprintf("a document of %s of `%s`", sizeText(size), test.shape), "artifact_versions", "markdown", func() {
+				save(t, fmt.Sprintf("a document of %s of `%s`", sizeText(size), test.shape), func() savedRow {
 					response := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", fields, "body.md", "text/markdown", []byte(body), "alice")
 					if response.Code != http.StatusCreated {
 						t.Fatalf("upload %s of %q: status=%d body=%.200s", sizeText(size), test.shape, response.Code, response.Body.String())
 					}
+					return savedDocument(t, response)
 				})
 			}
 		})
@@ -130,13 +141,14 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 		const shape = "a_"
 		for _, size := range []int{contracts.DispatchBlockUnits / 32, contracts.DispatchBlockUnits / 4, contracts.DispatchBlockUnits} {
 			body := strings.Repeat(shape, size/len(shape))
-			save(t, fmt.Sprintf("a comment of %s of `%s`", sizeText(size), shape), "comments", "body", func() {
+			save(t, fmt.Sprintf("a comment of %s of `%s`", sizeText(size), shape), func() savedRow {
 				response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 					"body": body,
 				}, "alice")
 				if response.Code != http.StatusCreated {
 					t.Fatalf("comment of %s of %q: status=%d body=%.200s", sizeText(size), shape, response.Code, response.Body.String())
 				}
+				return savedComment(t, response)
 			})
 		}
 	})
@@ -178,13 +190,16 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 			} {
 				fields := write.fields()
 				var edits []pmdoc.ChildEdit
-				save(t, write.what, "artifact_versions", "markdown", func() {
+				save(t, write.what, func() savedRow {
+					var row savedRow
 					edits = recordChildEdits(func() {
 						response := multipartRequest(t, handler, owner, fields, "body.md", "text/markdown", []byte(write.body), "alice")
 						if response.Code != http.StatusCreated {
 							t.Fatalf("%s: status=%d body=%.200s", write.what, response.Code, response.Body.String())
 						}
+						row = savedDocument(t, response)
 					})
+					return row
 				})
 				t.Logf("%s made %s", write.what, childEditsText(edits))
 				reads, changes := 0, []pmdoc.ChildEdit{}
@@ -199,6 +214,9 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 					t.Fatalf("%s deleted and inserted by %s, want %s: each call walks the fragment it names from its first child",
 						write.what, childEditsText(changes), childEditsText(write.wantChanges))
 				}
+				// The read count is exact on purpose: a change to Update that reads more or fewer
+				// times for one write changes it at every size alike and passes, and one that reads
+				// once more for each block fails.
 				first, seen := firstReads[write.kind]
 				if !seen {
 					firstReads[write.kind] = reads
@@ -216,7 +234,9 @@ func TestSavingAPathologicalBodyIsBounded(t *testing.T) {
 // seedChanges is every positional call writing a quote of 2 rules and blocks headings into a new
 // document makes: it inserts the quote's 2 + blocks children into the quote it builds, which no
 // document holds yet, and then the quote, the tail of the document. An empty heading and a rule
-// have no children to insert.
+// have no children to insert. It is exact on purpose, as replacementChanges is: a change to
+// Update's writing that makes other positional calls for this write must change it, and show that
+// each call it makes still walks the fragment once whatever blocks is.
 func seedChanges(blocks int) []pmdoc.ChildEdit {
 	return []pmdoc.ChildEdit{
 		{Kind: pmdoc.ChildInsert, Index: 0, Count: 2 + blocks},
@@ -232,6 +252,39 @@ func replacementChanges(blocks int) []pmdoc.ChildEdit {
 		{Kind: pmdoc.ChildDelete, Index: 2, Count: blocks},
 		{Kind: pmdoc.ChildInsert, Index: 2, Count: blocks},
 	}
+}
+
+// savedRow is the statement that reads back the length of the text one save stored, and its
+// arguments: the row the save's 201 answer names, so no clock decides which row is read.
+type savedRow struct {
+	query string
+	args  []any
+}
+
+// savedDocument reads a document upload's 201 answer for the artifact and the version number it
+// stored.
+func savedDocument(t *testing.T, response *httptest.ResponseRecorder) savedRow {
+	t.Helper()
+	var uploaded artifactUploadResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &uploaded); err != nil || uploaded.Artifact.ID == "" || uploaded.Version.Number == 0 {
+		t.Fatalf("read the version an upload stored: %v: %.200s", err, response.Body.String())
+	}
+	return savedRow{
+		query: `select length(markdown) from artifact_versions where artifact_id = $1 and number = $2`,
+		args:  []any{uploaded.Artifact.ID, uploaded.Version.Number},
+	}
+}
+
+// savedComment reads a comment's 201 answer for the comment it stored.
+func savedComment(t *testing.T, response *httptest.ResponseRecorder) savedRow {
+	t.Helper()
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil || created.ID == "" {
+		t.Fatalf("read the comment a post stored: %v: %.200s", err, response.Body.String())
+	}
+	return savedRow{query: `select length(body) from comments where id = $1`, args: []any{created.ID}}
 }
 
 // recordChildEdits runs write and answers every call it made to a fragment's children, reads and
@@ -268,7 +321,10 @@ const searchTextSegments = 16
 // parserCallsPerSave is how many texts each save of this row hands the parser: its trigger calls
 // search_vector once, which parses the vector's head, empty for a document or a comment, and its
 // body (migration 0087), once each. A body too long for one vector would make search_vector parse
-// cuts of it as well; no save here is one.
+// cuts of it as well; no save here is one. It is exact on purpose: a save that parses its text once
+// more is what the row exists to catch, so a change to search_vector or to a search trigger that
+// hands the parser another number of texts for these saves must change it, with the number
+// measured.
 const parserCallsPerSave = 2
 
 // parserInput is what Postgres's text-search parser was handed during one save, as
@@ -286,37 +342,34 @@ func (p parserInput) String() string {
 	return fmt.Sprintf("%d texts of %d characters in all, %s", p.calls, p.characters, run)
 }
 
-// parserForms is every form of pg_catalog's functions that hands a text to the text-search parser
-// and answers what it made of it, as the recorder shadows each (recordPathologicalParserInput):
-// its parameters, what it answers, the text the parser reads, and the call of pg_catalog's own.
-var parserForms = []struct{ name, params, returns, text, answer string }{
-	{"to_tsvector", "config regconfig, body text", "tsvector", "body", "return pg_catalog.to_tsvector(config, body)"},
-	{"to_tsvector", "body text", "tsvector", "body", "return pg_catalog.to_tsvector(body)"},
-	{"to_tsvector", "config regconfig, body json", "tsvector", "body::text", "return pg_catalog.to_tsvector(config, body)"},
-	{"to_tsvector", "body json", "tsvector", "body::text", "return pg_catalog.to_tsvector(body)"},
-	{"to_tsvector", "config regconfig, body jsonb", "tsvector", "body::text", "return pg_catalog.to_tsvector(config, body)"},
-	{"to_tsvector", "body jsonb", "tsvector", "body::text", "return pg_catalog.to_tsvector(body)"},
-	{"json_to_tsvector", "config regconfig, body json, filter jsonb", "tsvector", "body::text", "return pg_catalog.json_to_tsvector(config, body, filter)"},
-	{"json_to_tsvector", "body json, filter jsonb", "tsvector", "body::text", "return pg_catalog.json_to_tsvector(body, filter)"},
-	{"jsonb_to_tsvector", "config regconfig, body jsonb, filter jsonb", "tsvector", "body::text", "return pg_catalog.jsonb_to_tsvector(config, body, filter)"},
-	{"jsonb_to_tsvector", "body jsonb, filter jsonb", "tsvector", "body::text", "return pg_catalog.jsonb_to_tsvector(body, filter)"},
-	{"ts_parse", "parser_name text, body text, out tokid integer, out token text", "setof record", "body", "return query select * from pg_catalog.ts_parse(parser_name, body)"},
-	{"ts_parse", "parser_id oid, body text, out tokid integer, out token text", "setof record", "body", "return query select * from pg_catalog.ts_parse(parser_id, body)"},
+// parserFunctionNames names the functions of pg_catalog this row treats as the text-search
+// parser's entry points: each takes a text, or a json or jsonb it reads as text, and hands it to
+// the parser. The recorder shadows every form pg_proc lists of each (recordPathologicalParserInput),
+// and the catalog check looks for a stored call of any of those forms and of parserTriggerNames'
+// (assertParserReachedByBareName). Both read the forms from pg_proc, so neither keeps a list of its
+// own. An entry point not named here, such as the C functions of the text @@ operators, which call
+// the parser directly, is in neither.
+var parserFunctionNames = []string{
+	"to_tsvector", "json_to_tsvector", "jsonb_to_tsvector", "ts_parse", "ts_debug", "ts_headline",
+	"to_tsquery", "plainto_tsquery", "phraseto_tsquery", "websearch_to_tsquery",
 }
 
-// recordPathologicalParserInput answers a store on database whose connections find, ahead of
-// pg_catalog's, a function of a schema of their own for each of parserForms, and a function that
-// runs a save and answers what the parser was handed while it ran (parserInput). Each such
-// function records the text and then calls pg_catalog's. A call resolves a bare name through the
-// session's search_path when it is planned, so on those connections the text any trigger or
-// plpgsql function hands the parser by a bare name passes the recorder first. What resolves the
-// parser otherwise - by its qualified name in a function's text, in an expression the database
-// stores already resolved, in a function that sets its own search_path, or through
-// tsvector_update_trigger - is not recorded; assertParserReachedByBareName holds the database to
-// having none of the last three. The recorder keeps its counts in three sequences, which no
-// rollback undoes, so a call whose subtransaction rolls back, as search_vector's does for a vector
-// too long, is counted too. The store is storetest.Reopened's, every pool of it closed when t
-// ends, before database is dropped.
+// parserTriggerNames names the trigger functions of pg_catalog that parse a row's columns. No call
+// names them, so the recorder cannot shadow them; the catalog check fails a trigger that runs one.
+var parserTriggerNames = []string{"tsvector_update_trigger", "tsvector_update_trigger_column"}
+
+// recordPathologicalParserInput answers a store on database whose connections put a schema of
+// recording functions ahead of pg_catalog in search_path, one for each form pg_proc lists of
+// parserFunctionNames, and a function that runs a save and answers what the recorder was handed
+// while it ran (parserInput). Each recording function records its text, json and jsonb arguments,
+// joined by spaces, and then calls pg_catalog's form with every argument. It records a call that
+// names a shadowed function by its bare name and resolves it through the connection's search_path
+// when the call is planned, and no other: not a call by a qualified name, not one planned after
+// the search_path changes at run time, not an operator's function, not a parser call made inside
+// a function written in C. The recorder keeps its counts in three sequences, which no rollback
+// undoes, so a call whose subtransaction rolls back, as search_vector's does for a vector too long,
+// is counted too. The store is storetest.Reopened's, every pool of it closed when t ends, before
+// database is dropped.
 func recordPathologicalParserInput(t *testing.T, database *store.Store) (*store.Store, func(save func()) parserInput) {
 	t.Helper()
 	ctx := context.Background()
@@ -338,12 +391,54 @@ func recordPathologicalParserInput(t *testing.T, database *store.Store) (*store.
 		   end if;
 		 end $$`, searchTextSegments+1),
 	}
-	for _, form := range parserForms {
-		statements = append(statements, fmt.Sprintf(`create function pathological_parser.%s(%s) returns %s language plpgsql volatile strict as $$
+	rows, err := database.Pool.Query(ctx, `
+		select p.proname, pg_get_function_arguments(p.oid), pg_get_function_result(p.oid), p.proretset, p.proisstrict, p.pronargs,
+		       coalesce((select array_agg(a.n::int order by a.n) from unnest(p.proargtypes::oid[]) with ordinality as a(type, n)
+		                  where a.type in ('text'::regtype, 'json'::regtype, 'jsonb'::regtype)), '{}')
+		  from pg_proc p
+		 where p.pronamespace = 'pg_catalog'::regnamespace and p.prokind = 'f' and p.proname = any($1)
+		 order by p.proname, p.oid`, parserFunctionNames)
+	if err != nil {
+		t.Fatalf("read the parser's forms: %v", err)
+	}
+	forms := 0
+	for rows.Next() {
+		var name, arguments, result string
+		var setOf, strict bool
+		var inputs int16
+		var texts []int32
+		if err := rows.Scan(&name, &arguments, &result, &setOf, &strict, &inputs, &texts); err != nil {
+			t.Fatalf("read a parser form: %v", err)
+		}
+		recorded := make([]string, len(texts))
+		for i, position := range texts {
+			recorded[i] = fmt.Sprintf("$%d::text", position)
+		}
+		passed := make([]string, inputs)
+		for i := range passed {
+			passed[i] = fmt.Sprintf("$%d", i+1)
+		}
+		answer := fmt.Sprintf("return pg_catalog.%s(%s)", name, strings.Join(passed, ", "))
+		if setOf {
+			answer = fmt.Sprintf("return query select * from pg_catalog.%s(%s)", name, strings.Join(passed, ", "))
+		}
+		nulls := "called on null input"
+		if strict {
+			nulls = "strict"
+		}
+		statements = append(statements, fmt.Sprintf(`create function pathological_parser.%s(%s) returns %s language plpgsql volatile %s as $$
 		 begin
-		   perform pathological_parser.record(%s);
+		   perform pathological_parser.record(concat_ws(' ', %s));
 		   %s;
-		 end $$`, form.name, form.params, form.returns, form.text, form.answer))
+		 end $$`, name, arguments, result, nulls, strings.Join(recorded, ", "), answer))
+		forms++
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the parser's forms: %v", err)
+	}
+	if forms < len(parserFunctionNames) {
+		t.Fatalf("pg_proc lists %d forms of the %d parser functions this row names: not every one was read", forms, len(parserFunctionNames))
 	}
 	for _, statement := range statements {
 		if _, err := database.Pool.Exec(ctx, statement); err != nil {
@@ -368,23 +463,20 @@ func recordPathologicalParserInput(t *testing.T, database *store.Store) (*store.
 	}
 }
 
-// assertParserReachedByBareName fails t where the database holds a call of the parser that a
-// session's search_path cannot route through the recorder (recordPathologicalParserInput): an
-// expression the database keeps already resolved - a column's default or generated value, an
-// index's expression or predicate, a check constraint, the body of a SQL function written BEGIN
-// ATOMIC, a policy, a rule - that names one of pg_catalog's parser functions by its id; a trigger
-// that runs tsvector_update_trigger; and a function that sets its own search_path, under which a
-// bare name it or anything it calls resolves past the recorder. It reads the stored expressions
-// as their node trees, where a function call is `:funcid` and the function's id. Objects of
-// pg_catalog and information_schema are left out.
+// assertParserReachedByBareName fails t where the catalogs it scans keep a call of the parser: a
+// stored node tree - a column's default or generated value, an index's expression or predicate, a
+// check constraint, the body of a SQL function written BEGIN ATOMIC, a policy, a rule, a trigger's
+// WHEN clause - that calls a form of parserFunctionNames or parserTriggerNames by its id, as a
+// function or as an operator's function (`:funcid` or `:opfuncid` and the id); a trigger that runs
+// a form of parserTriggerNames; and a function that sets its own search_path in pg_proc. It scans
+// the objects outside pg_catalog and information_schema, and those catalogs alone: a stored tree
+// elsewhere, such as an argument's default, a type's default or an operator's definition, is not
+// read.
 func assertParserReachedByBareName(t *testing.T, database *store.Store) {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `
 		with parser as (
-			select oid from pg_proc
-			 where pronamespace = 'pg_catalog'::regnamespace
-			   and proname in ('to_tsvector', 'json_to_tsvector', 'jsonb_to_tsvector', 'ts_parse', 'ts_debug',
-			                   'ts_headline', 'tsvector_update_trigger', 'tsvector_update_trigger_column')
+			select oid from pg_proc where pronamespace = 'pg_catalog'::regnamespace and proname = any($1)
 		), ours(namespace) as (
 			select oid from pg_namespace where nspname not in ('pg_catalog', 'information_schema') and nspname !~ '^pg_toast'
 		), stored(what, tree) as (
@@ -406,8 +498,11 @@ func assertParserReachedByBareName(t *testing.T, database *store.Store) {
 			union all
 			select format('rule %s on %s', r.rulename, r.ev_class::regclass), coalesce(r.ev_action::text, '') || coalesce(r.ev_qual::text, '')
 			  from pg_rewrite r join pg_class c on c.oid = r.ev_class where c.relnamespace in (select namespace from ours)
+			union all
+			select format('the WHEN clause of trigger %s on %s', t.tgname, t.tgrelid::regclass), t.tgqual::text
+			  from pg_trigger t join pg_class c on c.oid = t.tgrelid where t.tgqual is not null and c.relnamespace in (select namespace from ours)
 		)
-		select 0, what from stored where exists (select 1 from parser where stored.tree ~ (':funcid ' || parser.oid || '\M'))
+		select 0, what from stored where exists (select 1 from parser where stored.tree ~ (':(op)?funcid ' || parser.oid || '\M'))
 		union all
 		select 0, format('trigger %s on %s runs %s', t.tgname, t.tgrelid::regclass, t.tgfoid::regproc)
 		  from pg_trigger t where t.tgfoid in (select oid from parser)
@@ -416,7 +511,8 @@ func assertParserReachedByBareName(t *testing.T, database *store.Store) {
 		  from pg_proc p where p.pronamespace in (select namespace from ours)
 		   and exists (select 1 from unnest(p.proconfig) as setting where setting like 'search_path=%')
 		union all
-		select (select count(*) from parser) * 1000000 + (select count(*) from stored), ''`)
+		select (select count(*) from parser) * 1000000 + (select count(*) from stored), ''`,
+		append(slices.Clone(parserFunctionNames), parserTriggerNames...))
 	if err != nil {
 		t.Fatalf("read the calls of the parser the database keeps: %v", err)
 	}
@@ -438,8 +534,8 @@ func assertParserReachedByBareName(t *testing.T, database *store.Store) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the calls of the parser the database keeps: %v", err)
 	}
-	if parsers, trees := read/1000000, read%1000000; parsers == 0 || trees == 0 {
-		t.Fatalf("read %d parser functions and %d stored expressions: nothing was read", parsers, trees)
+	if parsers, trees := read/1000000, read%1000000; parsers < int64(len(parserFunctionNames)+len(parserTriggerNames)) || trees == 0 {
+		t.Fatalf("read %d parser functions and %d stored expressions: not every one was read", parsers, trees)
 	}
 	if len(found) > 0 {
 		slices.Sort(found)
