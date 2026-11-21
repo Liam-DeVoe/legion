@@ -14,8 +14,9 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
-// deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead),
-// each bucket call waiting no longer than ctx (bus.Bounded). A delete ctx abandoned may still land
+// deleteInterest deletes sessionID's interest at the revision it reads (bus.KeyValue.DeleteAtRead,
+// which reads a value that is no row of sessionID again from the stream's leader: rowOf), each
+// bucket call waiting no longer than ctx (bus.Bounded). A delete ctx abandoned may still land
 // after this answer, and that is safe: it deletes only the revision it read, so a write that landed
 // since is kept. A record the read found absent is left alone, delete and all, so a registration
 // that stored the session's row between that read and this delete keeps it; the cache is brought
@@ -27,7 +28,7 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	kv, epoch := r.watcher.Handle()
 	revision := r.cache.FenceFor(epoch, sessionID)
 	r.mu.RUnlock()
-	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return deleteInterestAtRead(ctx, kv, sessionID) })
+	read, answered, err := bus.Bounded(ctx, func() (uint64, error) { return kv.DeleteAtRead(ctx, sessionID, rowOf(sessionID)) })
 	if !answered {
 		return fmt.Errorf("delete %s's interest record: %w", sessionID, err)
 	}
@@ -38,29 +39,14 @@ func (r *Registry) deleteInterest(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// deleteInterestAtRead is bus.KeyValue.DeleteAtRead fenced on the revision the row is stored at. A
-// value that is no row of sessionID's (boundInterest) can be a copy the server stored from another
-// key, which carries its source's Nats-Sequence header ahead of its own, so the revision the
-// direct get reports for it is the source's and a delete fenced on it is refused at every
-// attempt: its revision is read from the stream's leader instead (bus.KeyValue.GetFromLeader).
-func deleteInterestAtRead(ctx context.Context, kv bus.KeyValue, sessionID string) (uint64, error) {
-	entry, err := kv.Get(sessionID)
-	switch {
-	case errors.Is(err, bus.ErrRefused):
-		return kv.DeleteAtRead(sessionID)
-	case errors.Is(err, nats.ErrKeyNotFound):
-		return 0, nil
-	case err != nil:
-		return 0, err
+// rowOf is whether a value is a row of sessionID (boundInterest), the test a read fenced on a
+// revision takes (bus.KeyValue.ReadStored): a value it refuses is read again from the stream's
+// leader, whose revision is the one the value is stored at.
+func rowOf(sessionID string) func(value []byte) bool {
+	return func(value []byte) bool {
+		_, err := boundInterest(sessionID, value)
+		return err == nil
 	}
-	if _, err := boundInterest(sessionID, entry.Value()); err != nil {
-		if entry, err = kv.GetFromLeader(ctx, sessionID); errors.Is(err, nats.ErrKeyNotFound) {
-			return 0, nil
-		} else if err != nil {
-			return 0, err
-		}
-	}
-	return entry.Revision(), kv.Delete(sessionID, nats.LastRevision(entry.Revision()))
 }
 
 // deleteInterestAt deletes sessionID's interest record only while its latest revision is

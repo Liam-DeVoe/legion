@@ -52,7 +52,7 @@ func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
 
 	const key = "ses_raced"
 	racing := &writingOnMissingGet{KeyValue: kv.Legacy(), value: []byte("registered")}
-	revision, err := NewKeyValue(racing, kv.WatchHandle(), kv.Streams()).DeleteAtRead(key)
+	revision, err := NewKeyValue(racing, kv.WatchHandle(), kv.Streams()).DeleteAtRead(t.Context(), key, nil)
 	if err != nil {
 		t.Fatalf("delete %s at the revision its read answered: %v", key, err)
 	}
@@ -69,5 +69,42 @@ func TestADeleteAtReadKeepsTheRowWrittenAfterItsReadFoundNone(t *testing.T) {
 	}
 	if got := string(entry.Value()); got != "registered" {
 		t.Fatalf("%s holds %q, want %q", key, got, "registered")
+	}
+}
+
+// A value the caller's readable refuses can be a copy the server stored from another key's
+// record, which carries that record's Nats-Sequence header ahead of its own, so the revision a
+// direct get reports for it is the source's. The delete reads such a value again from the
+// stream's leader and deletes it at the sequence it is stored at, and the source keeps its record.
+// The control is the same delete with no readable, which reads no leader and is refused at the
+// source's revision, leaving the copy stored.
+func TestADeleteAtReadDeletesACopyItsReadableRefusesAtItsTrueSequence(t *testing.T) {
+	const bucket = "kv_delete_at_read_copy"
+	_, kv := leaderReadBucket(t, bucket)
+	conn := kv.Streams().Conn()
+	source, err := kv.Put("ses_source", []byte("the source's record"))
+	if err != nil {
+		t.Fatalf("put ses_source: %v", err)
+	}
+	copied := testnats.ServerWritesKey(t, conn, bucket, "ses_copy", testnats.DirectGetLast(bucket, "ses_source"), nil)
+	own := func(value []byte) bool { return string(value) == "ses_copy's own record" }
+
+	revision, err := kv.DeleteAtRead(t.Context(), "ses_copy", nil)
+	if !errors.Is(err, nats.ErrKeyExists) || revision != source {
+		t.Fatalf("DeleteAtRead(ses_copy) with no readable = revision %d, %v; want the source's revision %d refused with %v: the control shows nothing to correct", revision, err, source, nats.ErrKeyExists)
+	}
+	if stored := testnats.LastSequence(t, conn, bucket, "ses_copy"); stored != copied {
+		t.Fatalf("ses_copy's newest message is at %d after the refused delete, want the copy at %d", stored, copied)
+	}
+
+	revision, err = kv.DeleteAtRead(t.Context(), "ses_copy", own)
+	if err != nil || revision != copied {
+		t.Fatalf("DeleteAtRead(ses_copy) = revision %d, %v; want the copy deleted at %d, the sequence it is stored at", revision, err, copied)
+	}
+	if _, err := kv.Get("ses_copy"); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("Get(ses_copy) after the delete = %v, want %v", err, nats.ErrKeyNotFound)
+	}
+	if entry, err := kv.Get("ses_source"); err != nil || entry.Revision() != source {
+		t.Fatalf("ses_source after the delete is %v (%v), want its record kept at %d", entry, err, source)
 	}
 }

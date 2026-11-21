@@ -460,8 +460,26 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 	return invalidKey(key, err)
 }
 
-// DeleteAtRead deletes key at the revision it reads, so a write that lands in between is kept, and
-// returns that revision, 0 when there was none to read.
+// ReadStored is key's newest record, read by a direct get and read again from the stream's leader
+// (GetFromLeader) when readable refuses its value. A value that is no record of key can be a copy
+// the server stored from another key's record, which carries its source's Nats-Sequence header
+// ahead of its own, so the revision a direct get reports for it is the source's, and a write or a
+// delete fenced on that revision is refused at every attempt; the leader's read reports the
+// sequence the value is really stored at. A nil readable takes every value, and so never reads
+// the leader. Its errors are Get's, and GetFromLeader's for the second read, whose answer is
+// returned whether readable takes it or not.
+func (kv KeyValue) ReadStored(ctx context.Context, key string, readable func(value []byte) bool) (nats.KeyValueEntry, error) {
+	entry, err := kv.Get(key)
+	if err != nil || readable == nil || readable(entry.Value()) {
+		return entry, err
+	}
+	return kv.GetFromLeader(ctx, key)
+}
+
+// DeleteAtRead deletes key at the revision it reads (ReadStored, with readable), so a write that
+// lands in between is kept, and returns that revision, 0 when there was none to read. A value
+// readable refuses is deleted at the revision the stream's leader reports for it, the one it is
+// stored at.
 //
 // A key the read finds missing is deleted at no revision at all, which fences nothing: nats.go
 // sends no expected-last-subject-sequence header for revision 0, so that delete would take
@@ -473,8 +491,8 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 // bound and nats.go refuses a key outside its alphabet everywhere, so nothing can land in between:
 // that key is deleted at no revision, which removes a key an earlier build stored past the write
 // bound, and a key outside the alphabet is refused by the delete too.
-func (kv KeyValue) DeleteAtRead(key string) (uint64, error) {
-	entry, err := kv.Get(key)
+func (kv KeyValue) DeleteAtRead(ctx context.Context, key string, readable func(value []byte) bool) (uint64, error) {
+	entry, err := kv.ReadStored(ctx, key, readable)
 	switch {
 	case err == nil:
 		revision := entry.Revision()
