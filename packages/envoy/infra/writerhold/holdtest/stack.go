@@ -171,7 +171,7 @@ func StartWith(t testing.TB, opts Options) *Stack {
 	}
 
 	records := broker.Client(t)
-	if _, err := records.RestoreRow(context.Background(), 1, natsgrant.OperatorPhaseReleased, "", "holdtest bootstrap"); err != nil {
+	if err := records.Bootstrap(context.Background()); err != nil {
 		t.Fatalf("holdtest: bootstrap the hold row: %v", err)
 	}
 	kube := NewKube(t, cluster)

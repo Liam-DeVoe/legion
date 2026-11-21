@@ -384,20 +384,30 @@ func mapLine(label string, m map[string]string) string {
 }
 
 // restore writes a lost hold row back through POST /v1/nats-hold/restore: with --bootstrap the
-// first row, released at gen 1 with no hold id, which lands only in an empty log; with --hold, the
-// row held under that hold id, at the gen the route names (holdrecord.RestoreRow signs it afresh
-// there), so a lost row comes back closed and the hold goes on.
+// first row, released at gen 1 with no hold id (holdrecord.Client.Bootstrap, sent once), which
+// lands only in an empty log; with --hold, the row held under that hold id, at the gen the route
+// names (holdrecord.RestoreRow signs it afresh there), so a lost row comes back closed and the hold
+// goes on. A bootstrap the route answers with the log's next gen is a row lost mid-hold, which
+// --bootstrap never replaces: it is refused, naming that gen and the way back, and nothing is
+// written, so no row reads released and every writer stays refused.
 func restore(ctx context.Context, records *holdrecord.Client, o options, stdout io.Writer) error {
-	phase, holdID := natsgrant.OperatorPhaseHeld, o.holdID
 	if o.bootstrap {
-		phase, holdID = natsgrant.OperatorPhaseReleased, ""
-	}
-	row, err := records.RestoreRow(ctx, 1, phase, holdID, o.reason)
-	if err != nil {
+		err := records.Bootstrap(ctx)
+		var lost *holdrecord.RestoreGenError
 		var refused *holdrecord.RouteError
-		if o.bootstrap && errors.As(err, &refused) && (refused.Code == "gen_mismatch" || refused.Code == "row_exists") {
-			return fmt.Errorf("--bootstrap writes the first row only into an empty log, and the broker answered %s: %w", refused.Code, err)
+		switch {
+		case errors.As(err, &lost):
+			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and the log's next gen is %d: the row was lost after the log began, perhaps mid-hold, so restore it with `hold restore --hold <its hold id>`, which keeps it held", lost.RestoreGen)
+		case errors.As(err, &refused) && refused.Code == "row_exists":
+			return refusef(StepPreflight, "--bootstrap writes the first row only into an empty log, and a row is there (row_exists)")
+		case err != nil:
+			return err
 		}
+		fmt.Fprintln(stdout, "wrote the first row: gen 1, phase released")
+		return nil
+	}
+	row, err := records.RestoreRow(ctx, 1, natsgrant.OperatorPhaseHeld, o.holdID, o.reason)
+	if err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "restored the row: gen %d, phase %s, hold %q\n", row.Gen, row.Phase, row.HoldID)

@@ -116,7 +116,7 @@ func TestHoldCutoverRecordsOnlyUnderTheHold(t *testing.T) {
 	ctx := t.Context()
 	b := holdrecordtest.Start(t)
 	c := b.Client(t)
-	_, err := c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseReleased, "", "bootstrap")
+	err := c.Bootstrap(ctx)
 	require.NoError(t, err)
 	move := func(gen uint64, phase natsgrant.OperatorPhase, holdID string) {
 		t.Helper()
@@ -167,7 +167,7 @@ func TestHoldCutoverRecordsOnlyUnderTheHold(t *testing.T) {
 func TestHoldOnlyTheOperatorMovesTheHold(t *testing.T) {
 	ctx := t.Context()
 	b := holdrecordtest.Start(t)
-	_, err := b.Client(t).RestoreRow(ctx, 1, natsgrant.OperatorPhaseReleased, "", "bootstrap")
+	err := b.Client(t).Bootstrap(ctx)
 	require.NoError(t, err)
 
 	const audience = "envoy-nats"
