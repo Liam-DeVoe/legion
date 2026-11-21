@@ -2552,7 +2552,7 @@ SCRIPT_TEST_GATES = [
             f"{SCRIPTS}/dispatch-browser-run-reads.test.sh", [
         (f"{SCRIPTS}/dispatch-browser-run-reads.sh", "the script under test"),
         (f"{SCRIPTS}/gh-read.sh",
-         "dispatch-browser-run-reads.sh:79 sources it, and the harness drives its retry ladder with a "
+         "dispatch-browser-run-reads.sh:88 sources it, and the harness drives its retry ladder with a "
          "stand-in gh that refuses a case's first calls"),
     ]),
     harness("dispatch_browser_samples_test", "Test the browser lane's memory and CPU sampler",
@@ -3196,7 +3196,7 @@ GATES = [
          "upstream result that is neither success nor skipped and on a failed row in the "
          "merged report"),
         (".github/scripts/gh-read.sh",
-         "dispatch-browser-run-reads.sh:79 sources it, so the merge job's read of its own attempt's "
+         "dispatch-browser-run-reads.sh:88 sources it, so the merge job's read of its own attempt's "
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so

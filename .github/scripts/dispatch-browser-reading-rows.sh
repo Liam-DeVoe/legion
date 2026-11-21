@@ -172,8 +172,8 @@ if [ -n "$missing" ]; then
     echo "::error::the download of the legs' blob reports failed, so no leg's blob" \
       "could be read and the merged report is short of the rows of:$missing; the" \
       "step \"Download every leg's blob report\" carries that download's own error" \
-      "line. This is a failed read of the run's artifacts and not a failed browser" \
-      "row: no row of the suite failed here."
+      "line. This error is a failed read of the run's artifacts, not a failed browser" \
+      "row."
   else
     echo "::error::no blob report arrived from:$missing;" \
       "the merged report is short of those legs' rows"
