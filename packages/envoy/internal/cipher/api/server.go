@@ -389,11 +389,11 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 
 // answerCaller is the caller class and identity the answer's record names for a request
 // authenticate let through on route (answer.Recorder.NoteCaller): the launcher credential, the
-// enrollment, the listed account, the service and the account it presented, the listener's kind
-// and account, or the signed-in person. A route that takes no credential is public, and a route
-// of the approval page reached with no live sign-in unauthenticated; a handler that authenticates
-// its own caller notes its class over this one (tokenLogin, and rereadSecret for a session's
-// proof).
+// enrollment, the listed account, the service and the account it presented, the privacy reader
+// as <kind>/<machine id>, or the signed-in person. A route that takes no credential is public,
+// and a route of the approval page reached with no live sign-in unauthenticated; a handler that
+// authenticates its own caller notes its class over this one (tokenLogin, and rereadSecret for a
+// session's proof).
 func (c caller) answerCaller(route routeHandler) (class, id string) {
 	switch route.auth {
 	case authLauncher:

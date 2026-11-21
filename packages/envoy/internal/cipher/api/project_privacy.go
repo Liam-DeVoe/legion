@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // PrivacyReaders are the accounts GET /v1/project-privacy answers, as natscallout.PrivacyReaders
@@ -63,46 +65,40 @@ const (
 	maxProjectPrivacyReadsPerReader = 16
 )
 
-// privacyReads is the route's slots: one for each call asking Dispatch, at most
-// maxProjectPrivacyReads, and the calls each reader's account holds, at most
-// maxProjectPrivacyReadsPerReader.
+// privacyReads counts the calls of GET /v1/project-privacy asking Dispatch: all of them, at most
+// maxProjectPrivacyReads, and each reader's account's, at most maxProjectPrivacyReadsPerReader.
+// One lock holds both counts, and the read itself happens outside it (readProjectPrivacy).
 type privacyReads struct {
-	slots chan struct{}
-
 	mu        sync.Mutex
+	total     int
 	byAccount map[string]int
 }
 
 func newPrivacyReads() *privacyReads {
-	return &privacyReads{slots: make(chan struct{}, maxProjectPrivacyReads), byAccount: map[string]int{}}
+	return &privacyReads{byAccount: map[string]int{}}
 }
 
-// take holds one slot for account, or reports false, holding nothing, when every slot or every
-// one of the account's own is held.
+// take counts one call of account's, or reports false, counting nothing, while all the calls or
+// all of the account's own are already counted.
 func (p *privacyReads) take(account string) bool {
-	select {
-	case p.slots <- struct{}{}:
-	default:
-		return false
-	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.byAccount[account] >= maxProjectPrivacyReadsPerReader {
-		<-p.slots
+	if p.total >= maxProjectPrivacyReads || p.byAccount[account] >= maxProjectPrivacyReadsPerReader {
 		return false
 	}
+	p.total++
 	p.byAccount[account]++
 	return true
 }
 
-// give hands back the slot take held for account.
+// give stops counting the call take counted for account.
 func (p *privacyReads) give(account string) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.total--
 	if p.byAccount[account]--; p.byAccount[account] == 0 {
 		delete(p.byAccount, account)
 	}
-	p.mu.Unlock()
-	<-p.slots
 }
 
 // projectPrivacy answers a listener every private project as Dispatch answers it to this call
@@ -126,7 +122,15 @@ func (s *server) projectPrivacy(w http.ResponseWriter, r *http.Request, account 
 		return
 	case err != nil:
 		// WARN, as every other read of Dispatch that fails is: an outage is Dispatch's, and this
-		// route is called at every listener decision.
+		// route is called at every listener decision. The line names the failure's kind alone
+		// (redact.Class, or ErrBrokerRefused's fixed words): projectaccess's error quotes Dispatch's
+		// own words, a refusal's code and a malformed answer's projects value, and a Dispatch that
+		// repeats the bearer it was sent would put the broker's own token in its log.
+		if errors.Is(err, projectaccess.ErrBrokerRefused) {
+			err = redact.Masked(err, projectaccess.ErrBrokerRefused.Error())
+		} else {
+			err = redact.Class(err)
+		}
 		slog.Warn("broker: read Dispatch's private projects failed", "error", err)
 		writeError(w, http.StatusBadGateway, "dispatch_unavailable", "Dispatch did not answer which projects are private")
 		return

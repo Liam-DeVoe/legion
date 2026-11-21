@@ -128,6 +128,7 @@ const (
 	labelServiceToken      = "service_token_not_verified"
 	labelTokenTooLong      = "token_too_long"
 	labelServiceNotListed  = "service_not_listed"
+	labelNoNATSUser        = "no_nats_user"
 	labelHeldToProjects    = "held_to_projects"
 	labelSystemSubject     = "system_subject"
 	labelOpenDirection     = "open_direction"
@@ -276,6 +277,9 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	}
 	if entry == nil {
 		return Decision{}, refuse(labelServiceNotListed, "service not listed: "+account)
+	}
+	if !entry.Kind.TakesNATSUser() {
+		return Decision{}, refuse(labelNoNATSUser, "service takes no NATS user: "+entry.name())
 	}
 	grant, err := scopeGrant(*entry, serviceGrant(*entry))
 	if err != nil {

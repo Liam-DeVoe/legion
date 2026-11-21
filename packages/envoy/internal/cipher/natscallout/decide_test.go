@@ -113,6 +113,7 @@ var exampleServices = []ServiceEntry{
 	{Kind: KindDaemon, Account: daemonAccount, AllProjects: true},
 	{Kind: KindMeasure, Account: measureAccount, Google: true, AllProjects: true},
 	{Kind: KindDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+	{Kind: KindPrivacyMeasure, MachineID: "project-privacy-measure", Account: privacyMeasureAccount, AllProjects: true},
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -182,9 +183,10 @@ func TestRefusals(t *testing.T) {
 	readOnly.answer.Person, readOnly.answer.Service = "", "example-reader"
 	readOnly.answer.ProjectScope, readOnly.answer.Scope = ciphertoken.ProjectScopeNone, ciphertoken.ScopeRead
 	tokens := map[string]platformToken{
-		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
-		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
-		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
+		"unlisted-token":        {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
+		"two-hours-token":       {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
+		"held-token":            {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
+		"privacy-measure-token": {account: privacyMeasureAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {
@@ -228,6 +230,7 @@ func TestRefusals(t *testing.T) {
 		{"an unlisted service", deps, nil, serviceRequest("unlisted-token"), labelServiceNotListed, "service not listed: system:serviceaccount:example-ns:stranger"},
 		{"a two-hour platform token", deps, nil, serviceRequest("two-hours-token"), labelTokenTooLong, "token lives longer than an hour"},
 		{"a service held to projects this broker cannot read", deps, nil, serviceRequest("held-token"), labelHeldToProjects, "held to exchange projects, which this broker cannot read: service daemon/system:serviceaccount:example-ns:held-daemon"},
+		{"the privacy measurement, which takes no NATS user", deps, nil, serviceRequest("privacy-measure-token"), labelNoNATSUser, "service takes no NATS user: privacy-measure/project-privacy-measure"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := row.ctx

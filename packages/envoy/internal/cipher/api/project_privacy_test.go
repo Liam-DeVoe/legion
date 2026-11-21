@@ -45,6 +45,8 @@ const (
 	// the measurement job.
 	scopedListenerAccount = "system:serviceaccount:example-hub:example-scoped-listener"
 	measureAccount        = "system:serviceaccount:example-ns:example-measure"
+	// privacyMeasureAccount is plan C's privacy measurement Job, which reads the route too.
+	privacyMeasureAccount = "system:serviceaccount:example-ns:example-privacy-measure"
 	// privacyStubToken is the bearer the broker presents to the stub, as it presents its own
 	// account token to Dispatch.
 	privacyStubToken = "dispatch-access-example"
@@ -65,6 +67,7 @@ var privacyServices = strings.Join([]string{
 	"dispatch/example-dispatch/*=" + dispatchAccount,
 	"daemon/-/*=" + daemonAccount,
 	"measure/-/*=" + measureAccount,
+	"privacy-measure/project-privacy-measure/*=" + privacyMeasureAccount,
 }, " ")
 
 // privacyStub stands in for Dispatch's GET /api/v1/access/private-projects. Each request is counted,
@@ -279,11 +282,12 @@ func within(from <-chan privacyAnswer, d time.Duration) (privacyAnswer, bool) {
 }
 
 // TestOnlyAListenerReadsProjectPrivacy: a listener (the hub's, Dispatch's listener Deployment's,
-// and a VM's presenting a Google identity token) is answered Dispatch's rows unchanged. Every other
-// caller whose platform identity verifies is refused 403 not_listener before Dispatch is asked:
-// Dispatch's app account, a session pod's own token, a daemon's identity and the operator's Google
-// identity. A listener's token that does not verify, and no token at all, are refused 401, Dispatch
-// not asked either.
+// and a VM's presenting a Google identity token) and the privacy measurement are answered
+// Dispatch's rows unchanged. Every other caller whose platform identity verifies is refused 403
+// not_listener before Dispatch is asked: Dispatch's app account, a session pod's own token, a
+// daemon's identity, the operator's Google identity, the measurement job, a listener held to its
+// exchange projects and an account listed nowhere. A listener's token that does not verify, and
+// no token at all, are refused 401, Dispatch not asked either.
 func TestOnlyAListenerReadsProjectPrivacy(t *testing.T) {
 	const body = `{"projects":[` +
 		`{"project":"ALPHA","slack_channels":["C0A","C0B"],"slack_channels_changed_at":"2026-11-19T10:00:00Z"},` +
@@ -295,6 +299,7 @@ func TestOnlyAListenerReadsProjectPrivacy(t *testing.T) {
 		{"the hub's listener", g.accountToken(t, privacyListenerAccount, "", time.Hour)},
 		{"Dispatch's listener", g.accountToken(t, dispatchListenerAccount, "", time.Hour)},
 		{"a listener on a VM", g.live(t, listenerGoogleAccount)},
+		{"the privacy measurement", g.accountToken(t, privacyMeasureAccount, "", time.Hour)},
 	} {
 		got := g.privacy(t, row.token)
 		if got.status != http.StatusOK {
@@ -306,8 +311,8 @@ func TestOnlyAListenerReadsProjectPrivacy(t *testing.T) {
 		}
 	}
 	asked := stub.calls.Load()
-	if asked != 3 {
-		t.Errorf("three listeners' calls asked Dispatch %d times, want 3", asked)
+	if asked != 4 {
+		t.Errorf("four readers' calls asked Dispatch %d times, want 4", asked)
 	}
 
 	for _, row := range []struct {
@@ -319,6 +324,9 @@ func TestOnlyAListenerReadsProjectPrivacy(t *testing.T) {
 		{"a session token", g.podToken(t, workerAccount, uuid.NewString()), http.StatusForbidden, "not_listener"},
 		{"a daemon's identity", g.accountToken(t, daemonAccount, "", time.Hour), http.StatusForbidden, "not_listener"},
 		{"the operator's identity", g.live(t, testApprover), http.StatusForbidden, "not_listener"},
+		{"the measurement job", g.accountToken(t, measureAccount, "", time.Hour), http.StatusForbidden, "not_listener"},
+		{"a listener held to its exchange projects", g.accountToken(t, scopedListenerAccount, "", time.Hour), http.StatusForbidden, "not_listener"},
+		{"an account listed nowhere", g.accountToken(t, unlistedAccount, "", time.Hour), http.StatusForbidden, "not_listener"},
 		// A listener's account with a token that does not verify is refused as on every route
 		// that takes an identity token, before its account is looked up.
 		{"the hub's listener's expired token", g.accountToken(t, privacyListenerAccount, "", -time.Minute), http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED"},
@@ -373,7 +381,7 @@ func TestOnlyTheReadersNatscalloutNamesReadProjectPrivacy(t *testing.T) {
 			t.Errorf("a %s entry with scope %s (%s): GET %s = %d %s, want 403 not_listener: natscallout says it does not read project privacy", entry.Kind, scope, entry.Account, privacyPath, got.status, got.body)
 		}
 	}
-	for _, kind := range []natscallout.Kind{natscallout.KindDispatch, natscallout.KindListener, natscallout.KindDaemon, natscallout.KindMeasure} {
+	for _, kind := range []natscallout.Kind{natscallout.KindDispatch, natscallout.KindListener, natscallout.KindDaemon, natscallout.KindMeasure, natscallout.KindPrivacyMeasure} {
 		if !seen[kind] {
 			t.Errorf("the rig's BROKER_NATS_SERVICES names no %s entry, so this test does not see that kind", kind)
 		}

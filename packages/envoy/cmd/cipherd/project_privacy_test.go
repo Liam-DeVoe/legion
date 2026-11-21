@@ -22,13 +22,17 @@ import (
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
+// privacyMeasureAccount is the account plan C's privacy measurement Job runs as.
+const privacyMeasureAccount = "system:serviceaccount:example-ns:example-privacy-measure"
+
 // TestTheBrokerAnswersItsListenersProjectPrivacy: a broker running the NATS auth service, whose
-// BROKER_NATS_SERVICES binds listenerAccount to a listener and apiAccount to Dispatch's app,
-// answers the listener's GET /v1/project-privacy with the private rows of the Dispatch its
-// BROKER_PROJECT_ACCESS_URL names, and refuses Dispatch's app account 403 not_listener. The same
-// broker without BROKER_PROJECT_ACCESS_URL answers the listener 502 dispatch_unavailable. The hub
-// the auth service dials is down throughout: it connects in the background, and the route reads
-// the setting, not the hub.
+// BROKER_NATS_SERVICES binds listenerAccount to a listener, apiAccount to Dispatch's app and
+// privacyMeasureAccount to the privacy measurement, answers the listener's and the measurement's
+// GET /v1/project-privacy with the private rows of the Dispatch its BROKER_PROJECT_ACCESS_URL
+// names, and refuses Dispatch's app account 403 not_listener. The same broker without
+// BROKER_PROJECT_ACCESS_URL answers the listener 502 dispatch_unavailable. The hub the auth service
+// dials is down throughout: it connects in the background, and the route reads the setting, not
+// the hub.
 func TestTheBrokerAnswersItsListenersProjectPrivacy(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster := oidctest.New(t)
@@ -72,7 +76,8 @@ func TestTheBrokerAnswersItsListenersProjectPrivacy(t *testing.T) {
 		"BROKER_NATS_SEED_FILE=" + seed("user.seed", nkeys.CreateUser),
 		"BROKER_NATS_ISSUER_SEED_FILE=" + seed("issuer.seed", nkeys.CreateAccount),
 		"BROKER_NATS_XKEY_SEED_FILE=" + seed("xkey.seed", nkeys.CreateCurveKeys),
-		"BROKER_NATS_SERVICES=listener/example-hub/*=" + listenerAccount + " dispatch/example-dispatch/*=" + apiAccount,
+		"BROKER_NATS_SERVICES=listener/example-hub/*=" + listenerAccount + " dispatch/example-dispatch/*=" + apiAccount +
+			" privacy-measure/project-privacy-measure/*=" + privacyMeasureAccount,
 		"BROKER_NATS_K8S_AUDIENCE=envoy-nats",
 		"BROKER_DRAIN_SECONDS=0",
 		// Unset here whatever the test process holds; the first subtest sets both after these.
@@ -130,6 +135,13 @@ func TestTheBrokerAnswersItsListenersProjectPrivacy(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("the listener was answered %s, want PRIV alone, with its channels and when they changed", body)
+		}
+		// The privacy measurement's entry (kind privacy-measure) parsed at boot, and its account
+		// reads the route as a listener's does.
+		status, body = privacy(t, broker.Addr, accountToken(t, cluster, clusterKey, privacyMeasureAccount))
+		var measured any
+		if err := json.Unmarshal(body, &measured); err != nil || status != http.StatusOK || !reflect.DeepEqual(measured, want) {
+			t.Fatalf("the privacy measurement's GET /v1/project-privacy = %d %s, want 200 and the same rows", status, body)
 		}
 		asked := dispatch.Calls()
 		if status, body := privacy(t, broker.Addr, accountToken(t, cluster, clusterKey, apiAccount)); status != http.StatusForbidden || code(body) != "not_listener" {
