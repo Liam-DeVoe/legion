@@ -1,14 +1,3 @@
-// The fresh mode of SessionConsumers (consumernames.ModeFresh): every session consumer this
-// package creates is named session~<nuid>, a name never made before, and the selection record
-// of the session in the bucket consumernames.SessionBucket names the current one. The fixed
-// mode, the default, is the rest of session_consumers.go as it was, with each session's fixed
-// name s-<session id>; each exported method of SessionConsumers runs this file's method in its
-// place when the client was connected in the fresh mode (WithConsumerNames).
-//
-// Every call here goes through consumernames.Names, which refuses it until the bucket's
-// sentinel says the cutover is done, and refuses a missing bucket, sentinel or key: never a fall
-// back to the fixed name.
-
 package bus
 
 import (
@@ -228,24 +217,25 @@ func (s *SessionConsumers) CheckSelection(ctx context.Context) error {
 	return err
 }
 
-// freshAnswer records err for SelectionHealth and returns it in this package's vocabulary.
+// freshAnswer records err for SelectionHealth and returns it in this package's vocabulary. Only an
+// answer that proves the store admitted the call clears a refusal: a call that succeeded clears the
+// store's and its own session's key's, and a deleted key, which the store read to find, clears the
+// store's. Any other failure leaves both as they were, since it may never have reached the store (a
+// refused key, a lost connection), and SelectionHealth reads the sentinel again while the store's
+// refusal stands.
 func (s *SessionConsumers) freshAnswer(sessionID string, err error) error {
 	switch {
+	case err == nil:
+		s.fresh.storeRefusal.Store(nil)
+		if refusal := s.fresh.key.Load(); refusal != nil && refusal.sessionID == sessionID {
+			s.fresh.key.CompareAndSwap(refusal, nil)
+		}
+		return nil
 	case errors.Is(err, consumernames.ErrRecordDeleted):
 		s.fresh.storeRefusal.Store(nil)
 		s.fresh.key.Store(&keyRefusal{sessionID: sessionID, err: err})
 	case errors.Is(err, consumernames.ErrCutoverNotRun), consumernames.IsSelectionStateLost(err):
 		s.fresh.storeRefusal.Store(&err)
-	case errors.Is(err, ErrPublishDenied):
-	default:
-		// Any other answer, nil among them, came after the store admitted the call.
-		s.fresh.storeRefusal.Store(nil)
-		if refusal := s.fresh.key.Load(); refusal != nil && refusal.sessionID == sessionID {
-			s.fresh.key.CompareAndSwap(refusal, nil)
-		}
-	}
-	if err == nil {
-		return nil
 	}
 	switch {
 	case errors.Is(err, consumernames.ErrInvalidKey):
