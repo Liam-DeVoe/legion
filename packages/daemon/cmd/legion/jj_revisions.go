@@ -57,13 +57,13 @@ func (c jjSent) word() string {
 // visible commit, a descendant of a working-copy commit with a write that no command has
 // snapshotted, and the word would then name the commit that snapshot hid. Every other argument's
 // set is read before the step's first metaedit (revisionSets), so that a push of which the step
-// rewrites nothing costs one read of each argument. An argument whose read jj refuses (a revset jj
-// cannot parse or resolve, an ambiguous prefix, a commit that a git command made and that no jj
-// command has imported yet) is followed by nothing, and goes to the dry run and the real push as
-// the role wrote it (given): jj alone may still push such a commit, since the real push imports
-// it, while no read of the step, each with --ignore-working-copy, imports it or can read it. The
-// dry run then fails as the read did, with jj's error, which the step cannot read (dryRunFilled),
-// so the step takes no snapshot, which would import it.
+// changes nothing, no commit and no word, costs one read of each argument. An argument whose read
+// jj refuses (a revset jj cannot parse or resolve, an ambiguous prefix, a commit that a git
+// command made and that no jj command has imported yet) is followed by nothing, and goes to the
+// dry run and the real push as the role wrote it (given): jj alone may still push such a commit,
+// since the real push imports it, while no read of the step, each with --ignore-working-copy,
+// imports it or can read it. The dry run then fails as the read did, with jj's error, which the
+// step cannot read (dryRunFilled), so the step takes no snapshot, which would import it.
 func (s *jjStep) readRevisions() error {
 	s.revisions = make([]jjArgument, len(s.push.revisions))
 	var hidden []string

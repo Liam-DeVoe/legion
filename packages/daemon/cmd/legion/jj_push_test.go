@@ -46,6 +46,12 @@ const rolePushVariable = "LEGION_ROLE_IDENTITIES"
 // the step's bound, in bytes, of a word it builds of ids; the legion binary reads no such variable.
 const rolePushBoundVariable = "LEGION_TEST_JJ_WORD_BOUND"
 
+// rolePushRevisionBound is the step's own bound of a word of ids, in bytes, which a push keeps
+// where its environment holds no rolePushBoundVariable: the bound under which the step keeps the
+// word of a revision argument that it gives the push as the ids of its commits, which each line of
+// those ids names. The tests of every jj_push_*_test.go file share it.
+const rolePushRevisionBound = 100_000
+
 // rolePushArgMaxVariable is the variable that this package's test binary, run as legion, reads as
 // the step's limit, in bytes, of the push's command and of each metaedit's; the legion binary reads
 // no such variable.
@@ -113,10 +119,10 @@ func rolePushRealJJ(t testing.TB) string {
 }
 
 // The recording jj's behaviours: shell that its script runs before the real jj, with is_metaedit,
-// is_push, is_dry, is_log, is_set and is_ignoring telling whether the command holds the word
-// metaedit, push, --dry-run or log, a revset that names remote_bookmarks (the step's read of the
-// set), or --ignore-working-copy. A behaviour that sets ran answers the command itself, with
-// status.
+// is_push, is_dry, is_log, is_set, is_ignoring and is_quiet telling whether the command holds the
+// word metaedit, push, --dry-run or log, a revset that names remote_bookmarks (the step's read of
+// the set), --ignore-working-copy, or --quiet. A behaviour that sets ran answers the command
+// itself, with status.
 const (
 	// rolePushRecords runs every command on the real jj.
 	rolePushRecords = ":"
@@ -128,9 +134,10 @@ const (
 	// --ignore-working-copy, the step's snapshot, as jj fails, before it changes anything.
 	rolePushFailsSnapshot = `if [ -z "$is_push" ] && [ -z "$is_ignoring" ]; then echo 'Error: legion test: this snapshot fails' >&2; status=1; ran=1; fi`
 	// rolePushSnapshotPrints prints rolePushSnapshotLine on standard error from every command that
-	// is no push and that holds no --ignore-working-copy, the step's snapshot, then runs it on the
-	// real jj: a stand-in for jj's warning of a file it refuses to snapshot.
-	rolePushSnapshotPrints = `if [ -z "$is_push" ] && [ -z "$is_ignoring" ]; then echo '` + rolePushSnapshotLine + `' >&2; fi`
+	// is no push and that holds neither --ignore-working-copy nor --quiet, the step's snapshot,
+	// then runs it on the real jj: a stand-in for jj's line of the descendants of @ that a snapshot
+	// rebased, which jj 0.38 and 0.45 alike print on standard error, and which --quiet silences.
+	rolePushSnapshotPrints = `if [ -z "$is_push" ] && [ -z "$is_ignoring" ] && [ -z "$is_quiet" ]; then echo '` + rolePushSnapshotLine + `' >&2; fi`
 	// rolePushMetaeditFillsNothing answers every metaedit with success and changes nothing.
 	rolePushMetaeditFillsNothing = `if [ -n "$is_metaedit" ]; then ran=1; fi`
 	// rolePushUnreadableDryRun adds a line of neither shape to every block of a dry run.
@@ -178,7 +185,7 @@ func rolePushRecorder(real, log, behaviour string) string {
 	return "#!/bin/sh\n" +
 		"real='" + real + "'\n" +
 		"start=$(date +%s%N)\n" +
-		"ran= status=0 is_metaedit= is_push= is_dry= is_log= is_set= is_ignoring=\n" +
+		"ran= status=0 is_metaedit= is_push= is_dry= is_log= is_set= is_ignoring= is_quiet=\n" +
 		"for arg; do\n" +
 		"  case $arg in\n" +
 		"    metaedit) is_metaedit=1 ;;\n" +
@@ -187,6 +194,7 @@ func rolePushRecorder(real, log, behaviour string) string {
 		"    log) is_log=1 ;;\n" +
 		"    *remote_bookmarks*) is_set=1 ;;\n" +
 		"    --ignore-working-copy) is_ignoring=1 ;;\n" +
+		"    --quiet) is_quiet=1 ;;\n" +
 		"  esac\n" +
 		"done\n" +
 		behaviour + "\n" +
@@ -690,12 +698,20 @@ type rolePushWant struct {
 	// the push prints, in order, and no other: each line of an argument the step gives as the ids
 	// of its commits, or as none() (rolePushIDs).
 	ids []rolePushIDs
-	// oneCommitIDs is whether the push may print, where ids lists no line, one line of an argument
-	// the step gives as the id of one commit in one word, and no other. rolePushSends sets it: its
-	// want is that of a push of one commit, which a push may name by an id the step's rewrite hid,
-	// and the tester's TestACommitIDBesideARefusedNumberSendsTheRewrittenCommit and
-	// TestAQuotedCommitIDSendsTheRewrittenCommit, which print such a line, build their want from
-	// it and stay as the tester wrote them.
+	// oneCommitIDs is whether check, where ids lists no line, takes one printed line of an argument
+	// that holds a full commit id (rolePushFullID), of one commit in one word, and no other: the
+	// line the step prints where the argument names its one commit by a full commit id that the
+	// step's rewrite hid. rolePushSends sets it, so every want of one commit's push has it. These
+	// tests rely on it, each a push with a want of rolePushSends that lists no line:
+	// TestACommitIDBesideARefusedNumberSendsTheRewrittenCommit (`-c latest(<C>, <D>)`) and
+	// TestAQuotedCommitIDSendsTheRewrittenCommit (`-c "<C>"`, `-c '<C>'`), the tester's, which stay
+	// as the tester wrote them; the retry of each row of
+	// TestARefusedPushLeavesNoBookmarkAndItsRetrySends and of
+	// TestASameSecondRetrySendsTheCommitTheRefusedPushMade (`-c <C>`, `--named nm=<C>`, C the id of
+	// {commit:@-} that the refused push's rewrite hid); the row "a commit id of a commit the step
+	// fills before that dry run" of TestADryRunTheStepCannotReadChangesNothing (`--named nm=<C>`);
+	// and the row "-c <commit id>" of TestADryRunsShortCommitIDIsReadAmongTheCommitsThePushCanSend
+	// (`-c <C>`, C the id of {commit:@-}).
 	oneCommitIDs bool
 	// snapshots is how many snapshots of the working copy the step takes: the commands of the
 	// step's that a recording jj ahead of the real one sees run with no --ignore-working-copy.
@@ -764,6 +780,9 @@ type rolePushRewrite struct {
 type rolePushPrinted struct{ role, old, new string }
 
 var rolePushRewriteLine = regexp.MustCompile(`^legion jj: ([a-z]+): ([0-9a-f]{40}) -> ([0-9a-f]{40})$`)
+
+// rolePushFullID is a full commit id.
+var rolePushFullID = regexp.MustCompile(`[0-9a-f]{40}`)
 
 // rolePushIDs is one line `legion jj: revision `<argument>` names other commits after the step;
 // the push gets the <n> commit(s) … by their ids, in <k> word(s) of its option, each under <bound>
@@ -996,11 +1015,11 @@ func (f *rolePushFixture) check(want rolePushWant, code int, stderr string, dive
 			t.Errorf("the push printed %q, want the line to name %q", line, want.cannotSetNames)
 		}
 	}
-	// A want of one commit's push (rolePushSends) that lists no line takes the one line of an
-	// argument that names its commit by an id the step's rewrite hid: one commit, in one word.
-	oneCommit := want.oneCommitIDs && len(want.ids) == 0 && len(lines.ids) == 1 && lines.ids[0].commits == 1 && lines.ids[0].words == 1
+	// A want of one commit's push (rolePushSends) that lists no line takes one line of an argument
+	// that holds a full commit id (rolePushFullID), of one commit in one word (oneCommitIDs).
+	oneCommit := want.oneCommitIDs && len(want.ids) == 0 && len(lines.ids) == 1 && lines.ids[0].commits == 1 && lines.ids[0].words == 1 && rolePushFullID.MatchString(lines.ids[0].argument)
 	if !oneCommit && !slices.Equal(lines.ids, want.ids) {
-		t.Errorf("the push printed %v of a revision it gives as ids, want %v (or one line of one commit in one word where that list is empty: %v); it printed:\n%s", lines.ids, want.ids, want.oneCommitIDs, stderr)
+		t.Errorf("the push printed %v of a revision it gives as ids, want %v (or, where that list is empty, one line of one commit in one word of an argument that holds a full commit id: %v); it printed:\n%s", lines.ids, want.ids, want.oneCommitIDs, stderr)
 	}
 	f.checkRewrites(want, lines.rewrites, landed, stderr)
 	for commit, author := range want.same {
@@ -1144,9 +1163,9 @@ func (f *rolePushFixture) checkSame(commit string, author rolePushIdentity) {
 }
 
 // rolePushSends is what a push of one commit c to ref leaves: the remote holds c with the author
-// of role, and the step printed c's rewrite. Where the push names c by an id that the step's
-// rewrite hid, the step prints one line of that argument's id too, of one commit in one word,
-// which the want takes where it lists no line (oneCommitIDs).
+// of role, and the step printed c's rewrite. Where the push's argument names c by a full commit id
+// that the step's rewrite hid, the step prints one line of that argument too, of one commit in one
+// word, which the want takes where it lists no line (oneCommitIDs).
 func rolePushSends(ref string, c rolePushChange, role string, author rolePushIdentity) rolePushWant {
 	return rolePushWant{
 		refs:         []rolePushRef{{ref: "refs/heads/" + ref, commits: []rolePushCommit{{change: c.change, author: author}}}},
@@ -1697,51 +1716,6 @@ func rolePushRevsetRows() []rolePushArgsRow {
 func TestACommitIDInsideARevsetSendsTheRewrittenCommit(t *testing.T) {
 	t.Parallel()
 	rolePushRunArgs(t, "", rolePushRevsetRows())
-}
-
-// rolePushFullID is a full commit id.
-var rolePushFullID = regexp.MustCompile(`[0-9a-f]{40}`)
-
-// `jj git push -r ::<C>`, a tracked bookmark on C (-r sends a bookmark that points at the commit,
-// and jj refuses to make a remote bookmark for one that tracks nothing), on a history of five
-// commits under C that origin holds (rolePushFixture.history), with the step's bound of a word of
-// ids lowered to rolePushOneWordBound bytes: under the 341 bytes of the ids of the eight commits
-// the argument names, C, the history's, the seed's and the root's, which so fit no one word, and
-// over the 132 bytes of the argument's primary form, `(::<C>) ~ (<C>) | <C'>`, C' the commit the
-// step made of C. The real push gets that primary form, which a recording jj ahead of the real one
-// sees: a word under the bound that holds the ids of C's change and of no commit the step left
-// alone, since jj reads the argument among the commits the step can rewrite, C alone. So where the
-// ids of what an argument names pass the bound, its word grows with the commits the step
-// rewrote, not with C's history. The remote gets the rewritten C with its trailer's author, the
-// step prints the rewrite, and no change is divergent.
-func TestARevisionWhoseIDsPassALoweredBoundGetsItsPrimaryForm(t *testing.T) {
-	t.Parallel()
-	impl, rev := rolePushImplementer, rolePushReviewer
-	rolePushRunArgs(t, rolePushRecords, []rolePushArgsRow{
-		{name: "-r ::<C>, a tracked bookmark on C", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
-			f.history(5)
-			f.bound = rolePushOneWordBound
-			f.track("legion/K-1")
-			c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
-			f.bookmark("legion/K-1", c.commit)
-			want := rolePushSends("legion/K-1", c, "implementer", impl)
-			want.pushed = func(words []string) {
-				revision := words[len(words)-1]
-				if len(revision) >= rolePushOneWordBound {
-					f.t.Errorf("the real push's revision %q is %d bytes, want under %d", revision, len(revision), rolePushOneWordBound)
-				}
-				for _, id := range rolePushFullID.FindAllString(revision, -1) {
-					if change := f.changeOf(id); change != c.change {
-						f.t.Errorf("the real push's revision %q holds %s, a commit of change %q that the step left alone; want ids of C's change %s alone", revision, id, change, c.change)
-					}
-				}
-				if primary := "(::" + c.commit + ") ~ (" + c.commit + ") | " + f.read(c.change).commit; revision != primary {
-					f.t.Errorf("the real push's revision is %q, want its primary form %q", revision, primary)
-				}
-			}
-			return []string{"git", "push", "-r", "::" + c.commit}, want
-		}},
-	})
 }
 
 // rolePushFollowedRows are the pushes whose revision argument names a commit the step rewrites by
@@ -2791,8 +2765,10 @@ func (f *rolePushFixture) opsSince(op string) []string {
 // snapshot of the push's, older than each metaedit of the step, so the real push's own snapshot
 // added no commit; and the remote gets the write in the commit the step printed. What that
 // snapshot prints on standard error reaches the role, once, as the push's own snapshot would
-// print it. A snapshot of an @ outside the push, with an empty author, runs with the push's own
-// --config user.email, which so becomes @'s author's email, as jj alone's push would leave it. With
+// print it; with the role's own --quiet, that snapshot runs with --quiet too, and a line that
+// --quiet silences, as jj's of the descendants of @ it rebased, never reaches the role. A
+// snapshot of an @ outside the push, with an empty author, runs with the push's own --config
+// user.email, which so becomes @'s author's email, as jj alone's push would leave it. With
 // nothing to rewrite, @ by its trailer's role, every command of the step's carries
 // --ignore-working-copy, and the one snapshot is the real push's own. With the role's own
 // --ignore-working-copy, before the subcommand pair or after it, and a commit to rewrite, every
@@ -2821,11 +2797,18 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 		rows = append(rows, row{name: waiting.name + ", a commit to rewrite", form: waiting, rewrite: true})
 	}
 	const another = "another@example.invalid"
+	quiet := rolePushWaitingForm{name: "--bookmark on @ with --quiet", args: []string{"--quiet", "git", "push", "--bookmark", "legion/K-1"}, ref: "legion/K-1", bookmark: true}
 	rows = append(rows,
 		row{name: rolePushWaitingForms[0].name + ", a snapshot that prints on standard error", form: rolePushWaitingForms[0], rewrite: true, behaviour: rolePushSnapshotPrints,
 			after: func(f *rolePushFixture, stderr string) {
 				if n := strings.Count(stderr, rolePushSnapshotLine); n != 1 {
 					f.t.Errorf("the push printed %q %d times, want once, as its snapshot printed it:\n%s", rolePushSnapshotLine, n, stderr)
+				}
+			}},
+		row{name: quiet.name + ", a snapshot that prints on standard error", form: quiet, rewrite: true, behaviour: rolePushSnapshotPrints,
+			after: func(f *rolePushFixture, stderr string) {
+				if n := strings.Count(stderr, rolePushSnapshotLine); n != 0 {
+					f.t.Errorf("the push printed %q %d times, want none, as its snapshot prints it under the role's --quiet:\n%s", rolePushSnapshotLine, n, stderr)
 				}
 			}},
 		row{name: "--bookmark on a commit to rewrite, @ outside the push with an empty author and a waiting write, the push's own --config user.email=<X>", rewrite: true,

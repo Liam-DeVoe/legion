@@ -14,10 +14,6 @@ import (
 // bounds and limits they set and the helpers that only they use. As jj_push_test.go does, the file
 // names nothing the step's change adds, so it compiles and runs at the base too.
 
-// rolePushRevisionBound is the bound, in bytes, under which the step keeps the word of a revision
-// argument that it gives the push as the ids of its commits.
-const rolePushRevisionBound = 100_000
-
 // rolePushLowBound is the step's bound of a word of ids, in bytes, that two rows of
 // TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption set (rolePushBoundVariable): over the
 // 92 bytes of two commit ids joined by ` | ` behind `--change=`, and over each revset of the step's
@@ -274,6 +270,48 @@ func TestARevisionPastALoweredBoundGetsItsIDsInWordsOfItsOption(t *testing.T) {
 		{name: "-c <C1> | <C2> | <C3>, the bound over their ids", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			cs := work(f, rolePushOneWordBound)
 			return split(f, "-c", ids(cs), cs, 1, false)
+		}},
+	})
+}
+
+// `jj git push -r ::<C>`, a tracked bookmark on C (-r sends a bookmark that points at the commit,
+// and jj refuses to make a remote bookmark for one that tracks nothing), on a history of five
+// commits under C that origin holds (rolePushFixture.history), with the step's bound of a word of
+// ids lowered to rolePushOneWordBound bytes: under the 341 bytes of the ids of the eight commits
+// the argument names, C, the history's, the seed's and the root's, which so fit no one word, and
+// over the 132 bytes of the argument's primary form, `(::<C>) ~ (<C>) | <C'>`, C' the commit the
+// step made of C. The real push gets that primary form, which a recording jj ahead of the real one
+// sees: a word under the bound that holds the ids of C's change and of no commit the step left
+// alone, since jj reads the argument among the commits the step can rewrite, C alone. So where the
+// ids of what an argument names pass the bound, its word grows with the commits the step
+// rewrote, not with C's history. The remote gets the rewritten C with its trailer's author, the
+// step prints the rewrite, and no change is divergent.
+func TestARevisionWhoseIDsPassALoweredBoundGetsItsPrimaryForm(t *testing.T) {
+	t.Parallel()
+	impl, rev := rolePushImplementer, rolePushReviewer
+	rolePushRunArgs(t, rolePushRecords, []rolePushArgsRow{
+		{name: "-r ::<C>, a tracked bookmark on C", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			f.history(5)
+			f.bound = rolePushOneWordBound
+			f.track("legion/K-1")
+			c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
+			f.bookmark("legion/K-1", c.commit)
+			want := rolePushSends("legion/K-1", c, "implementer", impl)
+			want.pushed = func(words []string) {
+				revision := words[len(words)-1]
+				if len(revision) >= rolePushOneWordBound {
+					f.t.Errorf("the real push's revision %q is %d bytes, want under %d", revision, len(revision), rolePushOneWordBound)
+				}
+				for _, id := range rolePushFullID.FindAllString(revision, -1) {
+					if change := f.changeOf(id); change != c.change {
+						f.t.Errorf("the real push's revision %q holds %s, a commit of change %q that the step left alone; want ids of C's change %s alone", revision, id, change, c.change)
+					}
+				}
+				if primary := "(::" + c.commit + ") ~ (" + c.commit + ") | " + f.read(c.change).commit; revision != primary {
+					f.t.Errorf("the real push's revision is %q, want its primary form %q", revision, primary)
+				}
+			}
+			return []string{"git", "push", "-r", "::" + c.commit}, want
 		}},
 	})
 }

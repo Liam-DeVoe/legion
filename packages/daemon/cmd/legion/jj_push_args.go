@@ -32,6 +32,11 @@ type jjPush struct {
 	// the step reads as such a push does, so the step takes no snapshot before it
 	// (jjStep.snapshotDue).
 	noSnapshot bool
+	// quiet is whether the push runs with the role's own --quiet, before or after the subcommand
+	// pair, as jj takes it. The step's snapshot carries --quiet then too (jjStep.snapshot), so it
+	// prints what the push's own snapshot prints under it: jj's warnings, and no status line such
+	// as that of the descendants of @ it rebased. The dry run leaves it out (pushOnly).
+	quiet bool
 	// revisions are the push's revision arguments, in order.
 	revisions []jjRevision
 }
@@ -95,8 +100,10 @@ func readJJPush(args []string) jjPush {
 			switch arg {
 			case "--dry-run", "-h", "--help":
 				p.leave = true
-			case "--quiet", "--debug", "--no-integrate-operation", "--ignore-immutable":
+			case "--debug", "--no-integrate-operation", "--ignore-immutable":
 				p.pushOnly[i] = true
+			case "--quiet":
+				p.pushOnly[i], p.quiet = true, true
 			case "--ignore-working-copy":
 				p.pushOnly[i], p.noSnapshot = true, true
 			default:

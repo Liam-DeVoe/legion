@@ -9,9 +9,10 @@ import (
 )
 
 // The tests in this file are more of the step's (jj_push_test.go): a push of a long history, with
-// the helpers that make a long history and push it, which the tests of jj_push_revision_test.go and
-// jj_push_bound_test.go use too. As jj_push_test.go does, the file names nothing the step's change
-// adds, so it compiles and runs at the base too.
+// the helpers that make a history above the seed (fastImport, history, mutableHistory) and push a
+// long one (pushLong, rolePushCountRewrites). The tests of jj_push_revision_test.go and
+// jj_push_bound_test.go use those helpers too, and no other file does. As jj_push_test.go does,
+// the file names nothing the step's change adds, so it compiles and runs at the base too.
 
 // rolePushHistory is how many commits a long history has (rolePushFixture.history and
 // mutableHistory): enough that the ids of its commits, joined by ` | `, are over

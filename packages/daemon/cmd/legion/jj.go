@@ -284,20 +284,22 @@ func (s *jjStep) once() error {
 }
 
 // snapshot takes the one snapshot of the working copy that the push would take itself: one jj
-// command, next with the caller's options (jjPush.options) and no --ignore-working-copy, in env,
-// a read of the root commit's id, which needs no working-copy commit, before which jj 0.38 and 0.45
-// alike snapshot the working copy (`jj util snapshot` exists on 0.45 alone). It prints what that
-// command prints on standard error, as the push's own snapshot would print it: jj's warning of a
-// file it refuses to snapshot, or of the descendants of @ it rebased. A snapshot that finds nothing
+// command, next with the caller's options (jjPush.options), --quiet where the push has the role's
+// own (jjPush.quiet), and no --ignore-working-copy, in env, a read of the root commit's id, which
+// needs no working-copy commit, before which jj 0.38 and 0.45 alike snapshot the working copy (`jj
+// util snapshot` exists on 0.45 alone). It prints what that command prints on standard error, as
+// the push's own snapshot would print it: jj's warning of a file it refuses to snapshot, or its
+// line of the descendants of @ it rebased, which --quiet silences. A snapshot that finds nothing
 // new adds no operation. A command that cannot start or exits non-zero is a jjStepFailure, with
-// what it printed on standard error: the push would fail at the same snapshot.
+// what it printed on standard error (output): the push would fail at the same snapshot.
 func (s *jjStep) snapshot() error {
-	_, stderr, code, err := s.command(s.env, slices.Concat(s.push.options, []string{"--color=never", "log", "--no-graph", "-r", "root()", "-T", "commit_id"}))
+	flags := []string{"--color=never"}
+	if s.push.quiet {
+		flags = append(flags, "--quiet")
+	}
+	_, stderr, err := s.output(s.env, slices.Concat(s.push.options, flags, []string{"log", "--no-graph", "-r", "root()", "-T", "commit_id"}))
 	if err != nil {
 		return err
-	}
-	if code != 0 {
-		return jjStepFailure{code: code, output: stderr}
 	}
 	fmt.Fprint(s.stderr, stderr)
 	s.snapshotted = true
@@ -1000,21 +1002,22 @@ func (s *jjStep) eachID(revsets []string) ([]string, error) {
 // standard output (output): next, with the caller's options (jjPush.options), then
 // --ignore-working-copy, then args, in env.
 func (s *jjStep) jj(env []string, args ...string) (string, error) {
-	return s.output(env, slices.Concat(s.push.options, []string{"--ignore-working-copy"}, args))
+	stdout, _, err := s.output(env, slices.Concat(s.push.options, []string{"--ignore-working-copy"}, args))
+	return stdout, err
 }
 
-// output runs next with args in env (command) and answers what it printed on standard output. A
-// command that cannot start or exits non-zero is a jjStepFailure, with what it printed on standard
-// error.
-func (s *jjStep) output(env, args []string) (string, error) {
+// output runs next with args in env (command) and answers what it printed on standard output and
+// on standard error. A command that cannot start or exits non-zero is a jjStepFailure, with what
+// it printed on standard error.
+func (s *jjStep) output(env, args []string) (stdout, stderr string, err error) {
 	stdout, stderr, code, err := s.command(env, args)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if code != 0 {
-		return "", jjStepFailure{code: code, output: stderr}
+		return "", "", jjStepFailure{code: code, output: stderr}
 	}
-	return stdout, nil
+	return stdout, stderr, nil
 }
 
 // command runs next with args in env and waits for it, as a child in this process's group, with
