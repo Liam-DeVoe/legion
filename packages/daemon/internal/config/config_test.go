@@ -992,8 +992,46 @@ func TestResolveGitHubAppsRefusesAgentTierPrivateKey(t *testing.T) {
 
 	_, err := ResolveGitHubApps(apps)
 
-	if want := "App private key AGENT_APP_KEY is readable by agent-tier callers; move it to a daemon-only store"; err == nil || err.Error() != want {
+	if want := "github_apps.implement.private_key_secret: the App private key it names is readable by agent-tier callers; move it to a daemon-only store"; err == nil || err.Error() != want {
 		t.Errorf("ResolveGitHubApps error = %v, want %q", err, want)
+	}
+}
+
+// An App key pasted where private_key_secret's name goes is named in no refusal of the secrets
+// path: the setting is named, and the key stands as keyNameShown, as provider_keys' does. Made up
+// of letters, digits and underscores it passes as a name. Rows: no secrets command on PATH, a
+// secrets command that fails echoing what it was asked for, and one whose status is not one.
+func TestAPrivateKeySecretRefusalNamesNoKey(t *testing.T) {
+	const pasted = "madeUp_appKey_pasted_0123456789Zz"
+	for name, tc := range map[string]struct{ script, want string }{
+		"no secrets command": {"",
+			"github_apps.implement.private_key_secret: the secrets command is not on PATH, so the secretsd key it names cannot be read"},
+		"a failing secrets command that echoes the name": {"#!/bin/sh\necho \"no secret named $2\" >&2\nexit 3\n",
+			"github_apps.implement.private_key_secret: secrets get [the key name] --no-request failed (exit 3): no secret named [the key name]"},
+		"a status that is not one": {"#!/bin/sh\necho \"$2\"\n",
+			`github_apps.implement.private_key_secret: secrets get [the key name] --no-request printed an unparsable status (expected {"key","tier"})`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.script != "" {
+				if err := os.WriteFile(filepath.Join(dir, "secrets"), []byte(tc.script), 0o755); err != nil {
+					t.Fatalf("write fake secrets: %v", err)
+				}
+			}
+			t.Setenv("PATH", dir+string(os.PathListSeparator)+"/usr/bin:/bin")
+			_, err := ResolveGitHubApps(GitHubApps{
+				Implement: GitHubApp{AppID: "1", PrivateKeySecret: pasted},
+				Review:    GitHubApp{AppID: "2", PrivateKey: "review-key"},
+			})
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("ResolveGitHubApps error = %v, want %q", err, tc.want)
+			}
+			for i := 0; i+10 <= len(pasted); i++ {
+				if strings.Contains(err.Error(), pasted[i:i+10]) {
+					t.Fatalf("the refusal %q holds %q of the pasted key", err, pasted[i:i+10])
+				}
+			}
+		})
 	}
 }
 

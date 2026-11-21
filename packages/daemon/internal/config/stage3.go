@@ -548,6 +548,10 @@ func executePrivateKeyCommand(command, field string) (string, error) {
 	return key, nil
 }
 
+// resolvePrivateKeySecret is an App's private key read from the secretsd key name names. No refusal
+// names the key: it stands as keyNameShown, as provider_keys' do, since a key made only of letters,
+// digits and underscores passes as a name, so the name can be the key itself pasted where its name
+// goes. field names the setting.
 func resolvePrivateKeySecret(name, field string) (string, error) {
 	statusText, err := runAppSecretsGet(name, "--no-request", field)
 	if err != nil {
@@ -558,10 +562,10 @@ func resolvePrivateKeySecret(name, field string) (string, error) {
 		Tier string `json:"tier"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(statusText)), &status); err != nil || status.Key != name || status.Tier == "" {
-		return "", fmt.Errorf("%s: secrets get %s --no-request printed an unparsable status (expected {\"key\",\"tier\"})", field, name)
+		return "", fmt.Errorf(`%s: %s printed an unparsable status (expected {"key","tier"})`, field, shownCommand("--no-request"))
 	}
 	if status.Tier != "human" {
-		return "", fmt.Errorf("App private key %s is readable by agent-tier callers; move it to a daemon-only store", name)
+		return "", fmt.Errorf("%s: the App private key it names is readable by agent-tier callers; move it to a daemon-only store", field)
 	}
 	encoded, err := runAppSecretsGet(name, "--value", field)
 	if err != nil {
@@ -569,7 +573,7 @@ func resolvePrivateKeySecret(name, field string) (string, error) {
 	}
 	key, err := DecodePrivateKey(encoded)
 	if err != nil {
-		return "", fmt.Errorf("%s: %s did not decode to a PEM private key (expected base64 of a -----BEGIN block)", field, name)
+		return "", fmt.Errorf("%s: the secretsd key it names did not decode to a PEM private key (expected base64 of a -----BEGIN block)", field)
 	}
 	return key, nil
 }
@@ -613,19 +617,31 @@ func decodeBase64LikeNode(encoded string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(value)
 }
 
+// runAppSecretsGet runs `secrets get <name> <flag>`, returning its stdout. A failure names field
+// and the command with keyNameShown in place of name, and the child's stderr as stderrShown
+// prints it.
 func runAppSecretsGet(name, flag, field string) (string, error) {
 	args := []string{"get", name, flag}
 	environment := daemonEnvironment()
 	binary, ok := lookpath.On(pathValue(environment), "secrets")
 	if !ok {
-		return "", fmt.Errorf("%s: the secrets command is not on PATH, so %s cannot be read", field, name)
+		return "", fmt.Errorf("%s: the secrets command is not on PATH, so the secretsd key it names cannot be read", field)
 	}
 	command := exec.Command(binary, args...)
 	command.Env = environment
 	command.Stdin = os.Stdin
 	output, err := command.Output()
 	if err != nil {
-		return "", commandError(field+": secrets get "+name+" "+flag, err)
+		end := procgroup.Ended(err)
+		if !end.Ran() {
+			return "", fmt.Errorf("%s: could not run %s: %w", field, shownCommand(flag), err)
+		}
+		var exit *exec.ExitError
+		stderr := ""
+		if errors.As(err, &exit) {
+			stderr = string(exit.Stderr)
+		}
+		return "", fmt.Errorf("%s: %s failed (%s)%s", field, shownCommand(flag), end, stderrShown(stderr, name))
 	}
 	return string(output), nil
 }
