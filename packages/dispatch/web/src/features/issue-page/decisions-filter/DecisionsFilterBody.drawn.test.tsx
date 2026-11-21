@@ -11,6 +11,7 @@ import { ApiError, api } from "../../../api/client";
 import type {
   Actor,
   ArtifactText,
+  AuthenticatedUser,
   Comment,
   Decision,
   DecisionKeep,
@@ -300,6 +301,15 @@ function renderBody(
   // The decisions document's blocks (`issueDetails` names it by its role): none, so a Change is
   // placed by its quote alone, and no case makes a request for them.
   client.setQueryData(["artifact", DECISIONS_DOCUMENT.id, "blocks"], [], answered);
+  // Who is reading, as the page's first read of it left it, where the reads are dated: the page
+  // read it as it loaded, before any view was opened.
+  if (answered !== undefined) {
+    client.setQueryData(
+      ["whoami"],
+      { event_head: "0", kind: "user", login: READER } satisfies AuthenticatedUser,
+      answered
+    );
+  }
   const issue = issueDetails();
   const root = issueTree(children);
   // The view the slot hands the body where no address names a node and no words are typed
@@ -1293,6 +1303,26 @@ test("the view opened after the app's staleTime asks no read again, its rows' Ke
     view.unmount();
   } finally {
     for (const read of reads) read.mockRestore();
+  }
+});
+
+// The same rule for who is reading (decision 369 (c)): the page read it as it loaded, and a
+// press of Decisions 31 s later asks it no second time, from any observer the view mounts. A row
+// that draws a thread's read mark (`outline-thread-read.tsx`) observes it through
+// `useMarkThreadRead`'s `useIsHuman`. The tester, at a381aa82 on a running build: Decisions
+// pressed 35 s after the load asked `/auth/whoami` once, and so did the conversation pressed 35 s
+// after that, with no other read.
+test("the view opened after the app's staleTime asks who is reading no second time", async () => {
+  const who = spyOn(api, "whoAmI").mockReturnValue(Promise.withResolvers<never>().promise);
+  try {
+    const view = renderBody(wholeIssue(), {}, { answeredAgo: 31_000 });
+    // A row of the view draws a thread's read mark, so its observer is mounted.
+    expect(view.container.querySelectorAll("[data-thread-read]").length).toBeGreaterThan(0);
+    await act(() => nextFrame());
+    expect(who).not.toHaveBeenCalled();
+    view.unmount();
+  } finally {
+    who.mockRestore();
   }
 });
 
