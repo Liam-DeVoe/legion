@@ -1455,13 +1455,19 @@ func TestAnExistingConsumerKeepsItsPosition(t *testing.T) {
 	}
 }
 
+// consumerInfo reads the named consumer's info. A failed read fails the row, so the read waits
+// for the server until the row's hang guards end, the test binary's deadline less 30 s
+// (testwait.Remaining), in place of the five seconds nats.go gives a request whose context has no
+// deadline (its defaultAPITimeout), which would let a NATS server the machine holds decide it.
 func consumerInfo(t *testing.T, stream jetstream.Stream, name string) *jetstream.ConsumerInfo {
 	t.Helper()
-	consumer, err := stream.Consumer(context.Background(), name)
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
+	consumer, err := stream.Consumer(ctx, name)
 	if err != nil {
 		t.Fatalf("look up consumer %s: %v", name, err)
 	}
-	info, err := consumer.Info(context.Background())
+	info, err := consumer.Info(ctx)
 	if err != nil {
 		t.Fatalf("consumer %s info: %v", name, err)
 	}
@@ -1565,27 +1571,37 @@ func publish(t *testing.T, js jetstream.JetStream, subject string, data []byte) 
 // to the one last names, with none left to deliver. It reads the stream position, not a count of
 // deliveries, because one message can be delivered more than once (the delivery mechanism:
 // ConsumerSpec.HandlerLimit's comment in consume.go). That is at-least-once delivery the consumer
-// deduplicates and which a delivery count would read as more.
+// deduplicates and which a delivery count would read as more. Its reads wait for the server until
+// the row's hang guards end (testwait.Remaining), as assertNoAckPending's do.
 func assertAcknowledgedThrough(t *testing.T, stream jetstream.Stream, consumer string, last *jetstream.PubAck) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
 	testwait.Eventually(t, fmt.Sprintf("%s has acknowledged through stream sequence %d", consumer, last.Sequence), func() bool {
-		item, err := stream.Consumer(context.Background(), consumer)
+		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
 			return false
 		}
-		info, err := item.Info(context.Background())
+		info, err := item.Info(ctx)
 		return err == nil && info.AckFloor.Stream == last.Sequence && info.NumPending == 0 && info.NumAckPending == 0
 	})
 }
 
+// assertNoAckPending waits for consumer to owe no acknowledgement. Its reads wait for the server
+// until the row's hang guards end (testwait.Remaining), in place of the five seconds nats.go gives
+// a request whose context has no deadline: a read that fails only makes the next poll read again,
+// but each held read spends five seconds of the wait's own bound and the last one it makes decides
+// the row.
 func assertNoAckPending(t *testing.T, stream jetstream.Stream, consumer string) {
 	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t))
+	defer cancel()
 	testwait.Eventually(t, consumer+" has no acknowledgement pending", func() bool {
-		item, err := stream.Consumer(context.Background(), consumer)
+		item, err := stream.Consumer(ctx, consumer)
 		if err != nil {
 			return false
 		}
-		info, err := item.Info(context.Background())
+		info, err := item.Info(ctx)
 		return err == nil && info.NumAckPending == 0
 	})
 }
