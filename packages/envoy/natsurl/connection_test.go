@@ -17,9 +17,12 @@ import (
 // A connection's error prints as its class alone: a lookup's, a dial's through a SOCKS5 proxy, a
 // certificate's name check and a port net cannot read name the server by its host or port, which
 // can be a piece of a credential, and none of it prints. The system's words for a failed call, EOF,
-// a time out, a TLS alert's words, the NATS client's own errors and a server's -ERR as the client
-// relays it print as they are; the client's TLS error keeps its words before the class beneath it;
-// an error with no class prints as ConnectionUnprinted.
+// a time out, a TLS alert's words, the NATS client's own errors and a server's -ERR refusal as the
+// client relays it print as they are; the client's TLS error keeps its words before the class
+// beneath it. An error the client formatted from what the server sent - its parser's, built as
+// nats.go v1.55.0 parser.go:417, :474 and :522 build them, and its CONNECT handshake's (nats.go:3306),
+// and a -ERR the client names no refusal for - prints as ConnectionProtocolError, the made-up bytes
+// in it unprinted; an error with no class prints as ConnectionUnprinted.
 func TestConnectionClass(t *testing.T) {
 	const host = "madeUpHostPiece0123456789"
 	dial := func(err error) error { return &net.OpError{Op: "dial", Net: "tcp", Err: err} }
@@ -47,6 +50,13 @@ func TestConnectionClass(t *testing.T) {
 		{"a proxy nothing listens at", socks(dial(syscall.ECONNREFUSED)), "connection refused"},
 		{"the NATS client's own error", nats.ErrNoServers, "nats: no servers available for connection"},
 		{"a server's -ERR, as the client relays it", errors.New("nats: Authorization Violation"), "nats: Authorization Violation"},
+		{"a server's -ERR the client names, as processErr relays it", errors.New("nats: Maximum Control Line Exceeded"), "nats: Maximum Control Line Exceeded"},
+		{"the parser's error, quoting the bytes the server sent", fmt.Errorf("nats: Parse Error [%d]: '%s'", 0, "XYZ "+host+"\r\n"), ConnectionProtocolError},
+		{"processMsgArgs' error, quoting the MSG line", fmt.Errorf("nats: processMsgArgs Parse Error: '%s'", "legion.x "+host), ConnectionProtocolError},
+		{"processHeaderMsgArgs' error, quoting the HMSG line", fmt.Errorf("nats: processHeaderMsgArgs Bad or Missing Sid: '%s'", "legion.x "+host+" 1 2"), ConnectionProtocolError},
+		{"the CONNECT handshake's error, quoting the line in place of PONG", fmt.Errorf("nats: expected '%s', got '%s'", "PONG", "XYZ "+host), ConnectionProtocolError},
+		{"a server's -ERR the client names no refusal for", errors.New("nats: Something Else " + host), ConnectionProtocolError},
+		{"a server's refusal with more after it", errors.New("nats: Authorization Violation " + host), ConnectionProtocolError},
 		{"a server's permissions violation, as the client relays it", fmt.Errorf("%w: %s", nats.ErrPermissionViolation, `Permissions Violation for Subscription to "legion.denied"`),
 			`nats: permissions violation: Permissions Violation for Subscription to "legion.denied"`},
 		{"the client's own error under words of another's", fmt.Errorf("subscribe %s: %w", host, nats.ErrTimeout), "nats: timeout"},

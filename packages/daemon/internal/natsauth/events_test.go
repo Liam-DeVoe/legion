@@ -117,6 +117,13 @@ func TestAPermissionTheServerRefusesIsLoggedAtError(t *testing.T) {
 // the raw protocol lines in then to it; it returns the server's URL.
 func fakeServer(t *testing.T, then string) string {
 	t.Helper()
+	return fakeServerAnswering(t, "PONG\r\n"+then)
+}
+
+// fakeServerAnswering starts a NATS server that admits one client and writes answer, raw protocol
+// lines, in reply to its first PING; it returns the server's URL.
+func fakeServerAnswering(t *testing.T, answer string) string {
+	t.Helper()
 	ln, err := testnats.ListenLoopback()
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +146,7 @@ func fakeServer(t *testing.T, then string) string {
 				break
 			}
 		}
-		_, _ = io.WriteString(c, "PONG\r\n"+then)
+		_, _ = io.WriteString(c, answer)
 		_, _ = io.Copy(io.Discard, c)
 	}()
 	return "nats://" + ln.Addr().String()
@@ -168,6 +175,74 @@ func TestAFatalServerErrorIsNamedFromTheConnection(t *testing.T) {
 	if logged := out.String(); strings.Count(logged, "NATS connection closed") != 1 || !strings.Contains(logged, want) {
 		t.Errorf("log = %s\nwant exactly one line containing %s", logged, want)
 	}
+}
+
+// A server's bytes the NATS client cannot parse end the connection with an error the client
+// formats from them - its parser's (`nats: Parse Error [0]: '…'`), processMsgArgs' for a MSG line
+// it cannot read, and the CONNECT handshake's for a line in place of PONG - and a made-up secret in
+// those bytes prints nowhere: not in the `NATS connection lost` line of a connection that
+// reconnects, not in the `NATS connection closed` line of one that does not, and not in Connect's
+// error; each names the failure as a protocol error from the server.
+func TestAServersUnreadableBytesPrintNoneOfThem(t *testing.T) {
+	const secret = "madeUpServerBytesSecret0123456789"
+	requireNoRun := func(t *testing.T, what, text string) {
+		t.Helper()
+		for i := 0; i+10 <= len(secret); i++ {
+			if run := secret[i : i+10]; strings.Contains(text, run) {
+				t.Fatalf("%s holds %q, a run of the made-up secret: %s", what, run, text)
+			}
+		}
+	}
+	for _, tc := range []struct{ name, bytes string }{
+		{"a protocol operation the parser does not know", "XYZ " + secret + "\r\n"},
+		{"a MSG line processMsgArgs cannot read", "MSG legion.x " + secret + "\r\n"},
+	} {
+		t.Run(tc.name+", the connection closed", func(t *testing.T) {
+			var out lockedBuffer
+			closed := make(chan struct{}, 1)
+			conn, err := natsauth.Connect([]string{fakeServer(t, tc.bytes)}, "", t.Name(), nats.Timeout(5*time.Second), nats.NoReconnect(),
+				natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
+				signalled(make(chan struct{}, 1), make(chan struct{}, 1), make(chan struct{}, 1), closed))
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			t.Cleanup(conn.Close)
+			wait(t, closed, "the close", &out)
+			requireNoRun(t, "the log", out.String())
+			requireNoRun(t, "WithLastError", natsauth.WithLastError(errors.New("consume: the connection closed"), conn).Error())
+			if want := `level=ERROR msg="NATS connection closed" error="a protocol error from the server"`; !strings.Contains(out.String(), want) {
+				t.Errorf("log = %s\nwant a line containing %s", out.String(), want)
+			}
+		})
+		t.Run(tc.name+", the connection lost", func(t *testing.T) {
+			var out lockedBuffer
+			lost := make(chan struct{}, 1)
+			conn, err := natsauth.Connect([]string{fakeServer(t, tc.bytes)}, "", t.Name(), nats.Timeout(time.Second),
+				nats.ReconnectWait(10*time.Millisecond), nats.MaxReconnects(1),
+				natsauth.LogEvents(slog.New(slog.NewTextHandler(&out, nil))),
+				signalled(make(chan struct{}, 1), lost, make(chan struct{}, 1), make(chan struct{}, 1)))
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			wait(t, lost, "the lost connection", &out)
+			conn.Close()
+			requireNoRun(t, "the log", out.String())
+			if want := `level=WARN msg="NATS connection lost" error="a protocol error from the server"`; !strings.Contains(out.String(), want) {
+				t.Errorf("log = %s\nwant a line containing %s", out.String(), want)
+			}
+		})
+	}
+	t.Run("a line in place of PONG, Connect's error", func(t *testing.T) {
+		conn, err := natsauth.Connect([]string{fakeServerAnswering(t, "XYZ "+secret+"\r\n")}, "", t.Name(), nats.Timeout(5*time.Second), nats.NoReconnect())
+		if err == nil {
+			conn.Close()
+			t.Fatal("Connect connected to a server that answered PING with no PONG")
+		}
+		requireNoRun(t, "Connect's error", err.Error())
+		if err.Error() != "a protocol error from the server" {
+			t.Errorf("Connect = %q, want a protocol error from the server", err)
+		}
+	})
 }
 
 // A permission refusal stays the connection's LastError while it lives, and is no cause of

@@ -42,10 +42,13 @@ const (
 // The classes are the system's own words for a failed call (a syscall.Errno: "connection refused",
 // "connection reset by peer"), EOF, a TLS alert's own words ("remote error: tls: certificate
 // required"), the words a lookup, a time out and a TLS failure are named by, the reply a SOCKS5
-// proxy answered (socksClass), and the NATS client's own words: the text of an error it defines
-// (natsErrors), and of a server's -ERR it relays, which it writes as "nats: " and the server's
-// fixed words, an error that wraps nothing. The NATS client's TLS error keeps its words before the
-// class of what failed under it. Any other error is ConnectionUnprinted, and nil is "unknown".
+// proxy answered (socksClass), and the NATS client's own words where they are fixed: the text of
+// an error it defines (natsErrors), and a server's refusal it relays (relayed). The NATS client's
+// TLS error keeps its words before the class of what failed under it. Any other error of the NATS
+// client's own, written "nats: " and words it formatted, is ConnectionProtocolError: its parser
+// and its CONNECT handshake quote the bytes the server sent (`nats: Parse Error [%d]: '%s'`,
+// `nats: processMsgArgs Parse Error: '%s'`, `nats: expected 'PONG', got '%s'`), and those bytes
+// are whatever reached the socket. Any other error is ConnectionUnprinted, and nil is "unknown".
 func ConnectionClass(err error) string {
 	if err == nil {
 		return "unknown"
@@ -60,11 +63,6 @@ func ConnectionClass(err error) string {
 	if text != "" {
 		return text
 	}
-	// A server's -ERR, as the NATS client relays it (processErr's errors.New("nats: " + …), and
-	// sendConnect's natsProtoErr), or an error of its own it defines: an error that wraps nothing,
-	// in the client's words. It is printed as it is, so a server's refusal reads as the server wrote
-	// it ("nats: Authorization Violation"). So is a server's permissions violation, which the client
-	// writes as its own error and the server's words after it, the subject among them.
 	if relayed(err) {
 		return err.Error()
 	}
@@ -73,20 +71,49 @@ func ConnectionClass(err error) string {
 			return known.Error()
 		}
 	}
+	_, wraps := err.(interface{ Unwrap() error })
+	_, joins := err.(interface{ Unwrap() []error })
+	if !wraps && !joins && strings.HasPrefix(err.Error(), "nats: ") {
+		return ConnectionProtocolError
+	}
 	return ConnectionUnprinted
 }
 
-// relayed reports whether err is the NATS client's own words: an error that wraps nothing and
-// whose text starts "nats: ", or the client's permissions violation and the server's -ERR after
-// it (processErr's fmt.Errorf("%w: %s", ErrPermissionViolation, …)), which wraps that error alone.
+// ConnectionProtocolError is ConnectionClass's words for an error of the NATS client's own whose
+// text it formatted, from what the server sent among other things.
+const ConnectionProtocolError = "a protocol error from the server"
+
+// serverRefusals are a server's -ERR refusals the NATS client names (nats.go v1.55.0
+// nats.go:72-104), lower case: an error the client writes as "nats: " and one of these, in the
+// server's case, wrapping nothing, is the server's refusal as it wrote it (processErr's
+// errors.New("nats: " + …) for the last two, and sendConnect's natsProtoErr for any of them).
+var serverRefusals = []string{
+	nats.AUTHORIZATION_ERR, nats.AUTHENTICATION_EXPIRED_ERR, nats.AUTHENTICATION_REVOKED_ERR,
+	nats.ACCOUNT_AUTHENTICATION_EXPIRED_ERR, nats.MAX_CONNECTIONS_ERR, nats.MAX_ACCOUNT_CONNECTIONS_ERR,
+	nats.MAX_SUBSCRIPTIONS_ERR, nats.STALE_CONNECTION, "unknown protocol operation", "maximum control line exceeded",
+}
+
+// relayed reports whether err is the NATS client's own fixed words, printed as they are so a
+// server's refusal reads as the server wrote it ("nats: Authorization Violation"): an error that
+// wraps nothing and is one the client defines (natsErrors) or one of serverRefusals, case aside;
+// or a server's permissions violation, which the client writes as its own error and the server's
+// -ERR after it, the subject among them (processErr's fmt.Errorf("%w: %s",
+// ErrPermissionViolation, …)), wrapping that error alone. Nothing else of the client's is
+// relayed: an allowlist, not the "nats: " prefix, which the client's parser errors share.
 func relayed(err error) bool {
 	switch e := err.(type) {
 	case interface{ Unwrap() []error }:
 		return false
 	case interface{ Unwrap() error }:
-		return e.Unwrap() == nats.ErrPermissionViolation && strings.HasPrefix(err.Error(), nats.ErrPermissionViolation.Error()+": ")
+		server, ok := strings.CutPrefix(err.Error(), nats.ErrPermissionViolation.Error()+": ")
+		return e.Unwrap() == nats.ErrPermissionViolation && ok && strings.HasPrefix(strings.ToLower(server), nats.PERMISSIONS_ERR)
 	}
-	return strings.HasPrefix(err.Error(), "nats: ")
+	words, ok := strings.CutPrefix(err.Error(), "nats: ")
+	if !ok {
+		return false
+	}
+	return slices.Contains(serverRefusals, strings.ToLower(words)) ||
+		slices.ContainsFunc(natsErrors, func(known error) bool { return strings.EqualFold(err.Error(), known.Error()) })
 }
 
 // ServerPosition names the server a connection reached, connected (its ConnectedUrl, which the
