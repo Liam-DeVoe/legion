@@ -79,13 +79,13 @@ func (n *NATS) Subscribe(sessionID string, deliver func(Frame)) (func(), error) 
 }
 
 // Replay asks on a reply subject that names the session (bus.SessionReplySubject under a new
-// inbox): a session on a grant of its own admits replies under its own id alone
-// (bus.SessionReplies), so it could not answer nats.go's own request inbox, and among sessions on
-// such grants no other session can answer this one. A holder of the shared session user or of a
-// host user subscribes every session's control subject and may publish to every _INBOX. subject,
-// so it still can, and Replay returns whatever history it sends. The answer is taken over a
-// channel subscription of this request's own, as bus.Client.RequestCore takes the connection
-// probe's.
+// inbox): once natsgrant.Session publishes bus.SessionReplies, a session's replies under its own
+// id alone, in place of every _INBOX. subject, a session on that grant could not answer nats.go's
+// own request inbox, and no other session on such a grant can answer this one. A holder of the
+// shared session user or of a host user subscribes every session's control subject and may
+// publish to every _INBOX. subject, so it still can, and Replay returns whatever history it
+// sends. The answer is taken over a channel subscription of this request's own, as
+// bus.Client.RequestCore takes the connection probe's.
 func (n *NATS) Replay(ctx context.Context, sessionID string) (Frame, error) {
 	reply := bus.SessionReplySubject(nats.NewInbox(), sessionID)
 	replies := make(chan *nats.Msg, nats.RequestChanLen)
