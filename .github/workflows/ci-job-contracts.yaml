@@ -29,7 +29,10 @@ jobs:
     # builds Job g4b-co-first, which package.json's `//` note gives) and the 2 s of its second
     # command, which runs main's src/build-entries.test.ts (#4538) alone: 76 s in all. With that
     # second command in it, the test step took 4 s at acf34b3558 (job 136612737476 of run
-    # 44829908297), whose tree is 1c711353dc's in every file this job reads.
+    # 44829908297). Between that tree and 1c711353dc, bun.lock, packages/test-fixtures/package.json
+    # and packages/test-fixtures/src/timer-record.ts changed, and this job reads all three (its
+    # install reads the lockfile and every workspace manifest, and the test-fixtures sources are
+    # its reads); no contracts row loads the timer record, so the reading stands.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

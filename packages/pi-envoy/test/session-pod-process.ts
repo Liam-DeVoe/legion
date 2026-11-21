@@ -19,6 +19,7 @@
  * environment Oh My Pi's shell is built from. Their reports are part of its own.
  */
 import { roleTopic } from "@legion/contracts";
+import { exitProcess } from "@legion/envoy-client/process-exit";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { PiApi } from "@legion/pi-shared/pi-types";
 import { logger } from "@oh-my-pi/pi-utils";
@@ -181,5 +182,6 @@ const report: Report = {
   ...(children === undefined ? {} : { children }),
 };
 console.log(`${REPORT_MARKER}${JSON.stringify(report)}`);
-// The extension's own timers would keep the process up; its report is all it is for.
-process.exit(0);
+// The extension's own timers would keep the process up; its report is all it is for, so it ends
+// once the report has reached the pipe (`exitProcess`).
+await exitProcess(0);

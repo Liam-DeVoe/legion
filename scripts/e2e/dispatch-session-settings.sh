@@ -162,12 +162,17 @@ for tool in go bun jq curl psql tar python3; do
 done
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
 # one read of the DSN runs in this step, before the builds, the services and the `create
-# database` further down: the check refuses every DSN the loopback guard refuses, and a DSN
-# whose values Dispatch cannot be handed as well. Its refusal is the line this script fails with.
-# Dispatch is handed the run's own database by exec_run_database further down, and no variable
-# of this shell holds its connection string.
+# database` further down: the checks refuse every DSN the loopback guard refuses, a DSN whose
+# values Dispatch cannot be handed, and a DSN whose values psql cannot be handed in libpq's own
+# variables, the form server_psql makes and drops the database in (--libpq-env, on the server's
+# `postgres` database), which refuses a keyword libpq reads from no variable, such as
+# `keepalives`. Their refusal is the line this script fails with. Dispatch is handed the run's own
+# database by exec_run_database further down, and no variable of this shell holds its connection
+# string.
 database=legion_e2e_session_settings_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 require_run_database refusal LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "the run creates and drops a database there" || fail "$refusal"
+require_run_database refusal LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" postgres \
+  "the run creates and drops a database there" --libpq-env || fail "$refusal"
 omp=${LEGION_TEST_OMP:-$(command -v omp || true)}
 if [ -z "$omp" ] && [ -x /opt/omp/bin/omp ]; then omp=/opt/omp/bin/omp; fi
 [ -n "$omp" ] || fail "LEGION_TEST_OMP is required: no omp is on PATH and the worker image's /opt/omp/bin/omp is absent"
@@ -233,8 +238,6 @@ record_start "$nats_pid" || true
 until_true 60 "the nats-server to be ready" grep -q 'Server is ready' "$evidence/logs/nats.log"
 nats_url="nats://127.0.0.1:$(awk -F: '/Listening for client connections on/ {print $NF; exit}' "$evidence/logs/nats.log")"
 
-require_run_database refusal LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" postgres \
-  "the run creates and drops a database there" --libpq-env || fail "$refusal"
 server_psql -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
 

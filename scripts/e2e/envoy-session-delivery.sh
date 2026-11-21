@@ -346,12 +346,16 @@ readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
 # one read of the DSN runs before the builds, the services and the `create database` further
-# down: the check refuses every DSN the loopback guard refuses, and a DSN whose values Dispatch
-# cannot be handed as well. Its refusal is the line this script prints. Dispatch is handed the
-# run's own database by exec_run_database (start_dispatch), and no variable of this shell holds
-# its connection string.
+# down: the checks refuse every DSN the loopback guard refuses, a DSN whose values Dispatch
+# cannot be handed, and a DSN whose values psql cannot be handed in libpq's own variables, the
+# form server_psql makes and drops the database in (--libpq-env, on the server's `postgres`
+# database), which refuses a keyword libpq reads from no variable, such as `keepalives`. Their
+# refusal is the line this script prints. Dispatch is handed the run's own database by
+# exec_run_database (start_dispatch), and no variable of this shell holds its connection string.
 database="session_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
 require_run_database refusal LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "this run creates and force-drops a database there" || refuse "$refusal"
+require_run_database refusal LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" postgres \
+  "this run creates and force-drops a database there" --libpq-env || refuse "$refusal"
 work=${SESSION_DELIVERY_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")}
 mkdir -p "$work/logs" "$work/bin" "$work/sessions" "$work/ports"
 work=$(cd -- "$work" && pwd -P)
@@ -735,8 +739,6 @@ start_proxy() {
 start_proxy proxy-pi
 start_proxy proxy-cc
 
-require_run_database refusal LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" postgres \
-  "this run creates and force-drops a database there" --libpq-env || fail "$refusal"
 server_psql -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
 agent_token=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')

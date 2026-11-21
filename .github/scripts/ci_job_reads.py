@@ -327,9 +327,9 @@ def bun_job(job, workflow=""):
     install runs at the repository root, and Bun reads bunfig.toml from the working directory."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return setup_bun(job, workflow) + reads(
-        ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-61)"),
+        ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :52-62)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
-        ("patches/**", f"{install} applies package.json:52-61 patchedDependencies"),
+        ("patches/**", f"{install} applies package.json:52-62 patchedDependencies"),
         ("packages/proof-editor/proof-sdk-*.tgz",
          f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
@@ -541,7 +541,7 @@ def legion_build(why):
 
 RULES = {
     # --- daemon
-    f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:371 (runtime.Caller at :367 + ../../../..)")),
+    f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:395 (runtime.Caller at :391 + ../../../..)")),
     f"{DAEMON}/cmd/legion/gh_test.go": reads((f"{DAEMON}/docker/gh", "cmd/legion/gh_test.go:1003 ../../docker/gh")),
     f"{DAEMON}/cmd/legion/state_read_budget_test.go": reads(
         (f"{FIX}/daemon-api/state.json", "cmd/legion/state_read_budget_test.go:30 reads the daemon's state golden as the slow daemon's answer")),
@@ -552,14 +552,14 @@ RULES = {
         Read(path, "internal/api/reachstates_test.go:50 lists ../supervise and :60 parses each .go file of it but the test files (:57)")
         for path in files_but_tests(f"{DAEMON}/internal/supervise")],
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1391 (path from goldenPath at :1380, declared :38)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:1415 (path from goldenPath at :1404, declared :38)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
     f"{DAEMON}/internal/claim/claim_test.go": reads((f"{FIX}/project-tokens.json", "internal/claim/claim_test.go:196")),
     f"{DAEMON}/internal/classify/fixtures_test.go": reads((f"{FIX}/classification/**", "internal/classify/fixtures_test.go:119,128 (fixtureDirectory :143, runtime.Caller :148)")),
     f"{DAEMON}/internal/config/controller_test.go": reads(("deploy/kubernetes/daemon/controller.yaml.example", "internal/config/controller_test.go:214 LoadController reads it (config.ControllerConfigExample, joined at :213)")),
-    f"{DAEMON}/internal/config/kubernetes_test.go": reads(("deploy/kubernetes/operator-route/pod.yml", "internal/config/kubernetes_test.go:1555")),
+    f"{DAEMON}/internal/config/kubernetes_test.go": reads(("deploy/kubernetes/operator-route/pod.yml", "internal/config/kubernetes_test.go:1801")),
     # This row and two of the envoy rows below it - internal/dispatch/outbox/
     # expects_reply_never_false_test.go and internal/dispatch/api/live_events_test.go - declare a
     # read every filter gating a job that compiles them already matches. They are here so that a
@@ -568,7 +568,7 @@ RULES = {
     f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
     f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
-    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
+    f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1856")),
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
     # (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
     # `legion` their panes run and packs both Oh My Pi plugins into the run's own profile. No job
@@ -584,8 +584,8 @@ RULES = {
           for g in PACK_READS],
     ],
     f"{DAEMON}/internal/daemon/nats_permissions_test.go": reads(
-        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/nats_permissions_test.go:77"),
-        (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:78")),
+        (f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/nats_permissions_test.go:79"),
+        (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:80")),
     f"{DAEMON}/internal/daemon/outbox_scratch_dispatch_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/daemon/outbox_scratch_dispatch_test.go:354 testbuild.EnvoyBinary, which runs go build ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/daemon/supervision_test.go": [
@@ -595,7 +595,7 @@ RULES = {
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
     f"{DAEMON}/internal/intake/checks_skipped_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_skipped_test.go:32")),
     f"{DAEMON}/internal/intake/checks_statuses_test.go": reads((f"{FIX}/checks-settlement/*", "internal/intake/checks_statuses_test.go:139")),
-    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:856 globs it and reads each file; :960 reads one")),
+    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:873 globs it and reads each file; :977 reads one")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
         ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
@@ -607,7 +607,7 @@ RULES = {
     f"{DAEMON}/internal/runtime/sandbox/boundary_test.go": [legion_build("internal/runtime/sandbox/boundary_test.go:757 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/tmux/tmux_real_test.go": [
         legion_build("internal/runtime/tmux/tmux_real_test.go:88-89 go build .../daemon/cmd/legion"),
-        Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1843,1850")],
+        Read(f"{DAEMON}/cmd/legion/testdata/gh-help/**", "internal/runtime/tmux/tmux_real_test.go:1847,1854")],
     f"{DAEMON}/internal/stream/integration_test.go": [legion_build("internal/stream/integration_test.go:157 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/workerbin/workerbin_test.go": reads((f"{DAEMON}/docker/gh", "internal/runtime/workerbin/workerbin_test.go:99")),
     f"{DAEMON}/internal/textcheck/design_approved_wake_test.go": reads(
@@ -634,13 +634,18 @@ RULES = {
     f"{DAEMON}/internal/textcheck/role_for_readers_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/role_for_readers_test.go:88 walks every .go file under packages/daemon (../.., :84) "
                               "and :101 parses each one")),
-    # main's #4092 read these pages in internal/prompts's production-check test; that half
-    # moved here, so an edit of one of them alone starts the text checks and not the daemon's lane
+    # The pages and the proof scripts that state the production check's rule outside a prompt.
+    # main's #4092 read the first two in internal/prompts's production-check test. That half moved
+    # here, so an edit of one of them alone starts the text checks and not the daemon's lane
     # (dispatch://INFRA-1413).
     f"{DAEMON}/internal/textcheck/production_check_rule_test.go": reads(
-        ("scripts/e2e/README.md", "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../.."),
-        ("docs/site/src/content/docs/legion/concepts.md",
-         "internal/textcheck/production_check_rule_test.go:30 reads it under ../../../..")),
+        *[(text, "internal/textcheck/production_check_rule_test.go:55 reads it under ../../../..")
+          for text in ("scripts/e2e/README.md",
+                       "docs/site/src/content/docs/legion/concepts.md",
+                       "docs/site/src/content/docs/legion/walkthrough.md",
+                       "docs/site/src/content/docs/legion/using-legion.md",
+                       "scripts/e2e/stage3-devbox-workflow.sh",
+                       "scripts/e2e/stage4b-sandbox-tree.sh")]),
     f"{DAEMON}/internal/textcheck/reclaim_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:51,281 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
@@ -812,7 +817,7 @@ RULES = {
     f"{ENVOY}/cmd/dispatch/pod_grace_period_test.go": reads((f"{INFRA}/gcp/testdata/dispatch-pod.golden", "cmd/dispatch/pod_grace_period_test.go:53")),
     f"{ENVOY}/cmd/listener/api_test.go": reads(
         (f"{FIX}/dispatch-targeted-delivery.json", "cmd/listener/api_test.go:176,421,465"),
-        (f"{FIX}/envoy-session-no-interests.json", "cmd/listener/api_test.go:4605")),
+        (f"{FIX}/envoy-session-no-interests.json", "cmd/listener/api_test.go:4606")),
     f"{ENVOY}/cmd/listener/grace_margin_doc_test.go": reads(
         (f"{INFRA}/README.md", "cmd/listener/grace_margin_doc_test.go:17"),
         (f"{INFRA}/docs/nats-hub.md", "cmd/listener/grace_margin_doc_test.go:18")),
@@ -829,7 +834,7 @@ RULES = {
          "cmd/spec-check/main_test.go:432 fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary "
          "lists at :69 and its built binary reads")),
     f"{ENVOY}/internal/cipher/config/config_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem",
-                                                            "internal/cipher/config/config_test.go:1836,1866 Load the URL whose sslrootcert is this bundle (rdsBundle :1796), which pgx reads to build the root pool")),
+                                                            "internal/cipher/config/config_test.go:1838,1868 Load the URL whose sslrootcert is this bundle (rdsBundle :1798), which pgx reads to build the root pool")),
     f"{ENVOY}/internal/cipher/store/storetest/storetest_test.go": [
         run(f"{ENVOY}/internal/cipher/store/storetest", ["."], "internal/cipher/store/storetest/storetest_test.go:22 go list -deps .", mode="build")],
     f"{ENVOY}/internal/cistore/settlement_fixture_test.go": reads((f"{FIX}/checks-settlement/*", "internal/cistore/settlement_fixture_test.go:85")),
@@ -870,11 +875,15 @@ RULES = {
     # nobody. It is a file of its own under `//go:build !race` now, so the text-check job runs it
     # and this row is the declaration that holds that job's filter to what it reads.
     f"{ENVOY}/internal/dispatch/api/one_expression_guard_test.go": MODULE_SOURCES,
+    f"{ENVOY}/internal/dispatch/architecture/push_test.go": reads(
+        (f"{ENVOY}/scripts/fixtures/github/push.json", "internal/dispatch/architecture/push_test.go:490 os.ReadFile(pushFixture)")),
     f"{ENVOY}/internal/dispatch/delivery/counts_in_documents_test.go": reads(
         (f"{ENVOY}/cmd/dispatch/README.md",
          "internal/dispatch/delivery/counts_in_documents_test.go:22 docnumbers.Check under ../../../../.. "
          "(internal/docnumbers/docnumbers.go:63 os.ReadFile): the intake hold's lease, renewal and retry "
          "it states must equal the constants that decide them")),
+    f"{ENVOY}/internal/dispatch/delivery/intake_push_test.go": reads(
+        (f"{ENVOY}/scripts/fixtures/github/push.json", "internal/dispatch/delivery/intake_push_test.go:55 os.ReadFile(pushFixture)")),
     f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:518")),
@@ -995,6 +1004,10 @@ RULES = {
     # infra/gcp/imports_test.go moved to infra/internal/textcheck/gcp_imports_test.go in this
     # change, and main's entry for the old path came with the forward merge; the guard's own
     # entry is under its new path below.
+    f"{INFRA}/gcp/dispatch_signin_domain_vectors_test.go": reads(
+        (f"{ENVOY}/cmd/dispatch/testdata/signin-domain-vectors.json",
+         "infra/gcp/dispatch_signin_domain_vectors_test.go:40 readDispatchDomainVectors os.ReadFile "
+         "../../cmd/dispatch/testdata/signin-domain-vectors.json")),
     f"{INFRA}/host/heldportwrapper/main_test.go": [
         run(ENVOY, ["./cmd/listener"], "infra/host/heldportwrapper/main_test.go:112 buildListener builds . in ../../../cmd/listener (root go.work)", mode="build")],
     f"{INFRA}/host/live_test.go": [run(INFRA, ["./cmd/pulumi-resource-envoy-infra"], "infra/host/live_test.go pulumitest.Plugin -> internal/pulumitest/pulumitest.go:170-171 go build", mode="build")],
@@ -1336,14 +1349,31 @@ def hold_infra_race_unit_script():
 hold_infra_race_unit_script()
 
 
-# The three packages the test job's race step runs, and which its plain step therefore leaves out.
+# The five packages daemon-go's race step runs, and which its plain step therefore leaves out, each
+# for state its product code shares across goroutines. internal/daemon: the outbox's lane registry,
+# lease renewal and held clock, which share state with the intake's commit hooks and the API.
+# internal/sessionproxy, and internal/launcher, which wires it: the accept loop, copy pairs, pair
+# tracking and bounded drain. internal/intake: the consumers' goroutines (Run's, one per durable
+# consumer, and Lag's, one per consumer read) and the lock they take (Consumers.mu). Its consumers
+# share one handle on the notification stream, and nats.go's Info writes a handle's cached info
+# under no lock while Lag's read of the oldest waiting message (GetMsg) reads it, so each read of
+# the stream's info, DispatchTarget's and createConsumer's, goes through a handle of its own. That
+# race is what this list now guards: under the detector,
+# TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn fails when either read is
+# put back on the shared handle, and a run without the detector passes it.
+# internal/shimwire: the shim's two pumps, the goroutines internal/shim reads the daemon's stream
+# and the wrapped process's stdout on, share the dedupe's delivery record under Dedupe.mu, and a
+# Writer writes each frame whole under a lock of its own (Writer.mu). Under the detector,
+# TestTheDedupeIsSafeForTheShimsTwoPumps fails when the dedupe's lock is taken out, and a run
+# without the detector passes it.
 # One list: both step texts below are built from it, and check-ci-filters.sh fails when either step
-# in ci.yaml differs from the text built here, so the two steps cannot name different sets.
-# internal/record is not among them: its product code starts no goroutine and uses no sync, so the
-# detector has nothing of the package to find there. Its own tests do start goroutines, and the
-# cover the detector gave those is what this trade gives up. The plain step leaves out one more
+# in ci-job-daemon-go.yaml differs from the text built here, so the two steps cannot name different
+# sets. internal/record is not among them: its product code starts no goroutine and uses no sync,
+# so the detector has nothing of the package to find there. Its own tests do start goroutines, and
+# the cover the detector gave those is what this trade gives up. The plain step leaves out one more
 # package than the race step runs, the text checks, which are the text-check job's.
-DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/launcher"]
+DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/launcher", "internal/intake",
+                        "internal/shimwire"]
 # The job of ci-caches.yaml whose race build fills the cache the race step restores, and which
 # ci_workflow_rules.py's check_race_fill_packages holds to that list: a race build of any other
 # job of that file fills another family.
@@ -1503,7 +1533,7 @@ SUPERVISE_TABLE_PATTERN = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS))})$'"
 SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: the plain step runs every package of the module but
-# the race step's three and the text checks, and this package moved into one of those while these
+# the race step's five and the text checks, and this package moved into one of those while these
 # tests stayed here would run them in that step too.
 if SUPERVISE_TABLE_PACKAGE in DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]:
     raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which the plain step leaves out, so "
@@ -1594,11 +1624,11 @@ class RaceJob(NamedTuple):
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
-            "NATS credentials and the NATS auth service",
+            "NATS credentials, the NATS auth service and the sign-in code flow",
             "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
-                    RacePackage("natscred"), RacePackage("internal/cipher/natscallout"))),
+                    RacePackage("natscred"), RacePackage("internal/cipher/natscallout"), RacePackage("internal/oidc"))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
@@ -2572,13 +2602,13 @@ SCRIPT_TEST_READS = [read for gate_ in SCRIPT_TEST_GATES for read in gate_.reads
 # gate decides nothing until the job's own filter selects the job for the same change.
 GUIDE_LAYOUT_READS = reads(
     ("scripts/semantic-line-breaks.guides.test.ts", at("test", GUIDES_STEP)),
-    ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:9,16 spawns it"),
-    ("packages/envoy-client/src/process-exit.ts", "scripts/semantic-line-breaks.ts:39 imports it, so the checker the test spawns runs it"),
-    ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:35 runs the checker over GUIDES (:12)"),
-    ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:35 runs the checker over GUIDES (:12)"),
-    ("docs/kubernetes.md", "scripts/semantic-line-breaks.guides.test.ts:35 runs the checker over GUIDES (:12)"),
-    ("packages/envoy/AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:24-27 runs the checker over it"),
-    ("packages/envoy/cmd/dispatch/README.md", "scripts/semantic-line-breaks.guides.test.ts:24-27 runs the checker over it"),
+    ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:10,17 spawns it"),
+    ("packages/envoy-client/src/process-exit.ts", "scripts/semantic-line-breaks.ts:44 imports it, so the checker the test spawns runs it"),
+    ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
+    ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
+    ("docs/kubernetes.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
+    ("packages/envoy/AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:25-28 runs the checker over it"),
+    ("packages/envoy/cmd/dispatch/README.md", "scripts/semantic-line-breaks.guides.test.ts:25-28 runs the checker over it"),
     (TEST_FIXTURES_SRC, f"{at('test', GUIDES_STEP)} preloads @legion/test-fixtures/row-deadline"),
 )
 
@@ -2595,8 +2625,8 @@ GATES = [
     ], reads=setup_go("typecheck", f"{DAEMON}/go.mod") + darwin_vet_reads("typecheck", DAEMON_DARWIN_VET, DAEMON)),
 
     # The Go daemon's own suite, in a job of its own (.github/workflows/ci-job-daemon-go.yaml):
-    # the plain step over every package of the module but the three concurrent ones and the text
-    # checks, the race step over those three, and the Stage 1 proof, which builds ./cmd/legion
+    # the plain step over every package of the module but the five concurrent ones and the text
+    # checks, the race step over those five, and the Stage 1 proof, which builds ./cmd/legion
     # and boots it. The filter is daemon_go_tests, the list that already stood for exactly this
     # closure while it was aliased into the test filter and gated nothing of its own. The tests
     # the race step does not run are the plugin-pack job's (PLUGIN_PACK_TESTS), whose gate is
@@ -2618,7 +2648,7 @@ GATES = [
         # it lists, the two skipped table pins' included: -skip leaves a test out of the run,
         # never out of the build, so the closure here is the step's whole closure. The Run names
         # the packages the step's own `grep -Ev` keeps (packages_kept over DAEMON_PLAIN_PATTERN),
-        # rather than the superset ./...: the race step's Run below claims the three packages
+        # rather than the superset ./...: the race step's Run below claims the five packages
         # this step leaves out, which are this job's own, while the text checks are the
         # text-check job's, and a Run saying ./... would keep what only their tests read -
         # docs/kubernetes.md - on this job's filter. Only they read it: the way back checks in
@@ -2631,12 +2661,12 @@ GATES = [
              "supervise table's two pure pins skipped by name", {}),
         ]),
         # The race step carries a -skip, which is no form check-ci-filters.sh reduces either, so
-        # its script is pinned too. What it compiles is every test file of the three packages,
+        # its script is pinned too. What it compiles is every test file of the five packages,
         # the skipped tests' included: -skip leaves a test out of the run, never out of the
         # build, so the closure here is the step's whole closure and only those tests' own reads
         # (the plugin-pack gate below) leave this job.
         pinned_step("daemon-go", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
-            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack tests "
+            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the five concurrent packages, the plugin-pack tests "
                                        "skipped by name", {"race": True}),
         ]),
         pinned_step("daemon-go", DAEMON_RACE_IMPOSSIBLE_STEP, DAEMON, DAEMON_RACE_IMPOSSIBLE_SCRIPT, [
@@ -2961,9 +2991,9 @@ GATES = [
         ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:43 stages them (the roots at :29-32); scripts/pi-plugin-prepack.sh:103 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:32 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:86"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100 write dist/THIRD_PARTY_NOTICES with it"),
-        ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:121-124"),
+        ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:145-150"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
-    ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:20-137 imports")
+    ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:23-150 imports")
       + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
 
     gate("pi_legion", "pi-legion", runs=[
@@ -2989,7 +3019,7 @@ GATES = [
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
         (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
-        (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1471,4203, legion-role-claim.test.ts:26, src/daemon-api-version.test.ts:14"),
+        (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1471,4201, legion-role-claim.test.ts:26, src/daemon-api-version.test.ts:14"),
         (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:904"),
         (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:1031 (PLUGIN_REPORT :910)"),
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:111 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
@@ -3360,7 +3390,7 @@ GATES = [
          "webFixturePath joins it under pmdocSourceDir, and --check reads its content to compare"),
         ("scripts/e2e/lib/proof-wait.sh",
          "the guard and the one wait of the shell tests this job runs: packages/envoy/scripts/dev-airlock.test.sh:65, "
-         "dev-broker.test.sh:70, dev-stack.test.sh:88 and listener-deploy-probe.test.sh:31 source it, "
+         "dev-broker.test.sh:70, dev-stack.test.sh:114 and listener-deploy-probe.test.sh:31 source it, "
          "callout-check.test.sh runs callout-check.sh, whose :67 sources it, and packages/envoy/loadtest/run-step.test.sh:47, "
          "common.test.sh:187 and cluster/cluster.test.sh:224 source it"),
         (f"{ENVOY}/loadtest/run-step.test.sh", at("envoy-go-checks", LOADTEST_RUN_STEP)),

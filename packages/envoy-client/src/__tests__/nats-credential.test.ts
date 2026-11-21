@@ -38,7 +38,12 @@ import {
 import { brokerCredential } from "../broker-credential";
 import { readEnvoyConfig } from "../envoy-config";
 import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
-import { natsConnectionOptions } from "../nats-connection";
+import {
+  BROKER_REDIAL_CAP_MS,
+  BROKER_REDIAL_POLL_MS,
+  brokerRedialWaitBounds,
+  natsConnectionOptions,
+} from "../nats-connection";
 import {
   brokerNatsCredential,
   followNatsCredential,
@@ -344,6 +349,10 @@ describe("natsConnectionOptions with the broker token", () => {
       credential: { kind: "broker", broker: credential },
     });
     expect(options.ignoreAuthErrorAbort).toBe(true);
+    // It redials on its own backoff, and sets no `reconnectTimeWait`, which nats.js reads only in
+    // the default handler this one replaces.
+    expect(options.reconnectDelayHandler).toBeFunction();
+    expect(options.reconnectTimeWait).toBeUndefined();
   });
 
   test("the option it sets is the one nats.js reads", () => {
@@ -650,8 +659,11 @@ describe.skipIf(!envoyStackEnabled)(
         // The connection comes back on the token client's schedule: only a token landing starts
         // it over (`BrokerTokenClient.#run`), so the next trade is due at most RETRY_FIRST_WAIT_MS
         // doubled once for each trade that failed while the broker was away, capped at
-        // RETRY_MAX_WAIT_MS, and the connection presents the token it took at its next reconnect
-        // but one, each after nats.js's `reconnectTimeWait`. The row waits for that reconnect.
+        // RETRY_MAX_WAIT_MS, after the last of them. The credential holds the traded token only
+        // once something takes it: unless the keeper's retry takes it first, the next dial due, at
+        // most BROKER_REDIAL_CAP_MS on, finds nothing live to present, is refused, and starts the
+        // trade that takes it; the token then goes out the next time the redial loop asks
+        // (`brokerRedialDelays`), within BROKER_REDIAL_POLL_MS. The row waits for that reconnect.
         const failedTrades = Math.max(broker.state.trades - broker.state.minted.length, 1);
         const nextTradeMs = Math.min(
           RETRY_FIRST_WAIT_MS * 2 ** (failedTrades - 1),
@@ -666,10 +678,11 @@ describe.skipIf(!envoyStackEnabled)(
           () => reconnects > reconnectsBefore,
           dump
         );
-        // Main's bound, `nextTradeMs + 2 * 2_000 + 5_000` from the broker's return, on the
-        // program's own delays: no wait of the token client pending at the return was armed past
-        // that schedule's slot, and the client armed no more than the redials' and the
-        // handshake's time of its own once the broker was back.
+        // Main's bound, `nextTradeMs + BROKER_REDIAL_CAP_MS + BROKER_REDIAL_POLL_MS + 5_000` from
+        // the broker's return, on the program's own delays: no wait of the token client pending at
+        // the return was armed past that schedule's slot, and the client armed no more than the
+        // redial's, the redial loop's ask and the handshake's time of its own once the broker was
+        // back.
         const back = markAt(steps, "back");
         const reconnected = steps.findIndex(
           (step, index) =>
@@ -691,7 +704,7 @@ describe.skipIf(!envoyStackEnabled)(
         expect(
           afterBack.reduce((sum, wait) => sum + wait.delayMs, 0),
           `the token client's own timers between the broker's return and the reconnect: ${JSON.stringify(afterBack)}`
-        ).toBeLessThanOrEqual(2 * 2_000 + 5_000);
+        ).toBeLessThanOrEqual(BROKER_REDIAL_CAP_MS + BROKER_REDIAL_POLL_MS + 5_000);
         expect(opened.isClosed()).toBe(false);
         expect(await opened.rtt()).toBeGreaterThanOrEqual(0);
       } finally {
@@ -704,8 +717,9 @@ describe.skipIf(!envoyStackEnabled)(
 
     test("a token revoked before it lapses is dropped at the second refusal, and the connection comes back", async () => {
       // The broker revokes the session's token: the auth service, which asks it about each
-      // token, refuses every CONNECT that presents it, and nats.js redials every 2 s. Tokens
-      // live ten minutes, so only the keeper's drop gets the connection a token it admits.
+      // token, refuses every CONNECT that presents it, and nats.js redials on its backoff
+      // (`brokerRedialDelays`). Tokens live ten minutes, so only the keeper's drop gets the
+      // connection a token it admits.
       const broker = stubBroker(600);
       const hub = await startCalloutHub("revoked", broker.url);
       let connection: NatsConnection | undefined;
@@ -753,8 +767,10 @@ describe.skipIf(!envoyStackEnabled)(
         broker.state.revoked.add(revoked);
         const reconnectsBefore = reconnects;
         await opened.reconnect();
-        // Two refusals 2 s apart, the drop and the trade, and the redial after it: the row waits
-        // for that reconnect itself.
+        // Two refusals on the backoff, then the token traded at the second, which goes out the
+        // next time the redial loop asks: the connection is under a minute old, so it keeps its
+        // place in the backoff, and the two refusals are its first two redials. The row waits for
+        // that reconnect itself.
         const dump = () =>
           [
             `natsd refused ${hub.refusals()} connection(s), and the broker minted ${broker.state.minted.length} token(s)`,
@@ -767,9 +783,11 @@ describe.skipIf(!envoyStackEnabled)(
           () => reconnects > reconnectsBefore,
           dump
         );
-        // Main's bound, three of nats.js's 2 s redials and 10 s more from the revoke, on the
-        // program's own delays: what the keeper and the token client waited on between the revoke
-        // and the reconnect - the drop's renewal, its trade - stays inside it.
+        // Main's bound from the revoke, on the program's own delays: the first redial due at most
+        // `brokerRedialWaitBounds(1)` after the connection opened and the second at most
+        // `brokerRedialWaitBounds(2)` after that, then BROKER_REDIAL_POLL_MS, and 10 s for the
+        // trade and the handshakes. What the keeper and the token client waited on between the
+        // revoke and the reconnect - the drop's renewal, its trade - stays inside it.
         const revokedAt = markAt(steps, "revoked");
         const cameBack = steps.findIndex(
           (step, index) =>
@@ -783,7 +801,12 @@ describe.skipIf(!envoyStackEnabled)(
         expect(
           waited.reduce((sum, wait) => sum + wait.delayMs, 0),
           `the program's own timers between the revoke and the reconnect: ${JSON.stringify(waited)}\n${dump()}`
-        ).toBeLessThan(3 * 2_000 + 10_000);
+        ).toBeLessThan(
+          brokerRedialWaitBounds(1).highestMs +
+            brokerRedialWaitBounds(2).highestMs +
+            BROKER_REDIAL_POLL_MS +
+            10_000
+        );
         expect(hub.refusals()).toBeGreaterThanOrEqual(2);
         expect(broker.state.minted.length).toBe(2);
         expect(warnings.join("\n")).toContain(

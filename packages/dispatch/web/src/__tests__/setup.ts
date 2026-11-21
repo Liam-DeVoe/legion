@@ -14,6 +14,7 @@ import { resetDraftStorage } from "../features/inbox/draft-store";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
 import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
+import { resetRowReferenceReadings } from "../features/issue-page/row-references";
 import { resetTimestampTick } from "../features/refs/Timestamp";
 import { resetWriteStorage } from "../features/writes/write-storage";
 import { type Writes, watchWriteStores } from "../features/writes/write-store";
@@ -51,13 +52,15 @@ expect.extend(reportableJestDomMatchers());
 // here, since this file is what every `web/src` test loads.
 //
 // The per-test deadline is the `--timeout` of the command line that runs the file, each read
-// under load and written in `package.json`'s `"//"` note: 15000 on the `test:web` script that
-// runs `web/src`, which `test:web:cold` runs with one more preload, and 60000 on `test:harness`,
-// which runs `e2e/__tests__`. Bun's own default is 5000 ms, which a lane test failed on a 2-core
-// pod, where it read 4.45 s idle and 6.55 s loaded: "the Playwright config refuses a --workers
-// that is not the lane count", of `e2e/__tests__/harness-lanes.test.ts`, a file pull request
-// #3435 later deleted. The flag carries it rather than a `jest.setTimeout` here, because a
-// preload's deadline is not dependable: a 6 s probe in a directory run started by hand ended
+// under load and written in `package.json`'s `"//"` note: 30000 on the `test:web` script, which
+// runs `web/src` less `web/src/features/issue/useIssueDrafts.exploration.test.ts` (its
+// `--path-ignore-patterns`) and which `test:web:cold` and `test:web:late-reads` run with one more
+// preload; 1000000 on `test:web:drafts`, which runs that exploration file alone; and 60000 on
+// `test:harness`, which runs `e2e/__tests__`. Bun's own default is 5000 ms, which a lane test
+// failed on a 2-core pod, where it read 4.45 s idle and 6.55 s loaded: "the Playwright config
+// refuses a --workers that is not the lane count", of `e2e/__tests__/harness-lanes.test.ts`, a
+// file pull request #3435 later deleted. The flag carries it rather than a `jest.setTimeout` here,
+// because a preload's deadline is not dependable: a 6 s probe in a directory run started by hand ended
 // "this test timed out after 5000ms" three times of three with two scratch files beside it and
 // passed with one, and what file of a run kept it and what file lost it did not reproduce the
 // same way twice. Every one of those command lines also preloads
@@ -200,6 +203,14 @@ afterEach(resetReachability);
 // `<Timestamp>` would tick. `clearTimeout` clears a timer of either clock (measured on Bun 1.4.4),
 // so this reset needs no place relative to the clock restore below.
 afterEach(resetTimestampTick);
+// Each text a row reads is kept in one module-level cache (`row-references.ts`), and so is the id of
+// each list of keys it was read against. A rerun of the file keeps both with the module: a row that
+// counts the readings it makes found its texts read by the run before and counted fewer reads than
+// it made (19 of 20 reruns of one seed failed). Each row starts with neither. The reset runs before
+// each row as well as after it, because a file's own `afterEach` that throws skips every later
+// `afterEach` of that row, this preload's included (the hook order below).
+beforeEach(resetRowReferenceReadings);
+afterEach(resetRowReferenceReadings);
 
 // A fake clock a test installed is put back here as well as in that test's own `finally` or its
 // file's `afterEach`, because Bun keeps it across files: a test that installs it and then fails
