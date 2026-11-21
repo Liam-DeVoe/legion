@@ -2553,8 +2553,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A role the issue's live pod was built before waits on this row, before it creates,
 		// retrees or hands anything to a claim: a launch into that pod would replace it with the
-		// issue's disk, and only the pod's update round or its release may (ruling 18).
-		if err := r.roleWaitsForItsPod(ctx, row, issue, payload.Role); err != nil {
+		// issue's disk, and only the pod's update round or its release may (ruling 18). The claim
+		// runs in the slot of its agent (claim.Token.Cut), which is the role's own for a claim named
+		// by its role, and the slot of a keyed agent's first step for a step of another role.
+		if err := r.roleWaitsForItsPod(ctx, row, issue, slotOfToken(token, payload.Role)); err != nil {
 			return err
 		}
 		// A child carried into a tree of its own — a finished root's hand-over, or a person's label
@@ -2595,6 +2597,9 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// row finishes without acting, since the claim runs nothing and the start of the step
 		// the issue stands in now gives it its role.
 		if found && payload.Entry > 0 && payload.Phase != "" && machine.Claim().Role != payload.Role {
+			if err := r.reroleWaitsForCredential(issue, token, payload.Role); err != nil {
+				return err
+			}
 			err := r.reroleForStep(ctx, machine, token, row, payload)
 			if errors.Is(err, supervise.ErrStepLeft) {
 				r.log.Info("outbox start serves a step its issue left before the claim took its role; finished without acting", "row", row.ID,
@@ -3968,8 +3973,8 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 	return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
 }
 
-// roleWaitsForItsPod is the fence a start of role carries where the issue's live pod was built
-// before the deployment defined role (runtime.IssuePodRoles): the pod has no launcher, Secret or
+// roleWaitsForItsPod is the fence a start carries where the issue's live pod was built before the
+// deployment defined role, the slot the start's claim runs in (slotOfToken, runtime.IssuePodRoles): the pod has no launcher, Secret or
 // volume of the role, and a launch into it would replace it, ending every role in it and taking
 // the issue's disk with everything they did not push. It answers a wait, whose text begins with
 // pods.StartWaitsForPodPrefix and which is runtime.ErrAwaitsPodUpdate too, and the row tries
@@ -4017,6 +4022,37 @@ func (r *outbox) roleWaitsForItsPod(ctx context.Context, row record.OutboxRow, i
 	}
 	return wait.Errorf("%s%s of %s: the pod %s was built before the deployment defined %s; its update round or its release replaces it: %w",
 		prefix, role, issue.Key, pod, role, runtime.ErrAwaitsPodUpdate)
+}
+
+// slotOfToken is the slot of the pod that token's claim runs in: its agent's name
+// (claim.Token.Cut), and role for a token that names no agent.
+func slotOfToken(token claim.Token, role claim.Role) claim.Role {
+	if _, agent, named := token.Cut(); named {
+		return claim.Role(agent)
+	}
+	return role
+}
+
+// reroleWaitsForCredential is the fence the start of an entry that re-roles its claim, token,
+// carries where the claim's slot in the issue's live pod runs a launcher of an image before the
+// credential wait (runtime.IssuePodRoles' SlotWaitsForCredential): that launcher starts a child at
+// once, though the re-role has just written the new role's credential into the slot (Task A1g3),
+// so the child would act as the App its gh files held, the earlier role's, until the next refresh
+// and the kubelet's sync. It answers a wait, whose text begins with pods.StartWaitsForPodPrefix and
+// which is runtime.ErrAwaitsPodUpdate too, as roleWaitsForItsPod's is, and the row tries again on
+// its own backoff; the pod's update round or its release replaces the pod with launchers that
+// wait. A runtime with no pods answers nothing, and a start that re-roles nothing never asks.
+func (r *outbox) reroleWaitsForCredential(issue record.Issue, token claim.Token, role claim.Role) error {
+	podRoles, ok := r.supervisor.deps.Runtime.(runtime.IssuePodRoles)
+	if !ok {
+		return nil
+	}
+	pod, waits := podRoles.SlotWaitsForCredential(issue.Key, slotOfToken(token, role))
+	if waits {
+		return nil
+	}
+	return wait.Errorf("%s%s of %s: the pod %s was built before its launchers waited for a new role's credential; its update round or its release replaces it: %w",
+		pods.StartWaitsForPodPrefix, role, issue.Key, pod, runtime.ErrAwaitsPodUpdate)
 }
 
 // startWaitToldPrefix begins the last error of a start that waits for its pod once the controller

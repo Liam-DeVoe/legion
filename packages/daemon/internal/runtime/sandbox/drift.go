@@ -567,3 +567,23 @@ func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
 	}
 	return string(pod.UID), true
 }
+
+// SlotWaitsForCredential satisfies runtime.IssuePodRoles: the uid of the issue's pod whose
+// launcher of slot is connected and said in its hello no credential wait (launchers.credentialWaits),
+// and false; "" and true where that launcher waits, or where no launcher of the slot is connected.
+// It reads the launchers this runtime accepted and makes no API call.
+func (r *Runtime) SlotWaitsForCredential(issue string, slot claim.Role) (string, bool) {
+	project, err := claim.ProjectToken(r.project)
+	if err != nil {
+		return "", true
+	}
+	token, err := issuePod{}.claimToken(project, issue, slot)
+	if err != nil {
+		return "", true
+	}
+	pod, waits := r.launchers.credentialWaits(token)
+	if waits {
+		return "", true
+	}
+	return pod, false
+}

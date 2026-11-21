@@ -228,9 +228,14 @@ type IssuePodReader interface {
 var ErrAwaitsPodUpdate = errors.New("the issue's pod was built before this role, and only its update round or its release replaces it")
 
 // IssuePodRoles answers whether the issue's Sandbox holds a live pod whose launcher was built
-// without role, and that pod's uid. A runtime with no pods (tmux) does not implement it.
+// without role, and that pod's uid; and whether the launcher of slot in the issue's live pod starts
+// a child only once the slot's gh files hold the start's credential (SlotWaitsForCredential), with
+// the pod's uid where it does not: a launcher of an image before that wait, which a re-role into
+// its slot waits out until the pod's update round or its release. A runtime with no pods (tmux)
+// does not implement it.
 type IssuePodRoles interface {
 	PodLacksRole(issue string, role claim.Role) (pod string, lacks bool)
+	SlotWaitsForCredential(issue string, slot claim.Role) (pod string, waits bool)
 }
 
 // LaunchSessionNamer names the session a launch's agent starts or resumes under, where the

@@ -94,6 +94,11 @@ type launcherSession struct {
 	// and resume the file it finds (shimwire.LauncherHello.ResumesBySession). A launcher built
 	// before it could says nothing, and relaunch names it no session by its id alone.
 	resumesBySession bool
+	// credentialWait is whether this launcher's hello said it starts a child only once its slot's
+	// gh files hold the credential the start names (shimwire.LauncherHello.CredentialWait). A
+	// launcher of an image before that wait says nothing, and a re-role into its slot waits for
+	// the pod's update round (Runtime.SlotWaitsForCredential).
+	credentialWait bool
 
 	mu      sync.Mutex
 	conn    net.Conn
@@ -123,7 +128,8 @@ func newLaunchers(setting leakguard.Setting, leakCheck LeakCheckReader, saved ru
 func (d *launchers) accept(token claim.Token, issue string, podCreated, keptSince time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, keptSince: keptSince, id: hello.LauncherID, podUID: hello.PodUID,
 		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
-		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession}
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled, resumesBySession: hello.ResumesBySession,
+		credentialWait: hello.CredentialWait}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -263,6 +269,26 @@ func (d *launchers) resumesBySession(token claim.Token, podUID string) bool {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	return !session.closed && session.resumesBySession
+}
+
+// credentialWaits is the uid of the pod the launcher of token, a slot's token, connected from, and
+// whether its hello said it starts a child only once the slot's gh files hold the start's
+// credential (launcherSession.credentialWait). It answers "" and true where no launcher of the slot
+// is connected: the launch then builds or waits for a pod, and a pod this release builds runs
+// launchers that wait.
+func (d *launchers) credentialWaits(token claim.Token) (string, bool) {
+	d.mu.Lock()
+	session := d.sessions[token]
+	d.mu.Unlock()
+	if session == nil {
+		return "", true
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.closed {
+		return "", true
+	}
+	return session.podUID, session.credentialWait
 }
 
 func (d *launchers) await(ctx context.Context, token claim.Token, podUID string) (*launcherSession, error) {
