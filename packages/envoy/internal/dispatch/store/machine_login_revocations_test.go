@@ -3,10 +3,12 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // recordedMachineLoginRevocation records, in a transaction of its own, that Dispatch owes the
@@ -142,5 +144,102 @@ func TestARecordOfAMachineLoginRevocationTakesThePersonsApprovalLock(t *testing.
 	}
 	if owed, _, err := NewMachineLoginRevocations(database.Pool).Owing(ctx, email); err != nil || owed {
 		t.Fatalf("Owing(%s) after every record was rolled back or refused = %t, %v; want nothing owed", email, owed, err)
+	}
+}
+
+// errDatabaseGone is the failure a failingStatementTx answers for its failing statement.
+var errDatabaseGone = errors.New("the database is not answering")
+
+// goneRow is the row of a read the database did not answer.
+type goneRow struct{}
+
+func (goneRow) Scan(...any) error { return errDatabaseGone }
+
+// failingStatementTx is a transaction whose statement number failAt fails as a database that
+// stopped answering fails it, and whose every other statement runs on the real transaction.
+type failingStatementTx struct {
+	pgx.Tx
+	failAt, seen int
+}
+
+func (tx *failingStatementTx) fails() bool {
+	tx.seen++
+	return tx.seen == tx.failAt
+}
+
+func (tx *failingStatementTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if tx.fails() {
+		return pgconn.CommandTag{}, errDatabaseGone
+	}
+	return tx.Tx.Exec(ctx, sql, args...)
+}
+
+func (tx *failingStatementTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	if tx.fails() {
+		return goneRow{}
+	}
+	return tx.Tx.QueryRow(ctx, sql, args...)
+}
+
+// TestNoMachineLoginApprovalErrorNamesAPerson: the person's approval lock, the record of a
+// revocation of their machine logins and an approval's hold of their lock are each run once for
+// each statement they make, with that statement failing as a database that stopped answering
+// fails it. Each failure answers an error that wraps the database's and names no part of the
+// person's address: a removal and an approve write such an error to the handler's error line,
+// and every caller knows whom it asked (access.TestNoAccessErrorNamesAPerson holds the access
+// package to the same).
+//
+// Control: the try of the lock naming the address again, and the record's and the hold's first
+// statements fail naming it.
+func TestNoMachineLoginApprovalErrorNamesAPerson(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	const local, domain = "zq.hidden.person", "zq-secret.example"
+	const email = local + "@" + domain
+	steps := []struct {
+		name string
+		run  func(tx pgx.Tx) error
+	}{
+		{"LockMachineLoginApprovals", func(tx pgx.Tx) error { return LockMachineLoginApprovals(ctx, tx, email) }},
+		{"RecordMachineLoginRevocation", func(tx pgx.Tx) error { return RecordMachineLoginRevocation(ctx, tx, email) }},
+		{"HoldMachineLoginApprovals", func(tx pgx.Tx) error { _, err := HoldMachineLoginApprovals(ctx, tx, email); return err }},
+	}
+	for _, step := range steps {
+		failed := 0
+		for failAt := 1; ; failAt++ {
+			if failAt > 16 {
+				t.Fatalf("%s still makes a statement at number 16; it has no end this test finds", step.name)
+			}
+			inner, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			tx := &failingStatementTx{Tx: inner, failAt: failAt}
+			err = step.run(tx)
+			if rollback := inner.Rollback(ctx); rollback != nil {
+				t.Fatalf("roll back: %v", rollback)
+			}
+			if tx.seen < failAt {
+				// The step ended before it made statement failAt: every statement it makes has failed.
+				if err != nil {
+					t.Errorf("%s with no statement failing = %v, want it to succeed", step.name, err)
+				}
+				break
+			}
+			failed++
+			if !errors.Is(err, errDatabaseGone) {
+				t.Errorf("%s with its statement %d failing = %v, want it to wrap the database's failure", step.name, failAt, err)
+				continue
+			}
+			for _, part := range []string{email, local, domain} {
+				if strings.Contains(strings.ToLower(err.Error()), part) {
+					t.Errorf("%s with its statement %d failing = %q, which names %q of the person it was about", step.name, failAt, err, part)
+					break
+				}
+			}
+		}
+		if failed == 0 {
+			t.Errorf("%s made no statement, so this test failed none of them", step.name)
+		}
 	}
 }
