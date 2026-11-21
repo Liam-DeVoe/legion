@@ -306,7 +306,7 @@ export async function seedIssueWithDocuments(
   project: RowKey,
   shape: IssueShape
 ): Promise<SeededSkeleton> {
-  await createProject({ key: project, name: "Issue layout" });
+  await createProject({ key: project, name: "Layout" });
   // `force` past the possible-duplicate guard: these titles are deliberately close to each other.
   const parent = await createIssue({
     force: true,

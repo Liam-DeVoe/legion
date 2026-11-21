@@ -325,7 +325,7 @@ export interface SpineSeed {
  *  the answered question names another node, and a check that serves two requirements. */
 export async function seedSpineCases(): Promise<SpineSeed> {
   const project = layoutProject();
-  await createProject({ key: project, name: "Issue layout" });
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
     project,
@@ -374,7 +374,7 @@ async function seedPlainIssue(
   summary: boolean,
   title: string
 ): Promise<PlainIssueSeed> {
-  await createProject({ key: project, name: "Issue layout" });
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
     project,
@@ -434,7 +434,7 @@ const NESTING_ASKER = {
  *  of the thread and keeps the comment the request named beside it. */
 export async function seedReplyNesting(): Promise<ReplyNestingSeed> {
   const project = layoutProject();
-  await createProject({ key: project, name: "Issue layout" });
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
     project,
@@ -494,7 +494,7 @@ export const UNBROKEN_PATH =
 /** An issue whose spec marks one requirement whose words hold that run. */
 export async function seedUnbrokenWords(): Promise<PlainIssueSeed> {
   const project = layoutProject();
-  await createProject({ key: project, name: "Issue layout" });
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
     project,
@@ -531,7 +531,7 @@ export interface ChildTitleSeed {
  *  seed the requirement row uses. */
 export async function seedUnbrokenChildTitle(): Promise<ChildTitleSeed> {
   const project = layoutProject();
-  await createProject({ key: project, name: "Issue layout" });
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
     project,
@@ -785,7 +785,7 @@ export interface ReviewListSeed {
  *  name a statement: only those two wait for her review. */
 export async function seedReviewList(): Promise<ReviewListSeed> {
   const project = layoutProject();
-  await createProject({ key: project, name: "Issue layout" });
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
     project,
@@ -843,7 +843,7 @@ export interface PlanOrderSeed {
  *  write is what leaves that pointer dangling, and it changes no pointer of its own. */
 export async function seedPlanOrder(): Promise<PlanOrderSeed> {
   const project = layoutProject();
-  await createProject({ key: project, name: "Issue layout" });
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
     project,
@@ -883,7 +883,7 @@ export interface WideCodeSeed {
  */
 export async function seedWideCode(): Promise<WideCodeSeed> {
   const project = layoutProject();
-  await createProject({ key: project, name: "Issue layout" });
+  await createProject({ key: project, name: "Layout" });
   const issue = await createIssue({
     force: true,
     project,

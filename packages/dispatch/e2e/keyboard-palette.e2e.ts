@@ -21,7 +21,7 @@ import {
 } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
 import { keyedSearchWord } from "./search";
-import { expect, type Locator, rowKey, rowSessionId, test } from "./test";
+import { emptyDatabase, expect, type Locator, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -66,10 +66,9 @@ async function expectAnswer(dialog: Locator, words: string, answer: SearchRespon
  *  key or name holds the words in its box as a row of its own, above the hits and above every
  *  action that holds them further in (`projectRows`, web/src/features/search/SearchPalette.tsx),
  *  and it reads them from every project of the stack, not the row's alone. A row whose claim is
- *  that before the search answers the list holds only those actions, and so no highlight, reads
- *  first that no other row's project stands above them: the highlight would start on it, and
- *  Enter would open it and close the bar. So no project of this suite is named with `issue`, the
- *  word those rows search. */
+ *  that the list holds those actions and its hits with no project above them empties the stack
+ *  itself (`emptyDatabase`) and reads this after its own seed: a project above them would take
+ *  the highlight, and Enter would open it and close the bar. */
 async function expectNoProjectHolds(words: string): Promise<void> {
   const holding = (await listProjects())
     .map((project) => `${project.key} ${project.name}`)
@@ -601,11 +600,20 @@ test("an arrow pressed before the search answers reaches no action the query fin
   browser,
 }) => {
   const core = rowKey("CORE");
+  // The claim is the empty case: before the search answers, the list holds only the actions
+  // `issue` finds mid-label, and so no highlight. The projects the bar lists above them are the
+  // whole stack's whose key or name holds the word, and no key of this row's keeps another row's
+  // out, since the word must be one inside a fixed action's label (`Close issue`). So the row
+  // empties the stack itself. It empties through `emptyDatabase`, which counts the database as
+  // the worker's, so the datasets the worker keeps are written again for the rows after this one.
+  await emptyDatabase();
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Arrow before the issue search" });
   await patchIssue(issue.key, { status: "in_progress" });
   // The list `issue` draws before the search answers holds no project (`expectNoProjectHolds`).
   await expectNoProjectHolds("issue");
+  // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
+  // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).
   const context = await asUser(browser, "alice");
 
   try {
@@ -662,11 +670,22 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
   browser,
 }) => {
   const core = rowKey("CORE");
+  // The claim is the empty case: the list `issue` draws holds no project above its hit, so the
+  // highlight starts on the hit, Down stays among the hits, and Enter opens one. The projects the
+  // bar lists are the whole stack's whose key or name holds the word, and no key of this row's
+  // keeps another row's out, since the word must be one inside a fixed action's label
+  // (`Close issue`). So the row empties the stack itself, and over it the one hit is this row's
+  // own issue, whose page Enter opens. It empties through `emptyDatabase`, which counts the
+  // database as the worker's, so the datasets the worker keeps are written again for the rows
+  // after this one.
+  await emptyDatabase();
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Stale answer for an issue search" });
   await patchIssue(issue.key, { status: "in_progress" });
   // The list `issue` draws holds no project above its hit (`expectNoProjectHolds`).
   await expectNoProjectHolds("issue");
+  // Signed in after the emptying, as e2e/issue.e2e.ts's row is: the emptying deletes every
+  // session a sign-in wrote but the ones it writes again for alice and bob (e2e/users.ts).
   const context = await asUser(browser, "alice");
 
   try {

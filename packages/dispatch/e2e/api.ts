@@ -15,6 +15,7 @@ import {
   type RequestBody,
   type Result,
   repoParams,
+  routePath,
   routeUrl,
 } from "../web/src/api/paths";
 import type { Actor } from "../web/src/api/types";
@@ -746,7 +747,7 @@ export async function uploadIssueFile(
   form.append("name", input.name);
   form.append("file", new Blob([input.bytes], { type: input.contentType }), input.name);
   const response = await fetch(
-    new URL(routeUrl("/api/v1/issues/{key}/artifacts", { key: issue }), baseUrl),
+    new URL(routePath("post", "/api/v1/issues/{key}/artifacts", { key: issue }), baseUrl),
     { body: form, headers: await userHeaders(login), method: "POST" }
   );
   if (!response.ok) {

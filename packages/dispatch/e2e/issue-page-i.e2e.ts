@@ -338,7 +338,7 @@ async function enterNode(
  *  project to cite. */
 async function seedCitedIssue(): Promise<string> {
   const project = rowKey("CITED");
-  await createProject({ key: project, name: "Cited issues" });
+  await createProject({ key: project, name: "Citations" });
   const cited = await createIssue({
     force: true,
     project,
@@ -2084,7 +2084,7 @@ test("the caret Enter puts in a statement stays on screen while the editor draws
     // The cited issues are another project's, of the row's own (`rowKey`, e2e/test.ts), so
     // nothing the page reads before the editor opens has their names in hand.
     const citedProject = rowKey("CITED");
-    await createProject({ key: citedProject, name: "Cited issues" });
+    await createProject({ key: citedProject, name: "Citations" });
     const cited: string[] = [];
     for (let number = 1; number <= 60; number += 1) {
       const issue = await createIssue({
@@ -2186,7 +2186,7 @@ test("the words the caret Enter puts in a statement stand still while the editor
     // nothing the page reads before the editor opens has their names in hand, and the editor
     // draws them after the caret is in.
     const citedProject = rowKey("CITED");
-    await createProject({ key: citedProject, name: "Cited issues" });
+    await createProject({ key: citedProject, name: "Citations" });
     const cited: string[] = [];
     for (let number = 1; number <= 60; number += 1) {
       const issue = await createIssue({
