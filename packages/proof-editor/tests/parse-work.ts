@@ -69,7 +69,9 @@
  * The dependency patches. Six of the root `package.json`'s `patchedDependencies` entries are the
  * parsers this package reads markdown with, the proof marks' transform and the transform that
  * resolves reference-style links, patched so that a body costs time in proportion to its length
- * rather than to its square (sjawhar/legion#2519). Each patch leaves the package's output as it
+ * rather than to its square (sjawhar/legion#2519), but for emphasis nested inside emphasis, whose
+ * cost stays the square of its depth, as upstream's does (docs/upstream.md, "Parser patches").
+ * Each patch leaves the package's output as it
  * was, and each of the four parser patches patches both `lib/` and `dev/lib/`, because Vite
  * resolves the `development` export condition. What each makes
  * linear, and what it counts:

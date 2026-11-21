@@ -253,7 +253,7 @@ const shapes: HeavyShape[] = [
     // Each `<em>` is a tag nothing closes, so `convertHtmlFormatting` finds no `</em>` for it: a
     // search forward for the closer read every child after the tag, about the square of the
     // span's children; `patches/proof-sdk@…tgz.patch` finds each tag's closer in one pass from the
-    // end (`nextCloseTags`), with the same matches.
+    // end (`nextClosingTags`), with the same matches.
     name: "a proof span holding 1,000 emphasis tags that nothing closes",
     grow: (size) =>
       `<span data-proof="authored" data-id="p" data-by="human:reader">${"<em>w ".repeat(size)}</span>`,

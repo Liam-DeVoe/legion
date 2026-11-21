@@ -1,7 +1,7 @@
 # The upstream proof-sdk modules
 
 The modules of the `sjawhar/proof-sdk` fork that `src/` imports at run time, as `proof-sdk-upstream/src/…`, come from the tarball `proof-sdk-<commit>.tgz` beside `package.json`, installed as `proof-sdk-upstream`.
-This page says how that pin moves, how each tool resolves those modules, and which dependency patches keep the markdown parsers linear.
+This page says how that pin moves, how each tool resolves those modules, and which dependency patches keep the markdown parsers linear, with the one shape they do not: emphasis nested inside emphasis.
 
 ## Raising the pin
 
@@ -30,6 +30,8 @@ tsc reads `upstream/` instead: declarations that `scripts/upstream-declarations.
 ## Parser patches
 
 Four of the root `package.json`'s `patchedDependencies` make the markdown parsers linear: `micromark@4.0.2`, `micromark-core-commonmark@2.0.3`, `micromark-extension-gfm-footnote@2.1.0` and `mdast-util-from-markdown@2.0.3`.
+One shape stays quadratic, as upstream's does: emphasis nested inside emphasis costs the square of its depth, because micromark resolves what lies between an opener and its closer again each time an enclosing run closes (emphasis nested 800 deep, 4,801 characters: 26,899,192 attention steps).
+Dispatch's server bounds that depth: it refuses a body that nests inline marks more than 100 deep (`maxInlineNesting`, `packages/envoy/internal/dispatch/pmdoc/nesting.go`), where this parse takes 422,392 attention steps.
 A fifth, the `proof-sdk` tarball's, makes the proof marks' transform (`remarkProofMarks`) linear, its legacy-formatting step (`convertHtmlFormatting`) included.
 A sixth, `remark-inline-links@7.0.0`'s, removes each parent's definitions in one pass after its walk, where a splice for each shifted every later sibling.
 Each of the four changes both `lib/` and `dev/lib/`, because Vite resolves the `development` export condition.
