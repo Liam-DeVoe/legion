@@ -68,7 +68,7 @@ test("RailButton shows the person's own keys for its action, and none where they
 // together as `⌘K` on a Mac and spacing them as `Ctrl K` elsewhere.
 test("RailButton draws a person's key in the help's glyphs", () => {
   const stored = userPreferenceStorageKey("alice", "shell.keymap");
-  window.localStorage.setItem(stored, JSON.stringify({ "global.search": ["$mod+ArrowDown"] }));
+  window.localStorage.setItem(stored, JSON.stringify({ "global.search": ["$mod+Escape"] }));
   const view = render(
     <KeymapProvider login="alice">
       <RailButton action="global.search" className="mt-4" label="Search" onOpen={() => {}} />
@@ -77,9 +77,9 @@ test("RailButton draws a person's key in the help's glyphs", () => {
 
   try {
     const search = screen.getByRole("button", { name: /^Search/ });
-    expect(keyTokens("$mod+ArrowDown")[0]?.token).toBe(`${MOD_KEY_LABEL}+↓`);
+    expect(keyTokens("$mod+Escape")[0]?.token).toBe(`${MOD_KEY_LABEL}+Esc`);
     expect(search.querySelector("kbd")?.textContent).toBe(
-      MOD_KEY_LABEL === "⌘" ? "⌘↓" : `${MOD_KEY_LABEL} ↓`
+      MOD_KEY_LABEL === "⌘" ? "⌘Esc" : `${MOD_KEY_LABEL} Esc`
     );
   } finally {
     view.unmount();

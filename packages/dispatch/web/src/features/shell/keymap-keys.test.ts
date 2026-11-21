@@ -127,3 +127,20 @@ test("a stored plain letter of Search and actions, which also works while the re
   window.localStorage.setItem(ALICE_KEY, JSON.stringify({ "global.search": ["u", "$mod+j"] }));
   expect(storedPersonKeys("alice")).toEqual({ "global.search": ["$mod+j"] });
 });
+
+// Ctrl+V pastes in a text field, so a stored `$mod+v` of Search and actions, which the refusal
+// check took before it read a field's Ctrl keys, would take the paste from every field.
+test("a stored text-field key of Search and actions is dropped when the keys are read", () => {
+  // Added beside the default: the default is what stays.
+  window.localStorage.setItem(ALICE_KEY, JSON.stringify({ "global.search": ["$mod+k", "$mod+v"] }));
+  expect(storedPersonKeys("alice")).toEqual({ "global.search": ["$mod+k"] });
+  const view = drawProbes("alice", "global.search");
+  try {
+    expect(shown("global.search")).toBe("$mod+k");
+  } finally {
+    view.unmount();
+  }
+  // In place of the default: dropping a key only takes keys away, so none is left.
+  window.localStorage.setItem(ALICE_KEY, JSON.stringify({ "global.search": ["$mod+v"] }));
+  expect(storedPersonKeys("alice")).toEqual({ "global.search": [] });
+});

@@ -4,6 +4,7 @@ import { type ReactNode, useCallback, useLayoutEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { openInNewTab } from "../shell/new-tab";
+import { hrefTarget } from "./link-address";
 import { MARKDOWN_BODY_SELECTOR } from "./markdown-engine";
 import { fetchReferencePath, needsSpecSlug } from "./reference-target";
 import { buildReferencePath, type DispatchReferenceRoute, parseNodeReference } from "./routes";
@@ -145,10 +146,9 @@ export function useLinkOpener(): OpenLink {
  * above. A click a handler already took (a picture opening its lightbox, a router link, the
  * document editor's own link) is left alone, and so are a modifier click and a middle click,
  * which the browser opens in a new tab from the link's `href` - a reference link's is its page
- * (`collectReferenceAnchors`) - and a link to an address the server answers itself. A link with a
- * blank `href` and neither data attribute opens nothing, whatever the click: the sanitizer draws
- * a link whose scheme it refuses (`javascript:`, `data:`) with an empty `href` (`linkAddress`),
- * which the browser reads as the page the reader is on, an address the link never named.
+ * (`collectReferenceAnchors`) - and a link to an address the server answers itself. A link whose
+ * `href` names nothing (`hrefTarget`) and that has neither data attribute opens nothing, whatever
+ * the click.
  *
  * Its listener is attached in the commit that first draws the host, as `KeymapProvider`'s keydown
  * listener is, so no body drawn in that commit is in the page before the host listens. `AuthGate`
@@ -182,7 +182,7 @@ export function LinkClickHost(): ReactNode {
       const target =
         anchor.getAttribute("data-dispatch-ref") ??
         anchor.getAttribute("data-dispatch-href") ??
-        ((anchor.getAttribute("href") ?? "").trim() === "" ? null : anchor.href);
+        hrefTarget(anchor);
       if (target === null) {
         event.preventDefault();
         return;

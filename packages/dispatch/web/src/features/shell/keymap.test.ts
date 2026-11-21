@@ -166,15 +166,15 @@ test("a chord fires within the timeout, shows its pending prefix, and expires af
   keymap.register("global", [inbox.definition]);
 
   expect(press("g")).toBe(true);
-  expect(keymap.pending()).toBe("g");
+  expect(keymap.chord().keys).toBe("g");
   advance(999);
   press("i");
   expect(inbox.fired()).toBe(1);
-  expect(keymap.pending()).toBe("");
+  expect(keymap.chord().keys).toBe("");
 
   press("g");
   advance(1000);
-  expect(keymap.pending()).toBe("");
+  expect(keymap.chord().keys).toBe("");
   expect(press("i")).toBe(false);
   expect(inbox.fired()).toBe(1);
 });
@@ -188,7 +188,7 @@ test("a key that does not continue the chord is read afresh on its own", () => {
   press("g");
   press("j");
   expect(next.fired()).toBe(1);
-  expect(keymap.pending()).toBe("");
+  expect(keymap.chord().keys).toBe("");
 });
 
 test("registering a strict prefix of an existing sequence throws in strict mode", () => {

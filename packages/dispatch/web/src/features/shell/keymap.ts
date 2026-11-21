@@ -452,8 +452,6 @@ export interface Keymap {
    *  documents), and they are one row, enabled when either instance's `when()` holds. */
   describe(): KeyBindingDescription[];
   handleKeyDown(event: KeyboardEvent): void;
-  /** The keys typed so far of an unfinished chord (`"g"`), or `""`. */
-  pending(): string;
   pushScope(scope: KeymapScope): () => void;
   register(scope: KeymapScope, bindings: readonly KeyBinding[]): () => void;
   subscribe(listener: () => void): () => void;
@@ -759,9 +757,6 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
         return;
       }
       clearPending();
-    },
-    pending() {
-      return chord.keys;
     },
     pushScope(scope) {
       scopes.push(scope);

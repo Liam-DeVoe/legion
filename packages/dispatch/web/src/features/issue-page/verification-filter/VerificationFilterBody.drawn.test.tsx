@@ -2550,12 +2550,12 @@ test("the view's tree answers the outline's keys, and a check's facts open from 
     try {
       held.length = 0;
       await user.keyboard("t");
-      expect(appKeymap.pending()).toBe("t");
+      expect(appKeymap.chord().keys).toBe("t");
       await user.keyboard("j");
       expect(standing()).toEqual({ focus: "r1", stop: ["r1"] });
       await user.keyboard("tk");
       expect(turnedOff).toBe(1);
-      expect(appKeymap.pending()).toBe("");
+      expect(appKeymap.chord().keys).toBe("");
       expect(standing()).toEqual({ focus: "r1", stop: ["r1"] });
       expect(held).toEqual(["t", "j", "t", "k"]);
     } finally {

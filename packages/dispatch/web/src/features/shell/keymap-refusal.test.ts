@@ -113,6 +113,22 @@ test("an action that also works while the reader types takes no key a text field
   expect(refusalOf("inbox.snooze", ["u"], NO_PERSON_KEYS).kind).toBe("accepted");
 });
 
+// A text field's own keys with Ctrl or Cmd - paste, copy, cut, undo, redo, select all, delete a
+// word, move the caret - are its own with Shift or Alt too: Ctrl+Shift+Z redoes.
+test("an action that also works while the reader types takes no Ctrl or Cmd key a text field takes as its own", () => {
+  for (const key of ["$mod+v", "$mod+z", "$mod+Backspace", "$mod+ArrowLeft", "$mod+Shift+Z"]) {
+    expect(refusalOf("global.search", [key], NO_PERSON_KEYS), key).toEqual({
+      kind: "refused",
+      message: `${key} would be taken from every text field: Search and actions also works while you type, so its key needs Ctrl or Cmd with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or Alt with a key that types nothing, such as Alt+Enter.`,
+      other: undefined,
+    });
+  }
+  // Search and actions' default, and a Ctrl key no text field takes.
+  for (const key of ["$mod+k", "$mod+e"]) {
+    expect(refusalOf("global.search", [key], NO_PERSON_KEYS).kind, key).toBe("accepted");
+  }
+});
+
 // The `y` that copies a focused link's address is a binding written out whole, registered on
 // every page (`link-copy.ts`), which the registry reads as the first press of `y i`.
 test("a key whose first press is the focused link's y is refused, though no action holds y", () => {

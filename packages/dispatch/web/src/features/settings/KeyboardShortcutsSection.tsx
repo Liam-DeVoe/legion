@@ -418,6 +418,14 @@ export function KeyboardShortcutsSection(): ReactNode {
                     ? refusedReset.message
                     : undefined;
                 const refusalId = `${SHORTCUTS_SECTION_ID}-${action}-refusal`;
+                // One refusal for the row, drawn in one paragraph, so its id names one element.
+                // The two are never set at once: starting a recording clears a refused Reset, and
+                // Reset ends the recording before it is refused. Were both set, the recording's
+                // would win: its recorder has the focus and waits for another key, and the Reset
+                // was refused before the recording began.
+                const refusal =
+                  ours?.refusal === undefined ? resetRefusal : `${ours.refusal} Press another key.`;
+                const resetRefused = ours?.refusal === undefined && resetRefusal !== undefined;
                 return (
                   <li
                     aria-labelledby={`${SHORTCUTS_SECTION_ID}-${action}`}
@@ -445,14 +453,9 @@ export function KeyboardShortcutsSection(): ReactNode {
                           {notice}
                         </p>
                       ))}
-                      {ours?.refusal === undefined ? null : (
+                      {refusal === undefined ? null : (
                         <p className={`text-xs ${dangerText}`} id={refusalId} role="alert">
-                          {ours.refusal} Press another key.
-                        </p>
-                      )}
-                      {resetRefusal === undefined ? null : (
-                        <p className={`text-xs ${dangerText}`} id={refusalId} role="alert">
-                          {resetRefusal}
+                          {refusal}
                         </p>
                       )}
                     </div>
@@ -521,7 +524,7 @@ export function KeyboardShortcutsSection(): ReactNode {
                       ) : null}
                       {changeable && changed ? (
                         <button
-                          aria-describedby={resetRefusal === undefined ? undefined : refusalId}
+                          aria-describedby={resetRefused ? refusalId : undefined}
                           className={textButtonClass}
                           onClick={() => reset(action)}
                           type="button"

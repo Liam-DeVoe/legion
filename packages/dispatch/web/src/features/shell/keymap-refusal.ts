@@ -144,27 +144,46 @@ const FIELD_KEYS: Record<string, true> = {
   Space: true,
 };
 
+/** The keys a text field takes as its own with Ctrl or Cmd, whatever else the press holds: V, C
+ *  and X paste, copy and cut, Z and Y undo and redo (Ctrl+Shift+Z redoes too), A selects all,
+ *  Backspace and Delete delete a word, and the arrows, Home and End move the caret, and select
+ *  with Shift (Ctrl+Shift+← selects a word). Each key by its name in lower case, as
+ *  `BROWSER_KEYS`, so a letter counts in either case. */
+const FIELD_COMMAND_KEYS: Record<string, true> = {
+  a: true,
+  arrowdown: true,
+  arrowleft: true,
+  arrowright: true,
+  arrowup: true,
+  backspace: true,
+  c: true,
+  delete: true,
+  end: true,
+  home: true,
+  v: true,
+  x: true,
+  y: true,
+  z: true,
+};
+
 /** Whether a text field takes `combo` as its own, so that an `inEditable` binding of it would take
- *  the press from every field: a press with no Ctrl, Cmd or Meta, unless it holds Alt with a key
- *  that neither types a character nor edits the text (`Alt+Enter`). With Alt, a key of one
- *  character types one on a Mac (Option+M types `µ`). */
+ *  the press from every field: a press with Ctrl, Cmd or Meta whose key is one of
+ *  `FIELD_COMMAND_KEYS`, with Shift or Alt or without; and a press with no Ctrl, Cmd or Meta,
+ *  unless it holds Alt with a key that neither types a character nor edits the text
+ *  (`Alt+Enter`). With Alt, a key of one character types one on a Mac (Option+M types `µ`). */
 function actsInField(combo: KeyCombo): boolean {
-  if (combo.control || combo.meta || combo.mod) return false;
+  if (combo.control || combo.meta || combo.mod) {
+    return FIELD_COMMAND_KEYS[combo.key.toLowerCase()] === true;
+  }
   return !combo.alt || combo.key.length === 1 || FIELD_KEYS[combo.key] === true;
 }
-
-/** The bindings written out whole that are registered on every page: the `y` that copies a focused
- *  link's address (`link-copy.ts`). An action's key may neither begin with one of their keys nor
- *  be the first press of one, since the registry would find a prefix (`checkPrefixConflicts`,
- *  `keymap.ts`). The command bar's own close is the keys of Search and actions
- *  (`SearchPalette.tsx`), which the check reads as that action's. */
-const WRITTEN_WHOLE: readonly { readonly key: string; readonly label: string }[] = [
-  { key: LINK_COPY_KEY, label: LINK_COPY_LABEL },
-];
 
 function sameChord(a: readonly KeyCombo[], b: readonly KeyCombo[]): boolean {
   return a.length === b.length && a.every((combo, index) => sameCombo(combo, b[index] as KeyCombo));
 }
+
+/** The presses of `LINK_COPY_KEY`, the `y` that copies a focused link's address, read once. */
+const LINK_COPY_CHORD: readonly KeyCombo[] = parseChord(LINK_COPY_KEY);
 
 /** Each key's presses as `chordOf` read them first: a check reads every action's keys, and the
  *  same text always gives the same presses. The keys are the catalogue's and the ones a person
@@ -194,20 +213,22 @@ function refused(message: string, other?: KeymapActionId): KeyVerdict {
  * keys in `personKeys` or its defaults: the check Settings runs on every key a person gives.
  * Refused: a key that is no key; a key that keeps its own action (`RESERVED_KEYS`, a digit) or
  * that the browser keeps; for an action that also works while the reader types (`inEditable`), a
- * key a text field takes as its own (`actsInField`), since the registry would take it from every
+ * key a text field takes as its own (`actsInField`), with Ctrl or Cmd or without (`u`,
+ * `Backspace`, `$mod+v`, `$mod+z`, `$mod+ArrowLeft`), since the registry would take it from every
  * field; any key for an action whose keys all keep their own action, since its run reads the key
  * pressed; a key listed twice, or two of the action's own keys of which one is the first press of
  * the other (`g` beside `g i`, while `g i` beside `g a` passes); a key another action of the same
  * surface, or of a surface drawn with it, has, unless the two are a pair of `EXCLUSIVE_BY_FOCUS`;
  * a key that is the first press of another action's key, or whose first press is another action's
- * key, in any scope; and a key whose first press is the key of a binding written out whole
- * (`WRITTEN_WHOLE`). The shell's keys are drawn on every page but those `ON_EVERY_PAGE_BUT`
- * names: a key another action of the `global` scope has on a page where both are drawn is
- * refused, since one scope holds a key once, and a key a global action has, taken by a page's
- * action where the global one is drawn, or the other way round, is accepted with the notice that
- * the global action does not work on that page, as the Agents page's `/` and `i` are today. The
- * notice says more than the registry does: where the page's action does not apply (its `when` is
- * false), `resolve` in `keymap.ts` passes the key on to the global action.
+ * key, in any scope; and a key whose first press is `LINK_COPY_KEY`, the `y` that copies a focused
+ * link's address (`link-copy.ts`), a binding written out whole and registered on every page. The
+ * shell's keys are drawn on every page but those `ON_EVERY_PAGE_BUT` names: a key another action
+ * of the `global` scope has on a page where both are drawn is refused, since one scope holds a key
+ * once, and a key a global action has, taken by a page's action where the global one is drawn, or
+ * the other way round, is accepted with the notice that the global action does not work on that
+ * page, as the Agents page's `/` and `i` are today. The notice says more than the registry does:
+ * where the page's action does not apply (its `when` is false), `resolve` in `keymap.ts` passes
+ * the key on to the global action.
  */
 export function refusalOf(
   action: KeymapActionId,
@@ -230,7 +251,7 @@ export function refusalOf(
     if (chord.some(isBrowsers)) return refused(`${key} is the browser's own key.`);
     if (entry.inEditable === true && chord.some(actsInField)) {
       return refused(
-        `${key} would be taken from every text field: ${entry.label} also works while you type, so its key needs Ctrl or Cmd, or Alt with a key that types nothing, such as Alt+Enter.`
+        `${key} would be taken from every text field: ${entry.label} also works while you type, so its key needs Ctrl or Cmd with a key other than V, C, X, Z, Y, A, Backspace, Delete, an arrow, Home or End, or Alt with a key that types nothing, such as Alt+Enter.`
       );
     }
     for (const earlier of taken) {
@@ -290,16 +311,14 @@ export function refusalOf(
       }
     }
   }
-  for (const whole of WRITTEN_WHOLE) {
-    const wholeChord = chordOf(whole.key);
-    if (wholeChord === null) continue;
-    for (const { chord, key } of taken) {
-      if (isStrictPrefix(wholeChord, chord)) {
-        return refused(`${whole.key}, ${whole.label}, is the first press of ${key}.`);
-      }
-      if (isStrictPrefix(chord, wholeChord)) {
-        return refused(`${key} is the first press of ${whole.key}, ${whole.label}.`);
-      }
+  // The `y` that copies a focused link's address is written out whole and registered on every
+  // page (`link-copy.ts`), so a key may not begin with it: the registry would find a prefix
+  // (`checkPrefixConflicts`, `keymap.ts`). It is one press, so no key is its first press. The
+  // command bar's own close is the keys of Search and actions (`search/SearchPalette.tsx`), which
+  // this check reads as that action's.
+  for (const { chord, key } of taken) {
+    if (isStrictPrefix(LINK_COPY_CHORD, chord)) {
+      return refused(`${LINK_COPY_KEY}, ${LINK_COPY_LABEL}, is the first press of ${key}.`);
     }
   }
   return { kind: "accepted", notices: [...notices] };

@@ -17,12 +17,14 @@ While you type in a text field, or while the focus is in an open menu, list or p
 `Ctrl+K`, `Escape`, and in a document `Ctrl+Alt+M` and `Alt+Enter`, work as shortcuts, or the keys
 you gave those actions in their place. So single letters never interrupt your typing.
 
-A key that saves a change runs once for each press. If you hold the key down, it does nothing
-more. This is true of approve, dismiss, pin or unpin, set a priority, and keep a decision. It is
-also true of the palette's actions that save a change, when you give them a key: **Close issue**,
+The keys that approve, dismiss, pin or unpin, set a priority, and keep a decision run once for each
+press. If you hold one of these keys down, it does nothing more. This is also true of the
+palette's actions that save a change, when you give them a key: **Close issue**,
 **Reopen issue**, **Set priority P0** to **P3**, **Assign to me**, **Un-snooze**, **Mark read**,
 **Ask back**, **Ask back instead**, **Answer with it anyway**, and
-**Dismiss, or Move to Inbox, the selected items**.
+**Dismiss, or Move to Inbox, the selected items**. The Board's move keys, `Shift+J`, `Shift+K`,
+`Shift+L` and `Shift+H`, repeat while you hold them down, and each repeat moves the card one more
+time.
 
 You can change each key, give an action a second key, or take its keys away. See
 [Change the keys](#change-the-keys).
@@ -484,10 +486,13 @@ of one action where one is the first key of the other, such as `g` and `g i`. An
 keys all keep their own actions shows **Fixed**, and you cannot change it.
 
 **Search and actions**, **Comment on selection** and **Open the link at the caret** also work
-while you type in a text field. So each key you give them needs `Ctrl`, or `Alt` with a key that
-neither types nor edits text, such as `Alt+Enter`. Dispatch refuses them a key without `Ctrl` or
-`Alt`, and `Alt` with a letter, a digit or another character, `Space`, `Backspace`, `Delete`, an
-arrow key, `Home`, `End`, `Page Up` or `Page Down`.
+while you type in a text field. So each key you give them needs `Ctrl` with a key that a text
+field does not use, or `Alt` with a key that neither types nor edits text, such as `Alt+Enter`.
+Dispatch refuses them a key without `Ctrl` or `Alt`, and `Alt` with a letter, a digit or another
+character, `Space`, `Backspace`, `Delete`, an arrow key, `Home`, `End`, `Page Up` or `Page Down`.
+It also refuses them `Ctrl` with `V`, `C`, `X`, `Z`, `Y`, `A`, `Backspace`, `Delete`, an arrow
+key, `Home` or `End`, also with `Shift` or `Alt`. A text field uses these keys to paste, copy,
+cut, undo, redo and select text, to delete a word, and to move the cursor.
 
 A global key that you give to a page's action runs that action on its page whenever the action can
 run. Where it cannot, the key runs the global action. The list shows a note under each of the two
