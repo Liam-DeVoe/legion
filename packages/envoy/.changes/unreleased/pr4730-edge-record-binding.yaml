@@ -20,6 +20,24 @@ body: |-
   it started relays it nothing until the session registers through it again, and its messages
   wait in its consumer; a replica forgets a session's admission once the session's record has
   left its cache.
+  A record the server wrote at a key - a RePublish of another stream, whose body its writer chose,
+  or a direct get's copy - is no writer's record: a write or a delete the bucket refused at the
+  revision a direct get reported reads the key again from the stream's leader, with the headers it
+  is stored with, and replaces or deletes such a record at the sequence it is stored at, so every
+  registration of a session no longer answers 503 while one stands. The edge confirms each session
+  it would list, read or send to on another session's behalf by that leader read, and reads a
+  record the server wrote as absent.
+  A session's consumer filter built from its stored interest row (a relay restart, a repair, the
+  filter written after an unsubscribe, a delete or a prune) leaves out every topic reaching a
+  private stream subject that is not the session's own - another session's inbox, a
+  failed-delivery lane, another project's controller notice lane - as a registration does, reading
+  a controller role's claim record on each such build that names a notice lane.
+  The Legion agent registry's listings pass over an entry stored under a key it does not name, and
+  its session read answers not found for a session key holding another session's entry. The edge
+  shows a Legion agent only when the issue is one of the token's projects and the agent's session
+  is a session of that issue's project (a record bound to its key), so it shows no gone agent of
+  the token's own project either, and it shows an agent's replacement only when that is such a
+  session too.
 time: 2026-11-21T03:17:59Z
 custom:
     Issue: pr4730

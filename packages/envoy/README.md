@@ -146,9 +146,12 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
 
 - **Sends**: `POST /v1/messages/send` reaches only a session whose registering token listed one of the sender's projects.
   Any other target, and one the session registry reads as gone, gets the `404` of a session no listener has heard of, and no wake is reported (`sessionOfProjects`, which every edge read of a session's projects asks).
+  A target the session cache would grant is confirmed by its newest record on the session bucket's stream, read from the stream's leader with its headers (`edgeSessionShown`): a record the server wrote, such as a RePublish of another stream at the session's key, reads as absent.
 
 - **Reads**: `GET /v1/sessions`, `GET /v1/registry/{session_id}` and the three `/v1/legion/agents` reads answer only the sessions and Legion agents of the token's projects, each session with only those projects' roles and topics (`edgeShownTopics`);
   any other session gets the `404` of an unknown one.
+  Each session shown is confirmed by its stored record as a send's target is.
+  A Legion agent is shown only when its session is a session of its issue's project, a record bound to its key, so a gone agent of the token's own project is not shown either; its replacement is shown only when that is such a session too (`edgeLegionAgent`).
   A session's own `GET /v1/interests/{session_id}` shows the topics of its token's projects alone.
   `GET /v1/interests/` and another session's `GET /v1/interests/{session_id}` get `403 session_not_in_project`, and a write of the Legion agent registry gets `403 legion_registry_not_written`.
 
