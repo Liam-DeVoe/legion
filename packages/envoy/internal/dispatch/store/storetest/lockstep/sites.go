@@ -156,10 +156,11 @@ var storeWriteCallSites = map[string]string{
 	// retracted; then the row's delete; then, where a lens stands on the node, the read of the stale
 	// lenses on it (refs.StaleLensesOn) and of what stands beneath each (graphstore.WithBeneath),
 	// under the owner lock it holds and taking none of its own, and one Write of those nodes in
-	// ascending (kind, id) with their state tuples at the sentinel, whose order is the order
-	// TestEveryStoreWriteTakesOneLockOrder proves of Write, since this site's driver removes a
-	// document no lens stands on; then, after the room's announcement, the artifact.removed event and
-	// the gone statement it causes, in one batch (appendCausingEvent).
+	// ascending (kind, id) with their state tuples at the sentinel; then, after the room's
+	// announcement, the artifact.removed event and the gone statement it causes, in one batch
+	// (appendCausingEvent). Its driver removes a document no lens stands on, and a document a lens
+	// with a finding stands on too, holding each step that run takes in turn, the lens's and the
+	// finding's node rows and their state tuples among them.
 	"api/artifact_removal.go#removeArtifact": "api#TestEveryObjectNodeWriterTakesTheStoreLockOrder",
 	// A document's retirement, in the same order under the document's
 	// owner row: its artifact node stated gone, then the artifacts row that retires it, then
@@ -219,9 +220,10 @@ var storeWriteCallSites = map[string]string{
 	// its own: a read of the stale lenses with no lock, then the owner lock of each issue a stale
 	// lens's document names, then the read again under those locks, and one Write of the lenses it
 	// kept and the nodes beneath them in ascending (kind, id) and their state tuples at the sentinel,
-	// appending no event. It names the orphan sweep's driver, which drives StateOrphanedGone and not
-	// this sweep, for now: a driver of its own comes next.
-	"graphcensus/orphans.go#StateStaleLensesGone": "graphcensus#TestTheOrphanSweepTakesTheStoreLockOrder",
+	// appending no event. Its driver sweeps a stale lens with a finding and a risk under it and holds
+	// each step in turn - the owner lock, the three node rows, the state tuples - and the project's
+	// row, which the sweep never takes.
+	"graphcensus/orphans.go#StateStaleLensesGone": "graphcensus#TestTheStaleLensSweepTakesTheStoreLockOrder",
 	// The erase, the one writer that deletes from the store, through EraseNode: the tuples on both
 	// sides of the node, then the node's row. It takes the owner locks it writes under before that
 	// row, and its projection rows after it.
