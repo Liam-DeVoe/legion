@@ -39,11 +39,11 @@ func TestTheHeadsAReaderDrawsCutNoReferenceInHalf(t *testing.T) {
 		// 232 runes, so the key after them crosses the cut at 240 in both texts: the head an edge
 		// shows is the lead in both, though the first 240 runes of the two differ.
 		lead := strings.Repeat("x", 231) + " "
-		if got := editedHeadTargets(lead+"CORE-1234 a", lead+"CORE-1294 b", "", []text.Ref{core}); got != nil {
-			t.Fatalf("editedHeadTargets = %#v, want none: the head an edge shows did not move", got)
+		if got := EditedTargets(lead+"CORE-1234 a", lead+"CORE-1294 b", "", []text.Ref{core}); got != nil {
+			t.Fatalf("EditedTargets = %#v, want none: the head an edge shows did not move", got)
 		}
-		if got := editedHeadTargets("A first.", "A second.", "", []text.Ref{core}); len(got) != 1 {
-			t.Fatalf("editedHeadTargets = %#v, want the cited target: the head moved", got)
+		if got := EditedTargets("A first.", "A second.", "", []text.Ref{core}); len(got) != 1 {
+			t.Fatalf("EditedTargets = %#v, want the cited target: the head moved", got)
 		}
 	})
 }
@@ -60,7 +60,7 @@ func TestTheHeadsAReaderDrawsCutNoReferenceInHalf(t *testing.T) {
 func TestEveryHeadCutOfDispatchTextIsListed(t *testing.T) {
 	exempt := map[string]string{
 		"api/messages.go messageReplyPreview": "the parent's text a reply's event and delivery frame carry, which an agent reads as written",
-		"api/results.go cutWords":             "a check's line in the pull request body, which GitHub draws, not Dispatch",
+		"api/results.go cut":                  "a check's line in the pull request body, which GitHub draws, not Dispatch",
 		"api/results_ci.go ciObserved":        "a CI run's output, a check result's observed text drawn as the characters it is",
 		"api/results_ci.go ciUnreadDetail":    "the server's own words on a CI read it could not make, quoting GitHub's error",
 		"embed/embed.go boundBatch":           "the input of an embedding, which no person reads",

@@ -5,20 +5,17 @@ import {
 } from "@legion/contracts";
 
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
-import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
 import { agentRow } from "./agents";
 import {
   answerAsk,
   createIssueArtifact,
   createPriority,
-  editArtifact,
   getArtifactText,
   publishAgentStreamFrame,
   requestApproval,
 } from "./api";
 import {
   barAction,
-  blockId,
   composer,
   documentEditor,
   marginCard,
@@ -44,7 +41,6 @@ import {
   heldRow,
   heldRows,
   keyboardOnly,
-  NO_MATCH,
   OFF_ISSUE_PERSON,
   QUERY,
   rowsOfBox,
@@ -431,12 +427,25 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
           .toEqual(DOOR_ROWS[door]);
         await clearLine();
       }
-      await page.keyboard.type(`[[${NO_MATCH}`);
-      await expect(list.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
-      await clearLine();
+      // The editor stores what is typed in it, and the search reads the stored text, so a query
+      // typed here comes back naming this document and its issue once the draft is stored. The
+      // empty state the other boxes show for a query nothing answers is a race in this box (CI
+      // run 44453148990 drew this document's row for `[[zzqqxx`), so the box holds no such probe,
+      // and its people rule is held on the rows the picker draws after the search has answered.
       // The document belongs to an issue, so the picker offers that issue's people alone.
+      const searched = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/v1/search/results" &&
+          url.searchParams.get("q") === OFF_ISSUE_PERSON
+        );
+      });
       await page.keyboard.type(`@${OFF_ISSUE_PERSON}`);
-      await expect(list.getByTestId("ref-picker-empty")).toHaveText(REF_PICKER_WORDS.empty);
+      await searched;
+      // The rule is read from a list that is open: with no list there are no rows to read.
+      await expect(list).toBeVisible();
+      await expect(list.getByTestId("ref-picker-loading")).toHaveCount(0);
+      expect((await pickerRows(list)).filter((row) => row.startsWith("People:"))).toEqual([]);
       await clearLine();
 
       // The pick lands at the caret, written through the editor's own transaction.
@@ -532,47 +541,6 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       const answer = box.getByRole("textbox", { exact: true, name: CONTROL_LABELS.answer });
       await expect(answer).toBeFocused();
       await expectRow(page, answer, "issue-page-composer", "ask-answer");
-    },
-  },
-  // The new issue page's Change, on a waiting decision's own row of the outline
-  // (`DecisionActions.tsx`), which a reader gets once their
-  // `issue.page` is `outline`. An agent's decision waits for the reader's review once it shapes a
-  // statement of the issue's spec (`inReviewList`), so the host's spec gains one and the decision
-  // cites it; its row then draws Keep and Change, the row's own key presses Change, and the form
-  // opens with the caret in its field.
-  "issue-page-decision-change": {
-    drive: async (page, world) => {
-      await editArtifact(world.spec, {
-        ops: [
-          {
-            after: "end",
-            markdown: ":::requirement{#r-store}\nStore each notice.\n:::",
-            op: "insert",
-          },
-        ],
-        summary: "One statement",
-      });
-      const heading = "## Store notices in a table";
-      const decisions = await createIssueArtifact(
-        world.host,
-        {
-          content: `${heading}\n\nShapes dispatch://${world.host}/spec#b-r-store.\n`,
-          name: "decisions.md",
-        },
-        { actor: { id: SESSION.session_id, kind: "session" }, as: "agent" }
-      );
-      const block = await blockId(decisions.artifact.id, heading);
-      await withIssuePage(page.context(), "alice");
-      await page.goto(`/issues/${world.host}`);
-      await expectIssuePageDrawn(page);
-      await focusRow(page, `${decisions.artifact.slug}#b-${block}`);
-      await page.keyboard.press("Shift+C");
-      const field = page.getByRole("textbox", { exact: true, name: CONTROL_LABELS.your_change });
-      await expect(field).toBeFocused();
-      await walkBox(field, world);
-      await expectRow(page, field, "issue-page-decision-change", "comment", () =>
-        page.getByRole("button", { exact: true, name: CONTROL_LABELS.send_change }).click()
-      );
     },
   },
   "margin-comment-edit": {

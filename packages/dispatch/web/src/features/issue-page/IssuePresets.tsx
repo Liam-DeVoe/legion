@@ -15,7 +15,7 @@ import {
   pagePaperBg,
   pageQuietText,
 } from "../../theme/classes";
-import { useMediaQuery } from "../shell/useDialog";
+import { dialogOpen, useMediaQuery } from "../shell/useDialog";
 import { FILTER_ROW_ATTRIBUTE, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { presetPath } from "./issue-address";
 import { authorText, pageChrome } from "./page-structure";
@@ -30,12 +30,12 @@ import type { PresetSignal } from "./presets";
 import { useShortcutHelpOpener } from "./shortcut-help-opener";
 
 /**
- * The view row (dispatch://INFRA-1196 R2, R11, R20, and the prototype's view tabs): five
+ * The view row (R2, R11, R20, and the prototype's view tabs): five
  * controls, Conversation - the page with no view on - then Spec, Verification, Plan and
  * Decisions, each with its signal; and Keys at its right end.
  *
- * The row is one line at every width (ruling 5 of dispatch://INFRA-1196/artifact/build-rulings-md,
- * the 1440 and 390 px pictures). At 760 px and below the row is the one control and Outline,
+ * The row is one line at every width (the architect's ruling 5, the 1440 and 390 px pictures).
+ * At 760 px and below the row is the one control and Outline,
  * which stay at the top of the screen while the header scrolls away (`identity-block.ts` finds
  * the row by `FILTER_ROW_ATTRIBUTE`), and Keys is not drawn.
  *
@@ -74,8 +74,11 @@ export function IssuePresets({
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
-  /** What each control draws after its name (`presets.ts`'s `filterSignals`). */
-  signals: Readonly<Record<Preset, PresetSignal>>;
+  /** What each control draws after its name (`presets.ts`'s `filterSignals`). Undefined while
+   *  the counts cannot be read yet (`slots/view-row.tsx` waits for the tree's reads and the
+   *  reader's login): then no control draws a signal - no count, no unit word, no flag - and no
+   *  control's description or name points at one, so none names an element that is not drawn. */
+  signals?: Readonly<Record<Preset, PresetSignal>>;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -137,11 +140,13 @@ export function IssuePresets({
     };
     // The press is the open menu's alone: the page's own Escape - Details' among them - waits for
     // the next one. The menu reads it in the capture phase, so it marks the press before any
-    // listener of the page's that a layer under it added earlier. A modal dialog open over the
-    // row takes the press even before its focus has moved into it, the frame after it opens.
+    // listener of the page's that a layer under it added earlier. A dialog open over the row
+    // takes the press wherever the focus is: not yet in it, the frame after it opens, or gone to
+    // the page. Whether one is open is `useDialog`'s registry's answer (`dialogOpen()`), which
+    // also decides which dialog the key closes, as Details' drawer asks it.
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== "Escape" || inDialog(event.target)) return;
-      if (document.querySelector('[role="dialog"][aria-modal="true"]') !== null) return;
+      if (dialogOpen()) return;
       event.preventDefault();
       setOpen(undefined);
     };
@@ -245,11 +250,9 @@ export function IssuePresets({
               <span data-preset-name="" {...pageChrome}>
                 {PRESET_NAMES[active]}
               </span>
-              <Signal preset={active} signal={signals[active]} />
+              {signals === undefined ? null : <Signal preset={active} signal={signals[active]} />}
             </span>
-            <span aria-hidden="true" {...pageChrome}>
-              ▾
-            </span>
+            <MenuMark />
           </button>
           {open === "presets" ? (
             <div className={`${pageMenu} left-0`} onKeyDown={walkMenu} role="menu">
@@ -258,7 +261,9 @@ export function IssuePresets({
                 // where it is the one on, which its dot draws.
                 <button
                   aria-checked={preset === active}
-                  aria-labelledby={`${nameId(preset)} ${signalId(preset)}`}
+                  aria-labelledby={
+                    signals === undefined ? nameId(preset) : `${nameId(preset)} ${signalId(preset)}`
+                  }
                   className={`${pageMenuItem} flex items-baseline gap-1.5`}
                   key={preset}
                   onClick={() => {
@@ -275,7 +280,9 @@ export function IssuePresets({
                   <span id={nameId(preset)} {...pageChrome}>
                     {PRESET_NAMES[preset]}
                   </span>
-                  <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                  {signals === undefined ? null : (
+                    <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                  )}
                 </button>
               ))}
             </div>
@@ -315,7 +322,7 @@ export function IssuePresets({
               key={preset}
             >
               <button
-                aria-describedby={signalId(preset)}
+                aria-describedby={signals === undefined ? undefined : signalId(preset)}
                 aria-labelledby={nameId(preset)}
                 aria-pressed={on}
                 className="pt-[7px] pb-1.5 pl-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-page-ink"
@@ -354,7 +361,9 @@ export function IssuePresets({
                 }}
                 onMouseDown={(event) => event.preventDefault()}
               >
-                <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                {signals === undefined ? null : (
+                  <Signal id={signalId(preset)} preset={preset} signal={signals[preset]} />
+                )}
               </label>
             </span>
           );
@@ -363,6 +372,24 @@ export function IssuePresets({
       <span className="flex-1" />
       <div className="mb-[7px]">{atTheEnd}</div>
     </div>
+  );
+}
+
+/** The one control's ▾, drawn one em square so it takes the size of the control's text, in its
+ *  colour. It is a shape and not text, as `StatusGlyph`'s are, because the page's typeface lacks
+ *  ▾: as text, it is drawn in a face of the reader's own machine, at that face's width. The
+ *  control's `aria-haspopup` says it opens a menu, so the shape is hidden from assistive
+ *  technology. */
+function MenuMark(): ReactNode {
+  return (
+    <svg
+      aria-hidden="true"
+      className="inline-block size-[1em] shrink-0 align-middle"
+      focusable="false"
+      viewBox="0 0 16 16"
+    >
+      <path d="M4.5 6.5h7L8 10.5z" fill="currentColor" />
+    </svg>
   );
 }
 

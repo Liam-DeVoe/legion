@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -8,8 +8,15 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
 import type { Artifact, IssueReferences } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const artifact = {
   created_at: "2026-09-09T00:00:00Z",
@@ -57,11 +64,16 @@ function Location() {
 
 function renderTab(
   artifacts: Artifact[],
-  references: IssueReferences = noReferences,
+  references: IssueReferences | Error = noReferences,
   isClosed = false
 ) {
   const listArtifacts = spyOn(api, "listArtifacts").mockResolvedValue(artifacts);
-  const getIssueReferences = spyOn(api, "getIssueReferences").mockResolvedValue(references);
+  const getIssueReferences = spyOn(api, "getIssueReferences");
+  if (references instanceof Error) {
+    getIssueReferences.mockRejectedValue(references);
+  } else {
+    getIssueReferences.mockResolvedValue(references);
+  }
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -109,7 +121,9 @@ test("renders one row per artifact with no compare controls", async () => {
 test("a closed issue's Artifacts tab refuses a new document and an upload before a file is picked", async () => {
   const user = userEvent.setup();
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact], noReferences, true);
-  const pick = spyOn(HTMLInputElement.prototype, "click");
+  // Spied on HTMLElement, the prototype that owns the method: spying on HTMLInputElement would
+  // leave an own property behind that shadows every later spy on HTMLElement.
+  const pick = spyOn(HTMLElement.prototype, "click");
   try {
     await screen.findByTestId("artifact-diagram-png");
     const upload = screen.getByRole("button", { name: "Upload" });
@@ -413,6 +427,30 @@ test("References lists closure members with chip, via, and depth, names truncati
     expect(references).toHaveTextContent("via comment");
     expect(references).toHaveTextContent("depth 1");
     expect(references).toHaveTextContent("more references beyond 8 hops");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+test("a references read cut at its bound says References unavailable with a Retry that reads again", async () => {
+  const user = userEvent.setup();
+  const refusal =
+    "the issue's reference closure ran past its 2s bound, so no reference was read; try again later";
+  const { getIssueReferences, listArtifacts, view } = renderTab(
+    [artifact],
+    new ApiError(503, { code: "REFERENCES_TIMEOUT", error: refusal })
+  );
+
+  try {
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(`References unavailable: ${refusal}`);
+    expect(screen.queryByText(/^References \(/)).toBeNull();
+    getIssueReferences.mockResolvedValueOnce(noReferences);
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(getIssueReferences).toHaveBeenCalledTimes(2);
   } finally {
     view.unmount();
     listArtifacts.mockRestore();

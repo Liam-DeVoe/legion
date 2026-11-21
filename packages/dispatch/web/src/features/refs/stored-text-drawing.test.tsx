@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { snippetSource } from "../../__tests__/display-trees";
@@ -162,7 +162,7 @@ test("a preview marks the runs the server matched, from the snippet's own tree",
   expect(parses).toBe(0);
 });
 
-test("a hit inside a reference's own words is drawn inside the reference, in the surface's class", () => {
+test("a hit inside a reference's own words is drawn inside the reference, in the surface's class", async () => {
   // The snippet's own text cites `dispatch://CORE-1`, so the preview resolves that reference and
   // reads the issue's summary; without the spy that read reaches the network and the row fails on
   // it rather than on what it asserts (main's #2906 made a snippet's references its body's own).
@@ -195,6 +195,10 @@ test("a hit inside a reference's own words is drawn inside the reference, in the
     expect(mark?.textContent).toBe("CORE-1");
     expect(mark?.closest("[data-dispatch-ref]")?.textContent).toBe("dispatch://CORE-1");
     expect(parses).toBe(0);
+    // The summary read the reference made is answered inside `act`, before the spy is let go.
+    await act(async () => {
+      await getIssueSummary.mock.results[0]?.value;
+    });
   } finally {
     getIssueSummary.mockRestore();
   }

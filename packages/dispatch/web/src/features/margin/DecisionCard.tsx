@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -12,10 +12,9 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { decisionHeadingTree } from "../issue/decision-heading";
+import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { usePlainHeadline } from "../refs/plain-text";
 import { parseDispatchReference, referenceHref } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { regionOrigin } from "./ThreadList";
@@ -44,19 +43,14 @@ export function DecisionCard({
   // person (R5) - leaves the heading as plain words.
   const href = route === undefined ? undefined : referenceHref(route);
   const active = selected || hovered;
-  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
   const source = textSourceOf(
     "artifact",
     item.documentId,
     route !== undefined && "key" in route ? route.key : undefined
   );
-  const { reads, text } = usePlainHeadline(headingTree, decision.heading, {
-    source,
-    surface: "decision-heading-words",
-  });
-  // Until the engine has answered, the heading as written, which the reading list's
-  // `decision-heading-words` says is a load state: a card is never left with no name.
-  const heading = text?.text ?? decision.heading;
+  // The heading's plain words name the card and word its link (the reading list's
+  // `decision-heading-words`); the heading's reading draws it where there is no link.
+  const { reads, tree: headingTree, words: heading } = useDecisionHeadingWords(decision, source);
   return (
     <article
       aria-current={selected ? "true" : undefined}
@@ -137,6 +131,10 @@ export function DecisionList({
   const region = useRef<HTMLElement>(null);
   const cardRefs = useRef(new Map<string, HTMLDivElement>());
   const [tops, setTops] = useState<ReadonlyMap<string, number>>(() => new Map());
+  // How tall the region stands, the bottom of its lowest card, read where the tops are, so it
+  // follows a card the moment the card resizes, as the anchored comments' region does
+  // (`ThreadList.tsx`): read at render, it held a card's height from the last render.
+  const [bottom, setBottom] = useState(0);
   const measure = useCallback(() => {
     const origin = region.current === null ? undefined : regionOrigin(region.current);
     const next = new Map<string, number>();
@@ -161,6 +159,7 @@ export function DecisionList({
         ? current
         : next
     );
+    setBottom(previousBottom);
   }, [blockPlacements, decisions]);
   useLayoutEffect(() => {
     measure();
@@ -175,11 +174,6 @@ export function DecisionList({
   if (decisions.length === 0) {
     return null;
   }
-  const bottom = Math.max(
-    ...decisions.map(
-      (item) => (tops.get(item.id) ?? 0) + (cardRefs.current.get(item.id)?.offsetHeight ?? 0) + 8
-    )
-  );
   return (
     <section aria-label="Decisions" className="relative" ref={region} style={{ minHeight: bottom }}>
       {decisions.map((item) => (

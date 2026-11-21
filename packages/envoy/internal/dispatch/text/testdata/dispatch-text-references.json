@@ -125,6 +125,13 @@
     ]
   },
   {
+    "body": "The steps tab: dispatch://CORE-45/steps and https://dispatch.test/issues/CORE-46/steps.",
+    "refs": [
+      "dispatch://CORE-45",
+      "dispatch://CORE-46"
+    ]
+  },
+  {
     "body": "The activity tab: dispatch://CORE-45/activity and https://dispatch.test/issues/CORE-46/activity.",
     "refs": [
       "dispatch://CORE-45",

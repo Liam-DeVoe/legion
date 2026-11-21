@@ -42,10 +42,8 @@ export function PriorityControl({
   issueKey: string;
   priority: IssuePriority | null;
 }): ReactNode {
-  const write = useIssuePriority(issueKey);
-  return (
-    <PriorityEditor disabled={disabled} issueKey={issueKey} priority={priority} write={write} />
-  );
+  const write = useIssuePriority(issueKey, priority);
+  return <PriorityEditor disabled={disabled} issueKey={issueKey} write={write} />;
 }
 
 /**
@@ -64,43 +62,41 @@ export function PriorityControl({
  * The host passes the write when it has other ways to set the same priority: the issue page
  * creates one for the page and shares it with the keyboard's `0`–`3` and the palette's Set
  * priority rows, so one refusal is reported once, here, by the control the reader is looking at.
+ * The priority drawn is the write's (`IssueFieldWrite.shown`), so a pick from any of them shows
+ * from its press.
  *
- * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`,
- * dispatch://INFRA-1196 R13): three bars filled by how urgent the priority is, beside `P1` in
- * the ink, or the word Priority in the quiet grey while it has none. The select over it is the
- * same either way.
+ * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`): three
+ * bars filled by how urgent the priority is, beside `P1` in the ink, or the word Priority in the
+ * quiet grey while it has none. The select over it is the same either way.
  */
 export function PriorityEditor({
   disabled = false,
   issueKey,
-  priority,
   variant = "badge",
   write,
 }: {
   disabled?: boolean;
   issueKey: string;
-  priority: IssuePriority | null;
   variant?: "badge" | "header";
   write: IssuePriorityWrite;
 }): ReactNode {
   const page = usePageWords();
+  const priority = write.shown;
   const tone = priority === null ? badgeLow : priorityBadge[priority];
   // Inside `NoTooltips` the badge is the new issue page's label chip, and the word Priority its
   // quiet words on the same ground, as the header variant says it in the quiet grey: each colour
-  // there is one of that page's (dispatch://INFRA-3935 R6, decision 56 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md). The prototype's `.prio` draws how urgent
-  // a priority is by its bars and its word, never by a colour, so P0 and P3 wear the same chip.
+  // there is one of that page's. The prototype's `.prio` draws how urgent a priority is by its
+  // bars and its word, never by a colour, so P0 and P3 wear the same chip.
   const badgeTone =
     page === null
       ? `${tone.bg} ${tone.text}`
       : priority === null
         ? `${pagePaneBg} ${pageQuietText}`
         : pageLabelChip;
-  const shown = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
+  const label = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
   const mark = priority === null ? page?.pageChrome : page?.authorText;
   // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
-  // and its wrapper narrows to the line rather than keep its width (dispatch://INFRA-3935 R6,
-  // decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md). The header variant is the
+  // and its wrapper narrows to the line rather than keep its width. The header variant is the
   // new page's shape alone, so it wraps on every surface.
   return (
     <>
@@ -116,7 +112,7 @@ export function PriorityEditor({
             {...mark}
           >
             <PriorityBars priority={priority} />
-            {shown}
+            {label}
           </span>
         ) : (
           <span
@@ -124,7 +120,7 @@ export function PriorityEditor({
             className={`${page === null ? badgeSelectBadge : badgeSelectPageBadge} ${badgeTone}`}
             {...mark}
           >
-            {shown}
+            {label}
           </span>
         )}
         <select
@@ -149,7 +145,7 @@ export function PriorityEditor({
       </span>
       {write.failed ? (
         <QueryError
-          message={`Could not update the priority of ${issueKey}.`}
+          message={write.stopped ?? `Could not update the priority of ${issueKey}.`}
           onRetry={write.retry}
           retrying={write.pending}
         />

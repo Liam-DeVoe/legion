@@ -1,4 +1,4 @@
-import { afterEach, expect, jest, type Mock, mock, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, type Mock, mock, test } from "bun:test";
 import type { AgentStreamSettingsReported } from "@legion/contracts";
 // biome-ignore lint/style/noRestrictedImports: the same-task pair a closed select's own key makes (`stepWithKey`), and the blur that leaves a picker
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -12,6 +12,12 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { SessionSettingsView } from "./conversation";
 import { SessionSettings, SessionSwitchLines } from "./SessionSettings";
 import type { SwitchRequest } from "./use-session-switch";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** What the page passes the row: the pickers' props, and the words of the switch status the
  *  lines under the row show, which quote no reply here. */

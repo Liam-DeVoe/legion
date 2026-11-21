@@ -1,4 +1,4 @@
-import { beforeEach, expect, jest, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, test } from "bun:test";
 import type { OfferedReference } from "@legion/proof-editor";
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
@@ -23,6 +23,12 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { shortForm } from "../refs/routes";
 import { DocumentRuntime } from "./runtime";
 import { VersionView } from "./VersionView";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 answerTextReadsWithTheSeededText();
 

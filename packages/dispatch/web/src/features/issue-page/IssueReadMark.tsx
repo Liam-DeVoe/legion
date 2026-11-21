@@ -7,7 +7,8 @@ import type { UserState } from "../../api/types";
 import { stateForIssue } from "../issue/pins";
 import { useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
-import { outlineAsksQuery, outlineCommentsQuery, outlineMessagesQuery } from "./outline-reads";
+import { outlineCommentsQuery, outlineMessagesQuery } from "./conversation-reads";
+import { issueAsksQuery } from "./useIssueTree";
 
 /**
  * The issue's read mark, and the only writer of it (`user_issue_state.last_read_seq`, which the
@@ -45,7 +46,7 @@ export function IssueReadMark({ issueKey }: { issueKey: string }): ReactNode {
   // drew. The outline makes these reads and keeps them fresh, so the mark's mount asks for none
   // of them again (`refetchOnMount: false`), and one the outline is already making is that same
   // request, under the same key, not a second one.
-  const asks = useQuery({ ...outlineAsksQuery(issueKey), refetchOnMount: false });
+  const asks = useQuery({ ...issueAsksQuery(issueKey), refetchOnMount: false });
   const comments = useQuery({ ...outlineCommentsQuery(issueKey), refetchOnMount: false });
   const messages = useQuery({ ...outlineMessagesQuery(issueKey), refetchOnMount: false });
   const outlineHeld =

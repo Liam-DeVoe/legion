@@ -358,8 +358,8 @@ func artifactPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefi
 }
 
 // artifactCandidate is one document row as a candidate: addressed as the graph addresses it
-// (documentParent.parent) and owned by its issue, where an issue owns it. Its first line is cut
-// where no reference crosses the cut (FirstLine), serverURL being the server's own address.
+// (documentParent.parent) and owned by its issue, where an issue owns it. serverURL is the
+// deployment whose dashboard URLs in name are references (FirstLine).
 func artifactCandidate(document documentParent, name, serverURL string) Candidate {
 	candidate := Candidate{Kind: "artifact", ID: *document.id, FirstLine: FirstLine(name, serverURL)}
 	if parent := document.parent(); parent != nil {
@@ -421,7 +421,8 @@ func blockPrefixCandidates(ctx context.Context, q Queryer, scope Scope, prefix, 
 
 // blockCandidate is one block of document as a candidate, body being its text: addressed under
 // its document's reference and owned by its document's owner, the issue, or else the project
-// document itself. Its first line is cut as artifactCandidate's is.
+// document itself. serverURL is the deployment whose dashboard URLs in body are references
+// (FirstLine).
 func blockCandidate(blockID, body string, document documentParent, serverURL string) Candidate {
 	candidate := Candidate{Kind: "block", ID: blockID, FirstLine: FirstLine(body, serverURL)}
 	if parent := document.parent(); parent != nil {

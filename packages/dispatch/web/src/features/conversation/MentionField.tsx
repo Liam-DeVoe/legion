@@ -16,22 +16,15 @@ import {
   useState,
 } from "react";
 
-import { useTooltips } from "../../components/tooltips";
 import {
-  focusBorder,
   inputClasses,
-  pageHairBorder,
-  pageInkText,
-  pageMutedText,
-  pagePaperBg,
-  pageQuietText,
   textMutedOnSurface,
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { draftParties } from "../refs/party-references";
 import { RefPickerList } from "../refs/RefPickerList";
-import { applyInsertion, type RefPickerInsertion } from "../refs/ref-picker";
+import { applyInsertion, isCompositionKey, type RefPickerInsertion } from "../refs/ref-picker";
 import { useRefPicker } from "../refs/useRefPicker";
 import type { TextEditRange } from "./block-spans";
 
@@ -89,6 +82,7 @@ export function MentionField({
   className,
   describedBy,
   disabled = false,
+  fieldClassName,
   fieldRef,
   hintClassName,
   inline = false,
@@ -107,6 +101,7 @@ export function MentionField({
   onPickerOpenChange,
   placeholder,
   project,
+  readOnly = false,
   rows = 1,
   writing,
 }: {
@@ -125,6 +120,9 @@ export function MentionField({
   /** Takes no typing: a draft whose own send is out, which the host shows the reader rather than
    *  letting them write over what is already on the wire. The picker is shut with it. */
   readonly disabled?: boolean;
+  /** What this host's look asks of the box's colours, in place of the field's own: the new
+   *  issue page draws its boxes in its own colours inside `NoTooltips`. */
+  readonly fieldClassName?: string;
   /** How the host reaches this field (`MentionFieldHandle`): a ref it holds, or, for a host
    *  with a field per row, a callback that files the handle under its row. */
   readonly fieldRef?: Ref<MentionFieldHandle | null>;
@@ -179,6 +177,10 @@ export function MentionField({
   /** The project whose components the picker offers, where the box names one of its own; a box
    *  on an issue needs none, the issue's key holding it. */
   readonly project?: string;
+  /** Keeps its focus and its text but takes no typing: inside `NoTooltips`, a box whose write is
+   *  out, which `disabled` would drop the focus from in a browser. The picker is shut with it,
+   *  so a pick writes nothing into the box either. */
+  readonly readOnly?: boolean;
   /** How tall the box starts, in lines. */
   readonly rows?: number;
   /** This box's row of the writing list, for the write it is making now: the line under the box
@@ -202,15 +204,9 @@ export function MentionField({
   );
   const listboxId = useId();
   const hintId = useId();
-  // Inside `NoTooltips`, the new issue page's surface, a box the host does not draw in a look of
-  // its own is in the page's colours, as are its label, its mention
-  // targets and its hint: the paper inside its hairline rule, the ink typed on it, the quiet grey
-  // of a placeholder and of the hint, the muted grey of the label, and `main`'s focus rule, the
-  // application's one focus indicator. Everywhere else each class is `main`'s.
-  const tooltips = useTooltips();
   const picker = useRefPicker({
     caret,
-    enabled: !disabled && focused,
+    enabled: !disabled && !readOnly && focused,
     issueKey,
     project,
     text: body,
@@ -260,6 +256,8 @@ export function MentionField({
    *  being bound again. */
   const pickerKey = useRef<(event: globalThis.KeyboardEvent) => void>(() => {});
   pickerKey.current = (event) => {
+    // A composition's keys are the input method's: it confirms, cancels or moves in its word.
+    if (isCompositionKey(event)) return;
     if (!pickerNow.current.open) return;
     // A modified Enter is not the picker's: Ctrl/Cmd+Enter is the host's submit and Shift+Enter
     // the reader's newline, picker or no picker.
@@ -331,7 +329,7 @@ export function MentionField({
         className={
           labelClassName ??
           (look === undefined
-            ? `block text-sm font-medium ${tooltips ? textSecondaryOnSurface : pageMutedText}`
+            ? `block text-sm font-medium ${textSecondaryOnSurface}`
             : "contents")
         }
       >
@@ -343,7 +341,7 @@ export function MentionField({
           aria-label={label}
           className={
             look === undefined
-              ? `mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${tooltips ? `${inputClasses(true)} ${textPrimaryOnSurface}` : `${pageHairBorder} ${pagePaperBg} ${pageInkText} placeholder:text-page-quiet ${focusBorder}`} ${className ?? ""}`
+              ? `mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${fieldClassName ?? `${inputClasses(true)} ${textPrimaryOnSurface}`} ${className ?? ""}`
               : `${look} ${className ?? ""}`
           }
           disabled={disabled}
@@ -378,6 +376,7 @@ export function MentionField({
             setCaret(event.currentTarget.selectionStart)
           }
           placeholder={placeholder}
+          readOnly={readOnly}
           ref={bodyFieldRef}
           rows={rows}
           value={body}
@@ -387,11 +386,7 @@ export function MentionField({
       {parties.length === 0 ? null : (
         <ul
           aria-label="Mention targets"
-          className={
-            look === undefined
-              ? `flex flex-wrap gap-2 text-xs ${tooltips ? textPrimaryOnSurface : pageInkText}`
-              : "sr-only"
-          }
+          className={look === undefined ? `flex flex-wrap gap-2 text-xs ${textPrimaryOnSurface}` : "sr-only"}
         >
           {parties.map((target) => (
             <li className="rounded-full border px-2 py-1" key={target}>
@@ -414,7 +409,7 @@ export function MentionField({
       <p
         className={
           look === undefined
-            ? (hintClassName ?? `text-xs ${tooltips ? textMutedOnSurface : pageQuietText}`)
+            ? (hintClassName ?? `text-xs ${textMutedOnSurface}`)
             : "sr-only"
         }
         id={hintId}

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MAX_ISSUE_ADVANCES } from "@legion/contracts";
@@ -25,6 +25,7 @@ import { MultiSelect } from "../../components/MultiSelect";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
 import { PinButton } from "../../components/PinButton";
 import { RefusableButton } from "../../components/RefusableButton";
+import { withoutEllipsis } from "../../components/tooltips";
 import * as theme from "../../theme/classes";
 import {
   calloutWarningBg,
@@ -49,7 +50,7 @@ import { AssigneeControl } from "../issue/AssigneeControl";
 import { ClaimChip } from "../issue/ClaimChip";
 import { GitHubLink } from "../issue/GitHubLink";
 import type { StepEntry } from "../issue/gated-steps";
-import { IssueComponentsLine } from "../issue/IssueComponentsLine";
+import { componentsControlName, IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { PriorityControl, PriorityEditor } from "../issue/PriorityControl";
 import { RepoControl } from "../issue/RepoControl";
@@ -69,55 +70,61 @@ import {
   architecture,
   CLAIMED_AT,
   classOf,
+  colourOf,
   DECISIONS_ID,
   doc,
   draw,
+  FOCUS_VARIANTS,
   GONE_SESSION,
+  holdsItsLine,
   idlePriorityWrite,
   LIVE_SESSION,
   listed,
   minutesFromNow,
+  offPageColours,
   openAsk,
   priorities,
   proofDocument,
+  RAW_COLOR_PATTERN,
   SPEC_ID,
   STALLED_SESSION,
   type Surface,
   settleReads,
   specRequest,
+  splitToken,
   threadOf,
   tokens,
   undraw,
 } from "./shared-controls-fixture";
 
 /**
- * The shared controls on the new issue page's surface (dispatch://INFRA-3935 R2 and R6): inside
- * `NoTooltips` each file of R9 sets no `title`, draws what a `title` held, says the page's words
- * with their marks, draws every colour in the page's palette, and lets every value it draws wrap
- * (decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md); outside it, each draws what
+ * The shared controls on the new issue page's surface: inside `NoTooltips` each shared control
+ * sets no `title`, draws what a `title` held, says the page's words with their marks, draws every
+ * colour in the page's palette, and lets every value it draws wrap; outside it, each draws what
  * `main` draws. Each case mounts the controls through `draw` (`shared-controls-fixture.tsx`),
  * from fixtures that the controls' own test files on `main` build the same way. One case reads
  * source rather than a drawing: every page colour pair of an `ON_PAGE` table is registered in
- * `CONTRAST_CHECKS` (decision 99(c) of the same artifact).
+ * `CONTRAST_CHECKS`.
  */
 
 // ---------------------------------------------------------------------------------------------
 // Drawing a control on either side of `NoTooltips`
 // ---------------------------------------------------------------------------------------------
 
-/** One control of R9, or a few of one file, in the state a case reads it in. */
+/** One shared control, or a few of one file, in the state a case reads it in. */
 interface Mount {
-  /** The file of R9 that draws it, and how it is drawn. */
+  /** The shared control that draws it, and how it is drawn. */
   readonly name: string;
   /** What to draw: called once for each draw, so each draw holds fresh fixtures. */
   readonly node: () => ReactNode;
   /** Brings the drawn mount to the state it is read in: its reads answered, a popover open. */
   readonly settle?: (view: RenderResult, user: UserEvent) => Promise<void>;
-  /** The roots of what a file outside R9 draws inside the mount, read by selector and by role
-   *  (R2's "no title" binds each R9 file's own elements alone, so `AskCard`'s children of other
-   *  files, the editor `ProofDocument` hosts and a Markdown body are out). Each root and what it
-   *  holds is skipped; an element of a file of R9 that a child of another file holds, such as
-   *  `CopyRefButton`'s `CopyButton`, is read. */
+  /** The roots of what a file outside the shared controls draws inside the mount, read by
+   *  selector and by role (the rule that no shared control sets a `title` binds each one's own
+   *  elements alone, so `AskCard`'s children of other files, the editor `ProofDocument` hosts and
+   *  a Markdown body are out). Each root and what it holds is skipped; an element of a shared
+   *  control that a child of another file holds, such as `CopyRefButton`'s `CopyButton`, is
+   *  read. */
   readonly outside?: (root: HTMLElement) => readonly Element[];
   /** Whether the mount draws no colour at all (a `Timestamp` alone takes its host's). */
   readonly colourless?: boolean;
@@ -127,14 +134,14 @@ interface Mount {
   readonly values?: readonly string[];
 }
 
-/** A drawn mount, settled, with the elements its files of R9 draw. */
+/** A drawn mount, settled, with the elements its shared controls draw. */
 interface Drawn {
   readonly elements: readonly Element[];
   readonly view: RenderResult;
 }
 
-/** Draws `mount` on `surface`, settles it, and reads every element its files of R9 draw, those a
- *  portal puts under `document.body` (an open `MultiSelect`'s popover) among them. */
+/** Draws `mount` on `surface`, settles it, and reads every element its shared controls draw,
+ *  those a portal puts under `document.body` (an open `MultiSelect`'s popover) among them. */
 async function drawMount(mount: Mount, surface: Surface): Promise<Drawn> {
   answerDefaults();
   const user = userEvent.setup();
@@ -145,124 +152,6 @@ async function drawMount(mount: Mount, surface: Surface): Promise<Drawn> {
     (element) => !skipped.some((root) => root.contains(element))
   );
   return { elements, view };
-}
-
-// ---------------------------------------------------------------------------------------------
-// Reading a class for its colours
-// ---------------------------------------------------------------------------------------------
-
-/** `theme/no-raw-colors.test.ts`'s `COLOR_FAMILIES` and `RAW_COLOR_PATTERN`, copied as they
- *  stand there: they are constants of that test file, which exports nothing. The pattern is the
- *  palette guard's own reading of a raw Tailwind colour. */
-const COLOR_FAMILIES = [
-  "slate",
-  "sky",
-  "rose",
-  "amber",
-  "emerald",
-  "red",
-  "orange",
-  "yellow",
-  "lime",
-  "green",
-  "teal",
-  "cyan",
-  "blue",
-  "indigo",
-  "violet",
-  "purple",
-  "fuchsia",
-  "pink",
-  "gray",
-  "zinc",
-  "neutral",
-  "stone",
-] as const;
-const RAW_COLOR_PATTERN = new RegExp(
-  `\\b(?:text|bg|border|ring|placeholder|divide|outline|caret|accent|decoration|from|via|to)-(?:(?:${COLOR_FAMILIES.join("|")})-\\d{2,3}|white|black|transparent)\\b`
-);
-
-/** The variants of a focus indicator, kept inside `NoTooltips` (decision 58 of
- *  dispatch://INFRA-1196/artifact/part-decisions-md): `focusVisibleRing`, `hasFocusVisibleRing`
- *  and `main`'s focus rule on a field stay, since the page's palette holds no focus colour and
- *  the application has one focus indicator. */
-const FOCUS_VARIANTS: readonly string[] = ["focus", "focus-visible", "has-focus-visible"];
-
-/** A token as its variants and the utility after them. A colon inside brackets or parentheses
- *  is an arbitrary value's (`[overflow-wrap:anywhere]`, `content-[attr(data-initial)]`), not a
- *  variant's. */
-function splitToken(token: string): { readonly utility: string; readonly variants: string[] } {
-  const variants: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let index = 0; index < token.length; index += 1) {
-    const character = token[index];
-    if (character === "[" || character === "(") depth += 1;
-    else if (character === "]" || character === ")") depth -= 1;
-    else if (character === ":" && depth === 0) {
-      variants.push(token.slice(start, index));
-      start = index + 1;
-    }
-  }
-  return { utility: token.slice(start), variants };
-}
-
-/** Every utility that takes a colour after its property, and what follows the property. */
-const COLOUR_PROPERTY =
-  /^-?(?:text|bg|border(?:-[xytrblse])?|outline|ring(?:-offset)?|inset-ring|shadow|inset-shadow|drop-shadow|fill|stroke|decoration|divide|placeholder|caret|accent|from|via|to)-(.+)$/;
-const SHADE = new RegExp(`^(?:${COLOR_FAMILIES.join("|")})-\\d{2,3}$`);
-
-/**
- * The colour a utility names, or `undefined` for a utility that names none.
- *
- * The same property prefix carries colours and sizes alike (`text-sky-700` and `text-xs`,
- * `border-page-line` and `border-2`, `ring-sky-600` and `ring-2`), so a utility names a colour
- * by what follows its property, an opacity (`/40`) dropped: a shade of a palette family
- * (`sky-700`), one of the keyword colours `white`, `black` and `transparent`, an arbitrary colour
- * (`[#fff]`, `[rgb(…)]`, `[color:…]`, `[var(--color-…)]`), or a token of the page's palette by its
- * own name (`page-ink`, `icon-rail`), which `PAGE_COLORS` must then hold, so a misspelt page
- * token is a colour and fails. Anything else after the same prefixes names no colour: a size
- * (`text-xs`, `border-2`, `ring-2`, `border-l-4`), a style (`border-dashed`, `outline-none`,
- * `text-left`, `shadow-lg`), an arbitrary value that is no colour (`text-[10px]`), and `current`
- * and `inherit`, which paint the element's own text colour rather than name one; that text
- * colour is a token of its own, read here too.
- */
-function colourOf(utility: string): string | undefined {
-  const named = COLOUR_PROPERTY.exec(utility)?.[1];
-  if (named === undefined) return undefined;
-  const name = named.replace(/\/(?:\d+|\[[^\]]*\])$/, "");
-  if (SHADE.test(name) || name === "white" || name === "black" || name === "transparent") {
-    return name;
-  }
-  if (/^\[(?:#|rgba?\(|hsla?\(|oklch\(|oklab\(|color:|var\(--color-)/.test(name)) return name;
-  return /^(?:page|icon-rail)(?:-[a-z]+)*$/.test(name) ? name : undefined;
-}
-
-/** What a mount's elements draw that is no colour of the page: each token the palette guard
- *  reads as raw, and each colour `PAGE_COLORS` does not name, focus indicators skipped. */
-function offPageColours(
-  name: string,
-  elements: readonly Element[]
-): { readonly colours: number; readonly offenders: string[] } {
-  const offenders: string[] = [];
-  let colours = 0;
-  for (const element of elements) {
-    const testId = element.getAttribute("data-testid");
-    const where = `${name}: <${element.tagName.toLowerCase()}${testId === null ? "" : ` data-testid="${testId}"`}>`;
-    for (const token of (element.getAttribute("class") ?? "").split(/\s+/).filter(Boolean)) {
-      const { utility, variants } = splitToken(token);
-      if (variants.some((variant) => FOCUS_VARIANTS.includes(variant))) continue;
-      if (RAW_COLOR_PATTERN.test(utility)) {
-        offenders.push(`${where} ${token}: a raw colour`);
-        continue;
-      }
-      const colour = colourOf(utility);
-      if (colour === undefined) continue;
-      colours += 1;
-      if (!Object.hasOwn(PAGE_COLORS, colour)) offenders.push(`${where} ${token}: no page colour`);
-    }
-  }
-  return { colours, offenders };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -333,6 +222,13 @@ interface Stubs {
 await warmMarkdownRenderer();
 
 let stubs: Stubs;
+
+// A control's stored words - a step's reason, a person's line - are drawn by the lazy Markdown
+// engine, and the rows read each element's marks as soon as the control mounts. The rows run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 beforeEach(() => {
   stubs = {
@@ -539,13 +435,14 @@ function pressing(name: string | RegExp) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Every code file of R9, and `MultiSelect`, in the states that draw its colours
+// Every shared control's code file, and `MultiSelect`, in the states that draw its colours
 // ---------------------------------------------------------------------------------------------
 
-/** The roots of what `AskCard`'s children of other files draw (R2's "no title" leaves them out,
- *  since the new page draws no `AskCard`): each option row (`AskChoiceRow`, the label inside the
- *  options' fieldset), the decline control (`DeclineControl`, around its button), the
- *  recipients (`AskRecipients`), the replies (`AskThread`) and the question's Markdown body. */
+/** The roots of what `AskCard`'s children of other files draw (the rule that no shared control
+ *  sets a `title` leaves them out, since the new page draws no `AskCard`): each option row
+ *  (`AskChoiceRow`, the label inside the options' fieldset), the decline control
+ *  (`DeclineControl`, around its button), the recipients (`AskRecipients`), the replies
+ *  (`AskThread`) and the question's Markdown body. */
 function askCardChildren(root: HTMLElement): Element[] {
   const declines = within(root)
     .queryAllByRole("button", { name: "Decline to answer" })
@@ -918,13 +815,12 @@ const MOUNTS: readonly Mount[] = [
       <>
         <PriorityControl issueKey="CORE-1" priority={0} />
         <PriorityControl issueKey="CORE-2" priority={null} />
-        <PriorityEditor issueKey="CORE-3" priority={1} variant="header" write={idlePriorityWrite} />
         <PriorityEditor
-          issueKey="CORE-4"
-          priority={null}
+          issueKey="CORE-3"
           variant="header"
-          write={idlePriorityWrite}
+          write={{ ...idlePriorityWrite, shown: 1 }}
         />
+        <PriorityEditor issueKey="CORE-4" variant="header" write={idlePriorityWrite} />
       </>
     ),
   },
@@ -1052,17 +948,25 @@ const MOUNTS: readonly Mount[] = [
       />
     ),
     // With a label the control draws "+", and its name is `main`'s on both surfaces, key given
-    // or not (dispatch://INFRA-3935 R1); only an issue with no label, and inside `NoTooltips` a
-    // control that saves, is named by the words it draws (`labelsEmptyAndSaving`).
+    // or not; only an issue with no label, and inside `NoTooltips` a control that saves, is named
+    // by the words it draws (`labelsEmptyAndSaving`).
     settle: pressing("Edit labels"),
   },
   {
-    name: "RepoControl, its own repository, an inherited one and none in a row of Details",
+    name: "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one",
     node: () => (
       <>
         <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
         <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
         <RepoControl inRow issueKey="CORE-3" project="CORE" repo={null} resolvedRepo={null} />
+        <RepoControl
+          inRow
+          issueKey="CORE-4"
+          project="CORE"
+          repo="acme/app"
+          resolvedRepo="acme/app"
+        />
+        <RepoControl inRow issueKey="CORE-5" project="CORE" repo={null} resolvedRepo="acme/site" />
       </>
     ),
   },
@@ -1407,10 +1311,14 @@ const componentsWithPicker: Mount = {
     );
   },
   // The picker's name is `main`'s outside `NoTooltips` and begins with the words its trigger
-  // draws inside (`componentsControlName`; dispatch://INFRA-3935 R8, decision 114 of
-  // dispatch://INFRA-1196/artifact/part-decisions-md), and either ends with the issue's key.
+  // draws inside, then the word list's joining word (`componentsControlName`), and either ends
+  // with the issue's key.
   settle: async (view) => {
-    await within(view.container).findByRole("button", { name: /\bcomponents of CORE-2$/u });
+    const names = [
+      "Edit components of CORE-2",
+      `${CONTROL_LABELS.components_set} ${CONTROL_LABELS.control_name_of} CORE-2`,
+    ];
+    await within(view.container).findByRole("button", { name: (name) => names.includes(name) });
   },
 };
 
@@ -1427,7 +1335,11 @@ const componentPickerSaving: Mount = {
         onSave={() => undefined}
         saving
         selected={[]}
-        triggerAriaLabel="Saving components of CORE-1"
+        triggerAriaLabel={componentsControlName("CORE-1", {
+          components: { inherited_from: null, mode: "inherit" },
+          saving: true,
+          words: { ANSWER_LINES, CONTROL_LABELS },
+        })}
       >
         Set components
       </ComponentPicker>
@@ -1653,8 +1565,14 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   [mountNamed("IssueLabels, its chips and its picker open"), ["api", "frontend"]],
   [labelsEmptyAndSaving, []],
   [
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
-    ["Inherited or the project's default"],
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
+    // Outside `NoTooltips` a row of Details draws `main`'s box, its clear control with it.
+    [
+      "Clear it, and the issue inherits a repository again",
+      "Clear it, and the issue inherits a repository again",
+    ],
   ],
   [repoNothingResolved, []],
   [componentsWithPicker, []],
@@ -1692,8 +1610,8 @@ const MOVING_INSTANTS: readonly Mount[] = [
   mountNamed("SubscribedAgents, one removable and one subscribed more widely"),
 ];
 
-/** Draws `mount` on `surface`, settled, hands its view and the elements its files of R9 draw to
- *  `read`, and takes it off the page. */
+/** Draws `mount` on `surface`, settled, hands its view and the elements its shared controls
+ *  draw to `read`, and takes it off the page. */
 async function readDrawn(
   mount: Mount,
   surface: Surface,
@@ -1755,10 +1673,9 @@ function expectMarks(root: HTMLElement, words: readonly (readonly [string, Mark]
 // ---------------------------------------------------------------------------------------------
 
 /** Values as long as a reader's can be, each with no space to break at, so that only a class
- *  that breaks inside a word keeps one inside its row: part H's tester found a 44-character
- *  repository name running past Details' row (decision 104 of
- *  dispatch://INFRA-1196/artifact/part-decisions-md). A session's title begins with the word the
- *  mounts find its name by. */
+ *  that breaks inside a word keeps one inside its row: a tester of the new page found a
+ *  44-character repository name running past Details' row. A session's title begins with the
+ *  word the mounts find its name by. */
 const LONG = {
   component: "a-component-whose-identifier-runs-on-past-its-row",
   componentTitle: "A-component-whose-title-runs-on-past-the-row-of-Details",
@@ -2025,7 +1942,9 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
     values: [LONG.label],
   }),
   withLongValues(
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
     {
       node: () => (
         <>
@@ -2041,12 +1960,20 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
             repo={null}
             resolvedRepo={LONG.inheritedRepository}
           />
+          <RepoControl inRow issueKey="CORE-3" project="CORE" repo={null} resolvedRepo={null} />
           <RepoControl
             inRow
-            issueKey="CORE-3"
+            issueKey="CORE-4"
             project="CORE"
             repo={LONG.repository}
             resolvedRepo={LONG.repository}
+          />
+          <RepoControl
+            inRow
+            issueKey="CORE-5"
+            project="CORE"
+            repo={null}
+            resolvedRepo={LONG.inheritedRepository}
           />
         </>
       ),
@@ -2059,28 +1986,13 @@ const LONG_VALUES: ReadonlyMap<Mount, Mount> = new Map([
   }),
 ]);
 
-/** What holds an element at its width or on one line: `shrink-0` and `flex-none` keep its width
- *  in a flex row, `whitespace-nowrap`, `text-nowrap` and `whitespace-pre` keep its words on one
- *  line, and `truncate` cuts what does not fit. */
-const HOLDS_ITS_LINE = [
-  "flex-none",
-  "shrink-0",
-  "text-nowrap",
-  "truncate",
-  "whitespace-nowrap",
-  "whitespace-pre",
-];
+/** What lets a value break inside a word: `[overflow-wrap:anywhere]`, the one spelling the shared
+ *  controls use for it inside `NoTooltips`. Unlike `break-words` (`overflow-wrap: break-word`),
+ *  it also lets the value's min-content width shrink below its longest word. */
+const BREAKS_ANYWHERE = "[overflow-wrap:anywhere]";
 
-/** What lets a value break inside a word: `[overflow-wrap:anywhere]` and its equivalents. */
-const BREAKS_ANYWHERE = [
-  "[overflow-wrap:anywhere]",
-  "break-all",
-  "break-words",
-  "wrap-anywhere",
-  "wrap-break-word",
-];
-
-/** What keeps a value within its line's width. */
+/** What keeps a value within its line's width: `max-w-full`, or `min-w-0`, which a flex item
+ *  needs to shrink below its text. */
 const STAYS_IN_ITS_LINE = ["max-w-full", "min-w-0"];
 
 /**
@@ -2091,8 +2003,7 @@ const STAYS_IN_ITS_LINE = ["max-w-full", "min-w-0"];
 const NOT_VALUES: readonly (readonly [what: string, selector: string])[] = [
   // An icon draws no text.
   ["an icon", "svg, svg *"],
-  // `AgentName`'s state mark is the dot before a session's name, named by its reading
-  // (dispatch://INFRA-3935 R2).
+  // `AgentName`'s state mark is the dot before a session's name, named by its reading.
   ["AgentName's state mark", "[data-agent-name] > [role='img']"],
   // `AssigneeControl`'s initial is drawn from `data-initial` and adds no letter to the name.
   ["AssigneeControl's initial", "[data-initial]"],
@@ -2106,19 +2017,42 @@ function ownText(element: Element): string {
     .join("");
 }
 
+/** Whether `element` is a text box whose value or placeholder holds `value`: a box draws its
+ *  words from those attributes, not from any text of its own. */
+function boxHolds(element: Element, value: string): boolean {
+  return (
+    element instanceof HTMLInputElement &&
+    (element.value.includes(value) || element.placeholder.includes(value))
+  );
+}
+
+/** The element a holder of a value draws it as: the holder itself, unless the holder is a
+ *  Markdown body's (`MarkdownBody`), which takes no class, so its caller draws the value as the
+ *  element with the author-text mark around the body, whose classes are the value's. A body
+ *  with no such element around it is read as itself. */
+function valueDrawnBy(holder: Element): Element {
+  return (
+    holder.closest(".dispatch-markdown")?.parentElement?.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) ??
+    holder
+  );
+}
+
 /**
  * Each value `mount` draws among `drawn`: every element with the author-text mark, and each
- * element holding one of `mount.values` in its own text. A value inside `sr-only` is read aloud
- * and drawn in no row, and a native `<option>` is drawn by the browser's own list, which no class
- * wraps, so neither is read. `missing` takes each value of `mount.values` that nothing draws.
+ * element holding one of `mount.values` in its own text (`valueDrawnBy`), or a text box holding
+ * it as its value or its placeholder. A value inside `sr-only` is read aloud and drawn in no row,
+ * and a native `<option>` is drawn by the browser's own list, which no class wraps, so neither is
+ * read. `missing` takes each value of `mount.values` that nothing draws.
  */
 function drawnValues(mount: Mount, drawn: readonly Element[], missing: string[]): Element[] {
   const shown = drawn.filter((element) => element.closest(".sr-only, select") === null);
   const values = new Set(shown.filter((element) => element.hasAttribute(AUTHOR_TEXT_ATTRIBUTE)));
   for (const value of mount.values ?? []) {
-    const holders = shown.filter((element) => ownText(element).includes(value));
+    const holders = shown.filter(
+      (element) => ownText(element).includes(value) || boxHolds(element, value)
+    );
     if (holders.length === 0) missing.push(`${mount.name}: draws no ${value}`);
-    for (const holder of holders) values.add(holder);
+    for (const holder of holders) values.add(valueDrawnBy(holder));
   }
   return [...values];
 }
@@ -2128,23 +2062,17 @@ function described(element: Element): string {
   return `<${element.tagName.toLowerCase()} class="${element.getAttribute("class") ?? ""}">${(element.textContent ?? "").slice(0, 32)}`;
 }
 
-/** What of `HOLDS_ITS_LINE` an element carries, its inline `flex-shrink: 0` among them. */
-function holdsItsLine(element: Element): string[] {
-  const held = classOf(element).filter((token) => HOLDS_ITS_LINE.includes(token));
-  return element instanceof HTMLElement && element.style.flexShrink === "0"
-    ? [...held, "flex-shrink: 0"]
-    : held;
-}
-
-/** Why `value` cannot wrap inside its row: it breaks nowhere inside a word, it has no bound on
- *  its width, or it, an element of its text inside it, or an element around it up to `root`
- *  holds its line or its width. */
+/** Why `value` cannot wrap inside its row: it does not break anywhere (`BREAKS_ANYWHERE`), it
+ *  has no bound on its width (`STAYS_IN_ITS_LINE`), or it, an element of its text inside it, or
+ *  an element around it up to `root` holds its line or its width (`HOLDS_ITS_LINE`). A text box
+ *  is exempt from the first alone: it draws its value on one line, which it scrolls inside its
+ *  own width and no class breaks, so it narrows to its line instead, which the rest is read for. */
 function wrapOffences(mountName: string, value: Element, root: Element): string[] {
   const named = `${mountName}: ${described(value)}`;
   const offences: string[] = [];
   const own = classOf(value);
-  if (!own.some((token) => BREAKS_ANYWHERE.includes(token))) {
-    offences.push(`${named} breaks nowhere inside a word`);
+  if (!(value instanceof HTMLInputElement) && !own.includes(BREAKS_ANYWHERE)) {
+    offences.push(`${named} does not break anywhere (${BREAKS_ANYWHERE})`);
   }
   if (!own.some((token) => STAYS_IN_ITS_LINE.includes(token))) {
     offences.push(`${named} carries neither max-w-full nor min-w-0`);
@@ -2182,21 +2110,23 @@ function wrapOffences(mountName: string, value: Element, root: Element): string[
 /**
  * The files whose `ON_PAGE` table holds the page's colours for their elements inside
  * `NoTooltips`. `theme/text-on-background.test.ts` cannot pair those: it reads a class only where
- * it names an export of `classes.ts`, and `ON_PAGE.detail` names none (decision 99(c) of
- * dispatch://INFRA-1196/artifact/part-decisions-md). The case reads each file's source, as that
- * test does, rather than a list of pairs the file exports: which element draws an entry, and on
- * which ground, is a fact of the file's markup, and a list beside it could say other than the
- * markup draws.
+ * it names an export of `classes.ts`, and `ON_PAGE.detail` names none. The case reads each file's
+ * source, as that test does, rather than a list of pairs the file exports: which element draws an
+ * entry, and on which ground, is a fact of the file's markup, and a list beside it could say other
+ * than the markup draws.
  */
 const ON_PAGE_FILES = [
   "components/MultiSelect.tsx",
   "features/doc/ApprovalChip.tsx",
   "features/inbox/AskCard.tsx",
+  "features/inbox/AskThread.tsx",
+  "features/issue-page/IssueFieldForms.tsx",
+  "features/issue/RepoControl.tsx",
 ] as const;
 
 /** The page's two grounds, the paper and the pane, on which an element of these files is drawn
  *  where no element of its own file draws a ground under it: a control is laid on one of them
- *  (B registers each of the page's inks on both). */
+ *  (`classes.ts` registers each of the page's inks on both). */
 const PAGE_GROUNDS = ["page-paper", "page-pane"] as const;
 
 /** A source file, parsed, with each `const` of it by its name: a name declared in two of its
@@ -2370,9 +2300,8 @@ interface PageLook {
 }
 
 /** The page colours of `className`, or `undefined` for `main`'s look, a string with a colour of
- *  `main`'s, which is never drawn inside `NoTooltips` (dispatch://INFRA-3935 R6; the colour case
- *  holds that). The focus rule `main` keeps inside `NoTooltips` is no ground and no text
- *  (decision 58 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+ *  `main`'s, which is never drawn inside `NoTooltips` (the colour case holds that). The focus
+ *  rule `main` keeps inside `NoTooltips` is no ground and no text. */
 function pageLook(className: string): PageLook | undefined {
   const bg = new Map<string, string>();
   const text = new Map<string, string>();
@@ -2396,43 +2325,53 @@ interface DrawnPair {
   readonly text: string;
 }
 
+/** Whether an attribute is a class an element is drawn with: its own `className`, or the class
+ *  a component it mounts draws one of its parts with (the shared text field's `fieldClassName`,
+ *  `labelClassName` and `hintClassName`), which is drawn where the component is. */
+const CLASS_ATTRIBUTE = /^(?:className|[a-z][A-Za-z]*ClassName)$/;
+
+/** The expression an attribute's value is: what its braces hold, or its string. */
+function attributeExpression(attribute: ts.JsxAttribute): ts.Expression | undefined {
+  const value = attribute.initializer;
+  return value === undefined
+    ? undefined
+    : ts.isJsxExpression(value)
+      ? value.expression
+      : ts.isStringLiteral(value)
+        ? value
+        : undefined;
+}
+
 /** Each page colour pair the elements of `file` that read an `ON_PAGE` entry draw, in each state
  *  of theirs and of the elements around them: the text an element's class gives it, else the
  *  nearest around it; on the ground its class gives it, else each ground of the nearest element
  *  around it that draws one in every look it can take, with the grounds of the looks on the way
- *  that draw one; else the page's grounds. */
+ *  that draw one; else the page's grounds. A component's class of one of its parts
+ *  (`CLASS_ATTRIBUTE`) is read as an element of its own where the component is drawn; only its
+ *  `className` is around what the component holds. */
 function onPagePairs(file: ParsedSource): DrawnPair[] {
   const pairs: DrawnPair[] = [];
   const visit = (node: ts.Node, around: readonly (readonly PageLook[])[]) => {
-    const opening = ts.isJsxElement(node)
-      ? node.openingElement
+    const attributes = ts.isJsxElement(node)
+      ? node.openingElement.attributes.properties
       : ts.isJsxSelfClosingElement(node)
-        ? node
-        : undefined;
-    const classAttribute = opening?.attributes.properties.find(
-      (attribute): attribute is ts.JsxAttribute =>
-        ts.isJsxAttribute(attribute) && attribute.name.getText() === "className"
-    );
-    const value = classAttribute?.initializer;
-    const expression =
-      value === undefined
-        ? undefined
-        : ts.isJsxExpression(value)
-          ? value.expression
-          : ts.isStringLiteral(value)
-            ? value
-            : undefined;
-    if (opening === undefined || expression === undefined) {
-      ts.forEachChild(node, (child) => visit(child, around));
-      return;
-    }
-    const looks = classStrings(expression, file).flatMap((className) => {
-      const look = pageLook(className);
-      return look === undefined ? [] : [look];
-    });
-    const entries = onPageEntries(expression, file);
-    if (entries.length > 0) {
-      const line = file.source.getLineAndCharacterOfPosition(opening.getStart()).line + 1;
+        ? node.attributes.properties
+        : [];
+    let held: readonly PageLook[] | undefined;
+    for (const attribute of attributes) {
+      if (!ts.isJsxAttribute(attribute) || !CLASS_ATTRIBUTE.test(attribute.name.getText())) {
+        continue;
+      }
+      const expression = attributeExpression(attribute);
+      if (expression === undefined) continue;
+      const looks = classStrings(expression, file).flatMap((className) => {
+        const look = pageLook(className);
+        return look === undefined ? [] : [look];
+      });
+      if (attribute.name.getText() === "className") held = looks;
+      const entries = onPageEntries(expression, file);
+      if (entries.length === 0) continue;
+      const line = file.source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
       const states = new Set(
         [...looks, ...around.flat()].flatMap((look) => ["", ...look.bg.keys(), ...look.text.keys()])
       );
@@ -2448,7 +2387,7 @@ function onPagePairs(file: ParsedSource): DrawnPair[] {
         }
       }
     }
-    ts.forEachChild(node, (child) => visit(child, [looks, ...around]));
+    ts.forEachChild(node, (child) => visit(child, held === undefined ? around : [held, ...around]));
   };
   visit(file.source, []);
   return pairs;
@@ -2490,7 +2429,7 @@ function groundsOf(
 }
 
 /** Whether `CONTRAST_CHECKS` holds `text` on `ground` as words, at 4.5:1: a check of the same
- *  swatches at 3:1 is a shape's (B's twisty), which no word may lean on. */
+ *  swatches at 3:1 is a shape's (a row's twisty), which no word may lean on. */
 function registeredAsText(text: string, ground: string): boolean {
   const colours: Readonly<Partial<Record<string, theme.ColorPair>>> = PAGE_COLORS;
   const foreground = colours[text];
@@ -2509,8 +2448,8 @@ function registeredAsText(text: string, ground: string): boolean {
 // The cases
 // ---------------------------------------------------------------------------------------------
 
-// R1 and R2 of dispatch://INFRA-3935: outside `NoTooltips` each file of R9 carries every `title`
-// `main` gives it, in each state that sets one, and no other.
+// Outside `NoTooltips` each shared control carries every `title` `main` gives it, in each state
+// that sets one, and no other.
 test("outside NoTooltips each shared control sets the title that main sets", async () => {
   for (const mount of EVERY_MOUNT) {
     if (MOVING_INSTANTS.includes(mount)) continue;
@@ -2525,10 +2464,11 @@ test("outside NoTooltips each shared control sets the title that main sets", asy
   }
 });
 
-// dispatch://INFRA-3935 R2: inside `NoTooltips` no file of R9 sets a `title` it sets on `main`,
-// the two the source kept (the stale chip and `AgentUnresponsiveNote`) and an open
-// `MultiSelect`'s options among them. `AskCard`'s own elements are read, the asker's name and the
-// submit among them, and its children of other files are not (`askCardChildren`).
+// Inside `NoTooltips` no shared control sets a `title` it sets on `main`,
+// the two the source kept (the stale chip and `AgentUnresponsiveNote`), an open
+// `MultiSelect`'s options and a repository row's "None" and its repository's text in Details among
+// them. `AskCard`'s own elements are read, the asker's name and the submit among them, and its
+// children of other files are not (`askCardChildren`).
 test("inside NoTooltips no shared control sets a title", async () => {
   const scope = (view: RenderResult) => within(view.baseElement);
   const named = new Map<Mount, (view: RenderResult) => readonly Element[]>([
@@ -2557,6 +2497,16 @@ test("inside NoTooltips no shared control sets a title", async () => {
         scope(view).getByRole("button", { name: "Answer" }),
       ],
     ],
+    [
+      mountNamed(
+        "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+      ),
+      (view) => [
+        scope(view).getByRole("button", { name: `${CONTROL_LABELS.none}, Repository of CORE-3` }),
+        scope(view).getByRole("button", { name: "acme/app, Repository of CORE-4" }),
+        scope(view).getByRole("button", { name: "acme/site, Repository of CORE-5" }),
+      ],
+    ],
   ]);
   const titled: string[] = [];
   const unread: string[] = [];
@@ -2568,7 +2518,7 @@ test("inside NoTooltips no shared control sets a title", async () => {
           titled.push(`${mount.name}: <${element.tagName.toLowerCase()}> title="${title}"`);
         }
       }
-      // Each element R2 names is drawn, and is one the walk above read.
+      // Each element `named` picks out is drawn, and is one the walk above read.
       const read = named.get(mount)?.(view);
       if (read?.length === 0) unread.push(`${mount.name}: nothing drawn`);
       for (const element of read ?? []) {
@@ -2580,7 +2530,7 @@ test("inside NoTooltips no shared control sets a title", async () => {
   expect(unread).toEqual([]);
 });
 
-// dispatch://INFRA-3935 R2: a `title` hides a missing name from axe, so with none left each
+// A `title` hides a missing name from axe, so with none left each
 // control must be named by its own words or its label.
 test("inside NoTooltips every shared control keeps an accessible name", async () => {
   const roles = ["button", "link", "img", "status"] as const;
@@ -2605,14 +2555,14 @@ test("inside NoTooltips every shared control keeps an accessible name", async ()
   expect([...read].filter(([, count]) => count === 0)).toEqual([]);
 });
 
-// dispatch://INFRA-3935 R2: inside `NoTooltips` each fact that only a `title` held on `main` is
-// drawn, as text or as the control's name, in B's words where B's list holds them.
+// Inside `NoTooltips` each fact that only a `title` held on `main` is drawn, as text or as the
+// control's name, in the words of the new issue page's word list where it holds them.
 test("inside NoTooltips a fact that only a title held is drawn", async () => {
   const claimed = `${ageOf(CLAIMED_AT)} (${shortTime(CLAIMED_AT)})`;
   const heard = `${ageOf(HEARD_AT)} (${shortTime(HEARD_AT)})`;
 
   // `Timestamp` with `exact` says the date and the time in brackets after the age; without it,
-  // the age alone (R2's last sentence).
+  // the age alone.
   const timestamps: Mount = {
     name: "Timestamp, exact and not",
     node: () => (
@@ -2680,7 +2630,7 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
       `, ${CONTROL_LABELS.takeable_now}`
     );
     // A registry that answered leaves no claim unjudged.
-    expect(scope.queryAllByTestId("issue-claim-unchecked")).toEqual([]);
+    expect(scope.queryAllByTestId("issue-claim-unchecked")).toHaveLength(0);
   });
   // ... and "· running state unknown" when the agent list cannot be read.
   await readDrawn(
@@ -2747,17 +2697,25 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
     ]);
   });
 
-  // `RepoControl` says beside an inherited repository that it is inherited or the default.
+  // `RepoControl` says beside an inherited repository that it is inherited or the default: beside
+  // the box, and in a row of Details beside the repository's text.
   await readDrawn(
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
     "inside",
     (view) => {
       const scope = within(view.container);
       const drawn = scope.getAllByText(CONTROL_LABELS.repository_inherited);
-      expect(drawn).toHaveLength(1);
+      expect(drawn).toHaveLength(2);
       expect(
         drawn[0]?.parentElement?.contains(
           scope.getByRole("combobox", { name: "Repository of CORE-2" })
+        )
+      ).toBe(true);
+      expect(
+        drawn[1]?.parentElement?.contains(
+          scope.getByRole("button", { name: "acme/site, Repository of CORE-5" })
         )
       ).toBe(true);
     }
@@ -2770,18 +2728,73 @@ test("inside NoTooltips a fact that only a title held is drawn", async () => {
     const [removable, wider] = scope.getAllByRole("listitem");
     expect(removable?.textContent).not.toContain(STATE_LINES.subscription_wider);
     expect(wider?.textContent).toContain(STATE_LINES.subscription_wider);
-    expect(scope.queryAllByText(/\bvia\b|notifications\.dispatch/)).toEqual([]);
+    expect(scope.queryAllByText(/\bvia\b|notifications\.dispatch/)).toHaveLength(0);
   });
 });
 
-// dispatch://INFRA-3935 R6: inside `NoTooltips` each word a file of R9 reads from B's list is B's
-// word, found here by B's own entry, and each element carries the mark the source gives it: the
-// page's words `data-page-chrome`, a person's or an agent's `data-author-text` (`ApprovalSteps`'
-// "Not requested" pill, `StepReason`'s line and its reason, a person's name, and the page's "An
-// agent" outside every name somebody was given among them), and each approval chip
-// `data-approval-artifact` with its document's id. No control draws
+// Inside `NoTooltips` the repository's clear control carries no `title`: its name stays `main`'s,
+// and its description, in the page's mark, says what the `title` said, that the issue then
+// inherits a repository. A value that is not owner/name, written with Enter, draws `main`'s
+// refusal in the page's failed red, with the page's mark. Outside, the control keeps `main`'s
+// `title` and no description, and the refusal `main`'s red and no mark.
+test("inside NoTooltips the repository's clear control is described by what its title said, and a refusal is the page's failed red", async () => {
+  const user = userEvent.setup();
+  const clearExplains = "Clear it, and the issue inherits a repository again";
+  for (const surface of ["inside", "outside"] as const) {
+    const view = draw(
+      <>
+        <RepoControl issueKey="CORE-1" project="CORE" repo="acme/api" resolvedRepo="acme/api" />
+        <RepoControl issueKey="CORE-2" project="CORE" repo={null} resolvedRepo="acme/web" />
+      </>,
+      surface
+    );
+    try {
+      const scope = within(view.container);
+      const clear = scope.getByRole("button", { name: "Clear the repository of CORE-1" });
+      const description = document.getElementById(clear.getAttribute("aria-describedby") ?? "");
+      if (surface === "inside") {
+        expect(clear.getAttribute("title")).toBeNull();
+        expect(
+          scope.getByRole("button", {
+            description: clearExplains,
+            name: "Clear the repository of CORE-1",
+          })
+        ).toBe(clear);
+        expect(description?.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+      } else {
+        expect(clear.getAttribute("title")).toBe(clearExplains);
+        expect(description).toBeNull();
+      }
+
+      // The focus starts the mappings' read, which lands before the refusal is read.
+      await user.type(scope.getByRole("combobox", { name: "Repository of CORE-2" }), "nope{Enter}");
+      await settleReads();
+      const refusal = scope.getByRole("alert");
+      expect(refusal.textContent).toBe("Write the repository as owner/name.");
+      if (surface === "inside") {
+        expect(classOf(refusal)).toEqual(expect.arrayContaining(tokens(theme.pageFailedText)));
+        expect(
+          classOf(refusal).filter((token) => tokens(theme.dangerText).includes(token))
+        ).toEqual([]);
+        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(true);
+      } else {
+        expect(refusal.getAttribute("class")).toBe(theme.dangerText);
+        expect(refusal.hasAttribute(PAGE_CHROME_ATTRIBUTE)).toBe(false);
+      }
+    } finally {
+      undraw(view);
+    }
+  }
+});
+
+// Inside `NoTooltips` each word a shared control reads from the new issue page's word list is
+// that list's word, found here by the list's own entry, and each element carries the mark the
+// source gives it: the page's words `data-page-chrome`, a person's or an agent's
+// `data-author-text` (`ApprovalSteps`' "Not requested" pill, `StepReason`'s line and its reason,
+// a person's name, and the page's "An agent" outside every name somebody was given among them),
+// and each approval chip `data-approval-artifact` with its document's id. No control draws
 // `CONTROL_LABELS.unknown_author`: `AgentText.author` alone says it.
-test("inside NoTooltips the words come from B's list and carry their marks", async () => {
+test("inside NoTooltips the words come from the page's word list and carry their marks", async () => {
   await readDrawn(
     mountNamed("ApprovalChip, each state, and the Request changes dialog"),
     "inside",
@@ -2845,7 +2858,7 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       ["Implementer", "author-text"],
       ["Reviewer", "author-text"],
       ["Old planner", "author-text"],
-      // A session nothing names, not an author here, reads as one (decision 107).
+      // A session nothing names, not an author here, reads as one.
       [CONTROL_LABELS.unnamed_author, "page-chrome"],
     ]);
   });
@@ -2921,9 +2934,9 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       [CONTROL_LABELS.components_set, "page-chrome"],
     ]);
   });
-  // While it saves, the picker says B's "Saving components…" with the page's mark in place of its
-  // host's words, and the components line's name begins with them (`componentsControlName`;
-  // dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md).
+  // While it saves, the picker says the word list's "Saving components…" with the page's mark in
+  // place of its host's words, and the components line's name begins with them
+  // (`componentsControlName`).
   await readDrawn(componentPickerSaving, "inside", (view) => {
     expectMarks(view.container, [[ANSWER_LINES.saving_components, "page-chrome"]]);
     expect(within(view.container).getByRole("button").textContent).toBe(
@@ -2944,18 +2957,26 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       [ANSWER_LINES.saving_labels, "page-chrome"],
       ["api", "author-text"],
     ]);
-    // The control of an issue with no label is named by the words it draws, then the issue's
-    // key (WCAG 2.5.3, dispatch://INFRA-3935 R2); one that saves by the words it draws then, their
-    // ellipsis dropped, and here no key is given (R8, decision 114 of
-    // dispatch://INFRA-1196/artifact/part-decisions-md).
-    expect(
-      within(view.container)
-        .getAllByRole("button", { name: /labels?\b/iu })
-        .map((control) => [control.getAttribute("aria-label"), control.textContent])
-    ).toEqual([
-      [`${CONTROL_LABELS.add_label} to CORE-1`, CONTROL_LABELS.add_label],
-      ["Saving labels", ANSWER_LINES.saving_labels],
+    // The control of an issue with no label is named by the words it draws, then the word list's
+    // joining word and the issue's key (WCAG 2.5.3); one that saves by the words it draws then,
+    // their ellipsis dropped, and here no key is given. Each name is built from the word list's
+    // words.
+    const named = [
+      `${CONTROL_LABELS.add_label} ${CONTROL_LABELS.control_name_to} CORE-1`,
+      withoutEllipsis(ANSWER_LINES.saving_labels),
+    ].map((name) => within(view.container).getByRole("button", { name }));
+    expect(named.map((control) => control.textContent)).toEqual([
+      CONTROL_LABELS.add_label,
+      ANSWER_LINES.saving_labels,
     ]);
+    // Each name begins with the words its control draws, their ellipsis dropped.
+    for (const control of named) {
+      const drawn = withoutEllipsis((control.textContent ?? "").trim());
+      expect({
+        drawn,
+        nameBeginsWithWords: control.getAttribute("aria-label")?.startsWith(drawn),
+      }).toEqual({ drawn, nameBeginsWithWords: true });
+    }
   });
 
   await readDrawn(
@@ -2967,9 +2988,14 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
         ["P2 Rocq and Lean speed work restarted", "author-text"],
         ["P1 Evals collecting data now", "author-text"],
         [CONTROL_LABELS.advances_inherited, "page-chrome"],
-        ["✕", "page-chrome"],
         ["+", "page-chrome"],
       ]);
+      // The Remove draws its cross as a shape, with no text to find it by, so it is read by its
+      // name.
+      const remove = within(view.container).getByRole("button", {
+        name: "Remove P2 Rocq and Lean speed work restarted from CORE-1",
+      });
+      expect(markOf(remove)).toBe("page-chrome");
     }
   );
   await readDrawn(mountNamed("IssuePriorityLine, in a row of Details"), "inside", (view) => {
@@ -2978,7 +3004,7 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
       [CONTROL_LABELS.add_priority, "page-chrome"],
       ["P2 Rocq and Lean speed work restarted", "author-text"],
     ]);
-    expect(within(view.container).queryAllByText(PROPERTY_LABELS.advances)).toEqual([]);
+    expect(within(view.container).queryAllByText(PROPERTY_LABELS.advances)).toHaveLength(0);
   });
   await readDrawn(mountNamed("IssuePriorityLine, adding a priority"), "inside", (view) => {
     expectMarks(view.container, [
@@ -3057,13 +3083,17 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
   );
 
   await readDrawn(
-    mountNamed("RepoControl, its own repository, an inherited one and none in a row of Details"),
+    mountNamed(
+      "RepoControl, its own repository and an inherited one, out of a row of Details and in one, and none in one"
+    ),
     "inside",
     (view) => {
       expectMarks(view.container, [
         [`${PROPERTY_LABELS.repository}:`, "page-chrome"],
         ["acme/api", "author-text"],
         ["acme/web", "author-text"],
+        ["acme/app", "author-text"],
+        ["acme/site", "author-text"],
         [CONTROL_LABELS.repository_inherited, "page-chrome"],
         [`, ${CONTROL_LABELS.repository_inherited}`, "page-chrome"],
         [CONTROL_LABELS.none, "page-chrome"],
@@ -3099,8 +3129,7 @@ test("inside NoTooltips the words come from B's list and carry their marks", asy
   );
 });
 
-// dispatch://INFRA-3935 R1 and R6: outside `NoTooltips` no file of R9 marks anything, as on
-// `main`.
+// Outside `NoTooltips` no shared control marks anything, as on `main`.
 test("outside NoTooltips no shared control carries a mark", async () => {
   const marked: string[] = [];
   for (const mount of EVERY_MOUNT) {
@@ -3115,7 +3144,7 @@ test("outside NoTooltips no shared control carries a mark", async () => {
   expect(marked).toEqual([]);
 });
 
-// dispatch://INFRA-3935 R6: inside `NoTooltips` a stale chip draws as text the latest version its
+// Inside `NoTooltips` a stale chip draws as text the latest version its
 // `title` held, in a list and at the header's size alike; outside, it keeps `main`'s words and
 // `title`.
 test("inside NoTooltips a stale chip draws its latest version", async () => {
@@ -3149,14 +3178,13 @@ test("inside NoTooltips a stale chip draws its latest version", async () => {
       ["Approved v3 · changed since", "Approved at version 3; the latest version is 5"],
       ["Approved v3 · changed since", "Approved at version 3; the latest version is 5"],
     ]);
-    expect(within(view.container).queryAllByText(/latest v5/)).toEqual([]);
+    expect(within(view.container).queryAllByText(/latest v5/)).toHaveLength(0);
   });
 });
 
-// dispatch://INFRA-3935 R6 (decision 56 of dispatch://INFRA-1196/artifact/part-decisions-md):
-// inside `NoTooltips` every colour a file of R9 draws is one of B's page colours, the focus
-// indicator excepted (decision 58 of the same artifact).
-test("inside NoTooltips every colour is one of B's page colours", async () => {
+// Inside `NoTooltips` every colour a shared control draws is one of the page's colours in
+// `PAGE_COLORS`, the focus indicator excepted.
+test("inside NoTooltips every colour is one of the page's colours", async () => {
   const offenders: string[] = [];
   const colourless: string[] = [];
   for (const mount of EVERY_MOUNT) {
@@ -3171,17 +3199,62 @@ test("inside NoTooltips every colour is one of B's page colours", async () => {
   expect(colourless).toEqual([]);
 });
 
-// dispatch://INFRA-3935 R6 and R9: the components line's picker takes its trigger's class from
-// `ComponentPicker`, which hands it to `MultiSelect`. Inside `NoTooltips` that trigger, "+" or
-// "Set components", draws in B's page colours and keeps none of `secondaryButtonCompact`'s;
-// outside, its class is `main`'s `secondaryButtonCompact`. Inside, the trigger that draws "Set
-// components" is named by those words (R8, decision 114 of
-// dispatch://INFRA-1196/artifact/part-decisions-md); outside, each keeps `main`'s name.
-test("inside NoTooltips the components picker's trigger draws in B's page colours", async () => {
+// The page's typeface holds only the characters of `subset.sh`'s UNICODES, which the face's
+// `unicode-range` in styles.css repeats (`fonts/inter/subset.test.ts` holds the two equal). A
+// character outside them is drawn in a face of the reader's own machine, at that face's width,
+// so the page draws such a glyph as an inline svg. A value the reader or a fixture wrote is no
+// glyph the page draws, so author text and each of a mount's `values` are skipped.
+test("inside NoTooltips no shared control draws a character the page's typeface lacks", async () => {
+  const subsetSh = readFileSync(
+    join(import.meta.dir, "..", "..", "fonts", "inter", "subset.sh"),
+    "utf8"
+  );
+  const unicodes = /^UNICODES=(\S+)$/m.exec(subsetSh)?.[1];
+  if (unicodes === undefined) throw new Error("subset.sh has no UNICODES= line");
+  const ranges = unicodes.split(",").map((entry) => {
+    const match = /^U\+([0-9A-F]{4,6})(?:-([0-9A-F]{4,6}))?$/i.exec(entry.trim());
+    if (match === null) throw new Error(`${entry} in subset.sh's UNICODES is no U+ entry`);
+    const first = Number.parseInt(match[1], 16);
+    return [first, match[2] === undefined ? first : Number.parseInt(match[2], 16)] as const;
+  });
+  const offenders: string[] = [];
+  let read = 0;
+  for (const mount of EVERY_MOUNT) {
+    await readDrawn(mount, "inside", (_view, elements) => {
+      for (const element of elements) {
+        if (element.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) !== null) continue;
+        for (const node of element.childNodes) {
+          if (node.nodeType !== node.TEXT_NODE) continue;
+          const text = node.textContent ?? "";
+          if (mount.values?.some((value) => text.includes(value))) continue;
+          for (const character of text) {
+            read += 1;
+            const point = character.codePointAt(0) ?? 0;
+            if (ranges.some(([first, last]) => point >= first && point <= last)) continue;
+            const code = point.toString(16).toUpperCase().padStart(4, "0");
+            offenders.push(`${mount.name}: U+${code} ${character} in "${text}"`);
+          }
+        }
+      }
+    });
+  }
+  expect(offenders).toEqual([]);
+  // A walk that read no character would pass with nothing read.
+  expect(read).toBeGreaterThan(0);
+});
+
+// The components line's picker takes its trigger's class from `ComponentPicker`, which hands it
+// to `MultiSelect`. Inside `NoTooltips` that trigger, "+" or "Set components", draws in the page's
+// colours in `PAGE_COLORS` and keeps none of `secondaryButtonCompact`'s; outside, its class is
+// `main`'s `secondaryButtonCompact`. Inside, the trigger that draws "Set components" is named by
+// those words; outside, each keeps `main`'s name.
+test("inside NoTooltips the components picker's trigger draws in the page's colours", async () => {
   const triggers = (view: RenderResult, surface: Surface) =>
     [
       "Edit components of CORE-1",
-      surface === "inside" ? "Set components of CORE-2" : "Edit components of CORE-2",
+      surface === "inside"
+        ? `${CONTROL_LABELS.components_set} ${CONTROL_LABELS.control_name_of} CORE-2`
+        : "Edit components of CORE-2",
     ].map((name) => within(view.container).getByRole("button", { name }));
   const mainsColours = tokens(secondaryButtonCompact).filter(
     (token) => colourOf(splitToken(token).utility) !== undefined
@@ -3209,7 +3282,7 @@ test("inside NoTooltips the components picker's trigger draws in B's page colour
   });
 });
 
-// dispatch://INFRA-3935 R6: inside `NoTooltips` `AgentName`'s link, in each of its forms and as
+// Inside `NoTooltips` `AgentName`'s link, in each of its forms and as
 // the claim chip's holder, is the page's link, in the ink with its underline, and keeps none of
 // `main`'s link blue; outside, each keeps `main`'s class.
 test("inside NoTooltips AgentName's link draws in the page's ink with its underline", async () => {
@@ -3259,10 +3332,9 @@ test("inside NoTooltips AgentName's link draws in the page's ink with its underl
   });
 });
 
-// Decision 107 of dispatch://INFRA-1196/artifact/part-decisions-md (that issue's R22,
-// dispatch://INFRA-3935 R5): inside `NoTooltips` every form of `AgentName`, given a session's actor
-// or its bare id, names a session the agent list does not hold and no write stamped a title on by
-// B's word for an agent nothing names, which carries the page's mark, and never by its short id,
+// Inside `NoTooltips` every form of `AgentName`, given a session's actor or its bare id, names a
+// session the agent list does not hold and no write stamped a title on by the word list's word
+// for an agent nothing names, which carries the page's mark, and never by its short id,
 // an address that names nobody. Its `data-agent-name` keeps the full id, and so does the copy an
 // asker's row offers. Outside, each form draws `main`'s short id, with the full id as its title.
 test("inside NoTooltips a session nothing names reads as An agent, never by its short id", async () => {
@@ -3324,8 +3396,8 @@ test("inside NoTooltips a session nothing names reads as An agent, never by its 
     expect(
       within(root)
         .getAllByText(word)
-        .map((name) => name.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`))
-    ).toEqual(forms.map(() => null));
+        .map((name) => name.closest(`[${AUTHOR_TEXT_ATTRIBUTE}]`) === null)
+    ).toEqual(forms.map(() => true));
     expect(
       within(root).getAllByRole("link", { name: `Open live conversation with ${word}` })
     ).toHaveLength(2);
@@ -3369,9 +3441,9 @@ test("inside NoTooltips a session nothing names reads as An agent, never by its 
   });
 });
 
-// dispatch://INFRA-3935 R6 names the version link: it is drawn inside `NoTooltips` alone, so it is
+// `ApprovalSteps`' version link is drawn inside `NoTooltips` alone, so it is
 // the page's link, in the ink with its underline, and never `main`'s link blue.
-test("inside NoTooltips ApprovalSteps' version link draws in B's page colours", async () => {
+test("inside NoTooltips ApprovalSteps' version link draws in the page's colours", async () => {
   const node = () => (
     <ApprovalSteps
       entries={stepEntries()}
@@ -3391,10 +3463,10 @@ test("inside NoTooltips ApprovalSteps' version link draws in B's page colours", 
   });
 });
 
-// dispatch://INFRA-3935 R6 names RouteReach's markers: inside `NoTooltips` each is the page's
+// Inside `NoTooltips` each of RouteReach's markers is the page's
 // warning, its waiting orange, and none keeps `main`'s callout or muted grey; outside, each keeps
 // `main`'s.
-test("inside NoTooltips RouteReach's markers draw in B's page colours", async () => {
+test("inside NoTooltips RouteReach's markers draw in the page's colours", async () => {
   const markers = (view: RenderResult) => {
     const scope = within(view.container);
     return {
@@ -3439,8 +3511,7 @@ test("inside NoTooltips RouteReach's markers draw in B's page colours", async ()
   });
 });
 
-// Decision 104 of dispatch://INFRA-1196/artifact/part-decisions-md (dispatch://INFRA-3935 R4
-// and R6): inside `NoTooltips` every value a shared control draws - a name, an id, a title, a
+// Inside `NoTooltips` every value a shared control draws - a name, an id, a title, a
 // key, an instant - keeps its line's width and breaks anywhere, and nothing it is drawn in holds
 // its width or its line, so a long one wraps inside its row rather than run past it. Each mount
 // of `EVERY_MOUNT` is drawn with long values (`LONG_VALUES`, `withLongReads`). A value is an
@@ -3464,16 +3535,21 @@ test("inside NoTooltips every value a shared control draws can wrap", async () =
   expect(read).toBeGreaterThan(EVERY_MOUNT.length);
 });
 
-// Decision 99(c) of dispatch://INFRA-1196/artifact/part-decisions-md (dispatch://INFRA-3935 R9):
-// each page colour pair an element of an `ON_PAGE` table draws - its text on its ground, at rest,
+// Each page colour pair an element of an `ON_PAGE` table draws - its text on its ground, at rest,
 // under the pointer, refused, and as a field's placeholder - is one `classes.ts` registers in
 // `CONTRAST_CHECKS` as words, so `palette.test.ts` measures it.
 test("every page colour pair of the ON_PAGE tables is registered in CONTRAST_CHECKS", () => {
   const unregistered: string[] = [];
   const unread: string[] = [];
+  const empty: string[] = [];
   for (const path of ON_PAGE_FILES) {
     const file = parsedSource(path);
     const pairs = onPagePairs(file);
+    const table = tableEntries("ON_PAGE", file, 0);
+    // A file whose table or whose reads of it the walk does not find under the name `ON_PAGE`
+    // yields no pair to check, and would pass with nothing read.
+    if (table.size === 0) empty.push(`${path}: no ON_PAGE table`);
+    if (pairs.length === 0) empty.push(`${path}: no element reads an ON_PAGE entry`);
     for (const { entries, ground, line, state, text } of pairs) {
       if (registeredAsText(text, ground)) continue;
       unregistered.push(
@@ -3483,11 +3559,12 @@ test("every page colour pair of the ON_PAGE tables is registered in CONTRAST_CHE
     // Each entry that draws a text colour is read by an element the walk found, so no pair of
     // the table goes unread.
     const drawn = new Set(pairs.flatMap((pair) => pair.entries));
-    for (const [entry, strings] of tableEntries("ON_PAGE", file, 0)) {
+    for (const [entry, strings] of table) {
       const draws = strings.some((className) => (pageLook(className)?.text.size ?? 0) > 0);
       if (draws && !drawn.has(entry)) unread.push(`${path}: ON_PAGE.${entry}`);
     }
   }
+  expect(empty).toEqual([]);
   expect(unread).toEqual([]);
   expect([...new Set(unregistered)]).toEqual([]);
 });

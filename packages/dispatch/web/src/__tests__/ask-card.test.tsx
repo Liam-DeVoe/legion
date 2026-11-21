@@ -1,4 +1,4 @@
-import { afterAll, expect, jest, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, a form's own submit, the same-task pair of presses, a press on a control the send holds disabled, and a key that must not press the button it reaches
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -20,11 +20,18 @@ import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
 import { Inbox } from "../features/inbox/Inbox";
+import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
 import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
 import { keyedAttempt } from "./keyed-attempt";
 import { userOnFakeClock } from "./user";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
   edges: [],
@@ -691,17 +698,19 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const submitted: AnswerAskInput[] = [];
+  const answerHeld = Promise.withResolvers<void>();
   const { promise: landed, resolve: land } = Promise.withResolvers<void>();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
     await landed;
     return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
   });
   const input = ask();
-  const { view } = renderCard(
+  const { queryClient, view } = renderCard(
     <AskCard
       ask={input}
       answerAsk={async (_id, submission) => {
         submitted.push(submission);
+        await answerHeld.promise;
         return answered(input, submission.selected, submission.text ?? null);
       }}
       getAskThread={emptyThread(input)}
@@ -709,6 +718,9 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
   );
 
   try {
+    // The who-am-I read (a 401, as `network.ts` answers it) settles here, before the first press,
+    // rather than during a press, where its answer would update the card outside `act`.
+    await waitFor(() => expect(queryClient.getQueryState(["whoami"])?.status).toBe("error"));
     const answer = view.getByLabelText("Your answer") as HTMLTextAreaElement;
     await user.click(answer);
     await user.paste("This one");
@@ -728,6 +740,9 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
       expect(answer.value).toBe("This one ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
     );
     await user.click(view.getByRole("button", { name: "Answer" }));
+    await act(async () => {
+      answerHeld.resolve();
+    });
     await waitFor(() =>
       expect(submitted).toEqual([
         {
@@ -1537,7 +1552,8 @@ test("an answered ask records a chosen Other answer under an Other label, not as
   try {
     const card = view.getByTestId("ask-ask-1");
     expect(await within(card).findByText("Other")).toBeTruthy();
-    expect(within(card).getByText("Neither, let's wait a week")).toBeTruthy();
+    // The answer is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    expect(await within(card).findByText("Neither, let's wait a week")).toBeTruthy();
   } finally {
     view.unmount();
   }
@@ -1662,7 +1678,7 @@ test("AskCard keeps the thread and reply composer visible after the ask is answe
   }
 });
 
-test("the thread composer only appears after an ask is answered", async () => {
+test("the thread composer appears only once an ask is no longer open", async () => {
   const openAsk = ask();
   const { view: openView } = renderCard(
     <AskCard ask={openAsk} getAskThread={emptyThread(openAsk)} />
@@ -1672,10 +1688,24 @@ test("the thread composer only appears after an ask is answered", async () => {
   const { view: answeredView } = renderCard(
     <AskCard ask={answeredAsk} getAskThread={emptyThread(answeredAsk)} />
   );
+  const resolvedAsk: OwnedAsk = {
+    ...ask({ id: "ask-resolved" }),
+    resolution: {
+      actor: { id: "session-1", kind: "session" },
+      at: "2026-09-09T00:05:00Z",
+      kind: "retracted",
+      reason: "Superseded.",
+    },
+    state: "resolved",
+  };
+  const { view: resolvedView } = renderCard(
+    <AskCard ask={resolvedAsk} getAskThread={emptyThread(resolvedAsk)} />
+  );
 
   try {
     const openScope = within(openView.container);
     const answeredScope = within(answeredView.container);
+    const resolvedScope = within(resolvedView.container);
     expect(await openScope.findByLabelText("Your answer")).toBeTruthy();
     expect(openScope.queryByLabelText("Reply")).not.toBeInTheDocument();
 
@@ -1684,9 +1714,14 @@ test("the thread composer only appears after an ask is answered", async () => {
     expect(
       answeredScope.queryByText("Replying does not answer the question.")
     ).not.toBeInTheDocument();
+
+    // A resolved ask is not open either, however it was resolved.
+    expect(await resolvedScope.findByLabelText("Reply")).toBeTruthy();
+    expect(resolvedScope.getByRole("button", { name: "Reply" })).toBeTruthy();
   } finally {
     openView.unmount();
     answeredView.unmount();
+    resolvedView.unmount();
   }
 });
 
@@ -1759,7 +1794,7 @@ test("AskCard surfaces a retryable error when asking back fails", async () => {
   }
 });
 
-test("a resolved ask keeps its question and options and carries a resolution badge", async () => {
+test("a resolved ask keeps its question and options, carries a resolution badge, and still takes a reply", async () => {
   const input = {
     ...ask({
       options: [{ label: "Ship" }, { label: "Hold" }],
@@ -1785,7 +1820,8 @@ test("a resolved ask keeps its question and options and carries a resolution bad
       throw new Error("resolved Ask fixture is missing its resolution");
     }
     await waitFor(() => expect(view.getAllByText(resolution.reason)).toHaveLength(1));
-    expect(view.queryByRole("button", { name: "Reply" })).not.toBeInTheDocument();
+    // The conversation under a settled question goes on: the thread keeps its reply composer.
+    expect(view.getByRole("textbox", { name: "Reply" })).toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -1906,7 +1942,9 @@ test("a compact answered ask's Write a reply reveals its composer as the next ke
     expect(replyToggle).toHaveFocus();
 
     const field = view.getByLabelText("Reply");
-    nextTabStop(replyToggle)?.focus();
+    act(() => {
+      nextTabStop(replyToggle)?.focus();
+    });
     expect(field).toHaveFocus();
     expect(controlledBy(replyToggle)?.contains(field)).toBe(true);
     // The toggle and the form's submit button have distinct names.
@@ -2034,7 +2072,7 @@ test("a link to a folded reply opens the fold and still lets the reader collapse
   }
 });
 
-test("AskCard with no replies offers Write a reply only after an answer, and retries a failed thread fetch", async () => {
+test("AskCard with no replies offers Write a reply only once the ask is not open, and retries a failed thread fetch", async () => {
   const user = userEvent.setup();
   const openInput = ask();
   const { view: open } = renderCard(
@@ -2047,6 +2085,19 @@ test("AskCard with no replies offers Write a reply only after an answer, and ret
   });
   const { view: answered } = renderCard(
     <AskCard ask={answeredInput} getAskThread={emptyThread(answeredInput)} thread="collapsed" />
+  );
+  const resolvedInput: OwnedAsk = {
+    ...ask({ id: "ask-resolved" }),
+    resolution: {
+      actor: { id: "session-1", kind: "session" },
+      at: "2026-09-09T00:05:00Z",
+      kind: "declined",
+      reason: "Not mine to say.",
+    },
+    state: "resolved",
+  };
+  const { view: resolved } = renderCard(
+    <AskCard ask={resolvedInput} getAskThread={emptyThread(resolvedInput)} thread="collapsed" />
   );
   let attempts = 0;
   const failedInput = ask({ id: "ask-2" });
@@ -2076,8 +2127,11 @@ test("AskCard with no replies offers Write a reply only after an answer, and ret
   try {
     const openCard = within(open.container);
     const answeredCard = within(answered.container);
+    const resolvedCard = within(resolved.container);
     const failedCard = within(failed.container);
     await answeredCard.findByRole("button", { name: "Write a reply" });
+    // A resolved ask is not open either, however it was resolved.
+    await resolvedCard.findByRole("button", { name: "Write a reply" });
     // The open ask's only composer is the card's own Answer / Ask back row.
     await openCard.findByRole("button", { name: "Ask back" });
     expect(openCard.queryByRole("button", { name: "Write a reply" })).not.toBeInTheDocument();
@@ -2094,6 +2148,7 @@ test("AskCard with no replies offers Write a reply only after an answer, and ret
   } finally {
     open.unmount();
     answered.unmount();
+    resolved.unmount();
     failed.unmount();
   }
 });
@@ -2409,7 +2464,8 @@ test("the compact card's note disclosure leaves the reader in the field it revea
     // The close moves nobody: the reader is left on the control they pressed, which a press
     // focuses.
     expect(disclosure).toHaveFocus();
-    const ship = within(card).getByRole("radio", { name: "Ship" });
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const ship = await within(card).findByRole("radio", { name: "Ship" });
     await user.click(ship);
     expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
     expect(ship).toHaveFocus();

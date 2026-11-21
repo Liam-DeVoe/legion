@@ -33,11 +33,14 @@ export interface PageWords {
     | "approval_version_of"
     | "cancel"
     | "choose_priority"
+    | "close"
     | "components_inherited_from"
     | "components_none"
     | "components_not_attached"
     | "components_retired"
     | "components_set"
+    | "control_name_of"
+    | "control_name_to"
     | "external_link_unsafe"
     | "github_checks"
     | "no_repository"
@@ -66,9 +69,11 @@ export interface PageWords {
 
 /** A word of the page's list as a control's accessible name says it: a name is said rather than
  *  read, so the ellipsis that shows a write under way ("Saving labels…") is no word of it, and
- *  one `…`, or three dots, at the end goes ("Saving labels"). The shared controls name a busy
- *  control by the words it draws this way (`labelsControlName`, `componentsControlName`;
- *  dispatch://INFRA-3935 R8, decision 114 of dispatch://INFRA-1196/artifact/part-decisions-md). */
+ *  one `…`, or three dots, at the end goes ("Saving labels"). Inside `NoTooltips` the shared
+ *  controls name a busy control by the words it draws this way, then `CONTROL_LABELS`'
+ *  `control_name_of` and the issue's key: `labelsControlName` and `componentsControlName`, each
+ *  given the control's state inside `NoTooltips`, whether a save is in flight among it, or `null`
+ *  outside it for `main`'s name. */
 export function withoutEllipsis(words: string): string {
   return words.replace(/\s*(?:…|\.{3})$/u, "");
 }
@@ -78,16 +83,23 @@ export function withoutEllipsis(words: string): string {
  * where it offers none.
  *
  * Every shared control carries its `title` as it always has, because a tooltip is a real
- * affordance on a surface a reader points at. One surface does not: the issue page
- * (dispatch://INFRA-1196 R6, R19), where a fact a pointer alone can reach is a fact a reader on
- * a phone or on the keyboard does not have, so the page draws what it means and carries no
- * `title` at all. The page wraps what it draws in `NoTooltips`
- * (`features/issue-page/NoTooltips.tsx`), and every control inside answers by leaving its
- * `title` off, drawing the fact the `title` held, and saying the page's words with their marks.
+ * affordance on a surface a reader points at. One surface does not: the issue page, where a
+ * fact a pointer alone can reach is a fact a reader on a phone or on the keyboard does not
+ * have, so the page draws what it means and carries no `title` at all. The page wraps what it
+ * draws in `NoTooltips` (`features/issue-page/NoTooltips.tsx`), and every control inside
+ * answers by leaving its `title` off, drawing the fact the `title` held, and saying the page's
+ * words with their marks.
  *
  * It is a context rather than a prop because Details is drawn in the margin, which the shell
  * mounts beside the router, so no prop of the page reaches it. Outside the issue page it holds
  * nothing, and every control draws what it draws on `main`.
+ *
+ * Inside it a control also draws in the page's colours (`PAGE_COLORS`), lets every value wrap
+ * with `[overflow-wrap:anywhere]`, draws a glyph the page's typeface lacks as an inline svg, and
+ * keeps the focus on a control whose own write is out (`aria-disabled`, never `disabled`); the
+ * cases of `features/issue-page/shared-controls.tooltips.test.tsx` and
+ * `shared-controls.options.test.tsx` hold each rule. No control imports a module of
+ * `features/issue-page/`, so the page's word list loads with that page alone.
  */
 const SurfaceContext = createContext<PageWords | null>(null);
 

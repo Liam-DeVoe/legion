@@ -39,7 +39,7 @@ import { saveCommentEdit } from "../conversation/send-request";
 import { answerAskInput } from "../inbox/answer-ask";
 import { useAnswerDraft } from "../inbox/answer-drafts";
 import { DeclineControl } from "../inbox/DeclineControl";
-import { useOutstandingAnswerWrite } from "../inbox/outstanding-answers";
+import { type AskPress, useOutstandingAnswerWrite } from "../inbox/outstanding-answers";
 import { invalidateOwnerReads } from "../inbox/owner-reads";
 import { useQuestionLabel } from "../inbox/question-label";
 import { answerFailure } from "../inbox/useAskAnswerForm";
@@ -47,10 +47,10 @@ import { AgentName } from "../refs/AgentName";
 import { PlainText } from "../refs/plain-text";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useMediaQuery } from "../shell/useDialog";
+import { outlineCommentsQuery, outlineMessagesQuery } from "./conversation-reads";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import { firstLineOf } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
-import { outlineAsksQuery, outlineCommentsQuery, outlineMessagesQuery } from "./outline-reads";
 import {
   type AnswerTarget,
   type Landing,
@@ -60,6 +60,7 @@ import {
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { TAB_STOP_ROW } from "./slots/stage";
+import { issueAsksQuery } from "./useIssueTree";
 
 /** The kinds the line writes, as its chips before Send, in this order: a comment, which is on at
  *  first, and a question, which is an ask of the issue with no options (R2). A later part adds a
@@ -423,7 +424,7 @@ function WriteLine({
  *  the outline keeps it fresh, so the line asks for it again on no mount. */
 function ReplyTargetLine({ issueKey, reply }: { issueKey: string; reply: ReplyTarget }): ReactNode {
   const asks = useQuery({
-    ...outlineAsksQuery(issueKey),
+    ...issueAsksQuery(issueKey),
     enabled: reply.parentKind === "ask",
     refetchOnMount: false,
   });
@@ -540,7 +541,7 @@ function AnswerLine({
   target: AnswerTarget;
   writer: OutlineWriter;
 }): ReactNode {
-  const asks = useQuery(outlineAsksQuery(issueKey));
+  const asks = useQuery(issueAsksQuery(issueKey));
   const ask = asks.data?.find((one) => one.id === target.askId);
   const missing = asks.isSuccess && ask === undefined;
   const clear = writer.clear;
@@ -607,26 +608,32 @@ function AnswerForm({
   const setText = replacing === undefined ? setDraft : setChanged;
   const back = () =>
     finish(writer, place, { to: "self", under: { id: target.askId, kind: "ask" } });
+  // Each press carries the question it answers, as the Inbox's card's does (`AskPress`): a Retry
+  // runs the newest render's write with the press's own values (`useKeyedWrite`).
   const mutation = useOutstandingAnswerWrite({
-    askId: target.askId,
-    label: () => `Answer to “${question.line()}”`,
-    removesRow: () => replacing === undefined,
-    write: (input: AnswerAskInput, bounds) => api.answerAsk(target.askId, input, bounds),
+    label: (press: AnswerLinePress) => `Answer to “${press.questionWords}”`,
+    method: "POST",
+    // A change of an answer the server has already recorded leaves the Inbox alone: the
+    // question has no open row there to take out.
+    removesRow: (press) => press.input.expected_answer_at === undefined,
+    write: (press: AnswerLinePress, bounds) => api.answerAsk(press.ask.id, press.input, bounds),
     onError: (error) => {
       if (!(error instanceof ApiError) || STALE_ASK[error.code ?? ""] !== true) return;
       void queryClient.invalidateQueries({ queryKey: ["issue", issueKey] });
       void queryClient.invalidateQueries({ queryKey: ["ask-thread", target.askId] });
       const asksRead = queryClient.invalidateQueries({
-        queryKey: outlineAsksQuery(issueKey).queryKey,
+        queryKey: issueAsksQuery(issueKey).queryKey,
       });
-      if (error.code === "NOT_ANSWERER") setEnded(answerFailure(error).message);
+      if (error.code === "NOT_ANSWERER") {
+        setEnded(answerFailure({ error, method: undefined }).message);
+      }
       if (error.code !== "ASK_ANSWER_CHANGED") return;
       // The answer moved under the change: the line takes the answer as it now stands from the
       // read that answers, its time for the next send's `expected_answer_at` and its words in
       // the field, which the refusal's own words say it shows.
       void asksRead.then(() => {
         const answer = queryClient
-          .getQueryData<readonly AskWithTrees[]>(outlineAsksQuery(issueKey).queryKey)
+          .getQueryData<readonly AskWithTrees[]>(issueAsksQuery(issueKey).queryKey)
           ?.find((one) => one.id === target.askId)?.answer;
         if (answer === null || answer === undefined) return;
         setCurrent({ at: answer.at });
@@ -667,9 +674,13 @@ function AnswerForm({
     (selected.length === 0 && text.trim() === "" ? CONTROL_LABELS.answer_placeholder : null);
   const send = () => {
     if (refusal !== null || pending) return;
-    mutation.mutate(answerInput(ask, selected, text, replacing));
+    mutation.mutate({
+      ask,
+      input: answerInput(ask, selected, text, replacing),
+      questionWords: question.line(),
+    });
   };
-  const failure = mutation.error === null ? null : answerFailure(mutation.error);
+  const failure = mutation.error === null ? null : answerFailure(mutation);
   const source = textSourceOf("ask", ask.id, issueKey);
   return (
     <form
@@ -851,6 +862,13 @@ function OptionWords({
       {(line) => line ?? option.label}
     </PlainText>
   );
+}
+
+/** One press of the answer line's Send: the question it answers (`AskPress`), what it sends, and
+ *  the question as the write's label names it (`questionWords`). */
+interface AnswerLinePress extends AskPress {
+  readonly input: AnswerAskInput;
+  readonly questionWords: string;
 }
 
 /** The answer the line sends: the options picked, the reader's words, and, for a change of their

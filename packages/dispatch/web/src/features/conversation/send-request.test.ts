@@ -1,11 +1,15 @@
-import * as bun from "bun:test";
-import { expect, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 
-import * as client from "../../api/client";
-import { ApiError } from "../../api/client";
+import { ApiError, api } from "../../api/client";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendInterruptedError, SendStoppedError } from "../writes/keyed-write";
-import * as sending from "./send-request";
-import { requestFor, type SentRequest } from "./send-request";
+import { requestFor, type SentRequest, sendAttempt } from "./send-request";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** A message to the Planner's session, as Send froze it, under key `send-1`. */
 const refused: SentRequest = {
@@ -82,63 +86,53 @@ test("a comment's Retry after Dispatch's refusal is the request the composer sho
   expect(requestFor(undefined, undefined, next).sendKey).not.toBe("send-1");
 });
 
-/** A comment on issue CORE-1 as Send froze it, under key `send-1`: the session message above,
- *  addressed to the issue, with `request` over its fields. */
-function issueComment(request: Partial<SentRequest>): SentRequest {
-  return {
-    ...refused,
-    owner: { issueKey: "CORE-1", kind: "issue" },
-    pickedDelivery: undefined,
-    ...request,
-  };
-}
-
-// A reply to an ask names the ask by `ask_id`, which the server files under the ask in any state -
-// an open ask's question back, and a word under an answered or resolved one - where `reply_to`
-// would name a comment of that id.
-test("a reply to an ask is sent with ask_id", async () => {
-  const createComment = bun
-    .spyOn(client.api, "createComment")
-    .mockResolvedValue(undefined as never);
+// The issue page's box anchors a comment on a statement by the document and the statement's whole
+// words alone: the server finds the words and anchors the comment to the block that holds them,
+// so the request names no occurrence and no mark.
+test("a comment on a statement is sent with its quote and no occurrence", async () => {
+  const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
   try {
-    const sent = issueComment({
-      draft: { body: "The second layout, please.", replacement: "" },
-      replyTo: {
-        actor: { id: "planner", kind: "user" },
-        excerpt: "Which layout should the phone take?",
-        id: "ask-7",
-        parentKind: "ask",
-      },
-    });
+    const quote = "The box stays at the foot of the screen while the outline scrolls.";
+    const sent: SentRequest = {
+      ...refused,
+      draft: { body: "Even on a phone?", replacement: "" },
+      owner: { issueKey: "CORE-1", kind: "issue" },
+      pickedDelivery: undefined,
+      statement: { artifact: "core-1-spec", quote, row: "core-1-spec#b-r1" },
+    };
     const bounds = { key: sent.sendKey };
-    await sending.sendAttempt(sent)(bounds);
+    await sendAttempt(sent)(bounds);
 
     expect(createComment.mock.calls).toStrictEqual([
-      ["CORE-1", { ask_id: "ask-7", body: "The second layout, please." }, bounds],
+      ["CORE-1", { anchor: { artifact: "core-1-spec", quote }, body: "Even on a phone?" }, bounds],
     ]);
   } finally {
     createComment.mockRestore();
   }
 });
 
-// The issue page's box anchors a comment on a statement by the document and the statement's whole
-// words alone: the server finds the words and anchors the comment to the block that holds them,
-// so the request names no occurrence and no mark.
-test("a comment on a statement is sent with its quote and no occurrence", async () => {
-  const createComment = bun
-    .spyOn(client.api, "createComment")
-    .mockResolvedValue(undefined as never);
+// A reply under an ask is a comment that names the ask by `ask_id`, the field Dispatch reads for
+// it, and carries no `reply_to`, which Dispatch reads as a comment's id alone. A reply to a
+// comment still names that comment by `reply_to`.
+test("a reply under an ask names the ask by ask_id and no reply_to, and a reply to a comment names reply_to", async () => {
+  const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
   try {
-    const quote = "The box stays at the foot of the screen while the outline scrolls.";
-    const sent = issueComment({
-      draft: { body: "Even on a phone?", replacement: "" },
-      statement: { artifact: "core-1-spec", quote, row: "core-1-spec#b-r1" },
+    const reply = (parentKind: "ask" | "comment"): SentRequest => ({
+      ...refused,
+      owner: { issueKey: "CORE-1", kind: "issue" },
+      pickedDelivery: undefined,
+      replyTo: {
+        actor: { id: "alice", kind: "user" },
+        excerpt: "",
+        id: `${parentKind}-1`,
+        parentKind,
+      },
     });
-    const bounds = { key: sent.sendKey };
-    await sending.sendAttempt(sent)(bounds);
-
-    expect(createComment.mock.calls).toStrictEqual([
-      ["CORE-1", { anchor: { artifact: "core-1-spec", quote }, body: "Even on a phone?" }, bounds],
+    await sendAttempt(reply("ask"))({ key: "send-ask" });
+    await sendAttempt(reply("comment"))({ key: "send-comment" });
+    expect(createComment.mock.calls.map(([issueKey, input]) => [issueKey, input])).toStrictEqual([
+      ["CORE-1", { ask_id: "ask-1", body: "Status please" }],
+      ["CORE-1", { body: "Status please", reply_to: "comment-1" }],
     ]);
   } finally {
     createComment.mockRestore();

@@ -15,6 +15,7 @@ import {
   SESSION_TITLE,
   seedReferenceWorld,
 } from "./reference-surfaces";
+import { settledState } from "./settled";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -493,13 +494,15 @@ test("the live conversation offers an issue's message, and opens each holder's p
  *  preview, whose references are spans rather than links. */
 async function expandedComment(page: Page, id: string): Promise<Locator> {
   const card = page.locator(`[data-turn="comment:${id}"]`);
-  // The card first: a page that has just loaded holds neither control yet, and a count read
-  // before it draws would take the card for one that is already open.
-  await expect(card).toBeVisible();
+  // Which control the card shows is read once the page has settled on one of them: a page that
+  // has just loaded holds neither yet, and a count read then would take the card for an open one.
   const collapse = card.getByRole("button", { name: "Collapse thread" });
-  if ((await collapse.count()) === 0) {
-    await card.getByRole("button", { name: "Expand thread" }).click();
-  }
+  const expand = card.getByRole("button", { name: "Expand thread" });
+  const state = await settledState("the comment's card", [
+    ["open", collapse],
+    ["shut", expand],
+  ]);
+  if (state === "shut") await expand.click();
   await expect(collapse).toBeVisible();
   return card;
 }

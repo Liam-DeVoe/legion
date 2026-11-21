@@ -1,8 +1,0 @@
-kind: Removed
-body: |-
-  `POST /api/v1/broadcasts` no longer refuses a send that names more than 100 sessions with
-  `400 BROADCAST_INPUT`, and the Agents page's broadcast composer no longer refuses one before it
-  asks: a broadcast reaches every session it names. A session named twice is still one recipient.
-time: 2026-11-17T09:20:04.000000000Z
-custom:
-    Issue: pr3125

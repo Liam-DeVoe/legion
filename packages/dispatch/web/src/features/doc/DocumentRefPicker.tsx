@@ -117,8 +117,9 @@ export function DocumentRefPicker({
           />
         </div>
       )}
-      {/* What a pick does here, in the writing list's own words, as every other box says it:
-          inside `NoTooltips` in the page's quiet grey, as the shared field's hint is there. */}
+      {/* What a pick does here, in the writing list's own words, as every other box says it.
+          Inside `NoTooltips` it is the new issue page's quiet words, as the document's other
+          lines there are the page's. */}
       <p
         className={`mt-2 text-xs ${tooltips ? textMutedOnCanvas : pageQuietText}`}
         data-testid="document-body-hint"

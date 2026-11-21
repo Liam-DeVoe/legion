@@ -415,6 +415,18 @@ export type RefPickerKeyResult =
   | { readonly action: "opened-parts" }
   | { readonly action: "took"; readonly insertion: RefPickerInsertion };
 
+/** Whether a key belongs to an input method's composition - the Enter that confirms a Japanese,
+ *  Chinese or Korean word, the Escape that cancels it, the arrows that move between its
+ *  segments - which a host leaves to the input method and never hands the picker.
+ *  `isComposing` marks a key of a composition where the browser keeps the UI Events order.
+ *  Safari on macOS ends the composition before the keydown that confirms it, so that keydown
+ *  carries `isComposing` false and the IME key code 229 (WebKit bug 165004), which is why the
+ *  code is read too. `keyCode` is deprecated in the DOM types, and that is accepted here: it is
+ *  the only signal Safari gives. */
+export function isCompositionKey(event: globalThis.KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229;
+}
+
 /** What the list is, while it is not a list of rows. A host draws the words below. */
 export type RefPickerState = "rows" | "loading" | "empty" | "unreachable";
 

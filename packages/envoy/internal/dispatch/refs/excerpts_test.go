@@ -310,7 +310,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 		}
 	}
 	for name, clear := range map[string]func() error{
-		"ClearExcerpts": func() error { return ClearExcerpts(ctx, database.Pool, document) },
+		"ClearExcerpts": func() error { return clearExcerptsOnPool(ctx, database.Pool, document) },
 		"a direct update": func() error {
 			_, err := database.Pool.Exec(ctx, `update refs set excerpt_version = null where from_id = $1`, document)
 			return err
@@ -328,7 +328,7 @@ func TestAMentionLeftOwedAnExcerptNotifies(t *testing.T) {
 	}
 }
 
-// A version write names the targets whose excerpt it moved (ReplaceDocumentCounted): a version
+// A version write names the targets whose excerpt it moved (RecordExcerpts): a version
 // that rewrites the block a kept mention sits in moves that mention's excerpt and no other's, and
 // one that writes the same excerpts again moves nothing.
 func TestRecordExcerptsReportsTheMentionsWhoseExcerptMoved(t *testing.T) {
@@ -432,4 +432,79 @@ func TestRecordExcerptsKeepsAnExcerptOfTheSameVersion(t *testing.T) {
 	if want := []string{"CORE-1 v2 a new cut", "CORE-2 v2 a new cut", "CORE-3 v2 the cut version 2 stored"}; !slices.Equal(stored, want) {
 		t.Fatalf("the excerpts are %q, want %q", stored, want)
 	}
+}
+
+// The write phase's two halves of RecordExcerpts keep its guard: ExcerptsMoved names the owed
+// mention and the older one, and the update QueueRecordExcerpts queues writes those two and keeps
+// the one already holding this version's excerpt.
+func TestQueuedExcerptsKeepAnExcerptOfTheSameVersion(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "CORE")
+	document, _ := createReferenceArtifact(t, tx, "", "CORE", "design")
+	if _, err := tx.Exec(ctx, `
+		insert into refs (from_kind, from_id, to_kind, to_id, excerpt_version, excerpt_block_id, excerpt_text) values
+			('artifact', $1, 'issue', 'CORE-1', null, null, null),
+			('artifact', $1, 'issue', 'CORE-2', 1, 'b2', 'the cut of version 1'),
+			('artifact', $1, 'issue', 'CORE-3', 2, 'b3', 'the cut version 2 stored')
+	`, document); err != nil {
+		t.Fatalf("write the document's mentions: %v", err)
+	}
+	held := []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "issue", ID: "CORE-2"}, {Kind: "issue", ID: "CORE-3"}}
+	excerpts := map[Target]model.GraphExcerpt{
+		held[0]: {BlockID: "b1", Text: "a new cut"},
+		held[1]: {BlockID: "b2", Text: "a new cut"},
+		held[2]: {BlockID: "b3", Text: "a new cut"},
+	}
+
+	moved, err := ExcerptsMoved(ctx, tx, document, 2, held, excerpts)
+	if err != nil {
+		t.Fatalf("work out what version 2 moves: %v", err)
+	}
+	if want := held[:2]; !slices.Equal(moved, want) {
+		t.Fatalf("moved = %#v, want the owed mention and the older one, %#v", moved, want)
+	}
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		QueueRecordExcerpts(b, document, 2, excerpts)
+		return nil
+	}); err != nil {
+		t.Fatalf("record version 2: %v", err)
+	}
+	rows, err := tx.Query(ctx, `
+		select to_id || ' v' || excerpt_version || ' ' || excerpt_text from refs
+		where from_kind = 'artifact' and from_id = $1 order by to_id
+	`, document)
+	if err != nil {
+		t.Fatalf("read the excerpts: %v", err)
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("scan the excerpts: %v", err)
+	}
+	if want := []string{"CORE-1 v2 a new cut", "CORE-2 v2 a new cut", "CORE-3 v2 the cut version 2 stored"}; !slices.Equal(stored, want) {
+		t.Fatalf("the excerpts are %q, want %q", stored, want)
+	}
+}
+
+// clearExcerptsOnPool marks fromID's excerpts owed from a transaction of its own, as a caller
+// holding no write phase would: ClearExcerpts puts its statement on a batch, which a transaction
+// sends.
+func clearExcerptsOnPool(ctx context.Context, pool *store.Pool, fromID string) error {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		ClearExcerpts(b, fromID)
+		return nil
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

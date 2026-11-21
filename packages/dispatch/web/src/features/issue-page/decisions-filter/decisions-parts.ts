@@ -3,19 +3,12 @@ import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import { blockFragment } from "../../refs/block-reference";
 import { buildIssuePath, parseNodeReference } from "../../refs/routes";
 import { type ChangeComment, inReviewList } from "../decision-review";
-import {
-  drawnLine,
-  firstLineOf,
-  lineWords,
-  type ParentLine,
-  type TreeAsk,
-  type TreeNode,
-} from "../issue-tree";
-import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
+import { type ParentLine, parentLineOf, type TreeAsk, type TreeNode } from "../issue-tree";
+import { type DecisionState, isReader } from "../page-words";
 
 /**
  * The Decisions filter's parts, read from the tree, the decisions read, the issue's asks and its
- * comments (dispatch://INFRA-1196 R2, R9, R35).
+ * comments (R2, R9, R35).
  *
  * The filter is one list in parts, each under its own heading and in this order (R2):
  *
@@ -29,8 +22,8 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  *    one the reader sent a Change on, which waits on its agent.
  * 3. **The reader's own decisions**, newest first: each ask the reader answered or declined,
  *    and each agent decision a statement rests on that the reader kept or asked to change, by
- *    the time they did. An answered ask is the person's decision itself
- *    (dispatch://INFRA-1150 R1), and a declined one reads as a question the person declined,
+ *    the time they did. An answered ask is the person's decision itself, and a declined one
+ *    reads as a question the person declined,
  *    never as an answer.
  * 4. **What others decided**, newest first: the same entries where the person who answered,
  *    declined, kept or changed is not the reader, a question its asker took back, and a section
@@ -61,15 +54,15 @@ import { type DecisionState, isReader, NODE_TYPE_NAMES } from "../page-words";
  * ## What today's reads hold, and what they do not
  *
  * - **The `shaped` tie** is a link from a block of a decision to a block of the spec
- *   (`Decision.links`), which is the edge as today's read carries it; the tuple is
- *   dispatch://INFRA-1150's. A tie counts where its far end is a statement of this issue, read
+ *   (`Decision.links`), which is the edge as today's read carries it; the tuple is the decision
+ *   model's. A tie counts where its far end is a statement of this issue, read
  *   from the tree.
  * - **When a decision was made** is the time its words last changed (`Decision.changed_at`);
  *   the decisions read holds no other time for one.
  * - **A Change** is a comment a person anchored to the decision's words since it last changed
  *   (`decision-review.ts`'s `decisionChanges`); the decisions read holds no state for it.
  * - **An agent decision's author, its level of uncertainty, its reason and its readings** are
- *   dispatch://INFRA-1150's: the read holds no author and one yes or no, `unsure`, which the
+ *   the decision model's: the read holds no author and one yes or no, `unsure`, which the
  *   row draws as the one word it has.
  */
 
@@ -90,8 +83,9 @@ export type DecisionsPart = (typeof DECISIONS_PART_ORDER)[number];
 export interface ShapedStatement {
   /** The statement's node id. */
   readonly id: string;
-  /** Its first line, as R1 cuts a row's: the page draws one line for it here. */
-  readonly line: string;
+  /** The statement, whose one line a row projects from its words, as R1 cuts a row's
+   *  (`issue-tree.ts`'s `lineReading`): the page draws one line for it here. */
+  readonly node: TreeNode;
   /** Its address in the conversation, where it has one. */
   readonly path?: string;
   /** Whether the decision changed after it first named the statement and the statement has not
@@ -343,7 +337,7 @@ export function decisionsParts({
     if (row.kind !== "agent") {
       // A section the server marks a person's that restates no answer of this issue: it names
       // an ask the tree does not hold, or one nobody answered. The server's word for whose it
-      // is stands, and no read says which person (dispatch://INFRA-1150's `decided_by`).
+      // is stands, and no read says which person (the decision model's `decided_by`).
       others.push(entry);
     } else if (row.replaced) {
       agents.push(entry);
@@ -388,36 +382,19 @@ interface Placement {
 /** Every node of the tree by its id, in reading order, at its first placement, which is where it
  *  is edited (`TreeNode.transcluded`), with the parent it hangs under there. The issue itself is
  *  no parent a row names: the page is the issue. */
-function placements(root: TreeNode): ReadonlyMap<string, Placement> {
+export function placements(root: TreeNode): ReadonlyMap<string, Placement> {
   const placed = new Map<string, Placement>();
   const walk = (node: TreeNode, above: TreeNode | undefined): void => {
     if (!placed.has(node.id)) {
       placed.set(node.id, {
         node,
-        ...(above === undefined || above === root
-          ? {}
-          : {
-              parent: {
-                id: above.id,
-                line: lineOf(above),
-                type: above.type,
-              },
-            }),
+        ...(above === undefined || above === root ? {} : { parent: parentLineOf(above) }),
       });
     }
     for (const child of node.children) walk(child, node);
   };
   walk(root, undefined);
   return placed;
-}
-
-/** A node's one line, as every one-line drawing of a node is cut (R1, `issue-tree.ts`'s
- *  `ParentLine.line`): the first line of its first block's words (`lineWords`), drawn as
- *  `drawnLine` reads it, and the page's word for its kind where those hold none, never its id
- *  (R22). */
-function lineOf(node: TreeNode): string {
-  const words = lineWords(node);
-  return words === "" ? NODE_TYPE_NAMES[node.type] : drawnLine(firstLineOf(words));
 }
 
 /** The id of every node `view` holds. */
@@ -432,7 +409,7 @@ function idsOf(view: TreeNode): ReadonlySet<string> {
 }
 
 /** The ask a node is, by the ask's own id; undefined for every other node. */
-function askIdOf(node: TreeNode): string | undefined {
+export function askIdOf(node: TreeNode): string | undefined {
   if (node.type !== "ask" || node.reference === undefined) return undefined;
   const route = parseNodeReference(node.reference);
   return route?.kind === "ask" ? route.id : undefined;
@@ -455,7 +432,7 @@ function pathOf(node: TreeNode): { readonly path?: string } {
  * asks is an answered ask of this issue. The ask's own row is that decision, in the person's
  * words.
  */
-function isReading(row: Decision, answered: ReadonlySet<string>): boolean {
+export function isReading(row: Decision, answered: ReadonlySet<string>): boolean {
   return row.kind === "person" && (row.asks ?? []).some((ask) => answered.has(ask));
 }
 
@@ -484,7 +461,7 @@ function shapesOf(
     const held = shapes.get(node.id);
     shapes.set(node.id, {
       id: node.id,
-      line: lineOf(node),
+      node,
       ...pathOf(node),
       stale: link.stale || held?.stale === true,
     });

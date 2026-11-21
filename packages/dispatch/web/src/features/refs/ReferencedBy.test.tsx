@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -11,6 +11,12 @@ import type { GraphEdge, GraphReferences } from "../../api/types";
 import type { BlockItemKind } from "./block-reference";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { ReferencedBy } from "./ReferencedBy";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const createdAt = "2026-10-20T10:00:00Z";
 

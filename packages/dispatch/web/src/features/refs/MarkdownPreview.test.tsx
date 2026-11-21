@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import type { Window as HappyDOMWindow } from "happy-dom";
@@ -9,8 +9,15 @@ import { api } from "../../api/client";
 import type { DisplayTree, IssueReferenceSummary } from "../../api/types";
 import fixtures from "./__fixtures__/display-trees.json";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { warmMarkdownRenderer } from "./markdown-engine";
 import { installFakeParseWorker, restoreParseWorker } from "./parse-worker-fixture";
 import { type ReferenceHost, ReferenceHostIs } from "./reference-host";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /**
  * `MarkdownPreview` on its own: the inputs a real surface hands it that the one-fixture surface
@@ -335,6 +342,8 @@ test("a line break inside a paragraph reads as a space, so nothing after it fall
 // the faked worker (`parse-worker-fixture.ts`): the clamp it proves - the whole body parsed,
 // never the two lines the reader can see - is the one the dashboard applies to a body that size.
 test("a long body is parsed whole in the worker, so formatting past any visible cut renders and leaves no syntax", async () => {
+  // The body reaches the worker only once the lazy Markdown engine loads (`renderWithEngine`).
+  await warmMarkdownRenderer();
   const worker = installFakeParseWorker();
   const { preview, view } = renderPreview({
     lines: 2,
@@ -397,7 +406,11 @@ test("the hover text is the whole text as plain words, never its source, and a p
   });
   try {
     await waitFor(() => expect(preview().querySelector("strong")?.textContent).toBe("Stop"));
-    await waitFor(() => expect(preview()).toHaveAttribute("title", "Stop the deploy one two"));
+    // The hover text is the shared projection, which writes an ordered list's item with its
+    // number as a rendered body draws it (INFRA-1196 decisions 66 and 88): `1. one` keeps `1.`.
+    await waitFor(() =>
+      expect(preview()).toHaveAttribute("title", "Stop the deploy 1. one 2. two")
+    );
     rerender({ lines: 1, markdown: body.markdown, tree: body.latest });
     await waitFor(() => expect(preview()).not.toHaveAttribute("title"));
   } finally {

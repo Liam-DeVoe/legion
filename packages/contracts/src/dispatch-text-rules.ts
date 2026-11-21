@@ -92,6 +92,7 @@ export function referenceTargetFits(target: string): boolean {
 export const PLAIN_ISSUE_TABS = [
   "verification",
   "plan",
+  "steps",
   "activity",
   "children",
   "artifacts",

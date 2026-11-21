@@ -262,8 +262,7 @@ function attachTriggers(): () => void {
       return;
     }
     // A surface its reader works from the keyboard opens no card for a resting pointer (the new
-    // issue page, dispatch://INFRA-1196 R6); its references still open theirs on keyboard focus,
-    // below.
+    // issue page, R6); its references still open theirs on keyboard focus, below.
     if (previewCard.hoverPreviewsOff(trigger)) {
       return;
     }
@@ -723,6 +722,7 @@ export function RefPreviewHost(_props: { surface?: DispatchReadingSurface }): Re
     // layer, so Escape dismisses it alone and leaves the dialog beneath (the search palette)
     // open. With no open card the key passes through untouched.
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
       if (event.key === "Escape" && state?.phase === "open") {
         event.stopPropagation();
         closeRefPreview();

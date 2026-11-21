@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 
+import { DocumentAdmissionProvider } from "../document-admission";
 import { FocusedNodeProvider } from "../focused-node";
 import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
@@ -17,12 +18,16 @@ export function ProvidersSlot({
   // them (part G's R7, decisions 18 and 29). Inside `NoTooltips`, so it names a reply's target
   // as the page names an author.
   //
-  // Inside it, part I's three (decisions 29 and 41): the node the reader's focus is on, which
+  // Inside it, the outline's three: the node the reader's focus is on, which
   // the outline sets and Details reads, held for one issue (`focused-node.tsx`); what the
   // Contents list asks of the outline, and its Focus branch, which the pane, the sheet and the
   // outline share (`outline-request.tsx`); and each open document's toolbar, which the body's
-  // row editor reports and part N's version control in the view row is to read: nothing reads
+  // row editor reports and the view row's version control is to read: nothing reads
   // it yet (`useDocumentToolbars.ts`).
+  //
+  // Innermost, what each document's room last admitted the page to, which the body's row editor
+  // reports and the outline's rows read, so no row of a document its room admitted read-only
+  // draws the cue that it takes typing (`document-admission.tsx`).
   return (
     <NoTooltips>
       <OutlineWriterProvider issueKey={issue.key}>
@@ -30,8 +35,10 @@ export function ProvidersSlot({
         <FocusedNodeProvider key={issue.key}>
           <OutlineRequestProvider>
             <DocumentToolbarsProvider>
-              {/* Each slot the root draws. */}
-              {children}
+              <DocumentAdmissionProvider>
+                {/* Each slot the root draws. */}
+                {children}
+              </DocumentAdmissionProvider>
             </DocumentToolbarsProvider>
           </OutlineRequestProvider>
         </FocusedNodeProvider>

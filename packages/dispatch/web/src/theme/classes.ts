@@ -1147,8 +1147,7 @@ for (const ground of ["page-paper", "page-pane"] as const) {
 
 // The page colour pairs of the `ON_PAGE` tables of `MultiSelect.tsx`, `ApprovalChip.tsx` and
 // `AskCard.tsx` that no registration above holds, so `palette.test.ts` measures each
-// (dispatch://INFRA-3935 R9, decision 99(c) of dispatch://INFRA-1196/artifact/part-decisions-md;
-// `shared-controls.tooltips.test.tsx` holds every pair of those tables registered): a picker
+// (`shared-controls.tooltips.test.tsx` holds every pair of those tables registered): a picker
 // option's detail, muted words on the mark grey of its active row and of the row under the
 // pointer; and a refused filled action's words, Approve's or Answer's, muted on the hairline
 // grey it turns.
@@ -1263,6 +1262,13 @@ export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:tex
  */
 export const scrollFadeTrailing =
   "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),#0000)]";
+
+/**
+ * The width of `scrollFadeTrailing`, for code that keeps an item clear of the fade. Tailwind needs
+ * the class as literal text, so the class spells the same number; `classes.test.ts` holds the two
+ * equal.
+ */
+export const scrollFadeTrailingPx = 32;
 
 // ---------------------------------------------------------------------------------------------
 // Spec block marks: editor decorations (`ProofEditorHandle.setBlockMarks`), never classes written

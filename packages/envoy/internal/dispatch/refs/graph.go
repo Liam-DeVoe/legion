@@ -254,7 +254,7 @@ func resolveEdges(ctx context.Context, q Queryer, query Query) ([]resolvedEdge, 
 			// mention shows.
 			edge.Excerpt = &model.GraphExcerpt{BlockID: node.BlockID, Text: node.name(query.ServerURL)}
 		case node.text != "":
-			edge.Excerpt = &model.GraphExcerpt{Text: itemExcerpt(node.text, query.ServerURL)}
+			edge.Excerpt = &model.GraphExcerpt{Text: node.name(query.ServerURL)}
 		}
 		edges = append(edges, edge)
 	}
@@ -402,10 +402,11 @@ func Node(ctx context.Context, q Queryer, kind, id string, byRefKey bool) (model
 
 // TargetNames is the words each of targets is named by where a reader is shown a reference to it
 // rather than its own text: an issue's title, a document's name, an ask's question, a comment's
-// or a message's body, a component's title and a block's text, each cut to the bound an edge's
-// excerpt is cut to (resolvedNode.name), which is what GET /api/v1/references already shows
-// beside an edge at that node. The targets are addressed as the to side of an edge addresses
-// them (TargetOf), so an artifact's id is its ref_key.
+// or a message's body, a component's title and a block's text, each cut as an edge's excerpt is
+// cut (resolvedNode.name), which is what GET /api/v1/references already shows beside an edge at
+// that node; serverURL is the deployment whose dashboard URLs are references, so no cut splits
+// one. The targets are addressed as the to side of an edge addresses them (TargetOf), so an
+// artifact's id is its ref_key.
 //
 // One entry per target that resolves: a target with no entry is one nothing addresses now — its
 // node was deleted, or its kind is one this build cannot address (resolveNodes) — which is what
@@ -435,9 +436,10 @@ type resolvedNode struct {
 	refKey string
 }
 
-// name is the words shown for the node in place of its text: its own text cut to excerptRunes
-// where no reference crosses the cut (itemExcerpt), serverURL being the server's own address. A
-// block's text is its stored excerpt, already cut by BlockExcerpt.
+// name is the words shown for the node in place of its text: its own text's first excerptRunes
+// runes, cut where no reference crosses the cut (itemExcerpt; serverURL is the deployment whose
+// dashboard URLs are references). A block's text is its stored excerpt, already cut by
+// BlockExcerpt.
 func (n resolvedNode) name(serverURL string) string {
 	if n.BlockID != "" {
 		return n.text

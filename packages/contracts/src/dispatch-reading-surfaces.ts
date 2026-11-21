@@ -69,6 +69,7 @@ export type DispatchReadingSurface =
   | "inbox-thread-title"
   | "issue-decision"
   | "decision-heading-words"
+  | "decision-change-quote"
   | "issue-open-question"
   | "item-match-first-line"
   | "spec-requirement-words"
@@ -83,6 +84,7 @@ export type DispatchReadingSurface =
   | "margin-comment-body"
   | "margin-thread-preview"
   | "anchor-quote"
+  | "kept-draft"
   | "document-body"
   | "document-version-body"
   | "document-open-decision"
@@ -105,16 +107,15 @@ export type DispatchReadingSurface =
   | "search-result"
   | "ref-picker-row-label"
   | "issue-page-composer-target"
-  | "issue-page-row-text"
-  | "issue-page-decision-heading"
-  | "issue-page-decision-quote"
-  | "issue-page-child-title"
-  | "issue-page-ask-option"
-  | "issue-page-answer-choice"
-  | "issue-page-answer-text"
   | "agent-message-issue-option"
   | "issue-page-title"
   | "issue-outline-page-title"
+  | "node-row-words"
+  | "node-row-child-title"
+  | "node-row-first-line"
+  | "node-row-parent-line"
+  | "node-row-chip"
+  | "outline-crumb"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -266,6 +267,14 @@ const PLAIN_WORDS_REASON =
 const LOAD_STATE_REASON =
   "Until the reader's engine has answered, the place carries the text as written, which is a load state rather than a second reader.";
 
+/** What a node's one line on the new issue page cannot carry: a row of the outline reads no
+ *  question map, and its one line names a reference by the same rule its row does
+ *  (`node-row-words`), so the two draw a `#id` alike. */
+const NODE_LINE_NO_QUESTION_ID: DispatchReadingUncarried = {
+  forms: ["question-id"],
+  why: "A node's one line names its references by the rule its row does: a `#id` is read against its document's questions, one read for each document, which no row of the outline makes (`row-references.ts`), so it is drawn as written, in the line as in the row.",
+};
+
 /** Why what a check says and what a run of it printed are shown as written, which is what the
  *  five surfaces of the Verification tab that draw them say. */
 const COMMAND_OUTPUT_REASON =
@@ -280,11 +289,6 @@ const ONE_LINE_FIELD_REASON =
  *  the live document and a past version of one both say. */
 const EDITOR_REASON =
   "The Proof editor paints a document's body itself, from the document it edits, and draws each reference the body holds as a decoration over the stored text (`doc/document-references.tsx`, `@legion/proof-editor`'s `src/reference-decorations.ts`) - the renderer draws a read-only copy and the editor cannot be one. The references are read by the one reader every rendered body is read by (`refs/text-references.ts`), so a bare key, a `#id`, an address and a mention resolve by the same rules there.";
-
-/** Why the new issue page draws a person's answer as the characters stored, which is what the
- *  two rows of its answer say: the options it chose and the words it carries. */
-const ISSUE_PAGE_ANSWER_REASON =
-  "A person's answer is part of its ask and no node of its own, and the new issue page draws it word for word as the store holds it, never restated (`NodeRow.tsx`'s `AskAnswer`).";
 
 export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   // An issue's Activity tab: one event's body, which is an ask's question, its answer, its
@@ -412,7 +416,8 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "broadcasts-list-body",
   },
   // The Answers page: the subject a row answers, the options an answer chose, the answer, and
-  // the reply that carried it.
+  // the reply that carried it. The options an answer chose are drawn the same way on the new
+  // issue page, under the question of an ask that offers no list to mark them in.
   {
     files: ["packages/dispatch/web/src/features/answers/AnswersPage.tsx"],
     reach: "/answers, a row's subject line",
@@ -428,7 +433,10 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "answers-answer",
   },
   {
-    files: ["packages/dispatch/web/src/features/answers/AnswersPage.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/answers/AnswersPage.tsx",
+      "packages/dispatch/web/src/features/issue-page/NodeRow.tsx",
+    ],
     reach: "/answers, a row's chosen options",
     record: true,
     rendered: true,
@@ -514,6 +522,83 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "reply-quote",
   },
+  // The new issue page's outline: the words a node's row draws - its own text, and the answer an
+  // ask carries under its question - and a child issue's row, which is its title.
+  {
+    cannotCarry: {
+      forms: ["question-id"],
+      why: "A row reads no question map: a `#id` is read against its document's questions, one read for each document, which a row of the outline does not make (`row-references.ts`), so it is drawn as written.",
+    },
+    files: ["packages/dispatch/web/src/features/issue-page/RowText.tsx"],
+    reach: "/issues/<ISSUE> with the new issue page on, a comment's row in the outline",
+    record: true,
+    rendered: true,
+    surface: "node-row-words",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    reach: "/issues/<ISSUE> with the new issue page on, a child issue's row",
+    reason: `${NO_MARKUP_REASON} A child issue's row is its title, which is that one line, as the title bar's is (\`issue-page-title\`).`,
+    record: false,
+    rendered: false,
+    surface: "node-row-child-title",
+  },
+  // The new issue page's one line of a node, drawn as plain words: a folded branch's line, the
+  // line a filter's row names a node's parent by, and a crumb above a zoom, each projected from
+  // the node's own words and cut by R1's first-line rule; and a chip, which names a tie's target.
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
+      test: "a folded branch's line reads a reference as its target's name, and as its author's words until it resolves",
+    },
+    reach: "/issues/<ISSUE> with the new issue page on, a folded branch's one line",
+    reason: `A folded branch is one line, its node's first line, cut by R1's first-line rule with its ellipsis and drawn beside the count of what it holds. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "node-row-first-line",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
+      test: "a parent line is its parent's projected first line, a reference in it read by its target's name",
+    },
+    reach:
+      "/issues/<ISSUE>?preset=plan with the new issue page on, a plan task's line naming the statement it serves",
+    reason: `A filter's row names a parent it draws no row for on one line, the parent's first line cut by R1's first-line rule, in the words of a link to it. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "node-row-parent-line",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/NodeRow.drawn.test.tsx",
+      test: "a numbered step keeps its number in a chip and in a folded line",
+    },
+    reach: "/issues/<ISSUE> with the new issue page on, a plan task's needs chip",
+    reason: `A chip is a link to a tie's target, worded with the target's name cut to a chip's room: the chip's address as the projection reads it standing alone, which names its target by the name the page published from its batched read (\`refs/reference-names.tsx\`), itself projected from the target's own words as a title over one record. The address is no record a \`#id\` could name a question of. ${PLAIN_WORDS_REASON}`,
+    record: false,
+    rendered: false,
+    surface: "node-row-chip",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueTree.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueTree.test.tsx",
+      test: "a crumb reads a reference in its node's line as its target's name, and as its author's words until it resolves",
+    },
+    reach:
+      "/issues/<ISSUE> with the new issue page on, below 1024 px, the crumb line above a node zoomed into",
+    reason: `A crumb above a zoom names a node on one line, as a button: its first line cut by R1's first-line rule with its ellipsis, and its kind's word where its words hold none. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "outline-crumb",
+  },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.
   {
@@ -575,8 +660,12 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: true,
     surface: "resolved-ask",
   },
+  // An ask's options, on its card and under its question on the new issue page's row.
   {
-    files: ["packages/dispatch/web/src/features/inbox/AskOptionRow.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/inbox/AskOptionRow.tsx",
+      "packages/dispatch/web/src/features/issue-page/NodeRow.tsx",
+    ],
     reach: "/, an ask option's label and description",
     record: true,
     rendered: true,
@@ -683,11 +772,15 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "item-match-first-line",
   },
-  // A decision's heading, where it names a write, a form or a card, or words a link.
+  // A decision's heading, where it names a write, a form or a card, or words a link: on the
+  // Decisions panel, on a margin card, and in the Keep and the Change of a decision's row on the
+  // new issue page. All three read it through one hook (`useDecisionHeadingWords`).
   {
     files: [
+      "packages/dispatch/web/src/features/issue/decision-heading.ts",
       "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
       "packages/dispatch/web/src/features/margin/DecisionCard.tsx",
+      "packages/dispatch/web/src/features/issue-page/DecisionActions.tsx",
     ],
     proof: {
       file: "packages/dispatch/web/src/features/margin/DecisionCard.test.tsx",
@@ -699,6 +792,20 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "decision-heading-words",
+  },
+  // The words a Change of a decision is anchored to, quoted over the box on the new issue page.
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/DecisionActions.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/DecisionActions.test.tsx",
+      test: "the Change quotes its block's plain-text projection and anchors to the document's own words",
+    },
+    reach:
+      "/issues/<ISSUE>?preset=decisions with the new issue page on, a waiting decision's Change, the quote over its box",
+    reason: `The Change quotes the decision's first block below its heading, the words the change is anchored to, on one line over the box. ${PLAIN_WORDS_REASON} The write still anchors to the decisions document's own words, which the server matches (\`anchor-quote\`). ${LOAD_STATE_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "decision-change-quote",
   },
   // A requirement's line in the spec's Requirements list.
   {
@@ -805,14 +912,17 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
   },
   // The quote a comment or an ask was left on, wherever one is drawn: over a thread card and
   // its preview, over an ask's card, over a thread in the Inbox's reading column, in the
-  // composer that is writing on it, in the Decisions panel's Change form, and in the Activity
-  // tab's line for the comment.
+  // composer that is writing on it, in the Decisions panel's Change form, in the Activity tab's
+  // line for the comment, and in the words that name it beside a draft a margin compose kept
+  // for it (the composer's offer, the margin's list of what its compose kept).
   {
     files: [
       "packages/dispatch/web/src/features/margin/ThreadCard.tsx",
       "packages/dispatch/web/src/features/inbox/AskAnchorLink.tsx",
       "packages/dispatch/web/src/features/inbox/ThreadBody.tsx",
       "packages/dispatch/web/src/features/conversation/MentionComposer.tsx",
+      "packages/dispatch/web/src/features/conversation/KeptDraftOffers.tsx",
+      "packages/dispatch/web/src/features/margin/CommentsTab.tsx",
       "packages/dispatch/web/src/features/issue/DecisionsPanel.tsx",
       "packages/dispatch/web/src/features/activity/activity-model.ts",
     ],
@@ -822,6 +932,19 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: false,
     surface: "anchor-quote",
+  },
+  // A draft the reader wrote and did not send, waiting outside a composer's field: an edit
+  // written over a body the comment no longer holds, a draft a margin compose kept for other
+  // words, a reply kept for a comment or message no longer listed, and what the margin lists of
+  // its compose's kept drafts, each drawn by one offer (`DraftOffer`).
+  {
+    files: ["packages/dispatch/web/src/features/conversation/KeptDraftOffers.tsx"],
+    reach: "/issues/<ISSUE>/conversation, a kept draft beside the docked composer's field",
+    reason:
+      "A kept draft is the reader's own text as the field holds it, not a record and not yet a message: Dispatch has stored nothing of it, and Use it here puts exactly these characters back in the field, which shows them as the characters they are. It is drawn the same way beside the field, so the reader sees what they will take back - a mention as the link they picked, `[@Planner](dispatch://agent/...)` - and reads the message it becomes only once it is sent.",
+    record: false,
+    rendered: false,
+    surface: "kept-draft",
   },
   // A document's own body, live and at a past version, which the Proof editor draws.
   {
@@ -1058,83 +1181,6 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "issue-page-composer-target",
-  },
-  // The new issue page's outline (`RowText.tsx`): a node's own
-  // words in its row - a comment, a message, an ask's question, a block of the issue's documents
-  // - drawn by the renderer from the reading the server sent. The renderer links nothing in them:
-  // the row's own pass names each reference from the page's one batched read of what the tree
-  // cites (`linkRowReferences`, R21), so a row's references are its chips.
-  {
-    cannotCarry: {
-      forms: ["question-id"],
-      why: "A row leaves a `#id` as written: the question map a `#id` is read against is a read of its own for each document, which a row of the outline does not make (`rowReferences`), so the batched read names no question.",
-    },
-    files: ["packages/dispatch/web/src/features/issue-page/RowText.tsx"],
-    reach: "/issues/<ISSUE> with the new issue page, a comment's row in the outline",
-    record: true,
-    rendered: true,
-    surface: "issue-page-row-text",
-  },
-  // The new issue page's Keep and Change on a waiting decision's node (part G's
-  // `DecisionActions.tsx`): the heading that names both writes and the Change form, and the
-  // quote the Change is anchored to.
-  {
-    files: ["packages/dispatch/web/src/features/issue-page/DecisionActions.tsx"],
-    reach:
-      "/issues/<ISSUE> with the new issue page, a waiting decision's Keep and Change: the Writes indicator's line for each, and the Change form's name",
-    reason:
-      "A decision's heading names Keep's and Change's writes, in the label the Writes indicator reads as text, and the Change form, in its accessible name, none of which holds markup. Part G names them with the heading as the decisions read sends it, with no tree beside it: the characters its writer wrote. The Decisions panel names the same writes with the heading's plain-text projection (`decision-heading-words`).",
-    record: true,
-    rendered: false,
-    surface: "issue-page-decision-heading",
-  },
-  {
-    files: ["packages/dispatch/web/src/features/issue-page/DecisionActions.tsx"],
-    reach:
-      "/issues/<ISSUE> with the new issue page, the quote over a waiting decision's Change form",
-    reason:
-      "The quote a Change is anchored to is the decision's own words as the server matches an anchor against the document's flattened text (`pmdoc.FindQuote`): the words of the decision's first block, read from the reading the server sent of its text (`anchorQuote`), which hold no markdown to render. It is shown as the characters it is, as the Decisions panel's quote is (`anchor-quote`). A decision whose answer carried no reading, during a rolling deploy, quotes its first paragraph's markdown, which is all the browser has.",
-    record: false,
-    rendered: false,
-    surface: "issue-page-decision-quote",
-  },
-  // The new issue page's outline (part I's `NodeRow.tsx`): a child issue's row, an ask's options
-  // under its row, and a person's answer in the ask's body.
-  {
-    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
-    reach: "/issues/<ISSUE> with the new issue page, a child issue's row in the outline",
-    reason:
-      "A child issue's row names the child by its title, which is one line of text already: the reference framework leaves a title out of what it reads, so it is stored and shown as the characters its writer gave it.",
-    record: false,
-    rendered: false,
-    surface: "issue-page-child-title",
-  },
-  {
-    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
-    reach:
-      "/issues/<ISSUE> with the new issue page, an ask's options under its row, and each option's description in the focused row's body",
-    reason:
-      "An ask's options are drawn under its row, each by the label the asker gave it and, in the focused row's body, its description, as the characters the asker wrote (part I's `NodeOptions`). While the question waits on the reader each option is a control the reader presses to pick it, which holds no markup.",
-    record: true,
-    rendered: false,
-    surface: "issue-page-ask-option",
-  },
-  {
-    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
-    reach:
-      "/issues/<ISSUE> with the new issue page, an answered ask's body, the options its answer chose where the ask offers no list to mark them in",
-    reason: `${ISSUE_PAGE_ANSWER_REASON} Each option the answer chose is drawn as the label the answer stored for it.`,
-    record: true,
-    rendered: false,
-    surface: "issue-page-answer-choice",
-  },
-  {
-    files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
-    reach: "/issues/<ISSUE> with the new issue page, an answered ask's body, the answer's words",
-    reason: `${ISSUE_PAGE_ANSWER_REASON} What the person wrote is drawn whole and character for character, keeping the line breaks they typed (ruling 1).`,
-    record: true,
-    rendered: false,
-    surface: "issue-page-answer-text",
   },
   // The five places a record's text is still written into an element that can hold no markup.
   {

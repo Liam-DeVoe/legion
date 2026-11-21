@@ -16,27 +16,37 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// indexAskParts is refs.IndexAskPartsCounted for a write that holds the ask's parts alone: the
-// parts of the ask this write just wrote - its question, its options and its answer - indexed in
-// the same transaction through a reader of their own (refs.NewReader), written at `at`, with
-// what they moved merged into beside, the counted changes the same write already holds, so the
-// event it appends names them all. A write that reconciles the ask's question as well builds the
-// one reader itself and passes it to both (refs.ReplaceCounted, refs.IndexAskPartsCounted).
-func (s *server) indexAskParts(
+// queueAskParts is docs.Ledger.QueueAskParts bound to this server's URL: the parts of the ask
+// this write just wrote - its question, its options and its answer - planned in the read phase
+// and queued in the transaction's write phase, written at `at`, with what they moved merged
+// into beside, the counted changes the same write already holds, so the event it appends names
+// them all. The parts are read with the whole grammar, through a reader of their own
+// (refs.NewReaderInScope), which the ledger builds. document is the one the parts' `#id`s
+// resolve against for an ask whose insert this transaction has queued
+// (refs.PendingAskDocument), nil for an ask already stored, whose row ScopeOf reads.
+// questionReconciled says the write queued the reconciliation of the ask's question before the
+// parts (queueNewAskReferences, queueEditedReferences); a write that holds the parts alone - an
+// answer, a resolution, a restoration - passes false, and the parts' step reconciles the question
+// too and settles the ask's row of the forms queue after both (docs.Ledger.QueueAskParts).
+func (s *server) queueAskParts(
 	ctx context.Context,
-	tx pgx.Tx,
+	ledger *docs.Ledger,
 	ask model.Ask,
+	document *refs.PendingDocument,
 	at time.Time,
+	questionReconciled bool,
 	beside model.ReferenceChanges,
 ) (model.ReferenceChanges, error) {
-	return refs.IndexAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, "ask", ask.ID, s.deps.ServerURL), ask, at, beside)
+	return ledger.QueueAskParts(ctx, ask, s.deps.ServerURL, document, at, questionReconciled, beside)
 }
 
 // referencesSinceWait bounds how long a since read waits for the safe horizon to pass every event
@@ -478,16 +488,22 @@ func pinsAMessageBlock(raw, serverURL string) bool {
 // batched read - by text.ParseRef, so a node is read whatever the length of its name: the target
 // bound decides only what text indexes, and a node no index holds an edge to simply has fewer
 // edges. Anything else is 400 INVALID_REFERENCE naming the value, with its own sentence for a
-// pinned block of a message, which the grammar reads as no reference at all.
+// pinned block of a message, which the grammar reads as no reference at all. So is a party - an
+// agent's session, a role or a person - which the grammar reads but the graph holds no node for
+// (refs.TargetOf): each caller reads the graph, which has no edge of one in either direction and
+// no name for one, so every reference this answers has a target.
 func parseRequestRef(raw, serverURL string) (text.Ref, error) {
 	ref, ok := text.ParseRef(raw, serverURL)
-	if ok {
-		return ref, nil
+	if !ok {
+		if pinsAMessageBlock(raw, serverURL) {
+			return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
+		}
+		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
 	}
-	if pinsAMessageBlock(raw, serverURL) {
-		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
+	if _, stored := refs.TargetOf(ref); !stored {
+		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q names a %s, which the reference graph holds no node for", raw, ref.Kind)
 	}
-	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+	return ref, nil
 }
 
 // parseReferencesQuery turns ?to=|?from=, ?kind=, and ?since= into an edge query addressed the
@@ -511,13 +527,8 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 		return refs.Query{}, text.Ref{}, nil, err
 	}
 	// The node as graph_edges stores it: an ask's part and a comment's or message's block under
-	// its storage kind. A party - an agent's session, a role or a person - is stored under
-	// nothing: the graph holds no node for one (refs.TargetOf), so there is no edge of it to
-	// read in either direction.
-	target, stored := refs.TargetOf(ref)
-	if !stored {
-		return refs.Query{}, text.Ref{}, nil, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q names a %s, which the reference graph holds no node for", raw, ref.Kind)
-	}
+	// its storage kind. Every reference parseRequestRef answers has one: it refuses a party.
+	target, _ := refs.TargetOf(ref)
 	query := refs.Query{ServerURL: serverURL, Direction: direction, Kind: target.Kind, ID: target.ID}
 	var unknownKinds []string
 	if kinds := strings.TrimSpace(values.Get("kind")); kinds != "" {
@@ -608,8 +619,13 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	closure, truncated, err := refs.Closure(r.Context(), s.deps.Store.Pool, issue.Key)
+	closure, truncated, err := s.boundedClosure(r.Context(), issue.Key)
 	if err != nil {
+		if closureBoundHit(err) {
+			s.writeHandlerError(w, errorf(http.StatusServiceUnavailable, "REFERENCES_TIMEOUT",
+				"the issue's reference closure ran past its %s bound, so no reference was read; try again later", referencesClosureBound))
+			return
+		}
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -642,6 +658,47 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, model.IssueReferences{Members: members, Truncated: truncated})
+}
+
+// referencesClosureBound bounds refs.Closure's walk for one GET of an issue's references, as the
+// read transaction's statement_timeout and on its context. On 2026-11-20 from 00:27Z the walk held
+// Dispatch's Cloud SQL instance at full CPU: every `dispatch read --issue` and the Artifacts tab
+// ask for it, and Query Insights gave that one statement 31,299 s of execution in 20 minutes, 12
+// times every other statement together. A walk cut at the bound answers 503 REFERENCES_TIMEOUT,
+// which the CLI prints as references unavailable, rather than holding a connection and a CPU for
+// as long as the walk takes. dispatch://INFRA-4704 rewrites the walk.
+const referencesClosureBound = 2 * time.Second
+
+// boundedClosure runs refs.Closure in a read transaction of its own under referencesClosureBound.
+// The rollback runs on a context of its own, as the near-copy gate's does (duplicates.go): the
+// read's context has expired exactly when the rollback matters, and pgx answers a rollback on an
+// expired context by destroying the connection instead of returning it to the pool.
+func (s *server) boundedClosure(ctx context.Context, issueKey string) ([]refs.Member, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, referencesClosureBound+time.Second)
+	defer cancel()
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() {
+		rollback, cancelRollback := context.WithTimeout(context.WithoutCancel(ctx), duplicateGateRollback)
+		defer cancelRollback()
+		_ = tx.Rollback(rollback)
+	}()
+	if _, err := tx.Exec(ctx, fmt.Sprintf("set local statement_timeout = '%dms'", referencesClosureBound.Milliseconds())); err != nil {
+		return nil, false, err
+	}
+	return refs.Closure(ctx, tx, issueKey)
+}
+
+// closureBoundHit says whether boundedClosure's walk ended at its bound: Postgres cancelled the
+// statement (SQLSTATE 57014) or the context expired first.
+func closureBoundHit(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var pgError *pgconn.PgError
+	return errors.As(err, &pgError) && pgError.Code == "57014" // query_canceled
 }
 
 func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
