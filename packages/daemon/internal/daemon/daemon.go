@@ -250,6 +250,14 @@ type overrides struct {
 	// has done what it needs done before them, and releases them by answering false. nil, in
 	// production, holds nothing.
 	holdOutbox func(record.OutboxRow) bool
+	// statusRowChecked and statusRowRead are the two seams of a Dispatch status row's run
+	// (outbox.statusRowChecked, outbox.statusRowRead): told of the row once its run and phase
+	// entry have passed their check and before it reads Dispatch, and after each read a write of it
+	// is fenced on, with that read's sequence, before it waits for the record to see it. Each runs
+	// on the row's lane, so a test holds the row there by not returning until it has moved the
+	// issue. nil, in production, tells no one.
+	statusRowChecked func(ctx context.Context, row record.OutboxRow)
+	statusRowRead    func(ctx context.Context, row record.OutboxRow, seq int64)
 	// gateRegistrationRead is api.Options.GateRegistrationRead: told of each register_gate call
 	// once its Dispatch reads are made and before its fact is applied, on the route's goroutine,
 	// so a test can act on Dispatch between the two and release the call by returning. nil, in
@@ -1003,9 +1011,11 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
-	// holdOutbox, gateRegistrationRead and dropConsumedEvent are the overrides of those names;
-	// nil holds, tells and drops nothing.
+	// holdOutbox, statusRowChecked, statusRowRead, gateRegistrationRead and dropConsumedEvent are
+	// the overrides of those names; nil holds, tells and drops nothing.
 	holdOutbox           func(record.OutboxRow) bool
+	statusRowChecked     func(ctx context.Context, row record.OutboxRow)
+	statusRowRead        func(ctx context.Context, row record.OutboxRow, seq int64)
 	gateRegistrationRead func(ctx context.Context, issue string)
 	dropConsumedEvent    func(intake.Fact) bool
 	// streamWaitBegan is overrides.streamWaitBegan; nil runs nothing.
@@ -1148,7 +1158,8 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
-		holdOutbox: o.holdOutbox, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
+		holdOutbox: o.holdOutbox, statusRowChecked: o.statusRowChecked, statusRowRead: o.statusRowRead,
+		gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision,
 	}
 	if cfg.Runtime.Name == "kubernetes" {

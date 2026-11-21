@@ -457,10 +457,13 @@ func TestChangeStatusReadsEachSavedAnswerOfDispatch(t *testing.T) {
 			_, err := client.ChangeStatus(ctx, "LEGION-47", change)
 			refusal := assertRefusal(t, err, http.StatusConflict, "KEY_IN_FLIGHT")
 			assertChanged(t, refusal.Changed)
+			if refusal.RetryAfter != time.Second {
+				t.Fatalf("Retry-After = %s, want the one second the answer asks for", refusal.RetryAfter)
+			}
 		}},
 		{"status_change_midway_refused.http", func(t *testing.T, client *HTTPClient) {
 			// A person wrote the named issue between two steps: the later step is refused, and the
-			// answer carries the entries of the two steps that committed before it.
+			// answer carries the entries of the four steps that committed before it.
 			_, err := client.ChangeStatus(ctx, "LEGION-2", change)
 			refusal := assertRefusal(t, err, http.StatusConflict, "ISSUE_CHANGED")
 			if _, permanent := PermanentRefusal(err); permanent {
@@ -468,7 +471,9 @@ func TestChangeStatusReadsEachSavedAnswerOfDispatch(t *testing.T) {
 			}
 			assertChanged(t, refusal.Changed,
 				"LEGION-3 backlog parent=LEGION-2 previous=2 issue=LEGION-3 backlog parent=LEGION-2 seq=4",
-				"LEGION-4 backlog parent=LEGION-2 previous=2 issue=LEGION-4 backlog parent=LEGION-2 seq=4")
+				"LEGION-4 backlog parent=LEGION-2 previous=2 issue=LEGION-4 backlog parent=LEGION-2 seq=4",
+				"LEGION-5 backlog parent=LEGION-2 previous=2 issue=LEGION-5 backlog parent=LEGION-2 seq=4",
+				"LEGION-6 backlog parent=LEGION-2 previous=2 issue=LEGION-6 backlog parent=LEGION-2 seq=4")
 		}},
 		{"status_change_keyed_repeat.http", func(t *testing.T, client *HTTPClient) {
 			// The repeat, under the same key, of a call whose Dispatch process was killed after a

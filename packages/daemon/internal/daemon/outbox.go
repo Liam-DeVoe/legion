@@ -1149,7 +1149,13 @@ const statusWriteReads = 3
 // with nothing, whichever path brought the row here.
 func (r *outbox) writeStatus(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, rule statusRowRule, read dispatch.Issue) error {
 	if payload.HasOption() {
-		return r.changeStatus(ctx, row, payload, rule, &read, record.OutboxAttempt{})
+		// The row's last attempt, ended, numbers the next: its key is never sent again.
+		attempt, err := r.attemptOf(ctx, row)
+		if err != nil {
+			return err
+		}
+		attempt.Body = nil
+		return r.changeStatus(ctx, row, payload, rule, &read, attempt)
 	}
 	for range statusWriteReads {
 		// A status Dispatch already shows is this row's work, done: the write is not made again,

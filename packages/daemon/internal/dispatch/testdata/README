@@ -122,18 +122,19 @@ With the rule off:
                       the same move as status_change_todo_under_backlog.http, on LEGION-4 under
                       LEGION-3: taken.
 
-Two answers no single curl can be made to give were captured on 2026-11-21 at 11:52Z and 11:54Z
-by TestCaptureStatusChangeAnswers (internal/daemon/status_change_capture_test.go, build tag
+Two answers no single curl can be made to give were captured on 2026-11-21 by
+TestCaptureStatusChangeAnswers (internal/daemon/status_change_capture_test.go, build tag
 capture, run by hand), from the rig's scratch Dispatch built from the same working copy, with
 the rule on:
 
   go -C packages/daemon test -tags capture -count=1 -run '^TestCaptureStatusChangeAnswers$' ./internal/daemon/
 
-  status_change_midway_refused.http
+  status_change_midway_refused.http (12:24Z)
                       LEGION-2 with 200 children at work, backlog with include_children while a
-                      person writes LEGION-2 between two steps: 409 ISSUE_CHANGED with the entries
-                      of the two steps that committed before it (LEGION-3 and LEGION-4).
-  status_change_keyed_repeat.http
+                      person writes LEGION-2 once three steps have committed: 409 ISSUE_CHANGED
+                      with the entries of the four steps that committed before the refused one
+                      (LEGION-3 to LEGION-6, each from sequence 2 to 4).
+  status_change_keyed_repeat.http (11:54Z)
                       LEGION-203 with 200 children at work, the same call: its Dispatch process
                       killed (SIGKILL) after a step committed, and the call sent again under the
                       same key to the process started again on the same database, once the first

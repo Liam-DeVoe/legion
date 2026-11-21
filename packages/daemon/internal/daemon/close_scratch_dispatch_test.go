@@ -44,6 +44,7 @@ func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t 
 			records := record.NewStore()
 			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 			tc.close(t, pool, records, engine, issue)
+			seenAsDispatchShows(t, pool, baseURL, token, issue)
 
 			// A person leaves a comment while the row is between its read and its write: the
 			// status is untouched, and Dispatch has moved the issue's sequence on. The merge's
@@ -83,6 +84,7 @@ func TestAReopenedIssueKeepsTheStatusThePersonGaveItAndTheCloseWritesNothing(t *
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	mergeClosesTheIssue(t, pool, records, engine, issue)
+	seenAsDispatchShows(t, pool, baseURL, token, issue)
 
 	reopenTheIssue(t, pool, records, issue)
 
@@ -130,6 +132,7 @@ func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
 	records := record.NewStore()
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
 	mergeClosesTheIssue(t, pool, records, engine, issue)
+	seenAsDispatchShows(t, pool, baseURL, token, issue)
 
 	// The attempt that failed: Dispatch answered 5xx, so the row wrote nothing and waits. The run
 	// itself answers no error — a row whose attempt failed is recorded and backed off, which is

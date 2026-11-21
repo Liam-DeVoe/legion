@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -617,9 +618,10 @@ type scratchDispatchOptions struct {
 	root string
 	// log, when set, receives the server's output as well.
 	log io.Writer
-	// env is each further setting the server runs with, as NAME=value, such as Dispatch's
-	// parent-status rule (DISPATCH_PARENT_STATUS_RULE). A Dispatch whose settings table does not
-	// name a setting reads nothing of it.
+	// env is each further setting the server runs with, as NAME=value. Dispatch's parent-status
+	// rule (DISPATCH_PARENT_STATUS_RULE) is on unless env names it, as it is in production once the
+	// rule rolls out (decision 23 of dispatch://INFRA-4730). A Dispatch whose settings table does
+	// not name a setting reads nothing of it.
 	env []string
 }
 
@@ -658,11 +660,15 @@ func startScratchDispatchOn(t *testing.T, options scratchDispatchOptions) *scrat
 	if err != nil {
 		t.Fatalf("resolve repository root: %v", err)
 	}
+	env := options.env
+	if !slices.ContainsFunc(env, func(setting string) bool { return strings.HasPrefix(setting, parentStatusRule+"=") }) {
+		env = append(slices.Clone(env), parentStatusRule+"=on")
+	}
 	d := &scratchDispatch{
 		t: t, binary: testbuild.EnvoyBinary(t, "./cmd/dispatch"), dir: filepath.Join(root, "packages", "envoy"),
 		webDist: filepath.Join(root, "packages", "dispatch", "web", "dist"), database: database,
 		natsURL: options.natsURL, token: scratchAgentToken, home: filepath.Join(t.TempDir(), "home"),
-		log: options.log, env: options.env,
+		log: options.log, env: env,
 	}
 	if err := os.MkdirAll(d.home, 0o700); err != nil {
 		t.Fatalf("create scratch Dispatch home: %v", err)
@@ -809,6 +815,18 @@ func (d *scratchDispatch) stop() {
 		<-d.exited
 		d.t.Error("scratch Dispatch did not stop after SIGINT")
 	}
+}
+
+// kill ends the running server with SIGKILL, as a node's loss ends a process mid-call: nothing of
+// it runs on, and a request key it held stays in flight until its lease lapses.
+func (d *scratchDispatch) kill() {
+	d.t.Helper()
+	command := d.command
+	d.command = nil
+	if err := command.Process.Kill(); err != nil {
+		d.t.Fatalf("kill scratch Dispatch: %v", err)
+	}
+	<-d.exited
 }
 
 func createScratchDispatchIssue(t *testing.T, baseURL string) string {

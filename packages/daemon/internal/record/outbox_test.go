@@ -35,6 +35,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		OrdinaryStatusWrite("in_progress", "testing", "Legion moved this issue from testing back to implementing at the tester's request: the fix does not cover the empty list."),
 		PersonHandoverStatusWrite("todo", "triage"),
 		ReassertStatusWrite("in_progress", "done"),
+		// A write with options of Dispatch's status-change route, queued after the write of its
+		// parent it follows, for the controller (decisions 5, 6 and 12 of dispatch://INFRA-4730).
+		StatusWrite{Kind: OrdinaryStatusRow, Status: "backlog", ObservedStatus: "in_progress", IncludeChildren: true, UnlinkChildren: true,
+			IncludeParent: true, After: 12, Controller: true},
 		MessagePost{Body: "Pull request checks are blocked."},
 		// The row an older daemon's rescue message queued, which still decodes and round-trips.
 		MessagePost{Body: "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a",
@@ -58,6 +62,7 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ControllerNotice{Kind: ProjectPausedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now,
 			Reason: "the model provider is down"}},
 		ControllerNotice{Kind: ProjectResumedNotice, Pause: &ProjectPause{ID: 7, By: PauseActor{Kind: PauseByOperator}, At: now.Add(time.Hour)}},
+		ControllerNotice{Kind: StatusScopeNotice, Reason: "Dispatch refused the daemon's status write on LEGION-208 with 403 LEGION_STATUS_SCOPE_REQUIRED."},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleArchitect, Task: "Write the spec."},
 		SuperviseRequest{Op: "pause_stop", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 3, Pause: 7},
 		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Task: "a wake", WakeKind: pods.WakeChecks},
@@ -698,6 +703,7 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a status write of a kind nobody gave a rule", payload: StatusWrite{Kind: "escalation", Status: "testing", ObservedStatus: "in_progress"}, reason: `unknown kind "escalation"`},
 		{name: "empty status", payload: StatusWrite{Kind: OrdinaryStatusRow}, reason: "empty status"},
 		{name: "a reason on a re-assertion", payload: StatusWrite{Kind: ReassertStatusRow, Status: "in_progress", ObservedStatus: "done", Reason: "set back"}, reason: "only a done write or the workflow's own move does"},
+		{name: "a status write after no row", payload: StatusWrite{Kind: OrdinaryStatusRow, Status: "todo", ObservedStatus: "backlog", After: -1}, reason: "which no row is"},
 		{name: "unknown notice", payload: Notice{Kind: "unknown"}, reason: "unknown notice kind"},
 		{name: "a triage notice for an architect", payload: Notice{Kind: TriageNotice}, reason: "unknown notice kind"},
 		{name: "a slot-free notice for an architect", payload: Notice{Kind: SlotFreeNotice}, reason: "unknown notice kind"},
@@ -707,6 +713,8 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a tree-stalled notice for an architect", payload: Notice{Kind: TreeStalledNotice}, reason: "unknown notice kind"},
 		{name: "an architect-stalled notice for an architect", payload: Notice{Kind: ArchitectStalledNotice}, reason: "unknown notice kind"},
 		{name: "an architect-stalled notice naming no arm", payload: ControllerNotice{Kind: ArchitectStalledNotice, Role: claim.RoleArchitect}, reason: "carries the reason that names its arm"},
+		{name: "a status-scope notice for an architect", payload: Notice{Kind: StatusScopeNotice}, reason: "unknown notice kind"},
+		{name: "a status-scope notice naming nothing", payload: ControllerNotice{Kind: StatusScopeNotice}, reason: "a status-scope notice carries the reason"},
 		{name: "an actor on a phase-finished notice", payload: Notice{Kind: "phase-finished", Actor: "user:a"}, reason: "only a spec decision's does"},
 		{name: "a ref on a child-status notice", payload: Notice{Kind: "child-status", Ref: "dispatch://LEGION-1/spec"}, reason: "only a spec decision's does"},
 		{name: "a decision on a basis notice", payload: Notice{Kind: "basis-ended", Ref: "dispatch://LEGION-100/spec", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},

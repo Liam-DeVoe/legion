@@ -30,6 +30,7 @@ func TestIssueOfAnswersEachFactThatNamesOneIssue(t *testing.T) {
 		"CloseRoot":               CloseRoot{Issue: issue},
 		"CloseChild":              CloseChild{Issue: issue},
 		"CloseRefused":            CloseRefused{Issue: issue},
+		"StatusRefused":           StatusRefused{Issue: issue},
 		"ClaimFailed":             ClaimFailed{Issue: issue},
 		"SessionLost":             SessionLost{Issue: issue},
 		"SessionStoreFault":       SessionStoreFault{Issue: issue},

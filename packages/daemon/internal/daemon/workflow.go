@@ -1659,6 +1659,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, supervision.cfg.ControllerLaunch == config.ControllerLaunchDaemon, w.log)
 	w.outbox.hold = supervision.plan.holdOutbox
+	w.outbox.statusRowChecked, w.outbox.statusRowRead = supervision.plan.statusRowChecked, supervision.plan.statusRowRead
 	w.dropConsumedEvent = supervision.plan.dropConsumedEvent
 	w.outbox.readPullRequest, w.outbox.applyMergeability, w.outbox.mergeStateWait = w.readPullRequest, w.applyMergeability, w.mergeStateWait
 	w.outbox.queueMergeStateFollow = w.queueMergeStateFollow

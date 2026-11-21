@@ -295,6 +295,11 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 				t.Fatalf("queue the close: %v", err)
 			}
 		}, source: "outbox", fact: intake.CloseRefused{Issue: planning, Generation: 1, Entry: 1, Children: []string{"LEGION-777 (todo)"}}, keeps: planning}},
+		// Dispatch's refusal of any other write the daemon queued moves nothing of the issue's step
+		// either: the record's status goes back to Dispatch's, where it still holds the refused one,
+		// and the caller is told (decision 12 of dispatch://INFRA-4730).
+		"StatusRefused": {{name: "a refused status write keeps the issue in its step", arrange: none, source: "outbox",
+			fact: intake.StatusRefused{Issue: planning, Generation: 1, Entry: 1, Status: "backlog", Issues: []string{"LEGION-777 (todo)"}}, keeps: planning}},
 		// A member's merge queues its close and moves nothing: it leaves merging, and its step's
 		// run ends, once Dispatch shows it done (R24 of dispatch://INFRA-3320, workflow's closeLanded).
 		"PullRequestMerged": {{name: "a member's merge lands while the root is parked", arrange: func(t *testing.T, pool *pgxpool.Pool, admission *Admission, engine intake.Handler) {

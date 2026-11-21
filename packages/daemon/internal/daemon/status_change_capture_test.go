@@ -26,8 +26,9 @@ import (
 //
 //   - status_change_midway_refused.http: a call over a parent with 200 open children, refused at
 //     a later step because a person wrote the parent between two steps, which answers 409 with the
-//     entries of the steps that committed before it. The person's write must land after a step
-//     and before the named issue's, so the capture tries again on new issues until it does.
+//     entries of the steps that committed before it, three at least, so the daemon's tests read
+//     an entry of each kind its record can stand at. The person's write must land after the third
+//     step and before the named issue's, so the capture tries again on new issues until it does.
 //   - status_change_keyed_repeat.http: the repeat, under the same request key, of a call whose
 //     Dispatch process was killed (SIGKILL) after a step committed, sent to the process started
 //     again on the same database once the first run's lease on its key lapsed: the route finishes
@@ -57,7 +58,7 @@ func captureMidwayRefusal(t *testing.T, d *scratchDispatch) {
 		body := backlogWithChildren(t, parent, seq)
 		answered := make(chan capturedAnswer, 1)
 		go func() { answered <- sendStatusChange(d, parent, fmt.Sprintf("midway-refusal-%d", attempt), body) }()
-		awaitAStep(t, d, parent, seq)
+		awaitSteps(t, d, parent, seq, midwaySteps)
 		written := asScratchPerson(t, http.MethodPatch, d.base+"/api/v1/issues/"+url.PathEscape(parent),
 			map[string]string{"title": "written by a person while the call runs"})
 		written.Body.Close()
@@ -68,7 +69,7 @@ func captureMidwayRefusal(t *testing.T, d *scratchDispatch) {
 		if answer.err != nil {
 			t.Fatalf("the call over %s: %v", parent, answer.err)
 		}
-		if answer.status == http.StatusConflict && len(answer.changed) > 0 {
+		if answer.status == http.StatusConflict && len(answer.changed) >= midwaySteps {
 			saveAnswer(t, "status_change_midway_refused.http", answer.raw)
 			return
 		}
@@ -84,7 +85,7 @@ func captureKeyedRepeat(t *testing.T, d *scratchDispatch) {
 	const requestKey = "keyed-repeat-1"
 	lost := make(chan capturedAnswer, 1)
 	go func() { lost <- sendStatusChange(d, parent, requestKey, body) }()
-	awaitAStep(t, d, parent, seq)
+	awaitSteps(t, d, parent, seq, 1)
 	d.kill()
 	if first := <-lost; first.err == nil {
 		t.Fatalf("the killed call answered %d before its process died; nothing was left to finish", first.status)
@@ -104,18 +105,6 @@ func captureKeyedRepeat(t *testing.T, d *scratchDispatch) {
 	}
 	t.Logf("the repeat answered %d %s with %d entries", answer.status, answer.code, len(answer.changed))
 	saveAnswer(t, "status_change_keyed_repeat.http", answer.raw)
-}
-
-// kill ends the running server with SIGKILL, as a node's loss ends a process mid-call: nothing of
-// it runs on, and a request key it held stays in flight until its lease lapses.
-func (d *scratchDispatch) kill() {
-	d.t.Helper()
-	command := d.command
-	d.command = nil
-	if err := command.Process.Kill(); err != nil {
-		d.t.Fatalf("kill scratch Dispatch: %v", err)
-	}
-	<-d.exited
 }
 
 // openChildren is a parent at work with count children at work under it, and the parent's
@@ -155,14 +144,17 @@ func backlogWithChildren(t *testing.T, parent string, seq int64) []byte {
 	return body
 }
 
-// awaitAStep waits until a step of the call over parent has committed: each child's step adds a
-// child.status event to the parent, which moves its sequence past seq, the call's fence.
-func awaitAStep(t *testing.T, d *scratchDispatch, parent string, seq int64) {
+// midwaySteps is how many steps the midway refusal's call commits before the person's write.
+const midwaySteps = 3
+
+// awaitSteps waits until steps steps of the call over parent have committed: each child's step
+// adds a child.status event to the parent, which moves its sequence past seq, the call's fence.
+func awaitSteps(t *testing.T, d *scratchDispatch, parent string, seq int64, steps int) {
 	t.Helper()
 	client := dispatch.New(d.base, d.token)
-	testwait.WithinPolling(t, time.Minute, 5*time.Millisecond, "a step of the call over "+parent+" to commit", func() bool {
+	testwait.WithinPolling(t, time.Minute, 5*time.Millisecond, fmt.Sprintf("%d steps of the call over %s to commit", steps, parent), func() bool {
 		issue, err := client.GetIssue(context.Background(), parent)
-		return err == nil && issue.LastSeq > seq
+		return err == nil && issue.LastSeq >= seq+int64(steps)
 	})
 }
 
