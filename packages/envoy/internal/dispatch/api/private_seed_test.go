@@ -98,12 +98,22 @@ func seedPrivateProject(t *testing.T) privateSeed {
 // his token acts only while that rule admits him (restrictedOwnerAdmitted), which PRIV's list does.
 func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed {
 	t.Helper()
-	broker := ciphertokentest.NewStubBroker(t)
-	options.brokerTokens = stubBrokerTokens(t, broker)
-	options.signInOutside = true
 	if options.busProjects == nil {
 		options.busProjects = acceptingBus{}
 	}
+	seed := seedPublicProjectsWith(t, options)
+	seed.makePrivate(t, seedPrivate)
+	return seed
+}
+
+// seedPublicProjectsWith is verification v16's seed on a test server built from options, its
+// private-projects record written through options.busProjects alone, with both projects still
+// public: a test that makes PRIV private through the visibility route itself starts from it.
+func seedPublicProjectsWith(t *testing.T, options testServerOptions) privateSeed {
+	t.Helper()
+	broker := ciphertokentest.NewStubBroker(t)
+	options.brokerTokens = stubBrokerTokens(t, broker)
+	options.signInOutside = true
 	handler, database, deps, served := newRegisteredTestServer(t, options)
 	seed := privateSeed{
 		handler: handler, database: database, deps: deps, server: served,
@@ -143,7 +153,6 @@ func seedPrivateProjectWith(t *testing.T, options testServerOptions) privateSeed
 		}
 		seed.tokens[token.caller] = minted.Token
 	}
-	seed.makePrivate(t, seedPrivate)
 	return seed
 }
 
