@@ -37,7 +37,9 @@ body: |-
   its source's binding. A profile's `requesters` may name a Google group, which a full load reads
   as it reads a tag's; against its source's list a group entry is matched by that same group
   alone, never by a person in it. A profile of a group's secret is the group's, and a profile of
-  an `anthropic-federation` secret is held to that type's tag rules. A request may narrow a
+  an `anthropic-federation` secret is held to that type's tag rules. A restricted member's session
+  is denied every profile name `restricted-member` before the profiles file answers it, and its
+  request for a GitHub profile makes no check mint. A request may narrow a
   profile to one account or to repositories of it with RFC 9396
   `locations` in its signed request, matched to the profile's repositories without regard to
   case, which the approval page prints with the profile's scope (Google scopes included); a

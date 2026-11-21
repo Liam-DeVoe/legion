@@ -212,6 +212,10 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		// enroll.Renew guards against. The caller's proof is no longer good for anything.
 		writeError(w, http.StatusUnauthorized, "PROOF_INVALID", "enrollment is not live")
 		return
+	case writeMemberKindUncheckable(w, "the secret request", err):
+		// The broker could not learn whether Dispatch calls the session's person a restricted
+		// member, so it decides nothing and writes no request: 503, and the session asks again.
+		return
 	case err != nil:
 		writeInternal(w, "create request", err)
 		return
@@ -568,6 +572,10 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		// The grant holds a secret of a Dispatch project, which is checked again on every release,
 		// and Dispatch did not answer. Nothing was released and the grant stays live.
 		writeProjectAccessUnavailable(w, "read grant values", err)
+		return
+	case writeMemberKindUncheckable(w, "the release", err):
+		// As the request route answers it: nothing is released while the broker cannot learn
+		// whether the session's person is a restricted member.
 		return
 	case err != nil:
 		writeInternal(w, "read grant values", err)
