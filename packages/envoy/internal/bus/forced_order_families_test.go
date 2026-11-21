@@ -17,6 +17,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/forcedorder"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -71,7 +72,10 @@ func (r *forcedRig) pendingSession(t *testing.T, id string) *pendingSession {
 }
 
 // removeFromOutside deletes consumer name as the server's inactivity removal would, and confirms it
-// is gone: every row that removes a consumer reads its control here.
+// is gone: every row that removes a consumer reads its control here. On a cluster the delete answers
+// before every server has applied it, and for a moment the consumer's own replicas still answer its
+// info (the R3 topology of the lost-state row read one so at a load of 900), so the read is repeated
+// until the cluster answers that the consumer is gone, within removalApplied.
 func (r *forcedRig) removeFromOutside(t *testing.T, name string) {
 	t.Helper()
 	js, err := r.conn.JetStream()
@@ -81,10 +85,19 @@ func (r *forcedRig) removeFromOutside(t *testing.T, name string) {
 	if err := js.DeleteConsumer(Stream, name); err != nil {
 		t.Fatalf("remove %s from outside: %v", name, err)
 	}
-	if _, err := js.ConsumerInfo(Stream, name); !errors.Is(err, natsgo.ErrConsumerNotFound) {
-		t.Fatalf("control: %s read %v after its removal, want no consumer", name, err)
+	var last error
+	for deadline := time.Now().Add(removalApplied); ; time.Sleep(20 * time.Millisecond) {
+		if _, last = js.ConsumerInfo(Stream, name); errors.Is(last, natsgo.ErrConsumerNotFound) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("control: %s read %v %s after its removal, want no consumer", name, last, removalApplied)
+		}
 	}
 }
+
+// removalApplied bounds how long a consumer's removal may take to reach every server of a cluster.
+const removalApplied = 10 * time.Second
 
 // streamConsumerNames is every consumer name of the stream.
 func (r *forcedRig) streamConsumerNames(t *testing.T) []string {
@@ -293,6 +306,64 @@ func aReplacementLostRightAfterItsPublish(t *testing.T, topo forcedTopology) {
 	}
 	got := delivered(t, s.seqs[forcedAcked:], func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, other, again, s.id) })
 	requireDeliveredFrom(t, got, s.seqs[forcedAcked:], s.seqs, "the consumer created again after the loss")
+}
+
+// A read of a consumer that a registration answered before the consumer had a leader waits for
+// the leader, then gets every message after the saved start. Held here: the replacement-lost row
+// on R3, with the new consumer's assignment held on every member past the create request's
+// timeout. The registration then settles its create with an info, which finds the held candidate,
+// and answers it with no leader; the holds are released only once a whole read window
+// (forcedWindow) has passed since. A read whose window starts at the answer closes on nothing,
+// which the replacement-lost row's R3 topology did once at a load of 1,176 ("delivered []"). The
+// control in the row: the consumer has no leader when the registration answers.
+func TestForcedOrderARegistrationAnsweredBeforeItsConsumerIsLedIsReadOnceItIs(t *testing.T) {
+	skipOnARefusedServer(t)
+	r := newForcedRig(t, forcedorder.Topologies[2])
+	ctx := context.Background()
+	s := r.pendingSession(t, "ses_forced_answered_unled")
+	restarted, err := r.consumers.RestartAtFloor(ctx, s.id, []string{s.agent})
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	r.removeFromOutside(t, forcedName(restarted, s.id))
+	other := forcedProcess(t, r.urls)
+	replacement := testnats.Where("another consumer than the removed one", func(e testnats.Event) bool {
+		return e.Consumer != "" && e.Consumer != forcedName(restarted, s.id)
+	})
+	var holds []*testnats.Hold
+	for _, srv := range r.Servers.Servers {
+		holds = append(holds, r.Hooks.Hold(testnats.MetaApply, testnats.OnServer(srv), testnats.Stream(Stream), replacement))
+	}
+	again, err := other.Ensure(ctx, s.id, []string{s.agent}, 0)
+	if err != nil {
+		t.Fatalf("the other process's registration: %v", err)
+	}
+	for _, hold := range holds {
+		t.Logf("held %s", hold.Reached(t))
+	}
+	if info, err := other.Info(ctx, s.id); err != nil || consumerLed(other, info) {
+		t.Fatalf("control: %s when the registration answered = %+v, %v; want its info, with no leader", forcedName(again, s.id), info, err)
+	}
+	released := time.AfterFunc(forcedWindow+time.Second, func() {
+		for _, hold := range holds {
+			hold.Release()
+		}
+	})
+	t.Cleanup(func() { released.Stop() })
+	got := delivered(t, s.seqs[forcedAcked:], func(ctx context.Context) (*SessionPull, error) { return forcedPull(ctx, other, again, s.id) })
+	requireDeliveredFrom(t, got, s.seqs[forcedAcked:], s.seqs, "the consumer the registration answered before it was led")
+}
+
+// consumerLed reports whether info, a consumer's info as the server consumers are connected to
+// answers it, shows the consumer led. On a cluster the info names the consumer's leader in its
+// cluster information, which a member that has not applied the consumer's assignment yet leaves
+// out (nats-server v2.15.1 jetstream_api.go :5686-5701). A lone server's consumer has no Raft group
+// and no cluster information (consumer.go :3664-3666), and is led once it answers.
+func consumerLed(consumers *SessionConsumers, info *jetstream.ConsumerInfo) bool {
+	if consumers.client.Connection().ConnectedClusterName() == "" {
+		return true
+	}
+	return info.Cluster != nil && info.Cluster.Leader != ""
 }
 
 // Family 4. A delete (a deregistration's, the sweep's, the reaper's) of a session whose consumer the

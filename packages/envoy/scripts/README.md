@@ -359,6 +359,83 @@ for the stack's start under a short one. The stack runs in a session of its own 
 is stopped as one process group, so a stop during the build — the script's exit, a
 wait that ran out, Ctrl-C — ends that build with the stack.
 
+## project-secrets-check.sh
+
+Shows on the local stack that a private Dispatch project's secret goes only to a
+credential that names the project (R11 of dispatch://INFRA-3862). It starts one
+`dev-stack.sh --project-access` run, makes `PRIV` private (owner carol, access list
+bob), writes `PRIV_KEY` (tagged `dispatch-project=PRIV`, shared, agent tier) and
+`PUB_KEY` (untagged), and drives six callers. For each it runs `agent-secrets request`
+of the two secrets and one trade (`packages/cipher-client/scripts/print-trade.ts`,
+which prints the token's `project_scope` and `projects` from the broker's
+introspection), and prints one `PASS` or `FAIL` line per answer, naming the caller and
+the secret. The last line is `project-secrets-check: <n> rows ran, <m> passed`; it
+exits 0 only when all 16 rows ran and passed.
+
+```bash
+cd packages/envoy && LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh
+```
+
+| Caller | What passes |
+| --- | --- |
+| PRIV's pod (`legion-priv-worker`, mapped to PRIV for carol by its exchange entry) | its trade is `named` with `["PRIV"]`; after `agent-secrets enroll --pod --service legion-priv`, `PRIV_KEY` and `PUB_KEY` are granted |
+| carol's session listing PRIV (`AGENT_SECRETS_PROJECTS=PRIV`) on the stack's machine, which no machine registration names | avenue F's refusal (`machine_not_registered` at the trade, `MACHINE_NOT_REGISTERED` at enrollment); before F's check exists, only a `person`-scope token with `["PRIV"]`, and both secrets granted. The line says which branch ran |
+| alice's session listing PRIV | her trade is refused (her person cannot see PRIV) and her enrollment is refused `PROJECT_NOT_VISIBLE` |
+| carol's session naming nothing | `PUB_KEY` granted, `PRIV_KEY` denied `project-not-named` |
+| the machine's own session | its trade names no project, `PUB_KEY` granted, `PRIV_KEY` denied `project-not-named` |
+| PRIV's pod behind the airlock | a request through the proxy that spends the `PRIV_KEY` placeholder is served by the bound host (the host's own answer is read); after carol is taken off PRIV and the broker's 30-second K3 cache has passed, the next request's `CONNECT` is refused 407 |
+
+carol and alice each sign in with `agent-secrets login` on a box of their own (a HOME,
+key directory, sign-in store and `agent-secrets-helper` each), at the stack's issuer.
+Their sessions read no sign-in, so `agent-secrets register --exec` sends them to the
+box's helper, which enrolls them under the person's sign-in with the projects the
+session listed.
+
+The negative control writes `PRIV_KEY` with no project tag. Every caller then gets it,
+and the run exits 1 with the line `control: the first caller that got PRIV_KEY although
+it should have been refused: <caller>` (on the right stack, carol's session naming
+nothing):
+
+```bash
+LEGION_TEST_PG_DSN=... bash scripts/project-secrets-check.sh --control untagged
+```
+
+Live mode runs the session half against a deployment and writes nothing:
+
+```bash
+bash scripts/project-secrets-check.sh --broker-url <broker> --secret <NAME>
+```
+
+Its environment names the pod's exchange token (`AGENT_SECRETS_MACHINE_TOKEN_FILE`),
+the pod's enrolled key directory (`AGENT_SECRETS_KEY_DIR`), the operator's helper with
+its machine login (`AGENT_SECRETS_HELPER_SOCK`), and an account token the broker lists
+in `BROKER_API_ACCOUNTS` (`AGENT_SECRETS_ACCOUNT_TOKEN_FILE`), the only caller the
+broker lets read a token's introspection. A missing one of the first three exits 2; a
+missing account token fails the trade line as `UNKNOWN`. It runs the pod's trade (which
+names the project), the pod's request for the secret, and the operator's session
+listing that project, which reads F's check as the stack's row does. It takes no
+Dispatch URL, since nothing of the session half reads one.
+
+Until avenue A's `DISPATCH_ACCESS_ACCOUNTS` boot setting (t-a-5) and its private-project
+switch (t-a-20) are on the branch under test, the run writes Dispatch's rows directly
+in place of three of A's routes, reads them back, and says so on its output. The writes
+are two functions, each named for the route it stands in for, so each body becomes that
+call once the route answers: `standin_patch_access_private` for `PATCH
+/api/v1/projects/PRIV/access {"visibility":"private"}` and `PUT
+/api/v1/projects/PRIV/access/people/bob@example.com`, and, in the airlock row,
+`standin_patch_access_owner` for `PATCH /api/v1/projects/PRIV/access
+{"owner":"bob@example.com"}`. The rows need A's schema (`projects.owner`,
+`projects.visibility`, `project_access`), so on a Dispatch without it the run stops
+before any row with the route the write stands in for.
+
+`scripts/project-secrets-check.test.sh` proves the driver's own decisions with fakes of
+`dev-stack.sh`, `agent-secrets`, its helper, `bun`, `psql`, `curl`, `python3` and
+`sleep`: each row passes on the right answer and fails naming its caller and secret on
+a wrong one, the control fails, a run whose rows matched nothing fails, and live mode
+refuses half its options. It needs bash and jq and takes a few seconds. The driver
+needs what `dev-stack.sh` needs (Docker included, for the airlock's stands), `bun` with
+this repository's packages installed, and a few minutes.
+
 ## callout-check.sh
 
 Proves, on the whole local stack behind the NATS auth service, what the hub lets a
@@ -501,6 +578,7 @@ packages/envoy/scripts/forced-order.sh ./internal/testnats/hooktest/
 packages/envoy/scripts/forced-order.sh -server 2.10.29 ./internal/testnats/hooktest/
 packages/envoy/scripts/forced-order.sh -C packages/daemon ./internal/testnats/
 packages/envoy/scripts/forced-order.sh -drop write.preIO ./internal/testnats/hooktest/
+packages/envoy/scripts/forced-order.sh -timeout 25m ./internal/bus/
 ```
 
 It copies nats-server's module at the version it runs out of the module cache, applies
@@ -511,29 +589,43 @@ It copies nats-server's module at the version it runs out of the module cache, a
 nats-server replaced by the copy: for a module of the workspace, in a copy of `go.work` with
 absolute `use` paths, so every other module version is the one CI's own build links; for a module
 with no workspace, on a copy of the module's `go.mod`. A workspace that does not use the module,
-or that holds a replace, is refused. It reads go's JSON with `jq`. Nothing else of nats-server
+or that holds a replace, is refused, and so is a module whose `go.mod` replaces nats-server, since
+the hooked copy would take the replacement's place. It reads go's JSON with `jq`. Nothing else of nats-server
 changes, the repository's own files are never written, and no other build sees a hook.
 The hold points are `write.preIO`, `write.preRename` (2.15.1 alone: 2.10.29 writes `o.dat` in
 place), `flush.encoded`, `store.create`, `api.worker`, `client.publish`, `meta.apply` and `stream.apply`;
-`hooks.go` says where each one is. A server's shutdown reports `server.shutdown` before it stops
-anything and `server.down` once it has waited for its goroutines: the hook releases every hold on
-that server at the first and parks none of its goroutines until the second, so a `Stop` with an
-operation held returns, and the held operation lands or fails.
+`hooks.go` says where each one is. A server's shutdown, and its lame duck, report `server.shutdown`
+before they stop anything and `server.down` once the shutdown has waited for its goroutines: the
+hook releases every hold on that server at the first and parks none of its goroutines until the
+second, so a `Stop` or a `LameDuck` with an operation held returns, and the held operation lands
+or fails.
 
 `-C` names the module, relative to the caller's directory, as `go -C` does (`packages/envoy` by
-default), and the packages are relative to it. `-server` is the nats-server version, by default the
-one the build links; 2.15.1 and 2.10.29 are hooked, and any other version is refused, so a
-module that moves to a new nats-server fails here until its hooks are ported. `-drop <point>`
-removes every hook line naming that point before the build, which is each test's control: a test
-holding at a dropped point fails waiting for its hold, and with `-drop server.shutdown` the test
-that stops a held server fails at its own deadline, since the stop then waits for the parked
-goroutine. It fails, naming the package, when a
-package declares no `TestForcedOrder` test. `GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`.
-`ci.yaml`'s `envoy-go-race` job runs it on `./internal/testnats/hooktest/` twice: with no `-server`,
-so on the version the workspace links, and with `-server 2.10.29`. Its `daemon-go` job runs it with
-`-C packages/daemon` and no `-server`. So when `go.mod` moves to a nats-server with no hooks, both
-unversioned steps fail until the hooks are ported. Each job counts the 10 minutes in its time
-budget.
+default), and the packages are relative to it; an empty `-C` is refused. `-server` is the
+nats-server version, by default the one the build links; 2.15.1 and 2.10.29 are hooked, and any
+other version is refused, so a module that moves to a new nats-server fails here until its hooks
+are ported; an empty value is refused too. `-drop <point>` removes the hook calls that pass that
+point, exactly, before the build, which is each test's control: a test holding at a dropped point
+fails waiting for its hold, and with `-drop server.shutdown` the test that stops a held server
+fails at its own deadline, since the stop then waits for the parked goroutine. A name no hook of
+that version reports is refused before anything is built, so a mistyped point cannot fail a test
+on a compile error. It fails, naming the package, when a package declares no `TestForcedOrder`
+test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL`
+line).
+`-timeout <duration>` replaces go test's 10-minute `-timeout`, and an empty value is refused;
+`GO_TEST_TIMEOUT` does the same where the flag is not given, but a CI step gives the flag, since a
+`GO*` name in a step's env leaves its job's go commands unreduced. `forced-order.test.sh` holds
+it to six of those refusals (a package whose tests all skip, a `-drop` name that is no point, an
+empty `-server`, an empty `-C`, an empty `-timeout`, a module that replaces nats-server), with the
+fixture package `internal/testnats/hooktest/skiponly`.
+`ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
+the version the workspace links, on `./internal/testnats/hooktest/`, `./internal/bus/`,
+`./consumernames/` and `./cmd/listener/` with `-timeout 25m`, since every session row runs on one
+copy, an R1 cluster and R3; and with `-server 2.10.29` on `./internal/testnats/hooktest/` and
+`./consumernames/` alone, since the session consumers and the listener refuse 2.10.29 and their
+rows would all skip there. Its `daemon-go` job runs it with `-C packages/daemon` and no
+`-server`. So when `go.mod` moves to a nats-server with no hooks, both unversioned steps fail
+until the hooks are ported. Each job counts each step's timeout in its time budget.
 
 ## aws-moto-check.sh
 

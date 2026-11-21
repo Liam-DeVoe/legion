@@ -17,6 +17,15 @@
 // Replace replaces and Delete deletes, and a current the server no longer holds is created
 // again at a start the record proves safe, or refused (ErrNoSafeStart).
 //
+// Every record carries the key it belongs to (Record.Key, StoreState.Key), which a store's write
+// sets, and a store reads a value strictly: one JSON object of the record's fields and nothing
+// after it, whose key is the key it read and whose fields are well formed. Any other value is
+// ErrMalformedRecord for that key alone, and ErrMalformedSentinel under the sentinel's key, which
+// is never a missing sentinel (ErrNoSentinel, an absent one): any principal holding a JetStream API
+// grant can have the server store its answer under any key of the bucket through a request's reply
+// subject, and one holding a direct get can copy another key's message there whole, so no value is
+// read as a record on its shape alone.
+//
 // The protocol runs only in the fresh mode (ModeFresh), which a process reads once at its start
 // from ModeEnvVar (ParseMode). The fixed mode, the default, is the family's own code before this
 // package, with its fixed names, unchanged. In the fresh mode every call is refused until the

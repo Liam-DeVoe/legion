@@ -8,6 +8,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -126,7 +128,7 @@ func startDispatchGrantHub(t *testing.T) *dispatchGrantHub {
 		SeedFile:       write("service.seed", keys.ServiceSeed),
 		IssuerSeedFile: write("issuer.seed", keys.IssuerSeed),
 		XKeySeedFile:   write("xkey.seed", keys.XKeySeed),
-		Services:       []natscallout.ServiceEntry{{Kind: natscallout.KindDispatch, MachineID: machine, Account: account, AllProjects: true}},
+		Services:       []config.NATSService{{Kind: config.NATSDispatch, MachineID: machine, Account: account, AllProjects: true}},
 	}, natscallout.Deps{ServiceToken: func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
 		if raw != "dispatch-token" {
 			return "", false, time.Time{}, time.Time{}, errors.New("the token did not verify")
@@ -185,8 +187,8 @@ func TestTwoWritersOnDispatchsGrantRaceOnTheListenersRecord(t *testing.T) {
 	hub := startDispatchGrantHub(t)
 	ctx := t.Context()
 	key := consumernames.DurableKey(bus.ListenerDurable(hub.machine))
-	first := consumernames.NewKVStore(consumernames.SessionBucket, consumernames.ConnRequester{Conn: hub.connect(t, "dispatch")})
-	second := consumernames.NewKVStore(consumernames.SessionBucket, consumernames.ConnRequester{Conn: hub.connect(t, "dispatch")})
+	first := consumernames.NewKVStore(consumernames.ConnRequester{Conn: hub.connect(t, "dispatch")})
+	second := consumernames.NewKVStore(consumernames.ConnRequester{Conn: hub.connect(t, "dispatch")})
 	if _, err := first.Write(ctx, key, consumernames.Record{Start: 1}, 0); err != nil {
 		t.Fatalf("the first write on Dispatch's grant: %v", err)
 	}
@@ -223,7 +225,12 @@ func TestTwoWritersOnDispatchsGrantRaceOnTheListenersRecord(t *testing.T) {
 		t.Fatalf("a write of another machine's key on Dispatch's grant = %v, want it refused", err)
 	}
 
-	// Control: kvs.Create over a deleted key, on the admin's full grant and on Dispatch's.
+	// Control: kvs.Create over a deleted key, on the admin's full grant and on Dispatch's, each
+	// writing a well-formed record of the key, so only the grant can refuse it.
+	record, err := json.Marshal(consumernames.Record{Key: key})
+	if err != nil {
+		t.Fatal(err)
+	}
 	adminJS, err := jetstream.New(hub.admin)
 	if err != nil {
 		t.Fatal(err)
@@ -235,7 +242,7 @@ func TestTwoWritersOnDispatchsGrantRaceOnTheListenersRecord(t *testing.T) {
 	if err := adminKV.Delete(ctx, key); err != nil {
 		t.Fatalf("delete the record: %v", err)
 	}
-	if _, err := adminKV.Create(ctx, key, []byte("{}")); err != nil {
+	if _, err := adminKV.Create(ctx, key, record); err != nil {
 		t.Fatalf("control: kvs.Create over a deleted key on a full grant = %v, want the key recreated", err)
 	}
 	if err := adminKV.Delete(ctx, key); err != nil {
@@ -251,7 +258,7 @@ func TestTwoWritersOnDispatchsGrantRaceOnTheListenersRecord(t *testing.T) {
 	}
 	createCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := kv.Create(createCtx, key, []byte("{}")); err == nil {
+	if _, err := kv.Create(createCtx, key, record); err == nil {
 		t.Fatal("kvs.Create over a deleted key on Dispatch's grant recreated it: its fallback read was not refused")
 	}
 	if _, _, err := first.Read(ctx, key); !errors.Is(err, consumernames.ErrRecordDeleted) {

@@ -56,7 +56,7 @@ func TestAConsumerCallSentWhileDispatchsConnectionIsCutNeverReachesTheServer(t *
 		t.Fatal("the fixed intake's guard refused a store with no marker")
 	}
 	writeCutover(t, pool, consumernames.CutoverDone)
-	state, err := consumernames.NewPGStore(pool).State(ctx)
+	state, err := dispatchRecords(t, pool).State(ctx)
 	if err != nil || consumernames.Admit(state) != nil {
 		t.Fatalf("the fresh gate did not admit the cutover done: %+v, %v", state, err)
 	}

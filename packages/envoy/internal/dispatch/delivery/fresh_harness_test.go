@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/bus/bustest"
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -118,7 +119,7 @@ func (h *freshHub) startService(t *testing.T) {
 		SeedFile:       h.write(t, "service.seed", h.keys.ServiceSeed),
 		IssuerSeedFile: h.write(t, "issuer.seed", h.keys.IssuerSeed),
 		XKeySeedFile:   h.write(t, "xkey.seed", h.keys.XKeySeed),
-		Services:       []natscallout.ServiceEntry{{Kind: natscallout.KindDispatch, MachineID: freshMachineID, Account: dispatchAccount, AllProjects: true}},
+		Services:       []config.NATSService{{Kind: config.NATSDispatch, MachineID: freshMachineID, Account: dispatchAccount, AllProjects: true}},
 	}
 	deps := natscallout.Deps{ServiceToken: func(_ context.Context, raw string) (string, bool, time.Time, time.Time, error) {
 		if raw != "dispatch-token" {
@@ -305,7 +306,7 @@ func startDurableProcess(t *testing.T, hub *freshHub, pool *store.Pool, kind dur
 		held.guardFixedNames(second.Pool, process.guard)
 	}
 	if mode == freshNames {
-		process.store = &cuttableStore{inner: consumernames.NewPGStore(second.Pool)}
+		process.store = &cuttableStore{inner: dispatchRecords(t, second.Pool)}
 		held.nameFreshly(process.store, hub.connect, nil)
 		held.freshHook = func(point, name string) error {
 			if step := process.step.Load(); step != nil {
@@ -365,7 +366,7 @@ func seedPreviousHolder(t *testing.T, hub *freshHub, pool *store.Pool, kind dura
 	if _, err := js.AddConsumer(bus.Stream, &config); err != nil {
 		t.Fatalf("create the gone holder's consumer %s: %v", name, err)
 	}
-	records := consumernames.NewPGStore(pool)
+	records := dispatchRecords(t, pool)
 	record, revision, err := records.Read(t.Context(), kind.logical)
 	if err != nil {
 		t.Fatalf("read %s's record: %v", kind.logical, err)
@@ -529,24 +530,38 @@ func (s *cuttableStore) Write(ctx context.Context, logical string, record consum
 	return s.inner.Write(ctx, logical, record, revision)
 }
 
-// writeCutover writes the selection table's sentinel with the cutover marker cutover, as the
-// cutover's convert writes it ("done") or the rollback's restore ("rolled_back").
+// dispatchRecords is Dispatch's selection store on db, the family every row of the rig's is in. A
+// store the library refuses to make fails the row.
+func dispatchRecords(t testing.TB, db consumernames.PGQuerier) *consumernames.PGStore {
+	t.Helper()
+	records, err := consumernames.NewPGStore(consumernames.DispatchFamily, db)
+	if err != nil {
+		t.Fatalf("make Dispatch's selection store: %v", err)
+	}
+	return records
+}
+
+// dispatchSentinelKey is the key of Dispatch's sentinel row.
+var dispatchSentinelKey = consumernames.PGSentinelKey(consumernames.DispatchFamily)
+
+// writeCutover writes Dispatch's sentinel with the cutover marker cutover, as the cutover's
+// convert writes it ("done") or the rollback's restore ("rolled_back").
 func writeCutover(t *testing.T, pool *store.Pool, cutover string) {
 	t.Helper()
-	records := consumernames.NewPGStore(pool)
 	revision, err := sentinelRevision(t.Context(), pool)
 	if err != nil {
 		t.Fatalf("read the sentinel: %v", err)
 	}
-	if _, err := records.WriteSentinel(t.Context(), consumernames.StoreState{Cutover: cutover}, revision); err != nil {
+	state := consumernames.StoreState{Family: consumernames.DispatchFamily, Cutover: cutover}
+	if _, err := dispatchRecords(t, pool).WriteSentinel(t.Context(), state, revision); err != nil {
 		t.Fatalf("write the sentinel %q: %v", cutover, err)
 	}
 }
 
-// sentinelRevision is the sentinel row's revision, 0 when there is none.
+// sentinelRevision is Dispatch's sentinel row's revision, 0 when there is none.
 func sentinelRevision(ctx context.Context, pool *store.Pool) (uint64, error) {
 	var revision uint64
-	err := pool.QueryRow(ctx, `select revision from intake_consumers where logical = $1`, consumernames.PGSentinelKey).Scan(&revision)
+	err := pool.QueryRow(ctx, `select revision from intake_consumers where logical = $1`, dispatchSentinelKey).Scan(&revision)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, nil
 	}
@@ -557,7 +572,7 @@ func sentinelRevision(ctx context.Context, pool *store.Pool) (uint64, error) {
 // leaves a durable it found no consumer of, with start saved (0 for none).
 func writeSelectionRow(t *testing.T, pool *store.Pool, logical string, start uint64) {
 	t.Helper()
-	if _, err := consumernames.NewPGStore(pool).Write(t.Context(), logical, consumernames.Record{Start: start}, 0); err != nil {
+	if _, err := dispatchRecords(t, pool).Write(t.Context(), logical, consumernames.Record{Start: start}, 0); err != nil {
 		t.Fatalf("write %s's selection row: %v", logical, err)
 	}
 }
@@ -574,7 +589,7 @@ func readyForFresh(t *testing.T, pool *store.Pool) {
 // currentName is the physical name logical's durable delivers from: the record's current.
 func currentName(t *testing.T, pool *store.Pool, logical string) string {
 	t.Helper()
-	record, _, err := consumernames.NewPGStore(pool).Read(t.Context(), logical)
+	record, _, err := dispatchRecords(t, pool).Read(t.Context(), logical)
 	if err != nil {
 		return ""
 	}
@@ -584,7 +599,7 @@ func currentName(t *testing.T, pool *store.Pool, logical string) string {
 // selectionRecord is logical's record, for a row's failure message and its checks.
 func selectionRecord(t *testing.T, pool *store.Pool, logical string) consumernames.Record {
 	t.Helper()
-	record, _, err := consumernames.NewPGStore(pool).Read(t.Context(), logical)
+	record, _, err := dispatchRecords(t, pool).Read(t.Context(), logical)
 	if err != nil {
 		t.Fatalf("read %s's selection record: %v", logical, err)
 	}

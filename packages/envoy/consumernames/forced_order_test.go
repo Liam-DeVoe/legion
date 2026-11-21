@@ -178,7 +178,7 @@ func reconnectLiveStore(t *testing.T, uri string) *liveStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &liveStore{conn: conn, js: js, store: NewKVStore(SessionBucket, ConnRequester{conn}), family: jsFamily{js}}
+	return &liveStore{conn: conn, js: js, store: NewKVStore(ConnRequester{conn}), family: jsFamily{js}}
 }
 
 func requireEvery(t *testing.T, got, want []uint64, what string) {

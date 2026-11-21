@@ -26,6 +26,8 @@ func TestLoadReadsTheConsumerNamingMode(t *testing.T) {
 		{value: "fresh", want: consumernames.ModeFresh},
 		{value: "FRESH", refused: true},
 		{value: "auto", refused: true},
+		{value: " fresh", refused: true},
+		{value: "fixed\n", refused: true},
 	} {
 		t.Run("value "+test.value, func(t *testing.T) {
 			t.Setenv("ENVOY_MACHINE_ID", "test-machine")
@@ -40,6 +42,53 @@ func TestLoadReadsTheConsumerNamingMode(t *testing.T) {
 			}
 			if err != nil || service.ConsumerNames != test.want {
 				t.Fatalf("Load with %s=%q = %q, %v; want %q", consumernames.ModeEnvVar, test.value, service.ConsumerNames, err, test.want)
+			}
+		})
+	}
+}
+
+// ENVOY_LISTENER_ROLE says whether the listener is a host's, connecting as the NATS user that
+// host's sessions share (natsgrant.Host): unset is not, host is, and any other value refuses the
+// start, naming the variable and the value. A host listener runs fixed names for good, so the
+// fresh naming mode is refused beside it, naming both variables.
+func TestLoadReadsTheListenerRole(t *testing.T) {
+	for _, test := range []struct {
+		role, names string
+		host        bool
+		refused     []string
+	}{
+		{role: "", host: false},
+		{role: "host", host: true},
+		{role: "host", names: "fixed", host: true},
+		{role: "", names: "fresh", host: false},
+		{role: "Host", refused: []string{"ENVOY_LISTENER_ROLE", `"Host"`}},
+		{role: "hub", refused: []string{"ENVOY_LISTENER_ROLE", `"hub"`}},
+		// The role is read as exactly as the mode: a padded value, or one of spaces alone, is no role
+		// a deployment wrote on purpose.
+		{role: " host", refused: []string{"ENVOY_LISTENER_ROLE", `" host"`}},
+		{role: "host\n", refused: []string{"ENVOY_LISTENER_ROLE", `"host\n"`}},
+		{role: " ", refused: []string{"ENVOY_LISTENER_ROLE", `" "`}},
+		{role: "host", names: "fresh", refused: []string{"ENVOY_LISTENER_ROLE=host", consumernames.ModeEnvVar + "=fresh"}},
+	} {
+		t.Run(fmt.Sprintf("role %q names %q", test.role, test.names), func(t *testing.T) {
+			t.Setenv("ENVOY_MACHINE_ID", "test-machine")
+			t.Setenv("NATS_URLS", "nats://127.0.0.1:4222")
+			t.Setenv("ENVOY_LISTENER_ROLE", test.role)
+			t.Setenv(consumernames.ModeEnvVar, test.names)
+			service, err := Load(9020)
+			if test.refused != nil {
+				if err == nil {
+					t.Fatalf("Load = %+v; want a refusal naming %v", service, test.refused)
+				}
+				for _, part := range test.refused {
+					if !strings.Contains(err.Error(), part) {
+						t.Fatalf("Load's refusal %q does not name %s", err, part)
+					}
+				}
+				return
+			}
+			if err != nil || service.HostListener != test.host {
+				t.Fatalf("Load = host listener %v, %v; want %v", service.HostListener, err, test.host)
 			}
 		})
 	}

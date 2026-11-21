@@ -24,9 +24,9 @@ const (
 	ModeFresh Mode = "fresh"
 )
 
-// ParseMode is the mode value names: ModeFixed for "" (the setting unset) and for "fixed",
-// ModeFresh for "fresh", and an error naming ModeEnvVar and the value for anything else, on which
-// a process refuses to start.
+// ParseMode is the mode value names, read exactly: ModeFixed for "" (the setting unset) and for
+// "fixed", ModeFresh for "fresh", and an error naming ModeEnvVar and the value for anything else, a
+// padded value or another case among it, on which a process refuses to start.
 func ParseMode(value string) (Mode, error) {
 	switch Mode(value) {
 	case "", ModeFixed:

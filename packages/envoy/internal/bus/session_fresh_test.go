@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -177,7 +178,7 @@ func TestTheFreshModeCreatesAFreshNameAtEachCreation(t *testing.T) {
 		t.Fatalf("a second Ensure = %+v, %v; want %s kept", again, err, created.Name)
 	}
 
-	pull, err := consumers.Pull(ctx, created.Name)
+	pull, err := consumers.Pull(ctx, session, created.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +202,7 @@ func TestTheFreshModeCreatesAFreshNameAtEachCreation(t *testing.T) {
 		t.Fatalf("the predecessor %s: %v, want it deleted", created.Name, err)
 	}
 
-	pull = pullSessionNamed(t, consumers, restarted.Name)
+	pull = pullSessionNamed(t, consumers, session, restarted.Name)
 	msg := next(t, pull)
 	if err := msg.Ack(); err != nil {
 		t.Fatal(err)
@@ -225,16 +226,16 @@ func TestTheFreshModeCreatesAFreshNameAtEachCreation(t *testing.T) {
 	if !back.Created || back.Name == created.Name || back.Name == restarted.Name || back.StartSeq != first+1 {
 		t.Fatalf("Ensure after the delete = %+v, want a third fresh name at the record's start %d", back, first+1)
 	}
-	pull = pullSessionNamed(t, consumers, back.Name)
+	pull = pullSessionNamed(t, consumers, session, back.Name)
 	if msg := next(t, pull); msg.StreamSeq != second {
 		t.Fatalf("the consumer after the delete first delivered %d, want %d", msg.StreamSeq, second)
 	}
 }
 
-// pullSessionNamed starts a pull of consumer name, stopped when the test ends.
-func pullSessionNamed(t *testing.T, consumers *SessionConsumers, name string) *SessionPull {
+// pullSessionNamed starts a pull of sessionID's consumer name, stopped when the test ends.
+func pullSessionNamed(t *testing.T, consumers *SessionConsumers, sessionID, name string) *SessionPull {
 	t.Helper()
-	pull, err := consumers.Pull(context.Background(), name)
+	pull, err := consumers.Pull(context.Background(), sessionID, name)
 	if err != nil {
 		t.Fatalf("pull %s: %v", name, err)
 	}
@@ -358,7 +359,7 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 			t.Fatal(err)
 		}
 		for range 3 {
-			pull := pullSessionNamed(t, consumers, start.Name)
+			pull := pullSessionNamed(t, consumers, session, start.Name)
 			next(t, pull)
 			pull.Stop()
 			waitForAckPending(t, consumers, session, 1)
@@ -367,7 +368,7 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 			}
 		}
 		// A create that faults before it is sent, and the recovery that follows.
-		pull := pullSessionNamed(t, consumers, start.Name)
+		pull := pullSessionNamed(t, consumers, session, start.Name)
 		next(t, pull)
 		pull.Stop()
 		waitForAckPending(t, consumers, session, 1)
@@ -426,22 +427,38 @@ func TestTheFreshModeRefusesALongSessionIDAsTheFixedNameWasRefused(t *testing.T)
 	}
 }
 
-// A fixed-mode start refuses a selection bucket the cutover converted, naming the setting, and
-// starts over every store the cutover did not convert: no bucket, a bucket with no sentinel, no
-// marker, or a rollback's marker. The rows that start are the controls: the check refuses only on
-// a converted store.
+// A fixed-mode start refuses a selection bucket the cutover converted, naming the setting; starts
+// over a store the cutover did not convert (no bucket, no marker, a rollback's marker); and over a
+// bucket whose marker it cannot read - one that exists with no sentinel, or with a value under the
+// sentinel's key that is not the sentinel (the server's STREAM.INFO answer stored there through a
+// request's reply subject, another key's record) - answers an error that is no conversion, which
+// the listener reads again rather than run today's names unread. The rows that start are the
+// controls of the refusal; each unread row's control is today's reading of the same bytes, a
+// lenient decode that takes them for a sentinel with no marker, on which the start went on.
 func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		state   *consumernames.StoreState
 		bucket  bool
+		raw     func(t *testing.T, conn *natsgo.Conn)
 		refused bool
+		unread  bool
 	}{
 		{name: "converted", bucket: true, state: &consumernames.StoreState{Cutover: consumernames.CutoverDone, Boundary: 1}, refused: true},
 		{name: "no bucket"},
-		{name: "no sentinel", bucket: true},
 		{name: "not converted", bucket: true, state: &consumernames.StoreState{Boundary: 1}},
 		{name: "rolled back", bucket: true, state: &consumernames.StoreState{Cutover: consumernames.CutoverRolledBack, Boundary: 1}},
+		{name: "no sentinel", bucket: true, unread: true},
+		{name: "a STREAM.INFO answer as the sentinel", bucket: true, unread: true, raw: func(t *testing.T, conn *natsgo.Conn) {
+			if err := conn.PublishRequest("$JS.API.STREAM.INFO.KV_"+consumernames.SessionBucket, "$KV."+consumernames.SessionBucket+"."+consumernames.SentinelKey, nil); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "another key's record as the sentinel", bucket: true, unread: true, raw: func(t *testing.T, conn *natsgo.Conn) {
+			if err := conn.Publish("$KV."+consumernames.SessionBucket+"."+consumernames.SentinelKey, []byte(`{"key":"ses_other","current":"session~A"}`)); err != nil {
+				t.Fatal(err)
+			}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, consumers := sessionConsumersOnStream(t)
@@ -455,21 +472,68 @@ func TestTheFixedModeRefusesAStoreTheCutoverConverted(t *testing.T) {
 				}
 			}
 			if tc.state != nil {
-				if _, err := consumernames.NewKVStore(consumernames.SessionBucket, consumernames.ConnRequester{Conn: conn}).WriteSentinel(ctx, *tc.state, 0); err != nil {
+				state := *tc.state
+				state.Family = consumernames.SessionFamily
+				if _, err := consumernames.NewKVStore(consumernames.ConnRequester{Conn: conn}).WriteSentinel(ctx, state, 0); err != nil {
 					t.Fatal(err)
 				}
 			}
-			err := consumers.RefuseConvertedStore(ctx)
-			if tc.refused {
-				if err == nil || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
-					t.Fatalf("RefuseConvertedStore over a converted bucket = %v; want a refusal naming %s", err, consumernames.ModeEnvVar)
+			if tc.raw != nil {
+				tc.raw(t, conn)
+				data := awaitSentinelValue(t, conn)
+				var lenient consumernames.StoreState
+				if err := json.Unmarshal(data, &lenient); err != nil || lenient.Cutover != "" {
+					t.Fatalf("control: today's reading of %s = %+v, %v; want a sentinel with no marker, on which the start went on", data, lenient, err)
 				}
-				return
 			}
-			if err != nil {
-				t.Fatalf("RefuseConvertedStore over a store the cutover did not convert = %v; want the start to go on", err)
+			err := consumers.ReadMarker(ctx)
+			switch {
+			case tc.refused:
+				if err == nil || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
+					t.Fatalf("ReadMarker over a converted bucket = %v; want a refusal naming %s", err, consumernames.ModeEnvVar)
+				}
+			case tc.unread:
+				// No sentinel is the missing one; a value under its key that is no sentinel is malformed,
+				// never a missing sentinel.
+				unread := consumernames.ErrNoSentinel
+				if tc.raw != nil {
+					unread = consumernames.ErrMalformedSentinel
+				}
+				if err == nil || errors.Is(err, ErrConvertedStore) || !errors.Is(err, unread) {
+					t.Fatalf("ReadMarker over a bucket whose marker it cannot read = %v; want %v, no conversion, so the start reads again", err, unread)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("ReadMarker over a store the cutover did not convert = %v; want the start to go on", err)
+				}
 			}
 		})
+	}
+}
+
+// awaitSentinelValue waits until the selection bucket's sentinel key holds a value, and returns it.
+func awaitSentinelValue(t *testing.T, conn *natsgo.Conn) []byte {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	js, err := jetstream.New(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.KeyValue(ctx, consumernames.SessionBucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		entry, err := kv.Get(ctx, consumernames.SentinelKey)
+		if err == nil {
+			return entry.Value()
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("the sentinel key never held the row's value: %v", err)
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }
 
@@ -553,7 +617,7 @@ func TestAFixedModeStartRefusedTheBucketsReadIsNoConversion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(granted.Close)
-	if err := granted.RefuseConvertedStore(ctx); err == nil || errors.Is(err, ErrConsumerNotGranted) || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
+	if err := granted.ReadMarker(ctx); err == nil || errors.Is(err, ErrConsumerNotGranted) || !strings.Contains(err.Error(), consumernames.ModeEnvVar) {
 		t.Fatalf("a granted read of a converted bucket = %v, want the start refused naming %s", err, consumernames.ModeEnvVar)
 	}
 
@@ -563,7 +627,7 @@ func TestAFixedModeStartRefusedTheBucketsReadIsNoConversion(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(refused.Close)
-	if err := refused.RefuseConvertedStore(ctx); !errors.Is(err, ErrConsumerNotGranted) || !errors.Is(err, ErrPublishDenied) {
+	if err := refused.ReadMarker(ctx); !errors.Is(err, ErrConsumerNotGranted) || !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a read the grant refuses = %v, want ErrConsumerNotGranted, on which the listener warns and starts", err)
 	}
 }
@@ -579,8 +643,8 @@ func TestAFixedModeReconnectReadsTheMarkerAgainAndStopsOnAConversion(t *testing.
 	}
 	t.Cleanup(consumers.Close)
 	converted := make(chan error, 4)
-	consumers.WatchConversion(func(err error) { converted <- err })
-	// runs counts the reconnect hook runs, each after the conversion watch's hook of the same run.
+	consumers.GateOnMarker(func(err error) { converted <- err })
+	// runs counts the reconnect hook runs, each after the marker gate's hook of the same run.
 	runs := make(chan struct{}, 16)
 	consumers.client.AddReconnectHook(func(context.Context, *natsgo.Conn) error {
 		runs <- struct{}{}

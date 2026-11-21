@@ -59,8 +59,13 @@ function apiErrorCode(error: unknown): number | undefined {
   return (error as Partial<NatsError> | undefined)?.api_error?.err_code;
 }
 
-/** The sentinel the session bucket is made with (consumernames.StoreState). */
+/**
+ * The sentinel the session bucket is made with (consumernames.StoreState), keyed by its own key and
+ * naming the session family.
+ */
 export interface SessionBucketState {
+  key: typeof sentinelKey;
+  family: "session";
   cutover: "done";
   boundary: number;
 }
@@ -70,7 +75,9 @@ export interface SessionBucketState {
  * (consumernames.CreateSessionBucket): it waits up to `seconds` for `stream`, the stream the
  * session consumers read, to exist, reads its first sequence, then creates the bucket with one
  * value a key, on file storage, at the stream's own replica count, and writes the sentinel
- * {"cutover":"done","boundary":B} with B = max(1, that first sequence) as the key's first write.
+ * {"key":"envoy.bucket","family":"session","cutover":"done","boundary":B} with B = max(1, that
+ * first sequence) as the key's first write. The listener reads only a sentinel that names its own
+ * key and a family.
  * A bucket that exists already is refused, as create-bucket refuses it. Answers the sentinel.
  */
 export async function createSessionBucket(
@@ -92,6 +99,8 @@ export async function createSessionBucket(
     }
   }
   const state: SessionBucketState = {
+    key: sentinelKey,
+    family: "session",
     cutover: "done",
     boundary: Math.max(1, info.state.first_seq),
   };
@@ -104,8 +113,7 @@ export async function createSessionBucket(
   );
   if (exists) throw new Error(`the bucket ${sessionBucket} exists already`);
   const kv = await nc.jetstream().views.kv(sessionBucket, {
-    description:
-      "Envoy session consumers' selection records: each session's current consumer name",
+    description: "Envoy session consumers' selection records: each session's current consumer name",
     history: 1,
     storage: StorageType.File,
     replicas: info.config.num_replicas,
@@ -121,7 +129,8 @@ export async function createSessionBucket(
  * leader). "" when the record names none, as after the session's clean stop, which leaves the
  * record with no current, and when the bucket holds no record of the session at all. A key whose
  * last message is a delete or purge marker is thrown, as the listener refuses such a session, and
- * so is a bucket that does not exist.
+ * so are a value that is not the session's own record (its `key` is another) and a bucket that
+ * does not exist.
  */
 export async function readCurrent(nc: NatsConnection, sessionId: string): Promise<string> {
   const jsm = await nc.jetstreamManager();
@@ -139,7 +148,12 @@ export async function readCurrent(nc: NatsConnection, sessionId: string): Promis
     throw new Error(
       `the selection record of ${sessionId} in ${sessionBucket} is gone: its last message is a ${operation} marker`
     );
-  const current = message.json<{ current?: unknown }>().current ?? "";
+  const record = message.json<{ key?: unknown; current?: unknown }>();
+  if (record.key !== sessionId)
+    throw new Error(
+      `the key ${sessionId} of ${sessionBucket} holds no record of its own: its key is ${JSON.stringify(record.key)}`
+    );
+  const current = record.current ?? "";
   if (typeof current !== "string")
     throw new Error(
       `the selection record of ${sessionId} in ${sessionBucket} holds a current that is no name: ${JSON.stringify(current)}`
@@ -212,41 +226,24 @@ export async function readLast(
   }
 }
 
-async function main(): Promise<void> {
-  const [command, url, stream, argument, extra] = process.argv.slice(2);
-  // current takes one operand, the session id, in the place where the other commands take a stream.
-  if (!command || !url || !stream || (command !== "current" && !argument)) {
-    refuse(
-      "usage: last|consumers|delete|session-bucket <nats-url> <stream> <subject-filter|name-prefix|name|seconds> [seconds], or current <nats-url> <session-id>"
-    );
-  }
+const usage =
+  "usage: last|consumers|delete|session-bucket <nats-url> <stream> <subject-filter|name-prefix|name|seconds> [seconds], or current <nats-url> <session-id>";
 
-  // Production NATS: the operator's nkey user, when the server requires one, as a command run from
-  // the operator's shell resolves it (operator-nats-seed.ts).
-  let seed: NatsSeed | undefined;
-  try {
-    seed = operatorNatsSeed(url, "<nats-url>", process.env, process.cwd());
-  } catch (error) {
-    refuse(messageFor(error));
-  }
-  // A failed connect is named, and nats.js's own error left uncaught would print the URL it was
-  // given, a credential in it included (a malformed URL's `input`): the line names the server by
-  // its argument and the reason as a log may (natsDialFailure), and the error goes no further.
-  let nc: NatsConnection;
-  try {
-    nc = await connect({
-      servers: url,
-      timeout: 10_000,
-      name: "legion-e2e-nats-stream",
-      ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  // current takes the session id alone, where every other command takes a stream and an argument,
+  // so its operands are read on their own and no name holds two kinds of value.
+  if (argv[0] === "current") {
+    const [, url, sessionId] = argv;
+    if (!url || !sessionId) refuse(usage);
+    await withConnection(url, async (nc) => {
+      process.stdout.write(`${await readCurrent(nc, sessionId)}\n`);
     });
-  } catch (error) {
-    process.stderr.write(
-      `nats-stream: ${natsDialFailure(natsServersForLog("<nats-url>", 1), error)}\n`
-    );
-    process.exit(1);
+    return;
   }
-  try {
+  const [command, url, stream, argument, extra] = argv;
+  if (!command || !url || !stream || !argument) refuse(usage);
+  await withConnection(url, async (nc) => {
     if (command === "last") {
       const seconds = Number(extra ?? "10");
       if (!Number.isFinite(seconds) || seconds <= 0)
@@ -288,11 +285,45 @@ async function main(): Promise<void> {
         refuse(`seconds must be a positive number, not ${argument}`);
       const state = await createSessionBucket(nc, stream, seconds);
       process.stdout.write(`${JSON.stringify(state)}\n`);
-    } else if (command === "current") {
-      process.stdout.write(`${await readCurrent(nc, stream)}\n`);
     } else {
       refuse(`unknown command ${command}`);
     }
+  });
+}
+
+// withConnection connects to url as the operator's nkey user when the server requires one, runs
+// run on the connection and closes it.
+async function withConnection(
+  url: string,
+  run: (nc: NatsConnection) => Promise<void>
+): Promise<void> {
+  // Production NATS: the operator's nkey user, when the server requires one, as a command run from
+  // the operator's shell resolves it (operator-nats-seed.ts).
+  let seed: NatsSeed | undefined;
+  try {
+    seed = operatorNatsSeed(url, "<nats-url>", process.env, process.cwd());
+  } catch (error) {
+    refuse(messageFor(error));
+  }
+  // A failed connect is named, and nats.js's own error left uncaught would print the URL it was
+  // given, a credential in it included (a malformed URL's `input`): the line names the server by
+  // its argument and the reason as a log may (natsDialFailure), and the error goes no further.
+  let nc: NatsConnection;
+  try {
+    nc = await connect({
+      servers: url,
+      timeout: 10_000,
+      name: "legion-e2e-nats-stream",
+      ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
+    });
+  } catch (error) {
+    process.stderr.write(
+      `nats-stream: ${natsDialFailure(natsServersForLog("<nats-url>", 1), error)}\n`
+    );
+    process.exit(1);
+  }
+  try {
+    await run(nc);
   } finally {
     await nc.close();
   }

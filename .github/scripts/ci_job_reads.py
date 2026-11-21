@@ -876,11 +876,15 @@ RULES = {
     # nobody. It is a file of its own under `//go:build !race` now, so the text-check job runs it
     # and this row is the declaration that holds that job's filter to what it reads.
     f"{ENVOY}/internal/dispatch/api/one_expression_guard_test.go": MODULE_SOURCES,
+    f"{ENVOY}/internal/dispatch/architecture/push_test.go": reads(
+        (f"{ENVOY}/scripts/fixtures/github/push.json", "internal/dispatch/architecture/push_test.go:490 os.ReadFile(pushFixture)")),
     f"{ENVOY}/internal/dispatch/delivery/counts_in_documents_test.go": reads(
         (f"{ENVOY}/cmd/dispatch/README.md",
          "internal/dispatch/delivery/counts_in_documents_test.go:22 docnumbers.Check under ../../../../.. "
          "(internal/docnumbers/docnumbers.go:63 os.ReadFile): the intake hold's lease, renewal and retry "
          "it states must equal the constants that decide them")),
+    f"{ENVOY}/internal/dispatch/delivery/intake_push_test.go": reads(
+        (f"{ENVOY}/scripts/fixtures/github/push.json", "internal/dispatch/delivery/intake_push_test.go:55 os.ReadFile(pushFixture)")),
     f"{ENVOY}/internal/dispatch/docs/approval_carry_test.go": reads((f"{FIX}/decision-blocks/*", "internal/dispatch/docs/approval_carry_test.go:26")),
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:518")),
@@ -1001,6 +1005,10 @@ RULES = {
     # infra/gcp/imports_test.go moved to infra/internal/textcheck/gcp_imports_test.go in this
     # change, and main's entry for the old path came with the forward merge; the guard's own
     # entry is under its new path below.
+    f"{INFRA}/gcp/dispatch_signin_domain_vectors_test.go": reads(
+        (f"{ENVOY}/cmd/dispatch/testdata/signin-domain-vectors.json",
+         "infra/gcp/dispatch_signin_domain_vectors_test.go:40 readDispatchDomainVectors os.ReadFile "
+         "../../cmd/dispatch/testdata/signin-domain-vectors.json")),
     f"{INFRA}/host/heldportwrapper/main_test.go": [
         run(ENVOY, ["./cmd/listener"], "infra/host/heldportwrapper/main_test.go:112 buildListener builds . in ../../../cmd/listener (root go.work)", mode="build")],
     f"{INFRA}/host/live_test.go": [run(INFRA, ["./cmd/pulumi-resource-envoy-infra"], "infra/host/live_test.go pulumitest.Plugin -> internal/pulumitest/pulumitest.go:170-171 go build", mode="build")],
@@ -1177,11 +1185,23 @@ FORCED_ORDER_HOOKS = f"{ENVOY}/internal/testnats/testdata/hooked/**"
 FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" '
                         "-run '^TestForcedOrder' \"$@\"")
 # The envoy steps: one on the nats-server the workspace links (no -server, so a go.mod that moves
-# to a version with no hooks fails the step), and one on 2.10.29.
+# to a version with no hooks fails the step), and one on 2.10.29, each with the packages it runs:
+# the hooks' own tests, the protocol's rows, and on the linked version alone the session consumers'
+# and the listener durable's, which refuse 2.10.29 and would all skip there.
 ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
-ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
+ENVOY_FORCED_ORDER_PKGS = {
+    "": ["./internal/testnats/hooktest/", "./internal/bus/", "./consumernames/", "./cmd/listener/"],
+    "2.10.29": ["./internal/testnats/hooktest/", "./consumernames/"],
+}
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
 DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
+# The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
+# forced-order.test.sh runs forced-order.sh in six cases, and the one run that gets as far as a
+# go test is over its fixture package, hooktest/skiponly, on the linked version; the other five
+# are refused before anything is built.
+FORCED_ORDER_TEST = f"{ENVOY}/scripts/forced-order.test.sh"
+ENVOY_FORCED_ORDER_TEST_STEP = "Test forced-order.sh's refusals"
+ENVOY_FORCED_ORDER_TEST_PKGS = ["./internal/testnats/hooktest/skiponly/"]
 
 
 def envoy_forced_order_step(server):
@@ -1380,14 +1400,31 @@ def hold_infra_race_unit_script():
 hold_infra_race_unit_script()
 
 
-# The three packages the test job's race step runs, and which its plain step therefore leaves out.
+# The five packages daemon-go's race step runs, and which its plain step therefore leaves out, each
+# for state its product code shares across goroutines. internal/daemon: the outbox's lane registry,
+# lease renewal and held clock, which share state with the intake's commit hooks and the API.
+# internal/sessionproxy, and internal/launcher, which wires it: the accept loop, copy pairs, pair
+# tracking and bounded drain. internal/intake: the consumers' goroutines (Run's, one per durable
+# consumer, and Lag's, one per consumer read) and the lock they take (Consumers.mu). Its consumers
+# share one handle on the notification stream, and nats.go's Info writes a handle's cached info
+# under no lock while Lag's read of the oldest waiting message (GetMsg) reads it, so each read of
+# the stream's info, DispatchTarget's and createConsumer's, goes through a handle of its own. That
+# race is what this list now guards: under the detector,
+# TestEachReadOfTheStreamsInfoBesideALagReadGoesThroughAHandleOfItsOwn fails when either read is
+# put back on the shared handle, and a run without the detector passes it.
+# internal/shimwire: the shim's two pumps, the goroutines internal/shim reads the daemon's stream
+# and the wrapped process's stdout on, share the dedupe's delivery record under Dedupe.mu, and a
+# Writer writes each frame whole under a lock of its own (Writer.mu). Under the detector,
+# TestTheDedupeIsSafeForTheShimsTwoPumps fails when the dedupe's lock is taken out, and a run
+# without the detector passes it.
 # One list: both step texts below are built from it, and check-ci-filters.sh fails when either step
-# in ci.yaml differs from the text built here, so the two steps cannot name different sets.
-# internal/record is not among them: its product code starts no goroutine and uses no sync, so the
-# detector has nothing of the package to find there. Its own tests do start goroutines, and the
-# cover the detector gave those is what this trade gives up. The plain step leaves out one more
+# in ci-job-daemon-go.yaml differs from the text built here, so the two steps cannot name different
+# sets. internal/record is not among them: its product code starts no goroutine and uses no sync,
+# so the detector has nothing of the package to find there. Its own tests do start goroutines, and
+# the cover the detector gave those is what this trade gives up. The plain step leaves out one more
 # package than the race step runs, the text checks, which are the text-check job's.
-DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/launcher"]
+DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/launcher", "internal/intake",
+                        "internal/shimwire"]
 # The job of ci-caches.yaml whose race build fills the cache the race step restores, and which
 # ci_workflow_rules.py's check_race_fill_packages holds to that list: a race build of any other
 # job of that file fills another family.
@@ -1547,7 +1584,7 @@ SUPERVISE_TABLE_PATTERN = f"'^({'|'.join(sorted(SUPERVISE_TABLE_TESTS))})$'"
 SUPERVISE_TABLE_SCRIPT = f"go test -count=1 -run {SUPERVISE_TABLE_PATTERN} ./{SUPERVISE_TABLE_PACKAGE}/"
 # The skip belongs to the step that would otherwise run these tests, so the two lists are held
 # together here rather than by a reader noticing: the plain step runs every package of the module but
-# the race step's three and the text checks, and this package moved into one of those while these
+# the race step's five and the text checks, and this package moved into one of those while these
 # tests stayed here would run them in that step too.
 if SUPERVISE_TABLE_PACKAGE in DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]:
     raise ValueError(f"the table pins are in {SUPERVISE_TABLE_PACKAGE}, which the plain step leaves out, so "
@@ -1638,11 +1675,11 @@ class RaceJob(NamedTuple):
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
-            "NATS credentials and the NATS auth service",
+            "NATS credentials, the NATS auth service and the sign-in code flow",
             "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
-                    RacePackage("natscred"), RacePackage("internal/cipher/natscallout"))),
+                    RacePackage("natscred"), RacePackage("internal/cipher/natscallout"), RacePackage("internal/oidc"))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
@@ -2570,6 +2607,8 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
         (".github/workflows/ci-job-typecheck.yaml", "check-ci-filters.test.sh runs its darwin vet step's own run text "
                                                     "over a module with a negated tag"),
+        (FORCED_ORDER, "check-ci-filters.test.sh reads its go flags, which must pass -tags odatrace, the one name "
+                       "beyond the toolchain's that go_build_tags.py leaves out of every vet"),
     ]),
     harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
         (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh's fixture function)"),
@@ -2609,12 +2648,12 @@ SCRIPT_TEST_READS = [read for gate_ in SCRIPT_TEST_GATES for read in gate_.reads
 # gate decides nothing until the job's own filter selects the job for the same change.
 GUIDE_LAYOUT_READS = reads(
     ("scripts/semantic-line-breaks.guides.test.ts", at("test", GUIDES_STEP)),
-    ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:9,16 spawns it"),
-    ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:35 runs the checker over GUIDES (:12)"),
-    ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:35 runs the checker over GUIDES (:12)"),
-    ("docs/kubernetes.md", "scripts/semantic-line-breaks.guides.test.ts:35 runs the checker over GUIDES (:12)"),
-    ("packages/envoy/AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:24-27 runs the checker over it"),
-    ("packages/envoy/cmd/dispatch/README.md", "scripts/semantic-line-breaks.guides.test.ts:24-27 runs the checker over it"),
+    ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:10,17 spawns it"),
+    ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
+    ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
+    ("docs/kubernetes.md", "scripts/semantic-line-breaks.guides.test.ts:36 runs the checker over GUIDES (:13)"),
+    ("packages/envoy/AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:25-28 runs the checker over it"),
+    ("packages/envoy/cmd/dispatch/README.md", "scripts/semantic-line-breaks.guides.test.ts:25-28 runs the checker over it"),
 )
 
 # docs-pages.yaml builds and publishes main's site in a workflow of its own (its header says why),
@@ -2630,8 +2669,8 @@ GATES = [
     ], reads=setup_go("typecheck", f"{DAEMON}/go.mod") + darwin_vet_reads("typecheck", DAEMON_DARWIN_VET, DAEMON)),
 
     # The Go daemon's own suite, in a job of its own (.github/workflows/ci-job-daemon-go.yaml):
-    # the plain step over every package of the module but the three concurrent ones and the text
-    # checks, the race step over those three, and the Stage 1 proof, which builds ./cmd/legion
+    # the plain step over every package of the module but the five concurrent ones and the text
+    # checks, the race step over those five, and the Stage 1 proof, which builds ./cmd/legion
     # and boots it. The filter is daemon_go_tests, the list that already stood for exactly this
     # closure while it was aliased into the test filter and gated nothing of its own. The tests
     # the race step does not run are the plugin-pack job's (PLUGIN_PACK_TESTS), whose gate is
@@ -2654,7 +2693,7 @@ GATES = [
         # it lists, the two skipped table pins' included: -skip leaves a test out of the run,
         # never out of the build, so the closure here is the step's whole closure. The Run names
         # the packages the step's own `grep -Ev` keeps (packages_kept over DAEMON_PLAIN_PATTERN),
-        # rather than the superset ./...: the race step's Run below claims the three packages
+        # rather than the superset ./...: the race step's Run below claims the five packages
         # this step leaves out, which are this job's own, while the text checks are the
         # text-check job's, and a Run saying ./... would keep what only their tests read -
         # docs/kubernetes.md - on this job's filter. Only they read it: the way back checks in
@@ -2667,12 +2706,12 @@ GATES = [
              "supervise table's two pure pins skipped by name", {}),
         ]),
         # The race step carries a -skip, which is no form check-ci-filters.sh reduces either, so
-        # its script is pinned too. What it compiles is every test file of the three packages,
+        # its script is pinned too. What it compiles is every test file of the five packages,
         # the skipped tests' included: -skip leaves a test out of the run, never out of the
         # build, so the closure here is the step's whole closure and only those tests' own reads
         # (the plugin-pack gate below) leave this job.
         pinned_step("daemon-go", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
-            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack tests "
+            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the five concurrent packages, the plugin-pack tests "
                                        "skipped by name", {"race": True}),
         ]),
         pinned_step("daemon-go", DAEMON_RACE_IMPOSSIBLE_STEP, DAEMON, DAEMON_RACE_IMPOSSIBLE_SCRIPT, [
@@ -2983,7 +3022,7 @@ GATES = [
         ("skills/**", "packages/pi-envoy/src/skills-guard.test.ts:43 stages them (the roots at :29-32); scripts/pi-plugin-prepack.sh:103 stages skills; extensions/envoy.ts's resolveSkillsDirectory"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-envoy/package.json:27 prepack ({at('pi-envoy', 'Pack pi-envoy')}); packages/pi-envoy/scripts/prepack.test.ts:85"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:97,100 write dist/THIRD_PARTY_NOTICES with it"),
-        ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:120-123"),
+        ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:144-149"),
         (f"{DAEMON}/internal/prompts/**/*.md", "packages/pi-envoy/src/skills-guard.test.ts:208-212 reads every .md of skillAndPromptRoots (:30-33)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-131 imports")
       + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
@@ -3498,9 +3537,12 @@ GATES = [
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race",
          runs=[race_step(RACE_JOBS["envoy-go-race"]), ceiling_run("envoy-go-race")]
-         + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, ENVOY_FORCED_ORDER_PKGS)
+         + [forced_order_run("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP, ENVOY, ENVOY_FORCED_ORDER_TEST_PKGS)]
+         + [forced_order_run("envoy-go-race", envoy_forced_order_step(server), ENVOY, ENVOY_FORCED_ORDER_PKGS[server])
             for server in ENVOY_FORCED_ORDER_SERVERS],
          reads=ceiling_reads("envoy-go-race")
+         + reads((FORCED_ORDER_TEST, f"{at('envoy-go-race', ENVOY_FORCED_ORDER_TEST_STEP)} runs it"))
+         + forced_order_reads("envoy-go-race", ENVOY_FORCED_ORDER_TEST_STEP)
          + [read for server in ENVOY_FORCED_ORDER_SERVERS
             for read in forced_order_reads("envoy-go-race", envoy_forced_order_step(server))]
          + setup_go("envoy-go-race", f"{ENVOY}/go.mod")),

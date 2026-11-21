@@ -5,15 +5,18 @@
 -- durable keeps its logical name, and every consumer created for it has a physical name of its
 -- own, <logical>~<generation>, created once and never again: nats-server can leave a deleted
 -- consumer's late state write in a new consumer of the same name, which then skips messages after
--- a restart. One row per logical name holds which physical name the intake delivers from, the
--- operation in flight, the start saved before anything is deleted, the last ack floor read, and
--- the retired names a check deletes.
+-- a restart. Each row belongs to one family's store, Dispatch's being consumernames.DispatchFamily
+-- ('dispatch'). A durable's row, keyed '<family>/<logical>' (consumernames.PGKey: here
+-- 'dispatch/delivery-events' and 'dispatch/delivery-jobs'), holds which physical name the intake
+-- delivers from, the operation in flight, the start saved before anything is deleted, the last ack
+-- floor read, and the retired names a check deletes.
 --
---   logical    the durable's logical name, or consumernames.PGSentinelKey ('envoy.sentinel') for
---              the store's own row, whose record is consumernames.StoreState: the cutover marker
---              the fresh mode refuses every consumer call until it reads 'done'. No logical name a
---              durable has holds a '.', so the sentinel's key is no durable's.
---   record     consumernames.Record (or StoreState) as JSON.
+--   logical    the row's key: a durable's '<family>/<logical>', or 'envoy.sentinel/<family>'
+--              (consumernames.PGSentinelKey) for the family's own row, whose record is
+--              consumernames.StoreState naming that family: the cutover marker the fresh mode
+--              refuses every consumer call until it reads 'done'. No family holds a '.', so no
+--              sentinel's key is a durable's.
+--   record     consumernames.Record (or StoreState) as JSON, carrying the row's key as its own.
 --   revision   the row's version, 1 at its insert and one more at each update: every write is
 --              conditional on the revision it read, so two processes' writes never pass each other.
 --

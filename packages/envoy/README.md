@@ -152,6 +152,67 @@ explicitly: it is used as given, and one already in use fails the run with
 `address already in use`. The session opens no port of its own. CI runs the
 driver as the `envoy-e2e-local` job of `.github/workflows/ci.yaml`.
 
+## The listener's session consumers
+
+Each registered session gets a JetStream consumer of its own on `ENVOY_NOTIFICATIONS`, and the
+listener binds a durable of its own. How they are named, and the record behind the fresh names,
+are in [`consumernames/README.md`](consumernames/README.md).
+
+- **Names.** In the fixed mode a session's consumer is `s-<session id>` and the listener's durable
+  is `listener-<machine id>`. In the fresh mode each creation gets a name never made before:
+  `session~<nuid>`, carrying the metadata `envoy.logical` and `envoy.session_id`, and
+  `listener-<machine id>~<nuid>`, carrying `envoy.logical`. Their records live in the KV bucket
+  `envoy_session_consumers`. The start's bind, the monitor's rebuild, the probe, the bound wait and
+  `/healthz` all read the durable through its record. The sweep lists only `session~` names that
+  carry `envoy.session_id`.
+- **The mode setting.** `ENVOY_CONSUMER_NAMES` is `fixed` (also when unset) or `fresh`, read once
+  at the start and exactly: any other value, a padded one among them, refuses the start. The start
+  logs `session consumer naming mode` with `consumer_names` and `streams_operator_made` (the raw
+  `ENVOY_STREAMS_OPERATOR_MADE`, null when unset) before its first NATS connect.
+- **A host's listener.** `ENVOY_LISTENER_ROLE=host`, read exactly, marks a listener that connects
+  as the NATS user its host's sessions share (`natsgrant.Host`). It runs fixed names for good, reads
+  no cutover marker, and refuses `ENVOY_CONSUMER_NAMES=fresh`. The `host:Listener` component
+  renders the role only under its input `hostUser: true`.
+- **The fixed mode's marker gate.** The session consumers' connection and the main client, on
+  which the durable is created and bound, each make no consumer call and no durable create,
+  correction or bind until a read of the selection bucket's cutover marker (`envoy.bucket`) on that
+  very connection says the cutover did not convert the bucket. A missing bucket counts as no
+  marker, and so does a read the connection's grant refuses (the listener beside Dispatch holds no
+  such read).
+  - Every disconnect shuts the gate, and each reconnect reads the marker again.
+  - A converted bucket stops the process, naming `ENVOY_CONSUMER_NAMES`.
+  - A read that fails keeps the gate shut and is read again. Meanwhile a registration is answered
+    `503 consumer_error` naming the marker.
+  - At the start, a marker the listener cannot read makes the start wait rather than run fixed
+    names unread.
+- **The fresh mode** refuses every session-consumer call until the bucket's sentinel says the
+  cutover is done. A registration over lost or unproven selection state is answered
+  `503 consumer_error`. A key holding no record of its own is answered naming the key and the
+  bucket, for that session alone. An open operation's candidate that is not as the listener creates
+  it is answered naming the consumer. A registration whose NATS user may not read the bucket is
+  answered `503 no_grant`. The listener's grant (`natsgrant.KVWriteExisting("envoy_session_consumers")`)
+  holds the bucket's reads and key writes, and no create or update of its stream.
+- **`/healthz`:**
+  - The healthy answer carries `consumer_names` (`fixed` or `fresh`). When the durable's read
+    fails, it is `UNKNOWN`, with `consumer_names_unknown` naming the failed read and the
+    configured mode.
+  - In the fresh mode, while the start has not bound its durable over a sentinel that is absent,
+    malformed or of another family, the answer is `503` `not_ready`, with `bucket`, `key` and
+    `reason` (`absent`, `another family` or `malformed`). The start logs that state once per change.
+  - Once serving, a missing bucket, sentinel or cutover marker, or a session's lost key, is
+    `200 degraded` naming `session consumer selection bucket envoy_session_consumers`, with every
+    field of the healthy answer kept. A refusal clears once a call is admitted.
+  - In the fixed mode, a marker read that keeps failing after a reconnect stalls the reconnect
+    hooks after the KV watches are rebuilt. Past a minute the answer is `200 degraded` naming the
+    `cutover marker read`, with `bucket` and `key`, rather than the `KV watch rebuild`.
+- **The counter.** `envoy_session_consumer_names_total{op,outcome}` on `/metrics` counts each
+  selection step in the fresh mode. `op` is one of `select`, `create`, `replace`, `delete`,
+  `recover`, `missing_current`, `last_floor` or `cleanup`. `outcome` is one of `ok`, `adopted`,
+  `retired`, `refused`, `conflict`, `limit` or `error`.
+- **Local runs.** `ENVOY_CONSUMER_NAMES=fresh packages/envoy/scripts/e2e-local.sh` makes the
+  selection bucket and its sentinel, with the cutover done, before the listener serves, and checks
+  the same answers as the default run.
+
 ## Contract source of truth
 
 The authoritative event contract lives in `packages/contracts/`.
