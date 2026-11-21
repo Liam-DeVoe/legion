@@ -315,6 +315,7 @@ func (s *relaySockets) serve(w http.ResponseWriter, r *http.Request) {
 		subs:     map[int64]*nats.Subscription{},
 		replies:  map[string]time.Time{},
 		done:     make(chan struct{}),
+		pumped:   make(chan struct{}),
 		wake:     make(chan struct{}, 1),
 	}
 	if status, refusal := s.admit(socket); status != 0 {
@@ -431,6 +432,8 @@ type relaySocket struct {
 
 	endOnce sync.Once
 	done    chan struct{}
+	// pumped is closed once the pump has returned, after its last settle.
+	pumped chan struct{}
 }
 
 // forwardedReply is one receipt subject and when its frame was forwarded.
@@ -471,7 +474,8 @@ func (s *relaySockets) pongWait() time.Duration {
 }
 
 // read is the socket's one reader: it handles each frame whole before it reads the next, and
-// returns once the connection ends.
+// returns once the connection ends and the pump has returned, so the socket's place is given back
+// (serve's release) only after its pump has given back the last frame it held (settle).
 func (socket *relaySocket) read() {
 	conn := socket.conn
 	conn.SetReadLimit(relaySocketReadLimit)
@@ -492,8 +496,11 @@ func (socket *relaySocket) read() {
 			// itself, end already ran and left the connection to its grace (relaySocketCloseGrace)
 			// for this answer; the answer is in, so the client is not kept waiting out the rest of
 			// that grace for its connection's end, which a client that reopens on it waits for.
+			// The closed connection fails a write the pump is in at once, and end has closed done,
+			// so the pump returns promptly.
 			socket.end(0, "")
 			_ = conn.Close()
+			<-socket.pumped
 			return
 		}
 		extend()

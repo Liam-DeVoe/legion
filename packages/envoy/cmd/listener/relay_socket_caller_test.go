@@ -162,6 +162,42 @@ func TestAFrameTheReplicaRefusesLeavesNothingOnItsPerson(t *testing.T) {
 	}
 }
 
+// A socket's place and its person's record are given back only once its pump has given back the
+// frame it holds, so the person's count never leaves a closed socket's frame on a record the
+// replica has forgotten. The row holds a socket's write lock, so its pump keeps one frame counted,
+// and closes the client: while the pump holds that frame the replica keeps the socket's place and
+// its person's record; once the pump lets the frame go, both are given back and the record holds
+// nothing. Control: release run as soon as the reader returns (read waiting for no pump); the
+// replica gives the socket's place back while the person's record still counts the frame, and the
+// row fails naming it.
+func TestARelaySocketGivesItsPlaceBackOnlyAfterItsPumpsLastFrame(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour))
+	const session = "ses_edge_pump_last"
+	client, _ := rig.open(t, session)
+	client.subscribeOwn(session)
+	socket := rig.openSocket(t, session)
+	socket.writeMu.Lock()
+	unlock := sync.OnceFunc(socket.writeMu.Unlock)
+	t.Cleanup(unlock)
+	publishRelayFrame(t, rig.owner.url, session, natsgo.Header{})
+	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { frames, _ := socket.held(); return frames == 1 }) {
+		t.Fatal("the socket took no frame within 5 s")
+	}
+	_ = client.conn.Close()
+	// The pump cannot let its frame go while the row holds the write lock, so with the fix no
+	// release can come in this window; without it the release comes as soon as the reader ends.
+	if testwait.Holds(time.Second, 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
+		t.Fatalf("the replica gave the socket's place back while its pump still held a frame; the person's record counts %d bytes and the replica keeps %d caller records", socket.caller.buffered.Load(), rig.callerRecords())
+	}
+	unlock()
+	if !testwait.Holds(5*time.Second, 10*time.Millisecond, func() bool { return rig.holds(session) == 0 }) {
+		t.Fatal("the replica still holds the socket 5 s after its pump let its frame go")
+	}
+	if got, records := socket.caller.buffered.Load(), rig.callerRecords(); got != 0 || records != 0 {
+		t.Fatalf("after the socket was given back its person's record counts %d bytes and the replica keeps %d caller records, want 0 and 0", got, records)
+	}
+}
+
 // A frame on a session's relay subject whose receipt names another session, or is no receipt of
 // the shape an edge relay names (relayReceiptOf), is not forwarded: the socket hands its client
 // only receipts of its own session's frames, so a frame anyone puts on the subject cannot have the

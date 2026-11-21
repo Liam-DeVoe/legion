@@ -14,10 +14,8 @@ import (
 
 // relayCaller is one caller's sockets on the replica: how many are open, under relaySockets.mu,
 // and the bytes they hold for their clients, which relaySockets.callerBudget bounds. It is
-// forgotten once its last socket is released. A frame such a socket's pump is still writing
-// then gives its bytes back to the record forgotten, and a socket the caller opens meanwhile is
-// counted under a fresh one: what that leaves out is the frame of each socket being closed, until
-// its write returns.
+// forgotten once its last socket is released, which comes after that socket's pump has given back
+// the last frame it held (read), so both counts end together.
 type relayCaller struct {
 	sockets  int
 	buffered atomic.Int64
