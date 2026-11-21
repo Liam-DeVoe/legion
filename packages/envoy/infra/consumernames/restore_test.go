@@ -101,7 +101,7 @@ func (rig *restoreRig) listener() (*nats.Conn, jetstream.JetStream) {
 	rig.t.Helper()
 	nc, err := rig.s.Connect(rig.s.Cluster.URL(), rig.s.ListenerCredential(holdtest.ListenerMachines[0]))
 	require.NoError(rig.t, err)
-	js, err := jetstream.New(nc)
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(harnessAPITimeout))
 	require.NoError(rig.t, err)
 	return nc, js
 }

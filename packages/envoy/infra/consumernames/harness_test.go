@@ -437,17 +437,23 @@ func (h *stack) record(family, logical string) selection.Record {
 
 // operator connects to the hub as the operator, decided under the row's phase now: a test that
 // changes the phase connects again for the new phase's grant. run closes it before a held command.
+// Its JetStream calls a row's setup makes wait up to harnessAPITimeout, not nats.go's 5 s default:
+// a three-copy bucket's create under -race on a loaded box can take longer than 5 s, and the
+// setup is not what a row asserts.
 func (h *stack) operator() (*nats.Conn, jetstream.JetStream) {
 	h.t.Helper()
 	nc, err := h.s.Connect(h.s.Cluster.URL(), h.s.OperatorCredential()...)
 	require.NoError(h.t, err)
-	js, err := jetstream.New(nc)
+	js, err := jetstream.New(nc, jetstream.WithDefaultTimeout(harnessAPITimeout))
 	require.NoError(h.t, err)
 	h.mu.Lock()
 	h.conns = append(h.conns, nc)
 	h.mu.Unlock()
 	return nc, js
 }
+
+// harnessAPITimeout bounds each JetStream call a row's setup makes through the harness's clients.
+const harnessAPITimeout = time.Minute
 
 // notificationStream creates ENVOY_NOTIFICATIONS on js with the build's configuration at one copy,
 // as `envoy-infra streams update` would under a hold, and answers its info.
