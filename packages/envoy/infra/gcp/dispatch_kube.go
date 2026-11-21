@@ -637,7 +637,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// what holds the two graces equal is
 	// TestDispatchAndClusteredHubListenerPodsStopInsideTheirGrace, which reads both.
 	if _, err := deployment(listenerName, s.listenerReplicas, s.disruption.listenerPDBMinAvailable, map[string]*corev1.Secret{listenerName: listenerSecret}, corev1.PodSpecArgs{
-		ServiceAccountName: pulumi.String(listenerName), TerminationGracePeriodSeconds: pulumi.Int(40), EnableServiceLinks: pulumi.Bool(false),
+		// No container of the listener's pod reads the default ServiceAccount token: envoy-listener
+		// reads only the files its environment names, and the NATS seed's CSI volume is mounted by
+		// the driver with a token of its own asking. So it is not mounted, as it is not on the front
+		// door and the hub's listener.
+		ServiceAccountName: pulumi.String(listenerName), AutomountServiceAccountToken: pulumi.Bool(false), TerminationGracePeriodSeconds: pulumi.Int(40), EnableServiceLinks: pulumi.Bool(false),
 		Containers: corev1.ContainerArray{
 			corev1.ContainerArgs{
 				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: corev1.VolumeMountArray{nats.mount},
@@ -852,7 +856,11 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	appReady := readyProbe(8766, 10, 3, 3)
 	appReady.InitialDelaySeconds = pulumi.Int(5)
 	appPod := corev1.PodSpecArgs{
-		ServiceAccountName: pulumi.String(s.hostname), TerminationGracePeriodSeconds: pulumi.Int(35), EnableServiceLinks: pulumi.Bool(false),
+		// No container of the app's pod reads the default ServiceAccount token: envoy-dispatch
+		// reads only the projected tokens it mounts by name, cloud-sql-proxy signs in through the
+		// GKE metadata server, and the CSI volumes are mounted by the driver with a token of its own
+		// asking. So it is not mounted, as it is not on the front door and the hub's listener.
+		ServiceAccountName: pulumi.String(s.hostname), AutomountServiceAccountToken: pulumi.Bool(false), TerminationGracePeriodSeconds: pulumi.Int(35), EnableServiceLinks: pulumi.Bool(false),
 		InitContainers: corev1.ContainerArray{
 			corev1.ContainerArgs{
 				Name: pulumi.String("cloud-sql-proxy"), Image: pulumi.String(s.images.proxy), RestartPolicy: pulumi.String("Always"),

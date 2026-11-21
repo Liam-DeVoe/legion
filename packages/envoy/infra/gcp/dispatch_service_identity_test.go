@@ -136,6 +136,8 @@ func TestDispatchRunsByItsServiceIdentity(t *testing.T) {
 			} {
 				require.Equal(t, pod.account, pod.template["spec"].(map[string]any)["serviceAccountName"],
 					"%s runs as its own account, whose projected token is the one it presents", pod.name)
+				require.Equal(t, false, pod.template["spec"].(map[string]any)["automountServiceAccountToken"],
+					"%s mounts no default ServiceAccount token: none of its containers reads one", pod.name)
 				if !row.nats {
 					require.Equal(t, "/var/run/secrets/envoy/nats-seed", pod.env["NATS_NKEY_SEED_FILE"], "%s keeps its seed", pod.name)
 					require.NotContains(t, pod.env, "NATS_SERVICE_TOKEN_FILE", pod.name)
@@ -310,7 +312,7 @@ func TestDispatchRendersEachAudienceTrimmed(t *testing.T) {
 // An audience input set to whitespace alone names no audience, and is refused by name before
 // anything registers, as a blank azureFederationAudience is: trimmed to nothing it would render no
 // verifier, so Dispatch would boot with no OIDC caller verification, or with no broker relay, and
-// say nothing of why (review B7). Dispatch's own boot refused the half pair such an oidcAudience
+// say nothing of why. Dispatch's own boot refused the half pair such an oidcAudience
 // rendered before the trim; the component now refuses it first.
 func TestDispatchRefusesABlankAudienceByName(t *testing.T) {
 	for _, row := range []struct {

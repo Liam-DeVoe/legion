@@ -1770,16 +1770,19 @@ binds its port and exits when it cannot within 30 seconds, so a listener pod sta
 issuer cannot be reached restarts until it can. Once started, it keeps the key set it read, reads
 it again every 15 minutes behind the answers it serves from it, and reads it for a token naming a
 key it does not hold. While the key set cannot be read it keeps serving the keys it holds, however
-old the set grows, and reads again no sooner than 5 seconds after a read that failed; a listener
-that has read no key set yet reads again on the next call, but never two reads at once, since
-every call that arrives while a read is in flight waits on it. A token it cannot judge because the
+old the set grows, and reads again no sooner than 5 seconds after a read that failed, whether or
+not it has read a key set yet, and never two reads at once, since every call that arrives while a
+read is in flight waits on it. A token it cannot judge because the
 key set cannot be read, or has not answered within 3 seconds, is answered 503 with `Retry-After`
 (for a key rotated in during the outage, every such call until a read succeeds), which Dispatch
 tries again, as it does a listener being replaced, and never 401. The listener runs as machine
 `<hostname>`, so the hub's user for this deployment sets `dispatchMachineId` to the component's
 `hostname`. Both Envoy containers mount the NATS seed at `/var/run/secrets/envoy/nats-seed`, or
 with `natsAudience` their own projected NATS token at `/var/run/secrets/envoy/nats-token`; the seed
-remains outside Pulumi state. With
+remains outside Pulumi state. Neither pod mounts its ServiceAccount's default token
+(`automountServiceAccountToken: false`): no container of either reads it, since the Envoy
+containers read only the files their environment names, `cloud-sql-proxy` signs in through the GKE
+metadata server, and the Secret Manager CSI driver asks for a token of its own. With
 `agentSecretsUrl` set, the `envoy-dispatch` container alone also mounts its projected
 ServiceAccount token, read-only, at `/var/run/secrets/dispatch/agent-secrets-account-token`; with
 `azureEmbedKeySecret`, the Azure key at `/var/run/secrets/azure-embed/key`; with the keyless
