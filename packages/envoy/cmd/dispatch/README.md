@@ -205,10 +205,17 @@ A JWT the verifier rejects is `401 OIDC_TOKEN_INVALID` naming the reason class; 
 `DISPATCH_OIDC_ACCOUNTS` names the service accounts the deployment admits, comma-separated subjects such as `system:serviceaccount:dispatch:envoy-broker`:
 a verified token of any other account is `401 SERVICE_ACCOUNT_NOT_ADMITTED`, naming the account, before any handler reads or writes a row, on every route that reads a credential and on both sockets.
 Unset, every account whose token the issuer signs for the audience is admitted, as before the setting existed, and the boot logs one WARN saying so, `dispatch: DISPATCH_OIDC_ACCOUNTS is unset, …`, with `issuer` and `audience`.
-`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`), the secrets broker's own account in production;
+`DISPATCH_ACCESS_ACCOUNTS` names those of them that read the membership answer (`GET /api/v1/access/projects/{key}`, `GET /api/v1/access/person` and `GET /api/v1/access/private-projects`) and the repository answer (`GET /api/v1/access/projects/{key}/repositories`), the secrets broker's own account in production;
 a caller with no credential, or one whose credential does not verify, is refused there as every route refuses it (`401 NO_IDENTITY` for none);
 every other caller is `403 ACCESS_ACCOUNT_REQUIRED`.
 The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position), and an access account that a set `DISPATCH_OIDC_ACCOUNTS` does not list.
+
+The repository answer is the list of the repositories a project's issues resolve to, which the secrets broker reads for the edge listener, so that the GitHub events the edge listener relays to an outside person's agents are those of exactly these repositories:
+`{"project": "<KEY>", "repositories": ["<owner>/<name>", …]}`, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), lower-cased, each once and sorted byte-wise, and `[]` when no issue of the project resolves to one (`refs.ProjectRepositories`).
+It is read live on each request from `refs.ProjectRepositoriesSQL`, the one rule of which repositories a project owns, which the GitHub proxy (`/api/github/rest/...`, under Routes) and Delivery read too, so the answer lists a repository exactly when that rule counts the project as its owner:
+issues are a repository's only owners, so a repository mapping gives the project nothing, and no recorded rename is read.
+An unknown key is `404 PROJECT_NOT_FOUND`, and an issue whose parent chain is deeper than 32 links, or loops, is `503 REPOSITORIES_UNRESOLVED` naming that issue, never a shorter list: its unread ancestors may name a repository the list would leave out.
+That refusal reaches only the secrets broker, so Dispatch also logs it at WARN, `dispatch: the repository answer is unresolved`, with `project` and `issue`, for the operator who must repair the chain.
 
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.
 It is presented under RFC 9449's DPoP scheme
@@ -281,6 +288,7 @@ A session that has acted in no project is judged, while a project is private, by
 While a project is private and `session_projects_filled` holds no row, an open viewer reads no session but its own (Filling the sessions' projects, below).
 Any other caller reads, of what belongs to no project, only the people of the projects it sees, the sessions that have acted in one of them (or, while a project is private, have acted in none and are listed with a list that is not empty and names only projects it sees), its own, and the roles those sessions hold (`access.PersonClause`, `access.SessionClause`, `access.RoleClause`);
 every read of the whole deployment (`readclass.Deployment`: the priorities, the Pipeline page and a delivery run's jobs, the CI reconcile passes, the broadcasts, the delivery and new-issue settings, the credential requests, the machine logins and the groups) is `403 DEPLOYMENT_READ_REFUSED` to it (`api.withinReadScope`), while the delivery timeline and measures answer it the pull requests whose issue it sees and the deploy runs that shipped one of them.
+The live agent view on `/ws/live` relays a session's whole transcript, which holds whatever the session read, so it is narrower than the agents list (`access.SessionContentClause`): a caller that is not open watches only a session that its own person's broker-issued token proved (`session_owners`) and whose listener list names only projects it sees; while a project is private, an open viewer watches a session that wrote in no project it does not see when its listener list names only projects it sees, or, with no list, when a proved write tied the session to somebody and every private project each such person sees is one it sees too.
 While a project is private, a pull request that names no issue, and a run that shipped none, is shown to an open viewer only when no private project hidden from that viewer owns its repository (`refs.RepositoryClause`).
 A direct conversation is read by its parties and by an open viewer, each only when it may read every session in the conversation (`access.PartyClause`), so a restricted member or a credential acting for one reads only its own, and only with sessions of its projects.
 While a project is private, a direct conversation that names no party (no node, or a node with none) is read by no caller but the server, and the switch to private refuses while one exists.
@@ -2995,6 +3003,9 @@ A pair a row already holds is not written again, so a second run writes no pair,
 Once it has read every event it writes the one `session_projects_filled` row, none when a run before it did, and prints `backfill-session-projects: events=<read> pairs=<written> filled`.
 It exits 0 then, 1 when the database cannot be opened or written, and 2 for an argument other than `--reset`.
 
+The same statement records, in `session_owners`, the person each proven session's `owner` names, canonical by `model.CanonicalLogin`'s rule, as every live append of a proven session does: the live agent view reads it (`access.SessionContentClause`).
+`--reset` does not empty it, since no build recorded it under another rule.
+
 Migration `20261116081157_session_projects_proven` empties `session_projects` and `session_projects_filled`, because the rows the earlier rule recorded cannot be told apart once written, so run the fill again after the deploy that carries it; until it has run, no project can be made private (`409 PRIVATE_PROJECTS_INCOMPLETE`).
 Until it has run, an open viewer of a deployment that holds a private project reads no session but its own (`access.SessionClause`), since a session of a private project may have no row placing it there yet.
 Under `Recreate` the build before has stopped when the migration runs.
@@ -4745,6 +4756,7 @@ Each item below names a path with its method and identity, then its purpose.
   A `PUT` that leaves the mapping its project's default is `403 REPOSITORY_NOT_AVAILABLE` when the caller cannot read the repository through the GitHub proxy.
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
+  The repository rule (`refs.ProjectRepositoriesSQL`), which the GitHub proxy and the repository answer read, is the exception: it reads no rename.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `putRepoProject` in `internal/dispatch/api/repo_projects.go` gives the rules and the `settings.repo_project.updated` events.
 

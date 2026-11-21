@@ -92,12 +92,15 @@ func (s *server) startAgentSubscription(ctx context.Context, stream liveStreamer
 // answered as one nobody answers for, as GET /api/v1/agents/{session_id}/messages answers its list
 // as the empty list of a session nobody knows: the no-responder verdict and nothing after it, and
 // the relay never subscribes to the session, tells it a viewer is attached or asks for its replay.
-// The view relays the session's raw transcript, whose tool results hold whatever the session read
-// of any project it worked in, so it is held to every project the session acted in and every one
-// its listener record lists, where the HTTP read filters each message by its own project. The rule
-// is asked again on each change of a project's access or of a group the event relay carries, on
-// every heartbeat (accessRecheckEvery) and on each re-arm, and a view whose session the caller no
-// longer may read ends (dropped), so its page subscribes again and is answered as above.
+// The view relays the session's raw transcript, whose tool results hold whatever the session read,
+// and a read records nothing, where the HTTP read filters each message by its own project. So a
+// viewer that is not open watches only a session its own person's credential proved, and any
+// other viewer, while a project is private, only one whose reach it sees: the projects its listener
+// record lists, or with no list the private projects of the people who proved it
+// (access.SessionContentClause). The rule is asked again on
+// each change of a project's access or of a group the event relay carries, on every heartbeat
+// (accessRecheckEvery) and on each re-arm, and a view whose session the caller no longer may read
+// ends (dropped), so its page subscribes again and is answered as above.
 func (s *server) relayAgentConversation(ctx context.Context, stream liveStreamer, sub, sessionID string) {
 	reader, err := s.readerFor(ctx, stream.Caller())
 	if err != nil {

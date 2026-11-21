@@ -144,8 +144,8 @@ type AppContextOptions struct {
 	GitHubAPIBase string
 	OIDC          api.ServiceTokenVerifier
 	// OIDCAccounts are the service-account subjects the API admits, and AccessAccounts those that
-	// read the membership answer (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS, DISPATCH_ACCESS_ACCOUNTS).
-	// See api.DepsInput.
+	// read the routes of the read class accessAccount (cmd/dispatch: DISPATCH_OIDC_ACCOUNTS,
+	// DISPATCH_ACCESS_ACCOUNTS). See api.DepsInput.
 	OIDCAccounts   []string
 	AccessAccounts []string
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
