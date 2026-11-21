@@ -214,8 +214,10 @@ type CreateRequest struct {
 	Lower uint64
 }
 
-// maxConflicts bounds how often one call reads the record again after a refused write.
-const maxConflicts = 16
+// MaxConflicts bounds how often one call reads the record again after a refused write. A caller
+// that runs its own loop over Names' steps, as the session family's restart does over Select and
+// Replace, takes the same bound.
+const MaxConflicts = 16
 
 // errSettleLater says Step 0 met an open operation too young to settle, and the call reads again.
 var errSettleLater = errors.New("consumer names: an operation in flight is younger than the settle age")
@@ -388,7 +390,7 @@ func (n *Names) selectRecord(ctx context.Context, logical string, create CreateF
 				}
 				continue
 			case errors.Is(err, ErrConflict):
-				if conflicts++; conflicts > maxConflicts {
+				if conflicts++; conflicts > MaxConflicts {
 					return sel, err
 				}
 				continue
@@ -420,7 +422,7 @@ func (n *Names) selectRecord(ctx context.Context, logical string, create CreateF
 		}
 		created, err := n.reserve(ctx, sel, Start{Seq: start}, create, OperationMissingCurrent)
 		if errors.Is(err, ErrConflict) {
-			if conflicts++; conflicts > maxConflicts {
+			if conflicts++; conflicts > MaxConflicts {
 				return created, err
 			}
 			continue
@@ -665,7 +667,7 @@ func (n *Names) Ensure(ctx context.Context, logical string, req CreateRequest) (
 		}
 		created, err := n.reserve(ctx, sel, start, req.Create, OperationCreate)
 		if errors.Is(err, ErrConflict) {
-			if conflicts++; conflicts > maxConflicts {
+			if conflicts++; conflicts > MaxConflicts {
 				return created, false, err
 			}
 			continue
@@ -965,7 +967,7 @@ func (n *Names) Delete(ctx context.Context, logical string, listed *jetstream.Co
 	for conflicts := 0; ; {
 		floor, err := n.deleteOnce(ctx, logical, listed)
 		if errors.Is(err, ErrConflict) {
-			if conflicts++; conflicts <= maxConflicts {
+			if conflicts++; conflicts <= MaxConflicts {
 				continue
 			}
 		}
@@ -1037,7 +1039,7 @@ func (n *Names) RecordLastFloor(ctx context.Context, logical, name string, floor
 		record.LastFloor = &Floor{Floor: floor, Name: name, StreamID: streamID}
 		_, err = n.write(ctx, sel, record)
 		if errors.Is(err, ErrConflict) {
-			if conflicts++; conflicts <= maxConflicts {
+			if conflicts++; conflicts <= MaxConflicts {
 				continue
 			}
 		}

@@ -465,7 +465,7 @@ func (s *SessionConsumers) freshRestartAtFloor(ctx context.Context, sessionID st
 		}
 		replaced, err := s.fresh.names.Replace(ctx, sel, ackFloor(info)+1, create)
 		if errors.Is(err, consumernames.ErrConflict) {
-			if conflicts++; conflicts <= 16 {
+			if conflicts++; conflicts <= consumernames.MaxConflicts {
 				continue
 			}
 		}
