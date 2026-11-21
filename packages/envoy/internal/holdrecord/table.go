@@ -73,6 +73,15 @@ type entry struct {
 	repeatable bool
 	stoppable  bool
 	epochal    bool
+	// skipsSet is a command that needs no `done` hold set entry: hold abort, which ends a hold
+	// whose hold set stopped as well as any other.
+	skipsSet bool
+	// needsStop is a command admitted only once some command's latest entry is a stop, or its own
+	// intent is pending, a rerun after a crash: hold abort outside hub-restore, the way out of a
+	// failed command and not a way to end a workflow that is going well. The rerun is admitted
+	// since the stop the crashed run followed may have been superseded since (the stopped command
+	// ran again and finished).
+	needsStop bool
 }
 
 // table is one rule set's workflow table and rules.
@@ -105,7 +114,7 @@ func tableFor(r rules) table {
 	hub = append(hub,
 		entry{name: "streams census", requires: []string{CommandProve}, final: true, epochal: r.ProveEpochs, repeatable: r.ProveEpochs,
 			stoppable: stop},
-		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop})
+		entry{name: CommandAbort, excludes: []string{CommandProve}, final: true, stoppable: stop, skipsSet: true})
 	buckets := func(name string) []entry { return []entry{{name: name, final: true, stoppable: stop && r.WayOut}} }
 	recreate, restore := buckets("buckets recreate"), buckets("buckets restore")
 	if r.BackupCommand {
@@ -128,7 +137,7 @@ func tableFor(r rules) table {
 	if r.WayOut { // hold abort, every workflow's way out; hub-restore names it already
 		for w := range rows {
 			if w != WorkflowHubRestore {
-				rows[w] = append(rows[w], entry{name: CommandAbort, final: true, stoppable: stop})
+				rows[w] = append(rows[w], entry{name: CommandAbort, final: true, stoppable: stop, skipsSet: true, needsStop: true})
 			}
 		}
 	}
@@ -239,7 +248,7 @@ func (t table) Decide(d Done, req modelRequest) error {
 			}
 			return nil
 		}
-		if !(c == CommandAbort && (w == WorkflowHubRestore || t.Rules.WayOut)) && !hasDone(d.Ops, CommandSet) {
+		if e, ok := t.row(w, c); !(ok && e.skipsSet) && !hasDone(d.Ops, CommandSet) {
 			return wrap(ErrOutOfOrder, CommandSet)
 		}
 	}
@@ -255,10 +264,7 @@ func (t table) Decide(d Done, req modelRequest) error {
 			return wrap(ErrExcluded, x)
 		}
 	}
-	// Outside hub-restore abort is admitted once a command has stopped, and its own rerun after a
-	// crash left its intent pending is admitted too: that intent shows it was admitted, and the
-	// stop it followed may have been superseded since (the stopped command ran again and finished).
-	if c == CommandAbort && w != WorkflowHubRestore && t.Rules.WayOut && !anyStopped(d.Ops) && !slices.Contains(pending(d), c) {
+	if e.needsStop && !anyStopped(d.Ops) && !slices.Contains(pending(d), c) {
 		return wrap(ErrOutOfOrder, "no command has stopped")
 	}
 	for _, q := range e.requires {
