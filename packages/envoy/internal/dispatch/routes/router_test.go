@@ -360,10 +360,12 @@ func (r *signInRig) signIn(t *testing.T, claims map[string]any) *httptest.Respon
 	return callbackOn(r.handler, code, state, stateCookie)
 }
 
-// sessionCookie is the session cookie a sign-in on a Secure router set, `__Host-dsession`, or nil.
+// sessionCookie is the session cookie a sign-in set, under whichever of its two names it set it
+// with a value, or nil. Which name a sign-in sets is TestASignInSetsTheSessionForItsOriginAndSetting's
+// (auth) and the walk's (cmd/dispatch) to check.
 func sessionCookie(response *httptest.ResponseRecorder) *http.Cookie {
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == "__Host-dsession" && cookie.Value != "" {
+		if (cookie.Name == "__Host-dsession" || cookie.Name == "dsession") && cookie.Value != "" && cookie.MaxAge >= 0 {
 			return cookie
 		}
 	}
@@ -725,8 +727,8 @@ func TestGroupSignInRecordsNoSubject(t *testing.T) {
 }
 
 // Each cookie of the sign-in is Secure as the cookie mode says, but the clearing of
-// `__Host-dsession` in HTTP development mode, which a browser takes only Secure; the session is
-// `__Host-dsession` under TLS and `dsession` in HTTP development mode.
+// `__Host-dsession` in HTTP development mode, which a browser takes only Secure; the session a
+// sign-in at the canonical origin issues is canonicalSessionCookie in both modes.
 func TestOAuthStateCookieMatchesCookieMode(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -734,7 +736,7 @@ func TestOAuthStateCookieMatchesCookieMode(t *testing.T) {
 		secure   bool
 		session  string
 	}{
-		{name: "TLS default", secure: true, session: "__Host-dsession"},
+		{name: "TLS default", secure: true, session: canonicalSessionCookie},
 		{name: "HTTP development mode", insecure: true, secure: false, session: "dsession"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

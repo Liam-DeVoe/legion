@@ -908,17 +908,33 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
 The people Dispatch has seen, either way, are the assignee picker's options and the only names an issue may be assigned to.
 
-The session cookie a sign-in issues is `__Host-dsession`: signed, HttpOnly, `SameSite=Strict`, `Secure`, `Path=/` and no `Domain`, for 30 days (`auth.IssueSessionCookie`).
-The `__Host-` prefix makes a browser take it only from this host itself, so no other host under the domain, and no answer over plain HTTP, can set a session for Dispatch.
-`DISPATCH_INSECURE_COOKIE=1` omits the `Secure` attribute for local plain-HTTP testing, and since a browser refuses a `__Host-` cookie without it, the session cookie is then `dsession`, as the passkey ceremony cookie is then `dispatch_passkey_ceremony`.
+The session cookie a sign-in issues is signed, HttpOnly, `SameSite=Strict`, host-only (`Path=/` and no `Domain`), lasts 30 days, and is `Secure` unless `DISPATCH_INSECURE_COOKIE` is set (`auth.SetSessionCookie`).
+`DISPATCH_INSECURE_COOKIE=1` omits the `Secure` attribute for local plain-HTTP testing.
 Do not use it on an HTTPS deployment.
-Dispatch issued `dsession` under every setting before, so the server reads both names (`auth.SessionFromRequest`, and `auth.HasSessionCookie` for the origin check):
-`__Host-dsession` when a request carries one, read alone whatever it holds, so a `dsession` another host set beside it signs nobody in;
-and `dsession` otherwise, so a person signed in before the change keeps their session.
-Each sign-in sets the name for its setting and clears the other (`auth.SetSessionCookie`), so that person's next sign-in moves them to the new name, and `POST /auth/logout` clears both (`auth.ClearSessionCookies`).
+
+The cookie's name depends on the origin, so that every release keeps the build before it working (Running more than one process, below):
+
+- At `DISPATCH_OUTSIDE_ORIGIN`, which no earlier release served, the session cookie is `__Host-dsession`, which a browser takes only from that host itself over HTTPS, so no other host under its domain and no answer over plain HTTP can set a session there.
+  A request there is read by that name alone: a `dsession` there is no session, and an unsafe request carrying one is no request with a session cookie.
+  Under `DISPATCH_INSECURE_COOKIE`, since a browser refuses a `__Host-` cookie that is not `Secure`, the cookie there is `dsession`, read alone too, as the passkey ceremony cookie is then `dispatch_passkey_ceremony`.
+
+- At `DISPATCH_SERVER_URL` the session cookie moves from `dsession` to `__Host-dsession` in three releases:
+
+  1. This release still issues `dsession` there under every setting, so the release before it reads every session it issues, during a rolling update and after a rollback.
+     It reads both names (`auth.SessionFromRequest`, and `auth.HasSessionCookie` for the origin check): the first one a request carries with a non-empty value, `__Host-dsession` before `dsession`, so a `__Host-dsession` beside a `dsession` is read alone, whether or not it verifies.
+     Each sign-in clears `__Host-dsession`, which the next release may have set, so the browser keeps only the session it is given.
+
+  2. The next release issues `__Host-dsession` there where the cookie is Secure, and clears `dsession` at each sign-in.
+     It rolls out only once every process runs this release, and a rollback from it goes back no further than this release: a rollback across both releases signs out everyone who signed in on the next one.
+
+  3. A release at least 30 days after the next one (a session's lifetime) stops reading `dsession` there where the cookie is Secure.
+     Under `DISPATCH_INSECURE_COOKIE` the cookie stays `dsession`.
+
+  So the `__Host-` prefix guards no session at `DISPATCH_SERVER_URL` before the next release.
+  From it, a browser that has signed in holds `__Host-dsession`, and a `dsession` another host sets beside it signs in nobody else; until the third release, a browser that holds no `__Host-dsession` (one that has not signed in since, or has signed out) can still be given a session as `dsession` by another host under the domain or by an answer over plain HTTP.
+
+`POST /auth/logout` clears the cookie under both names at either origin (`auth.ClearSessionCookies`).
 Nothing else writes the cookie: no request re-issues or extends a session.
-A later release stops reading `dsession` where the cookie is Secure (under `DISPATCH_INSECURE_COOKIE` it stays the name issued);
-a session issued before this change lasts 30 days, so 30 days after this release no live Secure session carries the old name.
 
 `DISPATCH_DEV_SIGNIN=1` adds a second way to get the cookie on a local instance:
 `GET /auth/_dev/signin?login=<email>` records the lowercased person and issues the session cookie an issuer sign-in does, with no issuer exchange and no group check.
@@ -4612,7 +4628,7 @@ Each item below names a path with its method and identity, then its purpose.
   At `DISPATCH_SERVER_URL`, and on a server without the setting, each answers the `404` a path no route serves answers; a request from a page of another origin (an `Origin` that is not the outside origin, or none with `Sec-Fetch-Site` other than `same-origin`) is `403` "invalid request origin".
   `register/begin` takes `{"token"}`, the fragment of the owner's link (`POST /api/v1/projects/{key}/access/people/{email}/invitations`), and answers the options `navigator.credentials.create` takes, naming as the user the invited address and as the user handle the person's passkey subject: 16 random bytes, base64url, made at their first enrollment and kept after.
   It uses no link.
-  `register/finish` takes what `navigator.credentials.create` made and, in one transaction, uses the link, signs the person in as a restricted member through the account binding (`PgPeopleStore.signInAccountTx`, under the issuer `people.sub_issuer` records, the outside origin) and stores the passkey (table `passkeys`), answering `{"login"}` and the host-only session cookie.
+  `register/finish` takes what `navigator.credentials.create` made and, in one transaction, uses the link, signs the person in as a restricted member through the account binding (`PgPeopleStore.signInAccountTx`, under the issuer `people.sub_issuer` records, the outside origin) and stores the passkey (table `passkeys`), answering `{"login"}` and the outside origin's session cookie, `__Host-dsession` (`dsession` under `DISPATCH_INSECURE_COOKIE`; the session cookie, above).
   `login/begin` takes `{}` and answers the options `navigator.credentials.get` takes, naming no credential; `login/finish` takes what it made, verifies it against the passkey its credential id names and its user handle, asks the rule again (`AdmitsRestricted`), stores the new signature counter and signs the person in, answering `{"login"}` and the cookie.
 
   - A begin reads and writes nothing: it carries its ceremony to the finish in the signed, HttpOnly, `SameSite=Strict` cookie `__Host-dispatch_passkey_ceremony` (Secure, `Path=/`, no `Domain`, so no other host under the outside origin's domain can set it; `dispatch_passkey_ceremony` under `DISPATCH_INSECURE_COOKIE`), so whichever process the finish reaches completes it, within five minutes;

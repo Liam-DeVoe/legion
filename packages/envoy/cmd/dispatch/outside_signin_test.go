@@ -157,7 +157,7 @@ func requestWith(handler http.Handler, method, path string, signIn *httptest.Res
 		request.Header.Set("Origin", "http://dispatch.test")
 	}
 	for _, cookie := range signIn.Result().Cookies() {
-		if cookie.Name == hostSessionCookie && cookie.Value != "" && cookie.MaxAge >= 0 {
+		if isSessionCookie(cookie) {
 			request.AddCookie(cookie)
 		}
 	}

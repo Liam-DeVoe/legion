@@ -394,7 +394,7 @@ func codeFlowSignIn(t *testing.T, handler http.Handler, issuer *oidctest.Issuer,
 func whoamiAfter(handler http.Handler, signIn *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 	for _, cookie := range signIn.Result().Cookies() {
-		if cookie.Name == hostSessionCookie {
+		if isSessionCookie(cookie) {
 			request.AddCookie(cookie)
 		}
 	}
@@ -416,10 +416,10 @@ func ageConfirmation(t *testing.T, people testPeople, email string) {
 	}
 }
 
-// sessionCookieSet reports whether response set the session cookie of a Secure server,
-// `__Host-dsession`.
+// sessionCookieSet reports whether response set Dispatch's session cookie, under either name
+// (isSessionCookie).
 func sessionCookieSet(response *httptest.ResponseRecorder) bool {
-	return slices.ContainsFunc(response.Result().Cookies(), func(cookie *http.Cookie) bool { return cookie.Name == hostSessionCookie && cookie.Value != "" })
+	return slices.ContainsFunc(response.Result().Cookies(), isSessionCookie)
 }
 
 // errorCode is the code of a JSON error response.
@@ -1544,7 +1544,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				whoami := func(handler http.Handler, signedIn *httptest.ResponseRecorder) *httptest.ResponseRecorder {
 					request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 					for _, cookie := range signedIn.Result().Cookies() {
-						if cookie.Name == hostSessionCookie {
+						if isSessionCookie(cookie) {
 							request.AddCookie(cookie)
 						}
 					}

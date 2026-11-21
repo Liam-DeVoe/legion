@@ -58,9 +58,9 @@ interface ApiOptions {
   process?: DispatchProcess;
 }
 
-/** The name of the session cookie the server issues at sign-in, dev or GitHub: `dsession`, the
- *  name under DISPATCH_INSECURE_COOKIE, which e2e/run-server.sh runs every server under. A server
- *  whose cookie is Secure names it `__Host-dsession` (auth.IssueSessionCookie). */
+/** The name of the session cookie the server issues at sign-in, dev or GitHub: `dsession`, its name
+ *  under DISPATCH_INSECURE_COOKIE, which e2e/run-server.sh runs every server under and under which
+ *  the name stays `dsession` in every release (auth.SetSessionCookie). */
 export const sessionCookieName = "dsession";
 
 /** The server's dev sign-in route for `login`, relative to the dashboard origin; it answers a
