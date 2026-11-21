@@ -60,15 +60,16 @@ var restrictedOwnLoginRoutes = map[string]bool{
 
 // restrictedOwnLoginAtBrowser is the one rule of a restricted member's call of a row of
 // restrictedOwnLoginRoutes, which both gates read. governed reports whether it decides the call:
-// the row is one of them and reader's viewer is a restricted member's. allowed reports whether the call
-// reaches the handler: the member is at their browser (atBrowser) and the request holds their
-// writes to no list (writesHeldTo). A governed call that is not allowed is refused
-// restrictedOwnLoginRefusal, by either gate; an ungoverned one meets the gate's own rule.
+// the row is one of them and reader's viewer is a restricted member's. allowed reports whether the
+// call reaches the handler: the member is at their browser (atBrowser), whose cookie's credential
+// holds no list and names no project (model.BrowserActor), so no list holds the call. A governed
+// call that is not allowed is refused restrictedOwnLoginRefusal, by either gate; an ungoverned one
+// meets the gate's own rule.
 func restrictedOwnLoginAtBrowser(route apiRoute, reader model.Actor, r *http.Request) (governed, allowed bool) {
 	if !restrictedOwnLoginRoutes[route.Method+" "+route.Pattern] || reader.Viewer == nil || !reader.Viewer.Restricted {
 		return false, false
 	}
-	return true, atBrowser(r) && len(writesHeldTo(reader, resolvedCredential(r.Context()))) == 0
+	return true, atBrowser(r)
 }
 
 // restrictedOwnLoginRefusal answers a restricted member's call of a row of restrictedOwnLoginRoutes
