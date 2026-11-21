@@ -8,6 +8,7 @@ import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { useReportAdmission } from "./document-admission";
 import { DocumentStage } from "./document-stage";
 import { EDITOR_BOX_ATTRIBUTE } from "./node-caret";
+import { EVENT_FRESH } from "./useIssueTree";
 
 /**
  * One document's editor, on that document's own stage (`document-stage.tsx`).
@@ -56,7 +57,7 @@ export function StagedDocument({
   onVersionChange: (version: number | null) => void;
   showDiff: boolean;
 }): ReactNode {
-  const user = useQuery(whoAmIQuery());
+  const user = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH });
   const reportAdmission = useReportAdmission();
   const box = useRef<HTMLDivElement>(null);
   // Whether the editor is made, and so the room has answered: `ProofDocument` hands it over as it

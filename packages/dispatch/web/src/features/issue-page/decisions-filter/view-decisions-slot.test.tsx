@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  type RenderResult,
+  render,
+  renderHook,
+  waitFor,
+} from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, type NavigateFunction, useLocation, useNavigate } from "react-router-dom";
 
@@ -9,10 +16,12 @@ import {
   artifactBlocksQuery,
   issueCoverageQuery,
   issueResultsQuery,
+  myRepliesOwnerQuery,
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
 import type { ArtifactBlock, IssueAskRow, IssueDetails } from "../../../api/types";
+import { useIsHuman, type WhoAmIReadOptions } from "../../../hooks/useIsHuman";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
 import { MarginProvider } from "../../margin/margin-context";
@@ -24,7 +33,7 @@ import { EMPTY_STATE_LINES, type Preset } from "../page-words";
 import { ProvidersSlot } from "../slots/providers";
 import { StageSlot } from "../slots/stage";
 import { blockNodeId } from "../tree-drafts";
-import { issueAsksQuery } from "../useIssueTree";
+import { EVENT_FRESH, issueAsksQuery } from "../useIssueTree";
 import { check, VERIFICATION_SLUG } from "../verification-filter/verification-fixtures";
 import {
   artifact,
@@ -343,8 +352,9 @@ test("a write-up's address under words its question does not hold draws the outl
 // The page's reads are refreshed by events, never by their age, and the stage draws the outline
 // anew as the reader comes back to Conversation from a view. Under the app's `staleTime` a read is
 // stale 30 s after it answered (`main.tsx`), each observer judging it by its own options: the
-// outline's tree and its rows each read who is reading, and would ask for it again on a return
-// more than 30 s after the page loaded unless they read it as the tree's own reads are kept fresh
+// outline's tree, its rows and the mark that reads a thread in the reader's Inbox
+// (`outline-thread-read.tsx`) each read who is reading, and would ask for it again on a return more
+// than 30 s after the page loaded unless they read it as the tree's own reads are kept fresh
 // (`useIssueTree.ts`'s `EVENT_FRESH`). Here every read the page asks answered 31 s ago.
 test("coming back to the outline from Decisions after the app's staleTime asks who is reading no second time", async () => {
   // The stub of who is reading that `stubReads` set: `spyOn` hands back that same spy, which
@@ -375,6 +385,12 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
   // The issue holds two threads, so the outline draws rows.
   client.setQueryData(["comments", KEY], [...TWO_THREADS], answered);
   client.setQueryData(["issue-messages", KEY], [], answered);
+  // What the reader holds unread on the issue, which a thread's read mark reads.
+  client.setQueryData(
+    myRepliesOwnerQuery({ issue: KEY }).queryKey,
+    { as_of: "2026-11-05T02:00:00Z", limit: 200, offset: 0, rows: [], total: 0 },
+    answered
+  );
   // The blocks of each of the issue's documents, the spec and the decisions document.
   for (const { id } of issue.artifacts ?? []) {
     client.setQueryData(artifactBlocksQuery(id).queryKey, [], answered);
@@ -389,17 +405,51 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
   const view = drawStage("", { client, held, issue });
   expect(await emptyLineOf(view)).toBe(EMPTY_STATE_LINES.decisions);
   expect(who, "the Decisions view asked who is reading").not.toHaveBeenCalled();
-  // The reader leaves the view for the outline, as a press of Conversation does.
-  await act(async () => held.navigate?.(presetPath(KEY, "conversation")));
+  // The reader leaves the view for the outline at the second thread's reply, as a link to it
+  // does: the outline opens that thread, and the reply's row draws the thread's read mark.
+  await act(async () => held.navigate?.(`${presetPath(KEY, "conversation")}?comment=reply-b`));
   await waitFor(() =>
     expect(
-      view.container.querySelector('[data-issue-body] [data-node-id="head-b"]'),
-      `the stage drew ${drawnSlot(view)}, with no row of the issue's threads`
+      view.container.querySelector('[data-issue-body] [data-thread-read="head-b"]'),
+      `the stage drew ${drawnSlot(view)}, with no read mark of the second thread`
     ).not.toBeNull()
   );
   // Long enough for a read the outline's mount started to have been sent.
   await waitInAct(50);
   expect(who, "the outline drawn again asked who is reading").not.toHaveBeenCalled();
+});
+
+// Every other surface that reads who is reading gives it no options, and reads it as it did
+// before the outline's thread marks gave it the tree's freshness: under the app's `staleTime`, a
+// reading mounted more than 30 s after the answer asks for it again. Only a surface that gives
+// the tree's freshness (`EVENT_FRESH`) asks it no second time.
+test("who is reading, read with no options, is asked again after the app's staleTime, and read with the tree's freshness is not", async () => {
+  // The stub `stubReads` set, which `spyOn` hands back: an answer that never comes, so no read
+  // updates the hook after the row has counted the requests.
+  const who = spyOn(api, "whoAmI").mockReturnValue(Promise.withResolvers<never>().promise);
+  /** How many times `useIsHuman` given `options` asks who is reading as it mounts, under the
+   *  app's `staleTime` with the answer 31 s old. */
+  const requestsOf = async (options?: WhoAmIReadOptions): Promise<number> => {
+    who.mockClear();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    client.setQueryData(
+      whoAmIQuery().queryKey,
+      { event_head: "0", kind: "user", login: READER },
+      { updatedAt: Date.now() - 31_000 }
+    );
+    const hook = renderHook(() => useIsHuman(options), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    });
+    await waitInAct(0);
+    hook.unmount();
+    return who.mock.calls.length;
+  };
+  expect(await requestsOf(), "a surface that gives no options").toBe(1);
+  expect(await requestsOf(EVENT_FRESH), "a surface that gives the tree's freshness").toBe(0);
 });
 
 /** The plan and the Verification document of the issue the Verification cases draw, beside its

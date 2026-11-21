@@ -4,6 +4,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
 import type { TreeNode } from "./issue-tree";
 import { conversationItem } from "./outline-writer";
+import { EVENT_FRESH } from "./useIssueTree";
 
 /** Where the outline marks one thread read: the issue it is on, the thread's id, and the time of
  *  the newest write in it the outline draws. */
@@ -62,6 +63,10 @@ export function threadMarks(root: TreeNode): ReadonlyMap<string, ThreadMark> {
  * The read mark of the thread whose newest write is this row: once the row's foot has been on
  * screen for a second, the thread's Inbox row is read through that write. It takes no room: one
  * pixel along the foot of the row's card.
+ *
+ * It reads who is reading as the tree's own reads are kept fresh (`EVENT_FRESH`): the stage draws
+ * its row again at each press of a view, and under the app's 30 s `staleTime` a row drawn more
+ * than 30 s after the page loaded would ask for it again, though it has not changed.
  */
 export function ThreadReadMark({ mark }: { mark: ThreadMark }): ReactNode {
   const { ref } = useMarkThreadRead({
@@ -69,6 +74,7 @@ export function ThreadReadMark({ mark }: { mark: ThreadMark }): ReactNode {
     newestShownAt: mark.at,
     owner: { issue: mark.issueKey },
     threadId: mark.threadId,
+    whoAmI: EVENT_FRESH,
   });
   return (
     <span

@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { threadReadRequest } from "../../api/client";
 import { myRepliesKey, myRepliesOwnerQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
-import { useIsHuman } from "../../hooks/useIsHuman";
+import { useIsHuman, type WhoAmIReadOptions } from "../../hooks/useIsHuman";
 import { type DwellRef, useDwell } from "../shell/useDwell";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { unreadWrites } from "./thread-layout";
@@ -38,6 +38,7 @@ export interface MarkThreadReadOptions {
   /** The thread's writes, as the surface holds them, for the unread set below; none while the
    *  thread is still loading, and none at all from a surface that wants no set. */
   readonly writes?: readonly { readonly id: string; readonly created_at: string }[];
+  readonly whoAmI?: WhoAmIReadOptions;
 }
 
 /** What a thread's read mark answers: where the watch goes, and what the thread still holds
@@ -74,12 +75,13 @@ export function useMarkThreadRead({
   newestShownAt,
   owner,
   threadId,
+  whoAmI,
   writes,
 }: MarkThreadReadOptions): ThreadRead {
   const queryClient = useQueryClient();
   // The routes need the `person` scope, which a signed-in browser holds; any other principal
   // never asks, so never cycles on a 403.
-  const human = useIsHuman();
+  const human = useIsHuman(whoAmI);
   const watching = enabled && human && owner !== undefined && newestShownAt !== undefined;
   const unreadSet = useQuery({ ...myRepliesOwnerQuery(owner ?? NO_OWNER), enabled: watching });
   const rows = unreadSet.data;
