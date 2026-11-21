@@ -5,14 +5,21 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../../api/client";
 import { issueResultsQuery, referenceTargetsQuery } from "../../../api/queries";
-import type { ArtifactBlock, ReferenceTarget } from "../../../api/types";
+import type { Comment, ReferenceTarget } from "../../../api/types";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { issueDetails, KEY, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
+import {
+  issueDetails,
+  KEY,
+  SPEC_DOCUMENT,
+  SPEC_SLUG,
+} from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { readComment, TWO_THREADS } from "../outline-fixtures";
 import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
+import { treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import { issueTreeQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
 import { ProvidersSlot } from "./providers";
 import { ViewRowSlot } from "./view-row";
 
@@ -23,21 +30,22 @@ import { ViewRowSlot } from "./view-row";
  * real counts once it holds them.
  */
 
-/** A `requirement` block of the spec, as the blocks read answers it: a statement, which the Spec
- *  view counts. */
-function requirementBlock(id: string): ArtifactBlock {
-  return {
-    attributes: [],
-    from: 0,
-    id,
-    references: { asks: 0, comments: 0 },
-    to: 1,
-    token: id,
-    type: "requirement",
-  };
+/** A typed block of the spec at `position`, with `text` as its words, as the tree read answers
+ *  it. */
+function specBlock(id: string, supertag: string, position: number, text = ""): TreeAnswerNode {
+  return treeNode(id, supertag, KEY, {
+    document: { artifact_id: SPEC_DOCUMENT.id, position, slug: SPEC_SLUG },
+    text,
+  });
 }
 
-/** The address of the step `blocksWithStep` gives the spec, which the names read names it by. */
+/** The spec's two `requirement` blocks: statements, which the Spec view counts. */
+const STATEMENTS: readonly TreeAnswerNode[] = [
+  specBlock("r1", "requirement", 0),
+  specBlock("r2", "requirement", 1),
+];
+
+/** The address of the spec's step (`STEP_NODE`), which the names read names it by. */
 const STEP = buildDispatchReference({
   block: { id: "t1" },
   key: KEY,
@@ -45,19 +53,28 @@ const STEP = buildDispatchReference({
   slug: SPEC_SLUG,
 });
 
-/** The blocks read's answer for the document `id`: the spec's two statements and a step (`STEP`),
- *  which the Plan view counts and whose words come from the names read alone; none for any other
- *  document. */
-function blocksWithStep(id: string): never {
-  return Promise.resolve(
-    id === "artifact-spec"
-      ? [
-          requirementBlock("r1"),
-          requirementBlock("r2"),
-          { ...requirementBlock("t1"), type: "plan_task" },
-        ]
-      : []
-  ) as never;
+/** The step's words, which hold the words filter's `lanterns`. */
+const STEP_WORDS = "Hang the lanterns first.";
+
+/** A step of the spec (`STEP`), which the Plan view counts: the tree read answers it with its
+ *  words, as it answers every block's. */
+const STEP_NODE = specBlock("t1", "plan_task", 2, STEP_WORDS);
+
+/** The tree read's answer for the fixtures' issue: the issue, `blocks` of the spec, and each of
+ *  `comments` under the comment it replies to, else under the issue. The outline draws its rows
+ *  from it, the spec's blocks and the turns alike. */
+function treeOf(comments: readonly Comment[], blocks: readonly TreeAnswerNode[]): TreeAnswer {
+  return treeAnswer([
+    treeNode(KEY, "issue", null),
+    ...blocks,
+    ...comments.map((comment) =>
+      treeNode(comment.id, "comment", comment.reply_to ?? KEY, {
+        author: [comment.author],
+        made_at: comment.created_at,
+        text: comment.body,
+      })
+    ),
+  ]);
 }
 
 /** What the row draws once every read has answered: the spec's two statements, and the two
@@ -73,17 +90,12 @@ const ANSWERED_COUNTS: Readonly<Record<Preset, string>> = {
 /** The row's text with each control's name alone, which is all it draws with no signals. */
 const NAMES_ALONE = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join("");
 
-/** Answers every read the row reaches: the tree's six reads, the documents' blocks, the reader
- *  and the names. A case changes the answer of the read it holds out or fails. */
+/** Answers every read the row reaches: the tree's six reads, the tree read the outline draws its
+ *  rows from - the spec's two statements and the two threads - the reader and the names. No
+ *  document's blocks are read. A case changes the answer of the read it holds out or fails. */
 function answerReads() {
   return {
     asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
-    blocks: spyOn(api, "getArtifactBlocks").mockImplementation(
-      (id: string) =>
-        Promise.resolve(
-          id === "artifact-spec" ? [requirementBlock("r1"), requirementBlock("r2")] : []
-        ) as never
-    ),
     comments: spyOn(api, "listComments").mockResolvedValue(TWO_THREADS as never),
     coverage: spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
     decisions: spyOn(api, "getIssueDecisions").mockResolvedValue({
@@ -94,6 +106,7 @@ function answerReads() {
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
     names: spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never),
     results: spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
+    tree: spyOn(api, "getIssueTree").mockResolvedValue(treeOf(TWO_THREADS, STATEMENTS)),
     who: spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never),
   };
 }
@@ -241,16 +254,17 @@ test("the view row draws no count while the reader's login is out, and the real 
   }
 });
 
-// Under a words filter a plan task's or a callout's words come from the names read alone, so
+// Under a words filter a plan task's or a callout's words came from the names read alone, so
 // until that read answered Plan matched none of the issue's steps and drew 0 as its count, which a
 // names read that failed left for good. Under one the row draws no count, unit word or flag until
-// the names are held, and the real counts once they are.
+// the names are held, and the real counts once they are. The tree read now answers the step with
+// its words, and the names read names it by them too.
 test("under a words filter the view row draws no count while the names read is out, and the real counts once it has answered", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
   const reads = answerReads();
   // The spec holds a step too.
-  reads.blocks.mockImplementation(blocksWithStep);
+  reads.tree.mockResolvedValue(treeOf(TWO_THREADS, [...STATEMENTS, STEP_NODE]));
   // The names read, held out until the case answers it with the step's words.
   const names = Promise.withResolvers<{ targets: ReferenceTarget[] }>();
   reads.names.mockReturnValue(names.promise as never);
@@ -267,7 +281,7 @@ test("under a words filter the view row draws no count while the names read is o
 
     await act(async () =>
       names.resolve({
-        targets: [{ gone: false, kind: "block", name: "Hang the lanterns first.", ref: STEP }],
+        targets: [{ gone: false, kind: "block", name: STEP_WORDS, ref: STEP }],
       })
     );
     await waitFor(() =>
@@ -291,7 +305,7 @@ test("under a words filter the view row keeps drawing its counts while the names
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
   const reads = answerReads();
-  reads.blocks.mockImplementation(blocksWithStep);
+  reads.tree.mockResolvedValue(treeOf(TWO_THREADS, [...STATEMENTS, STEP_NODE]));
   const cited = "dispatch://CORE-7";
   // The names read of the first set answers with the step's words; the one of a set that holds
   // the address a new comment cites is held out for the rest of the case.
@@ -300,7 +314,7 @@ test("under a words filter the view row keeps drawing its counts while the names
     refs.includes(cited)
       ? held.promise
       : (Promise.resolve({
-          targets: [{ gone: false, kind: "block", name: "Hang the lanterns first.", ref: STEP }],
+          targets: [{ gone: false, kind: "block", name: STEP_WORDS, ref: STEP }],
         }) as never)
   );
   const view = renderViewRow(client, `${presetPath(KEY, "conversation")}?q=lanterns`);
@@ -313,12 +327,21 @@ test("under a words filter the view row keeps drawing its counts while the names
     );
 
     // The comments are read again, and answer a new thread too, by the reader, whose words hold
-    // the filter's word and cite an issue no other node names.
-    reads.comments.mockResolvedValue([
+    // the filter's word and cite an issue no other node names. The tree read, which the row's
+    // turns come from, is read again with them and answers the thread as a node, as the
+    // comment's event reads both.
+    const comments = [
       ...TWO_THREADS,
       { ...readComment("head-c", 5), body: `Hang the lanterns as ${cited} asks.` },
-    ] as never);
-    await act(async () => client.invalidateQueries({ queryKey: ["comments", KEY] }));
+    ];
+    reads.comments.mockResolvedValue(comments as never);
+    reads.tree.mockResolvedValue(treeOf(comments, [...STATEMENTS, STEP_NODE]));
+    await act(async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["comments", KEY] }),
+        client.invalidateQueries({ queryKey: issueTreeQuery(KEY).queryKey }),
+      ]);
+    });
     await waitFor(() =>
       expect(
         reads.names.mock.calls.some(([refs]) => refs.includes(cited)),
@@ -337,18 +360,20 @@ test("under a words filter the view row keeps drawing its counts while the names
   }
 });
 
-// The one more names read names only what a block's words cite, and gives no node its words, so
-// a step's words are held once the first names read has answered. A step whose words matched
-// `?q=` and cited an address nothing else names left the row drawing no count until the one more
-// read, of that address, answered, and none for good while it stood failed.
+// The one more names read names only the whole documents of the issue a block's stored source
+// cites, which the names read answers, and gives no node its words, so a step's words are held
+// once the first names read has answered. A step whose words matched `?q=` and whose source cited
+// an address nothing else names left the row drawing no count until the one more read, of that
+// address, answered, and none for good while it stood failed.
 test("under a words filter the view row draws Plan's count while the one more names read stands failed", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
   const reads = answerReads();
-  reads.blocks.mockImplementation(blocksWithStep);
-  const cited = "dispatch://CORE-7";
-  // The first names read names the step, whose words cite an issue nothing else names; the one
-  // more read, of that issue alone, fails.
+  reads.tree.mockResolvedValue(treeOf(TWO_THREADS, [...STATEMENTS, STEP_NODE]));
+  // The spec as a whole, which no word of the tree cites.
+  const cited = buildDispatchReference({ key: KEY, kind: "artifact", slug: SPEC_SLUG });
+  // The first names read names the step, whose stored source cites the spec as a whole; the one
+  // more read, of that document alone, fails.
   reads.names.mockImplementation(async (refs: readonly string[]) => {
     if (!refs.includes(STEP)) throw new Error("the one more names read failed");
     return {
@@ -367,7 +392,7 @@ test("under a words filter the view row draws Plan's count while the one more na
     await waitFor(() =>
       expect(
         client.getQueryState(referenceTargetsQuery([cited]).queryKey)?.status,
-        "the one more names read, of the issue the step's words cite, did not fail"
+        "the one more names read, of the document the step's source cites, did not fail"
       ).toBe("error")
     );
     await waitFor(() =>
@@ -390,8 +415,8 @@ test("under a words filter the view row of an issue that holds no node draws no 
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
   const reads = answerReads();
-  // No document holds a block and nobody has commented: the tree is the issue alone.
-  reads.blocks.mockResolvedValue([] as never);
+  // No document holds a block and nobody has commented: the tree read answers the issue alone.
+  reads.tree.mockResolvedValue(treeOf([], []));
   reads.comments.mockResolvedValue([] as never);
   const own = buildDispatchReference({ key: KEY, kind: "issue" });
   // The names read, held out until the case answers it with the issue's own name.

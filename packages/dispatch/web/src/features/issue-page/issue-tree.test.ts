@@ -68,7 +68,7 @@ import {
   treeParent,
   treeTuple,
 } from "./tree-read/tree-fixtures";
-import type { TreeAnswerNode } from "./tree-read/tree-read";
+import type { TreeAnswerNode, TreeTuple } from "./tree-read/tree-read";
 import {
   statementCounts,
   statementStandings,
@@ -514,6 +514,9 @@ interface Fixture extends IssueTreeReads {
   readonly nodes?: readonly TreeAnswerNode[];
   /** The parent the read answers for a typed block, by its id, where the case gives it one. */
   readonly parents?: Readonly<Record<string, string>>;
+  /** Tuples the case adds to the answer as they stand, each naming its ends by name
+   *  (`treeTuple`): what an ask's node shaped among them, which no block's pointer writes. */
+  readonly tuples?: readonly TreeTuple[];
 }
 
 /** A node of the answer being written, with its place among its siblings: the place the outline
@@ -555,13 +558,13 @@ function siblingOrder(one: Written, other: Written): number {
  * (`agents-only.ts`). A decision of the decisions read is no node of it: a section of
  * `decisions.md`. Each block pointer is a tuple, to the node it names where the answer holds it,
  * and to its address where not or where it pins a version of that node, which is no node of the
- * answer. Ranks are the read's, which a case does not state, so ranked siblings stand in the
- * order the outline drew them - each document's blocks in turn, the spec's first, then the
- * statements the coverage read holds, then the children - and the rest after them by time, then
- * id, as the read orders them.
+ * answer; each tuple the case adds (`Fixture.tuples`) is one too. Ranks are the read's, which a
+ * case does not state, so ranked siblings stand in the order the outline drew them - each
+ * document's blocks in turn, the spec's first, then the statements the coverage read holds, then
+ * the children - and the rest after them by time, then id, as the read orders them.
  */
 function answered(fixture: Fixture): IssueTreeReads {
-  const { documents, messages, nodes: added, parents: given, ...reads } = fixture;
+  const { documents, messages, nodes: added, parents: given, tuples: tied, ...reads } = fixture;
   const issue = reads.issue;
   const key = issue.key;
   const { nodeIdOf, slugOf, specSlug } = treeContext({ issue }, () => "");
@@ -785,7 +788,7 @@ function answered(fixture: Fixture): IssueTreeReads {
       )
     )
   );
-  return { ...reads, tree: treeAnswer(walk, tuples, { issue: key }) };
+  return { ...reads, tree: treeAnswer(walk, [...tuples, ...(tied ?? [])], { issue: key }) };
 }
 
 /** The issue's tree as `buildIssueTree` draws it from the case's reads and the tree read's
@@ -2251,6 +2254,10 @@ test("a person's decision is the answered ask's own node, which carries what it 
     selected: [],
     urgency: ask.urgency,
   }));
+  // The tree read answers the person's decision as the answered ask's own node, with what it
+  // shaped as that node's `shaped` tuples: the question asked of the issue itself by a tuple of
+  // its own, the question in the spec by its block's pointer. It places the agent's decision that
+  // settles the question in the spec, a decision block of the spec, under that question.
   const root = treeOf({
     asks: [own, inSpec],
     coverage: coverage([
@@ -2272,11 +2279,18 @@ test("a person's decision is the answered ask's own node, which carries what it 
           block("r-origin", "requirement"),
           block("r-shaped", "requirement", { from: `dispatch://${KEY}/spec#b-r-origin` }),
           block("r1", "requirement", { from: `dispatch://${KEY}/spec#b-q1` }),
-          block("d1", "decision"),
         ],
       },
     ],
     issue: issueDetails([spec]),
+    nodes: [
+      answerNode("d1", "decision", "q1", {
+        decision: settling,
+        document: { artifact_id: spec.id, position: 4, slug: SPEC },
+        text: settling.text,
+      }),
+    ],
+    tuples: [treeTuple("shaped", own.id, "r-shaped")],
   });
 
   // Each ask is one node, in its own place, and no decision node stands for either.
@@ -2323,27 +2337,25 @@ test("a reading sits under the ask or the decision it reads", () => {
     block_id: "q1",
     state: "answered",
   });
-  const placed = (id: string, type: string, from: number, to: number): ArtifactBlock => ({
-    ...block(id, type),
-    from,
-    to,
-  });
-  // The spec's blocks, each reading's markdown range inside the block it stands in: the answered
-  // question, a copy of it with no ask row of its own, the decision, and a reading in none.
+  // The spec's blocks: the answered question, a copy of it with no ask row of its own, the
+  // decision, a reading in each and one in none. The tree read answers the decision as a node of
+  // its own and places each reading where the store's `part_of` reaches: under the ask or the
+  // decision it reads, the reading in the copy under the source's ask, and the one in none under
+  // the issue.
   const documents = [
     {
       artifactId: spec.id,
       blocks: [
-        placed("q1", "ask", 0, 100),
-        placed("q1-reading", "reading", 60, 95),
-        placed("q2", "ask", 110, 200),
-        placed("q2-reading", "reading", 160, 195),
-        placed("d1", "decision", 210, 300),
-        placed("d1-reading", "reading", 260, 295),
-        placed("loose", "reading", 310, 330),
+        block("q1", "ask"),
+        block("q1-reading", "reading"),
+        block("q2", "ask"),
+        block("q2-reading", "reading"),
+        block("d1-reading", "reading"),
+        block("loose", "reading"),
       ],
     },
   ];
+  const parents = { "d1-reading": "d1", "q1-reading": "q1", "q2-reading": "q1" };
   const reading = (blockId: string): NonNullable<DecisionEntry["readings"]>[number] => ({
     artifact_id: spec.id,
     authored_by: { id: "planner", kind: "session" },
@@ -2360,6 +2372,11 @@ test("a reading sits under the ask or the decision it reads", () => {
     text: inSpec.question,
   };
   const decided = decision("d1", "Read it once.", []);
+  const decisionNode = answerNode("d1", "decision", KEY, {
+    decision: decided,
+    document: { artifact_id: spec.id, position: 4, slug: SPEC },
+    text: decided.text,
+  });
   const read: IssueDecisions = {
     decisions: [],
     document: null,
@@ -2398,6 +2415,8 @@ test("a reading sits under the ask or the decision it reads", () => {
     decisions: read,
     documents,
     issue: issueDetails([spec]),
+    nodes: [decisionNode],
+    parents,
   });
   expect(parentsOf(root, "d1-reading")).toEqual([blockNodeId(SPEC, "d1")]);
   expect(parentsOf(root, "q1-reading")).toEqual([blockNodeId(SPEC, "q1")]);
@@ -2406,7 +2425,14 @@ test("a reading sits under the ask or the decision it reads", () => {
   expect(parentsOf(root, "loose")).toEqual([KEY]);
   expect(nodeOf(root, blockNodeId(SPEC, "d1-reading"))?.type).toBe("reading");
 
-  const unread = treeOf({ asks: [inSpec], documents, issue: issueDetails([spec]) });
+  // Before the decisions read answers, the tree read places each reading as it did above.
+  const unread = treeOf({
+    asks: [inSpec],
+    documents,
+    issue: issueDetails([spec]),
+    nodes: [decisionNode],
+    parents,
+  });
   expect(parentsOf(unread, "d1-reading")).toEqual([blockNodeId(SPEC, "d1")]);
   expect(parentsOf(unread, "q1-reading")).toEqual([blockNodeId(SPEC, "q1")]);
   expect(parentsOf(unread, "q2-reading")).toEqual([blockNodeId(SPEC, "q2")]);
