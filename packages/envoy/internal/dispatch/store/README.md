@@ -36,6 +36,7 @@ The concurrent mode above is the way through:
 a first line of exactly `-- pgmigrate:non-transactional`, then one `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, non-unique and named.
 `graph_tuples` and `graph_nodes` are unpartitioned for that reason, and a later index on either is one such migration.
 An enabled DDL event trigger voids the exemption, and a UNIQUE build is refused, so a unique key on a table that size needs a stop-the-world migration instead.
+An expression index keeps the values it computed when its immutable function is replaced, so a migration that redefines `canonical_login` (`20261117000831`) runs `REINDEX INDEX CONCURRENTLY agent_tokens_canonical_owner` (`20261121192554`) in the same release.
 
 **A migration must leave the release before it able to read and write the schema.**
 A Dispatch release rolls, so the old build and the new build run against this schema at once, and nothing at boot refuses a schema newer than the binary knows.
@@ -57,7 +58,7 @@ A statement that makes a writer's own transition without the rest of what that w
 the last item is the broker's own clear, which recovers neither:
 
 - **An account written into `people.sub` by itself**, rather than that account signing in, records none of the revocations a sign-in records; the trigger `people_account_binding_replacement` keeps the change (migration `20261121180429`), and once the account binding holds, the revocation loop's catch-up (`CatchUpAccountBinding`) does what that sign-in would have done.
-  Say A held the address and B took it: writing A back is caught up by settling what is still owed for A and recording B's revocation naming A, which the loop pays, so the broker ends B's credentials and stops refusing A (`TestTheTriggerKeepsEveryChangeAWriterWithoutTheBindingMakesWhateverTheFleetReads`).
+  Say A held the address and B took it: writing A back is caught up by settling what is still owed for A and recording B's revocation naming A (`TestACatchUpOwesNothingToTheAccountThatHoldsTheAddressAgain` holds that a catch-up owes B's revocation alone, naming A, after A took the address back while the binding was off), which the loop pays, so the broker ends B's credentials and stops refusing A.
   Until then, while a build without the binding is in the fleet, B's credentials stay live at the broker, which serves them secrets without asking Dispatch, and the broker goes on refusing A.
   To recover at once, by hand, do on Dispatch's database what that sign-in would have done: first settle every revocation still owed for the account `people` records now (A), as a sign-in that takes an address back does (`settleReclaimedBrokerRevocationsSQL`), so the loop never pays one that would end what A holds; then record the revocation of the account the statement replaced (B, the `sub` it overwrote), naming A as its holder, exactly as a sign-in records one (`recordBrokerRevocationSQL`; an upsert where B was recorded before).
   The server's loop then pays it: the broker ends B's credentials and, since a revoke naming A as the holder deletes its record of A, stops refusing A.
