@@ -239,10 +239,18 @@ func TestAFixedProcessWhoseRoleMayNotReadTheMarkerNeverRuns(t *testing.T) {
 	if _, err := conn.Exec(ctx, "set role "+role); err != nil {
 		t.Fatalf("take the reading role: %v", err)
 	}
+	// The connection holds the role, and the start's deadline below can close it mid-read, so it
+	// goes back to no pool: it is taken out and closed. The role is dropped through the pool, and a
+	// role still there afterwards fails the row, so none outlives it on a long-lived server.
 	t.Cleanup(func() {
-		_, _ = conn.Exec(context.Background(), "reset role")
-		_, _ = conn.Exec(context.Background(), "drop role "+role)
-		conn.Release()
+		_ = conn.Hijack().Close(context.Background())
+		if _, err := pool.Exec(context.Background(), "drop role "+role); err != nil {
+			t.Errorf("drop the reading role %s: %v", role, err)
+		}
+		var left int
+		if err := pool.QueryRow(context.Background(), "select count(*) from pg_roles where rolname = $1", role).Scan(&left); err != nil || left != 0 {
+			t.Errorf("the reading role %s is still there after the row (%d, %v)", role, left, err)
+		}
 	})
 	db := conn.Conn()
 
