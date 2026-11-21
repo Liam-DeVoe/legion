@@ -393,6 +393,10 @@ func (r *outageRig) counter(t *testing.T, series string) int64 {
 // heldDroppedUndecided is the series of the frames the hold dropped undecided at its limit.
 const heldDroppedUndecided = `envoy_listener_held_dropped_total{reason="undecided"}`
 
+// relayDecidedUnknown is the series of the frames the relay decided while the answer was unknown,
+// each of which it holds.
+const relayDecidedUnknown = `envoy_listener_project_decisions_total{answer="unknown"}`
+
 // slackWatch counts what is published on either Slack lane: notifications.slack.> and every
 // private project's notifications.legion.<token>.slack.>.
 type slackWatch struct {
@@ -546,8 +550,31 @@ func (s *outageScene) outage(t *testing.T, phase outagePhase, c outageCase) {
 	s.heartbeat(t)
 	c.start(s.chain)
 	dropsBefore := s.rig.counter(t, heldDroppedUndecided)
+	unknownBefore := s.rig.counter(t, relayDecidedUnknown)
 	stored := time.Now()
 	held := s.store(t, phase.held)
+
+	// The relay decides the frame alone, so its read is the only one in flight and the hold
+	// begins c.firstRead after the store. A Slack event or a route sent first would take that
+	// read, and the relay's decision would wait for the next one (k7Reader), beginning the hold
+	// up to one more read later.
+	delivered := false
+	decideBy := time.Now().Add(outageArrival)
+	for {
+		if frame, ok := s.next(outageE, 100*time.Millisecond); ok {
+			s.find(t, "%s: E, whose token lists no project, received %s's frame %s %s after it was stored, during the outage",
+				name, projectOfFrame(frame), frame.item.EventID, frame.arrived.Sub(stored).Round(time.Millisecond))
+			delivered = true
+			break
+		}
+		if s.rig.counter(t, relayDecidedUnknown) > unknownBefore {
+			break
+		}
+		if time.Now().After(decideBy) {
+			s.find(t, "%s: the relay took no decision on %s's frame %s within %s", name, phase.held, held.EventID, outageArrival)
+			break
+		}
+	}
 
 	slackBefore := s.slack.count()
 	slackAnswer, slackTook := s.slackEvent()
@@ -566,7 +593,7 @@ func (s *outageScene) outage(t *testing.T, phase outagePhase, c outageCase) {
 	// outage let through.
 	var dropped time.Duration
 	deadline := time.Now().Add(outageDropWithin)
-	for dropped == 0 {
+	for !delivered && dropped == 0 {
 		if frame, ok := s.next(outageE, 100*time.Millisecond); ok {
 			s.find(t, "%s: E, whose token lists no project, received %s's frame %s %s after it was stored, during the outage",
 				name, projectOfFrame(frame), frame.item.EventID, frame.arrived.Sub(stored).Round(time.Millisecond))
