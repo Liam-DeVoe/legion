@@ -913,13 +913,18 @@ check_k4() {
 
 	# A stand-in on a .svc name of its own, which the stack does not have. It is this run's
 	# own: one Python HTTP server on loopback, reached by the .svc name with curl --resolve,
-	# because a Legion pod's /etc/hosts cannot be written.
-	local svc_port
-	svc_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+	# because a Legion pod's /etc/hosts cannot be written. The server binds a port the system
+	# picks and names it in the line it logs, so the port is its own from the bind on: a port
+	# chosen here and let go before the server bound it could be taken by any other process on
+	# this machine in between. -u writes that line at once rather than when a buffer fills.
+	local svc_pid svc_port
 	mkdir -p "$WORK_DIR/svc"
 	echo "the .svc stand-in answered" >"$WORK_DIR/svc/index.html"
-	(cd "$WORK_DIR/svc" && exec python3 -m http.server "$svc_port" --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
-	HELPER_PIDS+=($!)
+	(cd "$WORK_DIR/svc" && exec python3 -u -m http.server 0 --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
+	svc_pid=$!
+	HELPER_PIDS+=("$svc_pid")
+	await "the .svc stand-in" 30 "$WORK_DIR/svc.log" '^Serving HTTP on 127\.0\.0\.1 port [0-9]+ ' "$svc_pid"
+	svc_port="$(sed -n 's/^Serving HTTP on 127\.0\.0\.1 port \([0-9][0-9]*\) .*/\1/p' "$WORK_DIR/svc.log")"
 
 	local s_before t_before
 	s_before="$(records_count s)"

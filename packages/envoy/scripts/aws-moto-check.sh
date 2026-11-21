@@ -3,14 +3,15 @@
 #
 # Runs the built agent-secrets against moto's AWS, with no AWS account
 # (cmd/cipher/secret_moto_test.go, TestTheBuiltCLIAgainstMoto): it starts moto 5.2.5 on a
-# free loopback port under the account the tests' key ARN names, waits until it answers, runs the
-# test with AGENT_SECRETS_MOTO_URL naming it and AGENT_SECRETS_BINARY naming BINARY (empty: the
-# test builds the CLI from this tree), stops moto, and exits with go test's status.
+# loopback port moto binds and logs, under the account the tests' key ARN names, waits until it
+# answers, runs the test with AGENT_SECRETS_MOTO_URL naming it and AGENT_SECRETS_BINARY naming
+# BINARY (empty: the test builds the CLI from this tree), stops moto, and exits with go test's
+# status.
 #
 #   packages/envoy/scripts/aws-moto-check.sh [BINARY]
 #
 # BINARY is how a negative control runs an older release against the same moto. It needs uv
-# (uvx), curl, python3 and go.
+# (uvx), curl and go.
 set -euo pipefail
 
 binary="${1:-}"
@@ -30,21 +31,34 @@ cleanup() {
 }
 trap cleanup EXIT
 
-port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-url="http://127.0.0.1:$port"
-MOTO_ACCOUNT_ID=111122223333 uvx --from 'moto[server]==5.2.5' moto_server -H 127.0.0.1 -p "$port" >"$work/moto.log" 2>&1 &
+# moto binds a loopback port the system picks (-p 0) and names it in its " * Running on" line, so
+# the port is moto's from the bind on: a port chosen here and let go before moto bound it could
+# be taken by any other process on this machine in between, and the test would then run against
+# whatever answered there. The log exists before moto starts, so the first read finds a file.
+: >"$work/moto.log"
+MOTO_ACCOUNT_ID=111122223333 uvx --from 'moto[server]==5.2.5' moto_server -H 127.0.0.1 -p 0 >"$work/moto.log" 2>&1 &
 moto_pid=$!
 
 # The first run downloads moto, so the wait is long; a moto that exits stops it at once.
+url=""
 for _ in $(seq 1 240); do
-  curl -sf "$url/moto-api/" >/dev/null 2>&1 && break
+  if [ -z "$url" ]; then
+    port="$(sed -n 's|^ \* Running on http://127\.0\.0\.1:\([0-9][0-9]*\).*|\1|p' "$work/moto.log")"
+    [ -z "$port" ] || url="http://127.0.0.1:$port"
+  fi
+  [ -n "$url" ] && curl -sf "$url/moto-api/" >/dev/null 2>&1 && break
   if ! kill -0 "$moto_pid" 2>/dev/null; then
-    echo "aws-moto-check.sh: moto exited before it answered at $url:" >&2
+    echo "aws-moto-check.sh: moto exited before it answered${url:+ at $url}:" >&2
     cat "$work/moto.log" >&2
     exit 1
   fi
   sleep 0.5
 done
+if [ -z "$url" ]; then
+  echo "aws-moto-check.sh: moto did not name the port it listens on within 120 s:" >&2
+  cat "$work/moto.log" >&2
+  exit 1
+fi
 if ! curl -sf "$url/moto-api/" >/dev/null 2>&1; then
   echo "aws-moto-check.sh: moto did not answer at $url within 120 s:" >&2
   cat "$work/moto.log" >&2
