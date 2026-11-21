@@ -386,6 +386,12 @@ pass
 
 if [ "$priv_private" = 1 ]; then
   begin walk
+  # Each server writes the seed's windows and their vectors behind the seed's writes, in its own
+  # time, and the walk reads them beside the twin (the coverage route, each block's embedding,
+  # search's meaning leg): so both servers are read only once both have settled their meaning
+  # index (access-lib.sh's await_index_settled). No section since the seed wrote anything either
+  # server indexes.
+  await_index_settled "$index_settle_seconds" main twin
   until_true 120 "both servers to reconcile delivery once" reconciled
   logs_hold_own_writes
   # The route index this server serves, and the Probes of its own tables.
@@ -415,9 +421,10 @@ if [ "$priv_private" = 1 ]; then
   pass
 
   begin search
-  # Meaning search answers from vectors the embedding queue writes behind each write, so both
-  # servers are read only once neither owes a vector (access-lib.sh's indexed).
-  until_true 120 "both servers to owe no vector" indexed main twin
+  # Meaning search answers from the windows and vectors each server writes behind each write. The
+  # walk waited for both servers to settle them and wrote nothing they index, so this wait reads
+  # each server once, and a read of the walk's that wrote after all is waited for here.
+  await_index_settled "$index_settle_seconds" main twin
   for caller in "${unseeing_callers[@]}"; do
     for query in "q=paragraph&keywords_only=true" "q=paragraph" "q=remark&keywords_only=true" "q=remark"; do
       compare_twin "$caller" "/api/v1/search/results?$query"
@@ -471,8 +478,19 @@ if [ "$priv_private" = 1 ]; then
       expect_status 201 "$server: carol comments on PUB-1 while $caller's live socket is open"
       remember "$server" "live comment for $caller" "$(jq -r .id "$work/body")"
     done
+    # The written file names the PUB comment, written after PRIV's: the probe reads until the feed
+    # has sent every event its log lets the caller read of the writes (socket-access.ts), however
+    # long an open transaction holds the feed back, and the feed sends in id order, so a PRIV event
+    # main leaked has come by the time the PUB comment's does. alice's PRIV token reads no comment
+    # of them, so it names none, and its probe waits for nothing past the log's answer. The file is
+    # written whole and then moved into place, so the probe reads no part of it.
     for server in main twin; do
-      : >"$work/live-written-$server"
+      if [ "$caller" = alice-priv-token ]; then
+        : >"$work/live-written-$server.part"
+      else
+        recalled "$server" "live comment for $caller" >"$work/live-written-$server.part"
+      fi
+      mv "$work/live-written-$server.part" "$work/live-written-$server"
     done
     for server in main twin; do
       status=socket
