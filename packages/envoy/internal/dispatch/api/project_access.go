@@ -294,23 +294,24 @@ func (s *server) deleteProjectAccessPerson(w http.ResponseWriter, r *http.Reques
 
 // removePerson is access.RemovePrincipal for a person, which also owes the broker the revocation of
 // a restricted member's machine logins when the removal takes them off the list: it reads in the
-// removal's transaction whether the list named the person (access.NamesPerson), and only a removal
-// that took them off records the debt (recordMachineLoginRevocation), paid after the commit. Every
-// such removal owes it, whatever other project's list still names them, as R16's approved words
-// read: a machine login is no project's (each trade of it names its own project), so its revoke is
-// whole, and a person another list still names approves a new login, at their browser, for the
-// projects that list them. Its reads under the project's lock decide: where the read before the
-// locks did not find the debt, the person's addition to the list or their becoming a restricted
-// member having committed in between, the record takes the person's approval lock then, and while
-// an approval of theirs is in flight the removal is refused 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT
-// and changes nothing, for the owner to send again.
+// removal's transaction, before it takes them off, whether the removal owes it (access.RemovalOwes:
+// the list names the person and they are a restricted member), and only such a removal records
+// the debt (recordMachineLoginRevocation), paid after the commit. Every such removal owes it,
+// whatever other project's list still names them, as R16's approved words read: a machine login is
+// no project's (each trade of it names its own project), so its revoke is whole, and a person
+// another list still names approves a new login, at their browser, for the projects that list
+// them. Its read under the project's lock decides: where the same read before the locks did not
+// find the debt, the person's addition to the list or their becoming a restricted member having
+// committed in between, the record takes the person's approval lock then, and while an approval
+// of theirs is in flight the removal is refused 409 MACHINE_LOGIN_APPROVAL_IN_FLIGHT and changes
+// nothing, for the owner to send again.
 func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, email string, by model.Actor) (model.ProjectAccess, model.Event, error) {
-	named, err := access.NamesPerson(ctx, tx, key, email)
+	owes, err := access.RemovalOwes(ctx, tx, key, email)
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	answer, event, err := access.RemovePrincipal(ctx, tx, ev, key, kind, email, by)
-	if err != nil || !named {
+	if err != nil || !owes {
 		return answer, event, err
 	}
 	if err := s.recordMachineLoginRevocation(ctx, tx, email); err != nil {
@@ -323,26 +324,23 @@ func (s *server) removePerson(ctx context.Context, tx pgx.Tx, ev *events.Broker,
 }
 
 // recordMachineLoginRevocation records, in tx, that Dispatch owes the secrets broker the
-// revocation of every machine login person approved for their own machines, when people records
-// person as a restricted member (store.RecordMachineLoginRevocation). While it is owed, the
+// revocation of every machine login person approved for their own machines
+// (store.RecordMachineLoginRevocation). Its caller decided, in tx, that the write owes it: it took
+// a restricted member off a list that named them (access.RemovalOwes). While it is owed, the
 // person's approve is 409 (store.HoldMachineLoginApprovals), so only a login they approve once a
-// pass has settled it survives. A full member, a person with no row and a deployment with no broker
-// (Deps.AgentSecrets nil, where no machine login exists) owe nothing. The broker revocation loop
-// pays it after the write commits (revokeOwedMachineLogins), so the write never waits on the
-// broker: an owner removes a person while the broker is down. Every removal that takes the person
-// off a list records it (removePerson); it is written to be the one record any other write that
-// takes a restricted member off a project makes in its own transaction, after it names that person
-// to access.LockForAccessWrite as the one it removes. The record takes the person's approval lock
+// pass has settled it survives. A deployment with no broker (Deps.AgentSecrets nil, where no
+// machine login exists) owes nothing. The broker revocation loop pays it after the write commits
+// (revokeOwedMachineLogins), so the write never waits on the broker: an owner removes a person
+// while the broker is down. Every removal that takes the person off a list records it
+// (removePerson); it is written to be the one record any other write that takes a restricted
+// member off a project makes in its own transaction, after it names that person to
+// access.LockForAccessWrite as the one it removes. The record takes the person's approval lock
 // itself without waiting, so a write that did not take it first records under it or is refused
 // store.ErrMachineLoginApprovalInFlight, never records unordered against an approval in flight.
 func (s *server) recordMachineLoginRevocation(ctx context.Context, tx pgx.Tx, person string) error {
 	person = model.CanonicalLogin(person)
 	if s.deps.AgentSecrets == nil || person == "" {
 		return nil
-	}
-	kind, err := access.MemberKind(ctx, tx, person)
-	if err != nil || kind != model.MemberRestricted {
-		return err
 	}
 	return store.RecordMachineLoginRevocation(ctx, tx, person)
 }

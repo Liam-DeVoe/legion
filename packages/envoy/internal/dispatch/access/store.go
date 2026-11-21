@@ -88,7 +88,7 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 // secrets broker has not answered, and so holds no project's lock while it does; an approval of the
 // person's takes that lock alone, so no cycle forms through it. It takes it only where a read that
 // takes no lock finds that the removal owes the revocation of the person's machine logins
-// (removalOwes), since the person's approve does not wait for the lock and is refused while
+// (RemovalOwes), since the person's approve does not wait for the lock and is refused while
 // another holds it; a removal that finds it owes only under the project's lock takes it then
 // without waiting (store.RecordMachineLoginRevocation). A write of a group (PutGroup, DeleteGroup)
 // takes the name and then the projects its delete sweeps; a write of a project's list that names a
@@ -107,7 +107,7 @@ func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
 // LockForAccessWrite takes, in the order above, the locks a write of project key's access takes:
 // the approval lock of removed, the person the write takes off the list (empty for any other
 // write), where a read that takes no lock finds the removal owes the revocation of their machine
-// logins (removalOwes), then the group's name when the write names a group (empty when it names
+// logins (RemovalOwes), then the group's name when the write names a group (empty when it names
 // none), then the project's owner lock, the advisory lock every writer of a project takes
 // (store.LockOwner), and never a row lock on projects (TestNoForUpdateOnOwnerTables). It answers
 // the project's owner as tx reads it in the statement after that lock, nil for a project with
@@ -117,7 +117,7 @@ func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
 // took it, so the removal decides by its own reads under the project's lock whether it owes.
 func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group, removed string) (*string, error) {
 	if removed != "" {
-		owes, err := removalOwes(ctx, tx, key, removed)
+		owes, err := RemovalOwes(ctx, tx, key, removed)
 		if err != nil {
 			return nil, err
 		}
@@ -138,11 +138,13 @@ func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group, removed stri
 	return ReadOwner(ctx, tx, key)
 }
 
-// removalOwes reports whether a removal of the person login from project key's list owes the
-// revocation of their machine logins, as q reads it with no lock: the list names them and they are
-// a restricted member (api.removePerson, which decides by the same reads under the project's
-// lock). Its error names the project and never the person (TestNoAccessErrorNamesAPerson).
-func removalOwes(ctx context.Context, q Querier, key, login string) (bool, error) {
+// RemovalOwes reports whether a removal of the person login from project key's list owes the
+// revocation of their machine logins, as q reads it: the list names them and they are a restricted
+// member. It is the one rule for it: LockForAccessWrite reads it with no lock to decide whether to
+// take the person's approval lock first, and api.removePerson reads it again under the project's
+// lock, before it takes them off, to decide whether to record the debt. Its error names the
+// project and never the person (TestNoAccessErrorNamesAPerson).
+func RemovalOwes(ctx context.Context, q Querier, key, login string) (bool, error) {
 	var owes bool
 	if err := q.QueryRow(ctx, `
 		select exists (select 1 from project_access where project_key = $1 and principal_kind = $2 and principal = $3)
@@ -551,24 +553,6 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 		change = model.AccessGroupRemoved
 	}
 	return appendProjectChange(ctx, tx, ev, key, change, name, by)
-}
-
-// NamesPerson reports whether project key's access list names the person email, read in tx: a
-// removal asks it before RemovePrincipal to tell a removal that took a person off the list from one
-// that left it as it was. An email that names nobody is ErrPrincipalInput, as RemovePrincipal
-// answers it.
-func NamesPerson(ctx context.Context, tx pgx.Tx, key, email string) (bool, error) {
-	name, err := principalOf(PrincipalPerson, email)
-	if err != nil {
-		return false, err
-	}
-	var named bool
-	if err := tx.QueryRow(ctx, `
-		select exists (select 1 from project_access where project_key = $1 and principal_kind = $2 and principal = $3)
-	`, key, PrincipalPerson, name).Scan(&named); err != nil {
-		return false, fmt.Errorf("read whether project %s names %s: %w", key, name, err)
-	}
-	return named, nil
 }
 
 // appendProjectChange appends the event naming change on project key, records beside it what the
