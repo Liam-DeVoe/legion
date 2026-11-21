@@ -221,8 +221,8 @@ func TestEveryOutboxSubjectNamesItsProject(t *testing.T) {
 func TestADestinationKeyIsTheOneTheRecordAlreadyHolds(t *testing.T) {
 	stored := map[string]string{
 		model.IssueDestinationKey("PUB-1", "message.created"): "notifications.dispatch.issue.PUB-1.message.created",
-		model.SessionDestinationKey("s1"):                      "notifications.agent.s1",
-		model.RoleDestinationKey("reviewer"):                   "notifications.role.reviewer",
+		model.SessionDestinationKey("s1"):                     "notifications.agent.s1",
+		model.RoleDestinationKey("reviewer"):                  "notifications.role.reviewer",
 	}
 	for built, wrote := range stored {
 		if built != wrote {
