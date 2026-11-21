@@ -116,7 +116,7 @@ func requireNoGrantSourcesTheNotificationStream(t *testing.T, start func(testnat
 	}
 	rows := []sourceAttack{
 		{name: "session", connect: session, inbox: bus.DeliverSubject(a.id), src: privateSubject},
-		{name: "dispatch", connect: service("dispatch-token"), raw: natsgrant.Dispatch("example-dispatch"), inbox: "_INBOX.attack.dispatch", src: ">", reply: "_INBOX.reply.dispatch"},
+		{name: "dispatch", connect: service("dispatch-token"), raw: natsgrant.Dispatch("example-dispatch", natsgrant.DispatchIntake{}), inbox: "_INBOX.attack.dispatch", src: ">", reply: "_INBOX.reply.dispatch"},
 		{name: "listener", connect: service("listener-token"), raw: natsgrant.Listener("example-hub"), inbox: "_INBOX.attack.listener", src: ">", reply: "_INBOX.reply.listener"},
 		{name: "daemon", connect: service("daemon-token"), raw: natsgrant.Daemon(), inbox: "_INBOX.attack.daemon", src: ">", reply: "_INBOX.reply.daemon"},
 		{name: "measure", connect: service("measure-token"), raw: natsgrant.Measure(), inbox: "_INBOX_envoy_measure.attack", src: ">", reply: "_INBOX_envoy_measure.reply"},
@@ -230,24 +230,6 @@ func mustJSON(t *testing.T, value any) []byte {
 	raw, err := json.Marshal(value)
 	require.NoError(t, err)
 	return raw
-}
-
-// awaitPublishViolation waits for the server's publish permissions violation naming subject
-// among errs, failing the test when it does not come.
-func awaitPublishViolation(t *testing.T, errs <-chan error, subject string) {
-	t.Helper()
-	want := `Permissions Violation for Publish to "` + subject + `"`
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case err := <-errs:
-			if strings.Contains(err.Error(), want) {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("no %s: the request drew no answer and no refusal", want)
-		}
-	}
 }
 
 // drained is every error errs holds now, for a failure's message.

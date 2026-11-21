@@ -1102,10 +1102,10 @@ func tE3Rows(t *testing.T, now time.Time, a *session) []tE3Row {
 	t.Helper()
 	return []tE3Row{
 		{"a session", a.request(t, "nonce"), Decision{Name: "session/ses_a", Grant: must(natsgrant.Session("ses_a")), Expires: time.Unix(a.answer.ExpiresAt, 0)}, ""},
-		{"dispatch", serviceRequest("dispatch-token"), Decision{Name: "dispatch/example-dispatch", Grant: natsgrant.Dispatch("example-dispatch"), Expires: now.Add(time.Hour)}, ""},
-		{"a listener", serviceRequest("listener-token"), Decision{Name: listenerName, Grant: natsgrant.Listener("example-hub"), Expires: now.Add(time.Hour)}, ""},
-		{"a daemon", serviceRequest("daemon-token"), Decision{Name: "daemon/" + daemonAccount, Grant: natsgrant.Daemon(), Expires: now.Add(30 * time.Minute)}, ""},
-		{"measure", serviceRequest("measure-token"), Decision{Name: "measure/" + measureAccount, Grant: natsgrant.Measure(), Expires: now.Add(time.Hour)}, ""},
+		{"dispatch", serviceRequest("dispatch-token"), Decision{Name: "dispatch/example-dispatch", Grant: dispatchCalloutGrant("example-dispatch"), Expires: now.Add(time.Hour)}, ""},
+		{"a listener", serviceRequest("listener-token"), Decision{Name: listenerName, Grant: listenerCalloutGrant("example-hub"), Expires: now.Add(time.Hour)}, ""},
+		{"a daemon", serviceRequest("daemon-token"), Decision{Name: "daemon/" + daemonAccount, Grant: daemonCalloutGrant(daemonAccount), Expires: now.Add(30 * time.Minute)}, ""},
+		{"measure", serviceRequest("measure-token"), Decision{Name: "measure/" + measureAccount, Grant: natsgrant.ForCallout(natsgrant.Measure()), Expires: now.Add(time.Hour)}, ""},
 		{"no credential", Request{UserNkey: "UUSER", ServerID: "NSERVER"}, Decision{}, labelNoCredential},
 		{"an unlisted service", serviceRequest("unlisted-token"), Decision{}, labelServiceNotListed},
 		{"a two-hour token", serviceRequest("two-hours-token"), Decision{}, labelTokenTooLong},

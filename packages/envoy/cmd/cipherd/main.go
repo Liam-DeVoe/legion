@@ -806,9 +806,16 @@ func main() {
 	// and introspect against a broker that answers; it answers in the replicas' queue group until
 	// the drain begins.
 	if cfg.NATS.Enabled() {
+		// A service held to its exchange projects is held by the exchange list this broker trades
+		// by and by Dispatch's answers about those projects, which the service reads in the
+		// background; with no Dispatch to ask (BROKER_PROJECT_ACCESS_URL unset), it refuses that
+		// service by name.
 		deps := natscallout.Deps{
-			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify,
+			Introspect: provider.Introspect, ServiceToken: natsTokens.Verify, Exchange: exchangePolicy.MappedForAccount,
 			Log: slog.Default(), Metrics: natscallout.NewMetrics(registry),
+		}
+		if projectAccess != nil {
+			deps.Access = projectAccess.Access
 		}
 		// The writer hold's rule, only with its switch on (BROKER_NATS_HOLD_READ): the hold row is
 		// read at every decision, on a pool of its own, and verified against the operator's keys.

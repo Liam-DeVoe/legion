@@ -177,6 +177,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readString, func(f *fileConfig, v *string) { f.Controller = v }),
 		},
 		{
+			Name: "consumer_names", Default: "`fixed`", RequiredBy: "no",
+			Description: "How the daemon names its durable consumers: `fixed`, the names `legion-go-<project>-dispatch`, `-github` and `-wake` it has always used, or `fresh`, a new physical name at each creation of each, which the logical name's row of the daemon's `intake_consumers` table selects. On `fresh` the daemon refuses every consumer call until the operator's cutover has marked that table done; on `fixed` it refuses to start once the cutover has.",
+			Read:        reads(readString, func(f *fileConfig, v *string) { f.ConsumerNames = v }),
+		},
+		{
 			Name: "instructions", Default: "nothing is appended to an agent's system prompt", RequiredBy: "no",
 			Description: "A Markdown file of the deployment's standing rules — required checks, deploy and smoke commands, scope — appended to every agent's system prompt; it must hold no secret.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.Instructions = v }),
@@ -235,6 +240,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Name: "nats_daemon_nkey_seed_file", Default: "the daemon connects to NATS with no nkey user of its own", RequiredBy: "no",
 			Description: "The file holding the NATS nkey user seed for the daemon's own connection, readable by its owner alone, which no agent receives.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
+		},
+		{
+			Name: "nats_daemon_service_token_file", Default: "the daemon's own connection presents an nkey seed, or no credential", RequiredBy: "no",
+			Description: "The file holding the platform identity token the daemon's own NATS connection presents to a hub whose connections the NATS auth service in the secrets broker admits: a projected Kubernetes ServiceAccount token for that service's audience, read afresh at each connect, whose account the broker's `BROKER_NATS_SERVICES` lists as a daemon. The connection retries a refusal, takes the account's own reply prefix and moves to a later token before the one it presented lapses. No agent receives it; a daemon seed set beside it refuses boot naming both.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonServiceTokenFile = v }),
 		},
 		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set, and when runtime is kubernetes: every pod works one issue of a configured project",

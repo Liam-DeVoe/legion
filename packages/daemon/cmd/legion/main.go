@@ -23,6 +23,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/listenfd"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim"
@@ -214,8 +215,9 @@ func pluginsLine(cfg config.Config) string {
 // names a mise tool. Each refusal is written to stderr through printRefusal, as `legion start`
 // writes its own, so a URL a refusal quotes loses its query and its userinfo in both commands.
 // The OK line names the design-gate steps the file resolved to, in the order it named them
-// (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
-// public key when there is one, never the seed.
+// (`design-gate-steps=`, `none` for a deployment that gates none), each NATS nkey seed's public
+// key when there is one, never the seed, and the account the daemon's service token names when
+// nats_daemon_service_token_file is set, never the token.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level — in the words boot logs it with: what the key would have been refused for, and what
@@ -257,20 +259,23 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	if err == nil {
 		applyLinkedPlugins(&cfg)
 	}
-	paneNatsUser, daemonNatsUser := "", ""
+	var checked daemon.CheckedNATS
 	if err == nil {
-		paneNatsUser, daemonNatsUser, err = daemon.CheckStart(cfg, os.LookupEnv)
+		checked, err = daemon.CheckStart(cfg, os.LookupEnv)
 	}
 	if err != nil {
 		printRefusal(stderr, "legion config check", err)
 		return 1
 	}
 	ok := "Config OK: project=" + cfg.Project + " design-gate-steps=" + designGateSteps(cfg.Gates.Steps())
-	if paneNatsUser != "" {
-		ok += " nats-nkey-user=" + paneNatsUser
+	if checked.PaneUser != "" {
+		ok += " nats-nkey-user=" + checked.PaneUser
 	}
-	if daemonNatsUser != "" {
-		ok += " nats-daemon-nkey-user=" + daemonNatsUser
+	if checked.DaemonUser != "" {
+		ok += " nats-daemon-nkey-user=" + checked.DaemonUser
+	}
+	if checked.DaemonServiceAccount != "" {
+		ok += " nats-daemon-service-account=" + checked.DaemonServiceAccount
 	}
 	fmt.Fprintln(stdout, ok)
 	for _, warning := range cfg.Warnings {
@@ -623,6 +628,7 @@ func runState(ctx context.Context, c *operatorCall, asJSON bool, stdout, stderr 
 	for _, line := range webhookAppLines(state.Repositories.WithoutWebhookApp) {
 		fmt.Fprintln(stdout, line)
 	}
+	fmt.Fprintln(stdout, consumerNamesLine(state.Settings))
 	for _, line := range consumerLines(state.Consumers, state.Daemon.StartedAt, time.Now()) {
 		fmt.Fprintln(stdout, line)
 	}
@@ -1446,6 +1452,18 @@ func webhookAppLines(gaps []api.WebhookAppGapView) []string {
 		lines[i] = "webhook App missing on " + gap.Repo + ": " + gap.Reason
 	}
 	return lines
+}
+
+// consumerNamesLine is the line an operator reads for how the daemon names its durable consumers
+// (settings.consumer_names): on `fresh` the consumer lines after it carry each durable's logical
+// name, and the stream holds a fresh name of it. A daemon from before the setting serves none and
+// names them as `fixed` does.
+func consumerNamesLine(settings api.Settings) string {
+	mode := settings.ConsumerNames
+	if mode == "" {
+		mode = consumernames.ModeFixed
+	}
+	return "durable consumer names: " + string(mode)
 }
 
 // consumerLines are the lines an operator reads for the daemon's durable consumers

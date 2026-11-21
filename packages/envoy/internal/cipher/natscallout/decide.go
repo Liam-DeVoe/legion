@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/natshold"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/natscred"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -40,6 +41,13 @@ type Deps struct {
 	// (BROKER_NATS_K8S_AUDIENCE, BROKER_NATS_GOOGLE_AUDIENCE) and answers the account it names,
 	// whether that is a Google account, and when the token was issued and expires.
 	ServiceToken func(ctx context.Context, raw string) (account string, google bool, issued, expiry time.Time, err error)
+	// Exchange is the person and the projects the broker's own exchange list gives account, and
+	// false for an account no entry lists (exchange.Set.MappedForAccount). Nil, or a nil Access,
+	// holds no service to its projects, and refuses every entry that is not an all-projects one.
+	Exchange func(account string) (person string, projects []string, ok bool)
+	// Access is Dispatch's answer about one project (projectaccess). A decision never calls it:
+	// the service asks it in the background and decides on the pass it holds (heldAccess).
+	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
 	// Log is where the service's reporter writes the refusals, failed answers and drops it
@@ -63,6 +71,11 @@ type Deps struct {
 	// Start makes from HoldRead and HoldKeys (newHoldView). Nil with HoldRead set is a caller of
 	// Decide that started no replica (view).
 	hold *holdView
+
+	// held is the pass of Dispatch's answers and repository mapping a held entry's grant is built
+	// from, which Start makes and a decision reads (scopeGrant); nil until Start, when no held
+	// entry is admitted.
+	held *heldAccess
 }
 
 // view is the hold view a decision reads: the replica's, or, for a caller of Decide that started
@@ -158,6 +171,13 @@ const (
 	labelTokenTooLong      = "token_too_long"
 	labelServiceNotListed  = "service_not_listed"
 	labelHeldToProjects    = "held_to_projects"
+	labelNoExchangeEntry   = "no_exchange_entry"
+	labelProjectNotFound   = "project_not_found"
+	labelProjectNotVisible = "project_not_visible"
+	labelAccessRefused     = "project_access_refused"
+	labelNoProjects        = "no_exchange_projects"
+	labelGrantNotHoldable  = "grant_not_holdable"
+	labelNoCompletePass    = "no_complete_pass"
 	labelSystemSubject     = "system_subject"
 	labelOpenDirection     = "open_direction"
 	labelBudget            = "budget"
@@ -229,7 +249,7 @@ func decideOperator(ctx context.Context, deps Deps, entry ServiceEntry, expiry t
 	if err != nil {
 		phase = natsgrant.OperatorPhaseReleased
 	}
-	grant, err := scopeGrant(entry, natsgrant.Operator(phase))
+	grant, err := scopeGrant(ctx, deps, entry, natsgrant.Operator(phase), "")
 	if err != nil {
 		return Decision{}, err
 	}
@@ -365,7 +385,7 @@ func decideService(ctx context.Context, deps Deps, services []ServiceEntry, req 
 	if entry.Kind == KindOperator {
 		return decideOperator(ctx, deps, *entry, expiry)
 	}
-	grant, err := scopeGrant(*entry, serviceGrant(*entry, req.Name))
+	grant, err := scopeGrant(ctx, deps, *entry, serviceGrant(*entry, req.Name), req.Name)
 	if err != nil {
 		return Decision{}, err
 	}

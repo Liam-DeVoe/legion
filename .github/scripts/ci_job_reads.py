@@ -1079,9 +1079,11 @@ rig=$(../../{TAGGED_TESTS} natslive ./internal/testnats)
 go test -count=1 -tags natslive -run "$rig" ./internal/testnats/
 cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
 go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/
+grant=$(../../{TAGGED_TESTS} natslive ./natsgrant)
+go test -count=1 -timeout 5m -tags natslive -run "$grant" -v ./natsgrant/
 callout=$(../../{TAGGED_TESTS} natslive ./internal/cipher/natscallout)
 go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/cipher/natscallout/"""
-# One call per package, never one union -run over the three: a name an untagged test of one
+# One call per package, never one union -run over the four: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
@@ -1181,7 +1183,7 @@ FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout 
 ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
 ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
-DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
+DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/", "./internal/intake/"]
 # The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
 # forced-order.test.sh runs forced-order.sh three times, and the one run that gets as far as a go
 # test is over its fixture package, hooktest/skiponly, on the linked version; the other two are
@@ -3323,15 +3325,18 @@ GATES = [
              "packages, less DATABASE_SKIPS_RACE_ONLY, its command and the writer hold's client", {}),
         ]),
         # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
-        # test of internal/bus that needs a real server image, and the auth service's check that
-        # the deployed server lets an empty allow list through, which its guard refuses. The rest
-        # of internal/testnats runs in the unit step; the rest of internal/bus runs in
+        # test of internal/bus that needs a real server image, natsgrant's daemon grant held to its
+        # projects behind an auth callout on the hub's image, and the auth service's check that the
+        # deployed server lets an empty allow list through, which its guard refuses. The rest of
+        # internal/testnats and natsgrant runs in the unit step; the rest of internal/bus runs in
         # envoy-go-race, and the rest of internal/cipher/natscallout there and in the database-skips
         # step above, since UNIT_TEST_PATTERN leaves the race lane's packages out of the unit step,
-        # and the envoy_go entry of TAG_RUNS, one entry per step, checks the testnats half alone.
+        # and the envoy_go entry of TAG_RUNS, one entry per step, checks the testnats and natsgrant
+        # half.
         pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
             (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
             (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
+            (ENVOY, ["./natsgrant/"], "go test -tags natslive ./natsgrant/", {"tags": "natslive"}),
             (ENVOY, ["./internal/cipher/natscallout/"], "go test -tags natslive ./internal/cipher/natscallout/", {"tags": "natslive"}),
         ]),
     ], reads=reads(
@@ -4024,7 +4029,7 @@ TAG_RUNS = [
            f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests",
            job_file("listener-server-change")),
     TagRun("envoy_go", "envoy-go", NATS_MATRIX_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests",
+           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's and ./natsgrant's untagged tests",
            job_file("envoy-go")),
     TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_go", "envoy-infra-go",
            f"envoy-infra-go's own \"Unit test envoy-infra\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",

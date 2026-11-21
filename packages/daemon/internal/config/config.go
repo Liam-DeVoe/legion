@@ -10,8 +10,8 @@
 // keys outside it every pod needs.
 //
 // Load reads the file and nothing it names: a path key (`instructions`, `envoy_token_file`,
-// `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `operator_token_file`,
-// `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
+// `nats_nkey_seed_file`, `nats_daemon_nkey_seed_file`, `nats_daemon_service_token_file`,
+// `operator_token_file`, `hooks[].prompt_file`, `runtime.kubernetes.kubeconfig`) is resolved
 // against the file's directory and kept as a path. What sits at that path is read at boot, by
 // ReadSecretPointer, ReadDeploymentInstructions, ReadHookPrompt, and the runtime's client, so a
 // configuration loads on a machine that has none of the files it names; `legion config check`
@@ -33,6 +33,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sjawhar/envoy/consumernames"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -153,6 +155,10 @@ type Config struct {
 	// authenticates with, never handed to a pane, "" when the file names none (natsauth.DaemonSeed
 	// then reads NATS_DAEMON_NKEY_SEED_FILE or NATS_DAEMON_NKEY_SEED from the daemon's environment).
 	NatsDaemonNkeySeedFile string
+	// NatsDaemonServiceTokenFile is the file holding the platform identity token the daemon's own
+	// connection presents to a hub whose connections the NATS auth service admits
+	// (natsauth.ConnectService), never handed to a pane, "" when the file names none.
+	NatsDaemonServiceTokenFile string
 
 	// Stage 3's workflow dependencies. DispatchTokenFile remains a pointer here: boot reads the
 	// bearer only after every local configuration refusal has passed.
@@ -259,6 +265,13 @@ type Config struct {
 	// (leakguard.Manifest). The zero Setting is a deployment that runs no shared leak check of its
 	// own (resolveLeakCheck).
 	LeakCheck leakguard.Setting
+	// ConsumerNames is `consumer_names`: how the daemon names its durable consumers. Absent or
+	// `fixed` is the fixed names legion-go-<project>-<kind> the daemon has always used, and `fresh`
+	// a fresh physical name at each creation behind the selection record of intake_consumers
+	// (intake.ConsumerSpec.Names). Any other value refuses the load, naming it. The listener and
+	// Dispatch read the same choice from ENVOY_CONSUMER_NAMES; the daemon reads its settings from
+	// this file alone, and never that variable.
+	ConsumerNames consumernames.Mode
 	// Hooks is `hooks`: the deployment's own prompts, each put in front of named roles every
 	// Every moves back of the moves it selects. DefaultHooks() while the file names no key, and
 	// empty where it writes `hooks: []`, which runs none. A `prompt_file` is resolved against
@@ -399,15 +412,17 @@ type fileConfig struct {
 	NatsNkeySeedFile     *string
 	// NatsDaemonNkeySeedFile is `nats_daemon_nkey_seed_file`.
 	NatsDaemonNkeySeedFile *string
-	DispatchURL            *string
-	DispatchTokenFile      *string
-	Projects               map[string]Project
-	Gates                  *Gates
-	GitHubApps             *GitHubApps
-	Linger                 *time.Duration
-	ProductionCheckBound   *time.Duration
-	PodUpdateGrace         *time.Duration
-	StalledTreeNotice      *time.Duration
+	// NatsDaemonServiceTokenFile is `nats_daemon_service_token_file`.
+	NatsDaemonServiceTokenFile *string
+	DispatchURL                *string
+	DispatchTokenFile          *string
+	Projects                   map[string]Project
+	Gates                      *Gates
+	GitHubApps                 *GitHubApps
+	Linger                     *time.Duration
+	ProductionCheckBound       *time.Duration
+	PodUpdateGrace             *time.Duration
+	StalledTreeNotice          *time.Duration
 	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
 	// pointers as every other duration key here is: a file that leaves a key out is
 	// distinguishable from one that sets it, so resolve leaves the default standing for the
@@ -421,6 +436,7 @@ type fileConfig struct {
 	PodUpdateRoundsPerMinute *int
 	ReviewRoundCap           *int
 	Controller               *string
+	ConsumerNames            *string
 	Capabilities             *Capabilities
 	Durations                map[string]int
 	Counts                   map[string]int
@@ -1119,6 +1135,9 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if err := resolveLeakCheck(file, env, &cfg); err != nil {
 		return Config{}, err
 	}
+	if err := resolveConsumerNames(file, &cfg); err != nil {
+		return Config{}, err
+	}
 	if err := checkCommitIssueTrailerRenames(&cfg); err != nil {
 		return Config{}, err
 	}
@@ -1167,6 +1186,20 @@ func resolveControllerLaunch(file fileConfig, cfg *Config) error {
 		return errors.New("runtime.kubernetes.resources.controller sizes the pod of the controller the daemon launches, and controller: operator launches none: set controller: daemon or drop the key")
 	}
 	return nil
+}
+
+// resolveConsumerNames settles `consumer_names`: `fixed` when the file names none.
+func resolveConsumerNames(file fileConfig, cfg *Config) error {
+	cfg.ConsumerNames = consumernames.ModeFixed
+	if file.ConsumerNames == nil {
+		return nil
+	}
+	switch mode := consumernames.Mode(*file.ConsumerNames); mode {
+	case consumernames.ModeFixed, consumernames.ModeFresh:
+		cfg.ConsumerNames = mode
+		return nil
+	}
+	return fmt.Errorf("consumer_names must be 'fixed' or 'fresh' (got %q)", *file.ConsumerNames)
 }
 
 // checkProviderKeyFiles refuses a `provider_keys` entry naming a file (`file:/abs/path`) under
@@ -1316,6 +1349,9 @@ func resolveStage2(file fileConfig, configDir string, cfg *Config) error {
 	}
 	if file.NatsDaemonNkeySeedFile != nil {
 		cfg.NatsDaemonNkeySeedFile = underConfig(*file.NatsDaemonNkeySeedFile, configDir)
+	}
+	if file.NatsDaemonServiceTokenFile != nil {
+		cfg.NatsDaemonServiceTokenFile = underConfig(*file.NatsDaemonServiceTokenFile, configDir)
 	}
 	return nil
 }

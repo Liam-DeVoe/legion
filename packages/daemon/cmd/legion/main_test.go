@@ -1237,6 +1237,31 @@ func TestConfigCheckReadsTheDaemonNATSSeedAsBootDoes(t *testing.T) {
 	}
 }
 
+// `legion config check` reads the daemon's service token (nats_daemon_service_token_file) as boot
+// does, beside the pane seed: its OK line names the account the token names, as boot's line does,
+// and never the token.
+func TestConfigCheckNamesTheServiceTokensAccount(t *testing.T) {
+	legionState(t)
+	paneSeed, paneUser := testnkeys.User(t)
+	const account = "system:serviceaccount:legion-pub:legion-daemon"
+	token := testnkeys.ServiceToken(account, time.Now().Add(time.Hour))
+	config, _ := workflowConfig(t, 13370, "nats_daemon_service_token_file: ./nats-token\n")
+	if err := os.WriteFile(filepath.Join(filepath.Dir(config), "nats-token"), []byte(token), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("NATS_NKEY_SEED", paneSeed)
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+	if printed := out.String() + errb.String(); strings.Contains(printed, token) || strings.Contains(printed, paneSeed) {
+		t.Fatalf("the check printed a credential: stdout %q stderr %q", out.String(), errb.String())
+	}
+	if want := "Config OK: project=DEMO design-gate-steps=spec nats-nkey-user=" + paneUser + " nats-daemon-service-account=" + account + "\n" + demoProductionCheck + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("exit code = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+}
+
 // Under runtime: kubernetes, `legion config check` also makes boot's refusals of the runtime: an operator
 // pod that collides with Legion's own (a mount at Legion's launcher token projection, refused naming both
 // paths), and a kubeconfig that cannot be read — with no App key command run.
@@ -2627,6 +2652,43 @@ func plainStateOf(t *testing.T, served string) string {
 		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
 	}
 	return out.String()
+}
+
+// An operator reading plain `legion state` is told how the daemon names its durable consumers
+// (`settings.consumer_names`), on the line before the consumers' lag: on `fresh` the names those
+// lines carry are logical ones, each a fresh consumer on the stream. A daemon from before the
+// setting serves none, and names its consumers as `fixed` does, so the line says `fixed`.
+func TestPlainStateNamesTheConsumerNamingMode(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"issues":{},"pendingStatusWrites":[],` +
+		`"consumers":[{"name":"legion-go-LEGION-dispatch","waiting":0,"oldestAt":null,"oldestAgeSeconds":null,"lastHandledAt":null,"stalled":false}]`
+	for _, tc := range []struct {
+		name, settings, want string
+	}{
+		{name: "fresh", settings: `,"settings":{"consumer_names":"fresh"}`, want: "durable consumer names: fresh\nconsumer legion-go-LEGION-dispatch: 0 waiting\n"},
+		{name: "fixed", settings: `,"settings":{"consumer_names":"fixed"}`, want: "durable consumer names: fixed\nconsumer legion-go-LEGION-dispatch: 0 waiting\n"},
+		{name: "a daemon from before the setting", want: "durable consumer names: fixed\nconsumer legion-go-LEGION-dispatch: 0 waiting\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + tc.settings + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the lines %q", out.String(), tc.want)
+			}
+		})
+	}
 }
 
 // An operator reading plain `legion state` is told, one line per durable consumer, how many
