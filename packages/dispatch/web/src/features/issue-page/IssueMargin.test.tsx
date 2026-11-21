@@ -11,7 +11,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
@@ -20,6 +20,7 @@ import { realClock } from "../../__tests__/fake-clock";
 import { nextFrame } from "../../__tests__/frames";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { panelOf, pickNamed } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -3216,9 +3217,9 @@ test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus 
 });
 
 // Outside the new issue page Referenced by is as on every other page: a read that fails after the
-// list answered draws its line over that list, and Retry is disabled while the read it sent is
-// out.
-test("outside Details, Referenced by draws its line over the list it holds, and its Retry is disabled while the read it sent is out", async () => {
+// list answered draws its line over that list, and Retry is held (`heldPress`, `aria-disabled`)
+// while the read it sent is out.
+test("outside Details, Referenced by draws its line over the list it holds, and its Retry is held while the read it sent is out", async () => {
   const user = userEvent.setup();
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
@@ -3243,9 +3244,12 @@ test("outside Details, Referenced by draws its line over the list it holds, and 
     getReferences.mockImplementationOnce(() => new Promise(() => undefined));
     await user.click(retry);
     await waitFor(() =>
-      expect(retry, "Retry outside Details is not disabled while its read is out").toBeDisabled()
+      expect(retry, "Retry outside Details is not held while its read is out").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
     );
-    expect(retry, "Retry outside Details reads aria-disabled").not.toHaveAttribute("aria-disabled");
+    expect(retry, "Retry outside Details is disabled while its read is out").not.toBeDisabled();
   } finally {
     view.unmount();
     queryClient.clear();
@@ -3488,6 +3492,21 @@ const oneLivePriority: Priorities = {
   priority_work_parked: { by_priority: {}, count: 0, issues: [] },
   work_under_no_priority: { by_project: {}, count: 0, issues: [] },
 };
+
+/** Picks `oneLivePriority`'s one priority, "Evals collecting data now", in Priority to advance:
+ *  the shared list's single pick (`IssuePriorityLine`), which this tree draws where `main` drew a
+ *  select. A press on its trigger opens the list, the priority is pressed once the read lists it,
+ *  and the pick hands the focus back to the trigger, which it returns. */
+async function pickEvalsToAdvance(user: UserEvent): Promise<HTMLElement> {
+  const picker = await screen.findByRole("button", {
+    name: pickNamed(CONTROL_LABELS.priority_to_advance),
+  });
+  await user.click(picker);
+  await user.click(
+    await within(panelOf(picker)).findByRole("option", { name: /Evals collecting data now$/ })
+  );
+  return picker;
+}
 
 // The add control lists what has no value yet, so where nothing can be added - a closed issue,
 // or one with a value for every property the menu lists - it is not drawn at all.
@@ -3819,7 +3838,7 @@ test("Add lists no entry whose control is disabled, and lists it again once it i
     await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
     await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.advances }));
     const form = await screen.findByTestId("issue-advances");
-    await user.selectOptions(await within(form).findByRole("combobox"), "evals-now");
+    await pickEvalsToAdvance(user);
     await user.click(within(form).getByRole("button", { name: CONTROL_LABELS.add }));
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     // Refused while its write is out, by the rule Add reads (`usableControl`): `disabled`, or
@@ -4041,11 +4060,7 @@ test.each(
     const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
     act(() => control.focus());
     await user.keyboard("{Enter}");
-    const picker = await screen.findByRole("combobox", {
-      name: CONTROL_LABELS.priority_to_advance,
-    });
-    await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
-    await user.selectOptions(picker, "evals-now");
+    const picker = await pickEvalsToAdvance(user);
     const form = picker.closest("form");
     if (form === null) throw new Error("the picker is in no form");
     // The issue's read after the write is held, so the write lands, and the line gives the focus
@@ -4415,11 +4430,7 @@ test("the line moved into the Advances row elsewhere after the reader's own add 
   let unmount = otherPage.unmount;
   try {
     await user.click(await screen.findByRole("button", { name: addPriorityControlName("CORE-9") }));
-    const picker = await screen.findByRole("combobox", {
-      name: CONTROL_LABELS.priority_to_advance,
-    });
-    await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
-    await user.selectOptions(picker, "evals-now");
+    await pickEvalsToAdvance(user);
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
     await waitFor(() =>
       expect(
@@ -4454,11 +4465,7 @@ async function addFirstPriority(user: UserEvent): Promise<void> {
   const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
   act(() => control.focus());
   await user.keyboard("{Enter}");
-  const picker = await screen.findByRole("combobox", {
-    name: CONTROL_LABELS.priority_to_advance,
-  });
-  await within(picker).findByRole("option", { name: /Evals collecting data now$/ });
-  await user.selectOptions(picker, "evals-now");
+  await pickEvalsToAdvance(user);
   await user.tab();
   await user.keyboard("{Enter}");
 }
@@ -5838,6 +5845,9 @@ test("on an issue with no label, the Add menu's Labels and the key l reach the l
     );
     await user.keyboard("{Escape}");
     await waitFor(() => expect(control).toHaveAttribute("aria-expanded", "false"));
+    // Escape gives the focus back to the labels' control, a list's trigger, which takes the keys a
+    // select takes (`isEditableTarget`, `shell/keymap.ts`), so `l` is pressed from the page.
+    act(() => control.blur());
 
     await user.keyboard("l");
     await waitFor(() =>
@@ -5990,6 +6000,94 @@ test("with Development closed, l is off, and on again once Development opens", a
     view.unmount();
     restore();
     window.localStorage.removeItem(userPreferenceStorageKey("alice", "issue.margin-sections"));
+  }
+});
+
+/** The details slot and the margin's own content in a Details drawer that opens as the shell's
+ *  does (`Margin.tsx`): shut at first, its `aside` hidden, and open once a control sets it so
+ *  (`useOpenDetailsAt`). */
+function DetailsInDrawer({ details }: { details: IssueDetails }): ReactNode {
+  const [open, setOpen] = useState(false);
+  const drawer = useMemo<MarginDrawer>(() => ({ open, setOpen, setPage: () => undefined }), [open]);
+  return (
+    <MarginSlotProvider drawer={drawer} drawsSlot>
+      <DetailsSlot issue={details} route={{ key: "CORE-1", kind: "issue" }} />
+      {/* Shut, as the drawer draws it: `hidden`, which a browser draws as `display: none` and
+          happy-dom draws as nothing at all. */}
+      <aside
+        hidden={!open}
+        style={open ? undefined : { display: "none" }}
+        {...{ [DETAILS_ATTRIBUTE]: "" }}
+      >
+        <MarginBody />
+      </aside>
+    </MarginSlotProvider>
+  );
+}
+
+// `l` is the catalogue's Edit labels (`issue.labels`), one action on both issue pages, so the key
+// a person gives it in Settings is the key that opens Details at the Labels row here, with the
+// labels' control pressed, and `l` is then no key of it. While the slot bound `l` written out
+// whole, `l` opened Details whatever key the person had given Edit labels, and theirs did nothing.
+test("a key a person stored for Edit labels opens Details at the Labels row, and l no longer does", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  // The labels' popover reads the project's issues for the labels it offers.
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
+  // Details open reads what references the issue.
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const stored = userPreferenceStorageKey("alice", "shell.keymap");
+  window.localStorage.setItem(stored, JSON.stringify({ "issue.labels": ["Shift+L"] }));
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false, staleTime: Infinity } },
+  });
+  const view = render(
+    <MemoryRouter initialEntries={["/issues/CORE-1"]}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider login="alice">
+          <IssueKeys />
+          <MarginProvider>
+            <DetailsInDrawer details={issue} />
+          </MarginProvider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const row = await waitFor(() => rowAt("labels"));
+    const drawer = row.closest(`aside[${DETAILS_ATTRIBUTE}]`);
+    expect(drawer, "the Labels row is not in the shut drawer").toHaveAttribute("hidden");
+    const control = row.querySelector(
+      `button[aria-label="${labelsControlName("CORE-1", { labels: [], saving: false, words: CONTROL_NAME_WORDS })}"]`
+    );
+    expect(control, "the Labels row draws no labels control").toBeInstanceOf(HTMLButtonElement);
+
+    await user.keyboard("l");
+    expect(
+      drawer,
+      "l opened Details, though the person gave Edit labels another key"
+    ).toHaveAttribute("hidden");
+    expect(control, "l opened the labels control").toHaveAttribute("aria-expanded", "false");
+
+    await user.keyboard("{Shift>}L{/Shift}");
+    await waitFor(() =>
+      expect(drawer, "the person's key for Edit labels did not open Details").not.toHaveAttribute(
+        "hidden"
+      )
+    );
+    await waitFor(() =>
+      expect(
+        control,
+        "the person's key for Edit labels did not open the labels control"
+      ).toHaveAttribute("aria-expanded", "true")
+    );
+  } finally {
+    view.unmount();
+    listIssues.mockRestore();
+    getReferences.mockRestore();
+    restore();
+    window.localStorage.removeItem(stored);
   }
 });
 

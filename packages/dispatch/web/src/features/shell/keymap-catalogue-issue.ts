@@ -5,8 +5,8 @@ import type { ScopeTable } from "./keymap-catalogue";
 export const ISSUE_ACTIONS = {
   // Today's issue page: `issue/IssuePage.tsx`, `issue/IssueHeader.tsx` and the Conversation tab.
   // The new issue page registers the actions of `issue-both` too: the header's keys
-  // (`issue-page/useHeaderKeys.ts`), its command bar rows (`issue-page/useIssuePalette.ts`) and
-  // the tab chords.
+  // (`issue-page/useHeaderKeys.ts`), Details' Edit labels (`issue-page/slots/details.tsx`), its
+  // command bar rows (`issue-page/useIssuePalette.ts`) and the tab chords.
   status: {
     label: "Open the status menu",
     keys: ["s"],
@@ -27,11 +27,13 @@ export const ISSUE_ACTIONS = {
     writes: true,
     surface: "issue-both",
   },
+  // On the new page the labels' control is in Details' Labels row, so the key opens Details there
+  // and presses it.
   labels: {
-    label: "Edit labels",
+    label: "Edit labels (on the new page, in Details)",
     keys: ["l"],
     palette: true,
-    surface: "issue",
+    surface: "issue-both",
   },
   title: {
     label: "Edit the title",

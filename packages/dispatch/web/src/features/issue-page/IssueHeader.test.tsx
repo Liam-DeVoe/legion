@@ -10,7 +10,7 @@ import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pickNamed } from "../../__tests__/list-picks";
-import { choicesOf, pickFromMenu } from "../../__tests__/menu-picks";
+import { choicesOf, menuOpen, pickFromMenu } from "../../__tests__/menu-picks";
 import { answerRequests } from "../../__tests__/network";
 import {
   artifactRecordHandler,
@@ -1055,9 +1055,10 @@ test("Shift+P is offered with the actions menu shut, and pins the issue", async 
   }
 });
 
-// The pin is disabled while its write is out, and the menu it was pressed from is shut again by
-// then: read up to that shut group, a disabled pin still takes no press, so `Shift+P` is off. A
-// key press is not read here: a disabled button takes no click whatever the key rule says.
+// The pin is held while its write is out (`heldPress`, `aria-disabled`), and the menu it was
+// pressed from is shut again by then: read up to that shut group, a held pin still takes no press,
+// so `Shift+P` is off. A key press is not read here: a held pin's click does nothing whatever the
+// key rule says.
 test("Shift+P is off while the pin's write is out", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
@@ -1071,13 +1072,16 @@ test("Shift+P is off while the pin's write is out", async () => {
     const pin = screen.getByRole("button", { name: CONTROL_LABELS.pin_issue });
     await user.click(pin);
     await waitFor(() =>
-      expect(pin, "the pin is not disabled while its write is out").toBeDisabled()
+      expect(pin, "the pin is not held while its write is out").toHaveAttribute(
+        "aria-disabled",
+        "true"
+      )
     );
     expect(screen.getByRole("button", { name: CONTROL_LABELS.issue_actions })).toHaveAttribute(
       "aria-expanded",
       "false"
     );
-    expect(keyApplies("pin"), "Shift+P is offered while the pin is disabled").toBe(false);
+    expect(keyApplies("pin"), "Shift+P is offered while the pin is held").toBe(false);
   } finally {
     saved.resolve({ dismissed: [], last_read_seq: 0, pinned: true, seq: 1 });
     view.unmount();
@@ -1087,24 +1091,32 @@ test("Shift+P is off while the pin's write is out", async () => {
 });
 
 // The header's keys read the page's one rule (`usable-control.ts`), which refuses a control that
-// is busy, `aria-disabled`, as it refuses a disabled one: `s` is off while the status select is
-// `aria-disabled`, and focuses nothing.
-test("s is off while the status select is aria-disabled", async () => {
+// is busy, `aria-disabled`, as it refuses a disabled one: `s` is off while the status menu's
+// trigger is `aria-disabled`, and opens nothing.
+test("s is off while the status menu's trigger is aria-disabled", async () => {
   const user = userEvent.setup();
   const restore = stubHeader(issue);
   const view = renderHeader();
 
   try {
     const heading = await screen.findByRole("heading", { level: 1, name: issue.title });
-    const status = within(screen.getByTestId("issue-state-actions")).getByRole("combobox", {
-      name: "Status",
+    const status = within(screen.getByTestId("issue-state-actions")).getByRole("button", {
+      name: pickNamed("Status"),
     });
-    expect(keyApplies("status"), "s is off while the status select takes a press").toBe(true);
+    expect(keyApplies("status"), "s is off while the status menu's trigger takes a press").toBe(
+      true
+    );
     act(() => status.setAttribute("aria-disabled", "true"));
-    expect(keyApplies("status"), "s is offered while the status select is busy").toBe(false);
+    expect(keyApplies("status"), "s is offered while the status menu's trigger is busy").toBe(
+      false
+    );
     act(() => heading.focus());
     await user.keyboard("s");
-    expect(status, "s focused a busy status select").not.toHaveFocus();
+    expect(status, "s opened the status menu from a busy trigger").toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(menuOpen(), "s opened a menu while the status menu's trigger is busy").toBe(false);
   } finally {
     view.unmount();
     restore();

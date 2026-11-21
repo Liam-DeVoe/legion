@@ -130,10 +130,11 @@ function outsideInputsAndAskCards(): boolean {
  * `s`, `p` and `e` are offered exactly while their control takes a press by the page's one rule
  * (`usable-control.ts`, read through `headerControl` here), and the digits and `Shift+P` exactly
  * while theirs does and the focus is where those two may write (`outsideInputsAndAskCards`). The
- * rule refuses a control that is disabled (a closed issue, a save in flight), and also one that
- * is busy (`aria-disabled`), `aria-hidden` or not drawn. The pin is read only up to the shut
- * actions menu (`headerControl`), so the menu's `hidden` does not refuse it, nor does its not
- * being drawn there: `Shift+P` is offered while the shut menu hides the pin.
+ * rule refuses a control that is disabled (a closed issue), one that is busy (`aria-disabled`:
+ * held while its save is in flight, `heldPress`), and one that is `aria-hidden` or not drawn.
+ * The pin is read only up to the shut actions menu (`headerControl`), so the menu's `hidden`
+ * does not refuse it, nor does its not being drawn there: `Shift+P` is offered while the shut
+ * menu hides the pin.
  */
 export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
   useKeymap("issue", [

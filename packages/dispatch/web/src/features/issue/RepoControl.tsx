@@ -137,20 +137,22 @@ export type RepoControlFailure =
 /**
  * The issue's repository. It has two shapes, one per surface: the shared list
  * (`RepositoryList`) on every page today, and `main`'s box (`RepositoryBox`) inside `NoTooltips`,
- * the new issue page's design, which that page's own tree (INFRA-1196) decides. `inRow` acts
- * inside `NoTooltips` alone, so only the box reads it, and `held` outside it alone, so only the
- * list reads it. `RepositoryBox` is `main`'s text unchanged: its arms for outside `NoTooltips`
- * cannot run here, and it stays apart from `RepositoryList` until INFRA-1196 decides the new
- * page's repository.
+ * the new issue page's design, which that page's own tree (INFRA-1196) decides. `inRow`,
+ * `mappingsFreshness` and `sayFailure` act inside `NoTooltips` alone, so only the box reads them,
+ * and `held` outside it alone, so only the list reads it. `RepositoryBox` is `main`'s text
+ * unchanged: its arms for outside `NoTooltips` cannot run here, and it stays apart from
+ * `RepositoryList` until INFRA-1196 decides the new page's repository.
  */
 export function RepoControl({
   disabled = false,
   held = false,
   inRow = false,
   issueKey,
+  mappingsFreshness,
   project,
   repo,
   resolvedRepo,
+  sayFailure,
 }: {
   disabled?: boolean;
   /** The host's own write out (`RepositoryList`). It acts outside `NoTooltips` alone. */
@@ -159,15 +161,26 @@ export function RepoControl({
    *  `NoTooltips` alone. */
   inRow?: boolean;
   issueKey: string;
+  /** The options of the read of the mappings, in place of the app's defaults
+   *  (`RepositoryBox`). It acts inside `NoTooltips` alone. */
+  mappingsFreshness?: typeof EVENT_FRESH;
   project: string;
   repo: string | null;
   resolvedRepo: string | null;
+  /** Says a failed read of the mappings, or a failed write, in the host's own line, in place of
+   *  `QueryError` (`RepositoryBox`). It acts inside `NoTooltips` alone. */
+  sayFailure?: (failure: RepoControlFailure) => ReactNode;
 }): ReactNode {
   const shared = { disabled, issueKey, project, repo, resolvedRepo };
   return useTooltips() ? (
     <RepositoryList {...shared} held={held} />
   ) : (
-    <RepositoryBox {...shared} inRow={inRow} />
+    <RepositoryBox
+      {...shared}
+      inRow={inRow}
+      mappingsFreshness={mappingsFreshness}
+      sayFailure={sayFailure}
+    />
   );
 }
 

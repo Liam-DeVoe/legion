@@ -18,9 +18,6 @@ import type { SlotProps } from "../slot-props";
 import { usableControl } from "../usable-control";
 import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
 
-/** The key `l`'s name in the list of keys. */
-const LABELS_CONTROL_NAME = "Edit labels";
-
 /**
  * Details' properties: the one panel `IssueMarginPanel` draws, filled into the shell's Details
  * drawer.
@@ -35,8 +32,9 @@ const LABELS_CONTROL_NAME = "Edit labels";
  *
  * Slots share no state, so this slot keeps which of the two editors of its rows is open and
  * makes its own set of the issue's writes; the header's writes reach the same keyed line of the
- * issue (`useIssueHeaderWrites.ts`). It binds `l`, which opens Details at the Labels row with
- * the labels' control pressed.
+ * issue (`useIssueHeaderWrites.ts`). It binds the catalogue's Edit labels (`issue.labels`, `l`
+ * unless the person gave it another key), which opens Details at the Labels row with the labels'
+ * control pressed.
  */
 export function DetailsSlot({ issue }: SlotProps): ReactNode {
   const state = useQuery(userStateQuery()).data;
@@ -76,19 +74,18 @@ export function DetailsSlot({ issue }: SlotProps): ReactNode {
     {
       // The labels' control is in Details' Labels row: the key opens Details there and presses
       // it, as a reader does.
-      id: "labels",
-      keys: "l",
-      label: LABELS_CONTROL_NAME,
+      action: "issue.labels",
       run: () => openDetailsAt("labels", true),
       when: () => {
         // The control, by the name it has for the issue as it is now (`labelsControlName`):
         // "Add a label to CORE-1" while it has no label, "Edit labels" once it has one, and
         // "Saving labels of CORE-1" while a save of them is out, which the panel's labels read
         // from these same writes. While that save is out the control is busy, `aria-disabled` and
-        // refusing to open, so `l` acts only while the control takes a press (`usableControl`),
-        // which counts no refusal from Details being closed: the key opens Details at the row
-        // first. A closed Development is a refusal: it keeps the row on the page but `hidden`
-        // (`details-leaves.tsx`'s `PropertySection`), so `l` is off while Development is closed.
+        // refusing to open, so the key acts only while the control takes a press
+        // (`usableControl`), which counts no refusal from Details being closed: the key opens
+        // Details at the row first. A closed Development is a refusal: it keeps the row on the page
+        // but `hidden` (`details-leaves.tsx`'s `PropertySection`), so the key is off while
+        // Development is closed.
         const name = labelsControlName(issue.key, {
           labels: issue.labels ?? [],
           saving: writes.labels.isPending,

@@ -342,7 +342,7 @@ takes these keys while the focus is on the page itself or on a row of the outlin
 
 On the header, `s`, `p`, `0` – `3`, `e` and `Shift+P` work as on today's issue page. `a` and
 `Shift+R` approve and request changes while the focus is on an approval chip whose request waits
-on you.
+on you. `l` opens **Details** at **Labels** and opens the labels' control.
 
 The Plan and Verification filters show their own rows in place of the outline. Their rows take
 the outline's keys, but `Enter` does a different thing on each filter. A key that you change for
@@ -470,7 +470,7 @@ Dispatch refuses a key, and names the action that has it, when:
 - another action has it on the same page, or on a part shown at the same time. Each issue page is
   shown with its documents, and a project's page with its List, Board or Architecture tab.
   Today's issue page and the new one are never shown together, so an action of one page only can
-  have the key of an action of the other page only. The header's keys and the `t` keys are on
+  have the key of an action of the other page only. The header's keys, `l` and the `t` keys are on
   both pages, so each of them meets the keys of both pages. On the new issue page, `a` is the key
   of **Approve** on a focused approval chip and of **Answer the focused question** on a focused
   row. Only one of the two can run at a time, so the two actions can have the same key.

@@ -3,8 +3,9 @@
  * already renders, so a key does exactly what a click on it does. Scoping the lookup to
  * `[data-issue-header]` keeps a child issue's row in the Children tab - it carries the same
  * accessible names - out of reach. `IssuePage` reads it for the Status, priority, labels, title
- * and pin keys, and `IssueHeader` for Approve and Request changes; the new page's header reads it
- * for its own keys (`issue-page/useHeaderKeys.ts`), whose `<header>` carries the same mark.
+ * and pin keys, and `IssueHeader` for Approve and Request changes. The new page's `<header>`
+ * carries the same mark, but its keys (`issue-page/useHeaderKeys.ts`) read that page's one rule
+ * (`issue-page/usable-control.ts`), not this file.
  */
 const HEADER = "[data-issue-header]";
 

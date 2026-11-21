@@ -260,12 +260,11 @@ export function ReferencedBy({
    *  the read the press sent, or joined, has ended, since that press then took nothing away. Where
    *  it is passed, the failure line stands while the list holds no answer and a read of it has
    *  failed (`standsFailed`), in place of the loading line, as Details' own lines do, so the line
-   *  stays while the read Retry sent is out, and Retry keeps its focus then: it is drawn
-   *  `aria-disabled`, in place of `disabled`, since Chromium moves the focus of a control that
-   *  turns disabled to the page's body, and a press while the read is out joins it
-   *  (`cancelRefetch: false`) and sends nothing new. The new issue page's Details passes it.
-   *  Elsewhere the line stands while the last read failed, and Retry is `disabled` while its read
-   *  is out. */
+   *  stays while the read Retry sent is out, and Retry keeps its focus then, and a press while
+   *  the read is out joins it (`cancelRefetch: false`) and sends nothing new. The new issue
+   *  page's Details passes it. Elsewhere the line stands while the last read failed, and a press
+   *  while the read is out does nothing. On every page Retry is held while its read is out
+   *  (`heldPress`): `aria-disabled`, never `disabled`. */
   retried?: RefObject<boolean>;
   /** Takes Retry, so the host can hand the focus it holds on as it goes (`useFocusHandOff`). */
   retryRef?: Ref<HTMLButtonElement>;
@@ -286,16 +285,12 @@ export function ReferencedBy({
       Object.hasOwn(NODE_LABELS, edge.node.kind)
   );
   const groups = groupBySource(edges ?? []);
-  // Retry's attributes where the host notes its press (`retried`), spread over the ones it has on
-  // every page.
-  const retryInDetails:
-    | Pick<ButtonHTMLAttributes<HTMLButtonElement>, "aria-disabled" | "disabled" | "onClick">
-    | undefined =
+  // Retry's press where the host notes it (`retried`), spread over the one it has on every page:
+  // it joins the read that is out (`cancelRefetch: false`). `heldPress` holds Retry there too.
+  const retryInDetails: Pick<ButtonHTMLAttributes<HTMLButtonElement>, "onClick"> | undefined =
     retried === undefined
       ? undefined
       : {
-          "aria-disabled": query.isFetching || undefined,
-          disabled: false,
           onClick: () => {
             retried.current = true;
             void query.refetch({ cancelRefetch: false }).then((answer) => {
