@@ -1181,8 +1181,8 @@ func TestEveryWriteNamesTheSessionItsClientWritesAs(t *testing.T) {
 // *HTTPClient is a row of that table or one of the reads below, which send no actor, and each name
 // the two lists hold is a method the client has.
 func TestEveryMethodOfTheClientIsAReadOrAWriteOfTheTable(t *testing.T) {
-	reads := []string{"ListIssues", "GetIssue", "ListRepoProjects", "WebhookAppInstalled", "ArtifactSlugs", "EventsAfter",
-		"MessageBodiesSince", "Approval", "Handoff", "Whoami"}
+	reads := []string{"ListIssues", "GetIssue", "WebhookAppInstalled", "ArtifactSlugs", "EventsAfter", "MessageBodiesSince",
+		"Approval", "Handoff", "Whoami"}
 	listed := map[string]string{}
 	for _, read := range reads {
 		listed[read] = "the list of reads"
