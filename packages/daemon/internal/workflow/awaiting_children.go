@@ -592,12 +592,17 @@ func (e *Engine) KeepWaitChildren(ctx context.Context, tx pgx.Tx, issue record.I
 }
 
 // waitingRefusal refuses act — request_backward_move or sign_off (actBackwardMove, actSignOff) —
-// on issue, which stands in awaiting_children (WAITING_ON_CHILDREN, dispatch://INFRA-3320 R11):
-// each acts on a phase, and the parent stands in none. The reason names the open children as the
-// daemon reads them now, the start the parent holds and where the return takes it (goesBack), and
-// the architect's levers, which are the children. A parent whose last open child has gone since
-// the last admission pass is told that the next pass brings it back.
-func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, act architectAct) (intake.Result, error) {
+// of requester on issue, which stands in awaiting_children (WAITING_ON_CHILDREN,
+// dispatch://INFRA-3320 R11): each acts on a phase, and the parent stands in none. The reason
+// names the open children as the daemon reads them now, the start the parent holds and where the
+// return takes it (goesBack). To the architect, whose sign-off and move back these are, it ends
+// with the architect's levers, which are the children, the sentence on a status not taken yet and
+// the rules for ending a child (record.StatusNotTakenYet, record.EndChildRule), as every refusal
+// over children still in the workflow does. A phase worker's move back is refused here before the
+// guard reads its role (backward), and a worker acts on no child, so its refusal ends by naming
+// the architect that does instead. A parent whose last open child has gone since the last
+// admission pass is told that the next pass brings it back.
+func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Issue, act architectAct, requester claim.Role) (intake.Result, error) {
 	open, err := e.childrenOpen(ctx, tx, issue, nil)
 	if err != nil {
 		return intake.Result{}, err
@@ -610,9 +615,13 @@ func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 		return refused(waitingOnChildren, fmt.Sprintf("%s waits in awaiting_children, holding the start of %s, and no Dispatch child of it is open now: at the next admission pass it %s. It stands in no phase that %s acts on, so this %s changed nothing",
 			issue.Key, held, goesBack(held), act, act)), nil
 	}
-	return refused(waitingOnChildren, fmt.Sprintf("%[1]s waits in awaiting_children on these open Dispatch children of it: %[2]s. It stands in no phase that %[3]s acts on, so this %[3]s changed nothing; once no child under it is open, %[1]s %[4]s. "+
-		"Act on the children: release one that should run, or move one out from under %[1]s to an issue outside its tree or to no parent. %[5]s",
-		issue.Key, openChildNames(open), act, goesBack(held), record.EndChildRule)), nil
+	levers := fmt.Sprintf("The architect of %s acts on its children; tell it what you found.", issue.Key)
+	if requester == claim.RoleArchitect {
+		levers = fmt.Sprintf("Act on the children: release one that should run, or move one out from under %s to an issue outside its tree or to no parent. ", issue.Key) +
+			record.StatusNotTakenYet + " " + record.EndChildRule
+	}
+	return refused(waitingOnChildren, fmt.Sprintf("%[1]s waits in awaiting_children on these open Dispatch children of it: %[2]s. It stands in no phase that %[3]s acts on, so this %[3]s changed nothing; once no child under it is open, %[1]s %[4]s. %[5]s",
+		issue.Key, openChildNames(open), act, goesBack(held), levers)), nil
 }
 
 // goesBack is where the return takes a parent holding the start of held, as the refusals of an

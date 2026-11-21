@@ -614,28 +614,43 @@ const cwBackAsTesting = "goes back to testing by itself, or to %[1]s, the start 
 // awaiting_children are refused WAITING_ON_CHILDREN, naming the open children and the start the
 // parent holds, and change nothing. A parent whose last open child has gone since the last pass is
 // told that the next pass brings it back. The parent holds a start of reviewing, which comes back as
-// testing, and both refusals say so.
+// testing, and both refusals say so. The architect's refusals end with its levers, the children:
+// how to act on them, the sentence on a status not taken yet and the rules for ending a child
+// (record.StatusNotTakenYet, record.EndChildRule), as every refusal over children still in the
+// workflow does. A worker acts on no child, so its refusal ends by naming the architect that does
+// and gives none of the architect's rules.
 func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 	pool := migratedPool(t)
 	cwSeedWaiting(t, pool, cwParent, phase.Reviewing)
 	seedMirrorChild(t, pool, cwChild, "in_progress", cwParent)
 	apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
 	back := fmt.Sprintf(cwBackAsTesting, phase.Reviewing)
+	architects := "Act on the children: release one that should run, or move one out from under " + cwParent + " to an issue outside its tree or to no parent. " +
+		record.StatusNotTakenYet + " " + record.EndChildRule
+	workers := "The architect of " + cwParent + " acts on its children; tell it what you found."
 
 	for _, tc := range []struct {
-		name string
-		fact intake.Fact
-		act  string
+		name   string
+		fact   intake.Fact
+		act    string
+		ending string
+		absent []string
 	}{
-		{name: "the architect's move back", fact: intake.BackwardMove{Issue: cwParent, Requester: claim.RoleArchitect, To: phase.Implementing, Reason: "redo it"}, act: "request_backward_move"},
-		{name: "a worker's move back", fact: intake.BackwardMove{Issue: cwParent, Requester: claim.RoleTester, To: phase.Implementing, Reason: "redo it"}, act: "request_backward_move"},
-		{name: "the sign-off", fact: intake.SignOff{Issue: cwParent}, act: "sign_off"},
+		{name: "the architect's move back", fact: intake.BackwardMove{Issue: cwParent, Requester: claim.RoleArchitect, To: phase.Implementing, Reason: "redo it"}, act: "request_backward_move", ending: architects},
+		{name: "a worker's move back", fact: intake.BackwardMove{Issue: cwParent, Requester: claim.RoleTester, To: phase.Implementing, Reason: "redo it"}, act: "request_backward_move", ending: workers,
+			absent: []string{record.EndChildRule, record.StatusNotTakenYet, "Act on the children"}},
+		{name: "the sign-off", fact: intake.SignOff{Issue: cwParent}, act: "sign_off", ending: architects},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			message := refusedWith(t, apply(tc.name, tc.fact), waitingOnChildren, cwChild+" (in_progress)")
+			for _, word := range tc.absent {
+				if strings.Contains(message, word) {
+					t.Errorf("the refusal = %q; it says %q, which is the architect's to act on", message, word)
+				}
+			}
 			if want := cwParent + " waits in awaiting_children on these open Dispatch children of it: " + cwChild + " (in_progress). " +
 				"It stands in no phase that " + tc.act + " acts on, so this " + tc.act + " changed nothing; once no child under it is open, " + cwParent + " " + back + ". " +
-				"Act on the children: release one that should run, or move one out from under " + cwParent + " to an issue outside its tree or to no parent. " + record.EndChildRule; message != want {
+				tc.ending; message != want {
 				t.Fatalf("the refusal = %q, want %q", message, want)
 			}
 		})

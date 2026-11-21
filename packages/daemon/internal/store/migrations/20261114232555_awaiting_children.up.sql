@@ -70,7 +70,10 @@
 -- costs. A rollback below 20261111225552_phase_entry clears the three, by that section's statement
 -- for it: that migration's way back drops phases.entry, and the roll forward runs it again, which
 -- puts every role the earlier release handed work at entry 1 again, so a given task of entry 1
--- from before the rollback would match its row again in the same generation of its issue.
+-- from before the rollback would match its row again in the same generation of its issue. A role
+-- the earlier release handed no work stays at entry 0 after the roll forward, so a given task of
+-- entry 0, which a restart of a row at entry 0 writes, would match its row the same way; so the
+-- statement clears every row whose three columns are not at '', 0 and 0.
 --
 -- A daemon of an earlier release cannot run on this schema while a parent is in awaiting_children:
 -- it does not know the phase, and a write of such a row that leaves the phase without clearing the

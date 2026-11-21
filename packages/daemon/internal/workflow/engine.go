@@ -2069,7 +2069,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	// refused with the wait's own code before the table is read, which would only say that no
 	// backward row serves the phase (dispatch://INFRA-3320 R11).
 	if issue.Phase == phase.AwaitingChildren {
-		return e.waitingRefusal(ctx, tx, *issue, actBackwardMove)
+		return e.waitingRefusal(ctx, tx, *issue, actBackwardMove, fact.Requester)
 	}
 	// The table is the guard, and it reads three things: the move names a target, a backward row
 	// of the issue's phase serves that target - anything but an earlier phase has none - and the
@@ -2275,7 +2275,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 		return intake.Result{}, err
 	}
 	if issue.Phase == phase.AwaitingChildren {
-		return e.waitingRefusal(ctx, tx, *issue, actSignOff)
+		return e.waitingRefusal(ctx, tx, *issue, actSignOff, claim.RoleArchitect)
 	}
 	if issue.Phase != phase.Accepting {
 		return refused("SIGNOFF_OUTSIDE_ACCEPTING", fmt.Sprintf("%s is in phase %s, not accepting; this sign-off changed nothing", issue.Key, issue.Phase)), nil

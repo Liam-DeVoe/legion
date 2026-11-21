@@ -100,9 +100,10 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"When the daemon set the move back, write it again."
 
 // StatusNotTakenYet is the sentence that each refusal and notice over children still in the
-// workflow adds: sign_off's and close_root's (workflow's endChildrenFirst) and the pr-merged
-// notice (workflow's waitingForTree). The daemon reads the architect's status write on a child
-// from that write's Dispatch event, and the event consumer can deliver the event after the
+// workflow adds: sign_off's and close_root's (workflow's endChildrenFirst), the architect's
+// WAITING_ON_CHILDREN refusal of a parent with an open child (workflow's waitingRefusal) and the
+// pr-merged notice (workflow's waitingForTree). The daemon reads the architect's status write on a
+// child from that write's Dispatch event, and the event consumer can deliver the event after the
 // architect calls again. Until then the record holds the child in the workflow and the refusal
 // names it, so the architect waits for read_record to show its move (dispatch://INFRA-3178 R1).
 //

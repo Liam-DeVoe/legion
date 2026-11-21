@@ -1020,14 +1020,15 @@ const repositoriesLiveContract = 202
 // claim views' `updateState` and `wake`, repositoriesLiveContract's writes the `repositories` block
 // in contract 152's shape, and this one takes `treeRuns` and some `gatedSteps`. So a caller from
 // 202 up to the number below this contract is served the keys 193 added and the block 202 writes
-// and none of this contract's keys and words, one that states a number between 202 and this
-// contract being served 202's, the nearest recorded contract below it
-// (recordedContractAtOrBelow); and a caller from 193 to 201 is served the keys 193 added, the
-// block in contract 152's shape and none of this contract's: one that states a number from 194 to
-// 198 is served 193's shape, and one that states 199, 200 or 201 is served 199's, which is 193's,
-// since 199 moves no shape of an answer a plugin parses. Every such caller states its contract:
-// podContracts leaves out a claim at shapedAnswersContract or above, so a pod reading places no
-// caller there.
+// and none of this contract's keys and words. One that states a number between 202 and this
+// contract is served the nearest recorded contract below it (recordedContractAtOrBelow): one at
+// 203 or 204 is served 202's, and one at 205 to 213 is served 205's, whose records are 202's under
+// its own number, as version.go's 205 entry says. A caller from 193 to 201 is served the keys 193
+// added, the block in contract 152's shape and none of this contract's: one that states a number
+// from 194 to 198 is served 193's shape, and one that states 199, 200 or 201 is served 199's,
+// which is 193's, since 199 moves no shape of an answer a plugin parses. Every such caller states
+// its contract: podContracts leaves out a claim at shapedAnswersContract or above, so a pod
+// reading places no caller there.
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes moves
 // that constant, and the contract these keys and values arrived at stays where it is.

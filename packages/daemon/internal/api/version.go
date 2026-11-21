@@ -3122,10 +3122,14 @@ package api
 // sentences that named it: `SIGNOFF_CHILD_IN_WORKFLOW` and `SIGNOFF_CHILD_OPEN`, as
 // `POST /legion/v1/signoff` and `POST /legion/v1/roots/close` answer them, end with the rules for
 // ending a child and the sentence on a status the daemon has not taken yet
-// (`record.EndChildRule`, `record.StatusNotTakenYet`, workflow's endChildrenFirst), and
-// `WAITING_ON_CHILDREN`, the `awaiting-children` notice and the `children-first` notice end a
-// child by the same rules. Each refusal keeps its code and the shape every refusal has, so no
-// reader's parse moves.
+// (`record.EndChildRule`, `record.StatusNotTakenYet`, workflow's endChildrenFirst), and the
+// `awaiting-children` notice and the `children-first` notice end a child by the same rules.
+// `WAITING_ON_CHILDREN` on a parent with an open child, as `POST /legion/v1/signoff` and the
+// architect's `POST /legion/v1/phase/backward` answer it, ends with the same rules and the same
+// sentence on a status not taken yet; as a phase worker's `POST /legion/v1/phase/backward` answers
+// it, it ends by telling the worker that its architect acts on the children, and gives none of
+// the architect's rules, since a worker ends no child. Each refusal keeps its code and the shape
+// every refusal has, so no reader's parse moves.
 // (This change took 126 against the base 50bfbb0dec73, which carried 111, when the open pull
 // requests held 112 to 125 as read on 2026-11-14: 126 was the lowest number above the base's
 // that none of them declared. It kept 126 at the forward merge of 2026-11-14 that brought main
