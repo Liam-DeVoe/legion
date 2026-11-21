@@ -148,16 +148,22 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 	}
 	// The flag and the deadline are the asker's own: suspendRequest hands a daemon's request under
 	// the operator's hold the operator's source, which must not give it the operator's stop timeout
-	// too, nor hold a request whose asker reports a refusal as nothing having happened.
+	// too, nor hold a request whose asker reports a refusal as nothing having happened. The reason
+	// names what the hold would have waited for: the turn running, the compaction, or the phase of
+	// the wait for the take's report that holdForReport met (reportWaitNow).
 	if ev.(RequestSuspend).NeverHold {
-		reason := "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"
-		switch {
-		case m.held != nil && m.claim.State != StateWorking:
+		var reason string
+		switch phase := m.reportWaitNow(); {
+		case phase == waitTurn:
+			reason = "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"
+		case m.busy():
+			reason = "the claim's session is being compacted, and this suspension is not one that is held for the compaction's end"
+		case m.held != nil:
 			reason = "a held suspension waits for the report of the claim's last turn, and this suspension is not one that is held for it"
-		case m.claim.State != StateWorking && m.claim.Pending.turnStarted():
-			reason = "the turn of the claim's task ended with its report still to come, and this suspension is not one that is held for that report"
-		case m.claim.State != StateWorking:
+		case phase == waitTake:
 			reason = "the claim's take awaits its turn again with a relaunch waiting behind it, and this suspension is not one that is held for that turn"
+		default:
+			reason = "the turn of the claim's task ended with its report still to come, and this suspension is not one that is held for that report"
 		}
 		return &RefusedError{State: m.claim.State, Request: "suspend", Reason: reason}
 	}
@@ -341,28 +347,37 @@ func suspensionRank(source SuspendSource) int {
 // it cuts off, and the task it took back from that turn, as ended by the suspension (suspendNow,
 // Machine.cutTurnOf, recordEnd).
 //
-// A claim the deadline finds idle, the hold waiting for the report of its take's turn
-// (reportwait.go), has its task taken back the same way before the stop, by that wait's one
-// take-back (reportMissed), with the note of a cut turn: no report came, the stop leaves no
-// process to send one, and only that report finishes such a task, as for a process that dies
-// before its report. Over a take a report put back, which awaits its turn, the stop gives the take
-// back unstarted (suspended, takeBackUnstarted): no turn of it ran.
+// A claim the deadline finds with no turn running, the hold waiting for the report of its take's
+// turn (reportwait.go, reportWaitNow), has its task taken back the same way before the stop, by
+// that wait's one take-back (reportMissed), with the note of a cut turn: no report came, the stop
+// leaves no process to send one, and only that report finishes such a task, as for a process that
+// dies before its report. Over a take a report put back, which awaits its turn, the stop gives the
+// take back unstarted (suspended, takeBackUnstarted): no turn of it ran. That holds for a claim
+// whose session is being compacted with no turn started under the compaction too: the compaction
+// is no turn to cut off (inTurn), and the take is where the wait's phase says. Any other take of
+// such a claim is settled before the stop as a let-go settles it (interrupted): finished, where
+// its turn ran whole and its end frame, or a report whose finish the store refused, finishes it.
 func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 	if m.held == nil {
 		return nil
 	}
 	var err error
-	switch {
-	case m.claim.State == StateWorking:
+	switch phase := m.reportWaitNow(); {
+	case phase == waitTurn:
 		m.log.Warn("supervise: the agent's turn has not ended; suspending it mid-turn", "by", m.held.By, "deadline", m.held.Deadline)
 		if err = m.interrupted(ctx, "the held suspension's deadline ended the task's turn", ordinaryEnd); err != nil {
 			err = fmt.Errorf("take back the task of %s before its forced stop: %w", m.claim.Token, err)
 		}
-	case m.reportOwed() && m.claim.Pending.turnStarted():
+	case phase == waitReport:
 		err = m.reportMissed(ctx, "the held suspension's deadline")
-	case m.reportOwed():
+	case phase == waitTake:
 		m.log.Info("supervise: the held suspension's deadline came while the take a report put back awaits its turn; the agent is stopped",
 			"task", m.claim.Pending.Number, "by", m.held.By, "deadline", m.held.Deadline)
+	case m.busy():
+		m.log.Warn("supervise: the claim's compaction has not ended; suspending it mid-compaction", "by", m.held.By, "deadline", m.held.Deadline)
+		if err = m.interrupted(ctx, "the held suspension's deadline came during the compaction", ordinaryEnd); err != nil {
+			err = fmt.Errorf("settle the task of %s before its forced stop: %w", m.claim.Token, err)
+		}
 	default:
 		m.log.Info("supervise: trying the held suspension's stop again")
 	}

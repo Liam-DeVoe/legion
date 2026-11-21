@@ -73,7 +73,7 @@ func TestABacklogCutAtAReconnectLosesTheTurnCountSoALateReportKeepsTheTakesTurn(
 // The negative control is the head before this change (1d8f65eb), where the mark stands through
 // the hello and takes the next task's start in the first three cases, and names T's task in T's
 // late start in the fourth (the class of R3-5 of review round 3).
-func TestABacklogCutLeavesNoMarkForAStartThatMayBeGone(t *testing.T) {
+func TestABacklogCutLeavesNoMarkSoTheNextTakeKeepsItsOwnTurnStart(t *testing.T) {
 	disconnected := func(t *testing.T) (*harness, uint64) {
 		t.Helper()
 		h := newHarnessOf(t, queuedClaim(), currentPlugin)

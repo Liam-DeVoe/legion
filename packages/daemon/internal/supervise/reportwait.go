@@ -14,13 +14,13 @@ import (
 // (Machine.staleRelaunch), and a wake whose turn comes meanwhile, which is spent into the held
 // suspension (wakeNow, Machine.heldLaunch). And a take whose turn ended waits for that report with
 // nothing held, too: no other bound reaches a take whose turn started. This file is that one wait:
-// what it is (reportOwed), when new work joins it (reportHolds), its bound (TimerReport), which
-// takes it reaches (reportReaches), and its one take-back (reportMissed). Nothing of it is a mark
-// of its own: it is read off the take and the claim, so every decision that moves the take — its
-// turn's start and end, the move of its turn to a later run, a put-back, a finish, a take-back —
-// decides the wait again with it.
+// what it is (reportOwed), which of its phases the claim is in (waitPhase), when new work joins it
+// (reportHolds), its bound (TimerReport), which takes it reaches (reportReaches), and its one
+// take-back (reportMissed). Nothing of it is a mark of its own: it is read off the take and the
+// claim, so every decision that moves the take — its turn's start and end, the move of its turn to
+// a later run, a put-back, a finish, a take-back — decides the wait again with it.
 //
-// The wait has three phases, by where the take's turn is:
+// The wait has three phases, by where the take's turn is (waitPhase):
 //
 //   - The take's turn runs (inTurn): the work waits for the turn's end, as work held for any turn
 //     does (holdSuspension, holdStaleRelaunch), and no bound of this wait runs. So the wait never
@@ -99,7 +99,7 @@ import (
 // The report can come and its finish fail on the store (Machine.finishOwed). It came, so no work
 // begins to wait for it any more and no bound takes the task back (reportOwed); but work already
 // waiting goes on waiting for that finish, which the end-frame bound makes again until it lands,
-// and runs at it (reportAwaited, finishAtTurnsEnd), as at the report's own finish.
+// and runs at it (waitFinish, finishAtTurnsEnd), as at the report's own finish.
 //
 // What waited runs where the wait ends, once the decision ending it has settled the take
 // (afterTurn): the report's finish or its provider error's take-back (reportedTask), the owed
@@ -128,8 +128,25 @@ const reportMissedLine = "supervise: the report of the take's turn did not come 
 // reportOwed is whether the report that settles the claim's pending take is still to come: a take
 // of the pending task stands, and neither its turn's end frame nor a report's finish the store
 // refused settles it (overTurnFinish), so only the report naming its number does — a plugin at or
-// above TaskTakeContract (endFrameFinishes). It reads the take alone, in whichever phase its turn
-// is, so the end of a turn or of a compaction asks it as the turn ends (turnEnded, compactEnded).
+// above TaskTakeContract (endFrameFinishes). It reads the take alone, whether or not a turn runs:
+// the wait's second and third phases (waitReport, waitTake), or a turn running over either.
+//
+// The end of a turn and of a compaction ask it of the work held for that turn or compaction
+// (turnEnded, compactEnded), rather than reportHolds, for two reasons. The claim is still stored
+// working at that end, which gives the claim back only once the hold's outcome is known
+// (Machine.heldStopBack), so the wait's phase still reads the turn that is ending (waitTurn). And
+// the work held there begins to wait on the take at that end, where reportHolds asks of work that
+// waits on it already or of work that arrives: it waits for a report still to come over a take
+// whose turn ran, and over a take that awaits its turn — put back by a report while the turn ran,
+// or passed over by a turn the producer said held its text (heldUnrun) — whose own turn's start may
+// be on its way, as reportHolds has work that already waits go on waiting in the third phase. It
+// does not wait for a finish the store refused (waitFinish), which reportHolds has work already
+// waiting go on waiting for: that report came, so no work begins to wait for it, and the stop's
+// settle finishes the task by that report (overTurnFinish), where no end-frame bound stands over
+// the hold to make the finish again (finishTask arms it only over a ready or idle claim, and the
+// end of a turn or a compaction only where nothing is held: turnEnded, compactEnded). With nothing
+// held, an end over a take that awaits its turn runs nothing either way: the offer has nothing to
+// offer over a take that stands (offer).
 func (m *Machine) reportOwed() bool {
 	p := m.claim.Pending
 	if p == nil || !p.taken() {
@@ -139,13 +156,53 @@ func (m *Machine) reportOwed() bool {
 	return !finishes
 }
 
-// reportAwaited is what work already waiting on the take waits for: the report that settles it
-// (reportOwed), or the finish that report decided and the store refused (Machine.finishOwed),
-// which the end-frame bound makes again. It is false for a plugin below TaskTakeContract, whose end
-// frame finishes its task (endFrameFinishes): no work waits on such a take past its turn's end.
-func (m *Machine) reportAwaited() bool {
+// waitPhase is a phase of the wait for the pending take's report (the three of this file's doc), or
+// none. Every reader of the wait asks which the claim is in (reportWaitNow): whether work joins the
+// wait (reportHolds), the wait's own bound (reportBounded), R5's second wait over work held behind
+// a take put back (secondWaitNow), the held suspension's deadline (suspendAtTimeout), and the
+// refusal of a suspension that may not be held (holdSuspension).
+type waitPhase uint8
+
+const (
+	// waitNone is no turn running and no take the wait is on: none stands accepted, or the claim's
+	// plugin is below TaskTakeContract, whose end frame finishes its task (endFrameFinishes), so no
+	// work waits on its take past its turn's end.
+	waitNone waitPhase = iota
+	// waitTurn is the first phase: a turn runs (inTurn) — the take's own, one the take was passed
+	// over in while it awaits its turn (heldUnrun), or one of a claim holding no take — and work
+	// waits for its end, as work held for any turn does; no bound of the wait runs. A compaction
+	// with no turn started under it is no turn: what meets it waits for its end (busy), and the
+	// phase is the take's.
+	waitTurn
+	// waitReport is the second phase: the take's turn ran and is over, and the report naming its
+	// number has not come (reportOwed).
+	waitReport
+	// waitFinish is the second phase's report come and its finish refused by the store
+	// (Machine.finishOwed), which the end-frame bound makes again: no work begins to wait for it,
+	// and work already waiting goes on waiting for that finish.
+	waitFinish
+	// waitTake is the third phase: the take awaits its turn — given back the turn the daemon gave a
+	// run that was not its own (putBack), or not given one yet. Work already waiting goes on
+	// waiting, for the take's own turn to start or for R5's second bound; a take that awaits its
+	// turn with nothing waiting behind it is no wait.
+	waitTake
+)
+
+// reportWaitNow is the phase of the wait for the take's report the claim is in now: a turn running
+// comes first, whatever the take, and the take's own phase otherwise.
+func (m *Machine) reportWaitNow() waitPhase {
 	p := m.claim.Pending
-	return p != nil && p.taken() && !m.endFrameFinishes()
+	switch {
+	case m.inTurn():
+		return waitTurn
+	case p == nil || !p.taken() || m.endFrameFinishes():
+		return waitNone
+	case !p.TurnStarted:
+		return waitTake
+	case m.finishOwed:
+		return waitFinish
+	}
+	return waitReport
 }
 
 // workHeld is whether anything waits on the machine for the claim's turn or its take's report: a
@@ -153,17 +210,19 @@ func (m *Machine) reportAwaited() bool {
 func (m *Machine) workHeld() bool { return m.held != nil || m.staleRelaunch != nil }
 
 // reportHolds is whether work that reaches the claim now joins the wait for the take's report
-// rather than run as the claim stands. No turn runs (work that meets a running turn waits for its
-// end anyway: holdSuspension, holdStaleRelaunch), and either work already waits on the take
-// (reportAwaited), in any phase, or the take's turn has run and its report is still to come.
+// rather than run as the claim stands, and whether work already waiting on the take goes on
+// waiting (reportWaitNow). In the second phase, the report still to come, all work waits for it;
+// with that report come and its finish refused, or over a take that awaits its turn, only work
+// already waiting does, and what arrives joins it. In the first phase work waits for the turn's end
+// anyway (holdSuspension, holdStaleRelaunch), and with no take the wait is on, nothing waits.
 func (m *Machine) reportHolds() bool {
-	if m.inTurn() {
-		return false
+	switch m.reportWaitNow() {
+	case waitReport:
+		return true
+	case waitFinish, waitTake:
+		return m.workHeld()
 	}
-	if m.workHeld() {
-		return m.reportAwaited()
-	}
-	return m.reportOwed() && m.claim.Pending.turnStarted()
+	return false
 }
 
 // heldWaits is whether the held suspension waits behind the wait now (reportHolds): held, no turn
@@ -172,21 +231,20 @@ func (m *Machine) reportHolds() bool {
 func (m *Machine) heldWaits() bool { return m.held != nil && m.reportHolds() }
 
 // reportBounded is the pending take whose report the wait's own bound runs on, and false for none:
-// the take's turn ran and is over, and its report has not come (reportOwed: a report whose finish
-// the store refused came, and is no report missed); work waits for that report, or nothing does
-// and the bound reaches the take all the same (reportReaches); and the bound is judged — R5's
-// second bound set, and the worker's first act after a daemon start made (Machine.awaitsAct), as
-// R5's own waits are (secondWaitNow). A take awaiting its turn after a put-back is bounded by R5's
-// second wait instead, so no take is under the two bounds at once.
+// the wait's second phase, the take's turn over and its report not come (waitReport: a report
+// whose finish the store refused came, and is no report missed); work waits for that report, or
+// nothing does and the bound reaches the take all the same (reportReaches); and the bound is
+// judged — R5's second bound set, and the worker's first act after a daemon start made
+// (Machine.awaitsAct), as R5's own waits are (secondWaitNow). A take awaiting its turn after a
+// put-back is bounded by R5's second wait instead, so no take is under the two bounds at once.
 func (m *Machine) reportBounded() (*Delivery, bool) {
-	if m.deps.Timeouts.TurnStart <= 0 || m.awaitsAct || !SaidReady(m.claim.State) || m.inTurn() || !m.reportOwed() {
+	if m.deps.Timeouts.TurnStart <= 0 || m.awaitsAct || !SaidReady(m.claim.State) || m.reportWaitNow() != waitReport {
 		return nil, false
 	}
-	p := m.claim.Pending
-	if !p.turnStarted() || (!m.workHeld() && !m.reportReaches()) {
+	if !m.workHeld() && !m.reportReaches() {
 		return nil, false
 	}
-	return p, true
+	return m.claim.Pending, true
 }
 
 // reportReaches is whether the wait's bound reaches the pending take with nothing held: every take

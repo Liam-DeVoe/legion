@@ -201,7 +201,7 @@ func pauseStopDue(m *Machine, ctx context.Context, _ Event) error {
 		Reason: fmt.Sprintf("the project is paused (pause %d) and its gate held this claim's launch", pause)}
 	var err error
 	switch {
-	case m.claim.State == StateWorking:
+	case m.busy():
 		err = holdSuspension(m, ctx, request)
 	case m.claim.Locator == nil:
 		err = holdSuspendUntilReady(m, ctx, request)

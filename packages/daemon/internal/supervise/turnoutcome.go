@@ -227,7 +227,7 @@ func (m *Machine) unappliedTurnOutcome(o TurnOutcome) {
 // from the claim as the store keeps it, for the machine a daemon start builds over it
 // (NewMachine): the newest applied report of the claim's current generation that names the
 // pending task's number, while that task's take stands accepted, its turn started or not. Such a
-// report is of the take's turn (reachesLadder), and the daemon that applied it decided there what
+// report is of the take's turn (reportOfTake), and the daemon that applied it decided there what
 // became of the task, which a store that took the report and refused the writes after it does not
 // hold: the turn's start (startedUnseen) and then the task's finish, for a report that carried no
 // provider error — a finish that landed would have retired the task — or the take-back and the
@@ -240,20 +240,16 @@ func (m *Machine) unappliedTurnOutcome(o TurnOutcome) {
 // ladder step (TurnOutcome.ProviderErrorRetries above Delivery.ProviderErrorRetries): once that
 // step is written, the task was taken back, and a take of it standing now is the next take, given
 // after the ladder's wait, whose turn the report is not of. A report of another generation is of
-// a turn of another process than the one whose take this is (reachesLadder), and a task of no
-// number (Delivery.Number) is named by no report, so an entry stored before the window kept a
-// report's number (TurnOutcome.Task) owes nothing.
+// a turn of another process than the one whose take this is, and a task of no number
+// (Delivery.Number) is named by no report (reportOfTake), so an entry stored before the window
+// kept a report's number (TurnOutcome.Task) owes nothing.
 func (c Claim) owedReport() (TurnOutcome, bool) {
-	p := c.Pending
-	if p == nil || p.Number == 0 || !p.taken() {
-		return TurnOutcome{}, false
-	}
 	for i := len(c.TurnOutcomes) - 1; i >= 0; i-- {
 		o := c.TurnOutcomes[i]
-		if o.Unapplied || o.Generation != c.Generation || o.Task != p.Number {
+		if o.Unapplied || !c.reportOfTake(o.Generation, o.Task) {
 			continue
 		}
-		if o.ProviderError && o.ProviderErrorRetries <= p.ProviderErrorRetries {
+		if o.ProviderError && o.ProviderErrorRetries <= c.Pending.ProviderErrorRetries {
 			return TurnOutcome{}, false
 		}
 		return o, true
@@ -434,17 +430,24 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 }
 
 // reachesLadder is whether a turn-outcome report is of the turn of the task a take of this claim
-// holds: it names that task's number, the take stands accepted, its turn started or not, and the
-// report is of the claim's current generation. A report of that turn is what finishes the task
-// or, carrying a provider error, takes it to the ladder (reportedTask); any other report finishes
-// nothing and reaches no ladder, so its refusal is the launch budget's (turnOutcome). A report of
-// an earlier generation is of a turn of a process the claim has left, which held no take of this
-// process: a take stands only within the generation that accepted it, since the process's end
-// settles it (settle, interrupted). A daemon that reads the window back holds to the same rule
-// (Claim.owedReport).
+// holds (Claim.reportOfTake). A report of that turn is what finishes the task or, carrying a
+// provider error, takes it to the ladder (reportedTask); any other report finishes nothing and
+// reaches no ladder, so its refusal is the launch budget's (turnOutcome). A daemon that reads the
+// window back asks the same rule of each report it holds (Claim.owedReport).
 func (m *Machine) reachesLadder(r RequestTurnOutcome) bool {
-	p := m.claim.Pending
-	return r.Task != 0 && r.Generation == m.claim.Generation && p != nil && p.Number == r.Task && p.taken()
+	return m.claim.reportOfTake(r.Generation, r.Task)
+}
+
+// reportOfTake is whether a report of the given generation naming task is of the turn of the take
+// the claim's pending task holds, the one rule of it (reachesLadder, owedReport): it names that
+// task's number, the take stands accepted, its turn started or not, and the report is of the
+// claim's current generation. A report of an earlier generation is of a turn of a process the
+// claim has left, which held no take of this process: a take stands only within the generation
+// that accepted it, since the process's end settles it (settle, interrupted). A report naming no
+// number is of no take's turn, and a task of no number (Delivery.Number) is named by no report.
+func (c Claim) reportOfTake(generation, task uint64) bool {
+	p := c.Pending
+	return task != 0 && generation == c.Generation && p != nil && p.Number == task && p.taken()
 }
 
 // notTheTakesTurnLine is the line of a take given its turn back (notTheTakesTurn), at Info, with
@@ -576,7 +579,10 @@ func (m *Machine) putBack(ctx context.Context, by string) error {
 // and the mark would take the next start, the next task's own among them. There no start is
 // marked, and one of the reported turn that does come is read as any other (turnStarted): given
 // to a take that awaits its turn, which its own report then settles, or no task's, its line naming
-// no task. A working claim's start frame has come already: the turn running is the report's.
+// no task. A busy claim marks nothing (busy): in a turn, its start frame has come already, and the
+// turn running is the report's; under a compaction with no turn started under it, a start is given
+// no take and reads no mark (turnStartedWhileBusy), so a mark left for a start that comes under
+// the compaction would outlive it and name this task in a later start.
 func (m *Machine) startedUnseen(ctx context.Context, r RequestTurnOutcome) error {
 	p := m.claim.Pending
 	m.log.Info("supervise: a turn's report names the accepted take's task before its turn start was seen; the turn is the take's",
@@ -587,7 +593,7 @@ func (m *Machine) startedUnseen(ctx context.Context, r RequestTurnOutcome) error
 	if !count.known {
 		toCome = !count.cut
 	}
-	if m.claim.State != StateWorking && toCome {
+	if !m.busy() && toCome {
 		m.reportedAhead = aheadReport{task: p.Number, sequence: r.Sequence}
 	}
 	count.take = r.Sequence

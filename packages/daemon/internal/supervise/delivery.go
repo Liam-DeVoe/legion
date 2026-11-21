@@ -1178,7 +1178,7 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // taken back with the note a cut turn gets, as though its turn were still running: the next
 // accepted take carries the sentence of its interruption, and the let-go that follows records
 // the task's turn as cut off (Machine.cutTurnOf). Whether a turn runs is the one answer every
-// let-go reads (endState, as recordEnd and the stall backstop read it): a claim stored working
+// let-go reads (cutsTurn, as recordEnd and the stall backstop read it): a claim stored working
 // for nothing that runs is in no turn, so a compaction Oh My Pi started after the take's turn
 // ended and before its report leaves that take to be settled here too, whichever let-go comes.
 //
@@ -1211,7 +1211,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	if p == nil || !p.taken() {
 		return nil
 	}
-	inTurn := m.endState() == StateWorking
+	inTurn := m.cutsTurn()
 	if p.turnStarted() && !inTurn {
 		if by, finishes := m.overTurnFinish(); finishes {
 			return m.finishTask(ctx, by)

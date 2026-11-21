@@ -7,11 +7,23 @@ import "context"
 // has started since the one the daemon gave a take. The report's decision in turnoutcome.go reads
 // it (reportedTask, notTheTakesTurn).
 
-// inTurn is whether a turn of the claim's process is running: the claim is working, and not for
-// a compaction alone (Machine.compacting, whose inTurn is a turn started under it).
+// inTurn is whether a turn of the claim's process is running: the claim is busy, and not for a
+// compaction alone (Machine.compacting, whose inTurn is a turn started under it). It is the one
+// reading of a running turn on the machine, and a let-go reads it through endState (cutsTurn).
 func (m *Machine) inTurn() bool {
-	return m.claim.State == StateWorking && (m.compacting == nil || m.compacting.inTurn)
+	return m.busy() && (m.compacting == nil || m.compacting.inTurn)
 }
+
+// busy is whether the claim is working: a turn of its process runs (inTurn), or its session is
+// being compacted with no turn started under it (Machine.compacting). Working is the daemon's one
+// record of a busy agent (compactStart), so this is the stored state read as the machine's word
+// for it. Work that meets a busy claim waits for the end of what keeps it busy, a turn's or a
+// compaction's (holdSuspension, holdStaleRelaunch, finishAtTurnsEnd), and the start frame of a
+// turn reported while the claim is busy has come or is given no take (startedUnseen,
+// turnStartedWhileBusy). What asks whether a turn runs, as against a compaction alone, asks
+// inTurn: the phase of the wait for a take's report (reportWaitNow), and what a let-go cuts off
+// (cutsTurn).
+func (m *Machine) busy() bool { return m.claim.State == StateWorking }
 
 // turnsStarted is how many turns of the claim's process the machine has seen start in the launch
 // generation it counts (turnCount): every turn whose end it counted, and the one running, if one
@@ -181,7 +193,7 @@ func (m *Machine) anchorRestored() {
 	a := takeAnchor{number: p.Number, reported: m.claim.newestReported(), restored: true}
 	switch {
 	case !p.TurnStarted:
-	case m.claim.State == StateWorking && !m.claim.LastTurnEnd.After(p.ConfirmedAt):
+	case m.busy() && !m.claim.LastTurnEnd.After(p.ConfirmedAt):
 		a.given = count.ended + 1
 	default:
 		return

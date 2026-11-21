@@ -100,7 +100,7 @@ func TestAReconnectDeadlineLeavesAHeldSuspensionToTheTakesTurnAndReport(t *testi
 // pause's hold first and arms nothing (claimHold): a stop with no deadline waits for a turn the
 // worker may never start, and the claim stays idle and held while the pause stands (the class of
 // R3-2 of review round 3).
-func TestAPutBackWhilePausedLeavesThePausesStopToTheSecondBound(t *testing.T) {
+func TestChargeOnceAtTheSecondBoundForAPutBackWhilePausedThenThePausesStopLands(t *testing.T) {
 	h, flag, stops := pauseHarness(t, queuedClaim(), withWaits, currentPlugin)
 	h.manualTakes()
 	h.reach(StateReady)

@@ -769,7 +769,7 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 		return nil
 	}
 	pending := m.claim.Pending
-	if pending != nil && (pending.awaitsTurn() || (pending.taken() && m.claim.State == StateWorking)) {
+	if pending != nil && (pending.awaitsTurn() || (pending.taken() && m.busy())) {
 		return nil
 	}
 	if err := m.checkLaunch(ctx); err != nil {

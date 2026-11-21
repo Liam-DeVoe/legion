@@ -191,18 +191,20 @@ func (m *Machine) refreshPlugin(ctx context.Context, trigger string, admitted bo
 		return nil
 	}
 	controller := claim.IsController(m.claim.Role, m.claim.Issue, m.claim.Tree)
-	if m.claim.State == StateWorking && !controller {
+	if m.busy() && !controller {
 		m.holdStaleRelaunch(trigger)
 		return nil
 	}
-	// A claim idle while the report of its take's turn is owed, on a plugin that names its task's
-	// number, is relaunched once that report settles the task, behind the wait for it
-	// (reportwait.go, reportHolds), as a suspension is held for it (holdForReport): relaunched now,
-	// the process would take that report with it, the relaunch would take the task back as a cut
-	// turn (interrupted), and the relaunched worker would run again a task whose turn ran whole.
-	// The controller's claim is no exception, since what it is spared is the wait for its turn,
-	// not the run of a task twice.
-	if m.claim.State != StateWorking && m.reportHolds() {
+	// A claim whose take's report is owed, on a plugin that names its task's number, is relaunched
+	// once that report settles the task, behind the wait for it (reportwait.go, reportHolds), as a
+	// suspension is held for it (holdForReport): relaunched now, the process would take that report
+	// with it, the relaunch would take the task back as a cut turn (interrupted), and the relaunched
+	// worker would run again a task whose turn ran whole. The controller's claim is no exception,
+	// since what it is spared is the wait for its turn or its compaction, not the run of a task
+	// twice: over a compaction with no turn started under it, after the take's turn ended, it waits
+	// for the report as an idle claim does, and the compaction's end runs it (compactEnded,
+	// afterTurn).
+	if m.reportHolds() {
 		m.relaunchWaitsForReport(trigger)
 		return nil
 	}
@@ -434,16 +436,17 @@ func refreshStalePlugin(m *Machine, ctx context.Context, ev Event) error {
 // gone by then. Two things end it, and each leaves the claim better off than the relaunch would.
 // Its recorded plugin contract is this daemon's: a registration landed inside the wait — the
 // process reconnected and registered current, or a relaunch of another path got there first — so
-// there is nothing left to replace. Or the claim has started a turn: the worker is working, and
-// a relaunch now is exactly the cut turn the whole lane is built to avoid (holdStaleRelaunch,
-// dispatch://INFRA-2712 R2), where the next sweep finds the claim idle and relaunches it then.
+// there is nothing left to replace. Or the claim is busy (busy): the worker is in a turn, or its
+// session is being compacted, and a relaunch now is exactly the cut turn the whole lane is built
+// to avoid (holdStaleRelaunch, dispatch://INFRA-2712 R2), where the next sweep finds the claim
+// idle and relaunches it then.
 //
 // Its one caller is runWake, ahead of the launch's own lifecycle recheck and the turn take-back
 // (StartsProcess), which is the only order in which the claim still holds what those two would
 // spend. A launch wake makes no such re-read, and until this gate none waited long enough to
 // need one: the check is what the deleted plugin round made at its own wake.
 func (m *Machine) refreshOverturned() bool {
-	return m.claim.PluginContract == m.deps.PluginContract || m.claim.State == StateWorking
+	return m.claim.PluginContract == m.deps.PluginContract || m.busy()
 }
 
 // staleRegistration is what register and reregister run once they have recorded the plugin

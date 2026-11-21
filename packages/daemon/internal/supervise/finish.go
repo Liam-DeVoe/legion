@@ -29,13 +29,14 @@ func (m *Machine) startTakesTurn(ctx context.Context) error {
 // end-frame bound is armed again for it, whatever its plugin: the bound that fired, or the report
 // that named it, has been spent, nothing else would finish it (settle finishes it in every state
 // but ready, idle and working), and no worker sends a report again once it was answered. It is
-// armed at once over a ready or idle claim, and at the end of the turn running over a working
-// one — a report that came ahead of its own turn's end frame — so it is armed wherever the report
-// arrived, before a bound or after one fired (armEndFrameBound). A refusal of the report's own
-// finish leaves that finish owed (Machine.finishOwed), so the bound that makes it again finishes
-// by the report, whatever the claim's plugin, and each refusal of the bound's own write arms it
-// again, until one lands (decision 8 of dispatch://INFRA-2811). A plugin that names its
-// task's number is given no other bound than this one (endFrameFinishes).
+// armed at once over a ready or idle claim, and over a working one at the end of what it works
+// for: the turn running — a report that came ahead of its own turn's end frame — or a compaction
+// with no turn under it (compactEnded). So it is armed wherever the report arrived, before a
+// bound or after one fired (armEndFrameBound). A refusal of the report's own finish leaves that
+// finish owed (Machine.finishOwed), so the bound that makes it again finishes by the report,
+// whatever the claim's plugin, and each refusal of the bound's own write arms it again, until one
+// lands (decision 8 of dispatch://INFRA-2811). A plugin that names its task's number is given no
+// other bound than this one (endFrameFinishes).
 func (m *Machine) finishTask(ctx context.Context, by string) error {
 	p := m.claim.Pending
 	number, id := p.Number, p.ID
@@ -69,7 +70,7 @@ func finishAtTurnsEnd(m *Machine, ctx context.Context, _ Event) error {
 	if err := m.finishTask(ctx, by); err != nil {
 		return err
 	}
-	if m.claim.State == StateWorking {
+	if m.busy() {
 		return nil
 	}
 	return m.afterTurn(ctx, heldWaited)

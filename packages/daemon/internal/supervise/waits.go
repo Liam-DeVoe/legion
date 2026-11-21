@@ -175,10 +175,10 @@ func (m *Machine) firstWaitNow() (firstWait, bool) {
 // restart is (Machine.timers, TimerTurnStart).
 //
 // One hold does not stop it: work that waits behind a take a report put back, a held suspension
-// or a held stale-plugin relaunch (reportwait.go). That work is no hold over the take but waits
-// on it, for its own turn or for this bound, whichever is first (decision 8), so the bound is
-// armed from the put-back as for any take awaiting its turn, and it runs the work once it has
-// taken the take back (turnStartBoundOver). Left unarmed, as for a hold, the daemon's own
+// or a held stale-plugin relaunch (reportwait.go, waitTake). That work is no hold over the take
+// but waits on it, for its own turn or for this bound, whichever is first (decision 8), so the
+// bound is armed from the put-back as for any take awaiting its turn, and it runs the work once it
+// has taken the take back (turnStartBoundOver). Left unarmed, as for a hold, the daemon's own
 // suspension, which names no deadline, would wait for a turn the worker may never start. The
 // project's pause does not stop it either while such work waits: the pause holds the take, and
 // its own stop, held behind the take, is such work, so the hold read under the pause is the
@@ -189,7 +189,7 @@ func (m *Machine) secondWaitNow() (time.Time, bool) {
 	if m.deps.Timeouts.TurnStart <= 0 || m.awaitsAct || p == nil || !p.awaitsTurn() {
 		return time.Time{}, false
 	}
-	if m.workHeld() && m.reportHolds() {
+	if m.workHeld() && m.reportWaitNow() == waitTake {
 		// The hold is the work waiting behind the take (reportwait.go), which this bound bounds.
 		switch m.stateHold() {
 		case "", HoldSuspension, HoldStalePlugin:
@@ -315,7 +315,7 @@ func turnStartBoundOver(m *Machine, ctx context.Context, _ Event) error {
 // unstarted, as at the agent's answer of no turn (markRestoredTurnUnseen, turnAnswered).
 func reconnectDeadline(m *Machine, ctx context.Context, _ Event) error {
 	asked := m.askTurn && !m.askedAt.IsZero()
-	if m.held != nil && (!asked || (m.claim.State != StateWorking && !m.heldWaits())) {
+	if m.held != nil && (!asked || (!m.busy() && !m.heldWaits())) {
 		return m.suspendHeld(ctx)
 	}
 	if asked {

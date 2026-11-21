@@ -452,5 +452,14 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.persist(ctx); err != nil {
 		return err
 	}
+	// A finish the store refused while the compaction ran (finishTask, Machine.finishOwed) is made
+	// again by the end-frame bound, which that refusal armed for no working claim: armed here, as
+	// the end of a turn arms it (turnEnded), and only where none stands, so a plugin's bound armed
+	// at its turn's end keeps its time.
+	if p := m.claim.Pending; p != nil && p.turnStarted() {
+		if _, armed := m.timers[TimerFinish]; !armed {
+			m.armEndFrameBound(p.ID)
+		}
+	}
 	return m.afterTurn(ctx, false)
 }

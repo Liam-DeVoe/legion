@@ -1391,7 +1391,7 @@ func observe(m *Machine, ctx context.Context, ev Event) error {
 		if err := m.ensureEnrolled(ctx); err != nil {
 			return err
 		}
-		if m.claim.State == StateWorking {
+		if m.busy() {
 			return m.askTurnOver(ctx, ev)
 		}
 		if m.askTurn && !m.askedAt.IsZero() {
@@ -1521,7 +1521,7 @@ func turnAnswered(m *Machine, ctx context.Context, ev Event) error {
 	}
 	m.askTurn, m.unansweredAsks = false, 0
 	m.disarm(TimerRegistration)
-	if answer.Streaming && m.claim.State != StateWorking {
+	if answer.Streaming && !m.busy() {
 		m.log.Info("supervise: the agent of a claim the daemon's start restored is in a turn its shim's replay did not show begin; the claim is working")
 		if err := turnStarted(m, ctx, ev); err != nil {
 			return err
@@ -1915,6 +1915,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 			// The take's turn is over, or a report put the take back while this turn ran, and
 			// only the take's report settles it: the hold waits behind the wait for that report
 			// (reportwait.go), whose finish runs it (reportedTask, afterTurn), or behind its bound.
+			// The end asks reportOwed rather than reportHolds, for the reasons reportOwed gives.
 			m.claim.State = StateIdle
 			m.log.Info(reportWaitsLine, "task", p.Number, "held", "suspension", "by", m.held.By, "deadline", m.held.Deadline)
 			return m.persist(ctx)
@@ -2305,7 +2306,7 @@ func finishReady(m *Machine, ctx context.Context) error {
 // refused still (claimHold). pi-legion sends its ready again from its capability schedule while it
 // reads its session idle, and a turn can start before that ready reaches the daemon.
 func reready(m *Machine, ctx context.Context, _ Event) error {
-	if m.held != nil && m.claim.State != StateWorking && !m.heldWaits() {
+	if m.held != nil && !m.busy() && !m.heldWaits() {
 		return m.suspendHeld(ctx)
 	}
 	return finishReady(m, ctx)
