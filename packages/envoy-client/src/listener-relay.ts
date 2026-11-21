@@ -589,11 +589,11 @@ export class ListenerRelay implements InboundConnection {
     return promise;
   }
 
-  #send(frame: Readonly<Record<string, unknown>>): void {
+  #send(frame: { readonly op: string } & Readonly<Record<string, unknown>>): void {
     const socket = this.#socket;
     if (socket?.readyState !== WebSocket.OPEN) return;
     socket.send(JSON.stringify(frame));
-    if (typeof frame.op === "string") this.#sentSincePong.set(frame.op, this.#pingSeq);
+    this.#sentSincePong.set(frame.op, this.#pingSeq);
   }
 
   #unsubscribe(sid: number): void {
