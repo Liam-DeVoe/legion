@@ -664,11 +664,11 @@ type phaseWorker struct {
 // worker that is owed a turn, and that candidate has none to start. The gate is unreachable on
 // this release: the role skip above it passes over every phase phase.RoleFor names no worker
 // role for — the architect's admitted and accepting, and the empty role of held,
-// awaiting_person and done — and merging, the one holder record.AtWork used to answer false
-// for, is a worker's phase now, since its merger makes the merge itself. It is kept so that a
-// phase added later with a worker role of its own, in a state record.AtWork answers false for,
-// is sent nothing by either repair, and so record.AtWork stays the one statement of what work
-// is rather than a second list of phases here.
+// awaiting_person, awaiting_children and done — and merging, the one holder record.AtWork used
+// to answer false for, is a worker's phase now, since its merger makes the merge itself. It is
+// kept so that a phase added later with a worker role of its own, in a state record.AtWork
+// answers false for, is sent nothing by either repair, and so record.AtWork stays the one
+// statement of what work is rather than a second list of phases here.
 //
 // An issue whose key yields no claim token has no run to read, so it is passed over rather
 // than failing the whole fact, as the wait reconcile passes over such a root (workflow's
