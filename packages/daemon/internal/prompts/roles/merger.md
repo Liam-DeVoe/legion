@@ -75,7 +75,7 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
      gh api 'repos/<o>/<r>/commits/<group commit>/check-runs?check_name=legion-verdict' --jq .total_count
      ```
 
-     - `0`: no `legion-verdict` run reached the group commit. The daemon writes that check on each group commit, so it wrote none while the queue waited, because it was down or its write failed, and the queue removed the entry when the check timed out. That is no work to fix, so send nothing back. Read the check on the head itself, where `<slug>` is your App's login with `[bot]` taken off:
+     - `0`: no `legion-verdict` run reached the group commit. The daemon writes that check on each group commit, so it wrote none while the queue waited, because it was down or its write failed, and the queue removed the entry when the check timed out. That is no work to fix, so send nothing back. Each head gets one such enqueue. Read your own `dispatch comment`s on the issue first. If one already records such an enqueue of this head, enqueue nothing: tell the architect with `envoy_publish` to its encoded role token, name the head and both group commits, and quote the two reads above. Otherwise read the check on the head itself, where `<slug>` is your App's login with `[bot]` taken off:
 
        ```bash
        gh api 'repos/<o>/<r>/commits/<head>/check-runs?check_name=legion-verdict' --jq '[.check_runs[] | select(.app.slug == "<slug>") | .conclusion]'

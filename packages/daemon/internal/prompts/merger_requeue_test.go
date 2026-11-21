@@ -15,7 +15,11 @@ import (
 // With none, it enqueues the same head again once the head's own legion-verdict stands, records
 // that enqueue, and sends nothing back; with any, the group's checks failed and it sends the issue
 // back as before. The unconditional send-back it held for every `failed_checks` removal is gone.
-// This shows the text is loaded, never that a merger follows it.
+// Each head gets that requeue once: a second such removal of the same head, which its own
+// recorded enqueue shows, goes to the architect, and nothing is enqueued, so a writer that keeps
+// failing on group commits does not requeue the head every time the check times out. Both the
+// first removal's requeue and the second removal's report sit in the one paragraph that names the
+// missing run. This shows the text is loaded, never that a merger follows it.
 func TestMergerPromptRequeuesAMissingLegionVerdict(t *testing.T) {
 	composer, err := New(t.TempDir())
 	if err != nil {
@@ -38,8 +42,16 @@ func TestMergerPromptRequeuesAMissingLegionVerdict(t *testing.T) {
 			t.Errorf("the composed merger prompt omits %q", phrase)
 		}
 	}
-	if paragraphs := ruleParagraphs(raw, missing); len(paragraphs) != 1 || !strings.Contains(paragraphs[0], "send nothing back") {
-		t.Errorf("the composed merger prompt's paragraphs naming %q are %q; want one that says to send nothing back", missing, paragraphs)
+	const once = "Each head gets one such enqueue."
+	const second = "If one already records such an enqueue of this head, enqueue nothing: tell the architect with `envoy_publish` to its encoded role token, name the head and both group commits, and quote the two reads above."
+	paragraphs := ruleParagraphs(raw, missing)
+	if len(paragraphs) != 1 {
+		t.Fatalf("the composed merger prompt's paragraphs naming %q are %q; want one", missing, paragraphs)
+	}
+	for _, want := range []string{"send nothing back", once, "Read your own `dispatch comment`s on the issue first.", second} {
+		if !strings.Contains(paragraphs[0], want) {
+			t.Errorf("the composed merger prompt's paragraph naming %q omits %q: %q", missing, want, paragraphs[0])
+		}
 	}
 	if retired := "`failed_checks`: the queue's own `merge_group` checks failed. That is work to fix."; strings.Contains(text, retired) {
 		t.Errorf("the composed merger prompt still sends every `failed_checks` removal back: %q", retired)
