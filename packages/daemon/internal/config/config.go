@@ -554,17 +554,32 @@ var keyGrammar = regexp.MustCompile(`^[a-z][a-z0-9_]{0,39}$`)
 // token of 40).
 var keyHexRun = regexp.MustCompile(`[0-9a-f]{8,}`)
 
-// keyShape reports whether name has a key's shape: keyGrammar's, holding no keyHexRun. An unknown
-// key of that shape is named as written, so a typo keeps its help (`unknown key dispach_url`);
-// any other name, one holding an upper-case letter, a "-", a ":", a "/", an "@", a space or a run
-// of hex digits, as a token (`sk-ant-…`, `ghp_…`, a hex key) or a URL does, is named by its line
-// alone (unknownKeyAt). A typo holding a "-" or an upper-case letter is named by its line too.
+// keyAlphanumericRun is a run of 10 or more letters and digits; one that holds a digit is a
+// token's (a lower-case base36 token holds few runs of 8 hex digits), and no key of the
+// configuration holds one: its words are joined by "_", and none of 10 letters holds a digit.
+var keyAlphanumericRun = regexp.MustCompile(`[a-z0-9]{10,}`)
+
+// keyShape reports whether name has a key's shape: keyGrammar's, holding no keyHexRun and no
+// keyAlphanumericRun that holds a digit. An unknown key of that shape is named as written, so a
+// typo keeps its help (`unknown key dispach_url`); any other name, one holding an upper-case
+// letter, a "-", a ":", a "/", an "@", a space, a run of hex digits or a long run of letters and
+// digits, as a token (`sk-ant-…`, `ghp_…`, a hex key, a base36 token) or a URL does, is named by
+// its line alone (unknownKeyAt). A typo holding a "-" or an upper-case letter is named by its line
+// too; a short token of the grammar's letters (`abc_0123456`) is still named as written.
 func keyShape(name string) bool {
-	return keyGrammar.MatchString(name) && !keyHexRun.MatchString(name)
+	if !keyGrammar.MatchString(name) || keyHexRun.MatchString(name) {
+		return false
+	}
+	for _, run := range keyAlphanumericRun.FindAllString(name, -1) {
+		if strings.ContainsAny(run, "0123456789") {
+			return false
+		}
+	}
+	return true
 }
 
 // keyShapeWords is keyShape as a refusal says it.
-const keyShapeWords = "lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits"
+const keyShapeWords = "lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit"
 
 // unknownKeyAt is the refusal of an unknown key whose name has no key's shape (keyShape), under the
 // mapping under names ("" at the file's root): its line, never its text. Such a name is no typo of

@@ -2380,18 +2380,20 @@ func TestLoadReadsCapabilityDecisions(t *testing.T) {
 }
 
 // An unknown key whose name has no key's shape (keyShape: the configuration's grammar, with no run
-// of 8 hex digits) is named by its line alone, wherever it stands, so a credential pasted where a
-// key goes prints nowhere: at the root, under a described mapping, under a project, under
-// capabilities.decided, in a controller configuration, as a project's key, and as an entry of the
-// lists keyed by a role, a pod or an experiment. The keys are made-up tokens in three shapes: one
-// holding "-", longer than the 32 characters an experiment's name takes, one holding upper-case
-// letters, and a lower-case hex token of 40 digits, which fits the grammar. A key of the grammar
-// is still named as written.
+// of 8 hex digits and no run of 10 letters and digits that holds a digit) is named by its line
+// alone, wherever it stands, so a credential pasted where a key goes prints nowhere: at the root,
+// under a described mapping, under a project, under capabilities.decided, in a controller
+// configuration, as a project's key, and as an entry of the lists keyed by a role, a pod or an
+// experiment. The keys are made-up tokens in four shapes: one holding "-", longer than the 32
+// characters an experiment's name takes, one holding upper-case letters, a lower-case hex token of
+// 40 digits, and a lower-case base36 token of 34 characters with no run of hex digits; the last
+// two fit the grammar. A key of the grammar is still named as written, and so is a short token of
+// the grammar's letters (`abc_0123456`), the stated residual.
 func TestAnUnknownKeyOfNoKeyShapeIsNamedByItsLine(t *testing.T) {
 	load := func(path string) error { _, err := Load(path, noEnv); return err }
 	validate := func(path string) error { _, err := LoadForValidation(path, noEnv); return err }
 	controller := func(path string) error { _, err := LoadController(path, ""); return err }
-	for _, token := range []string{"madeup-dash-token-0123456789-abcdefgh", "ghp_MadeUpToken0123456789abcdef", "deadbeefcafe0123456789abcdef0123456789ab"} {
+	for _, token := range []string{"madeup-dash-token-0123456789-abcdefgh", "ghp_MadeUpToken0123456789abcdef", "deadbeefcafe0123456789abcdef0123456789ab", "kq7zm2xw9rt4pvn8ys3lgj5hk6mn7pq8rs"} {
 		for name, tc := range map[string]struct {
 			load        func(path string) error
 			body, under string
