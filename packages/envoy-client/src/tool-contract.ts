@@ -79,7 +79,7 @@ const ENVOY_NOTICE_STEPS =
   "each thing you wait on. On notice: Envoy inbound unavailable (envoy_inbox), read live sources " +
   "until a registration is accepted; what the stream stored arrives then. On notice: Envoy " +
   "inbound restored (envoy_inbox), rely on Envoy messages again. On notice: Envoy topics refused " +
-  "(envoy_inbox), read the live source of each topic it names that you wait on; this session no " +
+  "(envoy_inbox), read the live source of each of its topics that you wait on; this session no " +
   "longer follows those, and every other topic it follows is still delivered. On notice: unread " +
   "messages (envoy_inbox), read each card above the notice. On notice: message not shown " +
   "(envoy_inbox), read it now with the command its read_with names.";

@@ -11,6 +11,8 @@ body: |-
   `more` once, in its row. A Dispatch card keeps its reply command, and the `envoy_send`
   description says how to reply to any other card. Each plugin notice states only the fields of
   its kind, and the gap notice tells its cause by them (`retention_hours` or `previous_stream`).
+  A notice field may hold a list, which the notice states as a list (`noticeText`), and the
+  topics-refused notice names its topics so (`topics[2]: <topic>,<topic>`), beside its `reason`.
   The `envoy_inbox` and `envoy_whoami` descriptions give the step a reader takes on each of Envoy's
   own notices, by its kind, and each notice's kind names the tool whose description holds its step
   (`notice: messages may be missing (envoy_inbox)`): Oh My Pi shows the model only the first line

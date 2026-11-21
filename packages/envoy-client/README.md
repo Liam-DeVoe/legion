@@ -192,7 +192,8 @@ a give-up nobody was told of with `nak` rather than acking a message that then e
 notice shown to the session it names is reported even where the host moved before it resolved,
 and only its record waits for a host that is still on that session. `failureNoticeText` writes
 that card through `noticeText` (`@legion/envoy-client/notice-text`), which writes a notice's fields
-under `envoy:` in TOON, so a sender's summary that holds a newline stays inside its own field.
+under `envoy:` in TOON, so a sender's summary that holds a newline stays inside its own field, and
+a field that holds a list is written as a list (`topics[n]: …`).
 Work started for one session stops, writing nothing, once `sessionID()` names another.
 
 The host policy both plugins share sits in `@legion/envoy-client/stream-topics`, so each host keeps
@@ -536,8 +537,9 @@ edge mode refuses a whole registration that names a topic of no project of the s
 403 `topic_not_in_project` or `repository_not_in_project`, naming each refused topic as the
 registration carried it (`EnvoyApiError.refused`): `registerWithRelay`
 (`@legion/envoy-client/relay-registration`) has the host drop exactly those and tell the session
-which, once, with the reason (`drop`, a notice of those two fields, `refusedTopicsNoticeText`,
-whose step is in `envoy_inbox`'s description), logs one line naming them, and registers the rest
+which, once, with the reason (`drop`, a notice whose `topics` is a list of those topics,
+`topics[n]: …`, and whose `reason` is the listener's: `refusedTopicsNoticeText`, whose step is in
+`envoy_inbox`'s description), logs one line naming them, and registers the rest
 at once, whichever path registered. The resend names only the topics the session still follows
 (`followed` is read again before it), so one unsubscribed while the registration waited is not
 put back, and the relay forgets only the refused topics

@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { noticeProblems } from "@legion/test-fixtures/notice-fields";
+import { decode } from "@toon-format/toon";
 import {
   GAP_NOTICE,
   gapNoticeText,
@@ -100,6 +101,7 @@ test("every plugin notice states its fields", () => {
       ],
     },
     {
+      // Two lists of topics, of different topics and counts: `topics` is a list (`topics[n]: …`).
       declared: TOPICS_REFUSED_NOTICE,
       variants: [
         [
@@ -107,7 +109,10 @@ test("every plugin notice states its fields", () => {
             ["notifications.github.acme.priv", "notifications.github.acme.priv.>"],
             "repository_not_in_project"
           ),
-          refusedTopicsNoticeText(["notifications.slack.alerts"], "topic_not_in_project"),
+          refusedTopicsNoticeText(
+            ["notifications.slack.alerts", "notifications.team.ops", "notifications.whatsapp.>"],
+            "topic_not_in_project"
+          ),
         ],
       ],
     },
@@ -120,4 +125,26 @@ test("every plugin notice states its fields", () => {
 // The inbound-restored notice declares no field, so its text is its root and its kind line, whole.
 test("the inbound-restored notice states its kind alone", () => {
   expect(inboundRestoredNoticeText()).toBe(`envoy:\n  notice: ${INBOUND_RESTORED_NOTICE.kind}`);
+});
+
+// The topics-refused notice states the topics it names as a list, each topic an item of its own,
+// as `noticeText` writes any list (`topics[n]: …`), whatever their count: a reader reads each
+// refused topic, not one string it must split.
+test("the topics-refused notice states its topics as a list", () => {
+  const notices = [
+    [
+      ["notifications.github.acme.priv", "notifications.github.acme.priv.>"],
+      "repository_not_in_project",
+    ],
+    [
+      ["notifications.slack.alerts", "notifications.team.ops", "notifications.whatsapp.>"],
+      "topic_not_in_project",
+    ],
+    [["notifications.slack.alerts"], "topic_not_in_project"],
+  ] as const;
+  for (const [topics, reason] of notices) {
+    expect(decode(refusedTopicsNoticeText(topics, reason))).toEqual({
+      envoy: { notice: TOPICS_REFUSED_NOTICE.kind, topics: [...topics], reason },
+    });
+  }
 });

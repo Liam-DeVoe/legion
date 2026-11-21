@@ -55,6 +55,7 @@ import { sessionDirectory } from "@legion/envoy-client/dispatch-session-director
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
 import { NATS_DIAL_PLAN, NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection";
+import { TOPICS_REFUSED_NOTICE } from "@legion/envoy-client/relay-registration";
 import {
   renderSessionAnswers,
   sessionAnswersFailureLine,
@@ -12462,8 +12463,13 @@ console.log(JSON.stringify(args));
       await settle();
 
       expect(told()).toHaveLength(1);
-      expect(told()[0]).toContain(`${refusedRoot}, ${refusedRoot}.>`);
-      expect(told()[0]).toContain("repository_not_in_project");
+      expect(decode(told()[0] ?? "")).toEqual({
+        envoy: {
+          notice: TOPICS_REFUSED_NOTICE.kind,
+          topics: [refusedRoot, `${refusedRoot}.>`],
+          reason: "repository_not_in_project",
+        },
+      });
       expect(await followedTopics(fixture.tools, context)).not.toContain(`${refusedRoot}.>`);
     } finally {
       await fixture.handlers.get("session_shutdown")?.({}, context);

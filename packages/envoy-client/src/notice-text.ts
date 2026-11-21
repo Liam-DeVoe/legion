@@ -6,9 +6,10 @@ import { encode } from "@toon-format/toon";
  * key that names whose notice it is: `envoy` for Envoy's notices, `legion` for Legion's. The first
  * field names the kind (`notice: <kind>`). Each other field is one that the kind declares, stated
  * once, in the order of the declaration. A field holds a fact of the event: a word, a number, an
- * id or a command. No field holds words that are the same in every notice of its kind. The step a
- * reader takes on one of Envoy's own notices is in the description of the tool it reads with
- * (`envoy_inbox`, `envoy_whoami`: `tool-contract.ts`), keyed by the notice's kind, not in the
+ * id or a command, or a list of such facts, which TOON writes as a list (`topics[2]: a,b`, its
+ * count and then its items). No field holds words that are the same in every notice of its kind.
+ * The step a reader takes on one of Envoy's own notices is in the description of the tool it reads
+ * with (`envoy_inbox`, `envoy_whoami`: `tool-contract.ts`), keyed by the notice's kind, not in the
  * notice. The kind ends with that tool's name in parentheses (`messages may be missing
  * (envoy_inbox)`): a host that mounts a tool as a device, as Oh My Pi mounts an extension's tool
  * at `xd://<name>`, shows the model only the first line of its description until the model opens
@@ -26,8 +27,9 @@ export interface NoticeKind<Field extends string> {
   readonly fields: readonly Field[];
 }
 
-/** The value of one field. `undefined` leaves the field out of this notice. */
-export type NoticeValue = string | number | boolean | undefined;
+/** The value of one field: one fact, or a list of facts (`readonly string[]`), which the notice
+ *  states as a list. `undefined` leaves the field out of this notice. */
+export type NoticeValue = string | number | boolean | readonly string[] | undefined;
 
 /** Declares a notice kind: the one place that names its root, its kind and its fields. */
 export function noticeKind<const Field extends string>(
@@ -48,7 +50,7 @@ export function noticeText<Field extends string>(
   kind: NoticeKind<Field>,
   values: { readonly [Name in Field]: NoticeValue }
 ): string {
-  const fields: Record<string, string | number | boolean> = { notice: kind.kind };
+  const fields: Record<string, Exclude<NoticeValue, undefined>> = { notice: kind.kind };
   for (const field of kind.fields) {
     const value = values[field];
     if (value !== undefined) fields[field] = value;

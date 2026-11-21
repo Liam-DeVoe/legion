@@ -228,7 +228,7 @@ describe("envoyToolSpecs", () => {
       [
         "envoy_inbox",
         TOPICS_REFUSED_NOTICE.kind,
-        "read the live source of each topic it names that you wait on; this session no longer follows those, and every other topic it follows is still delivered",
+        "read the live source of each of its topics that you wait on; this session no longer follows those, and every other topic it follows is still delivered",
       ],
       ["envoy_inbox", "unread messages (envoy_inbox)", "read each card above the notice"],
       [
