@@ -118,7 +118,8 @@ to: the tool does not know which project a channel belongs to. Once the token ca
 `project-channels=slack`, a session whose credential names a private project gets it only behind
 the broker's airlock, which spends it on `POST /api/chat.postMessage` to a channel that project's
 owner named and on nothing else, so such a session posts only to its project's channels and cannot
-read a thread with the token
+read a thread with the token; and every other session that gets it behind the airlock can neither
+post to nor read a channel a private project's owner named
 ([A private project's secrets](/legion/broker/concepts/#a-private-projects-secrets)).
 
 ## How Dispatch's events arrive

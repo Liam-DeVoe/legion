@@ -55,7 +55,9 @@ func slackRows(priv projectaccesstest.Row, team projectaccesstest.Row) map[strin
 // and the channels that project's owner named, bounded to airlockProjectRecheck, and asks
 // Dispatch no more than a release of that project's own secret does. Every case where the
 // channels cannot be known, or the projects share none, is Limited with an empty list, never
-// unlimited; a credential that names no project is unlimited and asks Dispatch nothing.
+// unlimited; a credential that names no project is unlimited and asks Dispatch nothing, and its
+// value is bounded to airlockProjectRecheck all the same, so it learns of a private project's
+// channels once one names any.
 func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 	limitedTo := func(t *testing.T, values map[string]AirlockSecret, want []string) {
 		t.Helper()
@@ -114,9 +116,14 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 
 	t.Run("a credential naming no project is unlimited and asks Dispatch nothing", func(t *testing.T) {
 		_, _, _, release := slackFixture(t, slackRows(projectaccesstest.Row{SlackChannels: []string{"C0ALLOWED1"}}, publicTeam))
+		read := time.Now()
 		values, calls := release(slackToken)
-		if got := values[slackToken]; got.Limited || got.Channels != nil || !got.Expires.IsZero() {
-			t.Fatalf("%s for a session naming no project = Limited %v Channels %#v Expires %v; want unlimited, as today", slackToken, got.Limited, got.Channels, got.Expires)
+		got := values[slackToken]
+		if got.Limited || got.Channels != nil {
+			t.Fatalf("%s for a session naming no project = Limited %v Channels %#v; want unlimited, as today", slackToken, got.Limited, got.Channels)
+		}
+		if got.Expires.Before(read.Add(airlockProjectRecheck)) || got.Expires.After(time.Now().Add(airlockProjectRecheck)) {
+			t.Fatalf("%s for a session naming no project expires %v; want the read time plus %v, so a running proxy reads it again and meets the fence of that moment", slackToken, got.Expires, airlockProjectRecheck)
 		}
 		if calls != 0 {
 			t.Fatalf("a session naming no project made %d calls to Dispatch for %s; want none", calls, slackToken)
@@ -128,8 +135,10 @@ func TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels(t *testing.T) {
 // the same class as the judge's (TestTheJudgeOfAPodWithAProjectAndNoProjectAccessDecidesAsBefore):
 // a broker with no project-access client loads no dispatch-project secret and cannot know any
 // project is private, so a project-channels secret asked for by a pod whose exchange entry names a
-// project is granted and released exactly as the merge base released it: no refusal, no limit and
-// no ten-minute bound, though every pod's entry names a project.
+// project is granted and released as the merge base released it: no refusal and no limit, though
+// every pod's entry names a project. Its value carries the ten-minute bound every value of a
+// project-channels name carries in every deployment, so a pod holding it reads it again once the
+// broker can know a project is private.
 func TestTheSlackTokenOfAPodOnABrokerWithNoProjectAccessIsServedAsBefore(t *testing.T) {
 	rules := proxyrules.Rules{Secrets: []proxyrules.SecretRule{rule(slackToken, "")}}
 	m, _, _, _ := newProjectFixture(t, rules, publicTeam)
@@ -141,11 +150,16 @@ func TestTheSlackTokenOfAPodOnABrokerWithNoProjectAccessIsServedAsBefore(t *test
 	m.Projects = nil
 	pod, podKey := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-team-"+t.Name())
 	_, grantID := grantOf(t, m, pod, podKey, "post the release notes", slackToken)
+	read := time.Now()
 	values, _, err := m.AirlockValues(t.Context(), grantID)
 	if err != nil {
 		t.Fatalf("AirlockValues(%s) for a pod mapped to TEAM on a broker with no project access = %v; want it released as before", slackToken, err)
 	}
-	if got := values[slackToken]; got.Limited || got.Channels != nil || !got.Expires.IsZero() {
-		t.Fatalf("%s for that pod = Limited %v Channels %#v Expires %v; want unlimited and unbounded, as before", slackToken, got.Limited, got.Channels, got.Expires)
+	got := values[slackToken]
+	if got.Limited || got.Channels != nil || got.Excluded != nil || got.ExcludedUnread {
+		t.Fatalf("%s for that pod = Limited %v Channels %#v Excluded %#v ExcludedUnread %v; want unlimited and unfenced, as before", slackToken, got.Limited, got.Channels, got.Excluded, got.ExcludedUnread)
+	}
+	if got.Expires.Before(read.Add(airlockProjectRecheck)) || got.Expires.After(time.Now().Add(airlockProjectRecheck)) {
+		t.Fatalf("%s for that pod expires %v; want the read time plus %v, as every value of a project-channels name in every deployment", slackToken, got.Expires, airlockProjectRecheck)
 	}
 }

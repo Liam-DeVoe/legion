@@ -365,6 +365,21 @@ type Machine struct {
 	// transaction (projectFacts); nil on a broker with no such client, which serves no tagged
 	// secret (policy.Loader.ProjectChecks).
 	Projects projectaccess.Access
+	// PrivateList reads every private project at once, with the Slack channels each one's owner
+	// named (projectaccess.Client, BROKER_PROJECT_ACCESS_URL): the public fence's read, which
+	// AirlockValues makes for a project-channels name released to a credential that names no
+	// private project (privateChannels). It is read only once a project is known to be private
+	// (PrivateDeclared, projectaccess.PrivateLister.SawPrivate), so a deployment with none asks
+	// Dispatch nothing here; nil on a broker with no such client, which fences nothing.
+	PrivateList projectaccess.PrivateLister
+	// PrivateDeclared is the private projects the broker's own settings declare. A key it
+	// answers makes the public fence read PrivateList from the first release on, before any
+	// answer of Dispatch's in this process has called a project private, which a restart forgets.
+	// nil declares none.
+	PrivateDeclared func() []string
+	// Now is the clock AirlockValues reads its values' expiry and a channel list's settle time by;
+	// nil is time.Now. A test sets it to a pod's own clock.
+	Now func() time.Time
 	// Exchange is the broker's token exchange configuration, read for the project an operator's
 	// entry maps a pod's or a machine's account to (exchange.Set.MappedProjects), which is the
 	// project such a credential names. nil names none.
@@ -379,11 +394,13 @@ type Machine struct {
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
-	// channelsMissingLogged throttles ChannelsMissingMessage to one line per project, and
+	// channelsMissingLogged throttles ChannelsMissingMessage to one line per project,
+	// privateUnreadLogged PrivateChannelsUnreadMessage to one per project or failed read, and
 	// rowsUnansweredLogged rowUnansweredMessage and fallbackUnreadMessage to one per listed row and
 	// fallbackCutMessage to one per reader, per projectaccess.CacheTTL: each machine's own, so one
 	// machine's lines never silence another's.
 	channelsMissingLogged logThrottle
+	privateUnreadLogged   logThrottle
 	rowsUnansweredLogged  logThrottle
 	reasonsUnreadLogged   logThrottle
 	// narrowingChecks is NarrowingChecks' per-enrollment buckets, built on first use

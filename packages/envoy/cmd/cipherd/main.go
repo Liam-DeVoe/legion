@@ -348,14 +348,18 @@ func main() {
 	// every projected token here goes through, so a rotation needs no restart. config.Load holds
 	// the two settings to both or neither. Built before the loader, which serves a tagged secret
 	// only when this broker can ask whether its project is private (policy.Loader.ProjectChecks).
+	// The same client reads the list of every private project for the airlock's public Slack
+	// fence (requests.Machine.PrivateList). Both stay nil interfaces when the setting is unset,
+	// never a nil *Client inside one, so every reader's nil check holds.
 	var projectAccess projectaccess.Access
+	var privateList projectaccess.PrivateLister
 	// The same client's fresh read of every private project, which GET /v1/project-privacy answers
-	// a listener; nil when unset, where that route answers 502. It is assigned only from a client,
-	// since an interface holding a nil *projectaccess.Client would not be nil.
+	// a listener; it too stays a nil interface when the setting is unset, where that route answers
+	// 502.
 	var projectPrivacy api.FreshPrivateProjects
 	if cfg.ProjectAccessURL != "" {
 		client := projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
-		projectAccess, projectPrivacy = client, client
+		projectAccess, privateList, projectPrivacy = client, client, client
 	}
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
@@ -486,6 +490,11 @@ func main() {
 	dispatch := judgeDispatch(cfg)
 	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
 	reqMachine.Projects, reqMachine.Exchange = projectAccess, exchangePolicy
+	// The public Slack fence reads the private projects' channels once this broker knows a
+	// project is private: from an answer of Dispatch's in this process (PrivateList.SawPrivate)
+	// alone, for now. Machine.PrivateDeclared, the broker's own declaration of its private projects,
+	// is left nil: the setting that declares them is not in this broker yet.
+	reqMachine.PrivateList = privateList
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.

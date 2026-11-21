@@ -169,6 +169,11 @@ type Answer struct {
 	SlackChannels []string `json:"-"`
 	// SlackChannelsPresent is whether the answer carried slack_channels.
 	SlackChannelsPresent bool `json:"-"`
+	// SlackChannelsChangedAt is when Dispatch last changed SlackChannels, a change of the list or
+	// the project's switch to private (slack_channels_changed_at), and zero while it answers null
+	// for a list never changed. A private project's credential posts to no channel until the
+	// broker's settle time after it has passed (requests' AirlockSecret.SettlesAt).
+	SlackChannelsChangedAt time.Time `json:"-"`
 	// AskedAt is when the question this answers was asked, read before it was sent, so an
 	// answer's age is never less than it truly is. *Client always sets it; a zero AskedAt is an
 	// answer from a source that keeps no clock, which Stale takes as fresh.
@@ -334,7 +339,8 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	// SlackChannels is json:"-", so the key reaches this field and no other.
 	var wire struct {
 		Answer
-		SlackChannels *[]string `json:"slack_channels"`
+		SlackChannels          *[]string  `json:"slack_channels"`
+		SlackChannelsChangedAt *time.Time `json:"slack_channels_changed_at"`
 	}
 	status, err := c.get(ctx, projectPath+url.PathEscape(project), query, maxAnswerBytes, &wire)
 	switch {
@@ -355,6 +361,9 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	}
 	if wire.SlackChannels != nil {
 		answer.SlackChannels, answer.SlackChannelsPresent = *wire.SlackChannels, true
+	}
+	if wire.SlackChannelsChangedAt != nil {
+		answer.SlackChannelsChangedAt = *wire.SlackChannelsChangedAt
 	}
 	answer.AskedAt = asked
 	c.keepAnswer(key, cachedAnswer{answer: answer, at: asked})

@@ -190,6 +190,11 @@ type Options struct {
 	// federated token. BROKER_AIRLOCK_TEST_AZURE_AUTHORITY is it in the broker's local stack,
 	// whose token authority is a stand-in.
 	AzureAuthority string
+	// fenceSkip names rules of the public Slack fence (slackCallExcluded) the proxy skips: the
+	// negative control of each rule, which this package's own tests set to show a case they
+	// refuse would reach Slack without its rule. It is unexported, so no caller outside the
+	// package, a production start included, can set it; nil skips nothing.
+	fenceSkip fenceSkip
 }
 
 // Server is the broker's proxy port: one HTTP CONNECT proxy whose password is a placeholder of a
@@ -223,6 +228,8 @@ type Server struct {
 	dialAllow  []string
 	keepValues bool
 	noKind     bool
+	// fenceSkip is Options.fenceSkip, which only this package's tests set.
+	fenceSkip fenceSkip
 	// azureAuthority is Options.AzureAuthority, and microsoftAuthority for a proxy given none.
 	azureAuthority string
 
@@ -327,6 +334,7 @@ func New(o Options) *Server {
 		dialAllow:     o.DialAllow,
 		keepValues:    o.KeepValues,
 		noKind:        o.NoKind,
+		fenceSkip:     o.fenceSkip,
 		innerLn:       newChanListener(),
 		open:          map[io.Closer]struct{}{},
 		values:        map[string]*grantValues{},

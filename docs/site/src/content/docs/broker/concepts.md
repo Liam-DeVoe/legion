@@ -453,10 +453,11 @@ marked with tags or annotations:
   they name: a credential that names a private project spends such a secret only behind the
   airlock, on a post to one of those channels
   ([A private project's secrets](#a-private-projects-secrets)), and every other credential is
-  decided by owner and tier as before. Any other value, an empty tag and the word `none` included,
-  is refused `project-channels-malformed`, so the secret goes to nobody rather than out with no
-  limit. Set it with `agent-secrets secret create|retag --project-channels slack`, and remove it
-  with `--project-channels none`.
+  decided by owner and tier as before, and behind the airlock names none of a private project's
+  channels. Any other value, an empty tag and the word `none` included, is refused
+  `project-channels-malformed`, so the secret goes to nobody rather than out with no limit. Set it
+  with `agent-secrets secret create|retag --project-channels slack`, and remove it with
+  `--project-channels none`.
 - **`mint-service-account`** is written by `agent-secrets secret` beside every type, with the value
   `type-secret`, and this broker never reads it. Only the brokers from legion-envoy-v13.19.0 to
   the release before v16.0.0 read it, and refuse a type secret rather than serve its stored key.
@@ -685,6 +686,26 @@ of every private project the credential names has listed in Dispatch, and refuse
 listed none, when its projects share none, when its person can no longer see one of them, or when
 Dispatch's answer carries no list. A pod holding the secret reads the owners' lists again within
 ten minutes.
+
+Every other credential that gets the secret behind the airlock is fenced from the private
+projects' channels. Once the broker knows a project is private, because Dispatch has answered it
+so, the proxy refuses it `PRIVATE_CHANNEL`, without calling Slack, any call naming a channel id a
+private project's owner listed: under `channel`, `channel_id` or `channels`, in the query, a JSON
+body or a form, in any case and with white space or commas around it. It refuses a search too,
+which reads every channel at once, and a call whose body it cannot read: one of another type than
+JSON or a form, compressed, or over 1 MiB. The broker reads that list with its own token, keeps it
+30 seconds, and reads it again for a pod holding the secret within ten minutes; while it cannot
+read the list, or a private project's entry carries no channel list, every call on the secret is
+refused `PRIVATE_CHANNELS_UNREAD`, and the broker reads it again within a minute. While no project
+is private, the broker asks Dispatch nothing for it and the proxy reads no body: every call is
+carried as before.
+
+A channel an owner names is fenced from every other credential before the owner's own project
+posts to it. A private project's credential posts to none of its project's channels for 16
+minutes and 30 seconds after Dispatch last changed the list, or after the project turned private:
+the longest a pod holding a value read before the change goes on carrying calls to that channel
+for other credentials. `CHANNEL_NOT_ALLOWED` then ends with the time posting reopens. A channel an
+owner removes needs no wait.
 
 A request of a private project is the project's own: one for a secret of the project, one from a
 credential that names the project (the list above), or one whose reason names one of the

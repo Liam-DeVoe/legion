@@ -485,9 +485,20 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 		Projects:             dispatch,
 	}
 
-	enrollmentID, key := enrolSession(t, st, projects)
+	password := releaseSlack(t, m, st, "box-slack-"+t.Name(), "post the release notes (REL-12)", projects)
+	clock := &proxyClock{}
+	r := newRig(t, Options{Rules: rules, Grants: m, Now: clock.now})
+	return &slackBroker{rig: r, client: r.client(password), password: password, dispatch: dispatch, clock: clock}
+}
+
+// releaseSlack enrols a session of slackPerson's on runtime, naming projects, has m grant it the
+// token for reason at once, and releases it as a command would be: held back behind the airlock.
+// It answers the proxy password the release hands the command.
+func releaseSlack(t *testing.T, m *requests.Machine, st *store.Store, runtime, reason string, projects []string) string {
+	t.Helper()
+	enrollmentID, key := enrolSession(t, st, runtime, projects)
 	compact, err := record.Sign(key, slackAudience, []record.AuthorizationDetail{{Type: "agent_secret", Identifier: slackName, Actions: []string{"inject"}}},
-		"post the release notes (INFRA-3862)", "", nil, time.Now())
+		reason, "", nil, time.Now())
 	if err != nil {
 		t.Fatalf("record.Sign: %v", err)
 	}
@@ -499,17 +510,17 @@ func newSlackBroker(t *testing.T, rows map[string]projectaccesstest.Row, project
 	if err != nil || release.Airlock == nil {
 		t.Fatalf("Values = %+v, %v; want %s held back behind the airlock", release, err, slackName)
 	}
-
-	clock := &proxyClock{}
-	r := newRig(t, Options{Rules: rules, Grants: m, Now: clock.now})
-	return &slackBroker{rig: r, client: r.client(release.Airlock.ProxyPassword), password: release.Airlock.ProxyPassword, dispatch: dispatch, clock: clock}
+	return release.Airlock.ProxyPassword
 }
 
-// enrolSession writes a live session of slackPerson's naming projects, under a launcher credential
-// of that person's, straight into the store, as requests' own tests write theirs, and answers the
-// enrollment and the key its requests are signed with.
-func enrolSession(t *testing.T, st *store.Store, projects []string) (string, *ecdsa.PrivateKey) {
+// enrolSession writes a live session of slackPerson's on runtime naming projects, under a launcher
+// credential of that person's, straight into the store, as requests' own tests write theirs, and
+// answers the enrollment and the key its requests are signed with.
+func enrolSession(t *testing.T, st *store.Store, runtime string, projects []string) (string, *ecdsa.PrivateKey) {
 	t.Helper()
+	if projects == nil {
+		projects = []string{}
+	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -525,7 +536,7 @@ func enrolSession(t *testing.T, st *store.Store, projects []string) (string, *ec
 	}
 	id := uuid.NewString()
 	if _, err := st.Pool.Exec(t.Context(), `insert into enrollments (id, kind, runtime_id, operator, thumbprint, subject, launcher_credential_id, lease_expires_at, projects)
-		values ($1,'session',$2,$3,$4,null,$5, now() + interval '1 hour', $6)`, id, "box-slack-"+t.Name(), slackPerson, thumbprint, credentialID, projects); err != nil {
+		values ($1,'session',$2,$3,$4,null,$5, now() + interval '1 hour', $6)`, id, runtime, slackPerson, thumbprint, credentialID, projects); err != nil {
 		t.Fatalf("insert enrollments: %v", err)
 	}
 	return id, key

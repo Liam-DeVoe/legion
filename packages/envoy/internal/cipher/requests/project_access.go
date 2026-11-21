@@ -42,13 +42,13 @@ var ErrProjectAccessUnavailable = errors.New("the broker could not ask Dispatch 
 var errProjectNotNamed = errors.New("project not named")
 
 // airlockProjectRecheck bounds how long the airlock proxy may hold the values of a grant that
-// holds a project-tagged name, and a project-channels value released to a credential that names
-// any project: every such AirlockSecret expires no later than the read time plus this, and the
-// proxy drops a value within its own mintAgainBefore of that expiry, so a pod holding values
-// re-runs the release checks (AirlockValues, checkRelease) within this bound of the read. Whether
-// a project is private, and which channels its owner allows, are Dispatch's, not the policy
-// version's, so nothing else would make the proxy read a held value again when access is lost or
-// a named project turns private.
+// holds a project-tagged name, and every value of a project-channels name, whatever its credential
+// names: every such AirlockSecret expires no later than the read time plus this, and the proxy
+// drops a value within its own mintAgainBefore of that expiry, so a pod holding values re-runs the
+// release checks (AirlockValues, checkRelease) within this bound of the read. Whether a project is
+// private, which channels its owner allows, and which channels are private at all are Dispatch's,
+// not the policy version's, so nothing else would make the proxy read a held value again when
+// access is lost, a named project turns private, or a private project names a channel.
 const airlockProjectRecheck = 10 * time.Minute
 
 // projectFacts is what a release's policy check reads of Dispatch for one credential and one set
@@ -285,28 +285,29 @@ func (l *logThrottle) due(key string) bool {
 	return true
 }
 
-// channelLimit is the channels a grant's credential may post to, and whether it is limited at
-// all. It is limited when the grant holds a project-channels name and one of the projects its
-// credential names is private (policy.Requester.ListsPrivate, read from the unfiltered list). The
-// channels are then those every such project's owner allowed: the intersection, sorted, never
-// nil, so content of any named project lands only where all of their owners allow. They are empty
-// when the person can no longer see one of those projects, when a project's answer carries no
-// slack_channels key, when Dispatch did not answer, and when the lists share no channel; they
-// are never unlimited. A grant holding no project-channels name, or a credential naming no
-// private project, is unlimited and asks Dispatch nothing here; the answers it reads otherwise
-// are the ones projectFacts already put in the client's cache.
+// channelLimit is the channels a grant's credential may post to, whether it is limited at all, and
+// when a named project's changed list settles. It is limited when the grant holds a
+// project-channels name and one of the projects its credential names is private
+// (policy.Requester.ListsPrivate, read from the unfiltered list). The channels are then those
+// every such project's owner allowed: the intersection, sorted, never nil, so content of any named
+// project lands only where all of their owners allow. They are empty when the person can no longer
+// see one of those projects, when a project's answer carries no slack_channels key, when Dispatch
+// did not answer, when the lists share no channel, and while a named project's list is settling
+// (channelsOf); they are never unlimited. A grant holding no project-channels name, or a
+// credential naming no private project, is unlimited and asks Dispatch nothing here; the answers
+// it reads otherwise are the ones projectFacts already put in the client's cache.
 //
 // It decides on the release's own facts, which the values' reads since checkRelease have aged,
 // and on its own reads of the channels, so the decision is held to atDecision's bound like any
 // other: facts that aged past it are read again, afresh, and decided on as read, and a limit whose
 // answers aged past it again is the limit to no channel.
-func (m *Machine) channelLimit(ctx context.Context, checked grantRelease) ([]string, bool) {
+func (m *Machine) channelLimit(ctx context.Context, checked grantRelease) channelGrant {
 	names := make([]string, len(checked.granted))
 	for i, g := range checked.granted {
 		names[i] = g.name
 	}
 	if !anyChannelLimited(checked.set, names) {
-		return nil, false
+		return channelGrant{}
 	}
 	limit, err := atDecision(ctx, m.Projects, func(ctx context.Context, again bool) (channelGrant, time.Time, error) {
 		facts := checked.facts
@@ -320,26 +321,38 @@ func (m *Machine) channelLimit(ctx context.Context, checked grantRelease) ([]str
 		return limit, projectaccess.Oldest(facts.asked, asked), nil
 	})
 	if err != nil {
-		return []string{}, true
+		return channelGrant{channels: []string{}, limited: true}
 	}
-	return limit.channels, limit.limited
+	return limit
 }
 
-// channelGrant is what channelLimit answers: the channels, and whether they limit at all.
+// channelGrant is what channelLimit answers: the channels, whether they limit at all, and, under
+// a limit, when the latest change of a named private project's list settles (zero when none is
+// settling).
 type channelGrant struct {
-	channels []string
-	limited  bool
+	channels  []string
+	limited   bool
+	settlesAt time.Time
 }
 
 // channelsOf is channelLimit's decision on facts, and when the oldest answer it read itself was
 // asked: zero when it read none.
+//
+// A named private project whose list Dispatch changed (slack_channels_changed_at: a change of the
+// list, or the project's switch to private) less than slackChannelSettle ago limits the grant to
+// no channel until then, with settlesAt that time: a proxy serving a credential that names no
+// private project may still hold an Excluded read from before the change, and until it has read
+// the new list a channel the owner just named would be both postable here and readable there. A
+// zero time starts no wait, and a channel the owner removed needs none: the removal declassifies
+// what was posted there.
 func (m *Machine) channelsOf(ctx context.Context, facts projectFacts) (channelGrant, time.Time) {
 	none := channelGrant{channels: []string{}, limited: true}
 	if !facts.requester(policy.Requester{}).ListsPrivate() {
 		return channelGrant{}, time.Time{}
 	}
+	now := m.now()
 	var allowed []string
-	var asked time.Time
+	var asked, settlesAt time.Time
 	first := true
 	for _, project := range facts.named {
 		if facts.states[project] != policy.ProjectPrivate {
@@ -357,6 +370,11 @@ func (m *Machine) channelsOf(ctx context.Context, facts projectFacts) (channelGr
 			m.logChannelsMissing(project)
 			return none, asked
 		}
+		if changed := answer.SlackChannelsChangedAt; !changed.IsZero() {
+			if settles := changed.Add(slackChannelSettle); settles.After(now) && settles.After(settlesAt) {
+				settlesAt = settles
+			}
+		}
 		listed := slices.Compact(slices.Sorted(slices.Values(answer.SlackChannels)))
 		if first {
 			allowed, first = listed, false
@@ -364,7 +382,10 @@ func (m *Machine) channelsOf(ctx context.Context, facts projectFacts) (channelGr
 		}
 		allowed = slices.DeleteFunc(allowed, func(channel string) bool { return !slices.Contains(listed, channel) })
 	}
-	if allowed == nil {
+	switch {
+	case !settlesAt.IsZero():
+		return channelGrant{channels: []string{}, limited: true, settlesAt: settlesAt}, asked
+	case allowed == nil:
 		return none, asked
 	}
 	return channelGrant{channels: allowed, limited: true}, asked
@@ -375,6 +396,88 @@ func (m *Machine) logChannelsMissing(project string) {
 	if m.channelsMissingLogged.due(project) {
 		slog.Warn(ChannelsMissingMessage, "project", project)
 	}
+}
+
+// PrivateChannelsUnreadMessage is the log line for a public fence the broker could not read:
+// Dispatch's list of private projects failed, or named a project with no slack_channels key. Every
+// request on a project-channels name released to a credential that names no private project is
+// then refused PRIVATE_CHANNELS_UNREAD by the proxy, failing closed, until a read answers.
+const PrivateChannelsUnreadMessage = "the broker could not read which Slack channels belong to private projects; a project-channels secret serves no call to a credential that names no private project until it can"
+
+// privateFence is the public fence one AirlockValues call reads: every Slack channel id a private
+// project's owner named, sorted and each once, and whether the broker could not read them.
+type privateFence struct {
+	excluded []string
+	unread   bool
+}
+
+// privateChannels is the public fence: the channels a credential that names no private project
+// may not name with a project-channels secret, read from Dispatch's list of every private project
+// (PrivateList) with the broker's own token. It is read only once this broker knows a project is
+// private, from its own settings (PrivateDeclared) or from an answer of Dispatch's in this process
+// (projectaccess.PrivateLister.SawPrivate); until then it is empty and asks Dispatch nothing, so a
+// deployment with no private project is served as before (R9). A list that fails, or that names a
+// project with no slack_channels key, is unread: the proxy refuses every request on the name until
+// a read answers, rather than take a list it could not read as one naming no channel. So is a
+// broker that declares a private project and holds no PrivateList, which its settings refuse at
+// boot.
+func (m *Machine) privateChannels(ctx context.Context) privateFence {
+	declared := m.PrivateDeclared != nil && len(m.PrivateDeclared()) > 0
+	if m.PrivateList == nil {
+		if declared {
+			m.logPrivateUnread("", errors.New("a private project is declared and the broker holds no client of Dispatch's project access"))
+			return privateFence{unread: true}
+		}
+		return privateFence{}
+	}
+	if !declared && !m.PrivateList.SawPrivate() {
+		return privateFence{}
+	}
+	projects, err := m.PrivateList.PrivateProjects(ctx)
+	if err != nil {
+		m.logPrivateUnread("", err)
+		return privateFence{unread: true}
+	}
+	var excluded []string
+	for _, project := range projects {
+		if !project.SlackChannelsPresent {
+			m.logPrivateUnread(project.Key, nil)
+			return privateFence{unread: true}
+		}
+		excluded = append(excluded, project.SlackChannels...)
+	}
+	slices.Sort(excluded)
+	return privateFence{excluded: slices.Compact(excluded)}
+}
+
+// logPrivateUnread writes PrivateChannelsUnreadMessage once per projectaccess.CacheTTL for project,
+// the private project whose entry carried no slack_channels, or for the failed read err when
+// project is "".
+func (m *Machine) logPrivateUnread(project string, err error) {
+	if !m.privateUnreadLogged.due(project) {
+		return
+	}
+	if project != "" {
+		slog.Warn(PrivateChannelsUnreadMessage, "project", project, "why", "no slack_channels")
+		return
+	}
+	slog.Warn(PrivateChannelsUnreadMessage, "err", err)
+}
+
+// now is the machine's clock (Machine.Now), the wall clock when none is set.
+func (m *Machine) now() time.Time {
+	if m.Now != nil {
+		return m.Now()
+	}
+	return time.Now()
+}
+
+// earlier is the earlier of a and b.
+func earlier(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
 }
 
 // rowUnansweredMessage is the log line for a row an approver's list leaves out because the
