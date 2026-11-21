@@ -158,7 +158,7 @@ func TestTheStateServedBelowTheGroupContractCarriesNoPlan(t *testing.T) {
 // assignmentPlanContract is the contract whose entry in version.go added the key, and this
 // daemon's own contract is never below it: a caller at this contract is served the group.
 func TestTheAssignmentPlanContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedPlan = 216
+	const addedPlan = 220
 	if assignmentPlanContract != addedPlan {
 		t.Fatalf("assignmentPlanContract = %d, want %d, the contract whose entry in version.go added each assignment's plan",
 			assignmentPlanContract, addedPlan)
