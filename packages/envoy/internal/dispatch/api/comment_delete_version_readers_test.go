@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -450,31 +449,14 @@ func TestGoingStreamOverADocumentHoldingAPendingInsertIsWithdrawnByItsDelete(t *
 func TestGoingStreamOverAnIssueWhoseSpecHoldsAPendingInsertIsWithdrawnByItsDelete(t *testing.T) {
 	f := newGoingOverAnInsert(t)
 	nameVersion(t, f.rig.handler, f.artifactID, "With the insert pending")
-	f.answerer.searches = "answer"
-	f.answerer.frames = quotingFrames("issue", f.issueKey, insertedWords)
-	response := f.rig.ask(t, "alice", map[string]any{"words": "what does the issue say about " + insertedWords + "?", "project": "GWI"})
-	if response.Code != http.StatusCreated {
-		t.Fatalf("ask: status=%d body=%s", response.Code, response.Body.String())
-	}
-	run := decodeBody[askedRun](t, response)
-	if stored := f.rig.awaitTerminal(t, run.ID); len(stored) != 3 {
-		t.Fatalf("the run stored %v, want the three frames it answered", stored)
-	}
-	// The control: the run was given the issue, with the insert's words in its text, and no hit of
-	// the spec document or of a comment, whose own arms would record the run whatever the issue's
-	// arm reads.
-	_, hits, bodies := f.answerer.read()
-	given := false
+	run := askQuotingPostFound(t, f.rig, f.answerer, "GWI", "answer", "issue", f.issueKey, insertedWords)
+	// The control: the run was given no hit of the spec document or of a comment, whose own arms
+	// would record the run whatever the issue's arm reads.
+	_, hits, _ := f.answerer.read()
 	for _, hit := range hits {
-		switch {
-		case hit.Kind == "issue" && hit.ID == f.issueKey:
-			given = true
-		case hit.Kind == "document" || hit.Kind == "comment":
+		if hit.Kind == "document" || hit.Kind == "comment" {
 			t.Fatalf("the run was given %+v beside the issue, which records it with the comment by an arm of its own: hits %v", hit, hits)
 		}
-	}
-	if body := bodies[going.Hit{Kind: "issue", ID: f.issueKey}.Key()]; !given || !strings.Contains(body, insertedWords) {
-		t.Fatalf("the run was given the issue %s: %t, with the text %q, want it given with %q: hits %v", f.issueKey, given, body, insertedWords, hits)
 	}
 	// The positive control: while the insert stands, the run streams its frames, the words among
 	// them.
