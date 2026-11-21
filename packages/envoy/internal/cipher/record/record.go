@@ -139,41 +139,84 @@ type AuthorizationDetail struct {
 	Locations  []string `json:"locations,omitempty"`
 }
 
-// Target is the GitHub target d's locations name, which validateDetails holds to one account: that
-// account and, for the repository form, the repositories' names without it, sorted and each once.
-// It answers "" and nil for a detail that names no location, and nil repositories for the account
-// form. The record embeds the signed object (Body.Canonical), so the record a person approves
-// holds the target it narrows to.
-func (d AuthorizationDetail) Target() (account string, repositories []string) {
-	for _, location := range d.Locations {
-		owner, repository, _ := parseLocation(location)
-		account = owner
-		if repository != "" {
-			repositories = append(repositories, repository)
-		}
-	}
-	slices.Sort(repositories)
-	return account, slices.Compact(repositories)
+// Target is the GitHub target a request's signed locations narrow its one GitHub profile to
+// (AuthorizationDetail.Target): an account and, for the repository form, the repositories' names
+// without it, sorted and each once. The zero value is no target, and nil Repositories is the
+// account form. request_secrets records it beside the name it narrows (target_account and
+// target_repositories), and a release and the reuse of a grant read it back from there.
+type Target struct {
+	Account      string
+	Repositories []string
 }
 
-// Locations is the target account and repositories as the request signed them, Target's inverse:
-// one https://github.com/<account> for the account form, or one
+// Target is the GitHub target d's locations name, which validateDetails holds to one account: that
+// account and, for the repository form, the repositories' names without it, sorted and each once.
+// It answers the zero Target for a detail that names no location, and nil repositories for the
+// account form. The record embeds the signed object (Body.Canonical), so the record a person
+// approves holds the target it narrows to.
+func (d AuthorizationDetail) Target() Target {
+	var target Target
+	for _, location := range d.Locations {
+		owner, repository, _ := parseLocation(location)
+		target.Account = owner
+		if repository != "" {
+			target.Repositories = append(target.Repositories, repository)
+		}
+	}
+	slices.Sort(target.Repositories)
+	target.Repositories = slices.Compact(target.Repositories)
+	return target
+}
+
+// Locations is t as the request signed it, AuthorizationDetail.Target's inverse: one
+// https://github.com/<account> for the account form, or one
 // https://github.com/<account>/<repository> for each repository, in repository order, and nil for
-// no target (account ""). A release answers it from what request_secrets recorded of the target,
-// so a client that signed a target reads back the one the broker applied.
-func Locations(account string, repositories []string) []string {
-	if account == "" {
+// no target. A release answers it from what request_secrets recorded of the target, so a client
+// that signed a target reads back the one the broker applied.
+func (t Target) Locations() []string {
+	if t.Account == "" {
 		return nil
 	}
-	if len(repositories) == 0 {
-		return []string{gitHubLocationPrefix + account}
+	if len(t.Repositories) == 0 {
+		return []string{gitHubLocationPrefix + t.Account}
 	}
-	sorted := slices.Sorted(slices.Values(repositories))
+	sorted := slices.Sorted(slices.Values(t.Repositories))
 	locations := make([]string, 0, len(sorted))
 	for _, repository := range slices.Compact(sorted) {
-		locations = append(locations, gitHubLocationPrefix+account+"/"+repository)
+		locations = append(locations, gitHubLocationPrefix+githubname.Entry(t.Account, repository))
 	}
 	return locations
+}
+
+// Entries is t's repositories as account/name entries (githubname.Entry), the form the profiles
+// file and a minter's scope name them in, in t's order; nil for the account form and for no
+// target.
+func (t Target) Entries() []string {
+	if len(t.Repositories) == 0 {
+		return nil
+	}
+	entries := make([]string, len(t.Repositories))
+	for i, repository := range t.Repositories {
+		entries[i] = githubname.Entry(t.Account, repository)
+	}
+	return entries
+}
+
+// String is t as a refusal of a target and the approval page name it: its account, or each of its
+// repositories as account/name, joined with ", "; "" for no target. It holds nothing but the
+// signed locations' own words.
+func (t Target) String() string {
+	if len(t.Repositories) == 0 {
+		return t.Account
+	}
+	return strings.Join(t.Entries(), ", ")
+}
+
+// Equal reports whether t and other are the same target: the same account and the same
+// repositories in the same order, which AuthorizationDetail.Target and request_secrets both keep
+// sorted. The account form and no target each equal only themselves.
+func (t Target) Equal(other Target) bool {
+	return t.Account == other.Account && slices.Equal(t.Repositories, other.Repositories)
 }
 
 // MaxTargetLocations is the most entries one detail's locations hold: one for each repository of
@@ -196,7 +239,7 @@ func parseLocation(location string) (account, repository string, ok bool) {
 	if !found {
 		return "", "", false
 	}
-	account, repository, named := strings.Cut(rest, "/")
+	account, repository, named := githubname.SplitEntry(rest)
 	switch {
 	case !githubname.ValidLogin(account) || strings.ToLower(account) != account:
 		return "", "", false

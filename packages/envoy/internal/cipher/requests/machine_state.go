@@ -177,12 +177,10 @@ type SecretDecision struct {
 	// The request records it in request_secrets.airlock_digest, and a release ends the grant once
 	// it differs from the one the policy holds then.
 	ProfileDigest string `json:"-"`
-	// TargetAccount and TargetRepositories are the target the request's signed locations narrow
-	// this name's GitHub profile to (record.AuthorizationDetail.Target): the account, "" for no
-	// target, and the repositories' names, nil for the account form. The request records them in
-	// request_secrets.target_account and target_repositories, which the release mints for.
-	TargetAccount      string   `json:"-"`
-	TargetRepositories []string `json:"-"`
+	// Target is the target the request's signed locations narrow this name's GitHub profile to
+	// (record.AuthorizationDetail.Target), the zero record.Target for none. The request records
+	// it in request_secrets.target_account and target_repositories, which the release mints for.
+	Target record.Target `json:"-"`
 }
 
 // Request is one agent_secret request as Create and Get answer it. Approver is the approver its
@@ -660,7 +658,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	// The target the request's signed locations name, which only a request for one name carries
 	// (record.VerifyRequestObject). It is held to the name's profile once the policy has decided
 	// the name (checkTarget, below).
-	targetAccount, targetRepositories := obj.Details[0].Target()
+	target := obj.Details[0].Target()
 	lifetime := defaultLifetime(set, names, obj.LifetimeSeconds)
 	// A key the judge decides grants at most its own judge seconds, but only when the judge
 	// decides the request: a request naming no lifetime gets the shortest judge seconds of the
@@ -694,7 +692,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		}
 	}
 	sorted := sortedCopy(names)
-	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set, targetAccount, targetRepositories); err != nil {
+	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set, target); err != nil {
 		return Request{}, err
 	} else if ok {
 		if err := m.endBesideReusedGrant(ctx, enrollmentID, sorted, existing.ID); err != nil {
@@ -705,7 +703,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	// The check mint of each GitHub profile the request names, before a row is written and
 	// before anybody is asked (checkProfiles, profile_check.go): a refusal returns here, so the
 	// approval a profile the broker cannot mint would have spent is never asked for.
-	if err := m.checkProfiles(ctx, enr, names, set, obj.Reason, targetAccount, targetRepositories); err != nil {
+	if err := m.checkProfiles(ctx, enr, names, set, obj.Reason, target); err != nil {
 		return Request{}, err
 	}
 	assignee := m.claimAssignee(ctx, enr, set, names, obj.Reason)
@@ -738,13 +736,13 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			allowed = append(allowed, d.Name)
 		}
 	}
-	if err := checkTarget(set, allowed, targetAccount, targetRepositories); err != nil {
+	if err := checkTarget(set, allowed, target); err != nil {
 		return Request{}, err
 	}
 	// A target narrows the request's one name, so every decision of it carries the target, which
 	// insertRequest records beside it.
 	for i := range e.decisions {
-		e.decisions[i].TargetAccount, e.decisions[i].TargetRepositories = targetAccount, targetRepositories
+		e.decisions[i].Target = target
 	}
 	// Who decides is the keys' setting, read now and kept on the row: the judge holds a request
 	// whose every key needing a decision is a judge key, on a broker that runs a judge; every
@@ -773,7 +771,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			if err != nil {
 				return Request{}, err
 			}
-			joins = sameTarget(keptSecrets, targetAccount, targetRepositories)
+			joins = sameTarget(keptSecrets, target)
 		}
 		if joins {
 			if err := tx.Commit(ctx); err != nil {
@@ -848,27 +846,6 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		})
 	}
 	return req, nil
-}
-
-// checkTarget is the refusal of a request's target (ErrTargetRefused) that Create makes, and an
-// approval that would grant makes again (applyDecisionAttempt), nil where every name can be
-// served with it. account and repositories are the target the request's signed locations name,
-// "" for none; set is the snapshot Create or the approval evaluates names against. A name set
-// does not serve is passed over, since the evaluation answers it with the policy's own error.
-// Every refusal is gitHubScope's, the rule the release mints by: a target outside a name's
-// profile, a target on a name with no github block, and no target on a value-token profile of
-// several accounts. Here nobody is asked to approve a release that rule refuses.
-func checkTarget(set *policy.Set, names []string, account string, repositories []string) error {
-	for _, name := range names {
-		served, ok := set.Secrets[name]
-		if !ok {
-			continue
-		}
-		if _, err := gitHubScope(name, served.Profile, account, repositories); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // BrokerMovedDetail is the detail of a pending request Create ends because its record is signed
@@ -1312,7 +1289,7 @@ func (m *Machine) insertRequest(ctx context.Context, tx pgx.Tx, r newRequest) er
 	}
 	for _, d := range r.decisions {
 		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest, target_account, target_repositories) values ($1,$2,$3,$4,$5,$6,$7)`,
-			r.id, d.Name, d.Decision, d.Source, d.ProfileDigest, nullable(d.TargetAccount), d.TargetRepositories); err != nil {
+			r.id, d.Name, d.Decision, d.Source, d.ProfileDigest, nullable(d.Target.Account), d.Target.Repositories); err != nil {
 			return err
 		}
 	}
@@ -2186,8 +2163,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		for i, g := range requested {
 			names[i] = g.name
 		}
-		account, repositories := obj.Details[0].Target()
-		if err := checkTarget(set, names, account, repositories); err != nil {
+		if err := checkTarget(set, names, obj.Details[0].Target()); err != nil {
 			return Decision{}, false, err
 		}
 	}

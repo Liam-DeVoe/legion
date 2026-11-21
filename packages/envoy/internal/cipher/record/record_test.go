@@ -275,9 +275,11 @@ func TestARequestRefusesALocationThatIsNoGitHubTarget(t *testing.T) {
 }
 
 // TestATargetIsReadBackFromItsLocations: a verified request keeps the locations it signed, and
-// Target reads them as the one account and its repositories, sorted and each once, or as no target
-// for a detail that signs none; Locations builds the signed locations back from what Target read,
-// sorted and each once, which is what a release answers.
+// Target reads them as the one account and its repositories, sorted and each once, or as the zero
+// Target for a detail that signs none. Target.Locations builds the signed locations back, sorted
+// and each once, which is what a release answers; String names the target as a refusal and the
+// approval page do, its account or each repository as account/name; and Equal holds a target
+// equal to the same account and repositories, and not to another account's.
 func TestATargetIsReadBackFromItsLocations(t *testing.T) {
 	key, _ := proof.NewKey()
 	now := time.Now()
@@ -287,10 +289,11 @@ func TestATargetIsReadBackFromItsLocations(t *testing.T) {
 		account      string
 		repositories []string
 		rebuilt      []string
+		words        string
 	}{
-		{"no target", nil, "", nil, nil},
-		{"an account", []string{"https://github.com/example-org"}, "example-org", nil, []string{"https://github.com/example-org"}},
-		{"repositories of one account", []string{"https://github.com/example-org/proofs", "https://github.com/example-org/lean", "https://github.com/example-org/proofs"}, "example-org", []string{"lean", "proofs"}, []string{"https://github.com/example-org/lean", "https://github.com/example-org/proofs"}},
+		{"no target", nil, "", nil, nil, ""},
+		{"an account", []string{"https://github.com/example-org"}, "example-org", nil, []string{"https://github.com/example-org"}, "example-org"},
+		{"repositories of one account", []string{"https://github.com/example-org/proofs", "https://github.com/example-org/lean", "https://github.com/example-org/proofs"}, "example-org", []string{"lean", "proofs"}, []string{"https://github.com/example-org/lean", "https://github.com/example-org/proofs"}, "example-org/lean, example-org/proofs"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			compact, err := Sign(key, "https://secrets.test", []AuthorizationDetail{targetDetail(row.locations...)}, "read", "", nil, now)
@@ -304,12 +307,24 @@ func TestATargetIsReadBackFromItsLocations(t *testing.T) {
 			if !slices.Equal(obj.Details[0].Locations, row.locations) {
 				t.Fatalf("the verified detail's locations = %q, want the signed %q", obj.Details[0].Locations, row.locations)
 			}
-			account, repositories := obj.Details[0].Target()
-			if account != row.account || !slices.Equal(repositories, row.repositories) {
-				t.Fatalf("Target() = %q, %q; want %q, %q", account, repositories, row.account, row.repositories)
+			target := obj.Details[0].Target()
+			if target.Account != row.account || !slices.Equal(target.Repositories, row.repositories) {
+				t.Fatalf("Target() = %+v; want %q, %q", target, row.account, row.repositories)
 			}
-			if rebuilt := Locations(account, repositories); !slices.Equal(rebuilt, row.rebuilt) {
-				t.Fatalf("Locations(Target()) = %q, want %q", rebuilt, row.rebuilt)
+			if rebuilt := target.Locations(); !slices.Equal(rebuilt, row.rebuilt) {
+				t.Fatalf("Target().Locations() = %q, want %q", rebuilt, row.rebuilt)
+			}
+			if words := target.String(); words != row.words {
+				t.Fatalf("Target().String() = %q, want %q", words, row.words)
+			}
+			same := Target{Account: row.account, Repositories: slices.Clone(row.repositories)}
+			for _, other := range []Target{
+				{Account: "acme", Repositories: row.repositories},
+				{Account: row.account, Repositories: append(slices.Clone(row.repositories), "site")},
+			} {
+				if !target.Equal(same) || target.Equal(other) {
+					t.Fatalf("Target().Equal: %+v equals %+v %t and %+v %t; want true and false", target, same, target.Equal(same), other, target.Equal(other))
+				}
 			}
 		})
 	}

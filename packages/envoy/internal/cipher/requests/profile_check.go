@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
+	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
@@ -91,8 +92,8 @@ func gitHubProfile(served policy.Secret) bool {
 // checkProfiles is Create's whole verdict on the GitHub profiles a request names: the refusal
 // Create answers, and nil both for profiles the broker could mint and for any it could not
 // decide. names are the names the request asks for, set the snapshot Create evaluates them
-// against, reason the request object's own reason and targetAccount and targetRepositories the
-// target its signed locations name ("" and nil for none), all as Create holds them. It runs
+// against, reason the request object's own reason and target the target its signed locations
+// name (the zero record.Target for none), all as Create holds them. It runs
 // after reuseLiveGrant, which asks nobody for a grant that already exists, and before the
 // transaction, so a refusal writes no request row, makes no credential-request record and
 // interrupts no person; it also holds no row lock while it waits on GitHub, which is the rule
@@ -113,7 +114,7 @@ func gitHubProfile(served policy.Secret) bool {
 // answers those in a moment, in the order a caller reads them today. A state that is not pending
 // skips it too, so an agent-tier request and the Legion daemon's own token command reach GitHub
 // for nothing.
-func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []string, set *policy.Set, reason, targetAccount string, targetRepositories []string) error {
+func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []string, set *policy.Set, reason string, target record.Target) error {
 	profiled := false
 	for _, name := range names {
 		if gitHubProfile(set.Secrets[name]) {
@@ -153,7 +154,7 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 		if err != nil || !minted || secretType != policy.TypeGitHubApp || !gitHubProfile(served) {
 			continue
 		}
-		checked, refusal := m.checkProfile(budget, mint, enr.ID, d.Name, source, served, targetAccount, targetRepositories)
+		checked, refusal := m.checkProfile(budget, mint, enr.ID, d.Name, source, served, target)
 		if !checked {
 			return nil
 		}
@@ -166,7 +167,7 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 }
 
 // checkProfile is the check mint's verdict on one GitHub profile, for the scope in effect: the
-// target targetAccount and targetRepositories name, or the profile's own (gitHubScope). checked
+// request's target, or the profile's own where it names none (gitHubScope). checked
 // is true with no refusal where GitHub would serve its release, and true with the refusal Create
 // answers where it would not. checked is false where trouble ended the check instead — a stored
 // value that could not be read or that the minter cannot mint from, an answer that is neither a
@@ -185,12 +186,12 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 // the App's JWT, a 403 of some other kind and a 404 on the token route each say nothing about the
 // scope. Refusing the request for one of those would tell the caller to fix a profile that is not
 // at fault and would hide a broken App key behind it.
-func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, name, source string, served policy.Secret, targetAccount string, targetRepositories []string) (checked bool, refusal error) {
+func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, name, source string, served policy.Secret, target record.Target) (checked bool, refusal error) {
 	// Create holds the target to the profile inside its transaction, once the policy has decided
 	// the names (checkTarget), which is after this check. This check runs only for a request the
 	// policy sends to a person, so no name here is denied, and a target gitHubScope refuses is
 	// answered now, as the refusal checkTarget would make, before GitHub is asked anything.
-	scope, err := gitHubScope(name, served.Profile, targetAccount, targetRepositories)
+	scope, err := gitHubScope(name, served.Profile, target)
 	if err != nil {
 		return true, err
 	}

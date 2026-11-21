@@ -12,14 +12,12 @@ import (
 	"maps"
 	"slices"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
-	"github.com/sjawhar/envoy/internal/cipher/githubname"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
@@ -114,7 +112,7 @@ const GrantChainInvalidMessage = "broker: a grant's approval chain does not veri
 // when the grant holds a name behind the airlock, how to reach the proxy that holds the rest,
 // for each github-app profile whose permissions the cut to what an installation holds left
 // something out of, each entry it left out, by profile name and account (secrets.Minted.LeftOut),
-// and the target the grant's request signed, as record.Locations builds it back from what
+// and the target the grant's request signed, as record.Target.Locations builds it back from what
 // request_secrets recorded.
 type Release struct {
 	Values        map[string]string
@@ -342,12 +340,12 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call
 }
 
 // grantLocations is the target granted names recorded, as the request signed it
-// (record.Locations), and nil when none recorded one. Only a request of one name signs a target,
-// so the first name that holds one holds the grant's.
+// (record.Target.Locations), and nil when none recorded one. Only a request of one name signs a
+// target, so the first name that holds one holds the grant's.
 func grantLocations(granted []requestedSecret) []string {
 	for _, g := range granted {
-		if g.targetAccount != "" {
-			return record.Locations(g.targetAccount, g.targetRepositories)
+		if g.target.Account != "" {
+			return g.target.Locations()
 		}
 	}
 	return nil
@@ -516,7 +514,7 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	// the profile's own. Create refused a target the profile cannot serve (checkTarget), and an
 	// edit of the profile since ends the grant (checkRelease), so a refusal here is one no release
 	// reaches; it is answered rather than minted, since a scope it cannot build is never widened.
-	scope, err := gitHubScope(g.name, served.Profile, g.targetAccount, g.targetRepositories)
+	scope, err := gitHubScope(g.name, served.Profile, g.target)
 	if err != nil {
 		return secrets.Minted{}, err
 	}
@@ -573,114 +571,6 @@ func mintRequest(name, secretType string, served policy.Secret, value string, sc
 	}
 }
 
-// gitHubScope is the scope a release of name, served as profile, mints for the target account
-// and repositories ("" and nil for none; the repositories by name, of that account), and nil for
-// a name that is no GitHub profile. Its repositories are account/name entries, as the profiles
-// file writes them (secrets.GitHubScope), so the minter sends each account its own.
-//
-// With no target it is the profile's own accounts, repositories, permissions and value form.
-// policy.ParseProfiles refuses a profile that lists an account none of its repositories names,
-// so each account in effect has a repository of its own; were one built some other way, the
-// minter refuses its scope rather than reach the account whole (secrets.GitHubScope's refusal).
-// A value-token profile, whose release is one account's bare token, is refused with no target
-// while it names more than one account (ErrTargetRefused, telling the caller to name one with
-// --target): this is the one place that rule is written, for Create (checkTarget) and every
-// release alike, so the minter is never asked for such a token.
-//
-// A target narrows the profile and never widens it: its one account, which the profile must
-// name, with the target's repositories, each one the profile names where it names any, or, for an
-// account target, the profile's repositories of that account. A target's repository matches the
-// profile's without regard to case, as GitHub matches repository names (secrets' heldBy), and the
-// scope names it as the profiles file writes it, so the minter is asked for the profile's own
-// words; for a profile that names no repository it names it as the target does. A target outside
-// the profile and a target on a name with no github block are refused (ErrTargetRefused), naming
-// the profile's accounts and repositories: Create answers that refusal before anybody is asked
-// (checkTarget), and a release mints nothing for it.
-func gitHubScope(name string, profile *policy.Profile, account string, repositories []string) (*secrets.GitHubScope, error) {
-	if profile == nil || profile.GitHub == nil {
-		if account != "" {
-			return nil, fmt.Errorf("%w: %s has no github block, so it names no GitHub account or repository a target could narrow", ErrTargetRefused, name)
-		}
-		return nil, nil
-	}
-	block := profile.GitHub
-	scope := &secrets.GitHubScope{Accounts: block.Accounts, Permissions: block.Permissions, Value: block.Value}
-	if account == "" {
-		if block.Value == githubname.ValueToken && len(block.Accounts) > 1 {
-			return nil, fmt.Errorf("%w: %s releases one account's bare token, and the profile names %s: name one with --target ACCOUNT[/REPOSITORY]", ErrTargetRefused, name, profileWords(block))
-		}
-		scope.Repositories = block.Repositories
-		return scope, nil
-	}
-	// The profile's repositories of the target's account, or nil for a profile that names none
-	// and so reaches every repository its installations do.
-	var reached []string
-	for _, repository := range block.Repositories {
-		if owner, _, _ := strings.Cut(repository, "/"); owner == account {
-			reached = append(reached, repository)
-		}
-	}
-	outside := func() error {
-		return fmt.Errorf("%w: %s: the target %s is outside the profile, which names %s", ErrTargetRefused, name, targetWords(account, repositories), profileWords(block))
-	}
-	// An account the profile names no repository of is refused too. ParseProfiles refuses such a
-	// profile, so this guards only one built some other way, and it must: an empty reached is the
-	// nil Repositories of a scope of every repository, so without it such a target would widen.
-	if !slices.Contains(block.Accounts, account) || block.Repositories != nil && len(reached) == 0 {
-		return nil, outside()
-	}
-	scope.Accounts = []string{account}
-	scope.Repositories = reached
-	if len(repositories) == 0 {
-		return scope, nil
-	}
-	// The target's repositories as account/name entries, each the profile's own entry for it
-	// where the profile names repositories. Two names of the target that differ only in case give
-	// the profile's one entry, so the entries are sorted again and each kept once.
-	scope.Repositories = make([]string, 0, len(repositories))
-	for _, repository := range repositories {
-		entry := account + "/" + repository
-		if block.Repositories != nil {
-			at := slices.IndexFunc(reached, func(r string) bool { return strings.EqualFold(r, entry) })
-			if at < 0 {
-				return nil, outside()
-			}
-			entry = reached[at]
-		}
-		scope.Repositories = append(scope.Repositories, entry)
-	}
-	slices.Sort(scope.Repositories)
-	scope.Repositories = slices.Compact(scope.Repositories)
-	return scope, nil
-}
-
-// targetWords is a target as a refusal names it: its account, or each of its repositories as
-// account/name.
-func targetWords(account string, repositories []string) string {
-	if len(repositories) == 0 {
-		return account
-	}
-	named := make([]string, len(repositories))
-	for i, repository := range repositories {
-		named[i] = account + "/" + repository
-	}
-	return strings.Join(named, ", ")
-}
-
-// profileWords is a GitHub profile's scope as a refusal of a target names it, so the caller reads
-// what a target may name: its accounts, and its repositories or every repository its
-// installations reach. It holds nothing but the profiles file's own words.
-func profileWords(block *policy.GitHubBlock) string {
-	words := "the accounts " + strings.Join(block.Accounts, ", ")
-	if len(block.Accounts) == 1 {
-		words = "the account " + block.Accounts[0]
-	}
-	if block.Repositories == nil {
-		return words + " and every repository the App's installations on them reach"
-	}
-	return words + " and the repositories " + strings.Join(block.Repositories, ", ")
-}
-
 // trimmedValue answers the value release spends for a stored value it has just read
 // (policy.TrimLineEnding), and writes the operator's line
 // (TrailingLineEndingRemovedMessage) naming the secret each time the rule changed it. Both of
@@ -698,11 +588,10 @@ func trimmedValue(value, name string) string {
 // was made: the secret it froze (source), the decision the policy gave it then, the fingerprint
 // of the profile it was served as then (profileDigest, from the column airlock_digest; "" for a
 // stored secret served by its own name), and the target the request narrowed that profile to
-// (targetAccount, "" for none, and targetRepositories, nil for none and for an account target).
+// (target, the zero record.Target for none).
 type requestedSecret struct {
 	name, source, decision, profileDigest string
-	targetAccount                         string
-	targetRepositories                    []string
+	target                                record.Target
 }
 
 // requestedSecrets reads request requestID's names that the policy did not deny, in name order:
@@ -719,7 +608,7 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 	var requested []requestedSecret
 	for rows.Next() {
 		var g requestedSecret
-		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest, &g.targetAccount, &g.targetRepositories); err != nil {
+		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest, &g.target.Account, &g.target.Repositories); err != nil {
 			return nil, err
 		}
 		requested = append(requested, g)
@@ -727,14 +616,12 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 	return requested, rows.Err()
 }
 
-// sameTarget reports whether every name of requested was recorded with the target account and
-// repositories name ("" and nil for none): whether a grant, or a pending request, of requested
-// serves a request of that target. A request names a target only for its one name
-// (record.VerifyRequestObject), so a request of several names records none on any of them.
-func sameTarget(requested []requestedSecret, account string, repositories []string) bool {
-	return !slices.ContainsFunc(requested, func(g requestedSecret) bool {
-		return g.targetAccount != account || !slices.Equal(g.targetRepositories, repositories)
-	})
+// sameTarget reports whether every name of requested was recorded with target (the zero
+// record.Target for none): whether a grant, or a pending request, of requested serves a request
+// of that target. A request names a target only for its one name (record.VerifyRequestObject), so
+// a request of several names records none on any of them.
+func sameTarget(requested []requestedSecret, target record.Target) bool {
+	return !slices.ContainsFunc(requested, func(g requestedSecret) bool { return !g.target.Equal(target) })
 }
 
 // neededADecision answers, for a request's names as requestedSecrets reads them, which ones the
@@ -1245,7 +1132,7 @@ func writtenBeforeMigration13(alias string) string {
 
 // reuseLiveGrant answers Create's own "request (or reuse the live grant)" contract: an exact
 // name-set match (never a subset or superset — the same matching rule coalescing uses for pending
-// requests) of the same target (targetAccount and targetRepositories, "" and nil for none: a grant
+// requests) of the same target (the zero record.Target for none: a grant
 // releases its own request's scope, so a grant of another target, or of none, is no candidate,
 // sameTarget), asking for the same lifetime (or, asking for none, a request written before
 // migration 0013: writtenBeforeMigration13), against a still-live grant (not revoked, not expired)
@@ -1299,7 +1186,7 @@ func writtenBeforeMigration13(alias string) string {
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
-func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set, targetAccount string, targetRepositories []string) (Request, bool, error) {
+func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, set *policy.Set, target record.Target) (Request, bool, error) {
 	matches, err := matchingRequests(ctx, m.Store.Pool, `select r.id, g.id::text, array_agg(s.name) from requests r
 		join request_secrets s on s.request_id=r.id
 		join grants g on g.request_id=r.id
@@ -1315,7 +1202,7 @@ func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted 
 		if err != nil {
 			return Request{}, false, err
 		}
-		if !sameTarget(granted, targetAccount, targetRepositories) {
+		if !sameTarget(granted, target) {
 			continue
 		}
 		var rulesVersion, decidedBy string
@@ -1770,8 +1657,8 @@ type RecordDetail struct {
 
 // RecordProfile is one profile a record asks for: its name, its entry of the profiles file as the
 // live policy serves it, that entry's fingerprint (policy.Secret.ProfileDigest), and the target
-// the record's signed request narrows it to (record.AuthorizationDetail.Target), worded as a
-// refusal of a target words one (targetWords), "" for a record that names none. The profile is
+// the record's signed request narrows it to (record.AuthorizationDetail.Target), as a refusal of
+// a target words one (record.Target.String), "" for a record that names none. The profile is
 // the live one, not one frozen with the record: an approval binds its grant to the entry live
 // when it is given (decidedUnder), however the entry was when the request was made, and an edit
 // of the entry after the approval ends that grant (checkRelease). So what an approval can release
@@ -1844,8 +1731,7 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 			continue
 		}
 		if served := set.Secrets[d.Identifier]; served.Profile != nil {
-			account, repositories := d.Target()
-			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Digest: served.ProfileDigest, Target: targetWords(account, repositories)})
+			profiles = append(profiles, RecordProfile{Name: d.Identifier, Profile: served.Profile, Digest: served.ProfileDigest, Target: d.Target().String()})
 		}
 	}
 	detail := RecordDetail{

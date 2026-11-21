@@ -160,7 +160,7 @@ func (s *GitHubScope) repositoriesOf(account string) []string {
 // repositoryOf reads one entry of GitHubScope.Repositories, "account/name", as the name of a
 // repository of account, and false for an entry of any other account.
 func repositoryOf(entry, account string) (string, bool) {
-	owner, name, ok := strings.Cut(entry, "/")
+	owner, name, ok := githubname.SplitEntry(entry)
 	return name, ok && owner == account
 }
 

@@ -9,6 +9,7 @@ package githubname
 import (
 	"regexp"
 	"slices"
+	"strings"
 )
 
 // The two forms a GitHub profile's value takes (secrets.GitHubScope.Value, and policy's
@@ -26,6 +27,19 @@ const (
 // the minter cannot read whole cannot be released, and its revoke is sent only where the part it
 // read names the token.
 const MaxNarrowedRepositories = 100
+
+// Entry is one repository as the profiles file, a minter's scope and a target's locations write
+// it: its account and its own name, account/name. Every join of the two is this one.
+func Entry(account, name string) string {
+	return account + "/" + name
+}
+
+// SplitEntry reads an Entry back: the account before the first "/" and the name after it, and
+// false for text that holds no "/". A name that holds another "/" is left whole for its caller's
+// rule (ValidRepositoryName) to refuse. Every split of an entry is this one.
+func SplitEntry(entry string) (account, name string, ok bool) {
+	return strings.Cut(entry, "/")
+}
 
 // MetadataPermission is the permission GitHub grants at read with every installation token,
 // whatever its request named, and which every installation it lists holds. The minter refuses a

@@ -215,8 +215,8 @@ func (b *GitHubBlock) read() *GitHubBlock {
 	if b.Repositories != nil {
 		read.Repositories = make([]string, 0, len(b.Repositories))
 		for _, repository := range b.Repositories {
-			if account, name, ok := strings.Cut(repository, "/"); ok {
-				repository = loginOrAsWritten(account) + "/" + name
+			if account, name, ok := githubname.SplitEntry(repository); ok {
+				repository = githubname.Entry(loginOrAsWritten(account), name)
 			}
 			read.Repositories = append(read.Repositories, repository)
 		}
@@ -397,7 +397,7 @@ func checkRepositories(repositories, accounts []string, refuse func(field, why s
 	named := make([]string, 0, len(repositories))
 	for j, repository := range repositories {
 		field := fmt.Sprintf("github.repositories[%d]", j)
-		account, name, ok := strings.Cut(repository, "/")
+		account, name, ok := githubname.SplitEntry(repository)
 		if !ok {
 			return refuse(field, fmt.Sprintf("%q is not account/name", repository))
 		}
