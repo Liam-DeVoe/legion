@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  Dispatch no longer logs a request that its client closed as a server fault. A page that
+  navigated away, or a search the bar replaced, cancelled its request while the request's database
+  statement ran. Dispatch then wrote `500 INTERNAL` to the closed connection and logged
+  `level=ERROR msg="dispatch: API handler failed" error="context canceled"`. Such a request now
+  writes nothing, logs one debug line, and its request line gives status `499`. A cancel or a
+  deadline that Dispatch made itself is still a `500` with its `ERROR` line.
+time: 2026-11-21T11:11:26Z
+custom:
+    Issue: pr4815
