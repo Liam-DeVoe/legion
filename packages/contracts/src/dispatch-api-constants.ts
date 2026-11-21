@@ -22,6 +22,7 @@
 // Types only: a type import is erased by the compiler, so it builds no edge a bundler would
 // follow back to the schemas.
 import type { CredentialPendingRow, MyReplyRow } from "./dispatch-api.generated";
+import type { EventType } from "./dispatch-api-events";
 import type { MyReplyAgentRow, MyReplyThreadRow } from "./dispatch-api-inbox";
 
 /** The OAuth scopes a Dispatch credential can hold, mirroring Go's `model.ScopePerson` and
@@ -650,4 +651,90 @@ export async function retryNoRoute<T>(
     await wait(jitteredDelay(delay), options.signal);
   }
   throw options.exhausted();
+}
+
+/** Each member of `EventType` once: a record over the union, so the compiler refuses a type left
+ *  out of it and a key that is no type. The union is `dispatch-api-events.ts`'s, beside its
+ *  payloads' schemas; this record, the list and `isEventType` below are here, for the reason the
+ *  head of this module gives: the dashboard's event feed reads `isEventType` on every frame, and
+ *  from beside the union it would bring every area module's schemas into the entry chunk. */
+const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
+  "architecture.sync_failed": true,
+  "architecture.synced": true,
+  "artifact.approved": true,
+  "artifact.changes_requested": true,
+  "artifact.created": true,
+  "artifact.human_edited": true,
+  "artifact.removed": true,
+  "artifact.renamed": true,
+  "artifact.version": true,
+  "ask.anchor_refreshed": true,
+  "ask.answered": true,
+  "ask.asked_of": true,
+  "ask.edited": true,
+  "ask.follower_added": true,
+  "ask.follower_removed": true,
+  "ask.handed_back": true,
+  "ask.opened": true,
+  "ask.resolved": true,
+  "block.invalid": true,
+  "block.repaired": true,
+  "child.added": true,
+  "child.removed": true,
+  "child.status": true,
+  "comment.anchor_refreshed": true,
+  "comment.answered": true,
+  "comment.created": true,
+  "comment.delivery": true,
+  "comment.edited": true,
+  "comment.reopened": true,
+  "comment.resolved": true,
+  "decision.kept": true,
+  "handoff.recorded": true,
+  "issue.claimed": true,
+  "issue.closed": true,
+  "issue.created": true,
+  "issue.deployed": true,
+  "issue.pull_request_attribution_changed": true,
+  "issue.released": true,
+  "issue.updated": true,
+  "message.accepted": true,
+  "message.answered": true,
+  "message.created": true,
+  "message.delivery": true,
+  "priority.updated": true,
+  "project.created": true,
+  "project.updated": true,
+  "result.recorded": true,
+  "result.retracted": true,
+  "settings.architecture_source.updated": true,
+  "settings.project_default_assignee.updated": true,
+  "settings.repo_project.updated": true,
+  "subscription.remove_requested": true,
+  "subscription.removed": true,
+  "suggestion.accepted": true,
+  "suggestion.rejected": true,
+  "user_agent_state.updated": true,
+  "user_state.updated": true,
+  "user_thread_state.updated": true,
+};
+
+/**
+ * Every event type Dispatch writes to its log, sorted: the members of the `DispatchEvent` union,
+ * held to it by `EVENT_TYPE_MEMBERS`. `scripts/gen-go.ts` writes it into envoy's
+ * `internal/contracts` as `DispatchEventTypes`, so a Go reader that sorts every type, as the
+ * keyword fill's inventory test does, learns of a new one from the same list.
+ */
+export const DISPATCH_EVENT_TYPES: readonly EventType[] = (
+  Object.keys(EVENT_TYPE_MEMBERS) as EventType[]
+).sort();
+
+/**
+ * Whether `value` names an event type of the `DispatchEvent` union, so a reader of a frame can
+ * narrow its `type` before it reads the frame as that event. `Object.hasOwn`, not `in`:
+ * `EVENT_TYPE_MEMBERS` inherits `Object.prototype`, so `in` would read `constructor` or
+ * `toString` as an event type.
+ */
+export function isEventType(value: string): value is EventType {
+  return Object.hasOwn(EVENT_TYPE_MEMBERS, value);
 }
