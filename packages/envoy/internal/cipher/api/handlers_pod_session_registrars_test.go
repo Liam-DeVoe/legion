@@ -151,8 +151,10 @@ func TestTheOperatorMovesABinding(t *testing.T) {
 	if status != http.StatusOK || moved.SessionName != session || moved.Registrar != otherDaemonAccount || moved.PreviousRegistrar != daemonAccount || moved.RegisteredAt.Before(before) {
 		t.Fatalf("the operator's move of %s to %s = %d %s, want 200 binding %s to %s since the move, its previous registrar %s", session, otherDaemonAccount, status, strings.TrimSpace(string(body)), session, otherDaemonAccount, daemonAccount)
 	}
+	// Each check from here reports and goes on, so a move that left the name bound to none also
+	// shows which daemon the registrations below then bind it to.
 	if bound := ts.boundTo(t, session); bound != otherDaemonAccount {
-		t.Fatalf("once the operator's move of %s to %s answered, %s is bound to %q, want %s", session, otherDaemonAccount, session, bound, otherDaemonAccount)
+		t.Errorf("once the operator's move of %s to %s answered, %s is bound to %q, want %s", session, otherDaemonAccount, session, bound, otherDaemonAccount)
 	}
 	wantMoved := []map[string]any{{
 		"level": slog.LevelInfo, "msg": movedMessage, "operator": holdOperatorAccount,

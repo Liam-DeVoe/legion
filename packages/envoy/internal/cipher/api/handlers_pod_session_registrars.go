@@ -49,10 +49,10 @@ type podSessionBindingsAnswer struct {
 }
 
 // movePodSessionBinding is PUT /v1/pod-session-registrars/{session}: the deployment's operator binds
-// a session name to the daemon the body names, whatever daemon it is bound to now. Every session
-// name belongs, for good, to the daemon that first registered it at POST
-// /v1/oauth/exchange/pod-sessions (oauthstore.Store.RegisterPodSession), through release and lapse
-// alike, and this route is the one way it changes hands: a project that moves its sessions from a
+// a session name to the daemon the body names, whatever daemon it is bound to now. A session name
+// belongs to the daemon that first registered it at POST /v1/oauth/exchange/pod-sessions
+// (oauthstore.Store.RegisterPodSession), through release and lapse alike, and this route is the
+// one way it changes hands: a project that moves its sessions from a
 // daemon to another, as a project that turns private moves them to its own daemon, has the operator
 // move each name the first daemon bound before the second registers it, since the second is refused
 // every name the first holds.
