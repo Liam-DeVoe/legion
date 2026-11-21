@@ -14,6 +14,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/sjawhar/envoy/infra/internal/flagerr"
 	"github.com/sjawhar/envoy/infra/streams"
@@ -52,6 +54,12 @@ name, inside a streams-census, cutover or hub-restore hold. With no --hold each 
 hold of its own workflow (streams-update, streams-census); with --hold it runs in that hold. The
 hold stays set: envoy-infra hold release --hold ID ends it.
 
+The census reads each --daemon-database store only at the address its daemon's Deployment in
+namespace legion names (its envoy-infra.consumer-names/project, store-database and store-instance
+annotations): the file's URL must name that database and its second line that instance. A store
+whose database does not exist there is gone: the census prints it GONE, removes none of that
+daemon's consumers and prints each LEFT. A store it cannot match or read leaves it UNKNOWN.
+
 settings: --replicas (ENVOY_NATS_REPLICAS), --stream-max-bytes (ENVOY_STREAM_MAX_BYTES),
           --session-max-age (ENVOY_SESSION_MAX_AGE)
 The hold's flags, as envoy-infra hold takes them: --broker-url, --token-file, --verify-keys,
@@ -71,26 +79,104 @@ type streamsOptions struct {
 }
 
 // StreamIDWriter reconciles each daemon store's recorded StreamID with the current identity of
-// ENVOY_NOTIFICATIONS, which it reads on conn, the census's own operator connection: for each
-// family daemon/<P> it opens the store at daemonDatabases' <P>=<file> entry and writes the identity
-// where the store's differs, and returns one line per store it changed,
-// `daemon/<P>: stream_id "old" -> "new"`. A store it cannot read, or a stream with no identity, is
-// its error, and it writes nothing. It is consumernames.ReconcileDaemonStreamIDs, whose package
-// imports this one, so cmd/envoy-infra passes it in.
-type StreamIDWriter func(ctx context.Context, conn *nats.Conn, families, daemonDatabases []string) ([]string, error)
+// ENVOY_NOTIFICATIONS, which it reads on conn, the census's own operator connection. Its stores
+// are one for each daemonDatabases <P>=<file> entry, and each family daemon/<P> must be one of
+// them. It reads a store only at the address the daemon's Deployment names (deployments;
+// DaemonStoreDatabaseAnnotation, DaemonStoreInstanceAnnotation), and writes the identity where
+// the store's differs. A store whose database the server answers does not exist is gone, and a
+// store it cannot match, reach or read is unreconciled; while any store is unreconciled, it writes
+// nothing. What it did is its StreamIDResult. A malformed daemonDatabases entry, a listing of the
+// Deployments it cannot read, and a stream with no identity are its error, and it then writes
+// nothing. It is consumernames.ReconcileDaemonStreamIDs, whose package imports this one, so
+// cmd/envoy-infra passes it in.
+type StreamIDWriter func(ctx context.Context, conn *nats.Conn, deployments DaemonDeployments, families, daemonDatabases []string) (StreamIDResult, error)
+
+// StreamIDResult is what a StreamIDWriter did to the daemon stores, each list in the order of the
+// stores' project keys.
+type StreamIDResult struct {
+	Changed      []StreamIDChange    // stores whose recorded identity it rewrote, by project key
+	Gone         []GoneStore         // stores confirmed gone, which no daemon can use
+	Unreconciled []UnreconciledStore // stores left as they are, and why
+}
+
+// StreamIDChange is one store's recorded identity rewritten: daemon/<Project>'s store recorded
+// From, and now records To.
+type StreamIDChange struct{ Project, From, To string }
+
+// GoneStore is a store confirmed gone: daemon/<Project>'s Deployment names its database Database
+// on the Cloud SQL instance Instance, the operator's --daemon-database file states the instance
+// StatedInstance (a store is gone only when the two are equal, and both are printed so a reader
+// sees what was compared), and the server answered Answer, that the database does not exist
+// (SQLSTATE 3D000).
+type GoneStore struct{ Project, Database, Instance, StatedInstance, Answer string }
+
+// UnreconciledStore is a store the writer left as it was: daemon/<Project>'s, for Reason.
+type UnreconciledStore struct{ Project, Reason string }
+
+// The daemons' Deployments as the deployment renders them: each Legion daemon runs as a
+// Deployment in namespace DaemonNamespace, annotated with its project key
+// (DaemonProjectAnnotation) and the store it reads: the store's database name
+// (DaemonStoreDatabaseAnnotation) and the connection name of the Cloud SQL instance that holds it
+// (DaemonStoreInstanceAnnotation). The census's readers of the daemon stores read them with the
+// operator's Kubernetes credential, to check that the store an operator's --daemon-database file
+// reaches is that daemon's.
+const (
+	DaemonNamespace               = "legion"
+	DaemonProjectAnnotation       = "envoy-infra.consumer-names/project"
+	DaemonStoreDatabaseAnnotation = "envoy-infra.consumer-names/store-database"
+	DaemonStoreInstanceAnnotation = "envoy-infra.consumer-names/store-instance"
+)
+
+// DaemonDeployment is one Deployment in the daemons' namespace: its name and annotations.
+type DaemonDeployment struct {
+	Name        string
+	Annotations map[string]string
+}
+
+// DaemonDeployments lists the Deployments of the daemons' namespace.
+type DaemonDeployments func(ctx context.Context) ([]DaemonDeployment, error)
+
+// KubeDaemonDeployments lists the Deployments of DaemonNamespace through client, all of them in
+// one list. A list the API server refuses or does not answer is its error, which fails the
+// census's readers of the daemon stores, and the census is UNKNOWN.
+func KubeDaemonDeployments(client kubernetes.Interface) DaemonDeployments {
+	return func(ctx context.Context) ([]DaemonDeployment, error) {
+		list, err := client.AppsV1().Deployments(DaemonNamespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("list the Deployments of namespace %s: %w", DaemonNamespace, err)
+		}
+		deployments := make([]DaemonDeployment, len(list.Items))
+		for i, d := range list.Items {
+			deployments[i] = DaemonDeployment{Name: d.Name, Annotations: d.Annotations}
+		}
+		return deployments, nil
+	}
+}
 
 // ErrNoStoreWriter is a census run with no writer of the daemon stores' StreamIDs: a store left
 // with a recreated stream's old identity would resume against sequences of a stream that is gone,
 // so the census is UNKNOWN rather than done.
 var ErrNoStoreWriter = errors.New("this build passes the census no writer of the daemon stores' stream ids")
 
-// FreshNames reads the fresh consumer names the selection records name (CensusInput's
-// RecordedFreshNames), on conn, from each store: family to its sorted fresh names
-// `<base>~<nuid>`, for the listeners' durables, Dispatch's (from the database at
-// dispatchDatabaseFile) and each daemon's (daemonDatabases' <P>=<file> entries). A store it cannot
-// read is its error. It is consumernames.RecordedFreshNames, whose package imports this one, so
-// cmd/envoy-infra passes it in.
-type FreshNames func(ctx context.Context, conn *nats.Conn, families []string, dispatchDatabaseFile string, daemonDatabases []string) (map[string][]string, error)
+// FreshNames reads the fresh consumer names the selection records name, on conn, from each store
+// (FreshNamesRead): for the listeners' durables, Dispatch's (from the database at
+// dispatchDatabaseFile) and each daemon's (daemonDatabases' <P>=<file> entries, each read at the
+// address its Deployment names, as StreamIDWriter reads it). A store it cannot read is its error,
+// and so is a daemon store it cannot match with its Deployment; a daemon store whose database is
+// gone holds no names, and the reader names that daemon's consumers instead (FreshNamesRead.Gone).
+// It is consumernames.RecordedFreshNames, whose package imports this one, so cmd/envoy-infra
+// passes it in.
+type FreshNames func(ctx context.Context, conn *nats.Conn, deployments DaemonDeployments, families []string, dispatchDatabaseFile string, daemonDatabases []string) (FreshNamesRead, error)
+
+// FreshNamesRead is what a FreshNames reader read, as the census takes it.
+type FreshNamesRead struct {
+	// Names are family to its sorted fresh names `<base>~<nuid>` (CensusInput's
+	// RecordedFreshNames).
+	Names map[string][]string
+	// Gone are the consumer names of each daemon whose store is gone, each to why
+	// (CensusInput's GoneNames): the census keeps each of their consumers and names it.
+	Gone map[string]string
+}
 
 // ErrNoFreshNamesReader is a census run with no reader of the recorded fresh names: every consumer
 // in a fresh form would read as a crashed create's orphan and be removed, so the census is UNKNOWN
@@ -158,7 +244,7 @@ func runStreams(ctx context.Context, args []string, stdout, stderr io.Writer, e 
 	flags.Var(&o.families, "family", "a cutover family the declared set names (session, dispatch, daemon/<project key>); repeat")
 	flags.Var(&o.machineIDs, "listener-machine-id", "a machine id of the deployment's listeners; repeat")
 	flags.Var(&o.daemons, "daemon-consumer", "a Legion daemon's consumer, <name>=<filter>[,<filter>...]; repeat")
-	flags.Var(&o.daemonDatabases, "daemon-database", "a daemon store's database, <project>=<file> (the file holds its URL); repeat")
+	flags.Var(&o.daemonDatabases, "daemon-database", "a daemon store's database, <project>=<file> (the file's first line holds its URL, its second the Cloud SQL instance that URL reaches); repeat")
 	flags.StringVar(&o.dispatchDatabaseFile, "dispatch-database-file", "", "the file holding Dispatch's database URL, whose selection records name its fresh consumer names")
 	flags.StringVar(&o.replicas, "replicas", os.Getenv(bus.ReplicasEnvVar), "the deployment's replica count")
 	flags.StringVar(&o.maxBytes, "stream-max-bytes", os.Getenv(bus.StreamMaxBytesEnvVar), "the notification stream's byte limit")
@@ -229,15 +315,15 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 		row, err := records.Row(ctx)
 		return row.Phase, err
 	}
-	// result is the word's report, and reported is true once streams.Update or streams.Census
-	// answered with one: a run that stops before, at its admission, its set, its connect or a
-	// reader, or that either word refuses with a zero report (its phase or convert check), prints
-	// no report, so no zero report's CLEAN stands beside its refusal or its UNKNOWN.
+	// result is the word's report, and reported says it holds one: a run that stops before
+	// streams.Update or streams.Census answered (an unread reader, a refused admission, a failed set
+	// or connect), or one they refused at their phase or convert check, which return a zero report
+	// beside the error, prints no report, since the zero report's last line reads CLEAN.
+	var result streams.Report
+	var reported bool
 	madeReport := func(r streams.Report, err error) bool {
 		return err == nil || len(r.Changes)+len(r.Failures)+len(r.Unknown) > 0
 	}
-	var result streams.Report
-	var reported bool
 	c := HeldCommand{HoldID: o.holdID, Reason: o.reason, MintersReport: o.MintersReport}
 	switch o.word {
 	case "update":
@@ -259,11 +345,14 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 				return nil, nil, err
 			}
 			// The fresh names are read before anything is removed: with no reader, or one that
-			// cannot read a store, the census is UNKNOWN and removes nothing.
+			// cannot read a store, the census is UNKNOWN and removes nothing. The daemons'
+			// Deployments, which both readers of the daemon stores check each store's address
+			// against, are listed with the hold's own Kubernetes client.
 			if e.readers.FreshNames == nil {
 				return nil, nil, unknownf(StepPostcheck, ErrNoFreshNamesReader, "read the recorded fresh consumer names")
 			}
-			fresh, err := e.readers.FreshNames(ctx, nc, o.families, o.dispatchDatabaseFile, o.daemonDatabases)
+			deployments := KubeDaemonDeployments(op.Hub.Client)
+			fresh, err := e.readers.FreshNames(ctx, nc, deployments, o.families, o.dispatchDatabaseFile, o.daemonDatabases)
 			if err != nil {
 				return nil, nil, unknownf(StepPostcheck, err, "read the recorded fresh consumer names")
 			}
@@ -297,7 +386,8 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 					}
 					return e.readers.Recorded(ctx, nc)
 				},
-				RecordedFreshNames: fresh,
+				RecordedFreshNames: fresh.Names,
+				GoneNames:          fresh.Gone,
 			})
 			result, reported = r, madeReport(r, err)
 			changes := streamChanges(r)
@@ -316,7 +406,7 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 			if refused := streamsRefusal(r, err); refused != nil {
 				return changes, nil, leftBy(r, refused)
 			}
-			outputs, err := reconcileStreamIDs(ctx, nc, e.readers.Stores, o.families, o.daemonDatabases, stdout)
+			outputs, err := reconcileStreamIDs(ctx, nc, e.readers.Stores, deployments, o.families, o.daemonDatabases, stdout)
 			return changes, outputs, leftBy(r, err)
 		}
 	}
@@ -334,41 +424,77 @@ func heldStreams(ctx context.Context, o streamsOptions, settings streamset.Setti
 
 // leftBy is err, a streams run's failure after its intent, as the stop's record of what the run
 // left: a *Left naming each change the report made (a stream made or raised, a consumer or stream
-// removed) when it made any, else err itself, which RunHeld records as holdrecord.LeftUnchanged.
-// The bucket barrier's keys are the hold's own, and are no change.
+// removed) and each a *Left err carries (a daemon store's stream id rewritten before the census
+// stopped, reconcileStreamIDs) when there is any, else err itself, which RunHeld records as
+// holdrecord.LeftUnchanged. The bucket barrier's keys are the hold's own, and are no change.
 func leftBy(r streams.Report, err error) error {
-	if err == nil || len(r.Changes) == 0 {
-		return err
+	if err == nil {
+		return nil
 	}
-	changed := make([]string, len(r.Changes))
-	for i, f := range r.Changes {
-		changed[i] = f.String()
+	var changed []string
+	for _, f := range r.Changes {
+		changed = append(changed, f.String())
+	}
+	var inner *Left
+	if errors.As(err, &inner) {
+		changed = append(changed, inner.What)
+		err = inner.Err
+	}
+	if len(changed) == 0 {
+		return err
 	}
 	return &Left{What: strings.Join(changed, "; "), Err: err}
 }
 
 // reconcileStreamIDs has stores bring every daemon store's StreamID to ENVOY_NOTIFICATIONS'
-// current identity, after the census's complete listing and its phase and convert checks. Each
-// line stores returns (`daemon/<P>: stream_id "old" -> "new"`) is printed as a CHANGED line and
-// named in the census's done entry, as stream_id.daemon/<P>. The stores are the daemons' own
-// databases, no stream of the hub, so the postcheck counts none of these writes. With no stores,
-// or an error of theirs (a store it cannot read, a stream with no identity), it is UNKNOWN.
-func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWriter, families, daemonDatabases []string, stdout io.Writer) (map[string]string, error) {
+// current identity, after the census's complete listing and its phase and convert checks, each
+// store read at the address its Deployment names (deployments). Each store it changed is printed
+// as `CHANGED daemon/<P>: stream_id "old" -> "new"` and named in the census's done entry as
+// stream_id.daemon/<P>; each store gone as `GONE daemon/<P>: database <db> on instance <instance>
+// (the operator's file states <instance>): <answer>`, named as gone.daemon/<P> with the text after
+// `daemon/<P>: `. The stores are the daemons' own databases, no stream of the hub, so the
+// postcheck counts none of these writes. With no stores, an error of theirs (a malformed
+// --daemon-database, a listing of the Deployments it cannot read, a stream with no identity), or
+// any store left unreconciled, which it names with why, it is UNKNOWN and the census writes no
+// done entry; a store changed before that is then named as what the run left (a *Left), so the
+// stop does not record the run as unchanged.
+func reconcileStreamIDs(ctx context.Context, nc *nats.Conn, stores StreamIDWriter, deployments DaemonDeployments, families, daemonDatabases []string, stdout io.Writer) (map[string]string, error) {
 	if stores == nil {
 		return nil, unknownf(StepPostcheck, ErrNoStoreWriter, "reconcile the daemon stores' stream ids")
 	}
-	changed, err := stores(ctx, nc, families, daemonDatabases)
+	result, err := stores(ctx, nc, deployments, families, daemonDatabases)
 	if err != nil {
 		return nil, unknownf(StepPostcheck, err, "reconcile the daemon stores' stream ids")
 	}
 	outputs := map[string]string{}
-	for _, line := range changed {
+	var changed []string
+	for _, c := range result.Changed {
+		line := fmt.Sprintf("%s%s: stream_id %q -> %q", daemonFamilyPrefix, c.Project, c.From, c.To)
 		fmt.Fprintln(stdout, "CHANGED "+line)
-		store, _, _ := strings.Cut(line, ":")
-		outputs["stream_id."+store] = line
+		outputs["stream_id."+daemonFamilyPrefix+c.Project] = line
+		changed = append(changed, "stream_id of "+line)
 	}
-	return outputs, nil
+	for _, g := range result.Gone {
+		text := fmt.Sprintf("database %s on instance %s (the operator's file states %s): %s", g.Database, g.Instance, g.StatedInstance, g.Answer)
+		fmt.Fprintf(stdout, "GONE %s%s: %s\n", daemonFamilyPrefix, g.Project, text)
+		outputs["gone."+daemonFamilyPrefix+g.Project] = text
+	}
+	if len(result.Unreconciled) == 0 {
+		return outputs, nil
+	}
+	reasons := make([]string, len(result.Unreconciled))
+	for i, u := range result.Unreconciled {
+		reasons[i] = daemonFamilyPrefix + u.Project + ": " + u.Reason
+	}
+	err = unknownf(StepPostcheck, nil, "reconcile the daemon stores' stream ids: left unreconciled: %s", strings.Join(reasons, "; "))
+	if len(changed) > 0 {
+		return nil, &Left{What: strings.Join(changed, "; "), Err: err}
+	}
+	return nil, err
 }
+
+// daemonFamilyPrefix begins each daemon's cutover family, daemon/<project key>.
+const daemonFamilyPrefix = "daemon/"
 
 // streamsRefusal is a streams run's error, or its report's verdict when it is not clean: an UNKNOWN
 // report is an *Unknown, a failing one a *Refusal, so the run writes no done entry for either.
