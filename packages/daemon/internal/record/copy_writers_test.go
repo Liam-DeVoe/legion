@@ -29,12 +29,16 @@ type copyWriter struct {
 // non-test source, read from that source: the mirror's one write (blockers.Mirror.put), which an
 // event, a view, the release's read, the periodic turn's re-read and a listing all reach, and
 // the boot's refill in reconcileListing, which empties the project's rows in the transaction that
-// fills them from the listing. A use added anywhere else is a member the set does not hold, and
-// the test fails naming its file and function.
+// fills them from the listing. The replay of a recorded window (internal/replay) replays that
+// refill at each boot the record holds, on the replay's own database, in the transaction that
+// fills the rows from its copy of Dispatch's listing ((*driver).boot), and writes every reading
+// through the mirror. A use added anywhere else is a member the set does not hold, and the test
+// fails naming its file and function.
 func TestEveryWriterOfTheCopyIsAReading(t *testing.T) {
 	want := []copyWriter{
 		{file: "internal/blockers/mirror.go", function: "(*Mirror).put", method: "PutDispatchIssue"},
 		{file: "internal/daemon/workflow.go", function: "(*workflowRuntime).reconcileListing", method: "TakeDispatchRefill"},
+		{file: "internal/replay/driver.go", function: "(*driver).boot", method: "TakeDispatchRefill"},
 	}
 	got := copyWriters(t, filepath.Join("..", ".."), "cmd", "internal")
 	for _, writer := range got {

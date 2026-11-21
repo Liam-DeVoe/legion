@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -191,17 +192,19 @@ func dispatchBefore(iss *IssueTrace, at time.Time) (*DispatchEvent, int64) {
 	return newest, seq
 }
 
-// mirror writes iss's Dispatch mirror row as its newest issue event before the start shows it.
+// mirror writes iss's Dispatch mirror row as its newest issue event before the start shows it,
+// through the daemon's own writer of the copy (blockers.Mirror), as the daemon writes a reading of
+// an event: the copy of Dispatch's issues is written by a reading alone, and the record's newest
+// event before the start is the reading the start state stands on.
 func (s *seeder) mirror(iss *IssueTrace) error {
 	event, _ := dispatchBefore(iss, s.at)
 	if event == nil {
 		return nil
 	}
 	shown := event.Issue
-	reading := record.DispatchReading{Key: iss.Key, Project: cmp.Or(event.Project, iss.Project), Seq: event.Seq,
-		Status: record.Carry(shown.Status), Parent: record.Carry(shown.Parent), Blockers: record.Carry(append([]string{}, shown.BlockedBy...)),
-		Labels: record.Carry(append([]string{}, shown.Labels...)), Rank: record.Carry(shown.Rank)}
-	if err := s.records.PutDispatchIssue(s.ctx, s.tx, reading); err != nil {
+	fact := intake.DispatchIssue{Key: iss.Key, Seq: event.Seq, Status: shown.Status, Parent: shown.Parent,
+		Blockers: append([]string{}, shown.BlockedBy...), Labels: append([]string{}, shown.Labels...), Rank: shown.Rank}
+	if _, err := blockers.NewMirror(s.records, cmp.Or(event.Project, iss.Project)).Apply(s.ctx, s.tx, fact); err != nil {
 		return fmt.Errorf("replay: seed the mirror row of %s: %w", iss.Key, err)
 	}
 	return nil

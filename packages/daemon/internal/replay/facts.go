@@ -152,7 +152,6 @@ var FactSources = map[string]FactSource{
 	"PodBackstopDue":          {Way: FactLeftOut, Assumption: assumeSupervisionSettles},
 	"CutoverMergerRepair":     {Way: FactLeftOut, Assumption: assumeBootRepairsNothing},
 	"GateRequestFound":        {Way: FactLeftOut, Assumption: assumeBootRepairsNothing},
-	"RepoMappingChanged":      {Way: FactLeftOut, Assumption: assumeBootRepairsNothing},
 	"CheckReport":             {Way: FactLeftOut, Assumption: assumeNoProductionCheck},
 	"CheckLookEnded":          {Way: FactLeftOut, Assumption: assumeNoProductionCheck},
 	"CheckWakeDue":            {Way: FactLeftOut, Assumption: assumeNoProductionCheck},
