@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strings"
 	"time"
@@ -16,6 +18,7 @@ import (
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // operatorCall is one command that reaches the daemon over the operator's bearer — each `legion
@@ -144,7 +147,7 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 	if err != nil {
 		if bounded.Err() != nil && ctx.Err() == nil {
 			fmt.Fprintf(c.stderr, "%s: %s %s was not answered within the --wait bound of %s; the daemon goes on with it under its own deadlines. Read `legion claims list` to see where the claim stood, and ask again\n",
-				c.name(), method, op.base+path, *c.wait)
+				c.name(), method, redact.URL(op.base+path), *c.wait)
 			return 0, nil, false
 		}
 		fmt.Fprintf(c.stderr, "%s: %v\n", c.name(), err)
@@ -160,7 +163,7 @@ func (c *operatorCall) request(ctx context.Context, op operator, method, path st
 // printAnswer hands a 2xx answer path served to print; one it cannot read fails the command.
 func (c *operatorCall) printAnswer(op operator, path string, answer []byte, print func(io.Writer, []byte) error) int {
 	if err := print(c.stdout, answer); err != nil {
-		fmt.Fprintf(c.stderr, "%s: read the answer %s%s served: %v\n", c.name(), op.base, path, err)
+		fmt.Fprintf(c.stderr, "%s: read the answer %s served: %v\n", c.name(), redact.URL(op.base+path), err)
 		return 1
 	}
 	return 0
@@ -175,7 +178,9 @@ type operator struct {
 
 // do is one request to the daemon: body as JSON when it is not nil, the bearer as its
 // Authorization when op carries one. It answers the status and the body the daemon served; only a
-// request that got no answer is an error.
+// request that got no answer is an error, which names the route through redact.URL
+// (daemonRequestError): op.base is LEGION_DAEMON_URL's when it is set, user name and password and
+// all, and Go's *url.Error quotes the URL with only the password masked.
 func (op operator) do(ctx context.Context, method, path string, body any) (int, []byte, error) {
 	var reader io.Reader
 	if body != nil {
@@ -185,9 +190,10 @@ func (op operator) do(ctx context.Context, method, path string, body any) (int, 
 		}
 		reader = bytes.NewReader(encoded)
 	}
-	request, err := http.NewRequestWithContext(ctx, method, op.base+path, reader)
+	route := op.base + path
+	request, err := http.NewRequestWithContext(ctx, method, route, reader)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("%s %w", method, daemonRequestError(route, err))
 	}
 	if op.bearer != "" {
 		request.Header.Set("Authorization", "Bearer "+op.bearer)
@@ -197,15 +203,40 @@ func (op operator) do(ctx context.Context, method, path string, body any) (int, 
 	}
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, fmt.Errorf("%s %w", method, daemonRequestError(route, err))
 	}
 	defer response.Body.Close()
 	answer, err := io.ReadAll(response.Body)
 	if err != nil {
-		return 0, nil, fmt.Errorf("read the answer to %s %s: %w", method, request.URL, err)
+		return 0, nil, fmt.Errorf("read the answer to %s %w", method, daemonRequestError(route, err))
 	}
 	return response.StatusCode, answer, nil
 }
+
+// daemonRequestError is err, a request of route that got no answer, as a refusal prints it: route
+// through redact.URL; a route that does not parse in fixed words, since url.Parse's error quotes
+// what it could not read (`invalid port ":<the password's head>"` for a password holding a "/");
+// and any other error through the URL rule with *url.Error's own quote of the URL left out. Its
+// error unwraps to err, so a deadline is still told from a refusal.
+func daemonRequestError(route string, err error) error {
+	var transport *neturl.Error
+	if errors.As(err, &transport) {
+		if transport.Op == "parse" {
+			return &requestError{"the daemon: its address does not parse as a URL", err}
+		}
+		return &requestError{redact.URL(route) + ": " + redact.URLCredentials(transport.Err.Error()), err}
+	}
+	return &requestError{redact.URL(route) + ": " + redact.URLCredentials(err.Error()), err}
+}
+
+// requestError is daemonRequestError's error: its text, and the error it stands for.
+type requestError struct {
+	text string
+	err  error
+}
+
+func (e *requestError) Error() string { return e.text }
+func (e *requestError) Unwrap() error { return e.err }
 
 // daemonAddress is the API root of the daemon a command reaches: the one LEGION_DAEMON_URL names —
 // the daemon names it on every pane, and a pane has no legion.yaml — unless --config or --port

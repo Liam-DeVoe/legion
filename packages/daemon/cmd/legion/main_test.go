@@ -2296,6 +2296,39 @@ func TestStateNamesTheDaemonWithoutLEGIONDAEMONURLsUserinfo(t *testing.T) {
 	}
 }
 
+// A LEGION_DAEMON_URL whose password holds a "/" parses as a host with a port that is the
+// password's head, which url.Parse's error quotes (`invalid port ":<head>"`): `legion state` refuses
+// it in plain words, and `legion claims list`, an operator command, names an unreachable daemon
+// through redact.URL, holding no part of a made-up token written as the user.
+func TestTheOperatorCommandsNameLEGIONDAEMONURLWithoutItsCredential(t *testing.T) {
+	t.Run("an address that does not parse", func(t *testing.T) {
+		const head = "madeUpStateHead0123"
+		t.Chdir(t.TempDir())
+		t.Setenv("LEGION_DAEMON_URL", "http://legion:"+head+"/tail@127.0.0.1:1")
+		t.Setenv("LEGION_ISSUE", "")
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "state"}, &out, &errb)
+		if want := "legion state: read the daemon: its address does not parse as a URL\n"; code != 1 || errb.String() != want {
+			t.Fatalf("legion state = %d, stderr %q; want 1 and %q", code, errb.String(), want)
+		}
+	})
+	t.Run("an operator command", func(t *testing.T) {
+		const token = "madeUpClaimsToken0123"
+		t.Chdir(t.TempDir())
+		dir := t.TempDir()
+		bearer := filepath.Join(dir, "operator-token")
+		if err := os.WriteFile(bearer, []byte("operator-bearer\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("LEGION_DAEMON_URL", "http://"+token+"@127.0.0.1:1")
+		var out, errb bytes.Buffer
+		code := run(context.Background(), []string{"legion", "claims", "list", "--operator-token-file", bearer}, &out, &errb)
+		if code != 1 || !strings.Contains(errb.String(), "http://[a URL with credentials]/legion/v1/") || strings.Contains(errb.String(), token[:10]) {
+			t.Fatalf("legion claims list = %d, stderr %q; want 1, the daemon named by the mark, and no part of the token", code, errb.String())
+		}
+	})
+}
+
 // The deployment that writes no `memory` block and declares no `experiments` key — the
 // deployment this fleet runs — counts the memory arms its issues hold all the same: such a
 // project declares the memory experiment at mode off (config.Project.ExperimentsDeclared), under

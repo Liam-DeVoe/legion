@@ -11,7 +11,6 @@ import (
 	"maps"
 	"net"
 	"net/http"
-	neturl "net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -1700,11 +1699,7 @@ func get(ctx context.Context, route string) ([]byte, error) {
 			return fmt.Errorf("read %s: no answer in %s, past the %s this command allows one read of a daemon's API",
 				shown, time.Since(began).Round(time.Millisecond), requestTimeout)
 		}
-		var transport *neturl.Error
-		if errors.As(err, &transport) {
-			err = transport.Err
-		}
-		return fmt.Errorf("read %s: %s", shown, redact.URLCredentials(err.Error()))
+		return fmt.Errorf("read %w", daemonRequestError(route, err))
 	}
 	request, err := http.NewRequestWithContext(timed, http.MethodGet, route, nil)
 	if err != nil {
