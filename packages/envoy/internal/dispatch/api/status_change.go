@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // statusChangeRoute is the route's own name, which the advice of each write names.
@@ -181,7 +182,7 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	callerProject, _ := s.callerProject(r)
 	run := &statusChangeRun{
-		server: s, key: key, change: change, writer: writer,
+		server: s, key: key, change: change, writer: writer, callerName: statusChangeCallerName(writer.actor),
 		callerProject: callerProject, outliving: outlivingTheClient(r), resumed: resumed, pointed: resumed != nil,
 	}
 	plan, err := s.planStatusChange(ctx, key, change, writer, resumed)
@@ -437,16 +438,18 @@ func (s *server) planStatusChangeUnderLocks(
 	return statusChangePlan{named: named, steps: steps, conflict: conflict}, nil, nil
 }
 
-// statusChangeRun is one attempt of a status change that runs its steps. resumed is the recovery
-// point of the earlier attempt this one resumes (resumedStatusChange), nil for a first attempt.
-// pointed is that the request key holds a recovery point, which the call marks finished after its
-// last step: the point this attempt resumed, or one a step of this keyed attempt wrote. named is
-// the result of the named issue's own step, when this attempt ran it (namedRan).
+// statusChangeRun is one attempt of a status change that runs its steps. callerName is the caller
+// the comments of its steps name (statusChangeCallerName). resumed is the recovery point of the
+// earlier attempt this one resumes (resumedStatusChange), nil for a first attempt. pointed is that
+// the request key holds a recovery point, which the call marks finished after its last step: the
+// point this attempt resumed, or one a step of this keyed attempt wrote. named is the result of
+// the named issue's own step, when this attempt ran it (namedRan).
 type statusChangeRun struct {
 	server        *server
 	key           string
 	change        statusChange
 	writer        issueWriter
+	callerName    string
 	callerProject string
 	outliving     context.Context
 	resumed       *statusChangeRecovery
@@ -590,8 +593,8 @@ func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence, 
 		return call
 	}
 	call.comment = &issueComment{author: parentStatusRuleActor}
-	caller, named, status := statusChangeCallerName(run.writer.actor), run.key, run.change.status
-	because := fmt.Sprintf("because %s's status change of %s passed `%s`. %s", caller, named, step.option, statusChangeRuleSentence)
+	named, status := run.key, run.change.status
+	because := fmt.Sprintf("because %s's status change of %s passed `%s`. %s", run.callerName, named, step.option, statusChangeRuleSentence)
 	switch step.option {
 	case optionIncludeChildren:
 		call.step.leaves = func(before model.Issue) bool {
@@ -650,14 +653,7 @@ func claimedSessionName(id string) string {
 		}
 		return r
 	}, id))
-	runes := 0
-	for index := range quoted {
-		if runes == claimedSessionNameMax {
-			quoted = strings.TrimSpace(quoted[:index])
-			break
-		}
-		runes++
-	}
+	quoted = strings.TrimSpace(text.HeadRunes(quoted, claimedSessionNameMax))
 	if quoted == "" {
 		return "a session"
 	}
@@ -758,14 +754,24 @@ func (point *statusChangeRecovery) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &members); err != nil {
 		return err
 	}
-	for name, into := range map[string]any{
-		pointChanged: &point.Changed, pointEvents: &point.Events, pointWithdrawn: &point.Withdrawn,
-		pointFinished: &point.Finished, pointIssue: &point.Issue,
-	} {
-		if member, held := members[name]; held {
-			if err := json.Unmarshal(member, into); err != nil {
-				return fmt.Errorf("read %s of a status change's recovery point: %w", name, err)
-			}
+	for name, member := range members {
+		var into any
+		switch name {
+		case pointChanged:
+			into = &point.Changed
+		case pointEvents:
+			into = &point.Events
+		case pointWithdrawn:
+			into = &point.Withdrawn
+		case pointFinished:
+			into = &point.Finished
+		case pointIssue:
+			into = &point.Issue
+		default:
+			continue
+		}
+		if err := json.Unmarshal(member, into); err != nil {
+			return fmt.Errorf("read %s of a status change's recovery point: %w", name, err)
 		}
 	}
 	return nil

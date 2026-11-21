@@ -17,7 +17,7 @@ export function IssueStatusNotes({
 }: {
   issueKey: string;
   noteClassName: string;
-  statusMove: IssueStatusMove;
+  statusMove: Pick<IssueStatusMove, "question" | "refusal">;
 }): ReactNode {
   return (
     <>

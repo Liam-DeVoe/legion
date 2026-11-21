@@ -27,8 +27,6 @@ export interface IssueStatusMove {
   /** The status the question is checking, asking about or writing: the header shows it as the
    *  issue's pending one. */
   readonly pending: string | undefined;
-  /** Whether the question is checking, asking about or writing a status. */
-  readonly busy: boolean;
   /** The question while it is open, which `IssueStatusNotes` draws. */
   readonly question: ParentStatusQuestion | undefined;
   /** Why the dry run of the newest status write was refused, which put the status back, until
@@ -48,7 +46,6 @@ export function useIssueStatusMove(
 ): IssueStatusMove {
   const parentStatus = useParentStatusMove();
   return {
-    busy: parentStatus.pending !== undefined,
     move: (status, patch) => {
       void parentStatus.move({
         key: issue.key,

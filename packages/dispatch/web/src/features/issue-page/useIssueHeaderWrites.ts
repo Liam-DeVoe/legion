@@ -121,7 +121,7 @@ export interface IssueHeaderWrites {
   /** The rule's question every status write of the header (`pickStatus`, `requestStatus`) goes
    *  through: the question while Dispatch's rule would refuse a write, and why the dry run of the
    *  newest one was refused, which the header draws as `IssueStatusNotes`. */
-  readonly statusMove: IssueStatusMove;
+  readonly statusMove: Pick<IssueStatusMove, "question" | "refusal">;
   /** A parent Dispatch refused, with the reason it gave, or one the reader stopped, which may have
    *  been saved, drawn where the parent is edited. */
   readonly parentSaveFailed: boolean;

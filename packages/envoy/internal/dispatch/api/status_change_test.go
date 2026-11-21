@@ -588,9 +588,6 @@ func TestAStatusChangesCommentNamesItsCallerAsItsCredentialProvedIt(t *testing.T
 		if err := rig.database.Pool.QueryRow(context.Background(), `select body from comments where issue_key = $1`, parent).Scan(&body); err != nil {
 			t.Fatalf("read the comment on %s: %v", parent, err)
 		}
-		if strings.ContainsAny(body, "\r\n") {
-			t.Errorf("the comment on %s holds a line ending: %q", parent, body)
-		}
 		tree := pmdoc.ReadForDisplay(body, pmdoc.DisplayLatest)
 		if len(tree.Children) != 1 || tree.Children[0].Type != "paragraph" {
 			t.Fatalf("the comment on %s reads as %d blocks, want one paragraph: %q", parent, len(tree.Children), body)

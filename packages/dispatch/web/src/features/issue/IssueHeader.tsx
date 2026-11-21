@@ -233,7 +233,7 @@ export function IssueHeader({
   };
   // A status write is out, or the rule's question is checking or asking about one: no second
   // status write can start.
-  const statusBusy = updateIssue.isPending || statusMove.busy;
+  const statusBusy = updateIssue.isPending || statusMove.pending !== undefined;
   // Palette-only: closing and reopening an issue are too consequential for a single key, so they
   // are reachable from `$mod+k` alone, through the same handlers and the same guards as the
   // Close and Reopen buttons below. `IssuePage` pushes the `issue` scope these are offered under.

@@ -39,7 +39,7 @@ type MoveWrite = (variables: BoardMoveVariables) => Promise<Issue | null>;
  *  answered that it asks nothing, or once a choice of the rule's question landed. A move placed
  *  at once, in the call itself, does not tell it: its caller reads the place when the call
  *  returns. A keyboard move says where the card landed then, as it says it at once otherwise. */
-type Placed = () => void;
+type OnPlaced = () => void;
 
 /** What the board says of the move of `key` that did not land. One the reader stopped may have
  *  been made: the card goes back to where the page last read it, and the read that follows shows
@@ -77,7 +77,7 @@ function moveFailure(cause: unknown, key: string): string {
  * `priority` for a lane move), and only then is the card placed. That PATCH's refusal leaves the
  * status as Dispatch changed it. A move of a card the board knew no parent or open child of that
  * Dispatch refuses under the rule asks the same question. A move placed after its call returned
- * tells its caller once the card is placed (`Placed`).
+ * tells its caller once the card is placed (`OnPlaced`).
  *
  * With filters active, `labels` names the query the board actually renders (the same key the
  * List shares), so the optimistic write, rollback and refetch hit the list on screen; a
@@ -95,7 +95,7 @@ export function useBoardMoves(
     key: string,
     targetStatus: IssueStatus,
     insertionIndex: number,
-    placed?: Placed
+    onPlaced?: OnPlaced
   ) => Promise<void>;
   /** The lane-aware twin of `moveCard`, for a board grouped into swimlanes: moving a card into
    *  another lane reassigns its priority along with its status and rank. */
@@ -104,7 +104,7 @@ export function useBoardMoves(
     targetStatus: IssueStatus,
     targetLane: PriorityLane,
     insertionIndex: number,
-    placed?: Placed
+    onPlaced?: OnPlaced
   ) => Promise<void>;
   /** The question a move of a card's status asks while the rule would refuse it. */
   question: ParentStatusQuestion | undefined;
@@ -151,7 +151,7 @@ export function useBoardMoves(
     },
     [labels, project, queryClient, queryKey]
   );
-  /** Places the move `plan` makes of the list as it reads now, tells `placed`, and sends its
+  /** Places the move `plan` makes of the list as it reads now, tells `onPlaced`, and sends its
    *  change through `send`; on a refusal puts the list back and says why - but for the rule's
    *  refusal, which the question that follows says. Answers whether it landed, and the refusal. */
   const place = useCallback(
@@ -159,7 +159,7 @@ export function useBoardMoves(
       key: string,
       plan: MovePlan,
       send: MoveWrite,
-      placed?: Placed
+      onPlaced?: OnPlaced
     ): Promise<{ landed: boolean; refusal?: unknown }> => {
       const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
       const moved = previous === undefined ? undefined : plan(previous);
@@ -170,7 +170,7 @@ export function useBoardMoves(
       // tick so a second move computes from it. The refetch after it restores what it drops.
       void queryClient.cancelQueries({ queryKey, exact: true });
       queryClient.setQueryData(queryKey, moved.issues);
-      placed?.();
+      onPlaced?.();
       try {
         await send({ input: moved.input, key });
         setError(undefined);
@@ -187,7 +187,7 @@ export function useBoardMoves(
    *  lane move - as a PATCH of its own, with the status taken out. Its refusal leaves the status
    *  as Dispatch changed it. No read here is awaited: the list waits for the check this runs in. */
   const placeAfterChange = useCallback(
-    async (key: string, plan: MovePlan, placed?: Placed) => {
+    async (key: string, plan: MovePlan, onPlaced?: OnPlaced) => {
       const { landed } = await place(
         key,
         (issues) => {
@@ -197,7 +197,7 @@ export function useBoardMoves(
           return { ...moved, input };
         },
         placedMove,
-        placed
+        onPlaced
       );
       void refetch(landed);
     },
@@ -206,36 +206,42 @@ export function useBoardMoves(
   /** The question for a move Dispatch refused under the rule, and the card's place once a
    *  choice landed. */
   const asked = useCallback(
-    async (key: string, status: string, plan: MovePlan, conflict: ApiError, placed?: Placed) => {
+    async (
+      key: string,
+      status: string,
+      plan: MovePlan,
+      conflict: ApiError,
+      onPlaced?: OnPlaced
+    ) => {
       const end = await ask({ key, status }, conflict);
-      if (end.kind === "changed") await placeAfterChange(key, plan, placed);
+      if (end.kind === "changed") await placeAfterChange(key, plan, onPlaced);
     },
     [ask, placeAfterChange]
   );
   /** A move of the status of a card with a parent or an open child, inside the board's scope. */
   const checked = useCallback(
-    async (key: string, status: string, plan: MovePlan, placed?: Placed) => {
+    async (key: string, status: string, plan: MovePlan, onPlaced?: OnPlaced) => {
       const end = await move({
         key,
         patch: async () => {
-          const { landed, refusal } = await place(key, plan, placedMove, placed);
+          const { landed, refusal } = await place(key, plan, placedMove, onPlaced);
           void refetch(landed);
-          if (isParentStatusConflict(refusal)) await asked(key, status, plan, refusal, placed);
+          if (isParentStatusConflict(refusal)) await asked(key, status, plan, refusal, onPlaced);
         },
         related: true,
         status,
       });
       if (end.kind === "refused") setError(moveFailure(end.refusal, key));
-      if (end.kind === "changed") await placeAfterChange(key, plan, placed);
+      if (end.kind === "changed") await placeAfterChange(key, plan, onPlaced);
     },
     [asked, move, place, placeAfterChange, placedMove, refetch]
   );
   /** Commits a move `plan` makes of the list: through the question where the rule could refuse
    *  it, else optimistic write, PATCH, rollback-and-refetch on failure, refetch on success - the
-   *  one tail `moveCard` and `moveCardToLane` share. A move placed at once tells `placed` nothing;
-   *  one placed later, after the dry run or a choice of the question, tells it then. */
+   *  one tail `moveCard` and `moveCardToLane` share. A move placed at once tells `onPlaced`
+   *  nothing; one placed later, after the dry run or a choice of the question, tells it then. */
   const commit = useCallback(
-    async (key: string, plan: MovePlan, placed?: Placed) => {
+    async (key: string, plan: MovePlan, onPlaced?: OnPlaced) => {
       const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
       const moved = previous === undefined ? undefined : plan(previous);
       if (moved === undefined) {
@@ -245,23 +251,23 @@ export function useBoardMoves(
       const status = moved.input.status ?? undefined;
       const card = previous?.find((issue) => issue.key === key);
       if (status !== undefined && card !== undefined && cardHasParentOrOpenChild(card)) {
-        await inScope(() => checked(key, status, plan, placed));
+        await inScope(() => checked(key, status, plan, onPlaced));
         return;
       }
       const { landed, refusal } = await place(key, () => moved, patchMove);
       await refetch(landed);
       if (status !== undefined && isParentStatusConflict(refusal)) {
-        await inScope(() => asked(key, status, plan, refusal, placed));
+        await inScope(() => asked(key, status, plan, refusal, onPlaced));
       }
     },
     [asked, checked, inScope, patchMove, place, queryClient, queryKey, refetch]
   );
   const moveCard = useCallback(
-    (key: string, targetStatus: IssueStatus, insertionIndex: number, placed?: Placed) =>
+    (key: string, targetStatus: IssueStatus, insertionIndex: number, onPlaced?: OnPlaced) =>
       commit(
         key,
         (issues) => moveIssue(issues, key, targetStatus, insertionIndex, isVisible),
-        placed
+        onPlaced
       ),
     [commit, isVisible]
   );
@@ -271,13 +277,13 @@ export function useBoardMoves(
       targetStatus: IssueStatus,
       targetLane: PriorityLane,
       insertionIndex: number,
-      placed?: Placed
+      onPlaced?: OnPlaced
     ) =>
       commit(
         key,
         (issues) =>
           moveIssueToLane(issues, key, targetStatus, targetLane, insertionIndex, isVisible),
-        placed
+        onPlaced
       ),
     [commit, isVisible]
   );

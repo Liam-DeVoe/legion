@@ -405,12 +405,8 @@ export function useIssueTableActions({
       cancel: () => answer.resolve(false),
       run: () => answer.resolve(true),
     });
-    let yes: boolean;
-    try {
-      yes = await answer.promise;
-    } finally {
-      answering.current = undefined;
-    }
+    const yes = await answer.promise;
+    answering.current = undefined;
     if (yes) await moveIntoWork(target, id);
     return yes;
   };
