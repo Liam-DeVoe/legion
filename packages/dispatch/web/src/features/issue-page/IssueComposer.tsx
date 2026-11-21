@@ -379,6 +379,7 @@ function WriteLine({
         anchor,
         cancelReply: CONTROL_LABELS.write_on_issue,
         end,
+        kept: { issue: ANSWER_LINES.kept_on_issue, statement: ANSWER_LINES.kept_on_statement },
         kinds: writesKinds ? KINDS : [],
         placeholder: aimed
           ? place.phone

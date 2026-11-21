@@ -155,8 +155,9 @@ function refreshAfter(client: QueryClient, { anchor, owner }: SentRequest): void
 }
 
 /** An ask's fields (`SentRequest.ask`). This shape and the draft's, the anchor's, the kind's, the
- *  owner's and the reply's below are what a composer's draft and its address are kept by: here,
- *  and in the drafts a composer keeps for a reload (`unsent-drafts.ts`). */
+ *  owner's, the reply's, the box's mentions' and the statement's below are what a composer's
+ *  draft and its address are kept by: here, and in the drafts a composer keeps for a reload
+ *  (`unsent-drafts.ts`). */
 export const keptAsk = shape.record({
   multiple: shape.boolean,
   options: shape.array(
@@ -291,6 +292,18 @@ export const keptReplyTo = shape.record({
   to: shape.optional(shape.string),
 });
 
+/** The mentions the issue page's box wrote in front of a reply's draft (`SentRequest.seeds`),
+ *  each the party and the link written for it. */
+export const keptSeeds = shape.array(shape.record({ target: shape.string, text: shape.string }));
+
+/** The statement the issue page's box aims a comment at (`StatementAnchor`), with the row the
+ *  comment lands under once it is sent. */
+export const keptStatement = shape.record({
+  artifact: shape.string,
+  quote: shape.string,
+  row: shape.string,
+});
+
 const keptRequest = shape.record({
   anchor: shape.optional(keptAnchor),
   ask: keptAsk,
@@ -305,14 +318,12 @@ const keptRequest = shape.record({
   // mounts again over the send after a reload takes out what the box that wrote them would, and
   // no link the reader wrote. A record kept before they were holds none and reads as none; one
   // whose mentions are not mentions is dropped.
-  seeds: shape.optional(shape.array(shape.record({ target: shape.string, text: shape.string }))),
+  seeds: shape.optional(keptSeeds),
   sendKey: shape.string,
   // The statement the issue page's box aimed a comment at, with the row the comment lands
   // under once it is sent (`StatementAnchor.row`), so a box that mounts again over the send
   // after a reload lands on that row; a record whose statement is not one is dropped.
-  statement: shape.optional(
-    shape.record({ artifact: shape.string, quote: shape.string, row: shape.string })
-  ),
+  statement: shape.optional(keptStatement),
 }) satisfies Shape<KeptSentRequest>;
 
 const keptComposerSend = shape.record({
@@ -519,15 +530,17 @@ function heldUnder(rows: readonly Write[], mutationKey: MutationKey): HeldSend |
 
 /** `detail`, the record of a refused send whose refusal is `refusal`, carried to `to` by the
  *  reader's own move (`HeldSends.carry`): the request goes there, unless the send was stopped,
- *  whose key is used only at its own address. `at` is the words and kind of a margin compose the
- *  reader takes the draft into (`carryInto`), which is another address of the same owner. */
+ *  whose key is used only at its own address. The statement it is on is `to`'s, so a send the
+ *  issue page's box carries off a statement is on none. `at` is the words and kind of a margin
+ *  compose the reader takes the draft into (`carryInto`), which is another address of the same
+ *  owner. */
 function carriedTo(
   { stoppedSend, ...detail }: ComposerSend,
   refusal: Error,
   to: CarriedAddress,
   at?: Pick<SentRequest, "anchor" | "kind">
 ): ComposerSend {
-  const carried = { ...detail.request, ...to, ...at };
+  const carried = { ...detail.request, ...to, statement: to.statement, ...at };
   const stopped = stoppedSend ?? (refusal instanceof SendStoppedError ? detail.request : undefined);
   if (stopped === undefined) return { ...detail, request: carried };
   if (sameAddress(stopped, carried)) return { ...detail, request: stopped };

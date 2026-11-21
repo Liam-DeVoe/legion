@@ -125,45 +125,20 @@ import { composerNameOf, mountDraft, type OfferedDraft, useKeptDrafts } from "./
  *  link written for it (`partyMention`), as its send keeps it (`SentRequest.seeds`). */
 type SeededMention = NonNullable<SentRequest["seeds"]>[number];
 
-/** The mentions the issue page's line writes in front of `draft` for `mentions`: one for each
- *  party the draft does not name already, as the link that names it, and one for a party
- *  `mentions` names twice, as `replyPrefill` counts it. It is `seededDraft`'s rule for a channel
- *  with no mention of its own to take out (`ownTarget`), which an issue is, and the line writes
- *  its draft from these very mentions, so what it remembers writing is what it wrote. */
+/** The mentions the issue page's line writes as the draft of a new reply to a target whose
+ *  parent was delivered to `mentions`: one for each party, as the link that names it, as
+ *  `replyPrefill` writes them, so the line remembers exactly what it wrote, for the reader's own
+ *  move off the reply to take out (`useKeptDrafts`' `seeds`). */
 function mentionsSeeded(
-  mentions: readonly { readonly target: string; readonly title: string }[],
-  draft: string
+  mentions: readonly { readonly target: string; readonly title: string }[]
 ): SeededMention[] {
-  const named = new Set(draftParties(draft).targets);
+  const named = new Set<string>();
   return mentions.flatMap((mention) => {
     if (named.has(mention.target)) return [];
     named.add(mention.target);
     const text = partyMention(mention.target, mention.title);
     return text === undefined ? [] : [{ target: mention.target, text }];
   });
-}
-
-/**
- * What is left of `draft` once the seeds of `seeds` that still open it, as the issue page's line
- * wrote them, are taken out. Each seed in turn is read against the start of what is left: one
- * whose link stands there exactly as written goes, with the space after it where one parts it
- * from what follows, as the line joins them. The link is matched as text: at the start nothing
- * before it can make it other than the link it was written as, and words the reader typed
- * straight after its `)` - which the draft's reference reader takes into its address - leave it
- * that link. The start moves past nothing else, so from the first text that is no seed on - the
- * reader's words before the seeds, after them or in place of them - nothing is taken out, a link
- * the reader wrote that matches a seed's included, and a seed the reader deleted, changed or moved
- * behind their own words stays where it is. The text is a draft's whole record (R4), so a link the
- * reader wrote at the very start exactly as a seed was written reads as that seed.
- */
-function withoutOpeningSeeds(draft: string, seeds: readonly SeededMention[]): string {
-  let body = draft;
-  for (const seed of seeds) {
-    if (!body.startsWith(seed.text)) continue;
-    const end = seed.text.length;
-    body = body.slice(body.slice(end, end + 1) === " " ? end + 1 : end);
-  }
-  return body;
 }
 
 /** Whether Send takes the draft now: nothing refuses it (`draftRefusal`, the one rule for what an
@@ -253,22 +228,34 @@ export interface OutlineKind {
  * page's; what the composer says in answer to a send - a refusal, a delivery warning, the
  * picker - is its own, as on every surface that draws it, save the one refusal the host words
  * (`statementTwice`), the Retry its refusals offer (`retry`) and what it says of a file uploading
- * into the draft (`uploading`, `uploadedUnanswered`), and it is drawn in the page's colours. A
- * new target keeps the words the line holds, since the line is the page's one draft, and takes out
- * of them the mentions the last target's reply wrote there, where they still open the words as
- * it wrote them.
+ * into the draft (`uploading`, `uploadedUnanswered`), and it is drawn in the page's colours. Its
+ * draft follows the one rule every composer does (`useKeptDrafts`): a target the host sets - a
+ * row's Reply, `r` on a statement, the issue's own Reply - keeps what the line holds for the
+ * target it was written for, the issue's own included, and says so, and the line opens on the new
+ * target with what that target keeps, or else the reply's mentions alone; a refusal stays with the
+ * target it was written for. Only the line's own end of its target - the target line's control
+ * and Escape (`end`) - carries the draft, its refusal with it, to the issue, taking out of it the
+ * mentions the reply wrote there, where they still open the words as it wrote them.
  */
 export interface OutlineLook {
   /** A statement of the issue's spec the line comments on, by the document, the statement's
    *  whole words and its row in the outline (`StatementAnchor`). The send carries the document
    *  and the words as the comment's anchor (`SentRequest.statement`), and the row stays the
-   *  page's, for landing the new comment under it. The line's `end` ends it, as it ends a reply. */
+   *  page's, for landing the new comment under it. It is part of the line's address, as a reply
+   *  is, so what the line keeps it keeps for the statement (`AwayDraft.statement`). The line's
+   *  `end` ends it, as it ends a reply. */
   readonly anchor?: StatementAnchor;
   /** The word of the control at the right of the target line, which ends the target (`end`). */
   readonly cancelReply: string;
   /** What the target line's control and Escape do: the host ends the line's target - a reply, a
-   *  statement, an edit - or, with none, leaves the line. */
+   *  statement, an edit - or, with none, leaves the line. The composer counts each as the reader's
+   *  own move of its address, as Cancel reply is (`ownMoves`), so the draft goes with it. */
   readonly end: () => void;
+  /** What the line says, in its host's words, of a draft it keeps for the issue (`issue`) or for
+   *  a statement (`statement`) while it shows another target, each naming the way back to it;
+   *  one it keeps for another reply is said in the composer's own words (`keptAwayLine`). The
+   *  edit line keeps no draft for another target, and its host gives none. */
+  readonly kept?: { readonly issue: string; readonly statement: string };
   /** The kinds the line writes; none while it has a target, which takes a comment, or while the
    *  issue is closed. */
   readonly kinds: readonly OutlineKind[];
@@ -551,6 +538,9 @@ export function MentionComposer({
   /** This composer's send by name, which is what the margin looks it up by. */
   const composerName = mutationKey === undefined ? undefined : composerNameOf(mutationKey);
   const unsent = useUnsentDrafts();
+  /** The statement the issue page's box comments on: part of the address the composer shows, as
+   *  its reply is. */
+  const statement = outline?.anchor;
   // Only the mount reads it, so it is computed once rather than on every keystroke (`mountDraft`).
   const [initial] = useState(() =>
     mountDraft({
@@ -563,6 +553,7 @@ export function MentionComposer({
       replyTo,
       seedMentions,
       standing,
+      statement,
       unsent,
     })
   );
@@ -584,12 +575,12 @@ export function MentionComposer({
   // address - which the reply prefill must not replace: at the mount, and as the composer
   // arrives at an address that keeps one (`shown` in `useKeptDrafts`).
   const mountedHeld = useRef(initial.taken);
-  // The mentions the reply prefill wrote into the issue page's line for its current target, which
-  // the next target, or none, takes back out of the draft (`withoutOpeningSeeds`). A mount over a
-  // held reply takes the ones its send keeps (`SentRequest.seeds`), so a target that moves on or
-  // ends takes out what the mount that wrote them would have: a link the reader wrote before the
-  // Reply, which the prefill wrote no mention for, stays. A held send that answers no reply - one
-  // the line let go of, its mentions taken out as it went - leaves none to take out.
+  // The mentions the issue page's line wrote at the front of the draft of the reply it shows,
+  // which a draft kept for that reply keeps and brings back, and which the reader's own end of the
+  // reply takes back out of the draft it carries (`useKeptDrafts`' `seeds`). A mount over a held
+  // reply takes the ones its send keeps (`SentRequest.seeds`), so an end takes out what the mount
+  // that wrote them would have, and no link the reader wrote. A held send that answers no reply -
+  // one the line let go of, its mentions taken out as it went - leaves none to take out.
   const replySeeds = useRef<readonly SeededMention[]>(
     outgoing.held?.request.replyTo ? (outgoing.held.request.seeds ?? []) : []
   );
@@ -724,23 +715,6 @@ export function MentionComposer({
     // prefill of a new reply would write over. The prefill is for a new reply.
     const tookHeldDraft = mountedHeld.current;
     mountedHeld.current = false;
-    // The issue page's line keeps its draft through a change of target, so a target that moves
-    // on or ends first takes back out the mentions its prefill wrote, where they still open the
-    // draft as written (`withoutOpeningSeeds`): a reply under one entry, or a comment on the
-    // issue, reaches a party only the last entry's reply named where the draft names it in the
-    // reader's own words alone - a mention they wrote, or the prefill's one they changed or moved.
-    // On a mount that took a held draft, the held send's target is the first this mount has, so
-    // it takes nothing out of that draft.
-    if (
-      outlined &&
-      !tookHeldDraft &&
-      replyTo?.id !== previousReply.current &&
-      replySeeds.current.length > 0
-    ) {
-      const kept = withoutOpeningSeeds(previousBody.current, replySeeds.current);
-      replySeeds.current = [];
-      if (kept !== previousBody.current) replaceDraft({ body: kept });
-    }
     if (replyTo === null) {
       previousReply.current = undefined;
       return;
@@ -769,23 +743,10 @@ export function MentionComposer({
     ) {
       return;
     }
-    // The issue page's line is the page's one draft at every width, so a new target keeps the
-    // words the reader has typed there and writes the reply's mentions in front of them, joined
-    // as `seededDraft` joins a channel's seed to a live draft, from the very mentions it
-    // remembers writing (`mentionsSeeded`) for the next target to take out; every other surface's
-    // reply is a draft of its own, which starts from the seed alone (`replyPrefill`).
-    if (outlined) {
-      const typed = written.trim() === "" ? "" : written;
-      replySeeds.current = mentionsSeeded(replyTo.mentions ?? [], typed);
-      replaceDraft({
-        body: [...replySeeds.current.map((seed) => seed.text), typed]
-          .filter((part) => part !== "")
-          .join(" "),
-      });
-      takeFocus();
-      return;
-    }
     const prefill = replyPrefill(replyTo);
+    // The issue page's line remembers the very mentions the prefill writes (`mentionsSeeded`),
+    // so the reader's own end of the reply takes out those and no others.
+    if (outlined) replySeeds.current = mentionsSeeded(replyTo.mentions ?? []);
     prefilled.current = prefill.body;
     replaceDraft(prefill);
     takeFocus();
@@ -819,6 +780,17 @@ export function MentionComposer({
   // The Escape listener below reads it as it stands, so it is not re-bound each render for it.
   const cancelReplyNow = useRef(cancelReply);
   cancelReplyNow.current = cancelReply;
+  /** The issue page's line ends its target - the target line's control, and Escape - with its
+   *  host's `end`, which is the line's Cancel reply: a move of the address with the composer's own
+   *  control, counted as Cancel reply is, so the draft and its refusal go with it. The line stays
+   *  mounted, so nothing is handed over and nothing kept away. */
+  const endTarget = () => {
+    setCancels((count) => count + 1);
+    outline?.end();
+  };
+  // The Escape listener below reads it as it stands, as it reads `cancelReplyNow`.
+  const endTargetNow = useRef(endTarget);
+  endTargetNow.current = endTarget;
   /** An anchored composer's Close, and Escape once no suggestion list, picker or reply takes it:
    *  over a draft the reader has not sent - typed, handed back by a refusal, or offered beside the
    *  field (`offered`) - it raises `Discard draft?` rather than dropping what they wrote with
@@ -893,7 +865,9 @@ export function MentionComposer({
     replaceDraft,
     replyTo,
     seedMentions,
+    seeds: outlined ? replySeeds : undefined,
     standing,
+    statement,
     stoppedAside,
     unsent,
   });
@@ -915,11 +889,11 @@ export function MentionComposer({
       // An open picker takes Escape on the field's own listener and stops it there, so this
       // never sees it: Escape shuts the list, and the one after it reaches the composer.
       // The issue page's line stays mounted with its draft whatever ends it, so Escape there
-      // asks nothing: it does what its host's `end` does.
+      // asks nothing: it ends the target as the target line's control does (`endTarget`).
       if (outline !== undefined) {
         event.preventDefault();
         event.stopPropagation();
-        outline.end();
+        endTargetNow.current();
         return;
       }
       if (replyTo !== null) {
@@ -1340,12 +1314,31 @@ export function MentionComposer({
       {uploadStatus}
       {notice}
       {/* A draft kept for another reply, or for none, while the composer answers this one: the
-          line says whose it is and the way back, so the host's move takes nothing with no word. */}
+          line says whose it is and the way back, so the host's move takes nothing with no word.
+          The issue page's line says what it keeps for no reply in its host's words, which name
+          the way back: the target line's control for the issue, a statement's Reply for that
+          statement (`OutlineLook.kept`). */}
       {keptAway.map((away) => (
-        <p className={`text-sm ${quietTone}`} key={away.replyTo?.id ?? ""} role="status">
-          {keptAwayLine(away)}
+        <p
+          className={`text-sm ${quietTone}`}
+          key={away.replyTo?.id ?? away.statement?.row ?? ""}
+          role="status"
+        >
+          {!outlined || away.replyTo !== null || outline.kept === undefined
+            ? keptAwayLine(away)
+            : away.statement === undefined
+              ? outline.kept.issue
+              : outline.kept.statement}
         </p>
       ))}
+      {/* The issue page's line draws no line under Send, so where a refusal the line has moved
+          away from was written for, and the way back there, is said here, and Send's refusal
+          names this line (`footId`). */}
+      {outlined && elsewhere !== undefined ? (
+        <p className={`text-sm ${quietTone}`} id={footId} role="status">
+          {elsewhere}
+        </p>
+      ) : null}
       {refusal === undefined ? null : (
         <div className="flex flex-wrap items-center gap-3">
           {outlined ? (
@@ -1416,7 +1409,7 @@ export function MentionComposer({
       {outline.target === undefined ? null : (
         // The target is part of the message's address, fixed once the send is out, so the held
         // fieldset holds its control with every other draft control.
-        <OutlineTargetLine clearLabel={outline.cancelReply} onClear={outline.end}>
+        <OutlineTargetLine clearLabel={outline.cancelReply} onClear={endTarget}>
           {outline.target}
         </OutlineTargetLine>
       )}
@@ -1470,6 +1463,9 @@ export function MentionComposer({
             busy={sendBusy}
             look="page-send"
             refusal={submitReason ?? null}
+            refusalShownBy={
+              elsewhere !== undefined && submitReason === elsewhere ? footId : undefined
+            }
             type="submit"
           >
             {outline.send}

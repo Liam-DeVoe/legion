@@ -636,6 +636,13 @@ export const STATE_LINES = freeze({
   decisions_document_unreadable: "Could not load the decisions document.",
 } as const);
 
+/** The words of two controls the box at the foot of the outline names as the way back to a draft
+ *  it keeps (`ANSWER_LINES.kept_on_issue`, `kept_on_statement`), declared once here, ahead of
+ *  both tables, for those lines and `CONTROL_LABELS` alike: a row's Reply, and the box's control
+ *  that writes on the issue instead. */
+const REPLY_WORD = "Reply";
+const WRITE_ON_ISSUE_WORDS = "Write on the issue instead";
+
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
  * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
@@ -692,6 +699,12 @@ export const ANSWER_LINES = freeze({
    *  stays in the box. */
   statement_twice:
     "The statement's words stand twice in its document, so the comment cannot be placed under it.",
+  /** What the box says, once a row's Reply moved it on, of what the reader wrote on the issue,
+   *  or on a statement, and the box keeps there, with the control that goes back to it: the
+   *  box's own that writes on the issue, or the statement's Reply. A reply kept for a row is said
+   *  in the composer's own words, which name the author of what it answers. */
+  kept_on_issue: `What you wrote on the issue is kept: press ${WRITE_ON_ISSUE_WORDS} to go on with it.`,
+  kept_on_statement: `What you wrote on a statement is kept: press ${REPLY_WORD} on that statement to go on with it.`,
 } as const);
 
 /**
@@ -1103,7 +1116,7 @@ export const CONTROL_LABELS = freeze({
    *  message and an ask whatever its state, an answered or a resolved one included (R16,
    *  dispatch://INFRA-3677); it sets the line at the foot of the outline to answer it, as `r`
    *  does. */
-  reply: "Reply",
+  reply: REPLY_WORD,
   /** What the line at the foot of the outline says of the row it replies to, before that row's
    *  author and first line (the prototype's `.tgt`). */
   replying_to: "Replying to:",
@@ -1195,7 +1208,7 @@ export const CONTROL_LABELS = freeze({
   edit_placeholder: "Your comment, as it should read…  (Enter saves)",
   /** Sets the line back from the row it replies to, or the question it answers, to a new comment
    *  on the issue (the prototype's `.tgt .x`). */
-  write_on_issue: "Write on the issue instead",
+  write_on_issue: WRITE_ON_ISSUE_WORDS,
   /** What the box at the foot of the outline says while it is empty and writes a comment or a
    *  question on the issue itself: where the words go, as the reply's
    *  and the answer's placeholders say where theirs go. */

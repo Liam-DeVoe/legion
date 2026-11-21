@@ -3,7 +3,6 @@ import { createContext, type ReactNode, useCallback, useContext, useMemo, useSta
 
 import { api } from "../../api/client";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
-import { newSendKey } from "../../lib/send-key";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { deliveryMode } from "../conversation/delivery";
@@ -51,8 +50,8 @@ export interface OutlineWriter {
   /** Picks `label` of `node`'s options, or lets it go, and sets the line to answer `node`. */
   readonly pick: (node: TreeNode, label: string) => void;
   // A reply the line sent that Dispatch refused holds the line on it until the reader ends the
-  // reply in the line (`clear`), which takes it off the held send: the rule `statement` states
-  // for a refused send's target, its reply or its statement.
+  // reply in the line (`clear`), the reader's own move, which takes the refusal off it: the rule
+  // `statement` states for a refused send's target, its reply or its statement.
   /** The entry the line replies to; null while it replies to none. */
   readonly reply: ReplyTarget | null;
   /** Sets the line to reply to `node` and puts the caret in it. An open question's Reply is a
@@ -74,9 +73,12 @@ export interface OutlineWriter {
    *  send of the line's own that Dispatch refused, held under its name, holds the line on its
    *  target - its reply or its statement - and every other aim puts the line back there instead
    *  (`keptOnReply`, `keptOnStatement`), until the reader ends that target in the line - the
-   *  target line's control or Escape, which reach `clear` - which takes the target off the held
-   *  send (`HeldSends.readdress`), its refusal and its words kept. Every aim then takes effect
-   *  again, and a line that mounts again over that send writes on the issue. */
+   *  target line's control or Escape, which reach `clear`. That is the reader's own move of the
+   *  line's address, which the line's composer carries the refusal with to the issue
+   *  (`HeldSends.carry`), its words kept, unless the issue keeps a draft of the reader's own,
+   *  which no move writes over: the refusal then stays with its target, which still holds the
+   *  line. Once it is carried every aim takes effect again, and a line that mounts again over
+   *  that send writes on the issue. */
   readonly statement: StatementTarget | undefined;
   /** Picks `label` of the options of the question the line answers, or lets it go. */
   readonly toggle: (label: string) => void;
@@ -321,18 +323,13 @@ export function OutlineWriterProvider({
   }, []);
   const clear = useCallback(() => {
     if (store.sendingNow(sendKey)) return;
-    // Ending the target in the line ends the hold a refused send keeps on it (`keptOnStatement`,
-    // `keptOnReply`): the held send loses its statement and its reply, its refusal and its words
-    // kept, so the next aim takes effect and a line that mounts again over the send writes on
-    // the issue. It takes a new key too: a send that was stopped, or that a page close cut off,
-    // goes again under its own key, and that key already names the words sent to the old target,
-    // so Dispatch would refuse the same key with another request as a key used twice. The guard
-    // above has run, so a send held here was refused.
-    const held = store.get(sendKey)?.request;
-    if (held !== undefined && (held.statement !== undefined || held.replyTo !== null)) {
-      const { statement: _ended, ...onIssue } = held;
-      store.readdress(sendKey, { ...onIssue, replyTo: null, sendKey: newSendKey() });
-    }
+    // Ending the target in the line is the reader's own move of the line's address, which the
+    // line's composer counts (`OutlineLook.end`) and carries a refused send held for that target
+    // with (`HeldSends.carry`), so its hold on the line ends (`keptOnStatement`, `keptOnReply`):
+    // a send the reader stopped goes on as a new write under a key of its own, saying the first
+    // may have been delivered (`SendMovedError`). Where the issue keeps a draft of the reader's
+    // own, the composer carries nothing, and the refusal keeps its target. The guard above has
+    // run, so a send still out is never moved.
     setReply(null);
     setAnswer(undefined);
     setEditing(undefined);
@@ -434,11 +431,12 @@ interface HeldLine {
  * line's name, and says whether it did; `keptOnReply` does the same for a refused reply. Both
  * keep one rule: a refused send of the line holds the line on its target - its reply or its
  * statement - until the reader ends that target in the line (`clear`, which the target line's
- * control and Escape reach), which takes the target off the held send. Until then a press that
- * would aim the line elsewhere - a Reply, an Answer, an option, a change of answer, an Edit -
- * puts the caret back in the line on that target instead, so the refused words are neither
- * replaced by another target's seed nor sent under another target; and a refusal the same words
- * would meet again (`TARGET_AMBIGUOUS`) holds the line only until the reader lets its target go.
+ * control and Escape reach), whose composer then carries the refusal to the issue (`statement`).
+ * Until then a press that would aim the line elsewhere - a Reply, an Answer, an option, a change
+ * of answer, an Edit - puts the caret back in the line on that target instead, so the refused
+ * words are neither replaced by another target's seed nor sent under another target; and a
+ * refusal the same words would meet again (`TARGET_AMBIGUOUS`) holds the line only until the
+ * reader lets its target go.
  * A Reply on that same statement, `aimed`, takes its row's whole target. With none held it does
  * nothing. Each caller's `sendingNow` guard runs first, so a send held then was refused. The
  * writer's setters are handed in, so each setter that calls this keeps the dependencies it had.
@@ -468,10 +466,10 @@ function keptOnStatement(
  * Keeps the line on `held`, the reply of a send Dispatch refused that is held under the line's
  * name, and says whether it did, by the rule `keptOnStatement` states: an Answer, an option, a
  * change of answer, an Edit, a Reply on a statement or the issue's own Reply puts the caret back
- * in the line on that reply, until the reader ends it in the line (`clear`), which takes it off
- * the held send. A Reply on another entry is put back on it by `redirectedReplyTarget`. With
- * none held it does nothing. Each caller's `sendingNow` guard runs first, so a send held then
- * was refused.
+ * in the line on that reply, until the reader ends it in the line (`clear`), whose composer then
+ * carries the refusal to the issue. A Reply on another entry is put back on it by
+ * `redirectedReplyTarget`. With none held it does nothing. Each caller's `sendingNow` guard runs
+ * first, so a send held then was refused.
  */
 function keptOnReply(held: ReplyTarget | null | undefined, line: HeldLine): boolean {
   if (held === undefined || held === null) return false;

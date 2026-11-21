@@ -1,23 +1,14 @@
 import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { dispatchWritingBox } from "@legion/contracts";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste of a file into the box, which user-event's paste cannot carry
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import type { ReactNode } from "react";
-import { MemoryRouter } from "react-router-dom";
 
-import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
-import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import {
-  architectureTree,
-  issueCollaborators,
-  plannerAgent,
-  searchResponse,
-} from "../../__tests__/search-fixture";
+import { searchResponse } from "../../__tests__/search-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Actor, CommentWithTrees, IssueAskRow, SearchResult } from "../../api/types";
@@ -31,25 +22,40 @@ import {
 import type { UploadResult } from "../artifacts/ArtifactUpload";
 import { heldSends } from "../conversation/held-sends";
 import { KEYED_SEND_LATE_TEXT } from "../conversation/send-request";
-import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { nodeRouteFromHref, shortForm } from "../refs/routes";
-import { KeymapProvider } from "../shell/KeymapProvider";
-import { useKeymapScope } from "../shell/keymap";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
-import { useCurrentPoint } from "./current-point";
-import { IssueComposer } from "./IssueComposer";
-import { IssueTree } from "./IssueTree";
+import {
+  ALICE,
+  answerBoxReads,
+  askNode,
+  askRecord,
+  BOB,
+  BOBS_COMMENT,
+  type BoxReads,
+  commentNode,
+  commentRecord,
+  composerBox,
+  drawBoxPage,
+  KEPT_FOR_ISSUE,
+  KEY,
+  keptLines,
+  keptReplyLine,
+  node,
+  outline,
+  type Place,
+  READER,
+  rowOf,
+  SPEC_SOURCE,
+  STATEMENT_QUOTE,
+  statementNode,
+  targetWords,
+  writeField,
+} from "./composer-fixture";
 import { FOOT_HEIGHT_PROPERTY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";
-import { NoTooltips } from "./NoTooltips";
-import {
-  type OutlineWriter,
-  OutlineWriterProvider,
-  type ReplyItem,
-  useOutlineWriter,
-} from "./outline-writer";
-import { ANSWER_LINES, CONTROL_LABELS, type NodeType } from "./page-words";
+import type { OutlineWriter } from "./outline-writer";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /**
  * The new issue page's one box to write in, drawn as
@@ -60,23 +66,8 @@ import { ANSWER_LINES, CONTROL_LABELS, type NodeType } from "./page-words";
  * case (`packages/dispatch/AGENTS.md`): the reads below from `reads`, the writes by each case.
  */
 
-const KEY = "CORE-1";
-
-/** Who reads the page, and so who writes from the box. */
-const READER = "alice";
-const ALICE: Actor = { id: READER, kind: "user" };
-const BOB: Actor = { id: "bob", kind: "user" };
-
 /** When the reader answered ask-2, the answer a change of it is measured against. */
 const ANSWERED_AT = "2026-11-06T00:00:00Z";
-
-/** A statement of two paragraphs, one word of it marked, as the spec stores it; and its whole
- *  words as the server matches a quote against them (`wordsOf`). */
-const STATEMENT_WORDS = "The page draws **one** box.\n\nIt sits at the foot.";
-const STATEMENT_QUOTE = "The page draws one box. It sits at the foot.";
-
-/** The record a statement's words are a block of: the issue's spec (`tree-drafts.ts`). */
-const SPEC_SOURCE = { id: "artifact-spec", issue: KEY, kind: "artifact" } as const;
 
 /** A mention of the session the registry lists as Planner, which a plain line reads by that
  *  name (`plannerAgent`). */
@@ -90,234 +81,17 @@ const PLANNER: Actor = { id: "planner-session", kind: "session" };
  *  picker writes the same link for a pick of the planner. */
 const PLANNER_SEED = PLANNER_MENTION.replace("[@Old]", "[@Planner]");
 
-/** The reads the box and the writer draw from, under the keys the outline reads them by: each
- *  case's own, and what a stub below answers when a write makes the page read one again. */
-interface Reads {
-  asks: IssueAskRow[];
-  comments: CommentWithTrees[];
-}
-
-let reads: Reads;
-
-/** Question `id` as the issue's asks read sends it. */
-function askRecord(id: string, fields: Partial<IssueAskRow> = {}): IssueAskRow {
-  return {
-    anchor: null,
-    answer: null,
-    artifact_id: null,
-    asked_of: null,
-    asked_of_at: null,
-    asked_of_by: null,
-    author: { id: "carol", kind: "user" },
-    block_id: null,
-    created_at: "2026-11-05T00:00:00Z",
-    edited_at: null,
-    id,
-    issue_key: KEY,
-    kind: "question",
-    last_reply: null,
-    multiple: false,
-    opened_event_id: 1,
-    options: [{ label: "Yes" }, { label: "No" }],
-    question: `Question ${id}?`,
-    state: "open",
-    urgency: "med",
-    ...fields,
-  };
-}
+/** The reads the box and the writer draw from: each case's own (`composer-fixture.tsx`). */
+let reads: BoxReads;
 
 /** ask-2 as the reads hold it once `user` has answered it at `at` with `text`. */
 function answeredAsk(at: string, text: string, user = READER): IssueAskRow {
   return askRecord("ask-2", { answer: { at, selected: ["No"], text, user }, state: "answered" });
 }
 
-function commentRecord(
-  id: string,
-  author: Actor,
-  body: string,
-  fields: Partial<CommentWithTrees> = {}
-): CommentWithTrees {
-  const tree = displayTree(body);
-  return {
-    anchor: null,
-    ask_id: null,
-    author,
-    body,
-    ...(tree === undefined ? {} : { body_tree: tree }),
-    created_at: "2026-11-05T00:00:00Z",
-    edited_at: null,
-    id,
-    issue_key: KEY,
-    reply_to: null,
-    resolved: false,
-    resolved_at: null,
-    resolved_by: null,
-    suggestion: null,
-    turn: null,
-    ...commentDeliveryFields(),
-    ...fields,
-  };
-}
-
-function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
-  return {
-    alsoUnder: [],
-    children: [],
-    chips: [],
-    facts: [],
-    gaps: [],
-    held: 0,
-    question: false,
-    replaced: false,
-    text: partial.id,
-    transcluded: false,
-    waiting: false,
-    ...partial,
-  };
-}
-
-/** The row of question `id` in the outline. */
-function askNode(id: string, state: "answered" | "open"): TreeNode {
-  return node({
-    author: { id: "carol", kind: "user" },
-    id,
-    options: [{ label: "Yes" }, { label: "No" }],
-    question: state === "open",
-    reference: `dispatch://${KEY}/ask/${id}`,
-    state,
-    text: `Question ${id}?`,
-    type: "ask",
-  });
-}
-
-function commentNode(id: string, author: Actor, text: string): TreeNode {
-  return node({
-    author,
-    id,
-    reference: `dispatch://${KEY}/comment/${id}`,
-    text,
-    type: "comment",
-  });
-}
-
-function statementNode(): TreeNode {
-  const tree = displayTree(STATEMENT_WORDS);
-  if (tree === undefined) throw new Error("the engine read no statement");
-  return node({
-    id: "spec#b-r1",
-    reference: `dispatch://${KEY}/spec#b-r1`,
-    source: SPEC_SOURCE,
-    statement: true,
-    text: STATEMENT_WORDS,
-    tree,
-    type: "requirement",
-  });
-}
-
-/** The outline the body slot draws: bob's comment, the reader's own, an open question, the
- *  question the reader answered, and a statement of the spec. */
-function outline(): TreeNode {
-  return node({
-    children: [
-      commentNode("comment-1", BOB, "Earlier words"),
-      commentNode("comment-2", ALICE, "My own words"),
-      askNode("ask-1", "open"),
-      askNode("ask-2", "answered"),
-      statementNode(),
-    ],
-    id: KEY,
-    type: "issue",
-  });
-}
-
-/** bob's comment as a row's Reply hands it to the writer. */
-const BOBS_COMMENT: ReplyItem = {
-  author: BOB,
-  id: "comment-1",
-  kind: "comment",
-  text: "Earlier words",
-};
-
-/** Where the box stands, as the foot slot reads it off the address (`slots/foot.tsx`). */
-interface Place {
-  readonly closed?: boolean;
-  readonly documentOpen?: boolean;
-  readonly viewOn?: boolean;
-}
-
-/** The page's own `issue` scope, which every one of the tree's keys is registered in. */
-function IssueScope(): ReactNode {
-  useKeymapScope("issue");
-  return null;
-}
-
-/** A view's rows as the stage draws them in place of the outline (`slots/stage.tsx`): one tree,
- *  its row the tab stop, with the Reply and the Answer a view's row hands the writer. */
-function ViewRows(): ReactNode {
-  const writer = useOutlineWriter();
-  return (
-    <div aria-label="Spec" role="tree">
-      <div aria-selected="true" role="treeitem" tabIndex={0}>
-        <button onClick={() => writer?.replyTo(BOBS_COMMENT)} type="button">
-          Reply
-        </button>
-        <button onClick={() => writer?.answerNode(askNode("ask-1", "open"))} type="button">
-          Answer
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/** The body and the foot of the page: the outline, or a view's rows while a view is on, and the
- *  box after them, as `IssueOutlinePage.tsx` draws the stage and the foot slot. */
-function Page({
-  held,
-  place,
-  root,
-}: {
-  held: { writer?: OutlineWriter };
-  place: Place;
-  root: TreeNode;
-}): ReactNode {
-  held.writer = useOutlineWriter();
-  // The conversation's current point, as the body slot reads it from the whole tree (R12).
-  const point = useCurrentPoint(root);
-  return (
-    <div data-issue-page="">
-      {place.viewOn === true ? (
-        <ViewRows />
-      ) : (
-        <IssueTree
-          artifacts={new Map()}
-          context={new Set()}
-          emptyLine="Nothing here."
-          filtering={false}
-          focusReveal={false}
-          holdsEscape={false}
-          isClosed={place.closed === true}
-          onEditing={() => {}}
-          point={point}
-          reveal={undefined}
-          root={root}
-          rootRow
-        />
-      )}
-      <IssueComposer
-        documentOpen={place.documentOpen === true}
-        isClosed={place.closed === true}
-        issueKey={KEY}
-        viewOn={place.viewOn === true}
-      />
-    </div>
-  );
-}
-
-/** The page signed in as the reader, every read the writer and the box make answered from
- *  `reads` before it mounts. `redraw` moves the box to another place on the same mount: a view
- *  turned on or off, a document opened, the issue closed. `redrawOutline` draws the outline from
- *  another tree on the same mount, as the read a landed write makes does. A page drawn with an
- *  earlier page's `client` is that page mounted again in the same tab, its held sends with it. */
+/** The page signed in as the reader (`drawBoxPage`), every read the writer and the box make
+ *  answered from `reads` before it mounts. A page drawn with an earlier page's `client` is that
+ *  page mounted again in the same tab, its held sends with it. */
 function renderPage(
   place: Place = {},
   root: TreeNode = outline(),
@@ -329,46 +103,7 @@ function renderPage(
   })
 ) {
   client.setQueryData(["whoami"], { kind: "user", login: READER });
-  client.setQueryData(["asks", KEY], reads.asks);
-  client.setQueryData(["comments", KEY], reads.comments);
-  client.setQueryData(["issue-messages", KEY], []);
-  client.setQueryData(["agents"], [plannerAgent()]);
-  const held: { writer?: OutlineWriter } = {};
-  const draw = (at: Place, drawn = root) => (
-    <MemoryRouter>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <NoTooltips>
-              <OutlineWriterProvider issueKey={KEY}>
-                <IssueScope />
-                <Page held={held} place={at} root={drawn} />
-              </OutlineWriterProvider>
-            </NoTooltips>
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  const view = render(draw(place));
-  const writer = (): OutlineWriter => {
-    if (held.writer === undefined) throw new Error("the page drew no writer");
-    return held.writer;
-  };
-  /** Focuses the row of `nodeId` and presses `key` there, as the reader does. */
-  const press = async (user: UserEvent, nodeId: string, key: string) => {
-    const row = rowOf(nodeId);
-    await act(async () => row.focus());
-    await user.keyboard(key);
-  };
-  return {
-    client,
-    press,
-    redraw: (at: Place) => view.rerender(draw(at)),
-    redrawOutline: (drawn: TreeNode) => view.rerender(draw(place, drawn)),
-    view,
-    writer,
-  };
+  return { client, ...drawBoxPage(client, reads, place, root) };
 }
 
 /** Holds the page's frames: each `requestAnimationFrame` callback waits until `run`, which runs
@@ -395,21 +130,6 @@ function holdFrames(): { readonly release: () => void; readonly run: () => void 
   };
 }
 
-/** The box's section. */
-function composerBox(): HTMLElement {
-  const found = document.querySelector<HTMLElement>('[data-testid="issue-composer"]');
-  if (found === null) throw new Error("the page drew no box");
-  return found;
-}
-
-/** The field of the line that writes on the issue, a reply and a statement's comment: drawn
- *  whether or not the line is hidden, so a case reads the draft it keeps. */
-function writeField(): HTMLTextAreaElement {
-  const found = composerBox().querySelector<HTMLTextAreaElement>("[data-composer-write] textarea");
-  if (found === null) throw new Error("the box drew no write line");
-  return found;
-}
-
 /** The answer line's form, once the box answers a question. */
 function answerForm(): HTMLFormElement {
   const found = composerBox().querySelector<HTMLFormElement>("form[data-answering]");
@@ -419,14 +139,6 @@ function answerForm(): HTMLFormElement {
 
 function answerField(): HTMLTextAreaElement {
   return within(answerForm()).getByRole<HTMLTextAreaElement>("textbox", { name: "Answer" });
-}
-
-/** The words of the target line the box draws, the × beside them left out; null with none. */
-function targetWords(): string | null {
-  const line = [...composerBox().querySelectorAll<HTMLElement>("[data-composer-target]")].find(
-    (one) => one.closest("[hidden]") === null
-  );
-  return line?.firstElementChild?.textContent ?? null;
 }
 
 /** The kinds the drawn line shows as chips, in their order, each with whether it is pressed: the
@@ -439,12 +151,6 @@ function kinds(): { kind: string | undefined; name: string | null; pressed: stri
       name: chip.querySelector("[data-page-chrome]")?.textContent ?? null,
       pressed: chip.getAttribute("aria-pressed"),
     }));
-}
-
-function rowOf(nodeId: string): HTMLElement {
-  const row = document.querySelector<HTMLElement>(`[data-node-row][data-node-id="${nodeId}"]`);
-  if (row === null) throw new Error(`the outline drew no row for ${nodeId}`);
-  return row;
 }
 
 /** The node id of the outline's row that holds the focus, if one does. */
@@ -482,23 +188,12 @@ beforeEach(() => {
       commentRecord("comment-2", ALICE, "My own words"),
     ],
   };
-  // What a write makes the page read again, answered from the case's own reads.
-  stub(spyOn(api, "listIssueAsks").mockImplementation(async () => reads.asks));
-  commentsRead = stub(spyOn(api, "listComments").mockImplementation(async () => reads.comments));
-  stub(spyOn(api, "listIssueMessages").mockResolvedValue([]));
-  stub(spyOn(api, "listAgents").mockResolvedValue([plannerAgent()]));
-  // The reads behind the reference picker, and behind an edit's blocks, which the box hosts.
-  stub(spyOn(api, "getIssueCollaborators").mockResolvedValue(issueCollaborators()));
-  stub(spyOn(api, "getArchitecture").mockResolvedValue(architectureTree()));
-  stub(spyOn(api, "getKnownSessions").mockResolvedValue({ sessions: [] }));
-  stub(
-    spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
-      blocks: [],
-      indexed: false,
-      item: graphNode({ id, kind: "comment" }),
-    }))
-  );
-  searchRead = stub(spyOn(api, "search").mockResolvedValue(searchResponse([])));
+  // What a write makes the page read again, answered from the case's own reads, and the reads
+  // behind the reference picker and an edit's blocks, which the box hosts.
+  const answered = answerBoxReads(reads);
+  commentsRead = answered.commentsRead;
+  searchRead = answered.searchRead;
+  restores.push(answered.restore);
 });
 
 afterEach(() => {
@@ -607,10 +302,13 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await page.press(user, "comment-1", "r");
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(composerBox()).not.toHaveAttribute("hidden");
-  // The Reply keeps the words the box held: it is the page's one draft.
-  expect(writeField().value).toBe("Half a thought");
+  // The Reply keeps the words the box held for the issue they were written for, and the box's
+  // own end of the reply brings them back (decision 357, #3125's one rule).
+  expect(writeField().value).toBe("");
+  expect(keptLines()).toEqual([KEPT_FOR_ISSUE]);
   await user.keyboard("{Escape}");
   await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
+  expect(writeField().value).toBe("Half a thought");
 
   // A send made at rest is still out when a view opens: the box stays drawn over it until
   // Dispatch answers, and is hidden once it has.
@@ -631,9 +329,10 @@ test("under a view or a document the box is hidden until the reader asks to writ
   await waitFor(() => expect(composerBox()).toHaveAttribute("hidden"));
 });
 
-// The reviewer's finding 4593511272: the box is the page's one draft at every width, so a Reply
-// keeps what the reader has typed in it: here a comment half-typed at rest, under the target the
-// Reply names.
+// The reviewer's finding 4593511272, which decision 357 moved onto #3125's one rule: a Reply
+// keeps what the reader has typed in the box at rest, for the issue it was written for. The box
+// says the comment is kept and the way back, and opens on the reply with that row's own start;
+// the box's own end of the reply, Escape, brings the comment back.
 test("a Reply keeps a comment half-typed in the box at rest", async () => {
   const user = userEvent.setup();
   const page = renderPage();
@@ -642,12 +341,21 @@ test("a Reply keeps a comment half-typed in the box at rest", async () => {
   await page.press(user, "comment-1", "r");
   await waitFor(() => expect(targetWords()).toContain("Earlier words"));
   await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(writeField().value).toBe("");
+  expect(keptLines()).toEqual([KEPT_FOR_ISSUE]);
+
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(targetWords()).toBeNull());
   expect(writeField().value).toBe("Half a thought");
+  expect(keptLines()).toEqual([]);
 });
 
-// The same finding: a reply typed to one row is still the box's draft when the reader turns the
-// box to another row with its Reply, or with `r` after a statement, each named above the words.
-test("a Reply on another row keeps the reply typed in the box", async () => {
+// The same finding, which decision 357 moved onto #3125's one rule: a reply typed to one row is
+// kept for that row when the reader turns the box to another row with its Reply, or with `r` on a
+// statement, each named above the line. The box says whose comment the kept reply answers and
+// opens on each new target with that target's own start, and the first row's Reply brings the
+// reply back.
+test("a Reply on another row keeps the reply typed for its own row, and that row's Reply brings it back", async () => {
   const user = userEvent.setup();
   const page = renderPage();
   await page.press(user, "comment-1", "r");
@@ -663,15 +371,18 @@ test("a Reply on another row keeps the reply typed in the box", async () => {
   await waitFor(() => expect(targetWords()).toContain("Question ask-2?"));
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(page.writer().reply?.id).toBe("ask-2");
-  expect(writeField().value).toBe("My reply to bob");
+  expect(writeField().value).toBe("");
+  expect(keptLines()).toEqual([keptReplyLine("bob")]);
 
   // `r` on a statement, and back to bob's comment.
   await page.press(user, "spec#b-r1", "r");
   await waitFor(() => expect(targetWords()).toContain("The page draws one box."));
-  expect(writeField().value).toBe("My reply to bob");
+  expect(writeField().value).toBe("");
+  expect(keptLines()).toEqual([keptReplyLine("bob")]);
   await page.press(user, "comment-1", "r");
   await waitFor(() => expect(targetWords()).toContain("Earlier words"));
   expect(writeField().value).toBe("My reply to bob");
+  expect(keptLines()).toEqual([]);
 });
 
 /** The outline with the planner's comment after its others: a Reply on it starts the box with a
@@ -700,9 +411,9 @@ async function replyToPlanner(user: UserEvent, page: DrawnPage): Promise<void> {
 }
 
 // The reviewer's finding 5942007779: a Reply on an agent's comment writes the agent's mention into
-// the box, which is how the reply reaches the agent. The box keeps its draft through a new target,
-// so the next target takes that mention back out: a reply under a person's comment is not
-// delivered to the agent the reader no longer replies to.
+// the box, which is how the reply reaches the agent. A Reply on a person's comment opens the box
+// on that comment with its own start (decision 357, #3125's one rule), so a reply under a
+// person's comment is not delivered to the agent the reader no longer replies to.
 test("a Reply on a person's comment after one on an agent's takes the agent's mention out of the send", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -747,25 +458,52 @@ test("ending a reply to an agent's comment takes the agent's mention out of the 
   expect(writeField().value).toBe("");
 });
 
-// The same finding: the words the reader typed after the agent's mention are theirs, and stay when
-// the reader turns the box to a person's comment; the mention the box wrote goes, even with the
+/** Turns the box to bob's comment with `r` and back to the planner's with its `r`: moves of the
+ *  host's, which keep the reply to the planner for the planner's comment, open the box on bob's
+ *  with that comment's own start, and bring the reply back (decision 357). Answers what the box
+ *  held on bob's row and the lines it drew there of what it keeps. */
+async function toBobAndBack(
+  user: UserEvent,
+  page: DrawnPage
+): Promise<{ held: string; kept: string[] }> {
+  await page.press(user, "comment-1", "r");
+  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  const away = { held: writeField().value, kept: keptLines() };
+  await page.press(user, "comment-3", "r");
+  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
+  await waitFor(() => expect(writeField()).toHaveFocus());
+  return away;
+}
+
+/** What `toBobAndBack` finds on bob's row: the box empty there, and its line for the reply it
+ *  keeps for the planner's comment. */
+const KEPT_FOR_PLANNER = { held: "", kept: [keptReplyLine("Planner")] };
+
+// The same finding, which decision 357 moved onto #3125's one rule: the words the reader typed
+// after the agent's mention are theirs. A Reply on a person's comment keeps them for the agent's
+// comment with the mention, and its Reply brings them back as they were; the reader's own end of
+// the reply then keeps them on the issue and takes out the mention the box wrote, even with the
 // words typed straight after its link and no space between them.
-test("a Reply on a person's comment keeps the words typed after an agent's mention, and takes the mention out", async () => {
+test("ending a reply to an agent's comment keeps the words typed straight after the agent's mention, and takes the mention out", async () => {
   const user = userEvent.setup();
   const page = renderWithPlannerComment();
   await replyToPlanner(user, page);
   await user.keyboard("please look again");
   expect(writeField().value).toBe(`${PLANNER_SEED}please look again`);
 
-  await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  expect(await toBobAndBack(user, page)).toEqual(KEPT_FOR_PLANNER);
+  expect(writeField().value).toBe(`${PLANNER_SEED}please look again`);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(targetWords()).toBeNull());
   expect(writeField().value).toBe("please look again");
 });
 
-// The same finding: a mention of the agent the reader wrote themself is their own aim, and stays
-// through a new target, while the one the box wrote goes. Once the draft names the agent, a Reply
-// on the agent's comment writes no mention of its own, so the next target takes none out.
-test("a mention of the agent the reader wrote stays when the box turns to a person's comment", async () => {
+// The same finding, which decision 357 moved onto #3125's one rule: a mention of the agent the
+// reader wrote themself is their own aim. A Reply on a person's comment keeps the reply to the
+// agent whole for the agent's comment, both mentions in it, and its Reply brings it back as it
+// was. The reader's own end of the reply then carries it to the issue, where the mention the box
+// wrote goes and the reader's own stays, so the comment reaches the agent the reader named.
+test("a mention of the agent the reader wrote stays when the reader ends the reply, after the box turned to a person's comment and back", async () => {
   const user = userEvent.setup();
   const createComment = stub(
     spyOn(api, "createComment").mockResolvedValue(commentRecord("comment-9", ALICE, "cc"))
@@ -775,33 +513,33 @@ test("a mention of the agent the reader wrote stays when the box turns to a pers
   // The reader picks the planner after their own word, which writes the link the box wrote.
   await user.keyboard(" cc ");
   await user.paste(PLANNER_SEED);
+  const written = `${PLANNER_SEED} cc ${PLANNER_SEED}`;
+  expect(writeField().value).toBe(written);
 
-  await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
-  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
-
-  await page.press(user, "comment-3", "r");
-  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
-  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
-  await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
+  expect(await toBobAndBack(user, page)).toEqual(KEPT_FOR_PLANNER);
+  expect(writeField().value).toBe(written);
+  await user.click(
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.write_on_issue })
+  );
+  await waitFor(() => expect(targetWords()).toBeNull());
   await waitFor(() => expect(writeField()).toHaveFocus());
   expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
 
-  // The reply reaches the agent the reader named.
+  // The comment reaches the agent the reader named.
   await user.keyboard("{Enter}");
   await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
   expect(createComment.mock.calls[0]?.[1]).toEqual({
     body: `cc ${PLANNER_SEED}`,
     delivery: "steer",
-    reply_to: "comment-1",
   });
 });
 
-// A finding of the reviewer's on the same rule: the box takes out only the mention it wrote,
-// while that mention still stands at the front of the draft as written. A reader who empties the
-// box and writes the planner's link after a word of their own names the planner themself, and
-// the reply under a person's comment still reaches the planner.
+// A finding of the reviewer's on the same rule, which decision 357 moved onto #3125's one rule:
+// the box takes out only the mention it wrote, while that mention still stands at the front of
+// the draft as written. A reader who empties the box and writes the planner's link after a word
+// of their own names the planner themself: the reply goes to bob's comment's row and back whole,
+// and the reader's own end of the reply keeps the link, so the comment on the issue still
+// reaches the planner.
 test("a link to the agent the reader writes after their own word, in place of the box's, stays through a new target", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -815,31 +553,36 @@ test("a link to the agent the reader writes after their own word, in place of th
   await user.paste(PLANNER_SEED);
   expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
 
-  await page.press(user, "comment-1", "r");
-  await waitFor(() => expect(targetWords()).toContain("Earlier words"));
-  await waitFor(() => expect(writeField()).toHaveFocus());
+  expect(await toBobAndBack(user, page)).toEqual(KEPT_FOR_PLANNER);
+  expect(writeField().value).toBe(`cc ${PLANNER_SEED}`);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(targetWords()).toBeNull());
   const draft = writeField().value;
   await user.keyboard("{Enter}");
   await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-  // The reply reaches the agent the reader named.
+  // The comment reaches the agent the reader named.
   expect(createComment.mock.calls[0]?.[1]).toEqual({
     body: `cc ${PLANNER_SEED}`,
     delivery: "steer",
-    reply_to: "comment-1",
   });
   expect(draft).toBe(`cc ${PLANNER_SEED}`);
 });
 
-/** The draft of the refused reply to the planner's comment in the grid below, whoever wrote its
- *  link: the planner's link, then the reader's words. */
+/** The draft of the refused reply to the planner's comment in the grid below, by who wrote its
+ *  link: the planner's link the Reply wrote, then the reader's words; or the reader's own link to
+ *  the planner in its place, in the words the reader wrote it in, then theirs. */
 const PLANNER_HELLO = `${PLANNER_SEED} hello`;
+const OWN_HELLO = `${PLANNER_MENTION} hello`;
+
+/** What Send says on bob's row while the refused reply, let go, is held for the issue. */
+const WRITTEN_FOR_ISSUE = `This message was written for ${KEY}. Go back to it to send it, or discard it.`;
 
 /** What the reader does with the refused reply in the grid below: Retry it as it was; end it -
  *  Escape, or the target line's control - and Retry the words on the issue; or move it - let it
  *  go with Escape and press `r` on bob's comment, or let it go with the target line's control and
- *  press that row's Reply - and send the words there with Enter. A refused reply holds the box on
- *  the comment it answers until the reader lets it go in the box (`redirectedReplyTarget`), so a
- *  move lets it go first. */
+ *  press that row's Reply - then press Enter there, and go back to the issue with its own Reply
+ *  and Retry the words there. A refused reply holds the box on the comment it answers until the
+ *  reader lets it go in the box (`redirectedReplyTarget`), so a move lets it go first. */
 type AfterRefusal =
   | "retry"
   | "end with Escape"
@@ -848,13 +591,13 @@ type AfterRefusal =
   | "move with Reply";
 
 /**
- * One case of the grid below. The reader types their words in the box at rest: after their own
- * link to the planner where `ownLink`, so the Reply on the planner's comment writes no link of its
- * own, the draft naming the planner already; else alone, and the Reply writes the planner's link
- * in front of them. The reply holds the same draft either way, and Dispatch refuses it once.
+ * One case of the grid below. The reader replies to the planner's comment, whose Reply writes the
+ * planner's link into the box, and types their words after it; where `ownLink`, they first take
+ * that link out and write their own in its place (`OWN_HELLO`). Dispatch refuses the reply once.
  * Where `remount`, the page then mounts again in the same tab over the refused reply, as coming
  * back to the issue or a reload brings the box back. Then the reader does `then`. Answers the
- * draft the box holds as the second request goes, and that request.
+ * draft the box holds as the second request goes, that request, and for a move what the box
+ * held on bob's row: its words, what Send said there, and whether it offered Retry.
  */
 async function afterRefusedPlannerReply(
   then: AfterRefusal,
@@ -869,19 +612,21 @@ async function afterRefusedPlannerReply(
       .mockResolvedValue(commentRecord("comment-9", ALICE, "hello"))
   );
   const first = renderWithPlannerComment();
-  await user.click(writeField());
-  if (ownLink) await user.paste(PLANNER_HELLO);
-  else await user.keyboard("hello");
-  await first.press(user, "comment-3", "r");
-  await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
-  await waitFor(() => expect(writeField()).toHaveFocus());
-  expect(writeField().value).toBe(PLANNER_HELLO);
+  await replyToPlanner(user, first);
+  if (ownLink) {
+    await user.keyboard("{Control>}a{/Control}{Backspace}");
+    await user.paste(OWN_HELLO);
+  } else {
+    await user.keyboard(" hello");
+  }
+  const written = ownLink ? OWN_HELLO : PLANNER_HELLO;
+  expect(writeField().value).toBe(written);
   await user.keyboard("{Enter}");
   await waitFor(() =>
     expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The reply was refused.")
   );
   expect(createComment.mock.calls[0]?.[1]).toEqual({
-    body: PLANNER_HELLO,
+    body: written,
     delivery: "steer",
     reply_to: "comment-3",
   });
@@ -892,11 +637,12 @@ async function afterRefusedPlannerReply(
     page = renderPage({}, plannerOutline(), first.client);
     await waitFor(() => expect(targetWords()).toContain("The relay is fixed"));
     expect(page.writer().reply?.id).toBe("comment-3");
-    expect(writeField().value).toBe(PLANNER_HELLO);
+    expect(writeField().value).toBe(written);
   }
 
   if (then !== "retry") {
-    // The reply let go: the box writes on the issue.
+    // The reply let go, the reader's own move: the box writes on the issue, and the refused
+    // draft and its refusal go with it.
     if (then === "end with Escape" || then === "move with r") {
       await user.click(writeField());
       await user.keyboard("{Escape}");
@@ -907,39 +653,59 @@ async function afterRefusedPlannerReply(
     }
     await waitFor(() => expect(targetWords()).toBeNull());
   }
-  if (then === "move with r") await page.press(user, "comment-1", "r");
-  if (then === "move with Reply") {
-    await act(async () => rowOf("comment-1").focus());
-    const reply = rowOf("comment-1").querySelector<HTMLElement>('[data-row-act="reply"]');
-    if (reply === null) throw new Error("bob's row drew no Reply");
-    await user.click(reply);
-  }
-  const moved = then === "move with r" || then === "move with Reply";
-  if (moved) {
+  let away: { refused: boolean; retry: boolean; text: string } | undefined;
+  if (then === "move with r" || then === "move with Reply") {
+    // A Reply on bob's comment, the host's move: the refusal stays with the issue it is held for,
+    // and the box on bob's row says so and sends nothing.
+    if (then === "move with r") await page.press(user, "comment-1", "r");
+    else {
+      await act(async () => rowOf("comment-1").focus());
+      const reply = rowOf("comment-1").querySelector<HTMLElement>('[data-row-act="reply"]');
+      if (reply === null) throw new Error("bob's row drew no Reply");
+      await user.click(reply);
+    }
     await waitFor(() => expect(targetWords()).toContain("Earlier words"));
     await waitFor(() => expect(writeField()).toHaveFocus());
+    await user.keyboard("{Enter}");
+    const send = within(composerBox()).getByRole("button", { name: CONTROL_LABELS.send });
+    away = {
+      refused: send.getAttribute("aria-disabled") === "true",
+      retry: within(composerBox()).queryByRole("button", { name: "Retry" }) !== null,
+      text: writeField().value,
+    };
+    expect(send).toHaveAccessibleDescription(WRITTEN_FOR_ISSUE);
+    expect(createComment).toHaveBeenCalledTimes(1);
+    // The issue's own Reply, the way back to where the draft was written for. The outline draws
+    // the issue as its header rather than as a row, so the case calls what the issue's row's
+    // Reply calls (`RowActs`), from the row that holds the focus.
+    await act(async () => rowOf("comment-1").focus());
+    await act(async () => page.writer().writeOnIssue());
+    await waitFor(() => expect(targetWords()).toBeNull());
   }
   const draft = writeField().value;
-  if (moved) await user.keyboard("{Enter}");
-  else await user.click(within(composerBox()).getByRole("button", { name: "Retry" }));
+  await user.click(within(composerBox()).getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
-  return { draft, sent: createComment.mock.calls[1]?.[1] };
+  return { away, draft, sent: createComment.mock.calls[1]?.[1] };
 }
 
 // The reviewer's findings 5945015185 and PRRT_kwDORFy7ds64qGzx on the same rule, as a grid: the
 // same box or one mounted again over the refused reply, times the planner's link written by the
-// box or by the reader before the Reply, times a move, an end or a Retry. The link the box wrote
-// goes when the reply moves or ends, so a reply under bob's comment or a comment on the issue
-// reaches no agent the reader did not name, and stays for a Retry, which sends the refused reply
-// as it was. The reader's own link stays in every case: the box takes nothing out of the draft
-// that it did not write, whether or not it mounted again over the send (`SentRequest.seeds`).
-test("a refused reply moved to bob's comment takes out the agent's link the box wrote", async () => {
-  const { draft, sent } = await afterRefusedPlannerReply("move with r", {
+// box or by the reader, times a move, an end or a Retry. Decision 357 moved the grid onto #3125's
+// one rule: the reader's own end of the reply carries the draft and its refusal to the issue, and
+// takes out the link the box wrote, so a comment on the issue reaches no agent the reader did not
+// name; a Reply on bob's comment after it is the host's move, which leaves the refusal held for
+// the issue - the box on bob's row says so and sends nothing - and the issue's own Reply brings it
+// back; a Retry sends the refused reply as it was, the link the box wrote in it. The reader's own
+// link stays in every case: the box takes nothing out of the draft that it did not write, whether
+// or not it mounted again over the send (`SentRequest.seeds`).
+test("a refused reply let go stays on the issue through a Reply on bob's comment, without the agent's link the box wrote", async () => {
+  const { away, draft, sent } = await afterRefusedPlannerReply("move with r", {
     ownLink: false,
     remount: false,
   });
+  expect(away).toEqual({ refused: true, retry: false, text: "hello" });
   expect(draft).toBe("hello");
-  expect(sent).toEqual({ body: "hello", reply_to: "comment-1" });
+  expect(sent).toEqual({ body: "hello" });
 });
 
 test("a refused reply ended takes out the agent's link the box wrote", async () => {
@@ -960,13 +726,14 @@ test("a refused reply retried keeps the agent's link the box wrote", async () =>
   expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-3" });
 });
 
-test("a refused reply moved to bob's comment keeps the reader's own link to the agent", async () => {
-  const { draft, sent } = await afterRefusedPlannerReply("move with Reply", {
+test("a refused reply let go stays on the issue through a Reply on bob's comment, with the reader's own link to the agent", async () => {
+  const { away, draft, sent } = await afterRefusedPlannerReply("move with Reply", {
     ownLink: true,
     remount: false,
   });
-  expect(draft).toBe(PLANNER_HELLO);
-  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-1" });
+  expect(away).toEqual({ refused: true, retry: false, text: OWN_HELLO });
+  expect(draft).toBe(OWN_HELLO);
+  expect(sent).toEqual({ body: OWN_HELLO, delivery: "steer" });
 });
 
 test("a refused reply ended keeps the reader's own link to the agent", async () => {
@@ -974,8 +741,8 @@ test("a refused reply ended keeps the reader's own link to the agent", async () 
     ownLink: true,
     remount: false,
   });
-  expect(draft).toBe(PLANNER_HELLO);
-  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer" });
+  expect(draft).toBe(OWN_HELLO);
+  expect(sent).toEqual({ body: OWN_HELLO, delivery: "steer" });
 });
 
 test("a refused reply retried keeps the reader's own link to the agent", async () => {
@@ -983,17 +750,18 @@ test("a refused reply retried keeps the reader's own link to the agent", async (
     ownLink: true,
     remount: false,
   });
-  expect(draft).toBe(PLANNER_HELLO);
-  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-3" });
+  expect(draft).toBe(OWN_HELLO);
+  expect(sent).toEqual({ body: OWN_HELLO, delivery: "steer", reply_to: "comment-3" });
 });
 
-test("a box mounted again over a refused reply moved to bob's comment takes out the agent's link the box wrote", async () => {
-  const { draft, sent } = await afterRefusedPlannerReply("move with r", {
+test("a box mounted again over a refused reply let go keeps it on the issue through a Reply on bob's comment, without the agent's link the box wrote", async () => {
+  const { away, draft, sent } = await afterRefusedPlannerReply("move with r", {
     ownLink: false,
     remount: true,
   });
+  expect(away).toEqual({ refused: true, retry: false, text: "hello" });
   expect(draft).toBe("hello");
-  expect(sent).toEqual({ body: "hello", reply_to: "comment-1" });
+  expect(sent).toEqual({ body: "hello" });
 });
 
 test("a box mounted again over a refused reply ended takes out the agent's link the box wrote", async () => {
@@ -1014,13 +782,14 @@ test("a box mounted again over a refused reply retried keeps the agent's link th
   expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-3" });
 });
 
-test("a box mounted again over a refused reply moved to bob's comment keeps the reader's own link to the agent", async () => {
-  const { draft, sent } = await afterRefusedPlannerReply("move with Reply", {
+test("a box mounted again over a refused reply let go keeps it on the issue through a Reply on bob's comment, with the reader's own link to the agent", async () => {
+  const { away, draft, sent } = await afterRefusedPlannerReply("move with Reply", {
     ownLink: true,
     remount: true,
   });
-  expect(draft).toBe(PLANNER_HELLO);
-  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-1" });
+  expect(away).toEqual({ refused: true, retry: false, text: OWN_HELLO });
+  expect(draft).toBe(OWN_HELLO);
+  expect(sent).toEqual({ body: OWN_HELLO, delivery: "steer" });
 });
 
 // The architect's case: the finding's own probe.
@@ -1029,8 +798,8 @@ test("the reader's own link at the front survives a remount and an ended target"
     ownLink: true,
     remount: true,
   });
-  expect(draft).toBe(PLANNER_HELLO);
-  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer" });
+  expect(draft).toBe(OWN_HELLO);
+  expect(sent).toEqual({ body: OWN_HELLO, delivery: "steer" });
 });
 
 test("a box mounted again over a refused reply retried keeps the reader's own link to the agent", async () => {
@@ -1038,8 +807,8 @@ test("a box mounted again over a refused reply retried keeps the reader's own li
     ownLink: true,
     remount: true,
   });
-  expect(draft).toBe(PLANNER_HELLO);
-  expect(sent).toEqual({ body: PLANNER_HELLO, delivery: "steer", reply_to: "comment-3" });
+  expect(draft).toBe(OWN_HELLO);
+  expect(sent).toEqual({ body: OWN_HELLO, delivery: "steer", reply_to: "comment-3" });
 });
 
 // R5: an answer sends the options picked and the reader's words, and a change of the reader's own
@@ -1609,12 +1378,15 @@ test("a statement's target line names the issue its words cite, never its addres
   expect(summary).toHaveBeenCalledWith("CORE-2");
 });
 
-// The reviewer's finding 4593511280: a comment on a statement Dispatch refused holds the box on
-// the statement - a Reply on another row, or an Answer, puts the caret back in it on that
-// statement, its refused words kept - and a box that mounts again over the refused send, as one
-// does when the reader leaves the issue and comes back, names the statement from the send and
-// sends the words to it again. The send keeps the statement's document, words and row, so the
-// line names it by those words, and a write to it lands under the statement's row.
+// The reviewer's finding 4593511280, which decision 357 moved onto #3125's one rule: a refusal
+// stays with the address it was written for, and the box's address names the statement it
+// comments on (`OutlineLook.anchor`), so at its own statement a refused comment is no draft
+// written elsewhere and its Retry sends it. A comment on a statement Dispatch refused holds the
+// box on the statement - a Reply on another row, or an Answer, puts the caret back in it on that
+// statement, its refused words and its Retry kept - and a box that mounts again over the refused
+// send, as one does when the reader leaves the issue and comes back, names the statement from the
+// send and sends the words to it again. The send keeps the statement's document, words and row,
+// so the line names it by those words, and a write to it lands under the statement's row.
 test("a refused comment on a statement keeps its words and its statement, through a Reply elsewhere and a new mount", async () => {
   const user = userEvent.setup();
   const createComment = stub(
@@ -1631,6 +1403,8 @@ test("a refused comment on a statement keeps its words and its statement, throug
   await waitFor(() =>
     expect(within(composerBox()).getByRole("alert")).toHaveTextContent("The comment was refused.")
   );
+  const retry = () => within(composerBox()).queryByRole("button", { name: "Retry" });
+  expect(retry()).not.toBeNull();
 
   // `r` on bob's comment, and `a` on the open question.
   const named = `${CONTROL_LABELS.replying_to} The page draws one box.`;
@@ -1644,6 +1418,7 @@ test("a refused comment on a statement keeps its words and its statement, throug
     expect(writeField().value, `${key} on ${row}`).toBe("Agreed");
     expect(first.writer().reply, `${key} on ${row}`).toBeNull();
     expect(first.writer().answer, `${key} on ${row}`).toBeUndefined();
+    expect(retry(), `${key} on ${row}`).not.toBeNull();
   }
 
   // The box mounted again in the same tab, over the send it refused: the statement named by the
@@ -1670,11 +1445,13 @@ test("a refused comment on a statement keeps its words and its statement, throug
   });
 });
 
-// The reviewer's finding 5942007779: a comment on a statement sent from a box that mounted again
-// over its refused send - as a reload brings one back - lands as every send from the box lands
-// (R4). The held send keeps the statement's row beside its words, so once the read draws the
-// reader's new comment under the statement, the outline unfolds it, brings its row on screen and
-// gives it the focus, rather than giving the focus back to where the reader came from.
+// The reviewer's finding 5942007779, which decision 357 moved onto #3125's one rule: a comment on
+// a statement sent from a box that mounted again over its refused send - as a reload brings one
+// back - lands as every send from the box lands (R4). The box mounted again shows the statement
+// the refusal was written for, so Send there is that refusal's own and goes. The held send keeps
+// the statement's row beside its words, so once the read draws the reader's new comment under
+// the statement, the outline unfolds it, brings its row on screen and gives it the focus, rather
+// than giving the focus back to where the reader came from.
 test("a comment on a statement sent again from a box mounted over its refused send lands on its new row", async () => {
   const user = userEvent.setup();
   stub(
@@ -1699,6 +1476,9 @@ test("a comment on a statement sent again from a box mounted over its refused se
     expect(targetWords()).toBe(`${CONTROL_LABELS.replying_to} The page draws one box.`)
   );
   expect(writeField().value).toBe("Agreed");
+  expect(
+    within(composerBox()).getByRole("button", { name: CONTROL_LABELS.send })
+  ).not.toHaveAttribute("aria-disabled");
 
   // The new comment's row is drawn below the screen, so landing on it has to scroll to it.
   const scrolled = stub(spyOn(window, "scrollBy").mockImplementation(() => {}));

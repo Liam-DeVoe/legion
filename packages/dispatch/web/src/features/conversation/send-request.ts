@@ -219,9 +219,10 @@ export type Address = Pick<SentRequest, "anchor" | "owner" | "replyTo" | "statem
   readonly edit: { readonly id: string } | undefined;
 };
 
-/** The part of a send's address a move of the reader's own changes: its owner and the reply it
- *  answers (Cancel reply, an Agents row's issue pick; `HeldSends.carry`). */
-export type CarriedAddress = Pick<SentRequest, "owner" | "replyTo">;
+/** The part of a send's address a move of the reader's own changes: its owner, the reply it
+ *  answers and the statement it is on (Cancel reply, an Agents row's issue pick, the issue page's
+ *  box's own end of its target; `HeldSends.carry`). */
+export type CarriedAddress = Pick<SentRequest, "owner" | "replyTo" | "statement">;
 
 /** Whether `next` goes where `sent` went. A refused send's draft lives at that address: a press
  *  from a composer its host has moved to another is not its Retry (`HeldSends.send`), and only a
