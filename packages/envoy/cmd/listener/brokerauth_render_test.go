@@ -59,30 +59,41 @@ func renderedListenerEnv(t *testing.T, name string) map[string]string {
 }
 
 // TestTheRenderedListenerEnvResolves holds the listener envoy-infra renders to the listener's own
-// rule for its broker settings: the environment of each golden a listener of a hub that may make
-// a project private is rendered as is fed to resolveListenerBrokerConfig, which accepts it, in the
-// token-file form, with the origin it renders. A render the listener refused would be a listener
-// that does not start (main makes the refusal fatal), so this is the start's own check of what the
-// component renders.
+// rules: the environment of each golden a listener of a hub that may make a project private is
+// rendered as is fed to resolveListenerBrokerConfig, which accepts it, in the token-file form,
+// with the origin it renders, and to resolveListenerV1OpenWithTokenChecks, which keeps /v1 open on
+// the tailnet-only listener and closed on the hub's own, which requires a token of every caller;
+// the open one renders the token check (ENVOY_OIDC_*) that validateListenerAPIAuth needs beside
+// the setting. A render the listener refused would be a listener that does not start (main makes
+// the refusal fatal), so this is the start's own check of what the component renders.
 //
 // Control: the private environment without ENVOY_PUBLIC_URL; the resolver refuses it, and the
 // test fails naming the variable.
 func TestTheRenderedListenerEnvResolves(t *testing.T) {
-	for _, golden := range []string{
-		"clustered-hub-listener-pod-private.golden",
+	for golden, open := range map[string]bool{
+		"clustered-hub-listener-pod-private.golden":         false,
+		"clustered-hub-tailnet-listener-pod-private.golden": true,
 	} {
 		t.Run(golden, func(t *testing.T) {
 			env := renderedListenerEnv(t, golden)
-			config, err := resolveListenerBrokerConfig(func(name string) string { return env[name] })
+			getenv := func(name string) string { return env[name] }
+			config, err := resolveListenerBrokerConfig(getenv)
 			if err != nil {
 				t.Fatalf("the listener refuses the environment %s renders: %v", golden, err)
 			}
 			if !config.configured() || config.AccountTokenFile == "" || config.GoogleAudience != "" || config.Origin != env[EnvPublicURL] {
 				t.Fatalf("%s resolves to %+v, want the broker check in its token-file form with the origin it renders", golden, config)
 			}
+			got, err := resolveListenerV1OpenWithTokenChecks(getenv)
+			if err != nil || got != open {
+				t.Fatalf("%s: %s resolves to %v, %v; want %v", golden, EnvV1OpenWithTokenChecks, got, err, open)
+			}
+			if issuer, audience, err := resolveListenerOIDCConfig(getenv); err != nil || issuer == "" || audience == "" {
+				t.Fatalf("%s: the token check resolves to %q, %q, %v; want the pair a private listener renders", golden, issuer, audience, err)
+			}
 
 			delete(env, EnvPublicURL)
-			if _, err := resolveListenerBrokerConfig(func(name string) string { return env[name] }); err == nil || !strings.Contains(err.Error(), EnvPublicURL) {
+			if _, err := resolveListenerBrokerConfig(getenv); err == nil || !strings.Contains(err.Error(), EnvPublicURL) {
 				t.Fatalf("%s without %s resolves (err = %v), want a refusal naming %s", golden, EnvPublicURL, err, EnvPublicURL)
 			}
 		})

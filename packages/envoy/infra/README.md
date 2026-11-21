@@ -215,7 +215,7 @@ pod starts on them.
 | `privateProjects` | `false` | The deployment may make a Dispatch project private, as for `gcp:NatsHub`: refused without `authCallout`, beside `sessionUser`, beside any entry of `users` but `authCallout.serviceUser`, when `authCallout.serviceUser` is not a `permissions` entry or is granted more than the auth service's grant, and beside `monitorNamespaces`. With it, the session listener runs in its required mode and must require a token of its callers: it renders the broker settings and the privacy settings from its `agentSecretsUrl`, `publicUrl`, `brokerAudience`, `privacySourceUrl` and `allProjectsAccounts`, and the hub renders the headless Service over its replicas (see [The private hub's session listener](#the-private-hubs-session-listener)). |
 | `listener` | unset | The session listener the hub runs as a workload of its own, declared beside the tailnet entry rather than inside it (see [The session listener](#the-session-listener)): the fields `tailnet.listener` takes, below. It always requires a credential of its callers: `oidcIssuer`, `oidcAudience` and `oidcAccounts` are required and `allowedHosts` is refused, and its `image` must be `legion-envoy-v30.32.0` or later, the first listener that reads `ENVOY_OIDC_ACCOUNTS`: an older one admits every subject the issuer signs for the audience. With `tailnet` the hosts forward the Service's port 9020 to it, and the hub renders what the same listener renders as `tailnet.listener` but for the listener container's token check; without `tailnet` it is reached inside the cluster alone, so `machineId` and at least one `clientNamespaces` entry are required. Refused beside `tailnet.listener`, since the hub runs one listener. |
 | `tailnet` | unset | The tailnet entry: `serviceName`, the Tailscale Service's name without `svc:`, under `gcp:NatsHub`'s `hostname` rule (2 to 26 lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen); `tailnetDnsName`, the tailnet's DNS name, such as `example-tailnet.ts.net`; `tags`, at least one `tag:<name>`, which every host joins with; `replicas`, the number of hosts, 2 by default and at least 2, so a drained host leaves another serving; `tailscaleImage`, pinned by digest; and `listener`, the session listener the hosts forward the Service's port 9020 to, unless the hub's own `listener` declares it. |
-| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; its NATS identity, which follows `authCallout`; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the credential the listener requires of every caller, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces` or as the hub's own `listener` and refused otherwise; `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). Without `authCallout` the listener connects as a user whose seed is stored: `nkey`, the public key of that seed, and `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold the seed and which the component mounts by reference and never reads, are required, and `natsAudience` is refused. With `authCallout` it connects by its service identity: `natsAudience` is required, the audience of a projected token of the listener's own ServiceAccount, `system:serviceaccount:<namespace>:<name>-listener`, which the broker's `BROKER_NATS_K8S_AUDIENCE` names and its `BROKER_NATS_SERVICES` lists as a listener of `machineId`; the pod reads the token at `NATS_SERVICE_TOKEN_FILE`, and the hub renders no user for it, so `nkey`, `seedSecretName` and `seedSecretKey` are refused. Five more are read only with the hub's `privateProjects`, each required then and ignored without it: `agentSecretsUrl`, the secrets broker's base URL; `publicUrl`, the listener's own origin, which a caller's DPoP proof names; `brokerAudience`, the audience of the projected token of the listener's own account it presents to the broker, the broker's `BROKER_K8S_OIDC_AUDIENCE`, never `natsAudience`'s; `privacySourceUrl`, the secrets broker's base URL too, the same value as `agentSecretsUrl`, to which the listener appends `/v1/project-privacy` itself, so it names no path; and `allProjectsAccounts`, the callers the listener serves every project's sessions to, Dispatch's account among them, each a subject `oidcAccounts` lists ([The private hub's session listener](#the-private-hubs-session-listener)). |
+| `tailnet.listener` | required with `tailnet`, unless `listener` is set | The session listener the hub runs as a workload of its own, which the tailnet hosts forward the Service's port 9020 to (see [The session listener](#the-session-listener)): `image`, pinned by digest, and `legion-envoy-v30.32.0` or later wherever the listener requires a credential (with `clientNamespaces`), the first listener that reads `ENVOY_OIDC_ACCOUNTS`; `machineId`, `tailnet.serviceName` by default; its NATS identity, which follows `authCallout`; `clientNamespaces`, the namespaces whose pods reach the listener at its cluster Service, `<n>-listener.<namespace>.svc.cluster.local:9020`, beside the tailnet hosts, none by default, each a DNS label, none repeated; `oidcIssuer`, `oidcAudience` and `oidcAccounts`, the listener's token check, a projected ServiceAccount token `oidcIssuer` (an https URL with no user, query or fragment, an empty one included, such as the cluster's own `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`) signed for `oidcAudience`, of a subject `oidcAccounts` lists as `system:serviceaccount:<namespace>:<name>`, none repeated, all three required with `clientNamespaces`, as the hub's own `listener` or with `privateProjects`, and refused otherwise; the listener then requires the token of every caller, except a `tailnet.listener` with no `clientNamespaces` on a private hub, which keeps its open `/v1` beside the check ([The private hub's session listener](#the-private-hubs-session-listener)); `allowedHosts`, any further address a client dials a listener with no credential by, beyond `<tailnet.serviceName>.<tailnetDnsName>`, which it always serves, refused where the listener requires a credential of every caller, since it then serves any `Host`; and `cpu` and `memory`, the listener container's size, each its request and its limit, `500m` and `1Gi` by default. Two more inputs are optional: `senderMessagesPerMinute`, from 1 to 60000, and `senderMessageBurst`, at least 1 and only with a rate, the listener's limit on the messages each agent session sends ([The listener's sender limit](#the-listeners-sender-limit)). Without `authCallout` the listener connects as a user whose seed is stored: `nkey`, the public key of that seed, and `seedSecretName` and `seedSecretKey`, an existing Kubernetes Secret in `namespace` and its key, which hold the seed and which the component mounts by reference and never reads, are required, and `natsAudience` is refused. With `authCallout` it connects by its service identity: `natsAudience` is required, the audience of a projected token of the listener's own ServiceAccount, `system:serviceaccount:<namespace>:<name>-listener`, which the broker's `BROKER_NATS_K8S_AUDIENCE` names and its `BROKER_NATS_SERVICES` lists as a listener of `machineId`; the pod reads the token at `NATS_SERVICE_TOKEN_FILE`, and the hub renders no user for it, so `nkey`, `seedSecretName` and `seedSecretKey` are refused. Five more are read only with the hub's `privateProjects`, each required then and ignored without it: `agentSecretsUrl`, the secrets broker's base URL; `publicUrl`, the listener's own origin, which a caller's DPoP proof names; `brokerAudience`, the audience of the projected token of the listener's own account it presents to the broker, the broker's `BROKER_K8S_OIDC_AUDIENCE`, never `natsAudience`'s; `privacySourceUrl`, the secrets broker's base URL too, the same value as `agentSecretsUrl`, to which the listener appends `/v1/project-privacy` itself, so it names no path; and `allProjectsAccounts`, the callers the listener serves every project's sessions to, Dispatch's account among them, each a subject `oidcAccounts` lists ([The private hub's session listener](#the-private-hubs-session-listener)). |
 | `tailnetAuthKey` | required with `tailnet` | A secret: the Tailscale auth key the tailnet hosts join with, which [Before the first deployment](#before-the-first-deployment) says how to make. Refused without `tailnet`. May come from another resource or stack. |
 
 Only `kubeconfig` and `tailnetAuthKey` may come from another resource's output. Every other input
@@ -271,12 +271,13 @@ input:
   `oidcAccounts`, an `oidcIssuer` that is not an https URL with a host and no user, query or
   fragment, an `oidcAudience` holding whitespace or a control character, an `oidcAccounts` entry
   that is not `system:serviceaccount:<namespace>:<name>` or repeats an earlier one, and any
-  `allowedHosts`; of a `tailnet.listener` with no `clientNamespaces`, any of `oidcIssuer`,
-  `oidcAudience` and `oidcAccounts`;
-- with `privateProjects`, a session listener that requires no token, a missing `agentSecretsUrl`,
-  `publicUrl`, `brokerAudience`, `privacySourceUrl` or `allProjectsAccounts`, a `brokerAudience`
-  that is `natsAudience`'s, and an `allProjectsAccounts` entry `oidcAccounts` does not list, as
-  [The private hub's session listener](#the-private-hubs-session-listener) says;
+  `allowedHosts`; of a `tailnet.listener` with no `clientNamespaces` on a hub without
+  `privateProjects`, any of `oidcIssuer`, `oidcAudience` and `oidcAccounts`;
+- with `privateProjects`, a `tailnet.listener` with no `clientNamespaces` and no `oidcIssuer`,
+  `oidcAudience` or `oidcAccounts` (it keeps its open `/v1` beside that check), a missing
+  `agentSecretsUrl`, `publicUrl`, `brokerAudience`, `privacySourceUrl` or `allProjectsAccounts`, a
+  `brokerAudience` that is `natsAudience`'s, and an `allProjectsAccounts` entry `oidcAccounts`
+  does not list, as [The private hub's session listener](#the-private-hubs-session-listener) says;
 - no `users` without a session listener, and a user refused as
   [The hub's users](docs/nats-hub.md#the-hubs-users) lists, a user whose machine id gives the
   session listener's durable among them; the listener's user is named after its machine id.
@@ -490,7 +491,21 @@ service identity:
   `/v1/project-privacy` itself, so the hub refuses one naming any path but `/`, naming the listener,
   and one that is not `https`, since the listener presents its broker token there;
   `ENVOY_PROJECT_PRIVACY_REQUIRED=true` from the hub's own `privateProjects` and from no input of
-  its own, and `ENVOY_ALL_PROJECTS_ACCOUNTS` from `<l>.allProjectsAccounts`, comma-joined.
+  its own, and `ENVOY_ALL_PROJECTS_ACCOUNTS` from `<l>.allProjectsAccounts`, comma-joined;
+- with `tailnet`, the per-address introspection limit,
+  `ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND=50` and `ENVOY_AGENT_SECRETS_INTROSPECTION_BURST=200`
+  (after the broker check). The listener bounds the introspections each source address makes it
+  send, and every tailnet session reaches it from a tailnet host's address, so at its default (five
+  a second, a burst of 20) two hosts saturate near 2 × 5 × 90 = 900 sessions: a session spends one
+  introspection per 5 s answer cache while it calls and at least one per 90 s registration
+  heartbeat. The rendered bucket is the secrets broker's own per-address bound on
+  `POST /v1/oauth/introspect` (its `DefaultAccountLimit`, fifty a second and a burst of 200 per
+  broker pod), which the listener pod is one address of: a host's bucket of that size refuses no
+  session the broker would admit, carries 50 × 90 = 4,500 idle sessions alone, and passes 200 at
+  once in a restart storm. `cmd/listener`'s `TestTheRenderedIntrospectionLimitIsTheBrokers` holds
+  the two equal. Without `tailnet` no forwarder shares an address, and the default stays;
+- on a `tailnet.listener` with no `clientNamespaces`, `ENVOY_V1_OPEN_WITH_TOKEN_CHECKS=true`, last
+  (below).
 
 The pod mounts a second projected token of `<n>-listener`, for `<l>.brokerAudience` alone (the
 broker's `BROKER_K8S_OIDC_AUDIENCE`), read-only at `/var/run/secrets/envoy-broker`, a top-level
@@ -501,18 +516,29 @@ the listener's replicas, `<n>-listener-instances` (`clusterIP: None`,
 `publishNotReadyAddresses: true`, the listener's selector and port 9020), which Dispatch reads every
 replica at, and the listener's NetworkPolicy gains a rule admitting the namespaces of the
 `allProjectsAccounts` callers at port 9020. `gcp/testdata/clustered-hub-listener-pod-private.golden`
-is the pod, and `cmd/listener`'s `TestTheRenderedListenerEnvResolves` feeds its environment to the
-listener's own broker-settings resolver.
+is the pod of a hub's own `listener` and `clustered-hub-tailnet-listener-pod-private.golden` that of
+a `tailnet.listener`, and `cmd/listener`'s `TestTheRenderedListenerEnvResolves` feeds both
+environments to the listener's own resolvers.
 
-Such a listener must require a token of every caller (it is `listener`, or a `tailnet.listener`
-with `clientNamespaces`), since its readiness route answers Dispatch's account by its projected
-token, and each `allProjectsAccounts` entry must be a subject `oidcAccounts` lists. The hub refuses,
-naming the input: a listener that requires no token (`privateProjects and tailnet.listener: …`);
-any of the inputs missing (`<l>.publicUrl is required with privateProjects: …` without `tailnet`);
-a `publicUrl` other than the tailnet's origin beside `tailnet`; an image before the floor; a
-`brokerAudience` that is `natsAudience`'s; and an `allProjectsAccounts` entry that is no
-ServiceAccount subject or that `oidcAccounts` does not list. What it is about to render is then held
-to `core.CheckPrivacySource`, which refuses a render missing any piece, naming the listener and the
+Such a listener has a token check, `oidcIssuer`, `oidcAudience` and `oidcAccounts`, since its
+readiness route knows Dispatch's account by its projected token, and each `allProjectsAccounts`
+entry must be a subject `oidcAccounts` lists. A hub's own `listener`, or a `tailnet.listener` with
+`clientNamespaces`, requires a token of every caller, as without `privateProjects`. A
+`tailnet.listener` with no `clientNamespaces`, which an all-public hub runs open, keeps its open
+`/v1` beside the check: it renders the check with `ENVOY_V1_OPEN_WITH_TOKEN_CHECKS=true` and the
+tailnet name in `ENVOY_ALLOWED_HOSTS`, and no `ENVOY_API_ALLOW_UNAUTHENTICATED`. A token that is
+presented, a projected token or a DPoP broker token, is verified and refused when it does not
+verify, and a verified one is admitted as itself; a request that presents none, or a bearer the
+listener does not hold, is served at the tailnet name as before, with no principal, which the
+required mode answers with no private project. So the private mode narrows no tailnet caller
+before the open `/v1` itself is removed, and that change removes the setting with it. The hub
+refuses, naming the input: a private `tailnet.listener` without the check
+(`tailnet.listener.oidcIssuer is required because privateProjects is set: …`); any of the inputs
+missing (`<l>.publicUrl is required with privateProjects: …` without `tailnet`); a `publicUrl`
+other than the tailnet's origin beside `tailnet`; an image before the floor; a `brokerAudience`
+that is `natsAudience`'s; and an `allProjectsAccounts` entry that is no ServiceAccount subject or
+that `oidcAccounts` does not list. What it is about to render is then held to
+`core.CheckPrivacySource`, which refuses a render missing any piece, naming the listener and the
 variable. Without `privateProjects` none of this is rendered, whatever the five inputs hold, and
 the listener is byte for byte what it was before they existed.
 

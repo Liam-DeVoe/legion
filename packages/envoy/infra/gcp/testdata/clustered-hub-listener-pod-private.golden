@@ -43,6 +43,14 @@
             "value": "http://envoy-hub.example-tailnet.ts.net:9020"
           },
           {
+            "name": "ENVOY_AGENT_SECRETS_INTROSPECTIONS_PER_SECOND",
+            "value": "50"
+          },
+          {
+            "name": "ENVOY_AGENT_SECRETS_INTROSPECTION_BURST",
+            "value": "200"
+          },
+          {
             "name": "NATS_SERVICE_TOKEN_FILE",
             "value": "/var/run/secrets/envoy/nats-token"
           },
