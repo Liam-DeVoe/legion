@@ -218,6 +218,81 @@ func (r signalledRow) Scan(dest ...any) error {
 	return r.Row.Scan(dest...)
 }
 
+// A fixed process's read of its marker after a reconnect is retried every namingMarkerRetry until
+// it answers: one reconnect whose first read the database fails, and whose next read finds the
+// cutover done, makes the process exit, with no second reconnect. Before the fix the watch waited
+// for the next reconnect, which may never come.
+func TestAFixedProcessRetriesAFailedMarkerReadAfterAReconnect(t *testing.T) {
+	shrink := namingMarkerRetry
+	namingMarkerRetry = 10 * time.Millisecond
+	t.Cleanup(func() { namingMarkerRetry = shrink })
+	db := &scriptedMarker{answers: []any{errors.New("dial tcp 127.0.0.1:5432: connect: connection refused"), `{"cutover":"done"}`}}
+	reconnects := make(chan struct{}, 1)
+	told := make(chan error, 1)
+	go WatchFixedMarker(t.Context(), db, reconnects, func(err error) { told <- err })
+	reconnects <- struct{}{}
+	select {
+	case err := <-told:
+		if !strings.Contains(err.Error(), "ENVOY_CONSUMER_NAMES=fixed") {
+			t.Fatalf("told %v, want the refusal naming ENVOY_CONSUMER_NAMES=fixed", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("one reconnect whose first read failed told the process nothing (%d reads)", db.count())
+	}
+}
+
+// A fixed intake reads the cutover marker under its consumer lease before its take-over deletes or
+// creates anything, so a fixed process the cutover converted the store under never creates its
+// fixed durable again, whichever of its connections comes back first. The convert writes the
+// marker done and deletes the fixed durable; the intake's own connection then reconnects, and
+// neither the database listener nor the publisher signals anything. The intake's next take-over
+// reads done, refuses, and tells the process to exit, naming the setting. Before the fix it
+// created the fixed name again: for delivery-events, at deliver policy all, every retained event.
+func TestAFixedIntakeRefusesAConvertedStoreAtItsTakeOver(t *testing.T) {
+	for _, kind := range durableKinds {
+		t.Run(kind.logical, func(t *testing.T) {
+			pool, _ := deliveryTestPool(t)
+			hub := startFreshHub(t)
+			hub.createStream(t, 0)
+			converted := make(chan error, 16)
+			process := startDurableProcess(t, hub, pool, kind, fixedNames, guardedFixed(func(err error) {
+				select {
+				case converted <- err:
+				default:
+				}
+			}))
+			_, js := hub.admin(t)
+			waitFor(t, 40*time.Second, func() bool {
+				info, err := js.ConsumerInfo(bus.Stream, kind.logical)
+				return err == nil && info.PushBound
+			}, func() string { return "the fixed durable " + kind.logical + " is not delivering" })
+			spy := spyConsumerCalls(t, hub)
+
+			writeCutover(t, pool, consumernames.CutoverDone)
+			if err := js.DeleteConsumer(bus.Stream, kind.logical); err != nil {
+				t.Fatalf("the convert's delete of %s: %v", kind.logical, err)
+			}
+			if err := process.held.nats.Conn.ForceReconnect(); err != nil {
+				t.Fatalf("reconnect the intake's connection: %v", err)
+			}
+			waitFor(t, 30*time.Second, func() bool {
+				return len(converted) > 0 || slices.Contains(spy.createdNames(), kind.logical)
+			}, func() string { return "the intake neither refused nor created anything after the convert" })
+			if slices.Contains(spy.createdNames(), kind.logical) {
+				t.Fatalf("the fixed intake created %s again over a converted store", kind.logical)
+			}
+			if err := <-converted; !strings.Contains(err.Error(), "ENVOY_CONSUMER_NAMES=fixed") {
+				t.Fatalf("told %v, want the refusal naming ENVOY_CONSUMER_NAMES=fixed", err)
+			}
+			// Later attempts refuse too: two more of them create nothing.
+			time.Sleep(2 * durableBindInterval)
+			if slices.Contains(spy.createdNames(), kind.logical) {
+				t.Fatalf("a later take-over created %s again over a converted store", kind.logical)
+			}
+		})
+	}
+}
+
 // Defence in depth: a fixed process reads its marker again each time its database or NATS
 // reconnects, and is told to exit once it reads done. The control: a reconnect before done was
 // written, and done written with no reconnect after it, tell it nothing, so it is the reconnect

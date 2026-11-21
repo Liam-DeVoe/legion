@@ -858,10 +858,19 @@ func main() {
 	if appCfg != nil {
 		gitHubReadsWake = listenerHub.Wake(githubreads.Channel)
 	}
-	// A fixed process reads its cutover row again each time its database or NATS connection comes
-	// back, and exits once it reads done (delivery.WatchFixedMarker, started once the intakes are):
-	// a store another process converted while this one ran must not keep running the fixed names.
+	// A fixed process reads its cutover row before each take-over of a durable
+	// (IntakeNaming.Converted) and again each time its database or NATS connection comes back
+	// (delivery.WatchFixedMarker, started once the intakes are), and exits once either reads done: a
+	// store another process converted while this one ran must not keep running the fixed names.
+	// Both tell storeConverted, which never blocks, and one goroutine exits the process.
 	var markerReconnected chan struct{}
+	converted := make(chan error, 1)
+	storeConverted := func(err error) {
+		select {
+		case converted <- err:
+		default:
+		}
+	}
 	if boot.ConsumerNames != consumernames.ModeFresh {
 		markerReconnected = make(chan struct{}, 1)
 		reconnected := func() {
@@ -1078,7 +1087,7 @@ func main() {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
 		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake,
-			delivery.IntakeNaming{Mode: boot.ConsumerNames, Steps: durableNameSteps})
+			delivery.IntakeNaming{Mode: boot.ConsumerNames, Steps: durableNameSteps, Converted: storeConverted})
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -1113,10 +1122,15 @@ func main() {
 		os.Exit(1)
 	}
 	if markerReconnected != nil {
-		go delivery.WatchFixedMarker(ctx, database.Pool, markerReconnected, func(err error) {
-			slog.Error("dispatch: consumer names", "error", err)
-			exitAfterIntakes()
-		})
+		go delivery.WatchFixedMarker(ctx, database.Pool, markerReconnected, storeConverted)
+		go func() {
+			select {
+			case err := <-converted:
+				slog.Error("dispatch: consumer names", "error", err)
+				exitAfterIntakes()
+			case <-ctx.Done():
+			}
+		}()
 	}
 	// LEGION-550: resolves write_suggestions outcomes off the write path, from the events written
 	// since its last pass, woken by every event commit whichever process made it. It reads the log

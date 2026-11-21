@@ -108,9 +108,11 @@ func reserveDurableLeases(callers *store.LeaseCallers, durable string) (intakeLe
 //
 // naming is the process's ENVOY_CONSUMER_NAMES (IntakeNaming). In the fixed mode, the default, each
 // intake delivers from its fixed durable on the client connect opens for it, as before the mode
-// existed, and reads nothing of intake_consumers. In the fresh mode each intake's client only reads
-// the stream, and each take-over connects its own generation's connection through connect
-// (fresh_names.go), with its selection records in pool's intake_consumers.
+// existed, writes nothing to intake_consumers, and reads its cutover row alone, before each
+// take-over, refusing a store the cutover converted (guardFixedNames, IntakeNaming.Converted). In
+// the fresh mode each intake's client only reads the stream, and each take-over connects its own
+// generation's connection through connect (fresh_names.go), with its selection records in pool's
+// intake_consumers.
 func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, naming IntakeNaming) (stop func(), err error) {
 	if github == nil {
 		slog.Info("dispatch delivery: no GitHub App key — the intakes are idle")
@@ -133,6 +135,10 @@ func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, e
 		records := consumernames.NewPGStore(pool)
 		for _, durable := range durables {
 			durable.nameFreshly(records, connect, naming.Steps)
+		}
+	} else {
+		for _, durable := range durables {
+			durable.guardFixedNames(pool, naming.Converted)
 		}
 	}
 	var running sync.WaitGroup

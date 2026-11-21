@@ -235,6 +235,9 @@ type heldDurable struct {
 	// (stepReserved and the others, fresh_names.go), with the physical name the step is on; an error
 	// it answers is that step's failure. It is nil outside tests.
 	freshHook func(point, name string) error
+	// guard is a fixed intake's read of the cutover marker before each take-over
+	// (guardFixedNames); nil reads none, as in a test that builds the durable itself.
+	guard *fixedGuard
 
 	mu sync.Mutex
 	// delivering is the latest subscription subscribe made, which StopDelivering stops.
@@ -436,7 +439,14 @@ func (d *heldDurable) holds() bool {
 // From the delete on -- or from the lookup, when it finds no durable -- the take-over runs to its
 // end inside this one lease (finishTakeOver, which says what a lease given up with the durable
 // absent leaves behind).
+//
+// A guarded intake (StartIntakes's fixed intakes) first reads the cutover marker, under the lease,
+// and changes nothing over a store the cutover converted or a marker it could not read
+// (fixedNamesAllowed).
 func (d *heldDurable) takeOver(ctx context.Context) {
+	if !d.fixedNamesAllowed(ctx) {
+		return
+	}
 	js := d.nats.JS()
 	wanted := d.config()
 	name := wanted.Durable
@@ -744,13 +754,13 @@ const intakeHoldFinalizing = "dispatch delivery: a hand-back has not reached NAT
 
 // finalizeHandBacks keeps hold renewing while a hand-back of the stopped delivery is pending, and
 // releases it once that hand-back has landed and a flush of the connection the delivery published
-// it on answers, or once that connection has closed (handBacksSettled). Close flushes a NATS client's outbound buffer before it
-// closes its socket, so a hand-back waiting then is either sent at close or dropped with the
-// connection; only then is it safe to release the hold. It runs on a goroutine of its own that
-// nothing in Run waits for, so it waits for nats.go's lock with no bound and makes one flush at a
-// time. StartIntakes waits for it after it closes that client and before it returns to a caller
-// that can close the database pool. A lost hold ends it: another holder may then act, as after any
-// loss of the hold.
+// it on answers, or once that connection has closed (handBacksSettled). Close flushes a NATS
+// client's outbound buffer before it closes its socket, so a hand-back waiting then is either sent
+// at close or dropped with the connection; only then is it safe to release the hold. It runs on a
+// goroutine of its own that nothing in Run waits for, so it waits for nats.go's lock with no bound
+// and makes one flush at a time. StartIntakes waits for it after it closes that client and before
+// it returns to a caller that can close the database pool. A lost hold ends it: another holder may
+// then act, as after any loss of the hold.
 func (d *heldDurable) finalizeHandBacks(delivery *intakeDelivery, hold *duty.Hold, lapse bool) {
 	select {
 	case <-delivery.handBacksLanded():

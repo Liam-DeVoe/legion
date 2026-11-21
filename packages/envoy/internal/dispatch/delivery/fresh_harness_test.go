@@ -254,6 +254,9 @@ type durableProcess struct {
 	step atomic.Pointer[func(p *durableProcess, point, name string) error]
 	// blocked holds every handler until unblock.
 	blocked chan struct{}
+	// guard, when set on a fixed-mode process, is told when its take-over reads the store converted
+	// (heldDurable.guardFixedNames), as StartIntakes wires a fixed intake.
+	guard func(error)
 
 	mu      sync.Mutex
 	handled map[uint64]int
@@ -265,6 +268,12 @@ type processOption func(*durableProcess)
 // blockingHandlers holds every handler of the process until its unblock.
 func blockingHandlers() processOption {
 	return func(p *durableProcess) { p.blocked = make(chan struct{}) }
+}
+
+// guardedFixed reads the cutover marker before each fixed take-over of the process, as
+// StartIntakes's fixed intakes do, and tells converted when it reads the store converted.
+func guardedFixed(converted func(error)) processOption {
+	return func(p *durableProcess) { p.guard = converted }
 }
 
 // atStep runs step at each point of the process's fresh take-over.
@@ -292,6 +301,9 @@ func startDurableProcess(t *testing.T, hub *freshHub, pool *store.Pool, kind dur
 	key := func(*natsgo.Msg) (string, *contracts.Envelope, bool) { return "all", nil, true }
 	held := newHeldDurable(reader, process.leases, kind.config, key, process.handle)
 	process.held = &held
+	if mode == fixedNames && process.guard != nil {
+		held.guardFixedNames(second.Pool, process.guard)
+	}
 	if mode == freshNames {
 		process.store = &cuttableStore{inner: consumernames.NewPGStore(second.Pool)}
 		held.nameFreshly(process.store, hub.connect, nil)

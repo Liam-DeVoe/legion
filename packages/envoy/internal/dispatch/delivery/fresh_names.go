@@ -37,7 +37,8 @@ import (
 // (consumernames.Admit), and a missing table, sentinel or row is a refusal too, never a create: the
 // intake then delivers nothing and says so at ERROR, naming the durable. The fixed mode, the
 // default, runs the take-over of the fixed names unchanged, writes nothing to the table, and reads
-// its sentinel row alone (CheckNamingMode, WatchFixedMarker).
+// its sentinel row alone: at the start (CheckNamingMode), before each take-over (fixedNamesAllowed)
+// and after each reconnect (WatchFixedMarker).
 //
 // Each generation's calls go on a connection of its own, named for it, which the auth service
 // grants exactly that generation's calls (natsgrant.ParseDispatchConnection): a take-over opens
@@ -55,6 +56,11 @@ type IntakeNaming struct {
 	// Steps counts each step of the fresh mode's protocol by durable, operation and outcome
 	// (envoy_dispatch_durable_names_total); nil counts nothing.
 	Steps *metrics.Counter
+	// Converted is told, in the fixed mode, when an intake's take-over reads the store converted
+	// (fixedNamesAllowed), with the refusal naming the setting: the process must exit. It is called
+	// on the intake's own goroutine, under its consumer lease, so it must not block; nil refuses
+	// and tells nothing.
+	Converted func(error)
 }
 
 // CheckNamingMode is what a process in mode checks of the selection table at its start, before
@@ -93,7 +99,10 @@ func CheckNamingMode(ctx context.Context, db consumernames.PGQuerier, mode consu
 // database or NATS connection came back -- until ctx ends, and calls converted once, with the
 // refusal CheckNamingMode answers, when a read finds the cutover done: a converted store must not
 // keep running the fixed names, whichever process converted it while this one ran. A read that
-// fails changes nothing; the next reconnect reads again.
+// fails is read again every namingMarkerRetry until one answers, as at the start (CheckNamingMode):
+// a reconnect is when a database is slowest, and the next one may never come. It is the backstop of
+// the read each fixed take-over makes before it changes anything (heldDurable.fixedNamesAllowed),
+// which catches the store converted whichever connection comes back first.
 func WatchFixedMarker(ctx context.Context, db consumernames.PGQuerier, reconnected <-chan struct{}, converted func(error)) {
 	for {
 		select {
@@ -101,20 +110,69 @@ func WatchFixedMarker(ctx context.Context, db consumernames.PGQuerier, reconnect
 			return
 		case <-reconnected:
 		}
-		done, err := readFixedMarker(ctx, db)
-		if err != nil {
-			slog.Warn("dispatch delivery: read the cutover row after a reconnect", "error", err)
-			continue
-		}
-		if done {
-			converted(errConvertedStore())
-			return
+		for {
+			done, err := readFixedMarker(ctx, db)
+			if err == nil && done {
+				converted(errConvertedStore())
+				return
+			}
+			if err == nil {
+				break
+			}
+			slog.Warn("dispatch delivery: read the cutover row after a reconnect", "retry_in", namingMarkerRetry, "error", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(namingMarkerRetry):
+			}
 		}
 	}
 }
 
+// fixedGuard is a fixed-mode intake's read of the cutover marker before each take-over
+// (guardFixedNames): the database it reads, and what it tells when the store is converted.
+type fixedGuard struct {
+	db        consumernames.PGQuerier
+	converted func(error)
+}
+
+// guardFixedNames has each fixed take-over of the durable read the cutover marker in db, under the
+// durable's consumer lease, before it deletes or creates anything (fixedNamesAllowed), and call
+// converted, which must not block, when it reads the store converted. StartIntakes guards every
+// fixed intake; nil converted only refuses.
+func (d *heldDurable) guardFixedNames(db consumernames.PGQuerier, converted func(error)) {
+	d.guard = &fixedGuard{db: db, converted: converted}
+}
+
+// fixedNamesAllowed reports whether a fixed take-over may go on, read under its consumer lease: the
+// marker read, and not done. A store the cutover converted is refused, at ERROR, and told to the
+// process, which exits (IntakeNaming.Converted): its fixed durable is gone, and creating it again
+// would replay every retained message of delivery-events into the intake under a name a late
+// write can reach. A marker that could not be read is refused too, logged at most once a
+// standbyLogEvery per error, and the next attempt reads again: a fixed take-over never runs over a
+// marker it has not read. An unguarded durable is always allowed.
+func (d *heldDurable) fixedNamesAllowed(ctx context.Context) bool {
+	if d.guard == nil {
+		return true
+	}
+	converted, err := readFixedMarker(ctx, d.guard.db)
+	switch {
+	case err != nil:
+		d.throttle.reportStandbyAt(slog.LevelWarn, d.name, "dispatch delivery: the cutover row could not be read, so the fixed take-over changes nothing until it is: "+err.Error())
+		return false
+	case converted:
+		err := errConvertedStore()
+		slog.Error("dispatch delivery: the fixed take-over stopped", "name", d.name, "error", err)
+		if d.guard.converted != nil {
+			d.guard.converted(err)
+		}
+		return false
+	}
+	return true
+}
+
 // namingMarkerRetry is how long a fixed process waits between reads of a cutover row it could not
-// read at its start, and markerReadWithin bounds each read.
+// read, at its start and after a reconnect, and markerReadWithin bounds each read.
 var namingMarkerRetry = 2 * time.Second
 
 const markerReadWithin = 5 * time.Second
