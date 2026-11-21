@@ -693,6 +693,8 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
 
   - `DISPATCH_TRUSTED_PROXY_RANGES` names the front doors whose `X-Forwarded-For` the passkey begins' bound reads: comma-separated CIDRs, IPv4 or IPv6, each written as its network and none `/0`; an entry that is empty or breaks that rule refuses the boot, named by its position (`parseTrustedProxyRanges`).
     Behind Google's external Application Load Balancer, production names its proxy ranges `35.191.0.0/16`, `130.211.0.0/22` and `2600:2d00:1:1::/64` ([Google's firewall rules page](https://cloud.google.com/load-balancing/docs/firewall-rules)), and never the address of the balancer's forwarding rule.
+    Google's regional external Application Load Balancer reaches Dispatch from its proxy-only subnet and appends its forwarding rule's address after the client's, as the global one does, but that subnet is not one of the ranges above, so Dispatch reads it as another front door: listing the subnet alone, the rightmost entry outside the ranges is the forwarding rule's address, and every client shares its bound; list the forwarding rule's address too.
+    A front door the component builds itself, such as the tailnet mode's in-cluster forwarder, is in none of Google's ranges either: list it, or its begins key on the forwarder and share one bound.
 
   With no `DISPATCH_SIGNIN_*` setting at all the server boots and runs no browser sign-in:
   it issues no session cookie, and it refuses every one it has issued, answering each request that needs a person `401 NO_IDENTITY` (`requestIdentityFor`).
