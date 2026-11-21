@@ -4028,7 +4028,10 @@ nothing past the reach below: an edge machine can already update or delete any c
 An edge listener holds itself to that list. It keeps no role message for a role's next holder and
 hands no kept lane over, so a publish to a role no session holds is answered 404 with its refusal's
 exception, and the shared listeners' sweeps, every five minutes, hand the kept lane of a role held
-at the edge to its holder. A delivery exception whose lane the list does not hold, such as the
+at the edge to its holder. A claim at the edge that takes a role from another session writes no
+takeover record and runs no takeover pass, and its session relay copies no role message to a kept
+lane: a frame of a role another session holds goes to the edge session as every frame does. A
+delivery exception whose lane the list does not hold, such as the
 report of a refused GitHub or Dispatch event a session follows, is not published: the message is
 acknowledged undelivered to that session and counted on
 `envoy_edge_exceptions_withheld_total{topic_prefix, reason}`.
