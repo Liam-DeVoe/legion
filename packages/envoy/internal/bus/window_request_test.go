@@ -383,7 +383,7 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 	if elapsed > 700*time.Millisecond {
 		t.Fatalf("the send answered %s after it began, want about the 200ms to its deadline", elapsed)
 	}
-	err = answerOf(t, window.Request(subject, forwardEnvelope("deadline-request"), bus.RequestOptions{MsgID: bus.ForwardMsgID("deadline-request", subject), Timeout: time.Second}), time.Second)
+	err = answerOf(t, window.Request(subject, forwardEnvelope("deadline-request"), bus.RequestOptions{MsgID: bus.ForwardMsgID("deadline-request", subject), Timeout: time.Second}), busWait)
 	if !errors.Is(err, bus.ErrWindowDeadline) {
 		t.Fatalf("a Request past the window's deadline answered %v, want ErrWindowDeadline", err)
 	}
@@ -412,7 +412,7 @@ func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
 		t.Fatalf("a send before the window's deadline answered %v, want nil", err)
 	}
 	pinned = time.Now()
-	if err := answerOf(t, live.PublishAsync(item), time.Second); !errors.Is(err, bus.ErrWindowDeadline) {
+	if err := answerOf(t, live.PublishAsync(item), busWait); !errors.Is(err, bus.ErrWindowDeadline) {
 		t.Fatalf("a send of a pinned window past its deadline answered %v, want ErrWindowDeadline", err)
 	}
 }
