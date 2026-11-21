@@ -6986,6 +6986,7 @@ test("clear brush window pressed with the Window select scrolled out of sight sc
           const box = node.getBoundingClientRect();
           return { bottom: Math.round(box.bottom), top: Math.round(box.top) };
         });
+        // One read places the case: the reader's scroll above is synchronous, and nothing else draws.
         const button = await clear.evaluate((node) => {
           const box = node.getBoundingClientRect();
           return { bottom: Math.round(box.bottom), top: Math.round(box.top) };
@@ -7017,6 +7018,7 @@ test("clear brush window pressed with the Window select scrolled out of sight sc
         await nextFrames(page);
         // One read is the answer: every hand-off has run, and nothing else moves the focus.
         const holder = await focusHolder(page);
+        // Read after the same hand-offs as the read above, so where the focus is is settled.
         const landed = await page.evaluate(() => {
           const active = document.activeElement;
           const box = active?.getBoundingClientRect();
@@ -7035,6 +7037,7 @@ test("clear brush window pressed with the Window select scrolled out of sight sc
             top: Math.round(box?.top ?? 0),
           };
         });
+        // Read after the same hand-offs as the reads above, so where the focus is is settled.
         const onSelect = await windowSelect.evaluate((node) => node === document.activeElement);
         const where = `${holder.name} at ${landed.top}..${landed.bottom} px, scrollY ${before} -> ${landed.scrollY}`;
         if (landed.scrollY !== before) {
@@ -7139,6 +7142,7 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
       const where = `Inbox at ${size.width}x${size.height}, ${count} thread${count === 1 ? "" : "s"} dismissed`;
       await page.goto("/?group=none");
       await expect.poll(() => rows.count()).toBeGreaterThanOrEqual(30);
+      // One read of the order: the poll above found the list drawn, and nothing moves it before the marks.
       const order = await rows.evaluateAll((nodes) =>
         nodes.map((node) => node.getAttribute("data-inbox-row") ?? "")
       );
@@ -7183,6 +7187,7 @@ test("a bulk Dismiss deep in the Inbox's list hands the focus to the row now at 
       await expect(bar).toContainText(`${count} selected`);
       await bar.getByRole("button", { exact: true, name: "Dismiss selected threads" }).focus();
       await nextFrames(page);
+      // One instant is the point: where the list and the window stand just before the press.
       const before = await landing();
       await page.keyboard.press("Enter");
       for (const id of marked) await expect(inboxRowOf(id)).toHaveCount(0);
@@ -7346,6 +7351,7 @@ test("a bulk action that takes the marked rows out of the project List's view ha
     await expect(bar).toContainText("2 selected");
     await bar.getByRole("button", { exact: true, name: "Take out of epic" }).focus();
     await nextFrames(page);
+    // One instant is the point: where the table and the window stand just before the press.
     const before = await landing();
     await page.keyboard.press("Enter");
     await expect(bar).toHaveCount(0);
