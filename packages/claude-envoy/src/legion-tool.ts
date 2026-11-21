@@ -25,14 +25,20 @@ const BUILD = pluginBuildOf(pkg)
 export const LEGION_TOOL_NAME = "legion"
 
 /** The tool as `tools/list` declares it: one object schema, `op` choosing one of the phase ops
- * (`@legion/pi-shared/legion-phase-ops`), the operations a phase worker gets. */
+ * (`@legion/pi-shared/legion-phase-ops`), the operations a phase worker gets, `declare_wait`
+ * among them. The description states `declare_wait` between `request_backward_move` and
+ * `read_build`, as the Oh My Pi host's does (`createLegionTool` in
+ * `packages/pi-legion/src/tools.ts`). */
 export function legionToolDefinition() {
   return {
     name: LEGION_TOOL_NAME,
     description: legionToolDescription({
       envoyPublish: "mcp__legion__envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
-      after: PHASE_OP_SENTENCES.requestBackwardMove + PHASE_OP_SENTENCES.readBuild,
+      after:
+        PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.declareWait +
+        PHASE_OP_SENTENCES.readBuild,
     }),
     inputSchema: z.toJSONSchema(z.object({ op: z.enum(PHASE_OPS), ...phaseOpParameters(z) })),
   }
@@ -53,6 +59,11 @@ export interface LegionToolRuntime {
   /** The head of `legion/<issue>@origin` a `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. */
   readonly branchHead: () => Promise<string>
+  /** Told the id of the wait a `declare_wait` recorded, once the daemon has answered it
+   * (`PhaseOpRuntime.onWaitDeclared`): the phase hook's `waitDeclared`
+   * (`./legion-phase-hook`), so the channel server reports news it writes after this call's result
+   * against that wait. Undefined where the pane runs no phase hook. */
+  readonly onWaitDeclared?: ((waitId: string) => void) | undefined
 }
 
 /** Runs one call of the `legion` tool and answers its JSON result; a refusal throws its reason.
@@ -76,6 +87,7 @@ export async function executeLegionTool(
       build: BUILD,
       handoffReport: runtime.handoffReport,
       branchHead: runtime.branchHead,
+      onWaitDeclared: runtime.onWaitDeclared,
       ...(signal === undefined ? {} : { restart: { signal } }),
     },
     input,

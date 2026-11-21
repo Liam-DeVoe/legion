@@ -51,6 +51,18 @@ import { configuredValue } from "./claude-session"
  * claim it answers that the claim owes nothing, and every reminder is dropped — the refused turns
  * themselves are counted by the bridge, which reports each turn's outcome to the daemon
  * (INFRA-714).
+ *
+ * A wait the worker declared (`declare_wait`) and the design gate's hold that keeps a merger back
+ * are the daemon's owed answer to give (dispatch://INFRA-2040). While either stands, the machine
+ * continues no turn, arms no timer and sends no reminder but the one for a tool call written as
+ * text, and every activity report says that no reminder is due, so the daemon can release the
+ * pod. A WAITING line in the worker's reply buys nothing: only the worker's own background work
+ * buys a quiet wait (`${background_tasks}` at `Stop`). News is what this server's channel writes
+ * into the session after the declaration: each relayed Envoy delivery, under the frame's own key,
+ * and each person's message, with none (D8 of dispatch://INFRA-2040's plan). The channel server
+ * reports it through `news`, from its own process, whichever turn Claude Code takes it into: the
+ * bridge's inbox and these hooks never see the frame's key. The CallTool handler of the same
+ * server tells this endpoint the wait a `declare_wait` recorded (`waitDeclared`).
  */
 
 /** The tool's name: Claude Code shows it as `mcp__legion__legion_phase_hook`, and a hook entry
@@ -142,8 +154,22 @@ export interface PhaseHookEndpoint {
    * pod, and the daemon would see no turn end. The CallTool handler of the same server calls it
    * (`./envoy-channel-server`), as `onUpdateAnswered` does on the Oh My Pi host. */
   readonly updateAnswered: () => void
-  /** Drops the armed timer, so a 15-minute WAITING wait never holds a shutting-down server
-   * open (the server's own `stop`). */
+  /** The `legion` tool's `declare_wait` returned the wait `waitId` the daemon recorded
+   * (`onWaitDeclared` in `@legion/pi-shared/legion-phase-ops`): news this server writes after the
+   * call's result, in the declaring turn or a later one, is reported against that wait. The
+   * CallTool handler of the same server calls it (`./envoy-channel-server`), as the Oh My Pi
+   * host's `onWaitDeclared` does. An architect's session declares no wait and runs no reminder. */
+  readonly waitDeclared: (waitId: string) => void
+  /** News this server wrote into the session (D8 of dispatch://INFRA-2040's plan): a relayed Envoy
+   * delivery, with `deliveryKey` the frame's own dedupe key (`deliveryIdentity` in
+   * `deliverRelayed`, `./envoy-channel-server`), or a person's message, with none. It starts the
+   * count again, and while a wait this endpoint knows of stands it is reported to the daemon
+   * against that wait, the key verbatim (`PhaseReminder.news`). Settles once the daemon answered
+   * or the report failed and was kept to be sent again; it never rejects. An architect's session
+   * runs no reminder, and its news moves nothing. */
+  readonly news: (deliveryKey?: string) => Promise<void>
+  /** Drops the armed timer, so no reminder timer, the quiet wait of the worker's own background
+   * work the longest of them, holds a shutting-down server open (the server's own `stop`). */
   readonly stop: () => void
 }
 
@@ -153,8 +179,8 @@ export interface PhaseHookDeps {
   /** The pane's registered claim, or undefined while its boot is still registering. */
   readonly claim: () => ClaimCapability | undefined
   /** Settles once the pane's claim boot has run (`startLegionClaim`'s `booted`). The resume
-   * reminder and the recreated-workspace notice both need the claim, and neither is sent before
-   * one exists. Never rejects. */
+   * reminder, the owed read before it, the boot's activity report and the recreated-workspace
+   * notice all need the claim, and none is sent before one exists. Never rejects. */
   readonly booted: Promise<void>
   /** A turn of this session has started, whatever started it: the daemon's task, an Envoy
    * delivery, a reminder, a person. The channel server answers it by firing the claim boot's
@@ -165,15 +191,17 @@ export interface PhaseHookDeps {
    * name is taken costs nothing. */
   readonly firstTurnStarted: () => void
   /** What this session's claim owes now (`LegionDaemonClient.owed`), the one answer that decides
-   * whether a reminder goes out, aborted with `signal` once the check's bound passes
-   * (`PhaseReminderDeps.readOwed`). An answer that does not arrive is the shared reminder's to
-   * decide (`UNREAD_CHECK`, `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi. */
+   * whether a reminder goes out and that gives the wait the worker declared and the design gate's
+   * hold, aborted with `signal` once the check's bound passes (`PhaseReminderDeps.readOwed`). An
+   * answer that does not arrive is the shared reminder's to decide (`UNREAD_CHECK`,
+   * `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi. */
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>
   /** Reports news after the declaration of a wait to the daemon (`LegionDaemonClient.waitNews`),
    * aborted with `signal` once the bound passes (`PhaseReminderDeps.reportNews`). */
   readonly reportNews: (input: WaitNewsInput, signal: AbortSignal) => Promise<LegionWaitNews>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
-   * idle rule can decide whether the pane's pod may be released (INFRA-945). */
+   * idle rule can decide whether the pane's pod may be released (INFRA-945): at each `Stop`, and
+   * once at boot after the owed read. */
   readonly reportActivity: (input: ActivityInput) => Promise<void>
   /** Writes one line into the session over the bridge's inbox, which turns it into a user turn,
    * and resolves once the bridge has queued it. Undefined for a session outside a Legion pane,
@@ -218,8 +246,9 @@ export function paneReminderLog(write: (line: string) => void): PhaseReminderLog
  * left behind, which has no such key, still reads.
  */
 export interface PhaseStallRecord {
-  /** The reminder's rhythm and count the file holds, or undefined when it holds none this build
-   * knows. */
+  /** The reminder's rhythm and count the file holds, with the wait news is reported against
+   * (`waitId`) and each report of news the daemon never answered (`unsentNews`, each with its
+   * wait and its delivery's key), or undefined when it holds none this build knows. */
   readonly entry: PhaseStallEntry | undefined
   /** Whether this launch's recreated-workspace notice has already been written into the session
    * (`recreatedNoticeSent` in the file); false for a record that names no such key. It outlives
@@ -238,8 +267,10 @@ const NO_RECORD: PhaseStallRecord = { entry: undefined, recreatedNoticeSent: fal
  * (`phaseStallEntryFrom`), so a record an earlier build wrote — `{"state":"open"}` or
  * `{"state":"closed"}` with its count, `{"state":"quiet"}` or `{"state":"text-call"}` — reads as
  * the rhythm's `active` here too, and a missing `count`, `reported` or `reportKey` reads as 0,
- * false and absent. This host adds the warning for a record it understands none of, and its own
- * `recreatedNoticeSent`.
+ * false and absent. A record with no `waitId` or `unsentNews`, which every build before
+ * dispatch://INFRA-2040 wrote, reads as no wait known and no report kept; a record that has them
+ * gives the relaunched process the wait and the reports to send again at its boot. This host adds
+ * the warning for a record it understands none of, and its own `recreatedNoticeSent`.
  */
 export function readPhaseStallRecord(file: string, log: PhaseReminderLog): PhaseStallRecord {
   let raw: string
@@ -288,7 +319,8 @@ export function readPhaseStallRecord(file: string, log: PhaseReminderLog): Phase
  * the shape the Go bridge wrote the same file in while it kept this record, kept so a session
  * carried across the cutover reads whatever the build now in the pods left. The key is written
  * only once it is true, so a record this host writes is otherwise the shared entry and nothing
- * more. A write that fails is logged rather than thrown: the worker still gets its reminder. */
+ * more, the wait's id and the unsent reports of news among it. A write that fails is logged
+ * rather than thrown: the worker still gets its reminder. */
 export function writePhaseStallRecord(
   file: string,
   entry: PhaseStallEntry,
@@ -402,8 +434,10 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
   /**
    * INFRA-945: what this session is doing, reported to the daemon as each turn settles, so the
    * idle rule can decide whether the pane's pod may be released. Claude Code's only sight of
-   * background work is the `Stop` hook's `${background_tasks}`, so this host reports at the
-   * settle and nowhere else; the one kind it can name is a Claude Code background task.
+   * background work is the `Stop` hook's `${background_tasks}`, so this host names background work
+   * at the settle alone; the one kind it can name is a Claude Code background task. The boot
+   * reports once too, after its owed read (below), and names no background work: it has no
+   * `${background_tasks}` to read.
    *
    * A report that does not reach the daemon is logged and dropped: the turn's reminder is what
    * the hook owes its worker, and a claim with no report after its last turn is held rather than
@@ -436,7 +470,8 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
    * `claude` process does not repeat it, and a launch that recreated nothing clears it again. The
    * record lands before the line does — a notice a broken socket loses is one notice lost, while
    * one written twice is the thing it must not be — and the turn it starts is an inbound message
-   * like any other, which says nothing of what the claim owes.
+   * like any other, which says nothing of what the claim owes. It is this plugin's own notice, not
+   * news, so it ends no wait (D8 of dispatch://INFRA-2040's plan).
    */
   const sendRecreatedNotice = (issue: string): void => {
     if (recreatedNoticeSent) return
@@ -453,19 +488,42 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
     )
   }
 
-  void deps.booted.then(() => {
+  void deps.booted.then(async () => {
     const claim = deps.claim()
     if (claim === undefined) return
     sendRecreatedNotice(claim.issue)
+    if (claim.role === "architect") return
     // D10: a worker the daemon relaunched is reminded from a timer, since nothing else would wake
     // it, and the daemon's answer when it is due says whether anything is owed. The guard drops
     // that timer when a turn started meanwhile, which is exactly the case to drop — the daemon
-    // re-sending an interrupted task arrives as a `UserPromptSubmit`.
-    if (claim.role !== "architect") reminder.armResumeReminder()
+    // re-sending an interrupted task arrives as a `UserPromptSubmit`. The arming first sends
+    // every report of news the restored record kept unsent, then reads the owed answer, which
+    // names the wait that stands, and arms nothing while a wait the worker declared or the
+    // design gate's hold stands (`armResumeReminder`, `@legion/pi-shared/phase-reminder`).
+    await reminder.armResumeReminder()
+    // `sendActivity` otherwise runs only at a `Stop`, and a worker relaunched during a wait may
+    // run no turn before the wait ends. So the boot reports once the owed answer is read: while a
+    // wait or a hold stands it says that no reminder is due, and the daemon can release the pod.
+    // It names no background work. A server Claude Code restarts inside one `claude` process
+    // may leave a background task of the worker's running that this report does not name; the
+    // next `Stop` names it.
+    await sendActivity(claim, false)
   })
 
   return {
     updateAnswered: () => reminder.apply({ kind: "update-answered" }),
+    // An architect's session runs no phase reminder (the gate in `handle`), so neither entry below
+    // moves anything for one. A delivery written before the claim has registered is news all the
+    // same: the record restored above may name a wait, and a report kept for want of a claim goes
+    // at the boot.
+    waitDeclared: (waitId) => {
+      if (deps.claim()?.role === "architect") return
+      reminder.waitDeclared(waitId)
+    },
+    news: async (deliveryKey) => {
+      if (deps.claim()?.role === "architect") return
+      await reminder.news(deliveryKey)
+    },
     stop: dropTimer,
     handle: async (input) => {
       const parsed = hookArguments.safeParse(input)
@@ -492,7 +550,11 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // `stop_hook_active` arrives as "true" once this hook has already continued the turn. It
           // decides nothing: the count is what bounds a run of reminders. `background_tasks` does
           // decide: a turn that ends with a background task of the worker's own still running is
-          // a worker waiting to be woken by it, not a stalled one.
+          // a worker waiting to be woken by it, not a stalled one, and that is the one quiet wait
+          // a turn's end buys. A WAITING line in the worker's reply buys nothing. A wait the worker
+          // declared and the design gate's hold are the daemon's owed answer to give, which the
+          // settle reads: while either stands it continues nothing and arms nothing, but for a
+          // tool call written as text.
           const backgroundWork = backgroundWorkRunning(event.backgroundTasks)
           deps.log.debug("legion: a Claude Code phase worker's turn is settling", {
             issue: claim.issue,
@@ -540,10 +602,13 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // D7: the only sight this server has of an inbound turn. The daemon's task reaches
           // Claude Code's stdin from the bridge and never this process, so a turn is read from the
           // prompt itself: this endpoint's own reminder, or an inbound message, which starts the
-          // count again and says nothing of what the claim owes. The turn is declared first,
-          // which makes every armed timer stale, and the pending one is dropped outright: the
-          // runner's generation guard answers the same for the timers it armed, and dropping the
-          // one timer this server holds is the plainest way to say the same thing.
+          // count again and says nothing of what the claim owes. It reports no news either: the
+          // daemon's task, the resume task and the wait's own task are prompts, and the news among
+          // these turns — a delivery or a person's message this server wrote — was reported as the
+          // channel server wrote it, with the frame's key this hook never sees (`news`). The turn
+          // is declared first, which makes every armed timer stale, and the pending one is dropped
+          // outright: the runner's generation guard answers the same for the timers it armed, and
+          // dropping the one timer this server holds is the plainest way to say the same thing.
           reminder.turnStarted()
           dropTimer()
           const prompt = event.prompt ?? ""

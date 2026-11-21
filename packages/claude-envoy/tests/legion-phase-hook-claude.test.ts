@@ -162,8 +162,8 @@ const claude = process.env["LEGION_TEST_CLAUDE"]
 const SESSION = "6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f"
 
 /** The claim the stand-in daemon registers: the implementer of the issue the stand-in answers
- * owes `WORK` (`POST /legion/v1/claims/owed`), so the `Stop` earns its reminder, which names that
- * work. */
+ * owes `WORK` (`POST /legion/v1/claims/owed`) once the assignment has been sent, so the
+ * assignment's `Stop` earns its reminder, which names that work. */
 const ISSUE = "LEGION-208"
 const CLAIM_TOKEN = `legion-legion-${ISSUE.toLowerCase()}-implementer`
 const WORK = `the implementing phase of ${ISSUE}`
@@ -348,6 +348,11 @@ async function runWorker(options: {
   const registered = await fixture("register.json")
   const ready = Promise.withResolvers<void>()
   let answered = 0
+  // The seeding turn ends before the assignment is sent, and its `Stop` races the claim boot. The
+  // daemon answers that the claim owes nothing until then, so that `Stop` earns no reminder
+  // whichever wins: a WAITING line buys nothing (dispatch://INFRA-2040), and the seed's reply
+  // would otherwise be continued once the claim had booted.
+  let assigned = false
   const { requests, base } = serveStandin((url, body) => {
     // The stand-in Anthropic API: one scripted reply per model request, the last of them ending
     // the run, so every case ends on its own.
@@ -379,7 +384,9 @@ async function runWorker(options: {
       ready.resolve()
       return new Response(null, { status: 204 })
     }
-    if (url.pathname === "/legion/v1/claims/owed") return Response.json({ owes: true, work: WORK })
+    if (url.pathname === "/legion/v1/claims/owed") {
+      return Response.json(assigned ? { owes: true, work: WORK } : { owes: false, work: "" })
+    }
     if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 })
     if (url.pathname.startsWith("/legion/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 })
@@ -517,6 +524,7 @@ async function runWorker(options: {
         continue
       }
       await ready.promise
+      assigned = true
       prompt(next)
     }
   }
@@ -579,11 +587,11 @@ test.skipIf(claude === undefined)(
       binary: claude,
       prompts: ["Seed the session.", `Implement ${ISSUE}.`],
       replies: [
-        // The seeding turn settles on a WAITING line, so it earns no reminder whether or not the
-        // claim boot has finished by the time its own hooks run: a settle with no claim yet
-        // answers `{}`, and one with a claim buys the quiet wait instead of a continuation. The
-        // assignment that follows puts the count back to 0, either way.
-        [{ type: "text", text: "WAITING on the daemon's assignment." }],
+        // The seeding turn earns no reminder whether or not the claim boot has finished by the
+        // time its own hooks run: a settle with no claim yet answers `{}`, and one with a claim
+        // reads that the claim owes nothing before the assignment (`runWorker`). The assignment
+        // that follows puts the count back to 0, either way.
+        [{ type: "text", text: "Seeded." }],
         [{ type: "text", text: "I have started." }],
         [{ type: "text", text: "Still going." }],
       ],
@@ -656,7 +664,7 @@ test.skipIf(claude === undefined)(
       binary: claude,
       prompts: ["Seed the session.", `Implement ${ISSUE}.`],
       replies: [
-        [{ type: "text", text: "WAITING on the daemon's assignment." }],
+        [{ type: "text", text: "Seeded." }],
         [{ type: "text", text: "I have started." }],
         // The continuation the block bought: the worker works, which is what puts the reminder
         // count back to 0.
@@ -712,7 +720,7 @@ test.skipIf(claude === undefined)(
       // open until that third one has ended.
       runs: 3,
       replies: [
-        [{ type: "text", text: "WAITING on the daemon's assignment." }],
+        [{ type: "text", text: "Seeded." }],
         [
           {
             type: "tool_use",
@@ -721,7 +729,7 @@ test.skipIf(claude === undefined)(
           },
         ],
         [{ type: "text", text: "I started the build; I will be woken when it is done." }],
-        [{ type: "text", text: "WAITING on nothing more." }],
+        [{ type: "text", text: "The build is done." }],
       ],
     })
 
@@ -745,7 +753,7 @@ test.skipIf(claude === undefined)(
       state: "waiting",
       count: 0,
       reported: false,
-      lastMessage: "WAITING on nothing more.",
+      lastMessage: "The build is done.",
     })
   },
   180_000,
