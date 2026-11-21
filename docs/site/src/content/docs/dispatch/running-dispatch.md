@@ -426,14 +426,14 @@ trap 'rm -f "$header"' EXIT
 broker_url='<the URL in DISPATCH_AGENT_SECRETS_URL>'
 token=$(kubectl -n '<the namespace Dispatch runs in>' create token '<the ServiceAccount Dispatch runs as>' --audience '<the audience in BROKER_K8S_OIDC_AUDIENCE>' --duration 1h) || { echo 'no token was minted'; exit 1; }
 printf 'Authorization: Bearer %s\n' "$token" >"$header"
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -v email="$person" <<'SQL' || { echo 'NOT REVOKED: the agent tokens'; exit 1; }
+PGPASSWORD="$DISPATCH_PGPASSWORD" psql "$DISPATCH_PSQL_URL" -v ON_ERROR_STOP=1 -v email="$person" <<'SQL' || { echo 'NOT REVOKED: the agent tokens'; exit 1; }
 update agent_tokens set revoked_at = now() where canonical_login(owner) = :'email' and revoked_at is null;
 SQL
-signins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person="$person" <<'SQL'
+signins() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person="$person" <<'SQL'
 select id from person_signins where person = :'person' and revoked_at is null order by id;
 SQL
 }
-logins() { psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person="$person" <<'SQL'
+logins() { PGPASSWORD="$BROKER_PGPASSWORD" psql "$BROKER_PSQL_URL" -v ON_ERROR_STOP=1 -At -v person="$person" <<'SQL'
 select c.id from launcher_credentials c join credential_requests r on r.id = c.record_id and r.kind = 'launcher_credential' where c.service is null and c.revoked_at is null and r.approver = :'person' order by c.id;
 SQL
 }
