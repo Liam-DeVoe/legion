@@ -359,19 +359,24 @@ settings_verdict() {
     unknown "$1" "the identity service for GKE is on, so the cluster takes users and groups from an outside identity provider, whose members this check cannot list" ;;
   esac
 }
-# named_rights: sets NAMED_RIGHTS, the name-limited rights (named-rights.jq) of the cluster whose
-# bindings bound_subjects read last, for the principals of $WORK/principals.rec: impersonate groups
-# and users by name, the users being the bindings' User subjects and each user or Google service
-# account the GKE IAM step listed as a holder (GKE's IAM authorizer judges an impersonated user by
-# its own IAM); bind and escalate on every binding's role, and patch and update on every binding, by
-# name; and update and patch by name on each role bound to a reviewed principal. When the bindings
-# could not be read, it holds impersonate groups system:masters and the IAM holders alone.
+# named_rights [PROJECT]: sets NAMED_RIGHTS, the name-limited rights (named-rights.jq) of the cluster
+# whose bindings bound_subjects read last, for the principals of $WORK/principals.rec: impersonate
+# groups and users by name, the users being the bindings' User subjects and each user or Google
+# service account the GKE IAM step listed as a holder, and, for a cluster in PROJECT, a project other
+# than --project, each one its member project's IAM step listed (GKE's IAM authorizer judges an
+# impersonated user by its own IAM there); bind and escalate on every binding's role, and patch and
+# update on every binding, by name; and update and patch by name on each role bound to a reviewed
+# principal. When the bindings could not be read, it holds impersonate groups system:masters and
+# the IAM holders alone.
 named_rights() {
-  local reviewed bindings='{"items": []}' iam_users='[]'
+  local reviewed bindings='{"items": []}' iam_users='[]' file files=()
   reviewed="$(cut -d"$US" -f1 "$WORK/principals.rec" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
   [ "$BINDINGS_OK" != true ] || bindings="$(<"$WORK/bindings.json")"
-  if [ -s "$WORK/gke-analysis.rec" ]; then
-    iam_users="$(awk -F"$US" '$1 == "row" || $1 == "chain" { print $2 }' "$WORK/gke-analysis.rec" |
+  for file in "$WORK/gke-analysis.rec" ${1:+"$WORK/gke-analysis-$1.rec"}; do
+    [ ! -s "$file" ] || files+=("$file")
+  done
+  if [ "${#files[@]}" -gt 0 ]; then
+    iam_users="$(awk -F"$US" '$1 == "row" || $1 == "chain" { print $2 }' "${files[@]}" |
       sed -n 's/^\(user\|serviceAccount\):\([^[]*\)$/\2/p' | sort -u | jq -R -s -c 'split("\n") | map(select(length > 0))')"
   fi
   NAMED_RIGHTS="$(jq -c --argjson reviewed "$reviewed" --argjson iam_users "$iam_users" -f "$LIB/named-rights.jq" <<<"$bindings")"

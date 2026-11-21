@@ -8,16 +8,18 @@
 pool_name="the workload pool's project"
 [ -z "$POOL_PROJECT" ] || pool_name="project $POOL_PROJECT"
 
-# read_other_cluster STEP PRINCIPAL WHERE GROUPS [SETTINGS]: on the cluster KUBE names, no guarded pair's
-# namespace may exist (else a finding for PRINCIPAL, the cluster), and no ServiceAccount outside the
-# cluster's system namespaces, none of Kubernetes' own groups, and no binding subject may hold a
-# right of GUARD_RIGHTS, a custom or admission resource's right from the cluster's discovery, or a
-# name-limited right (each a finding, its right followed by WHERE); every binding of system:masters
-# but the bootstrap one is a finding, and its other Group subjects are judged by GROUPS, where the
-# cluster takes its groups from (groups_verdict). The reviews carry the witness. PASS when it
+# read_other_cluster STEP PRINCIPAL WHERE GROUPS [SETTINGS [PROJECT]]: on the cluster KUBE names, no
+# guarded pair's namespace may exist (else a finding for PRINCIPAL, the cluster), and no
+# ServiceAccount outside the cluster's system namespaces, none of Kubernetes' own groups, and no
+# binding subject may hold a right of GUARD_RIGHTS, a custom or admission resource's right from the
+# cluster's discovery, or a name-limited right (each a finding, its right followed by WHERE); every
+# binding of system:masters but the bootstrap one is a finding, and its other Group subjects are
+# judged by GROUPS, where the cluster takes its groups from (groups_verdict), and SETTINGS by
+# settings_verdict. PROJECT, a project other than --project the cluster is in, adds that project's
+# IAM holders to the users the named rights impersonate. The reviews carry the witness. PASS when it
 # recorded neither a finding nor an UNKNOWN.
 read_other_cluster() {
-  local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" ns name pair acts accounts=0
+  local cstep="$1" principal="$2" where="$3" groups_mode="$4" settings="${5:-}" iam_project="${6:-}" ns name pair acts accounts=0
   local -A exists=()
   mark
   for pair in "${GUARDED[@]}"; do
@@ -59,7 +61,7 @@ read_other_cluster() {
   masters_bindings "$cstep" "$where" "$principal"
   custom_rights "$KUBE" guard || unknown "$cstep" "$CUSTOM_ERROR"
   admission_rights "$KUBE" || unknown "$cstep" "$ADMISSION_ERROR"
-  named_rights
+  named_rights "$iam_project"
   guard_rights="$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$NAMED_RIGHTS")"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
   # namespaces is not the cluster's whole list; its binding subjects are still reviewed.
@@ -112,7 +114,8 @@ fi
 declare -A OTHER_PROJECTS=()
 
 # The pool project's own clusters, when --pool-project names another project (live: clusters of the
-# pool project): each uses the pool, as the project's other clusters do.
+# pool project): each uses the pool, as the project's other clusters do. The pool project's own IAM
+# is read first, so each cluster asks who may impersonate its holders by name.
 while IFS=$'\t' read -r -u 5 cluster location _; do
   OTHER_PROJECTS[$POOL_PROJECT]=1
   label="$POOL_PROJECT/$location/$cluster"
@@ -121,8 +124,9 @@ while IFS=$'\t' read -r -u 5 cluster location _; do
     unknown "$cstep" "$KUBE_ERROR"
     continue
   fi
+  member_project_iam "$POOL_PROJECT"
   read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "${GROUPS_CONFIG["$label"]:-unknown:the cluster list gave no authenticatorGroupsConfig}" \
-    "${CLUSTER_SETTINGS["$label"]:-}"
+    "${CLUSTER_SETTINGS["$label"]:-}" "$POOL_PROJECT"
 done 5<"$WORK/pool-clusters.tsv"
 
 # fleet_memberships: every membership of the pool project's fleet, from the GKE Hub API, every
@@ -240,7 +244,10 @@ else
           continue
         fi
         here=$((here + 1))
-        [ "$gke_project" = "$PROJECT" ] || OTHER_PROJECTS[$gke_project]=1
+        member_project=""
+        if [ "$gke_project" != "$PROJECT" ]; then
+          OTHER_PROJECTS[$gke_project]=1 member_project="$gke_project"
+        fi
         label="$gke_project/$gke_location/$gke_cluster"
         cstep="live: Workload Identity on fleet member $id (cluster $label)"
         if ! kube_for "$gke_cluster" "$gke_location" "$gke_project"; then
@@ -248,7 +255,9 @@ else
           continue
         fi
         groups_config_of "$gke_cluster" "$gke_location" "$gke_project"
-        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE" "${CLUSTER_SETTINGS["$label"]:-}"
+        # The member's own project's IAM first, so its cluster asks who may impersonate its holders.
+        [ -z "$member_project" ] || member_project_iam "$member_project"
+        read_other_cluster "$cstep" "cluster:$label" " on cluster $label" "$GROUPS_MODE" "${CLUSTER_SETTINGS["$label"]:-}" "$member_project"
       else
         here=$((here + 1))
         label="$POOL_PROJECT/$location/$id"

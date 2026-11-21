@@ -163,7 +163,9 @@
 #                     roleBindings.create and update, nodes.proxy, mutatingWebhookConfigurations and
 #                     validatingWebhookConfigurations create and update) and of the IAM writers
 #                     (setIamPolicy, iam.roles.update) are judged as the GKE IAM step judges its own
-#                     (--project's are in that step).
+#                     (--project's are in that step). Each such project, and the pool project, is
+#                     read before its clusters, which also ask who may impersonate, by name, each
+#                     user and Google service account it lists.
 #   live: minters of  For each Google service account an RBAC finding names (on a cluster, a fleet
 #     an RBAC         member or in the renders), Policy Analyzer's holders on it of the minters
 #     finding's       step's permissions, judged as that step judges --gsa's: who can mint its token,
