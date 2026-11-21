@@ -1509,7 +1509,8 @@ func TestEveryCaseTheSettleWindowRefusedIsRefusedByTheComparison(t *testing.T) {
 
 // TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff (R9): with outside sign-in off, a
 // broker token acting for a full member, for a person no people row holds, and for a service that
-// names no person answer GET /api/v1/whoami as they always did. Resolving one that names a person
+// names no person answer GET /api/v1/whoami as they do on the base, whose broker token holds the
+// person scope alone (no broker token gets approve, #4644). Resolving one that names a person
 // costs one statement of Dispatch's store, the read of that person's member kind by the people
 // table's key, and reads no access list; one that names no person reads nothing. The instrument is
 // shown seeing a list read in the same run: a restricted owner's token, which must read one,
@@ -1530,16 +1531,16 @@ func TestAFullMembersBrokerTokenAnswersAsBeforeWithOutsideSignInOff(t *testing.T
 		readsLists          bool
 	}{
 		{"carol, a full member", "carols-broker-token",
-			`{"kind":"agent","owner":"carol@example.com","project":null,"scopes":["person","approve"],"service":null,"session":"` + brokerTestSession + `"}`,
+			`{"kind":"agent","owner":"carol@example.com","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
 			rig.personToken(accessCarol), false, 1, false},
 		{"a person no people row holds", "nobodys-broker-token",
-			`{"kind":"agent","owner":"nobody@example.com","project":null,"scopes":["person","approve"],"service":null,"session":"` + brokerTestSession + `"}`,
+			`{"kind":"agent","owner":"nobody@example.com","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
 			rig.personToken(nobody), false, 1, false},
 		{"a service naming no person", "a-service-broker-token",
 			`{"kind":"agent","owner":null,"project":null,"scopes":[],"service":"` + brokerTestService + `","session":"` + brokerTestSession + `"}`,
 			serviceOnlyToken(rig.caller.jkt), false, 0, false},
 		{"erin, a restricted member, with outside sign-in on", "erins-broker-token",
-			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":["person","approve"],"service":null,"session":"` + brokerTestSession + `"}`,
+			`{"kind":"agent","owner":"erin@other.example","member_kind":"restricted","project":null,"scopes":["person"],"service":null,"session":"` + brokerTestSession + `"}`,
 			rig.personToken(accessErin), true, 2, true},
 	} {
 		rig.broker.Says(test.token, test.answer)
