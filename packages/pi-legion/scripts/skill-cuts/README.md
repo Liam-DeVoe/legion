@@ -216,6 +216,15 @@ with `label` `need` or `near-miss` and `source` `written`, or `session` with its
 `cases.ts`), a `context` (a case's: `devbox`, the default, `legion:<project>:<role>` or
 `subagent:<agent>`, whose profile carries the subagent's recorded system prompt and tools), and
 for Claude Code a `claude` plugin layout: `{marketplace, plugins: [{name, skills}], skillPlugin}`.
+The layout names each skill but the project skills. A project skill is a skill of the profile's
+`sessionRepository` (the repository the session's working directory was a checkout of, at the
+commit the profile's build read it at) whose path is `<level>/.claude/skills/<name>` or
+`<level>/.omp/skills/<name>`, where `<level>` is the working directory's path in the checkout or a
+parent of it up to the root. Claude Code lists a `.claude/skills` project skill under its bare
+name, not as `<plugin>:<name>`, so `load` writes it at its path in the checkout and in no plugin;
+it leaves a `.omp/skills` one out, since Claude Code does not read `.omp/skills`; a layout that
+puts a project skill in a plugin is refused. A profile that names no session repository has no
+project skill. The capture's record names where each skill went (`placements`).
 Each task runs in the context of the session it came from: a task line may name its own `profile`
 file (absolute, or relative to the tasks file's directory), and `--profile` is the profile of each
 task that names none; a task with neither is refused. `--name` tests the skill under another
@@ -227,13 +236,13 @@ Per task, the host's first request is captured once against a recorder, in the c
 task's own profile (Oh My Pi through `capture.ts`, which lists the skill under the hint Oh My Pi
 has a model write, with the plugins' stand-ins, and sends a subagent's recorded prompt with only
 the skill's listing line changed; Claude Code with a scratch `CLAUDE_CONFIG_DIR` per profile that
-installs the skills as local plugins), then sent `--runs` times. The plugins' stand-ins of an Oh
-My Pi capture listen on 127.0.0.1. A Legion role's run gets a stand-in Legion daemon, a stand-in
-Envoy listener and a sink for the NATS server the Envoy plugin dials. The run of every other
-profile that installs the Envoy plugin, whatever its context (a devbox one included), gets that
-listener and that sink, since the plugin defines its tools only when it has a listener to reach;
-a subagent's run gets the listener alone. A capture follows the harness strings rule above: a
-session task stands for its own session, and a written task for the one
+installs the other skills as local plugins), then sent `--runs` times. The plugins' stand-ins of
+an Oh My Pi capture listen on 127.0.0.1. A Legion role's run gets a stand-in Legion daemon, a
+stand-in Envoy listener and a sink for the NATS server the Envoy plugin dials. The run of every
+other profile that installs the Envoy plugin, whatever its context (a devbox one included), gets
+that listener and that sink, since the plugin defines its tools only when it has a listener to
+reach; a subagent's run gets the listener alone. A capture follows the harness strings rule
+above: a session task stands for its own session, and a written task for the one
 `--context-session` names (the session its profile was rebuilt from; `<path hash>` is the
 SHA-256 of that session file's path in hex), or for none, with neutral values, when it is not
 given. The runs of a profile's tasks are sent together, once each of its tasks has its capture,
@@ -342,8 +351,9 @@ Legion pane, the repository of its workspace `/legion/workspaces/<owner>/<name>/
 (the checkout at `<workspace>`); for a dev-box session, the repository of the copies output's list
 named as the last part of its working directory, or of the nearest parent named as any listed
 repository, when one repository alone has that name (otherwise none, and the evidence names the
-repositories that matched); the checkout's root is that directory. The profile lists that
-repository's project skills at its commit, as Oh My Pi lists them: each
+repositories that matched); the checkout's root is that directory. The profile names that
+repository and its commit at the session's start (`sessionRepository`), and lists the
+repository's project skills at that commit, as Oh My Pi lists them: each
 `<level>/.omp/skills/<name>/SKILL.md` (one with a description), then each
 `<level>/.claude/skills/<name>/SKILL.md`, where the levels are the working directory's path in the
 checkout and each of its parents up to the root, the nearest first (a working directory

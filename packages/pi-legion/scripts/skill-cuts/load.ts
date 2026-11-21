@@ -48,11 +48,17 @@
  *   the scratch `CLAUDE_CONFIG_DIR`, from its repository at its commit, and not into the checkout;
  *   the record names it (`userMemory`). Its other context files (the session repository's, at
  *   their paths) go into the checkout, as context.ts writes them, where Claude Code reads a
- *   project's `CLAUDE.md` of the working directory and its parents. The first request that holds
- *   tools and the
- *   task's text is kept. Claude Code lists each plugin skill as `<plugin>:<name>` with its
- *   description (`claudeListing`). Thinking `off` sets `CLAUDE_CODE_DISABLE_THINKING`, a level of
- *   `claude --effort` goes as that flag, and `auto` leaves Claude Code's own default.
+ *   project's `CLAUDE.md` of the working directory and its parents. A project skill of the
+ *   profile's `sessionRepository` (`claudeKind`: that repository at that commit, at
+ *   `<level>/.claude/skills/<name>`, `<level>` the working directory or a parent of it in the
+ *   checkout) goes in no plugin: its directory is written at that path in the checkout, where
+ *   Claude Code reads a project's skills, and lists it under its bare name. One at
+ *   `<level>/.omp/skills/<name>` is left out, since Claude Code reads no `.omp/skills`. A profile
+ *   that names no session repository has no project skill. The record names each skill's place
+ *   (`placements`). The first request that holds tools and the task's text is kept. Claude Code
+ *   lists each plugin skill as `<plugin>:<name>` with its description (`claudeListing`). Thinking
+ *   `off` sets `CLAUDE_CODE_DISABLE_THINKING`, a level of `claude --effort` goes as that flag,
+ *   and `auto` leaves Claude Code's own default.
  *
  * Then that one body is sent `--runs` times to the gateway (gateway.ts), with the `anthropic-*`
  * headers the host sent beside it, on the route of its API: an `anthropic/<id>` model's body goes
@@ -237,8 +243,8 @@ export const Task = z.discriminatedUnion("source", [
 export type Task = z.infer<typeof Task>;
 
 /** Where Claude Code installs the skills: a local marketplace named `marketplace` whose `plugins`
- *  each hold the profile's skills they name, and `skillPlugin`, the plugin the tested skill goes
- *  in (one of `plugins`, or a plugin of its own). */
+ *  each hold the profile's skills they name (each but its project skills, `claudeKind`), and
+ *  `skillPlugin`, the plugin the tested skill goes in (one of `plugins`, or a plugin of its own). */
 const ClaudeLayout = z.strictObject({
   marketplace: Name,
   plugins: z.array(z.strictObject({ name: Name, skills: z.array(Name) })),
@@ -252,6 +258,49 @@ const LoadProfile = Profile.extend({
   claude: ClaudeLayout.optional(),
 });
 type LoadProfile = z.infer<typeof LoadProfile>;
+
+/** A profile's session repository and the commit its project skills were read at (cases.ts). */
+type SessionRepository = NonNullable<Profile["sessionRepository"]>;
+
+/** What a Claude Code capture's record says when the profile names no session repository. */
+const NO_SESSION_REPOSITORY =
+  "the profile names no session repository, so no skill is placed as a project skill";
+
+/**
+ * Where a Claude Code load puts `skill` of `profile`. A project skill is a skill of the profile's
+ * `sessionRepository`, at its commit, whose path is `<level>/.claude/skills/<name>` or
+ * `<level>/.omp/skills/<name>`, `<level>` the profile's working directory in the checkout or a
+ * parent of it up to the checkout's root (build.ts lists the session repository's project skills
+ * at those levels). A `.claude/skills` one goes in the checkout (`checkout`), where Claude Code
+ * lists it under its bare name; a `.omp/skills` one is left out (`left out`), since Claude Code
+ * reads no `.omp/skills`; every other skill goes in the plugin the layout names (`plugin`). A
+ * profile that names no session repository has no project skill.
+ */
+function claudeKind(profile: Profile, skill: ProfileSkill): "checkout" | "left out" | "plugin" {
+  const own = profile.sessionRepository;
+  if (own === undefined || skill.repo !== own.repo || skill.commit !== own.commit) return "plugin";
+  const dir = path.posix.dirname(skill.path);
+  const parts = profile.workingDirectory?.split("/") ?? [];
+  for (let depth = parts.length; depth >= 0; depth -= 1) {
+    const level = parts.slice(0, depth).join("/");
+    const under = (kind: string) => (level === "" ? kind : `${level}/${kind}`);
+    if (dir === under(".claude/skills")) return "checkout";
+    if (dir === under(".omp/skills")) return "left out";
+  }
+  return "plugin";
+}
+
+/** Why the project skill `skill` (`claudeKind`: `checkout` or `left out`) is in no plugin. */
+function projectSkillWords(skill: ProfileSkill, kind: "checkout" | "left out"): string {
+  return `it is a project skill of ${skill.repo} (${skill.path}), which Claude Code ${kind === "checkout" ? "reads from the checkout" : "does not read"}`;
+}
+
+/** Where a Claude Code capture put one skill (`claudeKind`): in a plugin of its marketplace, at
+ *  its path in the checkout, or nowhere, and why. */
+type ClaudePlacement =
+  | { readonly skill: string; readonly as: "plugin"; readonly plugin: string }
+  | { readonly skill: string; readonly as: "checkout"; readonly path: string }
+  | { readonly skill: string; readonly as: "left out"; readonly reason: string };
 
 /** One run of one task: whether the first assistant message the gateway gave for the task's body
  *  loaded the skill and by which call, the names of its tool calls in order, its stop reason, the
@@ -364,8 +413,9 @@ interface TaskProfile {
 /** The profile of `file`, checked for a test of the skill `name` in `host`. Throws a refusal
  *  naming each fault: a file that is not a profile; a profile skill named `name` (the tested skill
  *  is not one of the other skills) or a name given twice; and for Claude Code a profile with no
- *  plugin layout, or one that puts a profile skill in no plugin or in two, names a skill the
- *  profile does not install, or names a plugin twice. */
+ *  plugin layout, or one that puts a skill that goes in a plugin (`claudeKind`) in no plugin or in
+ *  two, puts a project skill in a plugin, names a skill the profile does not install, or names a
+ *  plugin twice. */
 function loadProfile(file: string, host: Host, name: string): TaskProfile {
   let bytes: Uint8Array;
   let raw: unknown;
@@ -393,9 +443,16 @@ function loadProfile(file: string, host: Host, name: string): TaskProfile {
     faults.push("it has no `claude` plugin layout, which the Claude Code host needs");
   } else if (host === "claude" && layout !== undefined) {
     const held = layout.plugins.flatMap((plugin) => plugin.skills);
-    for (const skill of names) {
-      const count = held.filter((each) => each === skill).length;
-      if (count !== 1) faults.push(`its layout puts ${skill} in ${count} plugins, not 1`);
+    for (const skill of profile.skills) {
+      const count = held.filter((each) => each === skill.name).length;
+      const kind = claudeKind(profile, skill);
+      if (kind === "plugin" && count !== 1) {
+        faults.push(`its layout puts ${skill.name} in ${count} plugins, not 1`);
+      } else if (kind !== "plugin" && count > 0) {
+        faults.push(
+          `its layout puts ${skill.name} in a plugin, and ${projectSkillWords(skill, kind)}`
+        );
+      }
     }
     for (const skill of new Set(held)) {
       if (!names.includes(skill))
@@ -760,6 +817,11 @@ interface ClaudeCaptureRecord {
   /** The profile's user-level context file Claude Code read as user memory (`CLAUDE.md` in its
    *  config directory), or null when the profile has none. */
   readonly userMemory: UserMemory | null;
+  /** The profile's session repository, whose project skills the capture placed as Claude Code
+   *  reads them (`claudeKind`), or why it placed none; and where it put each skill of the
+   *  profile, then the tested one. */
+  readonly sessionRepository: SessionRepository | { readonly none: string };
+  readonly placements: readonly ClaudePlacement[];
   readonly runMs: number;
   /** The harness-string rule's record (capture.ts's HarnessRecord). */
   readonly harness: HarnessRecord;
@@ -777,8 +839,8 @@ interface Captured {
 
 /** The scratch Claude Code home of one test: the environment each run gets, the working
  *  directory, the checkout it is in when it is below the checkout's root, the appended system
- *  prompt, Claude Code's version, the context's record, the user memory file written, and the
- *  milliseconds its context build took. */
+ *  prompt, Claude Code's version, the context's record, the user memory file written, where each
+ *  skill went, and the milliseconds its context build took. */
 interface ClaudeSetup {
   readonly env: Record<string, string>;
   readonly workspace: string;
@@ -787,6 +849,7 @@ interface ClaudeSetup {
   readonly version: string;
   readonly context: ContextRecord;
   readonly userMemory: UserMemory | null;
+  readonly placements: readonly ClaudePlacement[];
   readonly contextMs: number;
 }
 
@@ -1092,8 +1155,10 @@ class LoadTest {
   }
 
   /** The scratch Claude Code home of `profile` (ClaudeSetup), made once per profile: its skills
-   *  and the tested one laid out by context.ts, and a local marketplace of its layout's plugins
-   *  installed into a scratch CLAUDE_CONFIG_DIR. A profile's user-level context file (`user: true`,
+   *  and the tested one laid out by context.ts, a local marketplace of its layout's plugins
+   *  installed into a scratch CLAUDE_CONFIG_DIR, and each project skill placed as Claude Code
+   *  reads it (`claudeKind`): a `.claude/skills` one written at its path in the checkout, a
+   *  `.omp/skills` one left out of the context. A profile's user-level context file (`user: true`,
    *  the one its dev box's host read, build.ts) is Claude Code's user memory, CLAUDE.md in its
    *  config directory: it is written there from the profile's repository at its commit, and left
    *  out of the checkout, where context.ts writes the profile's other context files. */
@@ -1112,6 +1177,15 @@ class LoadTest {
           `the profile ${profile.file} holds ${more.length + 1} user-level context files; Claude Code has one user memory file`
         );
       }
+      const kinds = profile.profile.skills.map((skill) => ({
+        skill,
+        kind: claudeKind(profile.profile, skill),
+      }));
+      // Claude Code reads no `.omp/skills`, so such a project skill is not installed at all.
+      const leftOut = new Set(
+        kinds.filter(({ kind }) => kind === "left out").map(({ skill }) => skill.name)
+      );
+      const skills = arm.profileSkills.filter((skill) => !leftOut.has(skill.name));
       // Oh My Pi's plugins are no Claude Code plugins: only the skills and context files go in.
       const contextStarted = performance.now();
       const context = await buildContext(
@@ -1119,11 +1193,12 @@ class LoadTest {
           ...c,
           profile: {
             ...c.profile,
+            skills,
             plugins: [],
             contextFiles: c.profile.contextFiles.filter((file) => file !== userMemory),
           },
         },
-        arm,
+        { ...arm, profileSkills: skills },
         { source: this.o.source, cacheDir: this.o.cacheDir, root: path.join(root, "context") }
       );
       const memory =
@@ -1136,6 +1211,28 @@ class LoadTest {
       if (own === undefined) {
         plugins.push({ name: layout.skillPlugin, skills: [profile.tested.name] });
       } else own.skills.push(profile.tested.name);
+      const placements: ClaudePlacement[] = [];
+      for (const { skill, kind } of kinds) {
+        if (kind === "left out") {
+          placements.push({ skill: skill.name, as: kind, reason: projectSkillWords(skill, kind) });
+        } else if (kind === "checkout") {
+          // Its files as the context installed them, at its path in the session's checkout.
+          const installed = context.skills.find((each) => each.name === skill.name);
+          if (installed === undefined) {
+            throw new Error(`the context installs no skill ${skill.name}`);
+          }
+          cpSync(installed.dir, path.join(context.checkout, skill.path), {
+            recursive: true,
+            verbatimSymlinks: true,
+          });
+          placements.push({ skill: skill.name, as: kind, path: skill.path });
+        } else {
+          const plugin = plugins.find((each) => each.skills.includes(skill.name));
+          if (plugin === undefined) throw new Error(`the layout puts ${skill.name} in no plugin`);
+          placements.push({ skill: skill.name, as: kind, plugin: plugin.name });
+        }
+      }
+      placements.push({ skill: profile.tested.name, as: "plugin", plugin: layout.skillPlugin });
       const market = path.join(root, "marketplace");
       writeWhole(
         path.join(market, ".claude-plugin", "marketplace.json"),
@@ -1205,6 +1302,7 @@ class LoadTest {
         version,
         context: context.record,
         userMemory: userMemory ?? null,
+        placements,
         contextMs,
       };
     })();
@@ -1334,6 +1432,8 @@ class LoadTest {
         .map((request) => ({ path: request.path, bytes: request.body.length })),
       context: setup.context,
       userMemory: setup.userMemory,
+      sessionRepository: profile.profile.sessionRepository ?? { none: NO_SESSION_REPOSITORY },
+      placements: setup.placements,
       runMs,
       harness: {
         ...facts,

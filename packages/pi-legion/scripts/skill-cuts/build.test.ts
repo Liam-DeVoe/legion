@@ -2015,7 +2015,7 @@ describe("build-cases over every made-up session", () => {
     );
   });
 
-  test("a Legion pane in a workspace lists the .claude/skills and .omp/skills of the workspace's repository at its commit, each as a project skill", () => {
+  test("a Legion pane in a workspace lists the .claude/skills and .omp/skills of the workspace's repository at its commit, each as a project skill, and its profile names that repository at that commit", () => {
     const c = byName("proj-legion");
     expect(c?.context).toBe("legion:ACME:tester");
     expect(c?.profile.skills).toEqual([
@@ -2025,6 +2025,7 @@ describe("build-cases over every made-up session", () => {
       { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
       { repo: "acme/proj", commit: SHA, path: ".omp/skills/older", name: "older" },
     ]);
+    expect(c?.profile.sessionRepository).toEqual({ repo: "acme/proj", commit: SHA });
     const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
     expect(evidence["session repository acme/proj"]).toBe(
       "the session's working directory /legion/workspaces/acme/proj/K-1/ is a Legion workspace of it: /legion/workspaces/<owner>/<name>/"
@@ -2060,6 +2061,7 @@ describe("build-cases over every made-up session", () => {
       { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
       { repo: "acme/proj", commit: SHA, path: "CLAUDE.md" },
     ]);
+    expect(c?.profile.sessionRepository).toEqual({ repo: "acme/proj", commit: SHA });
     const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
     expect(evidence["session repository acme/proj"]).toBe(
       "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository. The working directory /home/dev/src/proj is named proj, which acme/proj alone of the list is named"
@@ -2081,6 +2083,7 @@ describe("build-cases over every made-up session", () => {
       expect(c?.profile.contextFiles).toEqual([
         { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
       ]);
+      expect(c?.profile.sessionRepository).toBeUndefined();
     }
     const why = (name: string) =>
       byName(name)?.evidence?.find((each) => each.item === "no session repository")?.source;
@@ -2161,6 +2164,7 @@ describe("build-cases over every made-up session", () => {
     // other/ is no level of the working directory.
     expect(c?.profile.skills.some((skill) => skill.name === "xi")).toBe(false);
     expect(c?.profile.workingDirectory).toBe("agents/agentvm");
+    expect(c?.profile.sessionRepository).toEqual({ repo: "acme/proj", commit: SHA });
   });
 
   test("a working directory below its checkout's root gets the context file of each level up to the root, the farthest first, at its path in the repository", () => {
@@ -4103,7 +4107,9 @@ test("build-tasks with no bound writes byte for byte what it wrote before the bo
   // <commit>` names those reads in place of the whole tree (`gh api repos/acme/widgets/git/trees/
   // <commit>?recursive=1: its 0 SKILL.md files, …`); with that one source put back, the summary's
   // digest is f1931fe933e679585811234810766cb48799160f457f820a133829a181c75d5f, and the profiles'
-  // digest has not changed.
+  // digest has not changed. The profiles' is then that run's with `sessionRepository` (its
+  // repository and commit) in each of the 8 profiles whose session was in a checkout of one:
+  // that field taken out, it is 040bb4d5142a96ae518e1aabacb19f8557f5647e03d32edc88afbc0757b8b367.
   expect(digests).toEqual({
     "model tasks": "ffa3d7637184a555b27e1b14afee9b1dd58e697112f82f98d3819afda80652d9",
     "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
@@ -4111,7 +4117,7 @@ test("build-tasks with no bound writes byte for byte what it wrote before the bo
     "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
     "profiles summary": "548690d45d15c1ac9f85f4bf3f27fcbe8fa1cd233003c83ece74e7aa0f21c7bc",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
-    "profiles profiles": "040bb4d5142a96ae518e1aabacb19f8557f5647e03d32edc88afbc0757b8b367",
+    "profiles profiles": "26bf1079e50926d2c9e1bdc9482bca041b0a71392fb091f4352c437ab81932c4",
   });
 }, 120_000);
 
@@ -4340,7 +4346,7 @@ test("build-tasks --reprofile builds each task's profile again as --profiles-out
   expect(existsSync(other)).toBe(false);
 }, 120_000);
 
-test("build-tasks --reprofile of a task whose session is now in a checkout of acme/proj gives it a profile that lists acme/proj's project skills and root CLAUDE.md, says changed and lists the evidence items that differ; the other tasks are unchanged", async () => {
+test("build-tasks --reprofile of a task whose session is now in a checkout of acme/proj gives it a profile that names acme/proj at its commit and lists its project skills and root CLAUDE.md, says changed and lists the evidence items that differ; the other tasks are unchanged", async () => {
   const from = await profiledTasks();
   const task4 = "/sessions/task-4.jsonl";
   const moved = changedStore("reprofile-moved", (files) => {
@@ -4364,6 +4370,7 @@ test("build-tasks --reprofile of a task whose session is now in a checkout of ac
       { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
       { repo: "acme/proj", commit: SHA, path: "CLAUDE.md" },
     ],
+    sessionRepository: { repo: "acme/proj", commit: SHA },
   });
   const summary = reprofileSummary(dir);
   const record = summary.profiles.tasks.find((each) => each.task === "t1");

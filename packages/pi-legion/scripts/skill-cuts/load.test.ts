@@ -669,6 +669,27 @@ const USER_FILE = {
  *  whose session's working directory was a checkout of acme/proj (build.ts). */
 const PROJECT_RULES = "# Made-up project rules\n\nStart each answer with the word ready.\n";
 const PROJECT_FILE = { repo: "acme/proj", commit: COMMIT, path: "CLAUDE.md" };
+/** Two project skills of acme/proj (build.ts lists both as the session repository's): `kappa` in
+ *  `.claude/skills` below the checkout's root, with a reference, and `lambda` in `.omp/skills` at
+ *  the root. A session in `agents/agentvm` of that checkout reads both levels. */
+const KAPPA_FILES = {
+  "SKILL.md":
+    "---\nname: kappa\ndescription: Use when a task asks for the kappa summary of the made-up project.\n---\n\n# Kappa\n\nRead references/k.md first.\n",
+  "references/k.md": "The kappa summary is one line.\n",
+};
+const LAMBDA_SKILL =
+  "---\nname: lambda\ndescription: Use when a task asks for the lambda list of the made-up project.\n---\n\n# Lambda\n\nList in one line.\n";
+const KAPPA = {
+  repo: "acme/proj",
+  commit: COMMIT,
+  path: "agents/.claude/skills/kappa",
+  name: "kappa",
+};
+const LAMBDA = { repo: "acme/proj", commit: COMMIT, path: ".omp/skills/lambda", name: "lambda" };
+const PROJ_CHECKOUT = {
+  sessionRepository: { repo: "acme/proj", commit: COMMIT },
+  workingDirectory: "agents/agentvm",
+};
 /** A `models.yml` of the gateway's Messages route, whose provider a capture points at its
  *  recorder. */
 const ANTHROPIC_MODELS =
@@ -992,6 +1013,57 @@ describe("skill-cuts load refuses or stops on its own rules", () => {
     expect(ran.stderr).toContain(
       "--model openai/gpt-6.1-sol is given with no --hint-model, so the hint model is openai/gpt-6.1-sol"
     );
+    expect(recorder.requests.length).toBe(before);
+  });
+
+  // Catches: a project skill installed as a plugin's, so Claude Code lists it as <plugin>:<name>;
+  // and a skill of the session repository at no level of the working directory, of another
+  // commit, or of another repository taken for a project skill.
+  test("a Claude Code layout that puts a project skill of the profile's session repository in a plugin is refused, and so is one that leaves out a skill that is no project skill", async () => {
+    const dir = path.join(scratch, "claude-project-layout");
+    const { common } = hostInputs(dir);
+    const profile = path.join(dir, "profile.json");
+    writeFileSync(
+      profile,
+      JSON.stringify({
+        ...BETA_PROFILE,
+        ...PROJ_CHECKOUT,
+        skills: [
+          ...BETA_PROFILE.skills,
+          KAPPA,
+          LAMBDA,
+          { repo: "acme/proj", commit: COMMIT, path: "tools/.claude/skills/nu", name: "nu" },
+          {
+            repo: "acme/proj",
+            commit: "fedcba9876543210fedcba9876543210fedcba98",
+            path: ".claude/skills/xi",
+            name: "xi",
+          },
+          { repo: "acme/skills", commit: COMMIT, path: ".claude/skills/omicron", name: "omicron" },
+        ],
+        claude: {
+          marketplace: "acme-market",
+          plugins: [{ name: "acme-tools", skills: ["beta", "kappa", "lambda"] }],
+          skillPlugin: "acme-tools",
+        },
+      })
+    );
+    const before = recorder.requests.length;
+    const ran = await cli([
+      "load",
+      ...common,
+      ...["--host", "claude", "--profile", profile, "--claude", "/nowhere/claude"],
+    ]);
+    expect(ran.code).toBe(2);
+    for (const fault of [
+      "its layout puts kappa in a plugin, and it is a project skill of acme/proj (agents/.claude/skills/kappa), which Claude Code reads from the checkout",
+      "its layout puts lambda in a plugin, and it is a project skill of acme/proj (.omp/skills/lambda), which Claude Code does not read",
+      "its layout puts nu in 0 plugins, not 1",
+      "its layout puts xi in 0 plugins, not 1",
+      "its layout puts omicron in 0 plugins, not 1",
+    ]) {
+      expect(ran.stderr).toContain(fault);
+    }
     expect(recorder.requests.length).toBe(before);
   });
 
@@ -1790,9 +1862,19 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
             profile: z.string(),
             profileDigest: z.string(),
             userMemory: z.unknown(),
+            sessionRepository: z.unknown(),
+            placements: z.unknown(),
           })
           .parse(JSON.parse(readFileSync(files.record, "utf8")));
         expect(record.userMemory).toEqual(memory);
+        // The profile names no session repository, so every skill is a plugin's, as the record says.
+        expect(record.sessionRepository).toEqual({
+          none: "the profile names no session repository, so no skill is placed as a project skill",
+        });
+        expect(record.placements).toEqual([
+          { skill: sibling, as: "plugin", plugin },
+          { skill: "alpha", as: "plugin", plugin },
+        ]);
         expect(record.requestHeaders["anthropic-beta"]).toBeString();
         expect(
           Object.keys(record.requestHeaders).every((name) => name.startsWith("anthropic-"))
@@ -1878,6 +1960,93 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
       expect(record.userMemory).toEqual(USER_FILE);
       expect(record.context.contextFiles).toMatchObject([
         { ...PROJECT_FILE, as: "working directory" },
+      ]);
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  // Catches: a project skill of the session's checkout listed as <plugin>:<name>, where the real
+  // session's Claude Code listed it under its bare name; and a .omp/skills one listed at all.
+  test(
+    "writes a .claude/skills project skill of the profile's session repository at its path in the checkout, where Claude Code lists it under its bare name, leaves a .omp/skills one out, keeps the unit skill and the tested skill in their plugin, and records each placement",
+    async () => {
+      const dir = path.join(scratch, "claude-project-skill");
+      const { out, common } = hostInputs(dir);
+      writeTree(path.join(dir, "repos", "acme/proj", COMMIT), {
+        ...Object.fromEntries(
+          Object.entries(KAPPA_FILES).map(([file, text]) => [`${KAPPA.path}/${file}`, text])
+        ),
+        [`${LAMBDA.path}/SKILL.md`]: LAMBDA_SKILL,
+      });
+      const profile = path.join(dir, "profile.json");
+      writeFileSync(
+        profile,
+        JSON.stringify({
+          ...BETA_PROFILE,
+          ...PROJ_CHECKOUT,
+          skills: [...BETA_PROFILE.skills, KAPPA, LAMBDA],
+          claude: {
+            marketplace: "acme-market",
+            plugins: [{ name: "acme-tools", skills: ["beta"] }],
+            skillPlugin: "acme-tools",
+          },
+        })
+      );
+      answer = () => [
+        {
+          type: "tool_use",
+          id: "toolu_skill",
+          name: "Skill",
+          input: { skill: "acme-tools:alpha" },
+        },
+      ];
+      const ran = await cli([
+        "load",
+        ...common,
+        ...["--host", "claude", "--profile", profile, "--thinking", "off"],
+        ...["--claude", String(claude)],
+      ]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const files = loadCapturePaths(out, "claude", "need-1");
+      const listing = claudeListing(JSON.parse(readFileSync(files.body, "utf8")));
+      expect(listing.get("kappa")).toBe(
+        "Use when a task asks for the kappa summary of the made-up project."
+      );
+      const names = [...listing.keys()];
+      expect(names.filter((name) => name.endsWith(":kappa"))).toEqual([]);
+      // Claude Code reads no .omp/skills.
+      expect(names.filter((name) => name.includes("lambda"))).toEqual([]);
+      // The unit skill and the tested skill list as before, under their plugin.
+      expect(listing.get("acme-tools:beta")).toBe(
+        "Use when a task asks for the beta greeting of the made-up project."
+      );
+      expect(listing.get("acme-tools:alpha")).toBe(
+        "Use when a task asks for the alpha checklist of the made-up project."
+      );
+      const record = z
+        .looseObject({ sessionRepository: z.unknown(), placements: z.unknown() })
+        .parse(JSON.parse(readFileSync(files.record, "utf8")));
+      expect(record.sessionRepository).toEqual(PROJ_CHECKOUT.sessionRepository);
+      expect(record.placements).toEqual([
+        { skill: "beta", as: "plugin", plugin: "acme-tools" },
+        { skill: "kappa", as: "checkout", path: KAPPA.path },
+        {
+          skill: "lambda",
+          as: "left out",
+          reason:
+            "it is a project skill of acme/proj (.omp/skills/lambda), which Claude Code does not read",
+        },
+        { skill: "alpha", as: "plugin", plugin: "acme-tools" },
+      ]);
+      // kappa's files are in the checkout as its directory holds them.
+      const [load = ""] = readdirSync(path.join(dir, "scratch")).filter((name) =>
+        name.startsWith("load-")
+      );
+      const profiles = path.join(dir, "scratch", load, "claude", "profiles");
+      const [one = ""] = readdirSync(profiles);
+      expect(treeOf(path.join(profiles, one, "context", "work", KAPPA.path))).toEqual(KAPPA_FILES);
+      expect(savedRuns(out, "need-1")).toMatchObject([
+        { loaded: true, loadedBy: "Skill acme-tools:alpha" },
       ]);
     },
     HOST_ROW_TIMEOUT_MS

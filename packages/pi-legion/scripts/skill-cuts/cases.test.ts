@@ -198,6 +198,35 @@ test("a profile names the session's working directory inside its repository's ch
   );
 });
 
+test("a profile names its session repository and the commit it was read at; one with no commit, another key, or a repository that is no owner/name is refused", () => {
+  const base = alphaDir("base-session-repo");
+  const c1 = f1Case("c-repo");
+  const named = {
+    ...c1,
+    profile: {
+      ...c1.profile,
+      sessionRepository: { repo: "acme/project", commit: "fedcba9876543210" },
+      workingDirectory: "agents/agentvm",
+    },
+  };
+  expect(loadCases(caseFile("session-repo", [named]), base)).toEqual([named]);
+  const rows = [
+    { repo: "acme/project" },
+    { repo: "acme/project", commit: "fedcba9876543210", path: "agents" },
+    { repo: "project", commit: "fedcba9876543210" },
+  ].map((sessionRepository, n) => ({
+    ...named,
+    id: `c-repo-${n}`,
+    profile: { ...named.profile, sessionRepository },
+  }));
+  const file = caseFile("session-repo-bad", rows);
+  for (const n of [0, 1, 2]) {
+    expect(() => loadCases(file, base)).toThrow(
+      `case c-repo-${n} (${file}:${n + 1}) is not a case: profile.sessionRepository`
+    );
+  }
+});
+
 test("refuses a line that is not a whole line of the base text", () => {
   const base = alphaDir("base-line");
   const part = {

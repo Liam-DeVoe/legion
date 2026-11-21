@@ -253,7 +253,9 @@
  *   for a dev box, the repository of the copies output's list (repositories.tsv) named as the last
  *   part of its working directory, or of the nearest parent named as any listed repository, when
  *   one alone has that name (otherwise none, and the evidence names the repositories that
- *   matched); the checkout's root is that directory. Its project skills, read at its commit with
+ *   matched); the checkout's root is that directory. The profile names it and its commit at the
+ *   session's start (`sessionRepository`; load.ts places its `.claude/skills` project skills in
+ *   Claude Code's checkout by it). Its project skills, read at its commit with
  *   the units' repositories (when it is no unit's repository, only where Oh My Pi reads a project,
  *   one directory a call, `GithubReads.project`, so a repository whose whole tree GitHub cuts
  *   short is read too): each `<level>/.omp/skills/<name>/SKILL.md` that has a description,
@@ -2947,6 +2949,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       skills: profileSkills,
       plugins: profilePlugins,
       contextFiles: profileFiles,
+      sessionRepository:
+        checkout.repo === undefined
+          ? undefined
+          : { repo: checkout.repo, commit: await commitOf(checkout.repo) },
       workingDirectory:
         checkout.repo === undefined || checkout.rel === "" ? undefined : checkout.rel,
     },
