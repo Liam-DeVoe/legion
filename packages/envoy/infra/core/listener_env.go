@@ -70,7 +70,7 @@ type ListenerConfig struct {
 	// HostListener renders ENVOY_LISTENER_ROLE=host (bus.ListenerRoleEnvVar): the listener of a
 	// host, connecting as the NATS user that host's sessions share (HostPermissions), which runs
 	// fixed consumer names for good and reads no cutover marker its user may not read. host:Listener
-	// sets it; every other listener leaves it false and renders no role.
+	// sets it only under its hostUser input; every other listener leaves it false and renders no role.
 	HostListener bool
 }
 

@@ -2378,7 +2378,7 @@ Its environment comes from the inputs:
 | `ENVOY_ALLOW_REMOTE_NATS` | `1` when any URL in `natsUrls` names a host other than `localhost` or a loopback address. The URL is read, never resolved. |
 | `ENVOY_SENDER_MESSAGES_PER_MINUTE` | `senderMessagesPerMinute`, when set |
 | `ENVOY_SENDER_MESSAGE_BURST` | `senderMessageBurst`, when set |
-| `ENVOY_LISTENER_ROLE` | `host`, always: the listener connects as the NATS user its host's sessions share (`HostPermissions`), runs fixed consumer names for good, and reads no cutover marker of the selection bucket, which that user may not read |
+| `ENVOY_LISTENER_ROLE` | `host`, only with `hostUser: true`: the listener connects as the NATS user its host's sessions share (`HostPermissions`), runs fixed consumer names for good, and reads no cutover marker of the selection bucket, which that user may not read. Unset otherwise: the listener reads the marker, and a read its grant refuses is no marker |
 | `NATS_NKEY_SEED` | `seed`, when set. The whole environment is then a secret in the stack's state. |
 
 The listener serves on the host's loopback, `127.0.0.1:<port>`. This version sets no listen host,
@@ -2400,6 +2400,7 @@ The listener's outputs are `containerName` and `port`.
 | `senderMessageBurst` | unset | `ENVOY_SENDER_MESSAGE_BURST`, at least 1 and only with `senderMessagesPerMinute`: how many of those messages one session may send at once. Unset, it equals the rate. |
 | `seed` | unset | A secret: the nkey seed of the NATS user the listener connects as. May come from another resource or stack. |
 | `waitForHealthy` | `true` | Whether `pulumi up` waits on the container's health check. See [Readiness](#readiness). |
+| `hostUser` | `false` | `true` only for a listener whose NATS user is a host-kind entry, the user its host's sessions share (`HostPermissions`): it renders `ENVOY_LISTENER_ROLE=host`. A listener on its own user (`ListenerHostPermissions`, `ListenerPermissions`) leaves it unset. |
 | `watchdog` | unset | `{host}`: deploys the watchdog on that SSH address. See [The watchdog](#the-watchdog). |
 | `adopt` | unset | `{container, image, watchdog}`: root-level resources this listener takes over. See [Moving an existing deployment onto it](#moving-an-existing-deployment-onto-it). |
 
@@ -3945,7 +3946,7 @@ stream info, direct and stream message gets of `KV_envoy_session_consumers`, wri
 replies (`natsgrant.KVWriteExisting`). They hold no create or update of the bucket's stream, so no
 listener makes the bucket, or makes it again empty after a loss: the operator's create-bucket does,
 and every session-consumer call of the fresh mode refuses until it has. `HostPermissions` holds
-none of them, and a host's listener (`ENVOY_LISTENER_ROLE=host`, which `host:Listener` renders)
+none of them, and a host's listener (`ENVOY_LISTENER_ROLE=host`, which `host:Listener` renders under `hostUser: true`)
 reads no marker at all: it runs fixed names for good. `HostPermissions` is retiring, no
 production connection holds it, and the cutover's window requires that no host listener runs at
 or after it, so a host listener never meets a converted bucket and its durable is never
