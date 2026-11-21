@@ -24,7 +24,10 @@ type SentMessage = {
 
 /** What every aborter here is built with unless its case is about a pending take: no take is
  * pending, so nothing is held for one, and the log line a held message writes goes nowhere. */
-const NOTHING_PENDING = { deferUntilTakeSettles: () => false, log: { info: () => {} } } as const;
+const NOTHING_PENDING = {
+  deferUntilTakeSettles: () => undefined,
+  log: { info: () => {} },
+} as const;
 
 /**
  * The handler context as the host hands it over: `abort` answers `typeof` but is not an own
@@ -137,8 +140,8 @@ interface LadderRig {
   readonly sent: SentMessage[];
   readonly exitCodes: number[];
   readonly exitsWritten: number[];
-  /** Every line the aborter logged, in order. */
-  readonly logged: string[];
+  /** Every line the aborter logged, in order, with the fields it carried. */
+  readonly logged: { readonly message: string; readonly fields?: Record<string, unknown> }[];
 }
 
 /**
@@ -151,7 +154,7 @@ interface LadderRig {
 function ladder(options: {
   abortsTurn: boolean;
   exitsRead?: number;
-  deferUntilTakeSettles?: (callback: () => void) => boolean;
+  deferUntilTakeSettles?: (callback: () => void) => number | undefined;
 }): LadderRig {
   let clock = START;
   const steps: StallStepRecord[] = [];
@@ -161,7 +164,7 @@ function ladder(options: {
   const sent: SentMessage[] = [];
   const exitCodes: number[] = [];
   const exitsWritten: number[] = [];
-  const logged: string[] = [];
+  const logged: { message: string; fields?: Record<string, unknown> }[] = [];
   let exits = options.exitsRead ?? 0;
   let watchdog: StallWatchdog | undefined;
 
@@ -205,10 +208,10 @@ function ladder(options: {
       sendMessage: (message, messageOptions) => {
         sent.push({ message, options: messageOptions });
       },
-      deferUntilTakeSettles: options.deferUntilTakeSettles ?? (() => false),
+      deferUntilTakeSettles: options.deferUntilTakeSettles ?? (() => undefined),
       log: {
-        info: (message) => {
-          logged.push(message);
+        info: (message, fields) => {
+          logged.push({ message, fields });
         },
       },
     }),
@@ -291,7 +294,10 @@ test("the second step ends the turn and sends the session a message naming the e
 // was: the message is what starts the work again.
 test("a stall abort while a take is pending sends no restart message", async () => {
   let pending = false;
-  const withheld = ladder({ abortsTurn: true, deferUntilTakeSettles: () => pending });
+  const withheld = ladder({
+    abortsTurn: true,
+    deferUntilTakeSettles: () => (pending ? 4 : undefined),
+  });
   running(withheld.watchdog);
   withheld.tick(10 * MINUTE + SECOND);
   await withheld.watchdog.sweep();
@@ -306,14 +312,17 @@ test("a stall abort while a take is pending sends no restart message", async () 
   expect(withheld.steps[1]?.outcome).toContain("the message naming the ended call was not sent");
   expect(withheld.steps[1]?.outcome).not.toContain("the session was sent the message");
   expect(withheld.logged).toEqual([
-    expect.stringContaining("a take of the claim's task is pending"),
+    {
+      message: expect.stringContaining("a take of the claim's task is pending"),
+      fields: { task: 4 },
+    },
   ]);
   // The abort ended the turn, so the ladder takes no step after it.
   withheld.tick(2 * MINUTE);
   await withheld.watchdog.sweep();
   expect(withheld.exitCodes).toEqual([]);
 
-  const sent = ladder({ abortsTurn: true, deferUntilTakeSettles: () => false });
+  const sent = ladder({ abortsTurn: true, deferUntilTakeSettles: () => undefined });
   running(sent.watchdog);
   sent.tick(10 * MINUTE + SECOND);
   await sent.watchdog.sweep();
@@ -410,7 +419,10 @@ test("a stall abort's restart held for a pending take is sent once that take is 
 
   expect(held.aborts).toHaveLength(1);
   expect(held.sent).toEqual([]);
-  expect(held.logged).toEqual([expect.stringContaining("waits for the take")]);
+  // The line names the task the take waits for: task 4, whose value came during the run.
+  expect(held.logged).toEqual([
+    { message: expect.stringContaining("waits for the take"), fields: { task: 4 } },
+  ]);
   expect(held.steps[1]?.outcome).toContain("is sent if that take is refused or dropped");
 
   // The aborted run ends and asks the take: nothing goes while the daemon has not answered it.

@@ -252,15 +252,16 @@ export interface TaskTake {
   readonly pending: () => boolean;
   /**
    * Holds `callback` for the pending take (a stall abort's restart message): where `pending` is
-   * true, the callback is kept and the answer is true, and it is called once, at the end of the
-   * first settle that finds no run going and nothing pending — the take refused by a hold, the
-   * value dropped or deleted, the bound of a refusal `in-turn` passed — since nothing else then
-   * starts the worker's work again. A run that starts first drops it, since the worker is working
-   * again (the take's own text, or another turn), and so does `close`. A second call replaces the
-   * first. A callback that throws is logged as a warning. Where `pending` is false, the answer is
-   * false and nothing is kept.
+   * true, the callback is kept, and the answer is the number of the task the take waits for: the
+   * accepted take's number while its text is held or handed to the host, otherwise the held
+   * value's number. The callback is called once, at the end of the first settle that finds no run
+   * going and nothing pending — the take refused by a hold, the value dropped or deleted, the bound
+   * of a refusal `in-turn` passed — since nothing else then starts the worker's work again. A run
+   * that starts first drops it, since the worker is working again (the take's own text, or another
+   * turn), and so does `close`. A second call replaces the first. A callback that throws is logged
+   * as a warning. Where `pending` is false, nothing is kept and the answer is undefined.
    */
-  readonly deferUntilSettled: (callback: () => void) => boolean;
+  readonly deferUntilSettled: (callback: () => void) => number | undefined;
   /**
    * The number to note at this tool result of the run (R1, `taskWaitingNote`): that of an owed
    * value held while a run is going that is neither accepted nor the task running — one not asked
@@ -702,9 +703,13 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     },
     pending,
     deferUntilSettled: (callback) => {
-      if (!pending()) return false;
+      if (!pending()) return undefined;
       deferred = callback;
-      return true;
+      // An accepted take's text starts the next run, so its number is the task waited for; any
+      // other pending take is the held value's, which `pending` found owed.
+      return accepted.kind === "held" || accepted.kind === "handed"
+        ? accepted.number
+        : held?.number;
     },
     noteFor: () => {
       if (closed || !busy || !owed(held)) return undefined;

@@ -64,11 +64,12 @@ export interface ClaimSession {
   /** Whether the claim's take is pending (R6, `TaskTake.pending`), so that the phase reminder
    * starts no turn ahead of its task; false where the session holds no take. */
   readonly taskPending: () => boolean;
-  /** Holds `callback`, the stall abort's restart message, for the claim's pending take: true where
-   * the take is pending, which calls it once the take settles with no run starting first
-   * (`TaskTake.deferUntilSettled` says when); false, keeping nothing, where the take is not
-   * pending or the session holds no take. */
-  readonly deferUntilTakeSettles: (callback: () => void) => boolean;
+  /** Holds `callback`, the stall abort's restart message, for the claim's pending take: where the
+   * take is pending, it keeps the callback, which is called once the take settles with no run
+   * starting first, and answers the number of the task the take waits for
+   * (`TaskTake.deferUntilSettled` says when, and which); undefined, keeping nothing, where the
+   * take is not pending or the session holds no take. */
+  readonly deferUntilTakeSettles: (callback: () => void) => number | undefined;
   /**
    * The host's call at each tool result of the session's own agent (R2): the takes of the
    * issue's other claims that the daemon holds behind this claim's turn, as the latest holds
@@ -257,7 +258,7 @@ export function createClaimSession(deps: {
     },
     taskNote: () => taking?.take.noteFor(),
     taskPending: () => taking?.take.pending() ?? false,
-    deferUntilTakeSettles: (callback) => taking?.take.deferUntilSettled(callback) ?? false,
+    deferUntilTakeSettles: (callback) => taking?.take.deferUntilSettled(callback),
     heldNotes: () => (running ? (holdsRead?.holds() ?? []) : []),
   };
 }

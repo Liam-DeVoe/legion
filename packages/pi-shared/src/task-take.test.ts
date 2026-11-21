@@ -1125,7 +1125,7 @@ test("a stall restart held during a run whose take was refused in-turn waits for
     take.deferUntilSettled(() => {
       calls += 1;
     })
-  ).toBe(true);
+  ).toBe(4);
   take.runEnded(false);
   await advance(0);
   expect(calls).toBe(0);
@@ -1153,7 +1153,7 @@ test("a take refused in-turn stays pending at most IN_TURN_REWRITE_BOUND_MS afte
     bounded.take.deferUntilSettled(() => {
       calls += 1;
     })
-  ).toBe(true);
+  ).toBe(4);
   bounded.take.runEnded(false);
   await bounded.advance(IN_TURN_REWRITE_BOUND_MS - 1);
   expect(bounded.take.pending()).toBe(true);
@@ -1307,7 +1307,7 @@ test("deferUntilSettled calls back once when a pending take is refused or droppe
     held.take.deferUntilSettled(() => {
       heldCalls += 1;
     })
-  ).toBe(true);
+  ).toBe(4);
   expect(held.take.runEnded(false)).toBeUndefined();
   await held.advance(0);
   expect(held.routed("take")).toEqual([body(4, 12)]);
@@ -1333,7 +1333,7 @@ test("deferUntilSettled calls back once when a pending take is refused or droppe
     dropped.take.deferUntilSettled(() => {
       droppedCalls += 1;
     })
-  ).toBe(true);
+  ).toBe(4);
   await dropped.advance(0);
   expect(droppedCalls).toBe(0);
   drop.resolve(DROPPED);
@@ -1353,7 +1353,7 @@ test("deferUntilSettled calls back once when a pending take is refused or droppe
     accepted.take.deferUntilSettled(() => {
       acceptedCalls += 1;
     })
-  ).toBe(true);
+  ).toBe(4);
   accept.resolve(ACCEPTED);
   await accepted.advance(0);
   expect(accepted.ran).toEqual([TEXT]);
@@ -1363,7 +1363,7 @@ test("deferUntilSettled calls back once when a pending take is refused or droppe
   await accepted.advance(0);
   expect(acceptedCalls).toBe(0);
 
-  // Not pending: it answers false and keeps nothing, so a take refused later calls nothing.
+  // Not pending: it answers undefined and keeps nothing, so a take refused later calls nothing.
   const idle = rig();
   idle.take.ready();
   let idleCalls = 0;
@@ -1371,7 +1371,7 @@ test("deferUntilSettled calls back once when a pending take is refused or droppe
     idle.take.deferUntilSettled(() => {
       idleCalls += 1;
     })
-  ).toBe(false);
+  ).toBeUndefined();
   idle.take.relayed(put(4, 12));
   await idle.advance(0);
   expect(idle.routed("take")).toEqual([body(4, 12)]);

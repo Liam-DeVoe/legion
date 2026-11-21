@@ -622,10 +622,14 @@ export function createPhaseHookEndpoint(deps: PhaseHookDeps): PhaseHookEndpoint 
           // accepts each take it names at that turn's end. A turn that ended with neither `Stop`
           // nor `StopFailure` (an interrupted one) dropped nothing, so its answer is dropped here
           // where its read started a minute or more ago, as Oh My Pi's run start drops it
-          // (`packages/pi-legion/src/claim-session.ts`). A fresher answer is kept, and so is a read
-          // still in flight: Claude Code may fire this event for a message the bridge injects
-          // mid-turn, which ends no turn, and dropping that answer would put its note a minute
-          // past R2's bound, since the next read starts only a minute after the last one started.
+          // (`packages/pi-legion/src/claim-session.ts`). A fresher answer and a read still in
+          // flight are kept. After a `Stop` there is neither: the bridge writes a step's next
+          // user message only after that step's `result` (`sendQueued` in
+          // `packages/daemon/internal/claudebridge/bridge.go`), Claude Code runs `Stop` before
+          // that `result`, and the `Stop` handler drops both (`turnEnded`). So what is kept here
+          // comes from a turn that ended with neither `Stop` nor `StopFailure`, a race rather than
+          // the common path, and its cost is one note, within the read's 3 s bound, for a take
+          // that has already started.
           deps.holdsRead.turnStarted()
           const prompt = event.prompt ?? ""
           if (prompt === lastReminder) return {}
