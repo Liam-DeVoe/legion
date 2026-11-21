@@ -31,15 +31,17 @@ func (e *Engine) beneathRetro(ctx context.Context, tx pgx.Tx, issue record.Issue
 }
 
 // retroHeldNotice tells the owner of parent that Legion holds it before its retro for beneath, the
-// issues beneath it still in the workflow, and what ends the hold: each of them leaving it, done
-// or parked under the park rule (parkRule, carried word for word as every notice of a park is).
-// It names the retro and the implementer whose work the hold keeps, as the held notice of any
-// hold names the phase it is from (HeldNotice).
+// issues beneath it still in the workflow, and what ends the hold: each of them run to done, or
+// ended by the owner's own status write in Dispatch. It carries that write's rules word for word
+// (record.EndChildRule) and the sentence on a write the daemon has not taken yet
+// (record.StatusNotTakenYet), as the pr-merged notice does (waitingForTree). It names the retro
+// and the implementer whose work the hold keeps, as the held notice of any hold names the phase it
+// is from (HeldNotice).
 func retroHeldNotice(parent string, beneath []string) record.Notice {
 	return record.Notice{Kind: "retro-held", Role: phase.RoleFor(phase.Retro), Phase: phase.Retro, Reason: fmt.Sprintf(
 		"%s passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: %s. "+
-			"A parent's head proves its children's merged work. Run each one to done, or park one with park_child "+parkRule+
-			"; Legion starts the retro when the last one leaves.", parent, strings.Join(beneath, ", "))}
+			"A parent's head proves its children's merged work. Run each one to done, or end it; Legion starts the retro when the last one leaves.",
+		parent, strings.Join(beneath, ", ")) + " " + record.StatusNotTakenYet + " " + record.EndChildRule}
 }
 
 // heldParentWait is why parent, held before its retro for the issues beneath it
