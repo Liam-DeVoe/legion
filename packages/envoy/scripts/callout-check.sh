@@ -86,14 +86,15 @@ if [ "${DEV_STACK_CALLOUT:-}" != 1 ]; then
     echo "callout-check: the stack never came up" >&2
     exit 2
   fi
-  # The banner's exports, read as values: each `  export NAME=value` line, a quoted value unquoted.
+  # The banner's exports, read as the shell that sources a line reads it: dev-stack.sh prints each
+  # path with printf %q, so each `  export NAME=value` line is evaluated, in a subshell, rather than
+  # cut at its "=" (a work directory under a TMPDIR whose name holds a space or a quote is one word
+  # there). A line that does not evaluate, such as the banner's `<this process's own session name>`
+  # placeholder, is left out. scripts/e2e/nats-callout-sessions.sh reads the banner the same way.
   while IFS= read -r line; do
     name="${line#  export }"
-    value="${name#*=}"
     name="${name%%=*}"
-    value="${value#\"}"
-    value="${value%\"}"
-    [ "$name" = PATH ] && value="${value%%:*}:$PATH"
+    value="$( (eval "${line#  export }" && printf '%s' "${!name}") 2>/dev/null)" || continue
     printf -v "$name" '%s' "$value"
   done < <(sed -n 's/^\(  export [A-Z_0-9]*=.*\)$/\1/p' "$stack_log")
 fi

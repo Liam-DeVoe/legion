@@ -370,10 +370,13 @@ logged_addr() { jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.messag
 
 # dev-broker.sh prints each path it exports with printf %q, so the value is read as the shell that
 # sources the line reads it: a work directory under a TMPDIR with a space in its name is one word.
-BASE_DIR_WORD="$(first_match 'export DEV_BROKER_DIR=.+' "$DEV_BROKER_LOG" | cut -d= -f2-)"
+# The line read is the banner's own, `  export DEV_BROKER_DIR=...` from the line's start, and it is
+# evaluated in a subshell, so no other text of the broker's log is read and nothing it sets stays.
+BASE_DIR_LINE="$(sed -n 's/^  export \(DEV_BROKER_DIR=.*\)$/\1/p' "$DEV_BROKER_LOG" 2>/dev/null | head -n1 || true)"
 BASE_DIR=""
-if [ -n "$BASE_DIR_WORD" ]; then
-  eval "BASE_DIR=$BASE_DIR_WORD" || BASE_DIR=""
+if [ -n "$BASE_DIR_LINE" ]; then
+  # shellcheck disable=SC2153 # DEV_BROKER_DIR is what the evaluated banner line sets
+  BASE_DIR="$( (eval "$BASE_DIR_LINE" && printf '%s' "$DEV_BROKER_DIR") 2>/dev/null)" || BASE_DIR=""
 fi
 if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR" ]; then
   echo "dev-airlock: dev-broker.sh printed no DEV_BROKER_DIR" >&2
