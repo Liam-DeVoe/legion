@@ -507,22 +507,18 @@ func (h *edgeTopicHold) answerRepositoryOutage(ctx context.Context, w http.Respo
 // every heartbeat it sends meanwhile names that topic and is refused, and an entry no heartbeat
 // renews is gone at the session bucket's maximum age. Its GitHub frames are withheld meanwhile
 // (sessionRelays.edgeWithholds), and nothing else of the registration is stored. The entry is
-// written back as the session bucket holds it, stamped now, at the revision read, with the gap
-// mark of the entry it replaces (session.SessionRegistry.PutWithin), and only when it is this
-// listener's own registration of the session under the same projects: an entry another listener
-// wrote, or one no registration wrote, is left as it is. A read or a write that fails is logged,
-// and the refusal stands either way.
+// written back as the session bucket holds it, stamped now, with its gap mark, at the revision
+// read (session.SessionRegistry.RenewWithin), and only while it is this listener's own
+// registration of the session under the same projects: an entry another listener wrote, one no
+// registration wrote, and one another write replaced since the read and that fails the check when
+// it is read again are left as they are. A read or a write that fails is logged, and the refusal
+// stands either way.
 func (h *edgeTopicHold) renewThroughOutage(ctx context.Context, sessions *session.SessionRegistry, machineID string) {
-	entry, err := bucketSessionEntry(ctx, sessions, h.sessionID, roleHolderReadTimeout)
-	if err != nil {
-		h.logger.Warn("edge listener could not read the session's entry to renew it through the repository outage",
-			slog.String("session_id", h.sessionID), slog.String("error", err.Error()))
-		return
+	projects := slices.Sorted(slices.Values(h.projects))
+	owns := func(entry session.SessionEntry) bool {
+		return entry.MachineID == machineID && slices.Equal(slices.Sorted(slices.Values(entry.Projects)), projects)
 	}
-	if entry.MachineID != machineID || !slices.Equal(slices.Sorted(slices.Values(entry.Projects)), slices.Sorted(slices.Values(h.projects))) {
-		return
-	}
-	if err := sessions.PutWithin(ctx, h.sessionID, entry); err != nil {
+	if err := sessions.RenewWithin(ctx, h.sessionID, owns); err != nil {
 		h.logger.Warn("edge listener could not renew the session's entry through the repository outage",
 			slog.String("session_id", h.sessionID), slog.String("error", err.Error()))
 	}
