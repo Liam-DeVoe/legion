@@ -22,14 +22,14 @@ import (
 // The constants below are main's text, at commit b459fa923705, of statements of the graph read.
 // refs.Edges' in reads, as readEdgeRows writes each for the Query each caller named sends (a
 // document with WholeDocuments false and true, a message, a comment, an ask and the ask panel,
-// and the issue read, the first arm of every in read), are the statements INFRA-4855 changes; the
-// four loaders resolveNodes runs for the comments, asks, messages and blocks at the other end of
-// an edge are the ones INFRA-4704 changes. Each was captured from that commit's code by a
-// throwaway test that called the function through a Queryer recording the text it sent and the
-// arguments it bound, and each is held here letter for letter as b459fa923705 wrote it, as
-// mainClosureQuery is: a text built from the package's own fragments would move with them, and
-// main and the head would then agree however the head's statement changed. The ids a capture
-// bound are not in any text: every statement binds them.
+// and the issue read, the first arm of every in read), are the statements this change alters; the
+// four loaders resolveNodes runs for the comments, asks, messages and blocks at the other end of an
+// edge are the ones the graph read's one-hop change alters. Each was captured from that commit's
+// code by a throwaway test that called the function through a Queryer recording the text it sent
+// and the arguments it bound, and each is held here letter for letter as b459fa923705 wrote it, as
+// mainClosureQuery is: a text built from the package's own fragments would move with them, and main
+// and the head would then agree however the head's statement changed. The ids a capture bound are
+// not in any text: every statement binds them.
 
 // mainEdgesInDocument is readEdgeRows' in read of a document by its ref_key, Query{Direction:
 // "in", Kind: "artifact", WholeDocuments: false, ExcludeKinds: ["part_of"]}: the Query
@@ -307,13 +307,13 @@ const mainLoadBlockNodes = `
 	) first on true
 		where d.node_id = any($1)`
 
-// TestEdgesIntoANodesBlocksAnswerWhatMainsStatementDid is c-graph-edges (INFRA-4855). refs.Edges'
-// in read of a document (WholeDocuments false, and true with Kinds mentions), a message, a
-// comment and an ask (with no exclusion, and with AskBacklinkExclusions as its panel reads it)
-// answers, row for row and in order, what main's statement answered over the same data: the raw
-// rows of the statement Edges sends first, run again, against main's text held above. The rows
-// are compared before Edges resolves them, because a source block with no position resolves to
-// no node, so a comparison of resolved edges would miss a statement that lists one.
+// TestEdgesIntoANodesBlocksAnswerWhatMainsStatementDid is c-graph-edges. refs.Edges' in read of a
+// document (WholeDocuments false, and true with Kinds mentions), a message, a comment and an ask
+// (with no exclusion, and with AskBacklinkExclusions as its panel reads it) answers, row for row
+// and in order, what main's statement answered over the same data: the raw rows of the statement
+// Edges sends first, run again, against main's text held above. The rows are compared before Edges
+// resolves them, because a source block with no position resolves to no node, so a comparison of
+// resolved edges would miss a statement that lists one.
 //
 // The arms case holds graph_edges' arms that can end at a block to edgesBlockArms, so an arm a
 // later migration adds fails it until it is listed; the fixture writes a link of each arm into
@@ -495,11 +495,11 @@ const edgesProbeDocuments = 100
 // true, which runs no probe.
 const edgesWholeDocumentRead = "whole document"
 
-// edgesProbeCarryingReads is the list "The in reads that carry heldByABlock's probe" of
-// INFRA-4704's plan: refs.Edges' in read of a node of every kind nodeLoaders resolves, whose
-// first arm carries the probe for every kind, and the whole-document read, which carries none. The
-// kinds case compares it with nodeKinds first, so a kind a later build resolves fails it until it
-// is listed here, and the fixture writes a node of each.
+// edgesProbeCarryingReads is the list "The in reads that carry heldByABlock's probe" of the plan of
+// the graph read's one-hop change: refs.Edges' in read of a node of every kind nodeLoaders
+// resolves, whose first arm carries the probe for every kind, and the whole-document read, which
+// carries none. The kinds case compares it with nodeKinds first, so a kind a later build resolves
+// fails it until it is listed here, and the fixture writes a node of each.
 var edgesProbeCarryingReads = []string{
 	"artifact", "ask", "ask_block", "block", "comment", "comment_block", "component", "issue",
 	"message", "message_block", "session", edgesWholeDocumentRead,
@@ -507,8 +507,8 @@ var edgesProbeCarryingReads = []string{
 
 // edgesPlanSettings are the two settings each plan is read under: sequential scans off, which
 // leaves the planner only the reads an index gives it, and the default settings, which plan from
-// the fixture's analyzed sizes. JIT is off under both, as on production's database (D11 of
-// INFRA-4704's plan): it changes how a plan runs, not which plan is chosen.
+// the fixture's analyzed sizes. JIT is off under both, as on production's database (D11 of the plan
+// of the graph read's one-hop change): it changes how a plan runs, not which plan is chosen.
 var edgesPlanSettings = [2]struct {
 	name     string
 	settings []string
@@ -518,8 +518,8 @@ var edgesPlanSettings = [2]struct {
 }
 
 // edgesLinkTables are the tables that store a link, and edgesBlockTables the tables of the blocks
-// a link starts or ends at: the list "The link tables the plan rule and the count judge" of
-// INFRA-4855's plan, with edgesReplyTables, the table of the replies that can name a block of
+// a link starts or ends at: the list "The link tables the plan rule and the count judge" of the
+// plan of this change, with edgesReplyTables, the table of the replies that can name a block of
 // each kind: a comment answers a comment's block and an ask's part, a message a message's block,
 // and nothing answers a document's block.
 var (
@@ -556,15 +556,15 @@ func (a edgesBlockArm) String() string {
 	return a.arm.String() + ": " + a.from
 }
 
-// edgesBlockArms is the list "The arms that can end at a block" of INFRA-4855's plan: the arms of
-// graph_edges whose to_kind is a column or one of blockNodeKinds. They are refs; block_refs, whose
-// typed pointer is listed only where block_ref_listed allows its target; comment_block_refs,
-// message_block_refs and ask_block_refs, each joined to its source block, which must hold a
-// position; a comment's reply to a comment's block and to an ask's part, told apart by the ask/
-// that starts an ask part's node id; and a message's reply to a message's block. refs.Edges' in
-// read reads each of them by the node's block ids, and the fixture writes a link of each into each
-// read node's blocks. The arms case holds the view to this list, so an arm a later migration adds
-// fails it until it is listed here, read by block ids and written in the fixture.
+// edgesBlockArms is the list "The arms that can end at a block" of the plan of this change: the
+// arms of graph_edges whose to_kind is a column or one of blockNodeKinds. They are refs;
+// block_refs, whose typed pointer is listed only where block_ref_listed allows its target;
+// comment_block_refs, message_block_refs and ask_block_refs, each joined to its source block, which
+// must hold a position; a comment's reply to a comment's block and to an ask's part, told apart by
+// the ask/ that starts an ask part's node id; and a message's reply to a message's block.
+// refs.Edges' in read reads each of them by the node's block ids, and the fixture writes a link of
+// each into each read node's blocks. The arms case holds the view to this list, so an arm a later
+// migration adds fails it until it is listed here, read by block ids and written in the fixture.
 var edgesBlockArms = []edgesBlockArm{
 	{arm: graphViewArm{table: "refs"}, from: "FROM refs"},
 	{
@@ -777,8 +777,8 @@ func edgeRowsDifference(got, want []edgeKey) string {
 // source's block by its item and its block id is keyed. No read of a blocks table is an input of
 // a hash join unless it is an index probe (isIndexProbe): a hash join reads each of its inputs
 // whole, once. And every scan of comments or messages that tests replies_to_block, in a condition
-// or through an index whose predicate holds it, reads by replies_to_block in its Index Cond (D11
-// of INFRA-4855's plan): the reply arms read the replies to the node's blocks through
+// or through an index whose predicate holds it, reads by replies_to_block in its Index Cond (D11 of
+// the plan of this change): the reply arms read the replies to the node's blocks through
 // comments_replies_to_block and messages_replies_to_block.
 func requireKeyedReads(t *testing.T, keys *explaintest.IndexKeys, plan json.RawMessage) {
 	t.Helper()
@@ -959,8 +959,8 @@ func bitmapIndexScans(node edgesPlanTree, indexes []edgesPlanTree) []edgesPlanTr
 	return indexes
 }
 
-// requireCountedReads holds plan to the count case (D11 of INFRA-4855's plan): the read reads no
-// block link but those that end at the node read or at one of its current blocks. For each link
+// requireCountedReads holds plan to the count case (D11 of the plan of this change): the read reads
+// no block link but those that end at the node read or at one of its current blocks. For each link
 // table, the scans of it that ran and whose Index Cond does not name its source column
 // (edgesSourceColumns) read at most counts[table] rows in all: the rows of that table the fixture
 // holds that end at those targets. A scan whose Index Cond names the source column is

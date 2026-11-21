@@ -41,10 +41,10 @@ import (
 //     held in graph_test.go letter for letter as b459fa923705 wrote it and bound with the
 //     arguments its comment names; the after side is the statement readEdgeRows sends at the
 //     head, recorded as it sent it, and the two must bind the same arguments. Both texts run on
-//     this release's schema, so one database holds both sides. Each is strict because builds Job
-//     infra4704-r22-64m2t read the head at least 8 times main's own spread below main's lowest
-//     median there, the closest being the root message, 141.6 ms below 147.248 ms against a
-//     spread of 17.6 ms.
+//     this release's schema, so one database holds both sides. Each is strict because the earlier
+//     builds Job that measured these pairs read the head at least 8 times main's own spread below
+//     main's lowest median there, the closest being the root message, 141.6 ms below 147.248 ms
+//     against a spread of 17.6 ms.
 //   - The same document's in read as refs.ReferencedBy sends it (WholeDocuments, Kinds mentions)
 //     is a bounded pair (PairWithin), built the same way. It is bounded because the head's 4.715
 //     ms there was 0.482 ms below main's lowest median, 5.197 ms, while two runs of main's own
@@ -63,8 +63,8 @@ import (
 //     the in read of an issue that 1,000 documents mention, each in its own row and in two of its
 //     blocks, the text the same on both sides, the before side under main's index and the after
 //     side through the head's. Through block_refs_to the probe read every block link into the
-//     issue and kept its document's by a filter; round 12 of INFRA-4704 read 105.034 ms against
-//     10.661 ms.
+//     issue and kept its document's by a filter; round 12 of the earlier measurement read 105.034
+//     ms against 10.661 ms.
 //   - refs.DocumentIsCited of the first of the fixture's documents, as api.artifactIsUntouched
 //     reads it, is a bounded pair on the same fixture, its text the same on both sides and the
 //     before side under main's index: its reads of block_refs use to_kind and to_id alone, and
@@ -449,10 +449,10 @@ type probeFixture struct {
 // probeFixtureDocuments is how many documents mention the fixture's issue.
 const probeFixtureDocuments = 1000
 
-// probeFixtureWrites are round 12's statements (INFRA-4704, TestR22HeldFixture) for its one N of
-// 1,000, under a project of the test's own, E4855: an issue X, E4855-1000, and 1,000 documents
-// that each mention it in their own row (refs) and in two of their blocks (block_refs), so
-// heldByABlock hides each document's own mention behind its blocks and probes block_refs once
+// probeFixtureWrites are round 12's statements (TestR22HeldFixture of the earlier measurement) for
+// its one N of 1,000, under a project of the test's own, E4855: an issue X, E4855-1000, and 1,000
+// documents that each mention it in their own row (refs) and in two of their blocks (block_refs),
+// so heldByABlock hides each document's own mention behind its blocks and probes block_refs once
 // for each of them.
 var probeFixtureWrites = []string{
 	`insert into projects (key, name, default_assignee) values ('E4855', 'E4855 project', 'alice')`,
