@@ -694,6 +694,21 @@ test("a first sentence runs past an abbreviation, and holds the closing quote af
   expect(firstSentenceOf("Keep it (as written.) Then more.")).toBe("Keep it (as written.)");
 });
 
+// R5: a person's quote is their first sentence, word for word, so an abbreviation followed by a
+// number ends none of it. Review 5939401884's finding D measured "Use the old page (see p. 4)
+// for now." quoted as "Use the old page (see p."; on a running build at e28c9092 an answer
+// "Keep the memo, e.g. in the pane, and draw it whole (see p. 4). Then more words follow." was
+// drawn in its cell and its because line as "Keep the memo, e.g. in the pane, and draw it whole
+// (see p.".
+test("a first sentence runs past an abbreviation that a number follows", () => {
+  expect(firstSentenceOf("Use the old page (see p. 4) for now. Then more.")).toBe(
+    "Use the old page (see p. 4) for now."
+  );
+  expect(
+    firstSentenceOf("Keep the memo, e.g. in the pane, and draw it whole (see p. 4). Then more.")
+  ).toBe("Keep the memo, e.g. in the pane, and draw it whole (see p. 4).");
+});
+
 /** The page's name for the statement r2, which opens with its label ("R2."). */
 const LABELLED = (reference: string) =>
   reference === statementRef("r2") ? "R2. Every address…" : undefined;
