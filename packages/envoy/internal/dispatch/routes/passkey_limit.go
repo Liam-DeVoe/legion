@@ -24,9 +24,10 @@ const (
 	// passkeyBeginsRouteWide and passkeyBeginRouteBurst bound every address together, per process.
 	passkeyBeginsRouteWide = rate.Limit(50)
 	passkeyBeginRouteBurst = 200
-	// passkeyBeginAddresses caps the addresses the limiter remembers; at the cap it forgets those
-	// whose bucket is full again (idle for passkeyBeginIdle), so memory stays bounded however many
-	// addresses send.
+	// passkeyBeginAddresses caps the addresses the limiter remembers. At the cap it forgets those
+	// whose bucket is full again (idle for passkeyBeginIdle), sweeping the map at most once a
+	// passkeyBeginIdle, and refuses a new address while the map is still full, so memory and the
+	// work of each begin stay bounded however many addresses send.
 	passkeyBeginAddresses = 10000
 	passkeyBeginIdle      = time.Duration(passkeyBeginAddressBurst) * time.Second
 )
@@ -38,6 +39,8 @@ type passkeyBeginLimiter struct {
 	mu        sync.Mutex
 	all       *rate.Limiter
 	byAddress map[string]*passkeyBeginBucket
+	// swept is when forgetIdle last ran; the zero time before it has.
+	swept time.Time
 }
 
 type passkeyBeginBucket struct {
@@ -53,14 +56,19 @@ func newPasskeyBeginLimiter() *passkeyBeginLimiter {
 }
 
 // allow reports whether a begin from address at now is within both bounds, spending from each only
-// when both have room.
+// when both have room. A new address finding passkeyBeginAddresses remembered is refused, unless a
+// sweep (at most one a passkeyBeginIdle) forgets an idle one first.
 func (l *passkeyBeginLimiter) allow(address string, now time.Time) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	bucket, found := l.byAddress[address]
 	if !found {
-		if len(l.byAddress) >= passkeyBeginAddresses {
+		if len(l.byAddress) >= passkeyBeginAddresses && now.Sub(l.swept) >= passkeyBeginIdle {
 			l.forgetIdle(now)
+			l.swept = now
+		}
+		if len(l.byAddress) >= passkeyBeginAddresses {
+			return false
 		}
 		bucket = &passkeyBeginBucket{limiter: rate.NewLimiter(passkeyBeginsPerAddress, passkeyBeginAddressBurst)}
 		l.byAddress[address] = bucket
