@@ -41,9 +41,12 @@ import (
 //
 // A create of an issue under a parent, and a move of an issue under a parent, are judged on the row
 // as the write leaves it: Legion runs it when its own labels or its new parent's chain carry the
-// label (legionManagedStatusOfRow), and its architects are those of the parent's chain. A create
-// under no parent is not checked: the controller files a root with the label legion when a
-// person's answer asks Legion to run it.
+// label (legionManagedStatusOfRow), and its architects are those of the parent's chain. A move of
+// an issue that Legion runs, after which Legion still runs it, is judged on the issue's own chain
+// as it stands too, so it passes only a person or an architect at or above the issue where it
+// stands that is also at or above the new parent: no architect takes another's issue by moving it
+// under itself. A create under no parent is not checked: the controller files a root with the
+// label legion when a person's answer asks Legion to run it.
 
 // specWriterArchitectRole is the role whose sessions write the spec and the Verification document
 // of an issue Legion runs: the first role of legionagents.Roles.
@@ -93,8 +96,10 @@ const (
 	specWriteDocument specWriteAct = iota
 	// specWriteCreate creates an issue, with its spec, under a parent.
 	specWriteCreate
-	// specWriteMove moves an issue under a parent.
+	// specWriteMove moves an issue under a parent, judged on the new parent's chain.
 	specWriteMove
+	// specWriteMoveAway moves an issue under a parent, judged on the issue's own chain as it stands.
+	specWriteMoveAway
 	// specWriteClose closes the issue, which writes the blocks of its open asks withdrawn.
 	specWriteClose
 	// specWriteReopen reopens the issue, which writes the blocks of its withdrawn asks open again.
@@ -128,6 +133,9 @@ type specWrite struct {
 	// write, which the check reads on the issue's own chain as it stands.
 	under  string
 	labels []string
+	// to is the new parent of a specWriteMoveAway, which the refusal names; the check reads that
+	// move on the issue's own chain, with under empty.
+	to string
 }
 
 // chainIssue is the first issue of the write's chain, the one its architects are read from and
@@ -276,6 +284,9 @@ func (refusal *specWriterRefusal) message() string {
 	case specWriteMove:
 		act = "move " + write.issue + " under " + chain
 		why = "Legion runs " + write.issue + " under " + chain + ", and the move changes who can write its " + document + "."
+	case specWriteMoveAway:
+		act = "move " + write.issue + " under " + write.to
+		why = "Legion runs " + write.issue + " where it stands and under " + write.to + ", and the move changes who can write its " + document + "."
 	case specWriteClose:
 		act = "close " + write.issue
 		why = "Legion runs " + write.issue + ", and the close writes the asks in its " + document + "."
@@ -297,8 +308,11 @@ func (refusal *specWriterRefusal) message() string {
 		return message.String()
 	}
 	who := "a person or an architect of " + chain + " or of an issue above it"
-	if write.act.daemonPasses() {
+	switch {
+	case write.act.daemonPasses():
 		who = "a person, an architect of " + chain + " or of an issue above it, or the Legion daemon of its project"
+	case write.act == specWriteMoveAway:
+		who += " that is also an architect of " + write.to + " or of an issue above it"
 	}
 	fmt.Fprintf(&message, " %s Only %s can %s.", why, who, act)
 	if read.role != "" {
@@ -395,12 +409,16 @@ func (s *server) refuseSpecWriterOfAsk(ctx context.Context, tx pgx.Tx, writer sp
 
 // refuseSpecWriterOfIssueWrite is the check of one write of an issue: a PATCH's (writeIssue) or a
 // step of a status change, judged on the step as its writer read it under the owner locks. A move
-// under a parent is checked on the new parent's chain, with the labels the write leaves. A close
-// and a reopen are checked on the issue's own chain, with the daemon's pass. A write of the labels
-// or the parent after which Legion no longer runs the issue - Legion runs it before the write
-// (legionManagedStatus) and not as the write leaves it (legionManagedStatusOfRow) - is checked on
-// the issue's chain as it stands before the write, with the daemon's pass. A labels write that
-// keeps the label legion on the chain, and a labels_add, which cannot remove it, take nothing out.
+// under a parent is checked on the new parent's chain, with the labels the write leaves. A move
+// after which Legion still runs the issue is checked on the issue's own chain as it stands too, so
+// it passes only an architect at or above the issue that is also at or above the new parent; the
+// daemon, which writes no parent, passes neither check. A close and a reopen are checked on the
+// issue's own chain, with the daemon's pass. A write of the labels or the parent after which Legion
+// no longer runs the issue - Legion runs it before the write (legionManagedStatus) and not as the
+// write leaves it (legionManagedStatusOfRow), a move out of every tree Legion runs among them - is
+// checked on the issue's chain as it stands before the write, with the daemon's pass. A labels
+// write that keeps the label legion on the chain, and a labels_add, which cannot remove it, take
+// nothing out.
 func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWriter, step issueWriteStep) error {
 	if writer.person {
 		return nil
@@ -417,11 +435,33 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 			return err
 		}
 	}
-	if step.changesParent() && step.parentAfter != nil {
+	// Whether Legion runs the issue as the write leaves it. A row the write leaves carrying the label
+	// itself stays one Legion runs, wherever it sits: the walk starts at that row (legionOnChainSQL),
+	// so it reads nothing more. A move reads the walk of its new parent here; every other write of
+	// the labels or the parent reads it below, once Legion runs the issue before the write.
+	runsAfter := slices.Contains(labels, legionLabel)
+	moves := step.changesParent() && step.parentAfter != nil
+	if moves {
 		if err := refuseSpecWriter(ctx, tx, writer, specWrite{
 			act: specWriteMove, issue: step.key, under: *step.parentAfter, labels: labels,
 		}); err != nil {
 			return err
+		}
+		if !runsAfter {
+			var err error
+			if runsAfter, err = legionManagedStatusOfRow(ctx, tx, step.key, step.parentAfter, labels); err != nil {
+				return err
+			}
+		}
+		// A move after which Legion still runs the issue is checked on the issue's own chain as it
+		// stands too, and that check passes an issue Legion does not run before the move
+		// (judgeSpecWriter). A move out of every tree Legion runs is the take-out check's, below.
+		if runsAfter {
+			if err := refuseSpecWriter(ctx, tx, writer, specWrite{
+				act: specWriteMoveAway, issue: step.key, to: *step.parentAfter,
+			}); err != nil {
+				return err
+			}
 		}
 	}
 	var act specWriteAct
@@ -430,23 +470,20 @@ func refuseSpecWriterOfIssueWrite(ctx context.Context, tx pgx.Tx, writer specWri
 		act = specWriteClose
 	case step.statusAfter != nil && *step.statusAfter != "done" && step.statusBefore == "done":
 		act = specWriteReopen
-	case step.changesParent() || step.labelsAfter != nil:
-		// A row the write leaves carrying the label itself stays one Legion runs, wherever it sits:
-		// the walk starts at that row (legionOnChainSQL), so neither walk below can take it out.
-		if slices.Contains(labels, legionLabel) {
-			return nil
-		}
-		parent := step.parentBefore
-		if step.reparent {
-			parent = step.parentAfter
-		}
+	case (step.changesParent() || step.labelsAfter != nil) && !runsAfter:
 		before, err := legionManagedStatus(ctx, tx, step.key)
 		if err != nil || !before {
 			return err
 		}
-		after, err := legionManagedStatusOfRow(ctx, tx, step.key, parent, labels)
-		if err != nil || after {
-			return err
+		if !moves {
+			parent := step.parentBefore
+			if step.reparent {
+				parent = step.parentAfter
+			}
+			after, err := legionManagedStatusOfRow(ctx, tx, step.key, parent, labels)
+			if err != nil || after {
+				return err
+			}
 		}
 		act = specWriteOutOfLegion
 	default:

@@ -293,9 +293,11 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 	input.contentType = storedType
 	// Whether the credential is a person's, for the check of who writes an issue's spec or
 	// Verification document (refuseSpecWriter), read before storeArtifact opens its transaction.
-	// An upload the check does not judge, one that is no document of an issue, reads nothing for it.
+	// Every upload to an issue reads it, a file's too: a file named verification.md takes the slug
+	// that reads as the issue's Verification document (documentPlays). An upload to a project or to
+	// a session reads nothing for it.
 	writer := specWriter{actor: actor}
-	if target.IssueKey != nil && kind == "doc" {
+	if target.IssueKey != nil {
 		writer = s.specWriterOf(r, actor)
 	}
 	s.storeArtifact(w, r, input, writer, kind, target)
@@ -757,8 +759,10 @@ func (s *server) storeArtifact(
 	}
 	// The check of who writes an issue's spec or Verification document, on the row as this upload
 	// leaves it - a new one with the role its slug gave it, an older one with its role repaired -
-	// before the first document call, so an upload that would change nothing is refused too.
-	if target.IssueKey != nil && kind == "doc" {
+	// before the first document call, so an upload that would change nothing is refused too. It
+	// judges a file as well as a document: a file row whose slug is verification-md, which takes no
+	// role, is the issue's Verification document by that slug (specWriterDocumentName).
+	if target.IssueKey != nil {
 		if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
 			s.writeHandlerError(w, err)
 			return

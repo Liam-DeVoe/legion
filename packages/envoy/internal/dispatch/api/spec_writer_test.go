@@ -1369,15 +1369,18 @@ func TestSpecWriteChecksTheCloseAndTheReopen(t *testing.T) {
 
 // TestSpecWriteChecksAMoveUnderAParent: a move under a parent is checked as a create under it. C's
 // tester's create of a root with the label legion is taken; its move of that root under C is
-// refused, and the root stays one; C's architect's move of it under C is taken.
+// refused, and the root stays one. Legion runs the root where it stands, through its own label, and
+// Dispatch records no architect on it, so C's architect's move of it under C is refused too, on the
+// root's own chain (TestSpecWriteChecksAMoveOnBothChains), and the root stays one; a person's move
+// of it under C is taken.
 func TestSpecWriteChecksAMoveUnderAParent(t *testing.T) {
 	server := newSpecWriterServer(t, testServerOptions{})
 	rig := server.rig(t, specWriterRigShape{})
 	root := rig.requireCreated(t, "C's tester's create of a root with the label legion", "",
 		rig.creating(rig.cTester, "A worker's root", "", []string{"legion"}))
-	move := func(session string) func(t *testing.T) *httptest.ResponseRecorder {
+	move := func(writer string) func(t *testing.T) *httptest.ResponseRecorder {
 		return func(t *testing.T) *httptest.ResponseRecorder {
-			return rig.send(t, session, http.MethodPatch, "/api/v1/issues/"+root, map[string]any{"parent": rig.c.key})
+			return rig.sendAs(t, writer, http.MethodPatch, "/api/v1/issues/"+root, map[string]any{"parent": rig.c.key})
 		}
 	}
 	refusal := rig.refusalOn(rig.c, "spec.md", rig.cTester)
@@ -1386,9 +1389,84 @@ func TestSpecWriteChecksAMoveUnderAParent(t *testing.T) {
 	if parent := rig.issueRow(t, root).parent; parent != nil {
 		t.Errorf("the refused move left %s under %s, want it still a root", root, *parent)
 	}
-	rig.requireTaken(t, "C's architect's move of "+root+" under "+rig.c.key, http.StatusOK, move(rig.cArchitect))
+	rig.requireRefused(t, specWriteAttempt{
+		what:    "C's architect's move of " + root + " under " + rig.c.key,
+		send:    move(rig.cArchitect),
+		refusal: specWriteRefusal{issues: []string{root}, document: "spec.md", writer: rig.cArchitect},
+	})
+	if parent := rig.issueRow(t, root).parent; parent != nil {
+		t.Errorf("C's architect's refused move left %s under %s, want it still a root", root, *parent)
+	}
+	rig.requireTaken(t, "a person's move of "+root+" under "+rig.c.key, http.StatusOK, move(specWriterPerson))
 	if parent := rig.issueRow(t, root).parent; parent == nil || *parent != rig.c.key {
-		t.Errorf("C's architect's move left %s under %s, want it under %s", root, specWriterParentName(parent), rig.c.key)
+		t.Errorf("the person's move left %s under %s, want it under %s", root, specWriterParentName(parent), rig.c.key)
+	}
+}
+
+// TestSpecWriteChecksAMoveOnBothChains: a move of a Legion-run issue under a parent in a tree Legion
+// runs is checked on the issue's own chain as it stands as well as on the new parent's, so it
+// passes only a person or an architect at or above both places. On a rig with R, C and D, a sibling
+// of C under R, and V, a labelled root whose own architect the daemon of P publishes: C's
+// architect's move of D under C, V's architect's move of D under V, and the Legion daemon's move of
+// D under C are each refused, D stays under R, and each architect's edit of D's spec after its
+// move is refused too. R's architect's move of D under C and a person's move of D back under R are
+// taken. A move of D under U2, a root with no label, takes D out of every tree Legion runs, so it
+// stays under the take-out check alone (TestSpecWriteChecksAWriteThatTakesAnIssueOutOfLegion),
+// which passes the daemon: the daemon's move of D under U2 is taken.
+func TestSpecWriteChecksAMoveOnBothChains(t *testing.T) {
+	server := newSpecWriterServer(t, testServerOptions{})
+	rig := server.rig(t, specWriterRigShape{sibling: true, unlabelled: true, unclaimed: true})
+	vArchitect := "ses-v-architect-" + strings.ToLower(rig.project)
+	rig.publish(t, rig.v.key, []issueRoleHolder{{Role: "architect", Session: vArchitect}})
+	rig.quiet(t)
+	daemon := legionDaemonSessionOf(rig.r.key)
+	move := func(writer string, parent specWriterIssue) func(t *testing.T) *httptest.ResponseRecorder {
+		return func(t *testing.T) *httptest.ResponseRecorder {
+			return rig.sendAs(t, writer, http.MethodPatch, "/api/v1/issues/"+rig.d.key, map[string]any{"parent": parent.key})
+		}
+	}
+	requireUnder := func(t *testing.T, what string, parent specWriterIssue) {
+		t.Helper()
+		if after := rig.issueRow(t, rig.d.key).parent; after == nil || *after != parent.key {
+			t.Errorf("%s left %s under %s, want it under %s", what, rig.d.key, specWriterParentName(after), parent.key)
+		}
+	}
+
+	for _, architect := range []struct {
+		name, session string
+		parent        specWriterIssue
+	}{
+		{"C's architect", rig.cArchitect, rig.c},
+		{"V's architect", vArchitect, rig.v},
+	} {
+		what := fmt.Sprintf("%s's move of %s under %s", architect.name, rig.d.key, architect.parent.key)
+		rig.requireRefused(t, specWriteAttempt{
+			what:    what,
+			send:    move(architect.session, architect.parent),
+			refusal: rig.refusalOn(rig.d, "spec.md", architect.session),
+		}, rig.editAttempt(architect.session, rig.d, "spec.md"))
+		requireUnder(t, "the refused "+what, rig.r)
+	}
+	daemonsMove := rig.refusalOn(rig.c, "spec.md", daemon)
+	daemonsMove.issues = []string{rig.d.key, rig.c.key}
+	rig.requireRefused(t, specWriteAttempt{
+		what:    "the Legion daemon's move of " + rig.d.key + " under " + rig.c.key,
+		send:    move(daemon, rig.c),
+		refusal: daemonsMove,
+	})
+	requireUnder(t, "the daemon's refused move", rig.r)
+
+	for _, taken := range []struct {
+		name, writer string
+		parent       specWriterIssue
+	}{
+		{"R's architect", rig.rArchitect, rig.c},
+		{"a person", specWriterPerson, rig.r},
+		{"the Legion daemon of P", daemon, rig.u2},
+	} {
+		what := fmt.Sprintf("%s's move of %s under %s", taken.name, rig.d.key, taken.parent.key)
+		rig.requireTaken(t, what, http.StatusOK, move(taken.writer, taken.parent))
+		requireUnder(t, what, taken.parent)
 	}
 }
 

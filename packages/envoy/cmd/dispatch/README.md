@@ -4525,6 +4525,8 @@ Each item below names a path with its method and identity, then its purpose.
   The `PATCH` takes none of that route's options: it ignores them as members it does not declare.
   On an issue Legion runs, a close, a reopen and a `labels` or `parent` write that takes the issue out of Legion are each `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person, no architect of the issue or of an issue above it, and not the session of the project's Legion daemon (Document errors below).
   A move under a parent, after which Legion runs the issue, is `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of the new parent or of an issue above it.
+  When Legion also runs the issue before the move, the move is also `403 DOCUMENT_WRITER_NOT_ARCHITECT` from a writer that is no person and no architect of the issue or of an issue above it where it stands.
+  A move out of every tree Legion runs is a `parent` write that takes the issue out of Legion, above.
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:
   decision blocks in its documents, plain asks and requests to approve one of its documents.
   Each is recorded `resolved` with resolution kind `withdrawn`, naming the closer as the request's actor, with the reason `Withdrawn by the close of <KEY>.`, and gets one `ask.resolved` before `issue.closed`;
@@ -5027,7 +5029,7 @@ Each item below names a path with its method and identity, then its purpose.
   An ask block whose body breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`; a new version is held to it only for the asks it writes or changes.
   A check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
-  On an issue Legion runs, an upload of its spec or Verification document from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
+  On an issue Legion runs, an upload of its spec or Verification document, a file under the name `verification.md` among them, from a writer that is no person and no architect of the issue or of an issue above it is `403 DOCUMENT_WRITER_NOT_ARCHITECT` (Document errors below).
   A markdown document over 1 MiB, or any file over 25 MiB, is `413 CAP_EXCEEDED`, and so is a document whose markdown makes more than 65,536 elements (weighed as Element weights below lists), naming the line that passes the limit;
   a document or version whose markdown as stored (what `.../text` answers) would be longer than 1 MiB and longer than the document's was, or make more than 65,536 elements and more than the document's did, or that would leave a live state ygo could not decode as one update;
   or whose formatting is more items than one document update can store (1,048,576), naming the count.
@@ -5467,11 +5469,12 @@ Each item below names a status and code, then its meaning.
   An architect is the session of an `architect` row of the role holders on the issue's parent chain (`PUT /api/v1/issues/{key}/role-holders`).
   Legion runs an issue when it or an issue above it carries the label `legion`, in any case.
   Each route that writes such a version refuses every other writer with this code, before it stores anything or appends an event, and the server logs one line for each refusal:
-  an upload, an edit or a named version of the document;
+  an upload, an edit or a named version of the document, a file uploaded to the issue under the name `verification.md` among them;
   the reword, the retraction or the resolution of a block ask in it;
   a create under a parent, which writes the new issue's spec;
   and a close and a reopen, which write the asks in the spec, a move under a parent, which changes who can write it, and a `labels` or `parent` write that takes the issue out of Legion, after which any session can write it (`PATCH /api/v1/issues/{key}`, `POST /api/v1/issues/{key}/status-change`).
   A create and a move are judged on the issue as the write leaves it, with the architects of the new parent's chain.
+  A move of an issue Legion runs, after which Legion still runs it, is also judged on the issue's own chain as it stands, so only a person or an architect at or above the issue that is also at or above the new parent can make it.
   The session of the project's Legion daemon, `legion-daemon:<project>`, passes a close, a reopen and a write that takes an issue out of Legion too.
   While the project's `proven_sessions` is on (`/api/v1/projects/{key}/proven-sessions`, Routes above), an architect's session and the daemon's pass only on a credential that proves that session, a broker token of it.
   The message names the session, the write and the issue, who can make the write, the role the session holds on the issue and each architect session Dispatch records on the chain, and it ends `Propose the change with a suggestion or a comment.`
