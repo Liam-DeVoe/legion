@@ -26,11 +26,14 @@ import {
   codexHome,
   codexProcessId,
   codexSessionRecordFile,
+  hookPsTimeoutMs,
   markSessionEnded,
   processStarted,
   pruneCodexSessionRecords,
   readCodexSessionRecord,
   recordOfProcess,
+  SESSION_END_HOOK_TIMEOUT_MS,
+  SESSION_START_HOOK_TIMEOUT_MS,
   SHARED_APP_SERVER_NOTE,
   sharedAppServer,
   writeCodexSessionRecord,
@@ -74,7 +77,8 @@ async function sessionEnd(raw: unknown): Promise<void> {
   const file = codexSessionRecordFile(pluginData, pid)
   const record = await readCodexSessionRecord(file)
   if (record === undefined || record.session_id !== input.session_id) return
-  if (!recordOfProcess(record, pid)) return
+  const started = processStarted(pid, hookPsTimeoutMs(SESSION_END_HOOK_TIMEOUT_MS))
+  if (!recordOfProcess(record, started)) return
   await markSessionEnded(pluginData, pid, input.session_id)
 }
 
@@ -93,8 +97,8 @@ async function sessionStart(raw: unknown): Promise<void> {
       process.stderr.write(`envoy: could not prune old session records — ${messageFor(error)}\n`)
     }
     try {
-      const started = processStarted(pid)
-      if (sharedAppServer(pid)) {
+      const started = processStarted(pid, hookPsTimeoutMs(SESSION_START_HOOK_TIMEOUT_MS))
+      if (sharedAppServer(pid, hookPsTimeoutMs(SESSION_START_HOOK_TIMEOUT_MS))) {
         // No record: two sessions of one process would share it (`sharedAppServer`).
         process.stdout.write(`${SHARED_APP_SERVER_NOTE}\n\n`)
       } else if (input.transcript_path === null || input.transcript_path === undefined) {

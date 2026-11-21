@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process"
-import { readFileSync, readlinkSync, unwatchFile, watchFile } from "node:fs"
+import { existsSync, readFileSync, readlinkSync, unwatchFile, watchFile } from "node:fs"
 import { mkdir, readFile, rename, utimes, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { basename, dirname, join } from "node:path"
@@ -74,14 +74,14 @@ export async function markSessionEnded(
  */
 export function watchRecord(
   file: string,
-  pid: number,
+  started: Promise<string | undefined>,
   ended: (sessionId: string) => Promise<boolean>,
   changed: (record: CodexSessionRecord, ended: boolean) => void,
   intervalMs: number,
 ): () => void {
   const look = (): void => {
     void readCodexSessionRecord(file).then(async (record) => {
-      if (record === undefined || !recordOfProcess(record, pid)) return
+      if (record === undefined || !recordOfProcess(record, await started)) return
       changed(record, await ended(record.session_id))
     })
   }
@@ -185,36 +185,82 @@ function procParent(pid: number): number | undefined {
 }
 
 /** How the hook and the server run `ps`: in one fixed environment, so the start time each prints
- *  is the same text (macOS's `ps` formats it by the locale and the time zone), and briefly. */
-const PS_OPTIONS = {
-  encoding: "utf8",
-  env: { LC_ALL: "C", PATH: process.env["PATH"] ?? "/usr/bin:/bin", TZ: "UTC" },
-  timeout: 1_000,
-} as const
+ *  is the same text (macOS's `ps` formats it by the locale and the time zone). */
+const PS_ENV = { LC_ALL: "C", PATH: process.env["PATH"] ?? "/usr/bin:/bin", TZ: "UTC" } as const
 
-/** When process `pid` started: the 22nd field of `/proc/<pid>/stat` (clock ticks since boot), or
- *  where there is no /proc, `ps`'s start time to the second, prefixed `ps:`; undefined where
- *  neither can be read. Two processes that had one id never share it. */
-export function processStarted(pid: number): string | undefined {
+/** Whether this host has /proc: where it has, a pid with no `/proc/<pid>/stat` is a process gone,
+ *  and `ps` is never asked. */
+const HAS_PROC = existsSync("/proc/self/stat")
+
+/** The `timeout` codex/hooks/hooks.json gives the `SessionStart` hook, in ms. */
+export const SESSION_START_HOOK_TIMEOUT_MS = 20_000
+/** The `timeout` codex/hooks/hooks.json gives the `SessionEnd` hook, in ms. */
+export const SESSION_END_HOOK_TIMEOUT_MS = 3_000
+/** What a hook keeps of its timeout for the small writes after its read of the start. */
+const HOOK_WRITES_MS = 500
+
+/** How long a hook whose timeout is `timeoutMs` may give `ps` now: what Codex's timeout leaves it,
+ *  counted from its process's start, less `HOOK_WRITES_MS`. */
+export function hookPsTimeoutMs(timeoutMs: number): number {
+  return Math.max(0, Math.floor(timeoutMs - HOOK_WRITES_MS - performance.now()))
+}
+
+/** When process `pid` started by `/proc/<pid>/stat` alone: its 22nd field (clock ticks since
+ *  boot); undefined where that file cannot be read (no /proc, or no such process). */
+export function procStarted(pid: number): string | undefined {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8")
     return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]
   } catch {
-    // No /proc (macOS): `ps` names the start to the second, which a reused pid does not repeat
-    // within a second of the process it replaced exiting, and the hook and the server read it
-    // the same way.
-    const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], PS_OPTIONS)
-    const started = ps.status === 0 ? ps.stdout.trim() : ""
-    return started === "" ? undefined : `ps:${started}`
+    return undefined
   }
 }
 
-/** Whether `record` belongs to the `codex` process `pid` now runs, rather than to an earlier
- *  process that had the same id. A record or a process whose start cannot be read is not taken:
- *  records outlive their process, and a new `codex` that reused the pid would otherwise bind to the
- *  old one's session and register it until its first prompt. */
-export function recordOfProcess(record: CodexSessionRecord, pid: number): boolean {
-  const started = processStarted(pid)
+/** `ps`'s start time of `pid` from what it printed and its exit, prefixed `ps:`; undefined for
+ *  none. */
+function psStarted(status: number | null, stdout: string): string | undefined {
+  const started = status === 0 ? stdout.trim() : ""
+  return started === "" ? undefined : `ps:${started}`
+}
+
+/** When process `pid` started, for a caller with a deadline (a hook): `procStarted`, or where there
+ *  is no /proc (macOS), `ps`'s start time to the second, prefixed `ps:`, which a reused pid does not
+ *  repeat within a second of the process it replaced exiting. `ps` gets `psTimeoutMs`, what the
+ *  caller's own deadline leaves it (`hookPsTimeoutMs`), never a bound of its own: on a loaded host
+ *  `ps` can take seconds, and a start not read in time is a session not recorded. Undefined where
+ *  neither can be read in that time. Two processes that had one id never share it. */
+export function processStarted(pid: number, psTimeoutMs: number): string | undefined {
+  const started = procStarted(pid)
+  if (started !== undefined || HAS_PROC || psTimeoutMs <= 0) return started
+  const ps = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    env: PS_ENV,
+    timeout: psTimeoutMs,
+  })
+  return psStarted(ps.status, ps.stdout ?? "")
+}
+
+/** When process `pid` started, for a caller with no deadline (the server): as `processStarted`,
+ *  but `ps` runs without holding the event loop and is given as long as it takes, so a slow `ps`
+ *  costs a wait and never the start. */
+export async function processStartedLater(pid: number): Promise<string | undefined> {
+  const started = procStarted(pid)
+  if (started !== undefined || HAS_PROC) return started
+  const ps = Bun.spawn(["ps", "-o", "lstart=", "-p", String(pid)], {
+    env: PS_ENV,
+    stderr: "ignore",
+    stdout: "pipe",
+  })
+  const [stdout, status] = await Promise.all([new Response(ps.stdout).text(), ps.exited])
+  return psStarted(status, stdout)
+}
+
+/** Whether `record` belongs to the `codex` process whose start is `started` (`processStarted` of
+ *  the pid it runs as now), rather than to an earlier process that had the same id. A record or a
+ *  process whose start cannot be read is not taken: records outlive their process, and a new
+ *  `codex` that reused the pid would otherwise bind to the old one's session and register it until
+ *  its first prompt. */
+export function recordOfProcess(record: CodexSessionRecord, started: string | undefined): boolean {
   return record.codex_started !== null && started !== undefined && record.codex_started === started
 }
 
@@ -224,18 +270,52 @@ export function recordOfProcess(record: CodexSessionRecord, pid: number): boolea
  * Codex 0.170.0's terminal runs every session in a background `codex app-server --managed-daemon`
  * (measured on 0.170.0). This plugin keys a session by its process, so there two sessions would
  * share one record and one hand-off, and one would take the other's identity, so it registers none
- * of them with Envoy; `dispatch` still acts as the thread that calls it.
+ * of them with Envoy; `dispatch` still acts as the thread that calls it. Its arguments come from
+ * `/proc/<pid>/cmdline`, or where there is no /proc, from `ps`, which gets `psTimeoutMs`, what the
+ * caller's own deadline leaves it (`processStarted`).
  */
-export function sharedAppServer(pid: number): boolean {
-  let argv: string[]
+export function sharedAppServer(pid: number, psTimeoutMs: number): boolean {
+  const fromProc = procArguments(pid)
+  if (fromProc !== undefined || HAS_PROC || psTimeoutMs <= 0) return sharedArguments(fromProc)
+  const ps = spawnSync("ps", ["-o", "args=", "-p", String(pid)], {
+    encoding: "utf8",
+    env: PS_ENV,
+    timeout: psTimeoutMs,
+  })
+  return sharedArguments(psArguments(ps.status, ps.stdout ?? ""))
+}
+
+/** `sharedAppServer` for a caller with no deadline (the server): `ps` runs without holding the
+ *  event loop and is given as long as it takes (`processStartedLater`). */
+export async function sharedAppServerLater(pid: number): Promise<boolean> {
+  const fromProc = procArguments(pid)
+  if (fromProc !== undefined || HAS_PROC) return sharedArguments(fromProc)
+  const ps = Bun.spawn(["ps", "-o", "args=", "-p", String(pid)], {
+    env: PS_ENV,
+    stderr: "ignore",
+    stdout: "pipe",
+  })
+  const [stdout, status] = await Promise.all([new Response(ps.stdout).text(), ps.exited])
+  return sharedArguments(psArguments(status, stdout))
+}
+
+/** Process `pid`'s arguments by `/proc/<pid>/cmdline`; undefined where that cannot be read. */
+function procArguments(pid: number): string[] | undefined {
   try {
-    argv = readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")
+    return readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0")
   } catch {
-    const ps = spawnSync("ps", ["-o", "args=", "-p", String(pid)], PS_OPTIONS)
-    if (ps.status !== 0) return false
-    argv = ps.stdout.trim().split(/\s+/)
+    return undefined
   }
-  return SHARED_SUBCOMMANDS.has(codexSubcommand(argv.slice(1)) ?? "")
+}
+
+/** The arguments `ps -o args=` printed, split on blanks; undefined where it failed. */
+function psArguments(status: number | null, stdout: string): string[] | undefined {
+  return status === 0 ? stdout.trim().split(/\s+/) : undefined
+}
+
+/** Whether a process whose arguments are `argv` (with the program first) runs several sessions. */
+function sharedArguments(argv: string[] | undefined): boolean {
+  return argv !== undefined && SHARED_SUBCOMMANDS.has(codexSubcommand(argv.slice(1)) ?? "")
 }
 
 /** The subcommands that run several sessions in one process: `app-server` (the daemon `codex agents`
