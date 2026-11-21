@@ -81,6 +81,7 @@ func newFreshSessions(s *SessionConsumers) *freshSessions {
 		Store:  fresh.store,
 		Server: sessionNamesServer{s},
 		Prefix: func(string) string { return SessionConsumerNamePrefix },
+		Fixed:  func(sessionID string) string { return sessionConsumerPrefix + sessionID },
 		Floor:  ackFloor,
 		StreamID: func(ctx context.Context) (string, error) {
 			state, err := s.streamState(ctx)

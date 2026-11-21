@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -57,8 +58,15 @@ type Config struct {
 	Store  Store
 	Server Server
 	// Prefix is the part of a physical name before its '~' (FreshName): "session" for a session
-	// consumer, the logical name itself for a durable.
+	// consumer, the logical name itself for a durable. A record of logical names only consumers of
+	// that form, Prefix(logical)~<nuid>, and Fixed(logical) as an operation's old name alone
+	// (checkNames).
 	Prefix func(logical string) string
+	// Fixed is the name the family gave logical before this package, which the cutover's convert
+	// replaces: s-<session id> for a session. A record may name it only as an open operation's old
+	// name, the consumer convert replaces or deletes. Prefix(logical) when nil, as for a durable,
+	// whose fixed name is its logical one.
+	Fixed func(logical string) string
 	// Floor is the family's ack floor of a consumer's info.
 	Floor func(*jetstream.ConsumerInfo) uint64
 	// StreamID reads the stream's identity, which a last floor must carry to count.
@@ -206,6 +214,52 @@ func (n *Names) checkKey(logical string) error {
 	return CheckKey(logical)
 }
 
+// fixed is logical's fixed name (Config.Fixed).
+func (n *Names) fixed(logical string) string {
+	if n.cfg.Fixed != nil {
+		return n.cfg.Fixed(logical)
+	}
+	return n.cfg.Prefix(logical)
+}
+
+// freshOf reports whether name is a fresh name of logical: Prefix(logical), '~', and a NUID's
+// characters ([0-9A-Za-z]) alone (FreshName).
+func (n *Names) freshOf(logical, name string) bool {
+	nuid, ok := strings.CutPrefix(name, n.cfg.Prefix(logical)+"~")
+	return ok && nuid != "" && !strings.ContainsFunc(nuid, func(r rune) bool {
+		return !('0' <= r && r <= '9' || 'a' <= r && r <= 'z' || 'A' <= r && r <= 'Z')
+	})
+}
+
+// checkNames refuses, as ErrMalformedRecord, a record of logical that names a consumer outside
+// logical's own family: its current, each retired name and an open operation's candidate must be
+// fresh names of logical (freshOf), and an open operation's old name one of those or logical's fixed
+// name, which the cutover's convert replaces. Each is a name the protocol creates, binds, updates or
+// deletes, so a record that names another family's consumer (a daemon's durable, a session's of
+// another prefix) never gets one of those calls on it.
+func (n *Names) checkNames(logical string, record Record) error {
+	refuse := func(field, name string) error {
+		return fmt.Errorf("%w: the key %s's %s %q is no %s~<nuid> name", ErrMalformedRecord, logical, field, name, n.cfg.Prefix(logical))
+	}
+	if record.Current != "" && !n.freshOf(logical, record.Current) {
+		return refuse("current", record.Current)
+	}
+	for _, name := range record.Retired {
+		if !n.freshOf(logical, name) {
+			return refuse("retired name", name)
+		}
+	}
+	if op := record.Op; op != nil {
+		if op.Candidate != "" && !n.freshOf(logical, op.Candidate) {
+			return refuse("candidate", op.Candidate)
+		}
+		if op.Old != "" && op.Old != n.fixed(logical) && !n.freshOf(logical, op.Old) {
+			return fmt.Errorf("%w: the key %s's old name %q is neither a %s~<nuid> name nor its fixed name %s", ErrMalformedRecord, logical, op.Old, n.cfg.Prefix(logical), n.fixed(logical))
+		}
+	}
+	return nil
+}
+
 func (n *Names) observe(op Operation, outcome Outcome) {
 	if n.cfg.Observe != nil {
 		n.cfg.Observe(op, outcome)
@@ -309,7 +363,8 @@ func (n *Names) selectRecord(ctx context.Context, logical string, create CreateF
 	}
 }
 
-// read admits a call and reads logical's record.
+// read admits a call and reads logical's record, refusing one that names a consumer outside
+// logical's family (checkNames).
 func (n *Names) read(ctx context.Context, logical string) (Selection, error) {
 	sel := Selection{Logical: logical}
 	state, err := n.cfg.Store.State(ctx)
@@ -322,6 +377,9 @@ func (n *Names) read(ctx context.Context, logical string) (Selection, error) {
 	}
 	sel.State = state
 	record, revision, err := n.cfg.Store.Read(ctx, logical)
+	if err == nil {
+		err = n.checkNames(logical, record)
+	}
 	switch {
 	case err == nil:
 		return sel.with(record, revision), nil
@@ -725,7 +783,10 @@ func answered(err error) bool {
 // replace's predecessor. Delivery from the candidate begins only after this returns. A predecessor
 // whose delete the server confirmed is dropped from the retired names again, so a session replaced
 // many times keeps a record of one size; one whose delete failed stays retired, for the cleanup. A
-// refused drop leaves it retired too, and the cleanup finds it gone.
+// refused drop leaves it retired too, and the cleanup finds it gone. A predecessor that is the
+// fixed name (a convert's replace, settled here) is deleted and never retired, since a record's
+// retired names are fresh ones alone (checkNames): one whose delete fails is left to the cutover's
+// census, which declares every fixed name.
 func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.ConsumerInfo, operation Operation, outcome Outcome) (Selection, error) {
 	op := sel.Record.Op
 	record := sel.Record.clone()
@@ -742,7 +803,9 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 	old := ""
 	if op.Kind == OpReplace {
 		old = op.Old
-		record = record.retire(old)
+		if old != n.fixed(sel.Logical) {
+			record = record.retire(old)
+		}
 	}
 	record.Op = nil
 	next, err := n.write(ctx, sel, record)
@@ -757,6 +820,9 @@ func (n *Names) publish(ctx context.Context, sel Selection, info *jetstream.Cons
 	}
 	if err := n.cfg.Server.Delete(ctx, old); err != nil {
 		n.observe(OperationCleanup, OutcomeError)
+		return next, nil
+	}
+	if !slices.Contains(next.Record.Retired, old) {
 		return next, nil
 	}
 	kept := next.Record.clone()
