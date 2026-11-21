@@ -1110,8 +1110,8 @@ function walkBack(controls: readonly HTMLElement[], index: number): HTMLElement[
 
 /** Whether the reader can see any part of `element` now: its box meets the viewport and every box
  *  around it that clips it (`clippingBoxes`, which reads each box's style once in `clips`). The
- *  page's rescue reads it of each control its walk back reaches, as it reaches it, and so does
- *  the selection bar's hand-off after a press took the row marked last away (`SelectionBar`). */
+ *  page's rescue reads it of each control its walk back reaches, as it reaches it, and the
+ *  selection bar's hand-off reads it of each row mark it tries (`SelectionBar`'s `markShown`). */
 export function inSightNow(element: Element, clips: Map<Element, boolean>): boolean {
   return inSight(element, clippingBoxes(element, clips));
 }

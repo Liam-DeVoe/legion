@@ -3,11 +3,11 @@ import { type Context, useCallback, useContext, useMemo, useState } from "react"
 import type { Ask } from "../../api/types";
 import { type KeyedWriteOptions, useKeyedWrite } from "../writes/useKeyedWrite";
 
-/** What every press a card makes of an ask carries - a hand-on, an answer, a decline, a reply:
- *  the ask it is of. `retry()` runs the newest render's `write` and callbacks with the press's
- *  own values (`useKeyedWrite`), and a host may draw one card for one ask after another, so the
- *  ask a write is sent to, what it changes in the Inbox's read and the ask the Inbox holds are
- *  the press's, whichever ask the card shows. */
+/** What every press a card makes of an ask carries - a hand-on, an answer, a decline, a reply, a
+ *  question back: the ask it is of. `retry()` runs the newest render's `write` and callbacks with
+ *  the press's own values (`useKeyedWrite`), and a host may draw one card for one ask after
+ *  another, so the ask a write is sent to, what it changes in the Inbox's read and the ask the
+ *  Inbox holds are the press's, whichever ask the card shows. */
 export interface AskPress {
   readonly ask: Ask;
 }

@@ -1764,12 +1764,14 @@ function InboxBody({
     },
   ]);
 
-  // The bar's hand-off after a press that took the row marked last away: a row the reader can
-  // see at its place, else before it, else the list column's own stop, with no scroll. A row a
-  // Dismiss or a Move to Inbox press is taking off this view is passed over: it is still drawn
-  // until the write's optimistic apply lands, and a focus handed to it would drop with it.
-  // `dismissedHere` names every such row - each id the dismiss write's `pending` holds, and the
-  // ids of a press made under the narrowing, which `pending` leaves out.
+  // The bar's hand-off where the row marked last cannot take the focus, with no scroll. After a
+  // press that took that row away: a row the reader can see at its place, else before it. With no
+  // row marked: the first row the reader can see below whatever the page draws over the list.
+  // Else the list column's own stop. A row a Dismiss or a Move to Inbox press is taking off this
+  // view is passed over: it is still drawn until the write's optimistic apply lands, and a focus
+  // handed to it would drop with it. `dismissedHere` names every such row - each id the dismiss
+  // write's `pending` holds, and the ids of a press made under the narrowing, which `pending`
+  // leaves out.
   const landAtPlace = useLastMarkedPlace({
     control: (id) => originRow(id)?.querySelector<HTMLElement>(MARK_SELECTOR) ?? null,
     lastMarked,
@@ -2215,18 +2217,15 @@ function InboxBody({
       label="Selected rows"
       notice={snoozeRefusal}
       // The bar gone with the focus, or the control in it that held the focus: the checkbox of
-      // the row the reader marked last while the list still draws it, brought into view, else of
-      // the first row in list order while no row is marked, else the list column's own stop with
-      // no scroll. A press that took the row marked last away is answered above (`landAtPlace`),
-      // so where it moves nothing, no row is marked or the row marked last is drawn and no press
-      // is taking it away.
+      // the row the reader marked last while the list draws it and no press is taking it away,
+      // brought into view. Else the hand-off above (`landAtPlace`) has put the focus itself,
+      // with no scroll, after a press that took that row away or with no row marked. The list
+      // column's own stop is the last place the focus can go.
       returnFocus={() =>
         landAtPlace()
           ? null
-          : ((
-              originRow(lastMarked()) ??
-              rows().find((row) => !dismissedHere(row.dataset.inboxRow ?? ""))
-            )?.querySelector<HTMLElement>(MARK_SELECTOR) ?? focusListStop(listScroller.current))
+          : (originRow(lastMarked())?.querySelector<HTMLElement>(MARK_SELECTOR) ??
+            focusListStop(listScroller.current))
       }
       state={barState}
     >

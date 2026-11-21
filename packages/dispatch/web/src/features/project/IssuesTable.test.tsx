@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
-import { layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
+import { drawOver, layRowsOut, watchMoves } from "../../__tests__/laid-out-rows";
 import { pickNamed } from "../../__tests__/list-picks";
 import { installResizeObserver } from "../../__tests__/scroll-box";
 import { userOnFakeClock } from "../../__tests__/user";
@@ -1045,11 +1045,14 @@ test("an issue the table stops listing drops out of the selection and out of wha
   expect(readSelectedIssues()).toEqual(["CORE-1"]);
 });
 
-// Deep in a long List, the read of the list after the reader marked two issues no longer lists
-// them, so the selection empties and the bar goes while it holds the focus. The row after the
-// issue marked last moves up into its place, where the reader can see it, and its checkbox takes
-// the focus with no scroll. The first row, nine rows above the window, would scroll the box back
-// to its top through `focusRow`.
+// Deep in a long List, a press of the reader's takes the two issues they marked off the list,
+// so the selection empties and the bar goes while it holds the focus. The row after the issue
+// marked last moves up into its place, where the reader can see it, and its checkbox takes the
+// focus with no scroll. The first row, nine rows above the window, would scroll the box back to
+// its top through `focusRow`. A read of the list that no longer lists the two issues stands in
+// for that press here. No focus rescue is mounted (`table()` without `rescued`), so the bar reads
+// every loss as the reader's own (`causedByReader`). In the app the same read with no press of
+// the reader's is a loss they did not cause, and the bar leaves it to the page's rescue.
 test("the List's bar gone with the focus after the issue marked last left the list hands the focus to the row now at its place, with no scroll", async () => {
   const user = userEvent.setup();
   const issues = Array.from({ length: 20 }, (_, index) => issue(`CORE-${index + 1}`));
@@ -1076,6 +1079,48 @@ test("the List's bar gone with the focus after the issue marked last left the li
   await waitFor(() => expect(landing).toHaveFocus());
   expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
   expect(moves.scrolled).toEqual([]);
+});
+
+// A select-all from the table's head marks no issue of the reader's own. Deep in a long List,
+// Clear selection empties the selection, and the bar goes while it holds the focus. The table's
+// sticky head is drawn over the top of the window's first row. The focus goes, with no scroll,
+// to the checkbox of the first row the reader can see below the head. The first row, nine rows
+// above the window, would scroll the box back to its top through `focusRow`.
+test("the List's bar gone with the focus while no issue is marked hands the focus to the first row in sight below the table's head, with no scroll", async () => {
+  const user = userEvent.setup();
+  // Drawn with the page's rescue mounted, as the app draws it: Clear selection is a press of the
+  // reader's, so the bar hands its focus on.
+  table(
+    Array.from({ length: 20 }, (_, index) => issue(`CORE-${index + 1}`)),
+    "",
+    { rescued: true }
+  );
+  await screen.findByRole("checkbox", { name: "Select CORE-20" });
+  // The rows in the order the table draws them.
+  const order = [...document.querySelectorAll("[data-issue-row]")].map(
+    (row) => row.getAttribute("data-issue-row") ?? ""
+  );
+  // Each row's checkbox is drawn where its row stands now, 100 px a row, with the tenth row at
+  // the window's top: happy-dom lays nothing out, and the hand-off reads what the reader sees.
+  restores.push(layRowsOut("[data-issue-row]", 9));
+  await user.click(screen.getByRole("checkbox", { name: "Select every row on this page" }));
+  expect(readSelectedIssues()).toHaveLength(20);
+  // The table's head, 60 px tall, over the top of the tenth row, which stands from 0 to 100 px.
+  const head = screen.getByRole("table", { name: "Project issues table" }).querySelector("thead");
+  if (head === null) throw new Error("The List drew no table head");
+  restores.push(drawOver(head, 60, "[data-issue-row]", 9));
+  act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+  const moves = watchMoves();
+  restores.push(moves.restore);
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  const landing = screen.getByRole("checkbox", { name: `Select ${order[10]}` });
+  await waitFor(() => expect(landing).toHaveFocus());
+  expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
+  expect(moves.scrolled).toEqual([]);
+  // The page's rescue, which reads the same press, leaves the focus where the bar put it.
+  await afterRescue();
+  expect(landing).toHaveFocus();
 });
 
 test("leaving the table clears what the bar says it will act on", async () => {

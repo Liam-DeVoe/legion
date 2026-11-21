@@ -3,7 +3,7 @@ import { act, render, renderHook, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, type ReactNode, useRef, useState } from "react";
 
-import { layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
+import { drawOver, layRowsOut, watchMoves } from "../__tests__/laid-out-rows";
 import { useFocusRescue } from "./focus-place";
 import { ROW_MARKER } from "./row-marker";
 import { SelectionBar, useLastMarkedPlace } from "./SelectionBar";
@@ -435,10 +435,11 @@ test("the bar emptied by the reader's press on the last row's mark hands the foc
 const PLACED_KEYS = Array.from({ length: 20 }, (_, index) => `CORE-${index + 1}`);
 
 /** Rows, each an `<li>` with its mark, in a list, and the bar over them with one action: the
- *  page the hand-off after a press that took away the row marked last is read on
+ *  page the hand-off where the row marked last cannot take the focus is read on
  *  (`useLastMarkedPlace`). `listed` names the rows the list draws, `leaving` the drawn ones a
- *  press is taking away, and `last` the row marked last. Its `returnFocus` names the mark of the
- *  row marked last while the list holds it, else the first row's, as the Inbox's does. */
+ *  press is taking away, and `last` the row marked last, null where no row is marked. Its
+ *  `returnFocus` names the mark of the row marked last while the list holds it, as the Inbox's
+ *  does; the hand-off moves the focus itself otherwise. */
 function PlacedList({
   count,
   last,
@@ -446,7 +447,7 @@ function PlacedList({
   listed,
 }: {
   count: number;
-  last: string;
+  last: string | null;
   leaving?: readonly string[];
   listed: readonly string[];
 }): ReactNode {
@@ -476,7 +477,7 @@ function PlacedList({
       <SelectionBar
         count={count}
         label="Selected rows"
-        returnFocus={() => (landAtPlace() ? null : (markOf(last) ?? markOf(listed[0] ?? "")))}
+        returnFocus={() => (landAtPlace() || last === null ? null : markOf(last))}
       >
         <button type="button">Dismiss</button>
       </SelectionBar>
@@ -509,6 +510,32 @@ test("a press that takes away the row marked last hands the focus to the row tha
     expect(moves.scrolled).toEqual([]);
   } finally {
     moves.restore();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// The press took away the row marked last at the window's top, and the row that moves up into its
+// place stands under the list's sticky head: its box is in sight, but the page draws the head at
+// its mark's centre. No row before that place is in sight, so the list takes the focus at its own
+// stop, with no scroll, rather than a row the head covers.
+test("a press that takes away the row marked last, with the row now at its place under the list's sticky head, hands the focus to the list's own stop", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={1} last="CORE-10" listed={PLACED_KEYS} />);
+  // The head is 60 px tall, over the top of the row at 0 to 100 px.
+  const head = document.createElement("div");
+  const drawn = drawOver(head, 60, "[data-row]", 9);
+  const moves = watchMoves();
+  try {
+    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    view.rerender(<PlacedList count={0} last="CORE-10" listed={without(PLACED_KEYS, "CORE-10")} />);
+    const list = screen.getByRole("list", { name: "Rows" });
+    expect(list).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: list });
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    drawn();
     view.unmount();
     laidOut();
   }
@@ -599,5 +626,92 @@ test("the row marked last still listed takes the focus as the page names it, out
     moves.restore();
     view.unmount();
     laidOut();
+  }
+});
+
+// A select-all marks no row of the reader's own. Deep in a long list, the reader's press on the
+// bar empties the selection while the bar holds the focus. The focus goes to the mark of the
+// first row the reader can see, the window's top row, with no scroll. The row above it, whose box
+// ends at the window's top edge, shows none of itself. The list's first row, nine rows above the
+// window, would scroll the list back to its top and throw the reader's place away.
+test("with no row marked, the bar gone with the focus hands it to the first row in sight, with no scroll", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={20} last={null} listed={PLACED_KEYS} />);
+  const moves = watchMoves();
+  try {
+    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    view.rerender(<PlacedList count={0} last={null} listed={PLACED_KEYS} />);
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    const landing = rowBox("CORE-10");
+    expect(landing).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// With no row marked, the window's top row is drawn under the list's sticky head: its box is in
+// sight, but the page draws the head at its mark's centre. That row is passed over, and the
+// focus goes to the row below the head, with no scroll.
+test("with no row marked, a row in sight under the list's sticky head is passed over to the next row in sight", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={20} last={null} listed={PLACED_KEYS} />);
+  // The head is 60 px tall, over the top of CORE-10, which stands from 0 to 100 px.
+  const head = document.createElement("div");
+  const drawn = drawOver(head, 60, "[data-row]", 9);
+  const moves = watchMoves();
+  try {
+    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    view.rerender(<PlacedList count={0} last={null} listed={PLACED_KEYS} />);
+    const landing = rowBox("CORE-11");
+    expect(landing).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    drawn();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// With no row marked, a row a press is still taking away is passed over as well: the focus would
+// drop with it. The window's top row is that row, so the focus goes to the row below it.
+test("with no row marked, the first row in sight that a press is still taking away is passed over", () => {
+  const laidOut = layRowsOut("[data-row]", 9);
+  const view = render(<PlacedList count={20} last={null} listed={PLACED_KEYS} />);
+  const moves = watchMoves();
+  try {
+    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    view.rerender(<PlacedList count={0} last={null} leaving={["CORE-10"]} listed={PLACED_KEYS} />);
+    const landing = rowBox("CORE-11");
+    expect(landing).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    view.unmount();
+    laidOut();
+  }
+});
+
+// With no row marked and no row in sight - the press emptied the list - the list itself takes
+// the focus at its own stop, with no scroll, and the focus does not drop onto the page's body.
+test("with no row marked and no row left, the bar gone with the focus hands it to the list's own stop", () => {
+  const view = render(<PlacedList count={20} last={null} listed={PLACED_KEYS} />);
+  const moves = watchMoves();
+  try {
+    act(() => screen.getByRole("button", { name: "Dismiss" }).focus());
+    view.rerender(<PlacedList count={0} last={null} listed={[]} />);
+    const list = screen.getByRole("list", { name: "Rows" });
+    expect(list).toHaveFocus();
+    expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: list });
+    expect(moves.scrolled).toEqual([]);
+  } finally {
+    moves.restore();
+    view.unmount();
   }
 });

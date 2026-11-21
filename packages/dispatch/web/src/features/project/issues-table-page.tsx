@@ -125,7 +125,8 @@ export function IssueTableToolbar({
   table,
   unclaimedUnchecked,
 }: {
-  /** The search box, which the selection bar hands the focus to when no row is left for it. */
+  /** The search box. The focus goes here when a control of the table's head or of a notice goes
+   *  with it and no control at its place can take it (`noteFocus`). */
   searchRef: RefObject<HTMLInputElement | null>;
   /** The chip of the issues a link names, which the row draws first among its chips. */
   selection?: FilterChip;

@@ -293,9 +293,11 @@ export function IssuesTable({
   const leaves = () => model.displayRows.flatMap(({ row }) => (row.getIsGrouped() ? [] : [row.id]));
   // The List's own stop: its named table, which is drawn with no row as well.
   const tableStop = () => model.layout.scrollRef.current?.querySelector("table") ?? null;
-  // The bar's hand-off after a press that took the issue marked last off the list: a row the
-  // reader can see at its place, else before it, else the table's own stop, with no scroll. A
-  // row the window has not drawn is out of their sight, so it is never where the focus lands.
+  // The bar's hand-off where the issue marked last cannot take the focus, with no scroll. After a
+  // press that took that issue off the list: a row the reader can see at its place, else before
+  // it. With no issue marked, as after a select-all from the table's head: the first row the
+  // reader can see below the table's sticky head. Else the table's own stop. A row the window has
+  // not drawn is out of their sight, so it is never where the focus lands.
   const landAtPlace = useLastMarkedPlace({
     control: (key) =>
       model.layout.scrollRef.current
@@ -307,15 +309,15 @@ export function IssuesTable({
     shown: Object.keys(selection).length !== 0,
   });
   // The bar gone with the focus (`SelectionBar`): the checkbox of the issue the reader marked
-  // last while the table lists it, else the first row's while no issue is marked, else the
-  // table's own stop with no scroll once no row is listed. A row the window has not drawn is
-  // scrolled to and takes the focus as it lands (`focusRow`). A press that took the issue marked
-  // last off the list is answered above (`landAtPlace`).
+  // last while the table lists it. A row the window has not drawn is scrolled to and takes the
+  // focus as it lands (`focusRow`). Else the hand-off above (`landAtPlace`) has put the focus
+  // itself, with no scroll, after a press that took that issue off the list or with no issue
+  // marked.
   const returnFocus = () => {
     if (landAtPlace()) return null;
-    // `landAtPlace` moved nothing, so no issue is marked, or the issue marked last is listed.
-    const key = lastMarked.current ?? leaves()[0];
-    return key === undefined ? focusListStop(tableStop()) : model.focusRow(key, ROW_CHECKBOX);
+    // `landAtPlace` moved nothing, so the issue marked last is listed.
+    const key = lastMarked.current;
+    return key === null ? focusListStop(tableStop()) : model.focusRow(key, ROW_CHECKBOX);
   };
   // A control of the table's head - a column filter, or the list it opened in a portal of its
   // own - goes with the table when a press in it sends the List back to its skeleton, and the

@@ -1,9 +1,9 @@
 /**
  * Rows laid down the window, and the moves a page makes over them: the focus it asks for and the
- * scroll it asks for. A case of the selection bar's hand-off after a press took away the row the
- * reader marked last (`useLastMarkedPlace`) reads what the reader can see and whether anything
- * scrolled. happy-dom lays nothing out and scrolls nothing, so a case says here where each row
- * stands and reads each move here.
+ * scroll it asks for. A case of the selection bar's hand-off where the row the reader marked last
+ * cannot take the focus (`useLastMarkedPlace`) - a press took that row away, or no row is marked -
+ * reads what the reader can see and whether anything scrolled. happy-dom lays nothing out and
+ * scrolls nothing, so a case says here where each row stands and reads each move here.
  */
 
 import { spyOn } from "bun:test";
@@ -27,6 +27,25 @@ export function layRowsOut(rowSelector: string, first: number): () => void {
     return new DOMRect(0, (index - first) * ROW_PX, 200, ROW_PX);
   });
   return () => rect.mockRestore();
+}
+
+/** Draws `chrome` over the window's top `px`, as a list's sticky head is drawn over the rows that
+ *  scroll under it, for `document.elementFromPoint`, which happy-dom answers with no element. A
+ *  point above `px` names `chrome`. A point below it names the checkbox that `layRowsOut`, given
+ *  the same `rowSelector` and `first`, lays there, else no element. Answers the function that
+ *  gives happy-dom its own answer back. */
+export function drawOver(
+  chrome: Element,
+  px: number,
+  rowSelector: string,
+  first: number
+): () => void {
+  const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    if (y < px) return chrome;
+    const row = document.querySelectorAll(rowSelector)[first + Math.floor(y / ROW_PX)];
+    return row?.querySelector('input[type="checkbox"]') ?? null;
+  });
+  return () => point.mockRestore();
 }
 
 /** One focus the page asked for: the element, and the options it asked with. */
