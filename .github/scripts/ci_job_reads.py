@@ -1181,7 +1181,7 @@ FORCED_ORDER_GO_TEST = ('"${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout 
 ENVOY_FORCED_ORDER_SERVERS = ("", "2.10.29")
 ENVOY_FORCED_ORDER_PKGS = ["./internal/testnats/hooktest/"]
 DAEMON_FORCED_ORDER_STEP = "Forced-order tests of the daemon on the hooked nats-server the module links"
-DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/"]
+DAEMON_FORCED_ORDER_PKGS = ["./internal/testnats/", "./internal/intake/"]
 # The script's own test, envoy-go-race's step before the two above: packages/envoy/scripts/
 # forced-order.test.sh runs forced-order.sh three times, and the one run that gets as far as a go
 # test is over its fixture package, hooktest/skiponly, on the linked version; the other two are
