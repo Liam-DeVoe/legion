@@ -3419,8 +3419,8 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.relaunchAfterFailure(ctx, o, ended)
 	}
 	m.claim.DeathCharged = true
-	if m.chargeDeath(runtime.OutcomeProcessDied) {
-		return m.fail(ctx, failureCause(runtime.OutcomeProcessDied), "deaths with work outstanding ran out")
+	if m.chargeDeath(o) {
+		return m.fail(ctx, failureCause(o), "deaths with work outstanding ran out")
 	}
 	// The decision and the count it charged are written here, before the relaunch, because
 	// every window that leaves this claim to be reported again writes nothing of it: the

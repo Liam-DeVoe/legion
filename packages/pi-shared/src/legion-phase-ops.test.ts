@@ -23,7 +23,7 @@ import {
   STALE_ENTRY_INSTRUCTION,
 } from "./legion-phase-ops";
 
-/** The contract the build under test speaks, which its client states on every request. */
+/** A contract the test's client states on every request, and the build's package names. */
 const CONTRACT = 60;
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */

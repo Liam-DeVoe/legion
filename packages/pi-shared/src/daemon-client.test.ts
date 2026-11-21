@@ -52,8 +52,8 @@ function daemon(respond: (url: URL) => Response): {
   return { fetch: stub, requests };
 }
 
-/** The contract the build under test speaks. Every request states it, and the refusal cases
- * below set the contract the daemon states against it. */
+/** A contract the test's client states. Every request states it, and the refusal cases below
+ * set the contract the daemon states against it. */
 const CONTRACT = 60;
 
 /** A claim's secret, as the claim wire's requests below carry it. */
