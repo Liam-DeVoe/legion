@@ -42,7 +42,9 @@ const unknownText = "\x00"
 // The census reads every non-test Go file of the daemon module and refuses each place that builds
 // a role topic by hand, not by RoleTopic:
 //   - a use of subjectforms.RoleSubject anywhere but in RoleTopic's own body, since any other use
-//     picks the project itself and can name one the role's claim is not keyed by;
+//     picks the project itself and can name one the role's claim is not keyed by; a call whose
+//     role is the wildcard "*" or ">" names a subscription, which no publish can take, and is
+//     left alone;
 //   - a name that begins a role lane, read as far as its source spells it out: a string literal,
 //     the prefix, and a concatenation, a strings.Join or a fmt formatting of those, so the prefix
 //     joined from its words is read as the prefix. A use of the prefix as a reader (an argument of
@@ -56,12 +58,13 @@ const unknownText = "\x00"
 // beyond what the census reads; the executors' own tests compare each topic with RoleTopic's.
 //
 // Its control is in the same run: the census applied to sources that build a role topic by hand
-// in each of those ways must name each one, and must leave a reader, a subscription, a join that
-// begins no role lane and RoleTopic's own body alone. Negative controls, run when this was written,
-// each failing naming its file and expression: deliverNotice's publish put back on
-// notify.RoleTopicPrefix+string(architect); publishToRole's on
-// strings.Join([]string{"notifications", "role", bare}, "."); and roleMessage's on
-// subjectforms.RoleSubject(r.dispatchProject, payload.Role), a lane under the wrong project.
+// in each of those ways must name each one, a RoleSubject call whose role is a literal that is no
+// wildcard among them, and must leave a reader, a subscription (by the prefix or by a wildcard
+// role), a join that begins no role lane and RoleTopic's own body alone. Negative controls, run
+// when this was written, each failing naming its file and expression: deliverNotice's publish put
+// back on notify.RoleTopicPrefix+string(architect); publishToRole's on
+// strings.Join([]string{"notifications", "role", bare}, "."); and roleMessage's and deliverNotice's
+// on subjectforms.RoleSubject(r.dispatchProject, …), a lane under the wrong project.
 func TestEveryRoleTopicTheDaemonPublishesNamesItsProject(t *testing.T) {
 	t.Run("the topic names the role's own project", func(t *testing.T) {
 		for _, tc := range []struct{ role, want, project string }{
@@ -163,6 +166,9 @@ func (r *outbox) deliver(ctx context.Context, architect claim.Token, topic strin
 	_ = r.publish(ctx, "notifications."+"role."+string(architect), "m", nil, "k")
 	_ = r.publish(ctx, fmt.Sprintf("%s.%s.%s", "notifications", "role", architect), "m", nil, "k")
 	_ = r.publish(ctx, subjectforms.RoleSubject(r.dispatchProject, string(architect)), "m", nil, "k")
+	_ = r.publish(ctx, subjectforms.RoleSubject(r.dispatchProject, "merge-queue"), "m", nil, "k")
+	_ = r.subscribe(ctx, "notifications.envoy.exceptions."+subjectforms.RoleSubject(r.dispatchProject, "*"))
+	_ = r.subscribe(ctx, subjectforms.RoleSubject(r.dispatchProject, (">")))
 	_ = r.publish(ctx, notify.RoleTopic(string(architect)), "m", nil, "k")
 	return r.publish(ctx, notify.RoleTopicPrefix+string(architect), "m", nil, "k")
 }
@@ -174,7 +180,8 @@ func (r *outbox) deliver(ctx context.Context, architect claim.Token, topic strin
 					`control.go:21: "notifications." + "role." + string(architect)`,
 					`control.go:22: fmt.Sprintf("%s.%s.%s", "notifications", "role", architect)`,
 					`control.go:23: subjectforms.RoleSubject(r.dispatchProject, string(architect))`,
-					`control.go:25: notify.RoleTopicPrefix + string(architect)`,
+					`control.go:24: subjectforms.RoleSubject(r.dispatchProject, "merge-queue")`,
+					`control.go:28: notify.RoleTopicPrefix + string(architect)`,
 				},
 				roleTopicCalls: 1,
 			},
@@ -339,13 +346,18 @@ func roleTopicCensus(fset *token.FileSet, file *ast.File, path string) roleTopic
 		switch {
 		case !isExpr:
 		case isRoleSubject(expr):
-			if !inRoleTopic() {
-				built := expr
-				if call, ok := stack[len(stack)-1].(*ast.CallExpr); ok && call.Fun == expr {
-					built = call
-				}
-				report(built)
+			if inRoleTopic() {
+				break
 			}
+			built := expr
+			if call, ok := stack[len(stack)-1].(*ast.CallExpr); ok && call.Fun == expr {
+				// A wildcard role builds a subscription to the project's role lanes, not a topic.
+				if len(call.Args) == 2 && slices.Contains([]string{"*", ">"}, text(call.Args[1])) {
+					break
+				}
+				built = call
+			}
+			report(built)
 		case isPrefix(expr) || isStringLiteral(expr):
 			if isPrefixDeclaration(stack, inNotify) || isReader(stack, expr) {
 				break
