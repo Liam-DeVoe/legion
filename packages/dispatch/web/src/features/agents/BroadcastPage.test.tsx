@@ -1,7 +1,7 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { DELIVERY_DUPLICATE_WINDOW_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
@@ -17,6 +17,7 @@ import type {
   MessageDelivery,
   UserAgentStates,
 } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { BroadcastPage } from "./BroadcastPage";
 import { messageDeliveryFields } from "./delivery-fixture";
@@ -283,6 +284,44 @@ test("a pending attempt nobody is carrying offers a same-mode retry and no mode 
       expect(page.createMessageDelivery).toHaveBeenCalledWith("message-1", "steer", keyedAttempt)
     );
   } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A stranded recipient's Retry is held while its retry is out: by `aria-disabled`, not
+// `disabled`, which Chromium answers by taking the focus off the button
+// (`emulateChromiumFocusFixup`). So the keyboard reader who pressed it stays on it, and a press of
+// it then, by key or by pointer, sends nothing.
+test("a stranded recipient's Retry keeps the keyboard focus while its retry is out, and a second press sends nothing", async () => {
+  const stranded = attempt({ created_at: new Date(Date.now() - 5 * 60_000).toISOString() });
+  const page = renderBroadcast(broadcast([stranded]));
+  // Dispatch answers the retry only once the case lets it.
+  const delivered = Promise.withResolvers<MessageDelivery>();
+  page.createMessageDelivery.mockImplementation(() => delivered.promise);
+  const stopFocusFixup = emulateChromiumFocusFixup();
+  try {
+    const row = await screen.findByRole("article", { name: "Planner" });
+    const retry = within(row).getByRole("button", { name: "Retry" });
+    const user = userEvent.setup();
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(page.createMessageDelivery).toHaveBeenCalledTimes(1));
+    // The retry is out, and Retry is drawn held, whichever way it is held.
+    await waitFor(() => expect(retry.matches(":disabled, [aria-disabled='true']")).toBe(true));
+    expect(retry, "Retry dropped the focus while its retry was out").toHaveFocus();
+    expect(retry).toHaveAttribute("aria-disabled", "true");
+    expect(retry).toBeEnabled();
+    await user.keyboard("{Enter}");
+    await user.click(retry);
+    expect(
+      page.createMessageDelivery,
+      "a second press of Retry sent the delivery again"
+    ).toHaveBeenCalledTimes(1);
+    await act(async () => delivered.resolve(attempt({ attempt: 2, state: "sent" })));
+    await waitFor(() => expect(retry).not.toHaveAttribute("aria-disabled"));
+  } finally {
+    stopFocusFixup();
     page.view.unmount();
     page.restore();
   }

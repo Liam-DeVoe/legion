@@ -159,10 +159,11 @@ export const focusVisibleRing = "focus-visible:ring-sky-600 dark:focus-visible:r
 export const hasFocusVisibleRing =
   "has-focus-visible:ring-sky-600 dark:has-focus-visible:ring-sky-400";
 export const cardHoverBorder = "hover:border-sky-400 dark:hover:border-sky-300";
-/** The `cardHoverBorder` accent, scoped to `enabled:` so it doesn't apply while a button is
- * `disabled` (paired with `disabled:opacity-50`-style buttons). */
+/** The `cardHoverBorder` accent while the button can be pressed: `not-refused:` (`styles.css`)
+ *  skips a `disabled` button and one held with `aria-disabled` alike (paired with
+ *  `refused:opacity-50`-style buttons). */
 export const enabledCardHoverBorder =
-  "enabled:hover:border-sky-400 dark:enabled:hover:border-sky-300";
+  "not-refused:hover:border-sky-400 dark:not-refused:hover:border-sky-300";
 export const controlHoverBorder = "hover:border-sky-500 dark:hover:border-sky-400";
 
 registerText("focus ring on canvas", FOCUS_ACCENT, CANVAS, 3);
@@ -1230,6 +1231,20 @@ export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:tex
  */
 export const scrollFadeTrailing =
   "[mask-image:linear-gradient(to_right,#000_calc(100%-32px),#0000)]";
+
+/**
+ * The 48 px fades at the ends of a control row's chips strip (`components/ControlRow.tsx`), one at
+ * each end that has a chip out of view beyond it: `leading` while the strip is scrolled away from
+ * its start, `trailing` while there is more to the right, `both` while both are true. The row's
+ * round scroll button laid over that end then sits over faded chips rather than over the opaque
+ * end of one. 48 px is the width the strip's scroll padding keeps clear, so a chip brought into
+ * view is never under a fade. Masks, not colours, like `scrollFadeTrailing`.
+ */
+export const chipStripFade: Record<"both" | "leading" | "trailing", string> = {
+  both: "[mask-image:linear-gradient(to_right,#0000,#000_48px,#000_calc(100%-48px),#0000)]",
+  leading: "[mask-image:linear-gradient(to_right,#0000,#000_48px)]",
+  trailing: "[mask-image:linear-gradient(to_right,#000_calc(100%-48px),#0000)]",
+};
 
 /**
  * The width of `scrollFadeTrailing`, for code that keeps an item clear of the fade. Tailwind needs

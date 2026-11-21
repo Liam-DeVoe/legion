@@ -1,11 +1,10 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
-import { forgetKeyedLayerMemory } from "../dispatch-http";
 
 // `dispatch inbox` against a stub Dispatch: the three routes the Inbox page reads, the one read in
 // two of its states among them, answered as the server answers them, so the test pins the lines
@@ -300,7 +299,13 @@ beforeEach(() => {
   repliesAnswer = LISTED;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
+});
+
+// A row that holds the clock releases it when its command settles. One that timed out before
+// then would leave it held for every later row and file of the process, so each row ends on the
+// real clock.
+afterEach(() => {
+  setSystemTime();
 });
 
 async function runInbox(): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -518,7 +523,10 @@ describe("dispatch inbox", () => {
       ),
     };
 
-    const { code, stdout, stderr } = await runInbox();
+    // The command dates each age by its own clock when it prints, after its four reads: the clock
+    // stands at `now` until then, so each age is the one written above, however long they take.
+    setSystemTime(new Date(now));
+    const { code, stdout, stderr } = await runInbox().finally(() => setSystemTime());
 
     expect(stderr).toBe("");
     expect(code).toBe(0);

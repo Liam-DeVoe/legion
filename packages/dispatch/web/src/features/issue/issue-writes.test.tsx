@@ -1,18 +1,20 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { pickNamed } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { answerOpenAsks } from "../inbox/inbox-fixture";
+import { narrowIssue, patchAnswer } from "../issue-page/issue-fixtures";
 import { titleWrittenElsewhere } from "../issue-page/title-elsewhere-fixture";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
@@ -109,11 +111,6 @@ function renderIssuePage(path = "/issues/CORE-1") {
   return { queryClient, unmount: view.unmount };
 }
 
-function narrowIssue(details: IssueDetails): Issue {
-  const { artifacts: _artifacts, children: _children, open_asks: _openAsks, ...rest } = details;
-  return rest;
-}
-
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   const getIssueEvents = spyOn(api, "getIssueEvents").mockResolvedValue([]);
@@ -123,7 +120,8 @@ function stubIssueApi() {
     "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
   });
   // The header reads the project's repository mappings at once for an issue that resolves to
-  // none, as this one does; a project that maps none shows no repository item.
+  // none, as this one does; a project that maps none still shows the repository item, with
+  // nothing to suggest.
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
   // The Spec tab's requirements and the header's component line read these for the issue under
   // test; both answer the API's empty shape, which is what this fixture's issue has.
@@ -141,29 +139,8 @@ function stubIssueApi() {
   // The server answers a PATCH with the narrow `Issue`, not `IssueDetails`: no artifacts,
   // children, or open asks. The stub mirrors that so the page is exercised against the
   // real response shape.
-  const patchIssue = answerIssuePatches().mockImplementation(
-    // A null `status` or `title` in the body means "leave it as it is", which is what the server
-    // does with it; every other field the body names is written through. The body's `advances`
-    // is a list of priority ids, which the answer states as the resolved relations instead, so
-    // it is left to the issue's own.
-    async (
-      _key,
-      {
-        rank: _rank,
-        components: _components,
-        advances: _advances,
-        advances_revision: _advancesRevision,
-        status,
-        title,
-        ...update
-      }
-    ) =>
-      narrowIssue({
-        ...issue,
-        ...update,
-        status: status ?? issue.status,
-        title: title ?? issue.title,
-      })
+  const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
+    patchAnswer(issue, input)
   );
 
   return {
@@ -189,7 +166,7 @@ async function openTitleEditor(): Promise<HTMLInputElement> {
     return existing;
   }
   const user = userEvent.setup();
-  await user.click(await screen.findByRole("heading", { level: 1 }));
+  await user.click(await screen.findByRole("button", { name: "Edit title" }));
   return (await screen.findByLabelText("Issue title")) as HTMLInputElement;
 }
 
@@ -415,7 +392,9 @@ test("IssuePage keeps an unsaved title draft when a stale refetch arrives", asyn
   patchIssue.mockImplementationOnce(() => firstSave.promise);
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     let title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -428,7 +407,7 @@ test("IssuePage keeps an unsaved title draft when a stale refetch arrives", asyn
 
     // Blur exits click-to-edit mode; re-enter it to start a second, still-unsaved edit
     // before the first save's response arrives.
-    await user.click(await screen.findByRole("heading", { level: 1, name: "A" }));
+    await user.click(await screen.findByRole("button", { description: "A", name: "Edit title" }));
     title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -893,7 +872,9 @@ test("IssuePage retries an unchanged failed title draft", async () => {
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     const title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);
@@ -1888,17 +1869,19 @@ test("IssuePage mounts the header without reading who has signed in until the as
   ]);
   const { unmount } = renderIssuePage();
   try {
-    const control = await screen.findByRole("combobox", { name: "Assignee of CORE-1" });
+    const control = await screen.findByRole("button", { name: pickNamed("Assignee of CORE-1") });
     await screen.findByRole("heading", { level: 1 });
     expect(listUsers).not.toHaveBeenCalled();
     // Focus has no user-event form; the control is reached for, never pressed.
     fireEvent.focus(control);
     await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(
-        [...(control as HTMLSelectElement).options].map((option) => option.textContent)
-      ).toContain("bob")
-    );
+    // The list draws its options only while it stands open.
+    await userEvent.setup().click(control);
+    expect(
+      await within(
+        await screen.findByRole("listbox", { name: "Assignee of CORE-1 options" })
+      ).findByRole("option", { name: "bob" })
+    ).toBeTruthy();
   } finally {
     unmount();
     restore();
@@ -2084,7 +2067,9 @@ test("IssuePage says what Retry does after a title save the reader stopped", asy
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
 
   try {
-    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(
+      await screen.findByRole("button", { description: "Review the spec", name: "Edit title" })
+    );
     const title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
     await user.clear(title);
     await user.click(title);

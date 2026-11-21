@@ -14,6 +14,7 @@ import {
   patchIssue,
   replyToMessageDelivery,
 } from "./api";
+import { openFilterPanel } from "./filters";
 import { inboxPane, selectRow } from "./inbox-pane";
 import { agentRowId, asSession, replyRowId, sessionActor, THREAD_SESSION } from "./inbox-threads";
 import { sql } from "./psql";
@@ -74,19 +75,24 @@ function pageRowIds(entries: readonly MeInboxEntry[] | null): string[] {
   });
 }
 
+/** The Inbox's list column, found by its name: the region the page names `Inbox list`. */
+function inboxListRegion(page: Page) {
+  return page.getByRole("region", { name: "Inbox list" });
+}
+
 /** Every row id the Inbox list holds, in its order. */
 function listedRows(page: Page): Promise<string[]> {
-  return page
+  return inboxListRegion(page)
     .locator("[data-inbox-row]")
     .evaluateAll((rows) => rows.map((row) => row.getAttribute("data-inbox-row") ?? ""));
 }
 
 /** Narrows the page's own Type filter to the value named `label`, or takes that value off again:
- *  the option toggles. The bar's Filter control and the Type trigger each say whether what they
- *  open is open, read once the page has drawn them (`expandedState`). */
+ *  the option toggles. The control row's Filter panel (`openFilterPanel`, the dialog named
+ *  `Filter`) and the Type trigger in it each say whether what they open is open, read once the
+ *  page has drawn them (`expandedState`). */
 async function toggleType(page: Page, label: string): Promise<void> {
-  const filter = page.locator("[data-inbox-filter]");
-  if ((await expandedState("the Inbox's Filter", filter)) === "shut") await filter.click();
+  await openFilterPanel(page);
   const trigger = page.getByRole("button", { name: "Filter by type" });
   if ((await expandedState("the Type filter", trigger)) === "shut") await trigger.click();
   await page
@@ -364,7 +370,7 @@ test("an answered ask stays in the threads a person takes part in", async ({ bro
     // The list the page draws once both its reads have answered - rows or its empty state - is
     // there before the rows are compared: an empty answer would otherwise match the page before
     // it drew anything.
-    await expect(page.getByTestId("inbox-list"), "the Inbox page drew its list").toBeAttached();
+    await expect(inboxListRegion(page), "the Inbox page drew its list").toBeAttached();
     await expect.poll(async () => (await listedRows(page)).sort()).toEqual([...drawn].sort());
     expect(drawn, "the rows the page draws").not.toContain(replyRowId(thread.id));
     expect(drawn, "the rows the page draws").not.toContain(replyRowId(mentioned.id));

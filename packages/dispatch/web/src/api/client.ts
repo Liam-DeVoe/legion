@@ -113,6 +113,9 @@ export class ApiError extends Error {
   }
 }
 
+/** The message of a `NetworkError`. */
+export const NETWORK_ERROR_MESSAGE = "Dispatch could not be reached";
+
 /** A request the browser could not get an answer to at all: the connection failed or dropped
  *  (`fetch`'s and XHR's own error). It is no refusal - the request may have reached Dispatch - so
  *  a read is asked again by the queries' policy and a write again under its key. */
@@ -120,7 +123,7 @@ export class NetworkError extends Error {
   readonly path: string;
 
   constructor(path: string, cause: unknown) {
-    super("Dispatch could not be reached", { cause });
+    super(NETWORK_ERROR_MESSAGE, { cause });
     this.name = "NetworkError";
     this.path = path;
   }
@@ -173,6 +176,11 @@ export { REFERENCE_TARGETS_MAX };
  *  16 KB. It is set under that one known limit, not measured against the deployed Dispatch. */
 export const REFERENCE_TARGETS_MAX_QUERY_CHARS = 12_000;
 
+/** The message of a `RequestTimeoutError` given up after `deadlineMs` of silence. */
+export function requestTimeoutMessage(deadlineMs: number): string {
+  return `Dispatch did not answer within ${deadlineMs / 1000} seconds`;
+}
+
 /** A request Dispatch went silent on for its deadline, which the page then aborted. It is no
  *  refusal: the request may still have reached Dispatch, so only a read, or a write made again
  *  under its key (`writeUnderKey`), is asked again. */
@@ -180,7 +188,7 @@ export class RequestTimeoutError extends Error {
   readonly path: string;
 
   constructor(path: string, deadlineMs: number) {
-    super(`Dispatch did not answer within ${deadlineMs / 1000} seconds`);
+    super(requestTimeoutMessage(deadlineMs));
     this.name = "RequestTimeoutError";
     this.path = path;
   }
@@ -1938,9 +1946,14 @@ export class DispatchApiClient {
     return this.read("/api/v1/credential-grants", {}, { approver: "me" });
   }
 
-  /** Revoke a grant as the signed-in viewer, its approver or its enrollment's operator. The
-   *  operator's revoke of an automatic grant also ends that session's other automatic grants of
-   *  those secrets and makes it ask before it gets them again. */
+  /** Revoke a grant as the signed-in viewer: its approver, or the person its enrollment acts for,
+   *  ends it whatever project it touches. The operator's revoke of an automatic grant also ends that
+   *  session's other automatic grants of those secrets and makes it ask before it gets them again.
+   *  A grant revoked by a viewer it does not name is 404 when it belongs to a private project the
+   *  viewer may not see, and 503 `PROJECT_ACCESS_UNAVAILABLE` while the broker cannot ask Dispatch;
+   *  of the grants the viewer may see, they end one whose approver is anyone, and any other is 403
+   *  `NOT_APPROVER`. A grant the broker saw move to another box each time it read it is 409
+   *  `GRANT_MOVING`, revoking nothing; the same revoke succeeds once it stays put. */
   async revokeCredentialGrant(grantId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);
   }
@@ -1949,9 +1962,10 @@ export class DispatchApiClient {
    *  before anybody decided it, which the list keeps until somebody dismisses it. Dispatch names
    *  the viewer as the person dismissing, and the request then leaves every list for good, a
    *  shared one's included. The broker refuses one the viewer's list does not hold (403
-   *  `NOT_APPROVER`), one that can still be decided (409 `RECORD_PENDING`) and one that was
-   *  decided, or cancelled before its deadline (409 `RECORD_TERMINAL`); a second dismissal
-   *  answers the first one's values. */
+   *  `NOT_APPROVER`), one of a private project the viewer may not see (404, as an id no request
+   *  has, and 503 `PROJECT_ACCESS_UNAVAILABLE` while it cannot ask Dispatch), one that can still
+   *  be decided (409 `RECORD_PENDING`) and one that was decided, or cancelled before its deadline
+   *  (409 `RECORD_TERMINAL`); a second dismissal answers the first one's values. */
   async dismissCredentialRequest(recordId: string, bounds: WriteBounds): Promise<void> {
     await this.post(
       "/api/v1/credential-requests/{id}/dismiss",

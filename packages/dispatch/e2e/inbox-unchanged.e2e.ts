@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { setLiveSessions } from "./agents";
 import { devSignInPath, e2eAgentToken, sessionCookieFrom } from "./api";
 import { type BaseServer, baseBuild, baseWebBuild, bootBuild, stackBinary } from "./base-build";
+import { openFilterPanel } from "./filters";
 import { selectRow } from "./inbox-pane";
 import { holdReadMarks, THREAD_SESSION } from "./inbox-threads";
 import { bandHeadings } from "./inbox-view";
@@ -336,7 +337,7 @@ async function capture(browser: Browser, server: BaseServer): Promise<Drawn> {
         return `${element.getAttribute("role") ?? element.tagName.toLowerCase()}: ${name}`;
       })
     );
-    await page.locator("[data-inbox-filter]").click();
+    await openFilterPanel(page);
     await page.getByRole("button", { name: "Filter by type" }).click();
     const options = page.getByRole("listbox", { name: "Type options" }).getByRole("option");
     await expect(options).not.toHaveCount(0);

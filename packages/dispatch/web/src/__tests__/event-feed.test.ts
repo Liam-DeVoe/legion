@@ -112,6 +112,10 @@ const READS = {
   comments: { key: ["comments", "CORE-1"] },
   components: { key: ["components", "CORE"] },
   conversationMessages: { key: ["issue-messages", "CORE-1"] },
+  // The issue's decisions: its Decisions view reads them under this key with a query of its own
+  // (`DecisionsPanel.tsx`), and its outline, the margin beside its spec and the spec's marks
+  // through `issueDecisionsQuery`.
+  decisions: { key: ["decisions", "CORE-1"] },
   detail: { key: issueQuery("CORE-1").queryKey },
   docAskPanel: {
     data: { edges: [], node: { id: "ask-7", kind: "ask" } },
@@ -1098,6 +1102,16 @@ const rules: Record<string, Rule> = {
     event: event("artifact.version", { artifact_id: "artifact-3", name: "Plan" }),
     refreshes: ["summary", "detail"],
     spares: ["projects", "inbox", "docSummary", "parentSummary"],
+  },
+  // An issue's decisions are nodes of its documents, and Dispatch refuses the upload of a
+  // decisions document (`DECISIONS_ARE_NODES`), so a first upload, whose event carries no
+  // version, leaves the decisions alone.
+  "the upload of a document of the issue leaves the issue's decisions alone": {
+    event: event("artifact.created", {
+      artifact: { id: "artifact-4", name: "notes.md", slug: "notes-md" },
+    }),
+    refreshes: ["summary", "detail"],
+    spares: ["decisions"],
   },
   "a version of a project document refreshes that document's summary and page alone": {
     event: event("artifact.version", { artifact_id: "artifact-1", name: "Plan" }, documentOwner),

@@ -28,7 +28,7 @@ import { inboxThreadsWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
-import type { InboxFilters } from "./InboxBar";
+import type { InboxFilters } from "./grouping";
 import type { InboxListRow } from "./list-row";
 import {
   type MeInboxSnapshot,

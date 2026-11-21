@@ -1,15 +1,19 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 
-import { realClock } from "../../__tests__/fake-clock";
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api, NetworkError, REQUEST_DEADLINE_MS } from "../../api/client";
+import { deliverySettingsQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type { DeliverySettings } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
@@ -38,11 +42,25 @@ const record: DeliverySettings = {
   updated_by: { id: "alice@example.com", kind: "user" },
 };
 
-function renderForm() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/** The form as the Settings page draws it, reading its record through `queryClient`, a plain
+ *  client unless the case needs the app's own; `rescued` draws it in the shell's main content with
+ *  the page's focus rescue mounted on it (`RescuedMain`), as the app shell mounts it. */
+function renderForm({
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  rescued = false,
+}: {
+  readonly queryClient?: QueryClient;
+  readonly rescued?: boolean;
+} = {}) {
   render(
     <QueryClientProvider client={queryClient}>
-      <DeliverySettingsForm />
+      {rescued ? (
+        <RescuedMain>
+          <DeliverySettingsForm />
+        </RescuedMain>
+      ) : (
+        <DeliverySettingsForm />
+      )}
     </QueryClientProvider>
   );
   return queryClient;
@@ -336,6 +354,255 @@ test("a save the reader stopped says it may have been made, not that it failed",
     realClock();
     cleanup();
     queryClient.clear();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// Save is held while its save is out and through the record's read: by `aria-disabled`, not
+// `disabled`, which Chromium answers by taking the focus off the button
+// (`emulateChromiumFocusFixup`). So Save keeps the focus through the read. The form stays the
+// same element through the read and fills its fields again from the stored record, and the focus
+// stays on the same Save once it is let go: never on the form's first field, out of view at the
+// form's top, where the reader's next key would be typed.
+test("Save keeps the focus once the read draws the stored record, and no field takes it", async () => {
+  const user = userEvent.setup();
+  const stored: DeliverySettings = {
+    ...record,
+    deploy_repo: "acme/gadgets",
+    excluded_repos: ["acme/dojo", "acme/gadgets-smoke"],
+    updated_at: "2026-10-08T09:00:00Z",
+  };
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(stored);
+  const restoreFocus = emulateChromiumFocusFixup();
+
+  try {
+    const queryClient = renderForm({ rescued: true });
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Deploy repository", "acme/gadgets");
+    // The list as typed, one line; the server stores it as its entries.
+    await replace(user, "Excluded repositories", "acme/dojo, acme/gadgets-smoke");
+    // The read after the save is held, and answers the record as the server stored it.
+    const read = Promise.withResolvers<DeliverySettings>();
+    getDeliverySettings.mockReturnValue(read.promise);
+    await user.tab();
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    expect(save).toHaveFocus();
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(getDeliverySettings).toHaveBeenCalledTimes(2));
+    expect(putDeliverySettings).toHaveBeenCalledTimes(1);
+    // Save is held through the read, and keeps the focus.
+    await afterRescue();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveFocus();
+
+    await act(async () => read.resolve(stored));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await waitFor(() => expect(save).not.toHaveAttribute("aria-disabled"));
+    await afterRescue();
+    expect(document.activeElement).toBe(save);
+    expect(screen.getByRole("button", { name: "Save delivery settings" })).toBe(save);
+    expect(field("Deploy repository")).not.toHaveFocus();
+    expect(field("Deploy repository").value).toBe("acme/gadgets");
+    expect(field("Excluded repositories").value).toBe("acme/dojo\nacme/gadgets-smoke");
+  } finally {
+    restoreFocus();
+    cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// The save has its answer, and Save stays held while the Delivery page, which holds the record,
+// is still to draw it (`useHoldUntilDrawn`). Held, Save keeps the reader's focus: it is
+// `aria-disabled`, not `disabled`, which Chromium answers by taking the focus off the button
+// (`emulateChromiumFocusFixup`). A press of it then - Enter, a click, or the form's submit - sends
+// nothing.
+test("a held Save keeps the keyboard focus, and a press or a submit while it is held sends nothing", async () => {
+  const user = userEvent.setup();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue({
+    ...record,
+    updated_at: "2026-10-08T09:00:00Z",
+  });
+  const restoreFocus = emulateChromiumFocusFixup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <RescuedMain>
+          <DeliverySettingsForm initial={record} />
+        </RescuedMain>
+      </QueryClientProvider>
+    );
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    act(() => save.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await afterRescue();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).not.toBeDisabled();
+    expect(save).toHaveFocus();
+
+    await user.keyboard("{Enter}");
+    await user.click(save);
+    act(() => save.closest("form")?.requestSubmit());
+    await afterRescue();
+    expect(putDeliverySettings).toHaveBeenCalledTimes(1);
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveFocus();
+  } finally {
+    restoreFocus();
+    cleanup();
+    queryClient.clear();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// The save has its answer, and Save stays held until the Delivery page, which holds the record,
+// draws what the save changed in the form's place (`useHoldUntilDrawn`). That hold is part of the
+// Save press's action, so the form's going while it is on is the reader's doing: the page's
+// rescue gives the focus to what the page drew in the form's place, not to the page's body.
+test("the form its caller replaces after a save hands the focus to what the caller drew in its place", async () => {
+  const user = userEvent.setup();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue({
+    ...record,
+    updated_at: "2026-10-08T09:00:00Z",
+  });
+  const restoreFocus = emulateChromiumFocusFixup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const page = (replaced: boolean) => (
+    <QueryClientProvider client={queryClient}>
+      <RescuedMain>
+        {replaced ? (
+          <section aria-label="Delivery timeline">
+            <button type="button">Open the latest deploy</button>
+          </section>
+        ) : (
+          <DeliverySettingsForm initial={record} />
+        )}
+      </RescuedMain>
+    </QueryClientProvider>
+  );
+  try {
+    const view = render(page(false));
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    act(() => save.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    for (const _ of [0, 1, 2]) await afterRescue();
+    expect(save).toHaveAttribute("aria-disabled", "true");
+    expect(save).toHaveFocus();
+
+    view.rerender(page(true));
+    await afterRescue();
+    expect(screen.getByRole("button", { name: "Open the latest deploy" })).toHaveFocus();
+  } finally {
+    restoreFocus();
+    cleanup();
+    queryClient.clear();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// `DispatchQueryClient` answers the invalidation of the idle record after a save with the
+// record's own fetch, which TanStack pauses while the browser is offline, and no request deadline
+// runs while a fetch is paused. So Save's hold through that read has a timer of its own, the
+// request deadline (`REQUEST_DEADLINE_MS`): Save whose save landed offline is let go then, and the
+// form says the record is not read yet and why. Once the network returns, the record is read and
+// the note goes.
+test("offline, Save whose save landed is let go at the request deadline, and the form says why", async () => {
+  const online = onlineManager.isOnline();
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  // The save's answer, held until the case moves the clock, so what it sets off runs in `act`.
+  const saved = Promise.withResolvers<DeliverySettings>();
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockImplementation(
+    () => saved.promise
+  );
+  const queryClient = renderForm({
+    queryClient: new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } }),
+  });
+  await screen.findByDisplayValue("acme/widgets");
+  const save = screen.getByRole("button", { name: "Save delivery settings" });
+  jest.useFakeTimers();
+  try {
+    const user = userOnFakeClock();
+    onlineManager.setOnline(false);
+    await user.click(save);
+    await tick(0);
+    expect(putDeliverySettings).toHaveBeenCalledTimes(1);
+    saved.resolve({ ...record, updated_at: "2026-10-08T09:00:00Z" });
+    await tick(1_000);
+    expect(queryClient.getQueryState(deliverySettingsQuery().queryKey)?.fetchStatus).toBe("paused");
+    expect(save).toHaveAttribute("aria-disabled", "true");
+
+    // The save landed within the second before, which is when the hold's timer started.
+    await tick(REQUEST_DEADLINE_MS - 2_000);
+    expect(save).toHaveAttribute("aria-disabled", "true");
+
+    await tick(2_000);
+    expect(save).not.toHaveAttribute("aria-disabled");
+    expect(getDeliverySettings).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Couldn't load the delivery settings. Dispatch could not be reached."
+    );
+
+    act(() => onlineManager.setOnline(true));
+    await tick(0);
+    expect(getDeliverySettings).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    // The form and its reads go before the network returns, so no read paused offline goes on.
+    cleanup();
+    queryClient.clear();
+    onlineManager.setOnline(online);
+    realClock();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// Another tab saved, and this tab's read brings the record with its new write time: the fields
+// show the stored record, and a refusal of this tab's draft goes with that draft.
+test("a save of another tab's that the read brings fills the fields from the stored record, and the refusal shown goes", async () => {
+  const user = userEvent.setup();
+  const message =
+    "the GitHub App is not installed on acme/elsewhere: its token cannot read acme/elsewhere";
+  const elsewhere: DeliverySettings = {
+    ...record,
+    deploy_repo: "acme/gadgets",
+    population_authors: ["hubot"],
+    updated_at: "2026-10-08T09:00:00Z",
+    updated_by: { id: "bob@example.com", kind: "user" },
+  };
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
+    new ApiError(409, { code: "DELIVERY_SETTINGS_ACCESS", error: message })
+  );
+
+  try {
+    const queryClient = renderForm();
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Deploy repository", "acme/elsewhere");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+
+    getDeliverySettings.mockResolvedValue(elsewhere);
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
+    });
+
+    expect(field("Deploy repository").value).toBe("acme/gadgets");
+    expect(field("Population authors").value).toBe("hubot");
+    expect(field("Production jobs").value).toBe(
+      "widgets-release / widgets-release\nrelease / release"
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
     getDeliverySettings.mockRestore();
     putDeliverySettings.mockRestore();
   }

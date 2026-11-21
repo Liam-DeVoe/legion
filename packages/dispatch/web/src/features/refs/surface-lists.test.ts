@@ -1082,15 +1082,16 @@ type Held = string | typeof PROJECTED | Through | Props | ProseRecord;
 /**
  * The dashboard's own records that carry a writer's stored text under a field the contract's
  * scan cannot name, each by the type name it is declared under, with the paths of its fields
- * that hold that text: the new issue page's node, the reading a chip names its target by, and
- * the line a filter names a parent by. A value declared as one of them - a prop, a parameter -
- * is that text: handed whole to a call whose answer is drawn, as G's folded line once handed a
- * node to `firstLineOf(lineWords(node))`, it draws it, and so does one of those fields read off
- * it, as `chipWords(chip.reading.markdown)` would, unless the call is the projection, whose
- * answer is its line. A chip's `reading.words` is the page's word for a document and no
- * writer's.
+ * that hold that text: the new issue page's node, the facts of the focused one the panel names
+ * it by, the reading a chip names its target by, and the line a filter names a parent by. A
+ * value declared as one of them - a prop, a parameter - is that text: handed whole to a call
+ * whose answer is drawn, as G's folded line once handed a node to
+ * `firstLineOf(lineWords(node))`, it draws it, and so does one of those fields read off it, as
+ * `chipWords(chip.reading.markdown)` would, unless the call is the projection, whose answer is
+ * its line. A chip's `reading.words` is the page's word for a document and no writer's.
  */
 const PROSE_RECORDS: ReadonlyMap<string, readonly string[]> = new Map([
+  ["FocusedNode", ["text", "tree"]],
   ["NodeChip", ["reading.markdown", "reading.tree"]],
   ["ParentLine", ["text", "tree"]],
   ["TreeNode", ["text", "tree"]],
@@ -1714,6 +1715,16 @@ const FEATURES = "packages/dispatch/web/src/features";
  */
 const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string }[] = [
   {
+    file: "packages/dispatch/web/src/components/DisplayMenu.tsx",
+    holds: "the menu's own word for one of its choices, the label of its radio button",
+    written: "label",
+  },
+  {
+    file: "packages/dispatch/web/src/components/DisplayMenu.tsx",
+    holds: "the menu's own word for one of its choices, handed to the choice that draws it",
+    written: "option.label",
+  },
+  {
     file: `${FEATURES}/agents/AgentsPage.tsx`,
     holds: "a count of the group's agents, from the page's own selection of sessions",
     written: "groupCountLabel(agents, selected)",
@@ -1785,6 +1796,18 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "picks.includes(option.label)",
   },
   {
+    file: `${FEATURES}/issue-page/slots/body.tsx`,
+    holds:
+      "the page's own heading for an address that names nothing the outline draws (`ABSENT_LINES`, or the kind's word before \"not found\")",
+    written: "heading",
+  },
+  {
+    file: `${FEATURES}/issue-page/useTreeKeymap.ts`,
+    holds:
+      "the page's own word for an answer, in the name of the key that answers the focused question",
+    written: "CONTROL_LABELS.answer",
+  },
+  {
     file: `${FEATURES}/issue/AssigneeControl.tsx`,
     holds: "the assignee badge's text colour, a class of the theme's badge tone",
     written: "tone.text",
@@ -1818,6 +1841,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     file: `${FEATURES}/project/IssuesTable.tsx`,
     holds: "the table's own notice of what a table action did",
     written: "notice?.text",
+  },
+  {
+    file: `${FEATURES}/project/issues-table-actions.ts`,
+    holds:
+      "the table's own notice of what a table action did, said before its line for a list read that has not settled",
+    written: "notice.text",
   },
   {
     file: `${FEATURES}/refs/RefPickerList.tsx`,

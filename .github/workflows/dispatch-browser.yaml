@@ -63,7 +63,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
           commit=$(git rev-parse HEAD)
-          CGO_ENABLED=0 go build -ldflags "-X main.buildCommit=$commit" -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+          CGO_ENABLED=0 go build -ldflags "-X main.buildCommit=$commit" -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
         working-directory: packages/envoy
       # The shard and alone jobs' containers have no Go, so e2e/harness-postgres.ts reads the
       # stacks' connection limit from this output (DISPATCH_E2E_PG_CONNECTIONS) instead.
@@ -89,8 +90,8 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 720 + 120 + 120 + 524 = 1,484 s, 24 min 44 s, rounded up to the 25 minutes below.
-    timeout-minutes: 25
+    # 720 + 120 + 120 + 565 = 1,525 s, 25 min 25 s, rounded up to the 26 minutes below.
+    timeout-minutes: 26
     strategy:
       fail-fast: false
       # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
@@ -155,7 +156,9 @@ jobs:
         run: .github/scripts/dispatch-browser-wait-for-store.sh
       - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # 585 (#4523's read: run 44557669985, job 135679815991) x 1.15 = 673 s -> 12 min.
+        # 607 x 1.15 = 698 s -> 12 min. 607 s is the maximum of this pull request's full lane at
+        # dispatch://INFRA-3135's da0804df (shard 4 of run 44892576846); main's own census of
+        # 2026-11-18 to 2026-11-21 reads 531 s, without the rows this pull request adds (the notes).
         timeout-minutes: 12
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \

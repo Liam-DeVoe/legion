@@ -19,6 +19,7 @@ import { createElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, settle } from "../../__tests__/fake-clock";
+import { pickNamed } from "../../__tests__/list-picks";
 import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -54,6 +55,7 @@ import { issueStatuses } from "../project/board-model";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
+import { narrowIssue } from "./issue-fixtures";
 import { statusGlyph, statusTone } from "./issue-status";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
@@ -79,12 +81,6 @@ beforeAll(async () => {
 const issue: IssueDetails = { ...marginIssue, last_seq: 250, status: "todo" };
 
 const state: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 };
-
-/** The server answers a PATCH with the narrow `Issue`: no artifacts, children or open asks. */
-function narrowIssue(details: IssueDetails): Issue {
-  const { artifacts: _artifacts, children: _children, open_asks: _openAsks, ...rest } = details;
-  return rest;
-}
 
 /** The header and the Details panel of one issue page: two callers of the hook on one client. */
 function useBothCallers() {
@@ -389,8 +385,12 @@ test("the four control names are main's", async () => {
   );
   try {
     const scope = within(view.container);
-    expect(scope.getByRole("combobox", { name: "Assignee of CORE-1" })).toBeInTheDocument();
-    expect(scope.getByRole("combobox", { name: "Repository of CORE-1" })).toBeInTheDocument();
+    expect(
+      scope.getByRole("button", { name: pickNamed("Assignee of CORE-1") })
+    ).toBeInTheDocument();
+    expect(
+      scope.getByRole("button", { name: pickNamed("Repository of CORE-1") })
+    ).toBeInTheDocument();
     expect(
       await scope.findByRole("button", { name: "Edit components of CORE-1" })
     ).toBeInTheDocument();

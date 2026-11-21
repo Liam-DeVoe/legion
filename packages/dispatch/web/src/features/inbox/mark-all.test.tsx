@@ -13,13 +13,21 @@ import { ApiError, NetworkError } from "../../api/client";
 import { meInboxCountQuery, meInboxKey, meInboxQuery, whoAmIQuery } from "../../api/queries";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type { DispatchEvent, MeInboxResponse, MyReplyRow } from "../../api/types";
+import { ControlRow } from "../../components/ControlRow";
+import { dangerText } from "../../theme/classes";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
 import { stoppedWriteNote } from "../writes/keyed-write";
-import { InboxBar, type InboxFilters } from "./InboxBar";
+import type { InboxFilters } from "./grouping";
 import { answerOneRead, oneReadAnswer, oneReadReply } from "./inbox-fixture";
 import type { InboxListRow } from "./list-row";
-import { MARK_ALL_REFUSED_TEXT, markAllReadBody, marksThread, useMarkAllRead } from "./mark-all";
+import {
+  MARK_ALL_REFUSED_TEXT,
+  MARK_ALL_STOPPED_TEXT,
+  markAllReadBody,
+  marksThread,
+  useMarkAllRead,
+} from "./mark-all";
 import { meInboxThreads } from "./one-read-rows";
 import { useUnreadThreadCount } from "./useInboxCount";
 
@@ -38,14 +46,14 @@ function threadsRead(rows: readonly MyReplyRow[]): MeInboxResponse {
   return oneReadAnswer(rows, { asOf: AS_OF });
 }
 
-function noop(): void {}
-
 /**
- * The bar over one list, with the one number the sidebar's Inbox count and the compact header's
- * Inbox link both read beside it (`useUnreadThreadCount` over the one read's `meInboxCountQuery`,
- * which is what `Sidebar.tsx` and `app.tsx` each add their Needs-you count to). The list is the
- * reader's Reply and Agent rows of the one read, which the Inbox draws them from. The bar is the
- * surface the button and its refusal live on; the press itself is the Inbox's own hook.
+ * The row the Inbox draws **Mark all read** in (`Inbox.tsx`), with the one number the sidebar's
+ * Inbox count and the compact header's Inbox link both read beside it (`useUnreadThreadCount`
+ * over the one read's `meInboxCountQuery`, which is what `Sidebar.tsx` and `app.tsx` each add
+ * their Needs-you count to). The list is the reader's Reply and Agent rows of the one read, which
+ * the Inbox draws them from. The row is the surface the button, its refusal and the word of a
+ * press the reader stopped live on; the press itself is the Inbox's own hook, which is what this
+ * file is about.
  */
 function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
   const threads = meInboxThreads(useQuery(meInboxQuery()).data);
@@ -57,29 +65,22 @@ function Bar({ filters = {} }: { filters?: InboxFilters }): ReactNode {
       <output data-testid="inbox-count">{count}</output>
       <output data-testid="listed">{rows.length}</output>
       <output data-testid="unread">{threads.filter((t) => t.unread).length}</output>
-      <InboxBar
-        agentToken={undefined}
-        assignees={undefined}
-        filters={filters}
-        markAll={markAll}
-        onAssigneesChange={noop}
-        onClearAgent={noop}
-        onFiltersChange={noop}
-        onPopoverOpenChange={noop}
-        rows={rows}
-        selection={["alice"]}
-        view={{
-          group: "priority",
-          onGroupChange: noop,
-          onShowChange: noop,
-          onSortChange: noop,
-          onThreadOrderChange: noop,
-          show: "inbox",
-          sort: "newest",
-          threadOrder: "oldest",
-        }}
-        viewer="alice"
-      />
+      <ControlRow>
+        {markAll.offered ? (
+          <button data-inbox-mark-all="" onClick={markAll.markAll} type="button">
+            Mark all read
+          </button>
+        ) : null}
+        {markAll.failure === "refused" ? (
+          <p className={dangerText} data-inbox-mark-all-refused="" role="alert">
+            {MARK_ALL_REFUSED_TEXT}
+          </p>
+        ) : markAll.failure === "stopped" ? (
+          <p className={dangerText} data-inbox-mark-all-stopped="" role="alert">
+            {MARK_ALL_STOPPED_TEXT}
+          </p>
+        ) : null}
+      </ControlRow>
     </>
   );
 }

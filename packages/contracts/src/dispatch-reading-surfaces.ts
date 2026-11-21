@@ -114,6 +114,7 @@ export type DispatchReadingSurface =
   | "node-row-first-line"
   | "node-row-parent-line"
   | "node-row-chip"
+  | "outline-crumb"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -550,9 +551,9 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "node-row-child-title",
   },
-  // The new issue page's one line of a node, drawn as plain words: a folded branch's line, and
-  // the line a filter's row names a node's parent by, each projected from the node's own words
-  // and cut by R1's first-line rule; and a chip, which names a tie's target.
+  // The new issue page's one line of a node, drawn as plain words: a folded branch's line, the
+  // line a filter's row names a node's parent by and a crumb above a zoom, each projected from
+  // the node's own words and cut by R1's first-line rule; and a chip, which names a tie's target.
   {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/issue-page/NodeRow.tsx"],
@@ -591,6 +592,20 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: false,
     rendered: false,
     surface: "node-row-chip",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/IssueTree.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueTree.test.tsx",
+      test: "a crumb reads a reference in its node's line as its target's name, and as its author's words until it resolves",
+    },
+    reach:
+      "/issues/<ISSUE> with the new issue page on, below 1024 px, the crumb line above a node zoomed into",
+    reason: `A crumb above a zoom names a node on one line, as a button: its first line cut by R1's first-line rule with its ellipsis, and its kind's word where its words hold none. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "outline-crumb",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.

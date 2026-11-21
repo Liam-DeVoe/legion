@@ -38,7 +38,7 @@ import { parseNodeReference, referenceHref } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
-import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
+import { useDocumentStage } from "./document-stage";
 import { ChildIssueFacts, ChildIssueTag } from "./IssueChildren";
 import { bringOnScreen } from "./identity-block";
 import {
@@ -126,6 +126,7 @@ export function NodeRow({
   editing,
   expanded,
   focused,
+  foldable = true,
   folded,
   isClosed,
   level,
@@ -135,6 +136,7 @@ export function NodeRow({
   onToggle,
   ownAnswer,
   pinned,
+  placesItself,
   report,
   rowKey,
   tabStop,
@@ -171,6 +173,10 @@ export function NodeRow({
    *  undefined for a node that holds none. */
   expanded?: boolean;
   focused: boolean;
+  /** Whether the row draws its fold control where it holds children. The row a tree is zoomed
+   *  to, drawn open by definition, draws none, and keeps its `aria-expanded`. True unless the
+   *  view passes it. */
+  foldable?: boolean;
   /** How many nodes it holds while it is folded. */
   folded?: number;
   /** Whether the issue is closed, which the writes a body offers are refused on. */
@@ -184,6 +190,13 @@ export function NodeRow({
   /** Whether the answer this ask carries is the reader's own, which carries the ink rule. */
   ownAnswer: boolean;
   pinned: boolean;
+  /** Whether the row brings itself on screen while it has the focus (`useRowOnScreen`), which
+   *  every row does but three of the outline's: its first row as the page opens on it with no
+   *  question waiting on the reader, and the row a zoom leaves the reader on under the crumb line
+   *  it draws, each of which stays where it stands until the reader acts, and the row the reader
+   *  is editing, which the editor's own caret keeps in view while it grows as the reader writes.
+   *  All three are `IssueTree.tsx`'s to set. */
+  placesItself?: boolean;
   /** What a key pressed on this row answers, where it answers in words (`ANSWER_LINES`): drawn at
    *  the row, last, until the next key, a focus move or leaving the tree clears it (R22). */
   report?: string;
@@ -202,7 +215,7 @@ export function NodeRow({
 }): ReactNode {
   const row = useRef<HTMLDivElement | null>(null);
   const words = useRef<HTMLDivElement | null>(null);
-  const stage = useDocumentStage(editing, STAGE_IN_ROW);
+  const stage = useDocumentStage(editing);
   // Where the reader writes: a row's Reply and an open question's Answer set it (R16).
   const writer = useOutlineWriter();
   // The reader's own words: a turn a person wrote who is the reader (R34). An ask, a block or a
@@ -239,7 +252,7 @@ export function NodeRow({
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
 
-  const press = useRowOnScreen(row, focused);
+  const press = useRowOnScreen(row, focused, BELOW_WHAT_STAYS, placesItself);
 
   const depth = level - 1;
   // How many nodes a folded branch holds: on its one line, and after its words once its focus
@@ -307,6 +320,7 @@ export function NodeRow({
         <Bullet
           collapsed={collapsed}
           expanded={expanded}
+          foldable={foldable}
           onToggle={onToggle}
           tabStops={tabStops}
           tone={tone}
@@ -436,21 +450,23 @@ export function NodeRow({
 }
 
 /**
- * A node's one line (R1), as every place that draws one draws it - a folded branch's line and a
- * parent's line under a filter: its node's first line, projected from its words by the shared
- * plain-text projection (`lineReading`) and cut by R1's first-line rule (`firstLineOf`), with an
- * ellipsis only where the cut ended inside a sentence (`drawnLine`), so a heading never runs into
- * the paragraph after it. A reference in it reads as the same reference in the node's row does
- * (`RowText.tsx`): as its target's current name once it resolves, and as the words its author
- * wrote until then (R8, INFRA-1196 decision 350); and a numbered step keeps its number (decisions
- * 66 and 88). Each role is read by the issue the node's record is on. `line` is `undefined` until
- * the projection has answered, which is one pre-paint commit on a page whose engine is loaded,
- * and `""` for a node whose words hold none. `reads` draws nothing and the caller mounts it where
- * it draws the line.
+ * A node's one line (R1), as every place that draws one draws it - a folded branch's line, a
+ * parent's line under a filter and a crumb above a zoom (`IssueTree.tsx`): its node's first line,
+ * projected from its words by the shared plain-text projection (`lineReading`) and cut by R1's
+ * first-line rule (`firstLineOf`), with an ellipsis only where the cut ended inside a sentence
+ * (`drawnLine`), so a heading never runs into the paragraph after it. A reference in it reads as
+ * the same reference in the node's row does (`RowText.tsx`): as its target's current name once it
+ * resolves, and as the words its author wrote until then (R8, INFRA-1196 decision 350); and a
+ * numbered step keeps its number (decisions 66 and 88). Each role is read by the issue the node's
+ * record is on. `line` is `undefined` until the projection has answered, which is one pre-paint
+ * commit on a page whose engine is loaded, and `""` for a node whose words hold none. `reads`
+ * draws nothing and the caller mounts it where it draws the line.
  */
-function useNodeLine(
+export function useNodeLine(
   node: Pick<TreeNode, "source" | "text" | "tree" | "type">,
-  { surface }: { readonly surface: "node-row-first-line" | "node-row-parent-line" }
+  {
+    surface,
+  }: { readonly surface: "node-row-first-line" | "node-row-parent-line" | "outline-crumb" }
 ): { line: string | undefined; reads: ReactNode } {
   const { source, text: stored, tree, type } = node;
   const reading = useMemo(() => lineReading({ text: stored, tree, type }), [stored, tree, type]);
@@ -539,13 +555,22 @@ export const NODE_ROW_LAYOUT = {
  * filter's body places itself by this one hook. `below` is how far below what stays a row that
  * lay under it is placed, `BELOW_WHAT_STAYS` unless a view places its rows by a step of its own,
  * as a view whose sticky heads stand taller than the outline's does.
+ *
+ * Not while `placesItself` is false: then a focused row is placed neither as it takes the focus
+ * nor as it grows. The outline's first row the page opens on is one, and its body opens with the
+ * focus, so a row taller than the screen would be put at its top under the band and the
+ * page would open scrolled past its header. Read when the row is placed rather than as a
+ * cause of placing it, so the row turning back to placing itself moves nothing at that moment.
  */
 export function useRowOnScreen(
   row: RefObject<HTMLElement | null>,
   focused: boolean,
-  below: number = BELOW_WHAT_STAYS
+  below: number = BELOW_WHAT_STAYS,
+  placesItself = true
 ): () => void {
   const pressed = useRef(false);
+  const placing = useRef(placesItself);
+  placing.current = placesItself;
   const press = () => {
     pressed.current = true;
     const ended = new AbortController();
@@ -560,6 +585,7 @@ export function useRowOnScreen(
     const element = row.current;
     if (!focused || element === null) return;
     const place = () => {
+      if (!placing.current) return;
       if (pressed.current) return;
       bringOnScreen(element);
       belowWhatStays(element, below);
@@ -665,12 +691,14 @@ function stateTone(node: TreeNode): keyof typeof pageStateText {
 function Bullet({
   collapsed,
   expanded,
+  foldable,
   onToggle,
   tabStops,
   tone,
 }: {
   collapsed: boolean;
   expanded?: boolean;
+  foldable: boolean;
   onToggle: () => void;
   tabStops: boolean;
   tone: Tone;
@@ -681,6 +709,13 @@ function Bullet({
       className={`block size-[7px] rounded-full ${pageKindBullet[tone]} ${collapsed ? pageFoldedHalo : ""}`}
     />
   );
+  if (!foldable) {
+    return (
+      <span className={NODE_ROW_LAYOUT.bullet} data-node-bullet="">
+        {dot}
+      </span>
+    );
+  }
   if (expanded === undefined) {
     return (
       <span className={NODE_ROW_LAYOUT.bullet} data-node-bullet="">
@@ -1176,7 +1211,7 @@ export function NodeEdges({
   return (
     <>
       {node.alsoUnder.map((chip) => (
-        <Chip
+        <NodeReference
           chip={chip}
           issue={issue}
           key={`also:${chip.ref}`}
@@ -1185,7 +1220,13 @@ export function NodeEdges({
         />
       ))}
       {node.chips.map((chip) => (
-        <Chip chip={chip} issue={issue} key={chip.ref} label={chip.label} tabStops={tabStops} />
+        <NodeReference
+          chip={chip}
+          issue={issue}
+          key={chip.ref}
+          label={chip.label}
+          tabStops={tabStops}
+        />
       ))}
       {node.gaps.map((gap) => (
         <span data-gap="" data-gap-kind={gap} key={gap} {...pageChrome}>
@@ -1217,7 +1258,7 @@ export function NodeEdges({
  * (`useIssueTree.ts`) - which the projection's own answer says (`names`): a chip draws no
  * address.
  */
-function Chip({
+function NodeReference({
   chip,
   issue,
   label,
@@ -1294,8 +1335,9 @@ function Chip({
  *  that node where the model gives it an address (R18, and R26: a step's row reaches the
  *  statement it serves), and as words with no link where that address names a person, whom no
  *  page shows (R5). Out of the tab order, as every other control inside a row is, unless
- *  `tabStops` holds: `f` steps to it and Enter follows it. */
-function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
+ *  `tabStops` holds: `f` steps to it and Enter follows it. The Verification view draws its own
+ *  rows' parent lines with it too (`VerificationFilterBody.tsx`). */
+export function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
   const parent = line.reference === undefined ? undefined : parseNodeReference(line.reference);
   const href = parent === undefined ? undefined : referenceHref(parent);
   const { line: drawn, reads } = useNodeLine(line, { surface: "node-row-parent-line" });

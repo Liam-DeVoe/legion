@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -29,13 +29,13 @@ func expectSameCallersAsConversationRead(t *testing.T, rig *brokerTokenRig, what
 	t.Helper()
 	caller := newBrokerCaller(t)
 
-	broker := func(name string, says brokertoken.Introspection) string {
+	broker := func(name string, says ciphertoken.Introspection) string {
 		token := "a-broker-token-" + name
 		rig.broker.Says(token, says)
 		return token
 	}
 	personScoped := liveNamedToken(caller.jkt)
-	personScoped.ProjectScope, personScoped.Projects = brokertoken.ProjectScopePerson, nil
+	personScoped.ProjectScope, personScoped.Projects = ciphertoken.ProjectScopePerson, nil
 	brokerTokens := map[string]string{
 		"a broker token for a person":        broker("person", personScoped),
 		"a broker token for one project":     broker("project", liveNamedToken(caller.jkt)),

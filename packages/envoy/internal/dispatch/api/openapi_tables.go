@@ -8,7 +8,7 @@ package api
 import (
 	"reflect"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/cipher/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -89,8 +89,6 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(architectureTreeRead{}): "ArchitectureTree",
 	reflect.TypeOf(graphReferencesRead{}):  "GraphReferences",
 	reflect.TypeOf(handoffRead{}):          "Handoff",
-	reflect.TypeOf(prioritiesRead{}):       "Priorities",
-	reflect.TypeOf(priorityRowRead{}):      "PriorityRow",
 
 	// The members of the collaborators answer, whose Go names say which handler built them and
 	// whose names here are the ones main's TypeScript exported and a consumer imports

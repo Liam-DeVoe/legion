@@ -51,17 +51,21 @@ export function lineWordsOf(node: Parameters<typeof lineReading>[0]): string {
 }
 
 /** Publishes `published` for as long as it is drawn, as a page publishes its batched read. */
-function Publisher({ published }: { published: PublishedReferences }): ReactNode {
+export function Publisher({ published }: { published: PublishedReferences }): ReactNode {
   usePublishReferenceNames(published);
   return null;
 }
 
 /** What a page publishes where its batched read named each of `names`' references by its name,
- *  as words the store draws as they stand, and answered nothing else. */
-export function publishedNames(names: ReadonlyMap<string, string>): PublishedReferences {
+ *  as words the store draws as they stand, and answered nothing else: every one of those is a
+ *  reference it asks for, and so is each of `asked`, which it has named nothing for yet. */
+export function publishedNames(
+  names: ReadonlyMap<string, string>,
+  { asked = [] }: { asked?: readonly string[] } = {}
+): PublishedReferences {
   return {
     ambiguous: new Set(),
-    asked: new Set(names.keys()),
+    asked: new Set([...names.keys(), ...asked]),
     gone: new Set(),
     readings: new Map([...names].map(([reference, words]) => [reference, { words }])),
     unnamed: new Set(),

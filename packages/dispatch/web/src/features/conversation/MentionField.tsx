@@ -73,6 +73,7 @@ export function MentionField({
   disabled = false,
   fieldClassName,
   fieldRef,
+  held = false,
   hintClassName,
   inline = false,
   issueKey,
@@ -161,6 +162,10 @@ export function MentionField({
    *  out, which `disabled` would drop the focus from in a browser. The picker is shut with it,
    *  so a pick writes nothing into the box either. */
   readonly readOnly?: boolean;
+  /** Held by its host while the write it holds is out: the box says so by `aria-disabled`, never
+   *  `disabled`, which would drop the focus in a browser. A host holding the box passes
+   *  `readOnly` with it, so the box takes no typing either. */
+  readonly held?: boolean;
   /** How tall the box starts, in lines. */
   readonly rows?: number;
   /** This box's row of the writing list, for the write it is making now: the line under the box
@@ -285,6 +290,7 @@ export function MentionField({
           aria-activedescendant={picker.activeId}
           aria-controls={open ? listboxId : undefined}
           aria-describedby={[hintId, ...(describedBy ?? [])].join(" ")}
+          aria-disabled={held || undefined}
           aria-label={label}
           className={`mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none ${inline ? "min-h-11 resize-none" : "min-h-24"} ${fieldClassName ?? `${inputClasses(true)} ${textPrimaryOnSurface}`} ${className ?? ""}`}
           disabled={disabled}

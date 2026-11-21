@@ -28,6 +28,7 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { useNewIssuePageFreshness } from "../refs/reference-target";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
@@ -354,6 +355,7 @@ export function useMarginItems(
       ),
     [asks.data, owner]
   );
+  const freshness = useNewIssuePageFreshness();
   const comments = useQuery({
     enabled: owner !== undefined,
     queryKey: commentsQueryKey,
@@ -365,6 +367,7 @@ export function useMarginItems(
         ? api.listArtifactComments(owner.artifactId)
         : api.listComments(owner.key);
     },
+    ...freshness,
   });
   const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
   const dismissed =
@@ -500,7 +503,10 @@ export function useMarginItems(
   // only once that spec is on screen, since the issue page keeps it mounted under the Conversation.
   const showsDecisions =
     owner?.kind === "issue" && visibleArtifact?.primary === true && documentShown;
-  const decisionsView = useQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
+  const decisionsView = useQuery({
+    ...issueDecisionsQuery(issueKey ?? "", showsDecisions),
+    ...freshness,
+  });
   const specRefKey = visibleArtifact?.ref_key;
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];

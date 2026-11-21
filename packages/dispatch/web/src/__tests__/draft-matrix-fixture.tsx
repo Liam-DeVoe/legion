@@ -483,7 +483,6 @@ export function drawInboxColumn(
           <MarginProvider>
             <ReadingPane
               onAnswered={() => {}}
-              onSnoozeLive={() => {}}
               row={{ kind: "thread", thread: shown }}
               viewer={READER_LOGIN}
             />

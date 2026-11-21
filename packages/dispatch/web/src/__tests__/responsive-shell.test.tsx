@@ -88,6 +88,7 @@ const issue: IssueDetails = {
 
 const originalApi = {
   getAsk: api.getAsk,
+  getCredentialPending: api.getCredentialPending,
   listOpenAsks: api.listOpenAsks,
   getMeInbox: api.getMeInbox,
   getIssue: api.getIssue,
@@ -134,6 +135,9 @@ function renderShellAt(
   const threads = Array.from({ length: unreadThreads }, (_, index) => replyRow(`c${index}`));
   const asks = inbox.filter((ask) => ask.waiting_on_person === "alice");
   api.getMeInbox = async (query = {}) => oneReadReply(query, { asks, threads });
+  // No secrets broker, which is a credential list that answered: the shell's one Inbox number
+  // is drawn only once every read it adds up has answered (`useInboxCount`).
+  api.getCredentialPending = async () => null;
   api.listIssues = async () => [
     {
       advances: [],

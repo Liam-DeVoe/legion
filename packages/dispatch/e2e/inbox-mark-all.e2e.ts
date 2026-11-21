@@ -2,6 +2,7 @@ import { GROUP_PAGE } from "../web/src/features/inbox/InboxGroups";
 
 import { setLiveSessions } from "./agents";
 import { createAsk, createIssue, createProject, meInboxThreads } from "./api";
+import { controlRow } from "./filters";
 import { typeFilterCount } from "./inbox-filter";
 import {
   asSession,
@@ -79,7 +80,7 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
     await page.goto("/");
     const rows = page.locator("[data-inbox-row]");
     await expect(rows.first()).toBeVisible();
-    const inbox = page.locator("[data-inbox-bar]");
+    const inbox = controlRow(page);
     const unreadMarks = page.locator("[data-inbox-row] [aria-label='Unread']");
     await expectSidebarInboxCount(page, ASKS + REPLY_THREADS + AGENT_THREADS);
     // Six hundred and twenty-two rows stand in the one band this seed makes - no issue here
@@ -97,8 +98,8 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
     await expect(page.locator("[data-inbox-mark-all]")).toHaveCount(0);
     await expect(unreadMarks).toHaveCount(0);
     await expect(rows).toHaveCount(GROUP_PAGE);
-    expect(await typeFilterCount(page, inbox, "Threads")).toBe(REPLY_THREADS);
-    expect(await typeFilterCount(page, inbox, "Agent message")).toBe(AGENT_THREADS);
+    expect(await typeFilterCount(page, "Threads")).toBe(REPLY_THREADS);
+    expect(await typeFilterCount(page, "Agent message")).toBe(AGENT_THREADS);
     await expectSidebarInboxCount(page, ASKS);
 
     // The server answers; a reload reads the same list and the same numbers back from it, every
@@ -110,8 +111,8 @@ test("one click marks six hundred and twenty threads read, leaves every row in t
     await expect(rows).toHaveCount(GROUP_PAGE);
     await expect(unreadMarks).toHaveCount(0);
     await expectSidebarInboxCount(page, ASKS);
-    expect(await typeFilterCount(page, inbox, "Threads")).toBe(REPLY_THREADS);
-    expect(await typeFilterCount(page, inbox, "Agent message")).toBe(AGENT_THREADS);
+    expect(await typeFilterCount(page, "Threads")).toBe(REPLY_THREADS);
+    expect(await typeFilterCount(page, "Agent message")).toBe(AGENT_THREADS);
 
     // The compact header carries the same number, as a link to the Inbox from another page.
     await page.setViewportSize({ height: 900, width: 1024 });
@@ -165,9 +166,8 @@ test("the drawer's Mark all read clears the same counts and keeps its rows @phon
     const held = await holdPosts(page, MARK_ALL);
     await drawer.locator("[data-inbox-mark-all]").click();
     await expect(drawer.locator("[data-inbox-mark-all]")).toHaveCount(0);
-    const bar = drawer.locator("[data-inbox-bar]");
     await expect(drawer.locator("[data-inbox-row] [aria-label='Unread']")).toHaveCount(0);
-    expect(await typeFilterCount(page, bar, "Threads")).toBe(REPLY_THREADS);
+    expect(await typeFilterCount(page, "Threads", drawer)).toBe(REPLY_THREADS);
     await expectInboxCount(page, ASKS);
     await expect(drawer.locator("[data-inbox-row]")).toHaveCount(GROUP_PAGE);
 

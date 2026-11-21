@@ -20,6 +20,7 @@ import type {
 } from "../../api/types";
 import { CopyButton } from "../../components/CopyButton";
 import { ChevronIcon } from "../../components/DisclosureToggle";
+import { focusOnMount } from "../../components/focus-place";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
@@ -69,7 +70,6 @@ import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { stoppedNote } from "../writes/useKeyedWrite";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -89,7 +89,7 @@ import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
-import { useAskAnswerForm } from "./useAskAnswerForm";
+import { clarificationRefusal, useAskAnswerForm } from "./useAskAnswerForm";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
   api.answerAsk(id, input, bounds);
@@ -219,21 +219,28 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   med: "text-page-question",
 };
 
-/** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
- *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
+/** Moves focus from inside the form to the form's nearest focusable ancestor instead of letting
+ *  it fall to the document body, so j/k/Enter/Escape still start from the same place: whoever
+ *  caused the loss, and with no scroll. In the Inbox's list layout that ancestor is the ask's own
+ *  row, the reader's own place, so the focus goes to no other row; a row whose ask was answered
+ *  or withdrawn elsewhere stays in the list, with the card's closed state, while it holds the
+ *  focus. In the reading column it is the column's own focus stop. The Inbox's j, k and Enter
+ *  answer from either. */
 function handOffFocus(form: HTMLElement): void {
   if (!form.contains(document.activeElement)) return;
   form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
 }
 
-/** The form's callback ref. When the form leaves while a control inside it has focus - the ask
- *  was answered or resolved elsewhere and the card swaps to its record - focus is handed off
- *  without any event; React detaches a ref before removing its node, so the form is still in the
- *  document when this cleanup runs. The form is also kept in `formRef` for the disabled-control
- *  hand-off below: in the compact variant the answer field is unmounted while its disclosure is
- *  closed, so the field's `.form` is not a reliable way to reach it. The callback must be stable
- *  across renders: React re-runs a changed callback ref's cleanup on every commit, and that
- *  cleanup moves focus. */
+/** The form's callback ref. When the form leaves while a control inside it has focus - the card
+ *  swapping to its record once the ask is answered, or resolved elsewhere - its cleanup runs the
+ *  hand-off without any event, which moves the focus to the form's nearest focusable ancestor,
+ *  the list layout's row or the reading column's focus stop, with no scroll (`handOffFocus`);
+ *  React detaches a ref before removing its node, so the form is still in the document when this
+ *  cleanup runs. The form is also kept in `formRef` for the disabled-control hand-off below: in
+ *  the compact variant the answer field is unmounted while its disclosure is closed, so the
+ *  field's `.form` is not a reliable way to reach it. The callback must be stable across renders:
+ *  React re-runs a changed callback ref's cleanup on every commit, and that cleanup can move
+ *  focus. */
 function useFormRef(): [
   { current: HTMLFormElement | null },
   (form: HTMLFormElement | null) => (() => void) | undefined,
@@ -460,14 +467,14 @@ export function AskCard({
   const cannotAnswer = held?.cannotAnswer ?? !canAnswer;
   const nothingToAskBack = held?.nothingToAskBack ?? trimmedAnswer === "";
   const choiceShown = held?.choice ?? questionChoice;
-  // Ask back instead takes the focus as it is drawn. Outside `NoTooltips` its callback is a new
-  // one at each render, which focuses it again at each render, as on `main`. Inside it is this
-  // one callback, stable across renders as `useFormRef`'s is, which focuses it once: a focus
-  // taken at each render would move the reader's focus while a write is out - from Answer with
-  // it anyway, say, whose answer is out. The choice leaves the page, and the button with it, as
-  // the clarification lands outside `NoTooltips`, and inside once the ask is read again after it;
-  // a focus the button still holds then goes where the form's own hand-off puts it, not to the
-  // body.
+  // Ask back instead takes the focus as it is drawn, once. Outside `NoTooltips` its callback is
+  // `focusOnMount`, one function for every render, which never pulls the focus back on a later
+  // render. Inside it is this one callback, stable across renders as `useFormRef`'s is, which
+  // focuses it once as well: a focus taken at each render would move the reader's focus while a
+  // write is out - from Answer with it anyway, say, whose answer is out. The choice leaves the
+  // page, and the button with it, as the clarification lands outside `NoTooltips`, and inside
+  // once the ask is read again after it. Only inside does a focus the button still holds then go
+  // where the form's own hand-off puts it, not to the body.
   const focusAskBackInstead = useCallback(
     (button: HTMLButtonElement | null) => {
       if (button === null) return undefined;
@@ -674,7 +681,7 @@ export function AskCard({
         onClick={() => {
           if (!refusing) sendClarification();
         }}
-        ref={tooltips ? (node) => node?.focus() : focusAskBackInstead}
+        ref={tooltips ? focusOnMount : focusAskBackInstead}
         type="button"
       >
         {clarification.isPending ? "Sending…" : "Ask back instead"}
@@ -1048,18 +1055,16 @@ export function AskCard({
             retrying={mutation.isPending}
           />
         )}
-        {clarification.isError ? (
+        {clarification.error === null ? null : (
           <QueryError
-            message={
-              // A question back the reader stopped may have been sent, and Retry makes that very
-              // press again (`retryLast`).
-              stoppedNote(clarification, "your clarification", "sent") ??
-              "Could not send your clarification."
-            }
+            message={clarificationRefusal({
+              error: clarification.error,
+              method: clarification.method,
+            })}
             onRetry={() => submitGuard.retryLast(clarification)}
             retrying={clarification.isPending}
           />
-        ) : null}
+        )}
       </form>
       {/* The person's way out of a question they will not answer, under the form that answers
           it. An approval request draws none: it is answered with Approve or Request changes. */}

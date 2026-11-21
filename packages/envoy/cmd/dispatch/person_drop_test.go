@@ -23,8 +23,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/testbaseline"
@@ -40,7 +40,7 @@ const personDropSession = "ses_person_drop_agent"
 
 // A drop of an answered ask's block by a broker-issued token the secrets broker scoped to a person
 // stays, read under the base release (R6). The base release trusts a stub broker of the test's
-// own (brokertokentest), and an agent of the test's person, alice, drops the answered ask q-scoped
+// own (ciphertokentest), and an agent of the test's person, alice, drops the answered ask q-scoped
 // from its spec with a token the broker scoped to her, presenting a fresh DPoP proof: the base
 // release refuses no such drop, and records the version's author as the session the token proved,
 // owned by alice, with an act whose scopes hold `person`. Beside it, an agent's session drops the
@@ -55,8 +55,8 @@ func TestADropByAPersonScopedBrokerTokenUnderTheBaseStays(t *testing.T) {
 	databaseURL := censusDatabase(t)
 	base := baseRelease(t)
 	baseline := testbaseline.Commit(t)
-	broker := brokertokentest.NewStubBroker(t)
-	caller := brokertokentest.NewCaller(t)
+	broker := ciphertokentest.NewStubBroker(t)
+	caller := ciphertokentest.NewCaller(t)
 	accountToken := filepath.Join(t.TempDir(), "account-token")
 	if err := os.WriteFile(accountToken, []byte("the dispatch account's projected token\n"), 0o600); err != nil {
 		t.Fatalf("write the account token: %v", err)
@@ -93,9 +93,9 @@ func TestADropByAPersonScopedBrokerTokenUnderTheBaseStays(t *testing.T) {
 	// The person-scoped token's drop, with a proof of the caller's key signed for the origin the
 	// base release checks.
 	const token = "a-broker-token-scoped-to-alice"
-	broker.Says(token, brokertoken.Introspection{
-		Active: true, Session: personDropSession, Person: dispatchTestLogin, ProjectScope: brokertoken.ProjectScopePerson,
-		Scope: "dispatch.write", ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: brokertoken.ExchangeClientID,
+	broker.Says(token, ciphertoken.Introspection{
+		Active: true, Session: personDropSession, Person: dispatchTestLogin, ProjectScope: ciphertoken.ProjectScopePerson,
+		Scope: "dispatch.write", ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID,
 		Thumbprint: caller.JKT(),
 	})
 	path := "/api/v1/artifacts/" + specA + "/edits"

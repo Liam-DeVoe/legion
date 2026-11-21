@@ -159,7 +159,7 @@ function knowParties(queryClient: QueryClient, { login, role, session }: Parties
 
 /** Publishes `published` to the names store while it is drawn, and hands it to what it draws in
  *  the render that draws it, as the page publishes its one batched read and hands it its rows
- *  (`useIssueTree.ts`, `ConversationRows.tsx`); nothing where it is undefined. */
+ *  (`useIssueTree.ts`, `IssueTree.tsx`); nothing where it is undefined. */
 function Named({
   children,
   published,
@@ -337,8 +337,8 @@ test("an author is drawn by a name and a shape of its own kind", () => {
   });
 });
 
-/** One row of the tree as `ConversationRows` draws it, its body open: the node as the tree model
- *  built it, its author named by the page's one rule for naming one (`AgentText.author`). */
+/** One row of the tree as the outline (`IssueTree.tsx`) draws it, its body open: the node as the
+ *  tree model built it, its author named by the page's one rule for naming one (`AgentText.author`). */
 function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
   const agentText = useAgentText();
   return (

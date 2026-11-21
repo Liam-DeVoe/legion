@@ -4,7 +4,7 @@ import {
   dispatchWritingBox,
 } from "@legion/contracts";
 
-import { agentRow } from "./agents";
+import { agentRow, issueOption } from "./agents";
 import {
   answerAsk,
   createIssueArtifact,
@@ -193,7 +193,7 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // lists everyone who has signed in.
       await expectRow(page, field, "agents-row-composer", "agent-message");
       await row.getByRole("button", { name: "Choose issue" }).click();
-      await row.getByRole("combobox", { name: "Issue" }).selectOption(world.host);
+      await issueOption(row, world.host).click();
       await expectRow(page, field, "agents-row-composer", "comment", () =>
         composerSend(page, "Comment", row).click()
       );

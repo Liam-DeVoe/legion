@@ -42,7 +42,7 @@ import { inboxThreadsWritten } from "../../api/write-events";
 import { compareTimestamps } from "../../lib/timestamps";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import type { InboxFilters } from "./InboxBar";
+import type { InboxFilters } from "./grouping";
 import { type InboxListRow, rowId } from "./list-row";
 import {
   cancelMeInbox,
