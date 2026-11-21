@@ -24,11 +24,18 @@ body: |-
   token, and its cut.
 
   A read-only token's read of `GET /api/v1/issues/{key}/results` asks GitHub exactly what a
-  writer's read made at the same moment asks, and gives the same answer. It stores nothing and keeps
-  nothing after its request: it reads the writers' claims, holds and default-branch cache without
-  writing them. So each read-only read asks GitHub as a writer's read at that moment would, one
-  pulls read for each result commit that no stored head and no writer's claim covers, on the same
-  GitHub App installation's rate limit.
+  writer's read made at the same moment asks, and gives the same answer. It stores no row and
+  keeps no answer after its request: it reads the writers' claims, holds and default-branch cache
+  without writing them, and, as a writer's read does, it fills the GitHub client's token cache,
+  deletes lapsed holds and records a rate limit GitHub answers. So each read-only read makes a
+  writer's GitHub reads on the same installation's rate limit: a pulls read for each result
+  commit that no stored head and no writer's claim or settle covers, the commit-message pages of each pull
+  request it names that nothing else attributes, the compare reads of a branch check, the
+  check-runs read of a check CI proves and the default-branch read. A poll every N seconds of a
+  read that makes R of them costs R × 3600 / N an hour against the installation's limit (at least
+  5,000 an hour), and while a limit is recorded the client sends nothing on that installation's
+  token for any caller. Nothing caps a read-only caller's reads; ending the poll or revoking the
+  token undoes it.
 time: 2026-11-20T02:56:20Z
 custom:
   Issue: pr4557
