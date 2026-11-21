@@ -220,8 +220,9 @@ func TestARetryOfAMessageNamesNoTargetItsCallerDoesNotRead(t *testing.T) {
 // message reaches its session. Each answer is logged with its times and ids blanked, beside the
 // sha256 of what it logs, so a run at the base and a run at the head compare byte for byte.
 //
-// Control: retryableMentionTargets answering no target at all; alice's Retries of the comments then
-// answer 404 and the row fails.
+// Control: retryableMentionTargets answering no target at all, then createDelivery reading every
+// message as one with no target; alice's Retries of the comments, then of the messages, answer 404
+// and the row fails.
 func TestWithNoPrivateProjectARetryAnswersAsBefore(t *testing.T) {
 	counter := &contextStatements{}
 	seed := seedHiddenHolders(t, testServerOptions{store: storetest.TracedStore(t, storetest.Open(t), counter)})
@@ -252,6 +253,175 @@ func TestWithNoPrivateProjectARetryAnswersAsBefore(t *testing.T) {
 		if answer.Code != row.status || !strings.Contains(answer.Body.String(), row.holds) {
 			t.Errorf("PRIV public: alice's Retry of the %s %q with %v answers %d %s, want %d holding %s, as before",
 				row.kind, row.name, row.body, answer.Code, strings.TrimSpace(answer.Body.String()), row.status, row.holds)
+		}
+	}
+}
+
+// strandFirstAttempt puts message id's attempt 1 back as a process that died inside its send
+// leaves it: pending, pinned to the session it went to, made and claimed long enough ago that the
+// delivery sweep owes it (owedMessageAttempt).
+func strandFirstAttempt(t *testing.T, seed hiddenHolderSeed, id string) {
+	t.Helper()
+	if _, err := seed.database.Pool.Exec(t.Context(), `
+		update message_deliveries
+		set state = 'pending', error = null, envelope_id = null,
+		    claimed_at = now() - interval '10 minutes', created_at = now() - interval '10 minutes'
+		where message_id = $1::uuid and attempt = 1`, id); err != nil {
+		t.Fatalf("strand attempt 1 of %s: %v", id, err)
+	}
+}
+
+// attemptRows is message id's attempts as "<attempt> <state> <session> <claim lapsed>", in order.
+func attemptRows(t *testing.T, seed hiddenHolderSeed, id string) []string {
+	t.Helper()
+	rows, err := seed.database.Pool.Query(t.Context(), `
+		select attempt || ' ' || state || ' ' || coalesce(nullif(session_id, ''), '-') || ' ' ||
+		       (claimed_at is null or claimed_at < now() - interval '1 minute')
+		from message_deliveries where message_id = $1::uuid order by attempt`, id)
+	if err != nil {
+		t.Fatalf("read the attempts of %s: %v", id, err)
+	}
+	defer rows.Close()
+	var attempts []string
+	for rows.Next() {
+		var attempt string
+		if err := rows.Scan(&attempt); err != nil {
+			t.Fatalf("read the attempts of %s: %v", id, err)
+		}
+		attempts = append(attempts, attempt)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the attempts of %s: %v", id, err)
+	}
+	return attempts
+}
+
+// TestARetryLeavesAnAttemptPinnedToASessionItsCallerDoesNotSee: carol messages PUB's issue to
+// role:reviewer, which session-priv holds, and her attempt 1 to session-priv is stranded by a
+// process that died inside its send. alice reads the message's target and not that attempt
+// (leaveOutHiddenMessageSessions), so her Retry leaves the attempt as it stands and opens her own,
+// resolved as she reads the role - no holder she sees - and answers byte for byte as her Retry of
+// carol's twin message whose attempt 1 was sent, naming nothing of session-priv. The delivery
+// sweep then still sends carol's attempt 1 to session-priv, since alice's attempt failed and so
+// stands in no attempt's place (owedMessageAttempt). carol, who sees session-priv, resumes her own
+// stranded attempt 1 as before; and with no private project (R9) so does alice.
+//
+// Control: resumableBySQL dropped from messageDeliveryRoute and recordPendingMessageDelivery (the
+// unfiltered resume restored); alice's Retry then resumes carol's attempt 1, answers it naming
+// session-priv and settles it failed, and the row fails.
+func TestARetryLeavesAnAttemptPinnedToASessionItsCallerDoesNotSee(t *testing.T) {
+	seed := seedHiddenHolders(t, testServerOptions{})
+	send := func() string {
+		t.Helper()
+		return createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+seed.unclaimed+"/messages",
+			map[string]any{"body": "A note for the reviewer.", "target": "role:" + hiddenHolderRole, "delivery": "btw"}))
+	}
+	stranded, twin, carols, publicLater := send(), send(), send(), send()
+	awaitBackgroundWrites(t, seed.server)
+	strandFirstAttempt(t, seed, stranded)
+	strandFirstAttempt(t, seed, carols)
+	retryOf := func(caller privateCaller, id string) *httptest.ResponseRecorder {
+		t.Helper()
+		answer := seed.request(t, caller, http.MethodPost, "/api/v1/messages/"+id+"/deliveries", map[string]any{"delivery": "btw"})
+		awaitBackgroundWrites(t, seed.server)
+		return answer
+	}
+
+	got, want := retryOf(callerAlice, stranded), retryOf(callerAlice, twin)
+	gotText := timestampsAndIDs.ReplaceAllString(got.Body.String(), "<varies>")
+	wantText := timestampsAndIDs.ReplaceAllString(want.Body.String(), "<varies>")
+	if got.Code != want.Code || gotText != wantText {
+		t.Errorf("alice's Retry of carol's message whose attempt to session-priv is stranded answers %d %s; of its twin whose attempt was sent, %d %s: want one answer",
+			got.Code, strings.TrimSpace(gotText), want.Code, strings.TrimSpace(wantText))
+	}
+	if strings.Contains(got.Body.String(), sessionOfPrivate) {
+		t.Errorf("alice's Retry names %s, a session she does not see: %s", sessionOfPrivate, strings.TrimSpace(got.Body.String()))
+	}
+	if attempts := attemptRows(t, seed, stranded); len(attempts) == 0 || attempts[0] != "1 pending "+sessionOfPrivate+" true" {
+		t.Errorf("after alice's Retry carol's attempts are %v, want attempt 1 left pending to %s, its claim lapsed", attempts, sessionOfPrivate)
+	}
+
+	if resumed := retryOf(callerCarol, carols); resumed.Code != http.StatusCreated ||
+		!strings.Contains(resumed.Body.String(), `"attempt":1,`) || !strings.Contains(resumed.Body.String(), `"session_id":"`+sessionOfPrivate+`"`) ||
+		!strings.Contains(resumed.Body.String(), `"state":"sent"`) {
+		t.Errorf("carol's Retry of her stranded attempt answers %d %s, want attempt 1 resumed and sent to %s", resumed.Code, strings.TrimSpace(resumed.Body.String()), sessionOfPrivate)
+	}
+
+	if err := seed.server.resumeOwedDeliveries(t.Context()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	awaitBackgroundWrites(t, seed.server)
+	if attempts := attemptRows(t, seed, stranded); len(attempts) == 0 || !strings.HasPrefix(attempts[0], "1 sent "+sessionOfPrivate+" ") {
+		t.Errorf("after the delivery sweep carol's attempts are %v, want attempt 1 sent to %s", attempts, sessionOfPrivate)
+	}
+
+	seed.setVisibility(t, seedPrivate, model.ProjectPublic)
+	strandFirstAttempt(t, seed, publicLater)
+	if resumed := retryOf(callerAlice, publicLater); resumed.Code != http.StatusCreated ||
+		!strings.Contains(resumed.Body.String(), `"attempt":1,`) || !strings.Contains(resumed.Body.String(), `"session_id":"`+sessionOfPrivate+`"`) ||
+		!strings.Contains(resumed.Body.String(), `"state":"sent"`) {
+		t.Errorf("PRIV public: alice's Retry of carol's stranded attempt answers %d %s, want attempt 1 resumed and sent to %s, as before",
+			resumed.Code, strings.TrimSpace(resumed.Body.String()), sessionOfPrivate)
+	}
+}
+
+// TestTheSweepSendsAMessageAttemptNoLaterAttemptStandsInThePlaceOf: a message's stranded attempt 1
+// (mode btw) is the delivery sweep's to send while no later attempt stands in its place
+// (owedMessageAttempt). A later attempt that failed with a refusal, in either mode, or that failed
+// in the same mode with a cause that says it may have landed (the same idempotency key, which the
+// listener drops as a repeat), stands in no attempt's place, and the sweep sends attempt 1. A later
+// attempt that failed in another mode with such a cause, one still in flight, and one sent each
+// stand in its place, and attempt 1 stays pending.
+//
+// Controls: owedMessageAttempt owing only a message's latest attempt (the rule before); the three
+// first cases then leave attempt 1 pending and fail. And the rule without its arm for a later
+// attempt in another mode that may have landed; the fourth case then sends attempt 1 and fails.
+func TestTheSweepSendsAMessageAttemptNoLaterAttemptStandsInThePlaceOf(t *testing.T) {
+	seed := seedHiddenHolders(t, testServerOptions{})
+	const refusal = "no holder for role reviewer"
+	cases := []struct {
+		name, state, delivery string
+		failure               *string
+		liveClaim             bool
+		swept                 bool
+	}{
+		{"a later attempt refused in the same mode", "failed", "btw", new(refusal), false, true},
+		{"a later attempt refused in another mode", "failed", "steer", new(refusal), false, true},
+		{"a later attempt that may have landed, in the same mode", "failed", "btw", new(receiptTimeoutText), false, true},
+		{"a later attempt that may have landed, in another mode", "failed", "steer", new(storeUnconfirmedText), false, false},
+		{"a later attempt in flight", "pending", "btw", nil, true, false},
+		{"a later attempt sent", "sent", "btw", nil, false, false},
+	}
+	ids := make([]string, len(cases))
+	for index, test := range cases {
+		ids[index] = createdID(t, seed.request(t, callerCarol, http.MethodPost, "/api/v1/issues/"+seed.unclaimed+"/messages",
+			map[string]any{"body": "A note for session-pub.", "target": "session:" + sessionOfPublic, "delivery": "btw"}))
+		awaitBackgroundWrites(t, seed.server)
+		// carol's Retry opens attempt 2, sent; it is then written as the case's later attempt.
+		seed.mustRequest(t, callerCarol, http.MethodPost, "/api/v1/messages/"+ids[index]+"/deliveries", map[string]any{"delivery": "btw"}, http.StatusCreated)
+		awaitBackgroundWrites(t, seed.server)
+		if _, err := seed.database.Pool.Exec(t.Context(), `
+			update message_deliveries
+			set state = $2, delivery = $3, error = $4,
+			    envelope_id = case when $2 = 'sent' then envelope_id end,
+			    claimed_at = case when $5 then now() else now() - interval '10 minutes' end
+			where message_id = $1::uuid and attempt = 2`, ids[index], test.state, test.delivery, test.failure, test.liveClaim); err != nil {
+			t.Fatalf("%s: write attempt 2: %v", test.name, err)
+		}
+		strandFirstAttempt(t, seed, ids[index])
+	}
+	if err := seed.server.resumeOwedDeliveries(t.Context()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	awaitBackgroundWrites(t, seed.server)
+	for index, test := range cases {
+		attempts := attemptRows(t, seed, ids[index])
+		want := "1 pending " + sessionOfPublic + " true"
+		if test.swept {
+			want = "1 sent " + sessionOfPublic + " "
+		}
+		if len(attempts) == 0 || !strings.HasPrefix(attempts[0], want) {
+			t.Errorf("%s: after the sweep the attempts are %v, want attempt 1 %q", test.name, attempts, want)
 		}
 	}
 }
