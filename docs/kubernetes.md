@@ -2672,6 +2672,39 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 A daemon of the earlier release writes rows whose sequences fall behind their values, in its own project and in the rows of other projects that its controller tick reads for blockers.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release that reads the slots
+
+This release reads what each holder of an admission slot is doing, and since when: the slots reading of `legion state`, of `admission.slots` in its JSON body, and of the field `slots` of the controller's tick notice.
+Its migration `20261121103000_slots_reading_times` adds the three times that reading dates a holder by, which the record did not hold before.
+The table `issue_holds` holds when the hold of a held issue began.
+The table `slot_waits` holds when a slot holder began to wait on another issue while it keeps its slot.
+The column `claims.stopped_at` holds when a suspended or a retired claim stopped.
+The earlier release names none of the three, so after a rollback each would go stale.
+
+**A queued tick notice that carries `slots` must go before the earlier image is pinned.**
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no field `slots`.
+A tick notice still queued at the rollback then fails on every attempt, and the tick reaches nobody.
+Run this with every daemon of the database stopped, before the earlier image is pinned, through `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`:
+
+```sql
+begin;
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'tick' and payload ? 'slots';
+drop table if exists slot_waits;
+drop table if exists issue_holds;
+alter table claims drop column if exists stopped_at;
+delete from schema_version where version = 20261121103000;
+commit;
+```
+
+The header of `20261121103000_slots_reading_times.up.sql` carries this same block.
+The delete costs one tick: the next tick of the daemon that runs queues another.
+The delete of the version row is what lets the roll forward run the migration again.
+After the roll forward, each state that began before it reads with no time, as at the first upgrade.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and the two tables, the claims table and the outbox hold the rows of every project.
+Upgrade, and roll back, every daemon of one database in the same change.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
@@ -3204,6 +3237,7 @@ The migrations recorded above this one are these.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
 20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
+20261121103000_slots_reading_times, of cybermonklabs/legion#4771, adds the tables `issue_holds` and `slot_waits` and the column `claims.stopped_at`, and touches none of the six, so the block holds over it, and a rollback to a release before it runs the way back of its own section first, [Rolling back the release that reads the slots](#rolling-back-the-release-that-reads-the-slots), which deletes the queued tick notices that carry `slots`, drops the two tables and the column and deletes its version row.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

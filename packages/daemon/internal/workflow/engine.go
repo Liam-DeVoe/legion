@@ -1118,6 +1118,12 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 		return intake.Result{}, err
 	}
+	// The hold's beginning is kept beside it (record.Hold.Since), the time `legion state` and the
+	// tick's slots reading date a held holder's `stopped` by. This is the one move into held, so
+	// the row always dates the hold the issue stands in.
+	if err := e.store.MarkHoldBegan(ctx, tx, issue.Key, e.now()); err != nil {
+		return intake.Result{}, err
+	}
 	// The hold's beginning is a line of its own once the fact commits, so a window of the daemon's
 	// log read later says when the phase stopped and why: the cause the failed claim names, or
 	// unrecorded for a fact that names none (noticeFailure). A replay of the window starts the

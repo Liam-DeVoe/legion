@@ -101,8 +101,15 @@ func TestTickNoticeCarriesTheSlotsLine(t *testing.T) {
 		!strings.Contains(notice.Slots.Line, "ACME-4, which waits for a slot.") {
 		t.Fatalf("the tick notice's line is %q, want the slots line naming 4 of 4 in use and ACME-4 waiting", notice.Slots.Line)
 	}
-	if !strings.Contains(payload, `"slots":{`) || !strings.Contains(payload, `"line":`) {
-		t.Fatalf("the tick notice's payload carries no slots object with its line: %s", payload)
+	// The stored row is jsonb, which Postgres prints with its own spacing, so the payload is read as
+	// JSON rather than matched as text: it carries a slots object, and that object carries the line.
+	var stored struct {
+		Slots *struct {
+			Line *string `json:"line"`
+		} `json:"slots"`
+	}
+	if err := json.Unmarshal([]byte(payload), &stored); err != nil || stored.Slots == nil || stored.Slots.Line == nil {
+		t.Fatalf("the tick notice's payload carries no slots object with its line (%v): %s", err, payload)
 	}
 
 	// The state's own reading over the same records, read through internal/projection.

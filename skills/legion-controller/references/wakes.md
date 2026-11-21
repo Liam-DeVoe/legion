@@ -8,6 +8,9 @@ Run the every-turn steps and the parked-root walk. Name in the day's report, and
 
 A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` the entry's `tree`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says. When the owning architect's claim does not read `failed` and the Envoy registry shows its session `gone`, `fresh_session` that architect.
 
+A tick's `slots` is the slots reading that `legion state` prints as its `slots:` line, and its `line` is that same sentence ("What is it doing?" in `docs/site/src/content/docs/legion/running-legion.md`, section Observe, says what each count means).
+It asks nothing of you: take nothing for it, and where the day's report names the slots, quote its `line`.
+
 ## `awaiting-person`
 
 A root that waits only on a person keeps its slot: do not park it or take anything for its wait. The person's answer puts it in `admission.waiting` by itself, among the issues whose work came back, oldest first, and its promotion gives its architect the answer task.

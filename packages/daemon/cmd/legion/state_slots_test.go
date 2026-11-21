@@ -64,7 +64,8 @@ func (s slotsStateSource) State(ctx context.Context, tx pgx.Tx) (api.State, []su
 // and every oldest time it prints. A count with no known time prints no oldest, and the last
 // sentence names the first issue that waits for a slot or says that none waits.
 var slotsLinePattern = regexp.MustCompile(`^slots: (\d+) of (\d+) in use: ` +
-	`(\d+) working(?: \(oldest ([^)]+)\))?, (\d+) stopped(?: \(oldest ([^)]+)\))?, (\d+) person, (\d+) issue, ` +
+	`(\d+) working(?: \(oldest ([^)]+)\))?, (\d+) stopped(?: \(oldest ([^)]+)\))?, ` +
+	`(\d+) person(?: \(oldest ([^)]+)\))?, (\d+) issue(?: \(oldest ([^)]+)\))?, ` +
 	`(\d+) idle(?: \(oldest ([^)]+)\))?\. ` +
 	`Started work without a slot: (\d+) wait only for a slot(?: \(oldest ([^)]+)\))?, (\d+) in all(?: \(oldest ([^)]+)\))?\. ` +
 	`(?:(\d+) holders? ranks? below (\S+), which waits for a slot\.|No issue waits for a slot\.)$`)
@@ -342,13 +343,13 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 		{what: "the cap", count: r.Cap, n: number(2)},
 		{what: "working", count: r.Working.Count, n: number(3), oldest: r.Working.Oldest, printedTime: parts[4], timed: true},
 		{what: "stopped", count: r.Stopped.Count, n: number(5), oldest: r.Stopped.Oldest, printedTime: parts[6], timed: true},
-		{what: "person", count: r.Person.Count, n: number(7)},
-		{what: "issue", count: r.Issue.Count, n: number(8)},
-		{what: "idle", count: r.Idle.Count, n: number(9), oldest: r.Idle.Oldest, printedTime: parts[10], timed: true},
-		{what: "wait only for a slot", count: r.WaitOnlyForSlot.Count, n: number(11), oldest: r.WaitOnlyForSlot.Oldest, printedTime: parts[12], timed: true},
-		{what: "started without a slot in all", count: r.StartedWithoutSlot.Count, n: number(13), oldest: r.StartedWithoutSlot.Oldest,
-			printedTime: parts[14], timed: true},
-		{what: "holders below the first waiting issue", count: r.BelowFirstWaiting.Count, n: number(15)},
+		{what: "person", count: r.Person.Count, n: number(7), oldest: r.Person.Oldest, printedTime: parts[8], timed: true},
+		{what: "issue", count: r.Issue.Count, n: number(9), oldest: r.Issue.Oldest, printedTime: parts[10], timed: true},
+		{what: "idle", count: r.Idle.Count, n: number(11), oldest: r.Idle.Oldest, printedTime: parts[12], timed: true},
+		{what: "wait only for a slot", count: r.WaitOnlyForSlot.Count, n: number(13), oldest: r.WaitOnlyForSlot.Oldest, printedTime: parts[14], timed: true},
+		{what: "started without a slot in all", count: r.StartedWithoutSlot.Count, n: number(15), oldest: r.StartedWithoutSlot.Oldest,
+			printedTime: parts[16], timed: true},
+		{what: "holders below the first waiting issue", count: r.BelowFirstWaiting.Count, n: number(17)},
 	} {
 		if check.n != check.count {
 			t.Errorf("the slots line gives %s as %d and the JSON as %d: %q", check.what, check.n, check.count, line)
@@ -358,7 +359,7 @@ func TestTheSlotsLineTheJSONAndTheTickAgree(t *testing.T) {
 				slotsLineMinute(check.oldest), line)
 		}
 	}
-	if parts[16] != r.BelowFirstWaiting.First {
-		t.Errorf("the slots line names %q as the first issue that waits for a slot and the JSON %q: %q", parts[16], r.BelowFirstWaiting.First, line)
+	if parts[18] != r.BelowFirstWaiting.First {
+		t.Errorf("the slots line names %q as the first issue that waits for a slot and the JSON %q: %q", parts[18], r.BelowFirstWaiting.First, line)
 	}
 }

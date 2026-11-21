@@ -1354,6 +1354,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```text
   legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
   admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
+  slots: 3 of 4 in use: 1 working (oldest 2026-10-03T10:12Z), 0 stopped, 1 person (oldest 2026-10-02T16:20Z), 0 issue, 1 idle (oldest 2026-10-03T09:30Z). Started work without a slot: 1 wait only for a slot (oldest 2026-10-03T09:58Z), 1 in all (oldest 2026-10-03T09:58Z). 2 holders rank below WIDGETS-14, which waits for a slot.
   waiting line: 2
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
     WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
@@ -1380,6 +1381,26 @@ Closing the terminal leaves the project without one, and the daemon logs
   ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
   so a tree of four issues holding a slot holds four of them, and the `live trees` count is the
   trees that run whether or not any issue of theirs holds one.
+
+  The `slots` line under it says what each slot in use is spent on.
+  Each holder of a slot is counted in one state, the first of these five that is true of it.
+  `working`: a claim of the holder is in a turn, a start of one of its roles is queued, or a claim of it holds a task that no turn has taken yet.
+  `stopped`: its phase is held, or a claim of it is one that nothing will wake, which the `claims nothing will wake` line names.
+  `person`: it is a tree root that waits on a person, on an ask or on its design gate.
+  `issue`: it waits on another issue, an unfinished Dispatch blocker or an open child, and keeps its slot through the wait.
+  `idle`: none of the four is true, and its last turn has ended or it has had no turn yet.
+
+  The time after `oldest` is the earliest moment a holder of that count entered its state, in UTC to the minute.
+  A count prints no `oldest` when the daemon knows no such moment, which is the case for a state that began before the release that added this line.
+
+  The second sentence counts the started work that waits without a slot.
+  `wait only for a slot` counts the issues whose work came back, that hold no slot, and that `blocked on Dispatch links` does not name.
+  `in all` counts every issue whose work came back and that holds no slot, an issue that still waits on a link among them.
+
+  The last sentence names the first issue of the waiting line that waits for a slot and for nothing else.
+  It counts the holders that rank below that issue, by the Dispatch rank of each issue's tree root and then by its own.
+  It reads `No issue waits for a slot.` when no issue of the line waits for a slot alone.
+  `--json` carries the same reading as `admission.slots`, and the controller's tick notice carries it as `slots`.
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them: the issues whose work came back first, oldest first by the moment it

@@ -1,0 +1,134 @@
+package blockers
+
+import (
+	"slices"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+)
+
+// KeptWaits is what a slot holder waits on and keeps its slot through, under the slot rule the
+// facts carry (record.LineFacts.Rule): the Dispatch issues it is blocked by that are not done
+// (Unfinished) and the open children its first phase waits for (record.LineFacts.ChildWaits),
+// less the waits the rule gives the slot back for (waitsOf), each named once. It is what the
+// holder state `issue` reads (record.HolderFacts.WaitsOnIssue), and what the admission pass marks
+// the start of on the slot (admit's markSlotWaits).
+//
+// It is not record.LineFacts.Waits, which holds the waits that give the slot back and so names a
+// started issue the release is about to free, never one that keeps its row. Under the daemon's own
+// rule a link wait and a children wait both give the slot back, so a holder keeps its slot through
+// a wait only where waitsOf answers nothing for it: a root waiting on a person, a tree's own root
+// whose design gate has never opened, and a root that arrived carrying the row of the tree it
+// left. A rule whose wait keeps the slot (record.SlotRule.LinkWaitGivesBack false, or
+// ChildrenWaitGivesBack false) makes every holder that waits so a holder of this kind.
+func KeptWaits(rows map[string]Row, issue record.Issue, facts record.LineFacts) []string {
+	given := waitsOf(rows, issue, facts)
+	var kept []string
+	keep := func(key string) {
+		if !slices.Contains(given, key) && !slices.Contains(kept, key) {
+			kept = append(kept, key)
+		}
+	}
+	for _, key := range Unfinished(rows, issue.Key) {
+		keep(key)
+	}
+	for _, child := range facts.ChildWaits[issue.Key].Open {
+		keep(child.Key)
+	}
+	return kept
+}
+
+// SlotsInputs is everything one project's slots reading is read from, every part of it a read
+// or a judgement the caller has already made for its line, so the reading costs no query of its
+// own: the admission pass's tick (admit's tickRows) and the state's projection (projection.Project)
+// each hand in what they hold.
+type SlotsInputs struct {
+	// Cap is the project's admission cap.
+	Cap int
+	// Issues are the records the line was judged from: a holder, a member of the line and a tree
+	// root are each read from here, and a root they leave out from Facts.Roots.
+	Issues []record.Issue
+	// Slots are the slots of the line's judgement; a slot whose issue Issues does not hold is no
+	// holder of this project's.
+	Slots []record.Slot
+	// Rows, Facts and Line are what JudgeLine answered: the mirror rows, the facts with the held
+	// set, the child waits and the started issues' waits filled, and the line.
+	Rows  map[string]Row
+	Facts record.LineFacts
+	Line  []record.LineEntry
+	// Blocked and Held are the state's `admission.blocked` and `admission.held` over that same
+	// judgement (Blocked, record.HeldList).
+	Blocked []record.BlockedIssue
+	Held    []record.HeldIssue
+	// Claims are the claims of the moment as a holder's state reads them (record.HolderClaim),
+	// and Stranded the claims among them nothing will wake (workflow.Stranded).
+	Claims   []record.HolderClaim
+	Stranded []supervise.Claim
+}
+
+// SlotsReading is the project's slots reading (record.SlotsReadingOf) over what in holds, and
+// each holder by its key, with the state it is in and the time it entered it: the reading the
+// state serves as `admission.slots` and the tick notice carries as `slots`, and the state and time
+// each holder's `slot` carries. Each holder's facts are gathered here and named by
+// record.HolderStateOf, so the two callers read one holder alike.
+func SlotsReading(in SlotsInputs) (record.SlotsReading, map[string]record.SlotHolder) {
+	byKey := make(map[string]record.Issue, len(in.Issues))
+	for _, issue := range in.Issues {
+		byKey[issue.Key] = issue
+	}
+	rootRank := func(issue record.Issue) string {
+		if root, recorded := byKey[issue.Tree]; recorded {
+			return root.Rank
+		}
+		return in.Facts.Roots[issue.Tree].Rank
+	}
+	stranded := make(map[claim.Token]bool, len(in.Stranded))
+	for _, stopped := range in.Stranded {
+		stranded[stopped.Token] = true
+	}
+
+	holders := make([]record.SlotHolder, 0, len(in.Slots))
+	byHolder := make(map[string]record.SlotHolder, len(in.Slots))
+	for _, slot := range in.Slots {
+		issue, own := byKey[slot.Issue]
+		if !own {
+			continue
+		}
+		facts := record.HolderFacts{Issue: issue, AdmittedAt: slot.AdmittedAt, WaitSince: slot.WaitsSince}
+		record.HolderClaimFacts(&facts, in.Claims, stranded)
+		if owed, owes := in.Facts.Owed[issue.Key]; owes {
+			facts.Starting = append(facts.Starting, owed.CreatedAt)
+		}
+		if issue.Hold != nil {
+			facts.HeldSince = issue.Hold.Since
+		}
+		if issue.AwaitingPerson() && !issue.Answered() && claim.IsTreeRoot(issue.Key, issue.Tree) {
+			facts.Person = true
+			if at := issue.Awaiting.Since.At; !at.IsZero() {
+				utc := at.UTC()
+				facts.PersonSince = &utc
+			}
+		}
+		facts.WaitsOnIssue = len(KeptWaits(in.Rows, issue, in.Facts)) > 0
+		state, since := record.HolderStateOf(facts)
+		holder := record.SlotHolder{Issue: issue, RootRank: rootRank(issue), State: state, Since: since}
+		holders = append(holders, holder)
+		byHolder[issue.Key] = holder
+	}
+
+	blocked := make(map[string]bool, len(in.Blocked))
+	for _, row := range in.Blocked {
+		blocked[row.Issue] = true
+	}
+	held := make(map[string]bool, len(in.Held))
+	for _, row := range in.Held {
+		held[row.Issue] = true
+	}
+	members := make([]record.SlotsLineMember, len(in.Line))
+	for i, entry := range in.Line {
+		members[i] = record.SlotsLineMember{Entry: entry, RootRank: rootRank(entry.Issue),
+			HeldBack: len(LineWaitsOn(in.Rows, entry)) > 0, Blocked: blocked[entry.Issue.Key], Held: held[entry.Issue.Key]}
+	}
+	return record.SlotsReadingOf(in.Cap, holders, members), byHolder
+}

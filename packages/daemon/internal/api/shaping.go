@@ -545,6 +545,8 @@ var stateNarrowings = []stateNarrowing{
 	{contract: pauseContract, state: withoutPause, dropped: "paused and lastPause"},
 	{contract: shapedAnswersContract, state: withoutLowestPluginContract, issue: withoutClaimRoundReport,
 		dropped: "lowestPluginContract and the claim views' updateState and wake"},
+	{contract: slotsReadingContract, state: withoutSlotsReading, issue: withoutRanksAndSlotStates,
+		dropped: "admission.slots, the issues' rank and rootRank, and the slots' state and since"},
 }
 
 // valueStrip is one strip of a value from the state: what it takes off the state's own values,
@@ -939,6 +941,45 @@ const repositoryAppsContract = 152
 // It is a literal of its own and never shapedAnswersContract: a renumber of this change moves
 // that constant, and the contract the keys arrived at stays where it is.
 const pauseContract = 178
+
+// slotsReadingContract is the daemon contract that added the slots reading to the state
+// (version.go's entry of #4771): `admission.slots`, what the slots in use are spent on with the
+// sentence `legion state` prints for it, each issue's `rank` and `rootRank`, and each slot's
+// `state` and `since`. A plugin before it is served the state without all five
+// (withoutSlotsReading, withoutRanksAndSlotStates): one built before sjawhar/legion#2788 reads
+// the state with a strict schema and would refuse the whole body for a key it does not name, and
+// one built after strips the keys instead, so each band keeps the body its own contract's record
+// describes. The slot's `state` is read as a plain string by every reader that types it, so no
+// value strip is owed.
+//
+// It is a literal of its own and never DaemonAPIVersion: a later contract moves that constant,
+// and the contract the keys arrived at stays where it is.
+const slotsReadingContract = 212
+
+// withoutSlotsReading is state with no `admission.slots`, the one key of the state's own that
+// slotsReadingContract added. The admission block is the state's own value, so clearing the
+// pointer leaves the source's reading as it was.
+func withoutSlotsReading(state State) (State, bool) {
+	moved := state.Admission.Slots != nil
+	state.Admission.Slots = nil
+	return state, moved
+}
+
+// withoutRanksAndSlotStates is the issue with no `rank`, no `rootRank`, and a slot with no
+// `state` and no `since`, the four fields slotsReadingContract added to an issue. The slot is the
+// source's, so it is copied before its two fields are cleared, and only for a slot that carries
+// one of them.
+func withoutRanksAndSlotStates(issue Issue) (Issue, bool) {
+	moved := issue.Rank != "" || issue.RootRank != ""
+	issue.Rank, issue.RootRank = "", ""
+	if slot := issue.Slot; slot != nil && (slot.State != "" || slot.Since != nil) {
+		cleared := *slot
+		cleared.State, cleared.Since = "", nil
+		issue.Slot = &cleared
+		moved = true
+	}
+	return issue, moved
+}
 
 // withoutGatedSteps is the issue with no `gatedSteps`, the field gatedStepsContract added to the
 // state; nothing else of that contract is on the route. The field is `omitempty`, and a root of a

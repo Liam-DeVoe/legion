@@ -74,6 +74,12 @@ type Inputs struct {
 	// Cap is the project's admission cap, which the slots reading names beside the slots in use
 	// (record.SlotsReadingOf, api.Admission.Slots).
 	Cap int
+	// HolderClaims are the project's claims as a slot holder's state reads them, read by the
+	// caller in this transaction through the statement the admission pass's tick reads them
+	// through (record.Store.HolderClaims), which is the one that holds when a suspended or a
+	// retired claim stopped. Nil is Claims as record.HolderClaimsOf reads them, which date a
+	// stranded claim by its failure alone: what a caller holding only whole claims gives.
+	HolderClaims []record.HolderClaim
 }
 
 // Project joins durable issue facts to current supervision claims for GET /legion/v1/state. The
@@ -490,6 +496,49 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// no drop site saw, over the same facts and the same line these lists are built from, so one
 	// issue reads one word here and in the controller's tick.
 	projected.Admission.Held = record.HeldList(own, slots, line, dropped, facts)
+	// What the slots in use are spent on: each holder counted by what it is doing, the two
+	// readings of started work that waits without a slot, and the holders that rank below the
+	// first issue that waits for one, with the sentence `legion state` prints for them. It is read
+	// by the one assembly the admission pass's tick reads it by (blockers.SlotsReading), over the
+	// judgement, the line and the two lists above, so the body, its line and the tick notice give
+	// one reading of one project. Each holder's `slot` carries the state it was counted under and
+	// when it entered it.
+	holderClaims := in.HolderClaims
+	if holderClaims == nil {
+		holderClaims = record.HolderClaimsOf(in.Claims)
+	}
+	reading, holders := blockers.SlotsReading(blockers.SlotsInputs{
+		Cap: in.Cap, Issues: own, Slots: slots, Rows: rows, Facts: facts, Line: line,
+		Blocked: projected.Admission.Blocked, Held: projected.Admission.Held, Claims: holderClaims, Stranded: in.Stranded,
+	})
+	projected.Admission.Slots = &reading
+	for key, holder := range holders {
+		view, shown := projected.Issues[key]
+		if !shown || view.Slot == nil {
+			continue
+		}
+		slot := *view.Slot
+		slot.State, slot.Since = string(holder.State), holder.Since
+		view.Slot = &slot
+		projected.Issues[key] = view
+	}
+	// Each issue of the project carries its own Dispatch rank and its tree root's, the two keys
+	// the line orders its starting part by and the reading places a holder against the first
+	// issue that waits for a slot by, so the count of holders below that issue can be read off
+	// the body. An issue of another project, which the state lists for a claim's sake, is no
+	// issue the admission reading places and carries neither.
+	ownByKey := make(map[string]record.Issue, len(own))
+	for _, issue := range own {
+		ownByKey[issue.Key] = issue
+	}
+	for _, issue := range own {
+		view := projected.Issues[issue.Key]
+		view.Rank = issue.Rank
+		if root, recorded := ownByKey[issue.Tree]; recorded {
+			view.RootRank = root.Rank
+		}
+		projected.Issues[issue.Key] = view
+	}
 	// Why each issue that is not working now is not working, one rendered answer on its own view.
 	// It is decided here, after the line and `blocked` are both in hand, because three of the four
 	// states are read off them, and from the two judgements this pass still holds apart — the

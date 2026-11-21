@@ -113,8 +113,10 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written. The four issues.memory_* columns are no part of it: what a unit was drawn is an
 // assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
-// runs reads the columns but the back-fill of 20261111045636_experiment_assignments.
-const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at`
+// runs reads the columns but the back-fill of 20261111045636_experiment_assignments. The last
+// column is the time the issue's hold began (Hold.Since), read off issue_holds, which only the
+// engine's move into held writes (MarkHoldBegan); scanIssue keeps it for a held issue alone.
+const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, ''), moved_at, tree_stalled_told_at, released_for_wait_at, (select held_at from issue_holds where issue_holds.issue = issues.key)`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
 	issue, err := scanIssue(tx.QueryRow(ctx, "select "+issueColumns+" from issues where key = $1", key))
@@ -372,6 +374,20 @@ func (s *Postgres) MarkIssueMoved(ctx context.Context, tx pgx.Tx, key string, at
 	return nil
 }
 
+// MarkHoldBegan records at as when key's hold began (Hold.Since), the time the slots reading
+// dates a held holder by. It is the one writer of issue_holds, and its one caller is the engine's
+// move into held, in the transaction that writes the hold: a later hold of the same issue
+// replaces the time, so the row always dates the hold the issue stands in, since no other path
+// moves an issue into held. The row goes with its issue (issue_holds' foreign key), and a key with
+// no record has no row to hold and fails the write.
+func (s *Postgres) MarkHoldBegan(ctx context.Context, tx pgx.Tx, key string, at time.Time) error {
+	if _, err := tx.Exec(ctx, `insert into issue_holds (issue, held_at) values ($1, $2)
+		on conflict (issue) do update set held_at = excluded.held_at`, key, at); err != nil {
+		return fmt.Errorf("mark the hold of %s begun at %s: %w", key, at, err)
+	}
+	return nil
+}
+
 // MarkTreeStalledTold records at as the movement the daemon told root's tree stopped for. It is
 // the one writer of tree_stalled_told_at: PutIssue names the column nowhere, so the pass can
 // hold a copy of the root read before the telling and still mark it.
@@ -547,12 +563,12 @@ func scanIssue(row scanner) (*Issue, error) {
 	var answeredAt *time.Time
 	var answeredBy, answeredDetail string
 	var sinceSeq *int64
-	var since, declaredAt, treeStalledToldAt, releasedForWaitAt *time.Time
+	var since, declaredAt, treeStalledToldAt, releasedForWaitAt, heldSince *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
 		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
-		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt); err != nil {
+		&issue.ToldParent, &issue.MovedAt, &treeStalledToldAt, &releasedForWaitAt, &heldSince); err != nil {
 		return nil, err
 	}
 	if declaredAt != nil {
@@ -575,6 +591,10 @@ func scanIssue(row scanner) (*Issue, error) {
 	issue.Phase = phase.Phase(phaseValue)
 	if heldFrom != nil {
 		issue.Hold = &Hold{From: phase.Phase(*heldFrom), Reason: HoldReason(holdReason)}
+		if heldSince != nil {
+			utc := heldSince.UTC()
+			issue.Hold.Since = &utc
+		}
 	}
 	if awaitingAsk != nil || awaitingGate != nil {
 		if answeredAt != nil {
@@ -1026,6 +1046,55 @@ func (s *Postgres) ProjectClaims(ctx context.Context, tx pgx.Tx, project string)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the claims of project %s: %w", project, err)
+	}
+	return claims, nil
+}
+
+// HolderClaims reads the claims of one project as a slot holder's state reads them, in one
+// statement and no order: for every claim of the project that stands on an issue, its identity,
+// its state and who suspended it, its two turn times, the queued time of the task it holds or
+// else of its handshake's first queue, whether it holds a task, and when it stopped (HolderClaim):
+// failed_at for a failed claim, stopped_at, which the claim store writes on the move into
+// suspended or retired, for the other two. Every time column is nullable and reads back as the
+// zero time, a time the record does not hold.
+//
+// project is the claim project token, the spelling `claims.project` holds, which the caller
+// converts to (the interface's own doc).
+func (s *Postgres) HolderClaims(ctx context.Context, tx pgx.Tx, project string) ([]HolderClaim, error) {
+	rows, err := tx.Query(ctx, `select c.token, c.issue, c.role, c.tree, c.state, c.suspended_by, c.last_turn_start,
+			c.last_turn_end, coalesce(d.queued_at, c.handshake_queued_at), d.claim_token is not null,
+			case when c.state = 'failed' then c.failed_at else c.stopped_at end
+		from claims c left join pending_task_deliveries d on d.claim_token = c.token
+		where c.project = $1 and c.issue <> ''`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the claims of project %s for its slot holders: %w", project, err)
+	}
+	defer rows.Close()
+	var claims []HolderClaim
+	for rows.Next() {
+		var (
+			held                                  HolderClaim
+			token, role, state, by                string
+			turnStart, turnEnd, queuedAt, stopped *time.Time
+		)
+		if err := rows.Scan(&token, &held.Issue, &role, &held.Tree, &state, &by, &turnStart, &turnEnd, &queuedAt, &held.Pending,
+			&stopped); err != nil {
+			return nil, fmt.Errorf("read the claims of project %s for its slot holders: %w", project, err)
+		}
+		held.Token, held.Role = claim.Token(token), claim.Role(role)
+		held.State, held.SuspendedBy = supervise.ClaimState(state), supervise.SuspendSource(by)
+		for _, at := range []struct {
+			read *time.Time
+			into *time.Time
+		}{{turnStart, &held.LastTurnStart}, {turnEnd, &held.LastTurnEnd}, {queuedAt, &held.QueuedAt}, {stopped, &held.StoppedAt}} {
+			if at.read != nil {
+				*at.into = at.read.UTC()
+			}
+		}
+		claims = append(claims, held)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the claims of project %s for its slot holders: %w", project, err)
 	}
 	return claims, nil
 }
@@ -2234,8 +2303,12 @@ func nullableText(text string) any {
 	return text
 }
 
+// Slots is every slot of the database, in slot order, each with the time its holder began to wait
+// on another issue while it keeps the slot, where the pass marked one (Slot.WaitsSince, the row of
+// slot_waits that goes with the slot's).
 func (s *Postgres) Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error) {
-	rows, err := tx.Query(ctx, "select issue, index, admitted_at from slots order by index, issue")
+	rows, err := tx.Query(ctx, `select slots.issue, slots.index, slots.admitted_at, slot_waits.since from slots
+		left join slot_waits on slot_waits.issue = slots.issue order by slots.index, slots.issue`)
 	if err != nil {
 		return nil, fmt.Errorf("list slots: %w", err)
 	}
@@ -2243,8 +2316,13 @@ func (s *Postgres) Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error) {
 	slots := []Slot{}
 	for rows.Next() {
 		var slot Slot
-		if err := rows.Scan(&slot.Issue, &slot.Index, &slot.AdmittedAt); err != nil {
+		var waitsSince *time.Time
+		if err := rows.Scan(&slot.Issue, &slot.Index, &slot.AdmittedAt, &waitsSince); err != nil {
 			return nil, fmt.Errorf("list slots: %w", err)
+		}
+		if waitsSince != nil {
+			utc := waitsSince.UTC()
+			slot.WaitsSince = &utc
 		}
 		slots = append(slots, slot)
 	}
@@ -2252,6 +2330,24 @@ func (s *Postgres) Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error) {
 		return nil, fmt.Errorf("list slots: %w", err)
 	}
 	return slots, nil
+}
+
+// MarkSlotWait writes or deletes issue's row of slot_waits (Slot.WaitsSince): the insert keeps a
+// row that stands, so a wait keeps the moment it began across every pass that reads it again, and
+// a holder holding no slot has no row to write, since the row references the slot's and goes
+// with it.
+func (s *Postgres) MarkSlotWait(ctx context.Context, tx pgx.Tx, issue string, waits bool, at time.Time) error {
+	if !waits {
+		if _, err := tx.Exec(ctx, "delete from slot_waits where issue = $1", issue); err != nil {
+			return fmt.Errorf("clear the wait of %s's slot holder: %w", issue, err)
+		}
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `insert into slot_waits (issue, since) select issue, $2 from slots where issue = $1
+		on conflict (issue) do nothing`, issue, at); err != nil {
+		return fmt.Errorf("mark the wait of %s's slot holder begun at %s: %w", issue, at, err)
+	}
+	return nil
 }
 
 func (s *Postgres) PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error {

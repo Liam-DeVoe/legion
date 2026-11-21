@@ -2925,4 +2925,34 @@ package api
 // declared, so this entry moved to 199, the lowest number above main's 193 that no other open pull
 // request declares. Read the base's own number and every open pull request again at every forward
 // merge rather than from this line.)
-const DaemonAPIVersion = 199
+//
+// 212: #4771 -- the slots reading. `GET /legion/v1/state` gains `admission.slots`, what the slots
+// in use are spent on (record.SlotsReading): `inUse` and `cap`; the holders counted by what each is
+// doing, `working`, `stopped`, `person`, `issue` and `idle`, each a `count` with the `oldest` time
+// a holder of it entered that state where the record holds one (record.HolderStateOf); the two
+// readings of started work that waits without a slot, `waitOnlyForSlot` (the members of the
+// line's returned part that hold no slot and stand in no row of `admission.blocked`) and
+// `startedWithoutSlot` (every member of that part that holds no slot), each a `count` and an
+// `oldest`; `belowFirstWaiting`, the `count` of holders that rank below the first issue that waits
+// for a slot and that issue's key as `first`; and `line`, the reading as the one sentence `legion
+// state` prints right after its admission count line (record.SlotsLine). Each issue of the project
+// gains `rank`, its own Dispatch rank, and `rootRank`, its tree root's, and each holder's `slot`
+// gains `state`, one of the five words, and `since`, when it entered that state, absent where the
+// record holds no such time. The controller's tick notice gains `slots`, the same reading
+// (record.Notice.Slots), which the payload validator takes on a tick alone.
+//
+// A caller below this contract is served the state without the five keys
+// (withoutSlotsReading, withoutRanksAndSlotStates, the band of slotsReadingContract). The tick
+// notice is no answer of this route: an outbox payload is decoded strictly, so no daemon of an
+// earlier release decodes a tick that carries `slots`, and the way back of this change's
+// migration (`store/migrations/20261121103000_slots_reading_times.up.sql`) deletes those rows
+// before a rollback, with the two tables and the column the migration adds for the times the
+// reading dates a holder by. No request shape moves.
+// (This entry takes 212, above main's 202: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 396 open pull requests of cybermonklabs/legion, ended at
+// 2026-11-21T11:47:28Z, found 203 (#4175), 204 (#4173 and #4193), 205 (#4573), 206 (#3712 and
+// #4539), 207 (#3831, #3993, #4030, #4065, #4273, #4392, #4432, #4590, #4592, #4596, #4682, #4723
+// and #4805), 208 (#2230), 209 (#4049, #4540, #4553 and #4580), 210 (#4661) and 211 (#4611)
+// declared, and none declaring 212. Read the base's own number and every open pull request again
+// at every forward merge rather than from this line.)
+const DaemonAPIVersion = 212

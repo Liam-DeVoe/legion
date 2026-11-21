@@ -2234,6 +2234,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Pause != nil {
 			return fmt.Errorf("a %s notice carries a project pause; only the controller's project-paused and project-resumed notices do", value.Kind)
 		}
+		if value.Slots != nil {
+			return fmt.Errorf("a %s notice carries a slots reading; only the controller's tick notice does", value.Kind)
+		}
 		if (value.Kind == VolumeNearFullNotice) != (value.Volume != nil) {
 			return fmt.Errorf("a %s notice carries a volume sweep only when it is one", value.Kind)
 		}
@@ -2265,6 +2268,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Kind != TickNotice && len(value.Held) > 0 {
 			return fmt.Errorf("a %s notice carries held issues only when it is a tick", value.Kind)
+		}
+		if value.Kind != TickNotice && value.Slots != nil {
+			return fmt.Errorf("a %s notice carries a slots reading only when it is a tick", value.Kind)
 		}
 		pauseKind := value.Kind == ProjectPausedNotice || value.Kind == ProjectResumedNotice
 		if pauseKind != (value.Pause != nil) {

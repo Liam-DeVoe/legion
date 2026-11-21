@@ -209,7 +209,10 @@ const SUMMARY_LEGEND =
   "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
   "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
   "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
-  "admission cap; active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
+  "admission cap; slots: the daemon's slots line, what each slot in use is spent on (working, " +
+  "stopped, person, issue, idle, each with its oldest time), the started work that waits without " +
+  "a slot, and how many holders rank below the first issue that waits for one; " +
+  "active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
@@ -244,7 +247,14 @@ function stateSummary(state: LegionState): string {
   if (pause !== undefined) lines.push(pause);
   if (admission !== undefined) {
     lines.push(
-      `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`,
+      `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`
+    );
+    // The daemon's own slots line, printed as it wrote it, so the controller reads the sentence
+    // `legion state` prints and the tick notice carries. A daemon that serves a caller below the
+    // contract that added it writes none, and the line is left out.
+    const slots = admission.slots;
+    if (slots?.line !== undefined) lines.push(slots.line);
+    lines.push(
       `active ${admission.active?.join(" ") || "(none)"}`,
       `waiting ${admission.waiting?.join(" ") || "(none)"}`
     );

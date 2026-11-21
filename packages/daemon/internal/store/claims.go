@@ -353,6 +353,14 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (boo
 // earlier release retired carries the column's default, 0, which is below every number the
 // sequence hands out, so no owed row of it is ever ended and it behaves as it did before the
 // column existed (20261109191929_outbox_write_mark).
+//
+// The write that moves a claim into suspended or retired from a state that is neither stamps
+// stopped_at with this write's own time (the store's clock, as updated_at), a move between the
+// two keeps the moment the claim first stopped, and every write of a claim in any other state
+// clears it. It is taken from SQL on the transition, as the write mark is, so a machine's write
+// carries no time of its own for it, and supervise.Claim holds none: its one reader is the slots
+// reading, which dates a stranded claim's `stopped` by it (record.Store.HolderClaims). A claim an
+// earlier release stopped holds none, which reads as a stop the record holds no time for.
 func upsertClaim(ctx context.Context, db execer, c supervise.Claim, stamp *time.Time) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
@@ -426,11 +434,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim, stamp *time.
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		pod_end, failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		handshake_entry, handshake_generation, handshake_queued_at, handshake_confirmed_at,
-		retired_at_write_mark, updated_at)
+		retired_at_write_mark, stopped_at, updated_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
 		$55, $56, $57, $58, $59,
-		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end, coalesce($60::timestamptz, now()))
+		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end,
+		case when $11 in ('suspended', 'retired') then coalesce($60::timestamptz, now()) end, coalesce($60::timestamptz, now()))
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
 		session = excluded.session, session_file = excluded.session_file,
@@ -445,6 +454,12 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim, stamp *time.
 		-- retired and left alone by every other write (this function's doc).
 		retired_at_write_mark = case when excluded.state = 'retired' and claims.state <> 'retired'
 			then nextval('outbox_write_mark_seq') else claims.retired_at_write_mark end,
+		-- When the claim stopped, for a suspended or a retired claim (record.HolderClaim.StoppedAt):
+		-- this write's own stamp on the move into either from a state that is neither, the moment
+		-- already held on a move between the two, and nothing once it runs again (this function's
+		-- doc).
+		stopped_at = case when excluded.state not in ('suspended', 'retired') then null
+			when claims.state in ('suspended', 'retired') then claims.stopped_at else excluded.updated_at end,
 		serving_generation = excluded.serving_generation,
 		given_entry = excluded.given_entry,
 		served_entry = excluded.served_entry,

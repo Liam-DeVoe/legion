@@ -1,6 +1,13 @@
 package record
 
-import "time"
+import (
+	"slices"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+)
 
 // HolderState is what one holder of an admission slot is doing with it: at work, stopped,
 // waiting on a person, waiting on another issue, or idle. The slots reading counts the holders by
@@ -81,6 +88,153 @@ type HolderFacts struct {
 // began; for idle, its newest lastTurnEnd, or its slot's admittedAt where no turn has ended. The
 // time is nil where the record holds none for the state, which a state begun before the record
 // kept its time is.
+//
+// Idle is timed from the later of the newest lastTurnEnd and the slot's admittedAt: a turn that
+// ended before the holder took the slot it holds now, one of a run the holder had before a
+// re-admission, is no idle time of this slot's.
 func HolderStateOf(f HolderFacts) (HolderState, *time.Time) {
-	return "", nil
+	switch {
+	case len(f.InTurn) > 0:
+		return HolderWorking, oldestTime(f.InTurn)
+	case len(f.Starting) > 0:
+		return HolderWorking, oldestTime(f.Starting)
+	case len(f.PendingTasks) > 0:
+		return HolderWorking, oldestTime(f.PendingTasks)
+	case f.Issue.Phase == phase.Held:
+		return HolderStopped, f.HeldSince
+	case f.Stranded:
+		return HolderStopped, f.StoppedAt
+	case f.Person:
+		return HolderPerson, f.PersonSince
+	case f.WaitsOnIssue:
+		return HolderIssue, f.WaitSince
+	}
+	since := knownTime(f.AdmittedAt)
+	if f.LastTurnEnd != nil && (since == nil || f.LastTurnEnd.After(*since)) {
+		since = knownTime(*f.LastTurnEnd)
+	}
+	return HolderIdle, since
+}
+
+// oldestTime is the oldest of times, nil where none of them is known (the zero time is a time
+// the record does not hold).
+func oldestTime(times []time.Time) *time.Time {
+	var oldest *time.Time
+	for _, at := range times {
+		if at.IsZero() {
+			continue
+		}
+		if oldest == nil || at.Before(*oldest) {
+			oldest = knownTime(at)
+		}
+	}
+	return oldest
+}
+
+// knownTime is at in UTC, as every time of the slots reading is written, or nil for the zero
+// time, which is a time the record does not hold.
+func knownTime(at time.Time) *time.Time {
+	if at.IsZero() {
+		return nil
+	}
+	utc := at.UTC()
+	return &utc
+}
+
+// HolderClaim is one role claim as a slot holder's state reads it: whose claim it is, the state
+// it stands in and the times that state is dated by. The admission pass reads these from the
+// store's own narrow read (Store.HolderClaims) for the tick notice, and the state's projection
+// builds them from the claims it already holds (HolderClaimsOf) unless its caller read them
+// through that same statement, so the two read a holder from one shape. A time the record does
+// not hold is the zero time.
+type HolderClaim struct {
+	Token claim.Token
+	Issue string
+	Role  claim.Role
+	Tree  string
+	State supervise.ClaimState
+	// SuspendedBy is who suspended the claim while it is suspended, which the stranded judgement
+	// reads (workflow.Stranded).
+	SuspendedBy supervise.SuspendSource
+	// LastTurnStart and LastTurnEnd are when its agent last began and last ended a turn
+	// (supervise.Claim's own two).
+	LastTurnStart time.Time
+	LastTurnEnd   time.Time
+	// QueuedAt is when the task the claim was last queued was queued to it: its pending task's
+	// queued time where it holds one, and otherwise its handshake's, the first queue of the last
+	// entry it was queued a task of (supervise.Claim.Handshake). It is what dates a start of a
+	// claim not yet ready and a task no turn of it has taken.
+	QueuedAt time.Time
+	// Pending says the claim holds a task no turn has confirmed (supervise.Claim.Pending).
+	Pending bool
+	// StoppedAt is when the claim stopped: when it failed (supervise.Claim.FailedAt) for a
+	// failed claim, and the moment the store recorded its move into suspended or retired
+	// (claims.stopped_at) for the other two. The claims a caller holds whole carry no record of
+	// the second, so HolderClaimsOf gives it for a failed claim alone.
+	StoppedAt time.Time
+}
+
+// HolderClaimsOf is claims as a slot holder's state reads them, for a caller that already holds
+// whole claims: the state's projection, given every claim of its snapshot (projection.Project).
+// A claim on no issue, the project's controller's, is read too and matches no holder.
+func HolderClaimsOf(claims []supervise.Claim) []HolderClaim {
+	read := make([]HolderClaim, 0, len(claims))
+	for _, c := range claims {
+		held := HolderClaim{
+			Token: c.Token, Issue: c.Issue, Role: c.Role, Tree: c.Tree, State: c.State, SuspendedBy: c.SuspendedBy,
+			LastTurnStart: c.LastTurnStart, LastTurnEnd: c.LastTurnEnd, QueuedAt: c.Handshake.QueuedAt,
+			Pending: c.Pending != nil,
+		}
+		if c.Pending != nil {
+			held.QueuedAt = c.Pending.QueuedAt
+		}
+		if c.State == supervise.StateFailed {
+			held.StoppedAt = c.FailedAt
+		}
+		read = append(read, held)
+	}
+	return read
+}
+
+// startingStates are the claim states of a start under way that has not reached its agent's
+// ready: what HolderFacts.Starting dates a claim by.
+var startingStates = []supervise.ClaimState{
+	supervise.StateQueued, supervise.StateLaunching, supervise.StateLaunchUncertain,
+	supervise.StateShimConnected, supervise.StateRegistered,
+}
+
+// readyStates are the two states of a claim whose agent is up and in no turn, where a task it
+// holds is one no turn has taken yet (HolderFacts.PendingTasks). A suspended, failed or retired
+// claim holding a task is no work under way: what stops it is its own stop.
+var readyStates = []supervise.ClaimState{supervise.StateReady, supervise.StateIdle}
+
+// HolderClaimFacts sets on facts what the claims of its holder say: the claims in a turn, the
+// starts under way, the tasks no turn has taken, the newest turn's end, and, where stranded names
+// a claim of the holder, that it is stranded and the oldest time one of those claims stopped.
+// claims are every claim the caller read, of any issue; the holder's own are those on its issue.
+func HolderClaimFacts(facts *HolderFacts, claims []HolderClaim, stranded map[claim.Token]bool) {
+	var stops []time.Time
+	for _, c := range claims {
+		if c.Issue != facts.Issue.Key {
+			continue
+		}
+		switch {
+		case c.State == supervise.StateWorking:
+			facts.InTurn = append(facts.InTurn, c.LastTurnStart)
+		case slices.Contains(startingStates, c.State):
+			facts.Starting = append(facts.Starting, c.QueuedAt)
+		case c.Pending && slices.Contains(readyStates, c.State):
+			facts.PendingTasks = append(facts.PendingTasks, c.QueuedAt)
+		}
+		if !c.LastTurnEnd.IsZero() && (facts.LastTurnEnd == nil || c.LastTurnEnd.After(*facts.LastTurnEnd)) {
+			facts.LastTurnEnd = knownTime(c.LastTurnEnd)
+		}
+		if stranded[c.Token] {
+			facts.Stranded = true
+			stops = append(stops, c.StoppedAt)
+		}
+	}
+	if facts.Stranded {
+		facts.StoppedAt = oldestTime(stops)
+	}
 }

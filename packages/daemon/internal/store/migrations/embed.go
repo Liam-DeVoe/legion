@@ -63,7 +63,8 @@ const StepRecordsRollForward = 20261117064152
 // 20261120055717_dispatch_issue_value_sequences.up.sql carries a third, one statement that
 // docs/kubernetes.md gives too: internal/store's
 // TestTheCopysRefillMarksComeFromTheMigrationAndTheWayBack runs it, and no textcheck holds its
-// text to the guide's.
+// text to the guide's. The header of 20261121103000_slots_reading_times.up.sql carries a fourth,
+// held as the first two are.
 func WayBack(version int) (string, error) {
 	all, err := All()
 	if err != nil {
