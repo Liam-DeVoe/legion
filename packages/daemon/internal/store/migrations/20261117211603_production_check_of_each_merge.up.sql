@@ -16,19 +16,17 @@
 -- to run the way back after its older checks have closed:
 -- select issue from production_checks where closed_at is null group by issue having count(*) > 1;
 --
--- There is no down file. This directory keeps none, so the way back is the transaction below, run
--- with the daemon stopped, before the earlier image is pinned:
+-- There is no down file. This directory keeps none, so the way back is the one transaction that
+-- closes this header, its last paragraph (migrations.WayBack), run with the daemon stopped and
+-- before the earlier image is pinned, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1.
 --
---   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
---   begin;
---   delete from production_checks p where exists (select 1 from production_checks q
---     where q.issue = p.issue and q.opened_at > p.opened_at);
---   alter table production_checks drop constraint production_checks_pkey;
---   alter table production_checks add primary key (issue);
---   alter table production_checks drop column generation, drop column task;
---   delete from schema_version where version = 20261117211603;
---   commit;
---   SQL
+-- begin;
+-- delete from production_checks p where exists (select 1 from production_checks q where q.issue = p.issue and q.opened_at > p.opened_at);
+-- alter table production_checks drop constraint production_checks_pkey;
+-- alter table production_checks add primary key (issue);
+-- alter table production_checks drop column generation, drop column task;
+-- delete from schema_version where version = 20261117211603;
+-- commit;
 alter table production_checks drop constraint production_checks_pkey;
 alter table production_checks add primary key (issue, opened_at);
 alter table production_checks add column generation bigint not null default 0;
