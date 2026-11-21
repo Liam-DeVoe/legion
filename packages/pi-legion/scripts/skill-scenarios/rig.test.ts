@@ -2492,6 +2492,45 @@ describe("heads_fixture", () => {
       stdout: `${heads["702"]}\t${git(path.join(run, "remote.git"), "rev-parse", "main")}\n`,
       stderr: "",
     });
+    // Each body holds every line of the template's brief that the implementer writes, and the
+    // Thermo line's row for each half, as skills/legion-worker/references/pr-body.md has them. A
+    // reviewer of reviewer-own-head requested changes on a body that lacked the brief and had one
+    // Thermo row, instead of judging the gate.
+    const template = readFileSync(
+      path.join(root, "skills/legion-worker/references/pr-body.md"),
+      "utf8"
+    );
+    const brief = template.slice(
+      template.indexOf("## For the reviewer"),
+      template.indexOf("## Verification")
+    );
+    const briefLines = brief.split("\n");
+    const implementerLabels = briefLines.flatMap((line, index) => {
+      const label = /^\*\*([^*]+):\*\*/.exec(line)?.[1];
+      const reviewers = `${line}\n${briefLines[index + 1] ?? ""}`.includes(
+        "the reviewer writes this line"
+      );
+      return label === undefined || reviewers ? [] : [label];
+    });
+    expect(implementerLabels).toEqual(["Outcome", "Why", "Change", "Proven by", "Size"]);
+    const halves = [...template.matchAll(/^- (`thermonuclear-[a-z-]+`):/gm)].map((m) => m[1]);
+    expect(halves.length).toBe(2);
+    for (const pr of ["702", "703"]) {
+      const body = gh(`gh pr view ${pr} --repo example/widgets --json body --jq .body`).stdout;
+      expect({
+        pr,
+        brief: body.includes("\n## For the reviewer\n"),
+        missing: implementerLabels.filter(
+          (label) => !body.includes(`\n**${label}:** `) && !body.includes(`\n**${label}:**\n`)
+        ),
+        rows: halves.map((half) =>
+          body.includes(`\n- ${half}: not run (the whole change touches no runtime code)\n`)
+        ),
+      }).toEqual({ pr, brief: true, missing: [], rows: [true, true] });
+    }
+    expect(gh("gh pr view 702 --repo example/widgets --json body --jq .body").stdout).toContain(
+      "\n**Size:** 1 file changed, +3/−0\n"
+    );
     // The reads a reviewer makes of the base, as GitHub answers them for a base with no protection.
     expect(gh("gh api repos/example/widgets/branches/main --jq .protected")).toEqual({
       code: 0,

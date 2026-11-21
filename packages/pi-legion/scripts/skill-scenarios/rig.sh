@@ -2023,15 +2023,19 @@ SQL
 # A call no route names is the stand-in's loud failure (gh-standin.ts), which score.ts counts as a
 # rig error, so a read this list lacks can never pass as GitHub's answer. The stand-in records each
 # call and its body in calls.jsonl.
-# Each body is `Dispatch: <issue>`, then the template's Verification section
-# (skills/legion-worker/references/pr-body.md), whose one Checks line is that of k1 at that pull
+# Each body is `Dispatch: <issue>`, then the template's two sections
+# (skills/legion-worker/references/pr-body.md): For the reviewer, with the implementer's lines
+# (Outcome, Why, Change, Proven by and Size; Look at first and Not proven are the reviewer's to
+# write), and Verification, whose Thermo line has a row for each half of the pair, each not run
+# since the change touches no runtime code, and whose one Checks line is that of k1 at that pull
 # request's head: the line Dispatch answered for the newest pass a role recorded there, or for the
 # tester's fail at #703 in sibling-fails (seed.ts heads-events keeps both in $R/fixture.json), and in
 # ci-only and ci-pass-and-fail the `Pull request line:` results-before.txt holds under the line of
-# that head; with none, `not yet run`. So no body disagrees with the results, and a reviewer's
-# refusal cannot come from a body.
+# that head; with none, `not yet run`. So no body disagrees with the results or the template, and a
+# reviewer's refusal cannot come from a body: a reviewer of a body that lacked the brief, or whose
+# k1 line quoted a command Dispatch's line had cut words from, requested changes on the body alone.
 heads_routes() {
-  local scenario=$1 scenario_case=${2:-} pr head line body files jobs named approved title branches main pulls='[]' prs=(702 703)
+  local scenario=$1 scenario_case=${2:-} pr head line body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size
   case $scenario in architect-pass-and-fail | ci-pass-and-fail) prs=(702) ;; esac
   title=$(jq -r .title "$R/fixture.json")
   for pr in "${prs[@]}"; do
@@ -2045,13 +2049,40 @@ heads_routes() {
     fi
     [ -n "$line" ] || [ "$pr" != 702 ] ||
       fail "no line of k1 at #702's head for its body: see $R/fixture.json and $R/results-before.txt"
+    case $pr in
+    702)
+      outcome='A reader of the usage page learns how to list every command of the widgets CLI.'
+      # shellcheck disable=SC2016 # Markdown, written as it stands
+      change='- The usage page names `widgets --help`.
+- It says that command lists every command of the CLI.'
+      ;;
+    *)
+      outcome='A reader of the README finds the usage page.'
+      change='- The README points a reader at the usage page.
+- The usage page itself is unchanged.'
+      ;;
+    esac
+    # The template's Size: files changed, +added/−removed.
+    size=$(git -C "$R/remote.git" diff --numstat "$worker_base" "$head" |
+      awk '{ files++; added += $1; removed += $2 } END { printf "%d file%s changed, +%d/−%d", files, files == 1 ? "" : "s", added, removed }')
     body="Dispatch: $worker_key
+
+## For the reviewer
+
+**Outcome:** $outcome
+**Why:** Nothing told a reader how to list the commands of the widgets CLI ($worker_key).
+**Change:**
+$change
+**Proven by:** the cli check k1 of the issue's Verification document, run at this head.
+**Size:** $size
 
 ## Verification
 
 **Threads:** 0 resolved, 0 unresolved.
 
-**Thermo:** \`simplify-settled-diff\` once at ${head:0:12}: 0 applied; defects reported: none; thermonuclear pair at the reviewed head ${head:0:12}: not run (docs-only).
+**Thermo:** \`simplify-settled-diff\` once at ${head:0:12}, a docs-only PR included: 0 applied; defects reported: none; thermonuclear pair at the reviewed head ${head:0:12} over the whole change, one row per half:
+- \`thermonuclear-deep-review\`: not run (the whole change touches no runtime code)
+- \`thermonuclear-code-quality\`: not run (the whole change touches no runtime code)
 
 **Checks:**
 ${line:-- Check k1 (before_merge): not yet run}
