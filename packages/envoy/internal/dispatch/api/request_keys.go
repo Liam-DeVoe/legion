@@ -90,7 +90,12 @@ import (
 //     the steps' entries (recoveryPointRead).
 //   - Every answer to a keyed request the layer judged carries the key back in the Idempotency-Key
 //     response header, a 5xx included: an earlier Dispatch ignores the header and answers without
-//     it, so a client retries a 5xx under its key only where the echo says the key was judged.
+//     it, so a check can tell a Dispatch that judges the key from one that does not. The agents'
+//     client reads no /healthz, and every Dispatch that carries b1c42d1d7d runs this layer, so it
+//     sends a failed write again under its key whatever the echo says. It reads the echo only to
+//     settle a refusal: a fresh 4xx, or a 422 KEY_REUSED, that echoes exactly its key is final
+//     (answerEvent, packages/envoy-client), so a change that drops or moves the echo turns such
+//     a refusal back into an unsettled write.
 //
 // A write without the header runs as it always did, unkeyed, and is logged at DEBUG: a script, a
 // test and the Legion daemon's outbox send writes that name no intent, and are expected to. A write
@@ -364,9 +369,8 @@ func (s *server) keyedWrites(method, pattern string, handler http.HandlerFunc, r
 		r.Body = io.NopCloser(replayable)
 
 		// Every answer from here on - run, replayed or refused, stored or not, a 5xx included - names
-		// the key back, so a client can tell a Dispatch that judged its key from one that ignored the
-		// header, and retries a 5xx under the key only against the first: an earlier Dispatch would
-		// run the write again.
+		// the key back, so a check can tell a Dispatch that judged its key from one that ignored the
+		// header.
 		w.Header().Set(contracts.IdempotencyKeyHeader, key)
 		claim, answered := s.claimRequestKey(w, r, login, key, hex.EncodeToString(digest.Sum(nil)), route)
 		if answered {
@@ -940,7 +944,7 @@ func (s *server) claimRequestKey(
 			tag, err = pool.Exec(ctx, `
 				update request_keys set attempt = attempt + 1, leased_at = now()
 				where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
-				  and (recovery is null or not coalesce((recovery->>'finished')::boolean, false))
+				  and (recovery is null or not coalesce((recovery->>'`+pointFinished+`')::boolean, false))
 			`, login, key, held.attempt)
 		} else {
 			tag, err = pool.Exec(ctx, `
@@ -967,7 +971,7 @@ func (s *server) claimRequestKey(
 func (s *server) readHeldRequestKey(ctx context.Context, login, key string) (held heldRequestKey, found bool, err error) {
 	err = s.deps.Store.Pool.QueryRow(ctx, `
 		select request_digest, method, path, attempt, status, headers, response,
-		       response is not null, `+recoveryPointRead+`, coalesce((recovery->>'finished')::boolean, false),
+		       response is not null, `+recoveryPointRead+`, coalesce((recovery->>'`+pointFinished+`')::boolean, false),
 		       committed_at is not null,
 		       leased_at is null or leased_at < now() - make_interval(secs => $3),
 		       created_at < now() - make_interval(secs => $4)
@@ -1287,21 +1291,23 @@ func outlivingTheClient(r *http.Request) context.Context {
 // point's shape. A status change's point is a head on the key's row - the ids of the events and
 // the asks its steps made, then the mark and the answer's issue - and one row per step in
 // request_key_steps holding the step's entry, which every reader reads back under changed
-// (recoveryPointRead). Each step writes its part in its own transaction, right after its write
-// phase's batch (writeIssue, through docs.Ledger.AfterWrites), since the step's issue as its write
-// answered it is known only once that batch has run, and the call marks the point finished in a
-// transaction of its own (markStatusChangeFinished).
+// (recoveryPointRead); status_change.go names each member once (pointChanged and the others).
+// Each step writes its part in its own transaction, right after its write phase's batch
+// (queueStatusChangeStep, which writeIssue queues through docs.Ledger.AfterWrites), since the
+// step's issue as its write answered it is known only once that batch has run, and the call
+// marks the point finished in a transaction of its own (markStatusChangeFinished).
 type recoveryPoint interface {
 	messageRecovery | broadcastRecovery | commentRecovery | statusChangeRecovery
 }
 
 // recoveryPointRead is a request_keys row's recovery point as every reader of it reads it: the
 // point the row holds, with, for a status change, the entry of each step that committed under
-// changed, in the order the steps committed (request_key_steps, migration 20261121043859). A row
-// that holds no point reads null, and one no step row names - every other route's - reads as it is
-// stored. It is an expression over request_keys, which a statement that reads it names unaliased.
+// pointChanged, in the order the steps committed (request_key_steps, migration 20261121043859). A
+// row that holds no point reads null, and one no step row names - every other route's - reads as
+// it is stored. It is an expression over request_keys, which a statement that reads it names
+// unaliased.
 const recoveryPointRead = `recovery || coalesce((
-		select jsonb_build_object('changed', jsonb_agg(s.entry order by s.id))
+		select jsonb_build_object('` + pointChanged + `', jsonb_agg(s.entry order by s.id))
 		from request_key_steps s
 		where s.login = request_keys.login and s.idempotency_key = request_keys.idempotency_key
 		having count(*) > 0), '{}')`

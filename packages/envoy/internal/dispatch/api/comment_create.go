@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -1042,12 +1043,26 @@ type issueComment struct {
 // on the ledger of the write that leaves it, which holds the issue's owner lock: the row, its
 // references and its comment.created event, in the order that the comment route queues them. The
 // event is the author's, so a system author wakes nobody (events.Broker.Notify).
+//
+// The body takes the comment route's own checks (createCommentFor): its line endings become line
+// feeds (pmdoc.LineFeeds), then the block bounds and the refusal of a decision block hold it
+// (itemblocks.Check), answered as that route answers them (blockBoundError), so a body they refuse
+// is refused as the route refuses it and the write that leaves it rolls back. A blank body is a
+// fault of the caller's own, and is refused as one. It answers the comment's event and its body as
+// the row holds it.
 func (s *server) queueIssueComment(
 	ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key string, author model.Actor, body string,
-) (*model.Event, error) {
+) (*model.Event, string, error) {
+	body = pmdoc.LineFeeds(body)
+	if strings.TrimSpace(body) == "" {
+		return nil, "", fmt.Errorf("the comment that %s leaves on %s has no body", author.ID, key)
+	}
+	if err := blockBoundError(itemblocks.Check("body", body)); err != nil {
+		return nil, "", err
+	}
 	id, err := commentRowID(ctx, tx)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	owner := issueOwner(key)
 	comment := model.Comment{
@@ -1055,13 +1070,14 @@ func (s *server) queueIssueComment(
 		Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
 	}
 	if err := queueCommentRow(ctx, tx, ledger, &comment); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	references, err := s.queueCommentReferences(ctx, tx, ledger, comment)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return s.queueCommentCreated(ctx, tx, ledger, owner, &comment, "", commentThreadTarget{}, "", references, commentResolution{})
+	created, err := s.queueCommentCreated(ctx, tx, ledger, owner, &comment, "", commentThreadTarget{}, "", references, commentResolution{})
+	return created, body, err
 }
 
 // commentRowID is the id of a new comment, read before its row is queued.

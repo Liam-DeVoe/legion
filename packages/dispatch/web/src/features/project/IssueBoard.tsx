@@ -525,24 +525,30 @@ export function IssueBoard({
     }
     // Both move functions place the card in the cache synchronously before their request goes
     // out, so the announcement reads the optimistic position - the one the user sees. A move the
-    // rule's question checks first places nothing yet, and is not announced as made.
+    // rule's question checks first places nothing yet: it is announced once the move functions
+    // place it, after the dry run or a choice of the question (`announce`, their `onPlaced`); after
+    // a choice, each other issue it moved is already in its cell, so the count holds them.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
+    /** Says where the card stands now: its position and count in the visible cell - the one the
+     *  user sees - or nothing while it is not in that cell yet. */
+    const announce = () => {
+      const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
+        (issue) =>
+          issue.status === target.status &&
+          isVisible(issue) &&
+          (lane === undefined || issue.priority === lane)
+      );
+      const position = column.findIndex((issue) => issue.key === key);
+      if (position !== -1) {
+        setAnnouncement(announceMove(key, target.status, position + 1, column.length));
+      }
+    };
     if (lanes && lane !== undefined) {
-      void moveCardToLane(key, target.status, lane, target.insertionIndex);
+      void moveCardToLane(key, target.status, lane, target.insertionIndex, announce);
     } else {
-      void moveCard(key, target.status, target.insertionIndex);
+      void moveCard(key, target.status, target.insertionIndex, announce);
     }
-    // The announcement's position and count are the visible cell - the one the user sees.
-    const column = (queryClient.getQueryData<IssueSummary[]>(queryKey) ?? []).filter(
-      (issue) =>
-        issue.status === target.status &&
-        isVisible(issue) &&
-        (lane === undefined || issue.priority === lane)
-    );
-    const position = column.findIndex((issue) => issue.key === key);
-    if (position !== -1) {
-      setAnnouncement(announceMove(key, target.status, position + 1, column.length));
-    }
+    announce();
     focusAfterMove.current = { key, status: target.status, laneId };
   };
   const focusedCard = () => cardAround(document.activeElement) !== null;

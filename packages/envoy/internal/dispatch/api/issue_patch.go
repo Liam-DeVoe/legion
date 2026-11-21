@@ -118,11 +118,15 @@ type issueWriteCall struct {
 // under its own owner lock, not from the plan that the call read before its first step.
 type issueWriteCallStep struct {
 	// named is the issue that the status change names, or empty for a step of R25's fix, which
-	// names none. A fenced step, or a step of a keyed call, that holds its owner lock reads back
-	// the ids of every event the step appended on it (issueWriteResult.namedEvents).
+	// names none. A fenced step, or a step of a keyed call (claim), that holds its owner lock reads
+	// back the ids of every event the step appended on it (issueWriteResult.namedEvents).
 	named string
 	// fence is the call's fence on named, or nil for a call that sent no expected_sequence.
 	fence *issueWriteFence
+	// claim is the request key's claim of a keyed status change, nil for a call with no key and
+	// for a step of R25's fix: a step that writes adds its entry to the call's recovery point
+	// under it (queueStatusChangeStep).
+	claim *requestKeyClaim
 	// leaves reports, from the issue as the step reads it under its owner lock, that the step
 	// leaves the issue as it stands: the step writes no row, no event and no comment, and rolls
 	// its transaction back. It is nil for a step that always writes: the named issue's own.
@@ -384,13 +388,10 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// reads here: the named issue's own step, a fenced step, and the step of a direct child, whose
 	// parent lockPatchOwnersAndParent locked. The read is a plain one, before the first write. A
 	// step of an unfenced call with no request key reads none, since nothing reads those events.
-	var claim requestKeyClaim
-	keyed := false
 	namedLastSeq, holdsNamed := 0, false
 	if step != nil {
-		claim, keyed = ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
 		switch {
-		case step.fence == nil && !keyed:
+		case step.fence == nil && step.claim == nil:
 		case step.named == key:
 			namedLastSeq, holdsNamed = before.LastSeq, true
 		case step.fence != nil || (before.Parent != nil && *before.Parent == step.named):
@@ -827,31 +828,29 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	if call.comment != nil {
 		// The call's comment comes after the write's own events, on the issue's owner, which the
-		// write's lock holds.
-		commented, err := s.queueIssueComment(ctx, tx, ledger, key, call.comment.author, commentBody)
+		// write's lock holds. Its body is the one the row holds, which the comment route's checks
+		// leave (queueIssueComment).
+		commented, stored, err := s.queueIssueComment(ctx, tx, ledger, key, call.comment.author, commentBody)
 		if err != nil {
 			return issueWriteResult{}, err
 		}
 		appended = append(appended, commented)
+		commentBody = stored
 	}
 	// A step that holds the named issue's lock reads back the ids of the events on it after the
 	// last_seq it read under that lock. The ids exist only once the write phase's batch has run,
 	// so the statement derives them in its own SQL, after the step's last event insert. They hold
 	// what document work appended there through the ledger's event sink too, which appended does
-	// not. A step of a keyed call writes the call's recovery point with the same statement, run
-	// right after the batch rather than on it (docs.Ledger.AfterWrites): it adds to the head the
-	// key holds, which is the call's point so far, since only the attempt that holds the key
-	// writes it, those ids and, for the named issue's own close, the ids of the asks it withdrew,
-	// and it adds the step's entry as a row of request_key_steps, with the issue as this write
-	// answers it - its last_seq the one its own events reached and a close's closed_at the
-	// restamp below - which are known only once the batch's callbacks have read them. The
-	// statement is scoped to the request's own claim, so a step whose key another attempt took
-	// over rolls back (errRequestKeyTakenOver). A step that holds no lock of the named issue adds
-	// no ids, and an unkeyed step writes no point.
+	// not. A step of a keyed call reads them with the statement that writes the call's recovery
+	// point (queueStatusChangeStep), run right after the batch rather than on it
+	// (docs.Ledger.AfterWrites), with the issue as this write answers it - its last_seq the one its
+	// own events reached and a close's closed_at the restamp below - which are known only once the
+	// batch's callbacks have read them. A step that holds no lock of the named issue adds no ids,
+	// and an unkeyed step writes no point.
 	var namedEvents []int64
 	if step != nil {
 		switch {
-		case keyed:
+		case step.claim != nil:
 			var closedAsks []string
 			if closing && key == step.named {
 				closedAsks = askIDs(withdrawn)
@@ -859,34 +858,8 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			if err := ledger.AfterWrites(func(b *store.WriteBatch) error {
 				answered := after
 				answered.LastSeq = appendedIssueLastSeq(key, appended)
-				entry, err := json.Marshal(answeredStatusChangeEntry(answered, before.LastSeq))
-				if err != nil {
-					return err
-				}
-				b.Queue("write the recovery point of a status change", `
-					with named as (
-						select coalesce(array_agg(id order by id), '{}') as ids from events
-						where $4 and issue_key = $5 and seq > $6
-					), head as (
-						update request_keys set recovery = jsonb_build_object(
-							'events', coalesce(recovery -> 'events', '[]') || to_jsonb(named.ids),
-							'withdrawn', coalesce(recovery -> 'withdrawn', '[]') || coalesce(to_jsonb($8::text[]), '[]'))
-						from named
-						where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
-						returning named.ids
-					), step as (
-						insert into request_key_steps (login, idempotency_key, entry) select $1, $2, $7::jsonb from head
-					)
-					select ids from head
-				`, claim.login, claim.key, claim.attempt, holdsNamed, step.named, namedLastSeq, entry, closedAsks,
-				).QueryRow(func(row pgx.Row) error {
-					err := row.Scan(&namedEvents)
-					if errors.Is(err, pgx.ErrNoRows) {
-						return errRequestKeyTakenOver
-					}
-					return err
-				})
-				return nil
+				return queueStatusChangeStep(b, step, answeredStatusChangeEntry(answered, before.LastSeq),
+					namedLastSeq, holdsNamed, closedAsks, &namedEvents)
 			}); err != nil {
 				return issueWriteResult{}, err
 			}

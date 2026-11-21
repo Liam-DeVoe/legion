@@ -613,9 +613,10 @@ export async function runDispatchCli(
     // is never told an issue was filed. Its text is the same either way.
     code = result.refused === true ? REFUSED : OK;
   } catch (error) {
-    // A 409 PARENT_STATUS_CONFLICT, from whichever command, names each issue that holds the
-    // rule and the flags that move them, as a near copy's refusal names each open issue.
-    text = (parentStatusConflictLines(error) ?? [messageFor(error)]).join("\n");
+    // A 409 PARENT_STATUS_CONFLICT names each issue that holds the rule and what the refused
+    // command's caller does next (`parentStatusConflictLines`), as a near copy's refusal names
+    // each open issue.
+    text = (parentStatusConflictLines(error, tool) ?? [messageFor(error)]).join("\n");
     // The command's write landed but its answer was lost: it is done, so the call succeeded, and
     // its one line says to read back what it made. The executor turns a landing of a write that
     // was only a step of its command (a picture, a closing reason) into a failure of its own.

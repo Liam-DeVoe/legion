@@ -400,14 +400,22 @@ How `/v1` admits a caller depends on who reaches the listener:
   `ENVOY_OIDC_ISSUER`, `ENVOY_OIDC_AUDIENCE` and `ENVOY_OIDC_ACCOUNTS` (`<l>.oidcAccounts` joined
   by commas) in place of the flag, and admits a request only with a projected ServiceAccount token
   `<l>.oidcIssuer` signed for `<l>.oidcAudience`, of a subject `<l>.oidcAccounts` lists; anything
-  else gets 401. A calling pod mounts such a token with a projected volume of its own
-  (`serviceAccountToken` with `audience: <l>.oidcAudience`) and sends it as
-  `Authorization: Bearer <token>`. The NetworkPolicy then narrows who may try, and is not the only
-  guard. The listener renders no `ENVOY_ALLOWED_HOSTS`, since a listener that requires a bearer
-  serves `/v1` to any `Host`, so `<l>.allowedHosts` is refused. It reads the issuer's discovery
-  document when it starts and refuses to start when the issuer does not answer, so its pod needs
-  egress to the issuer, such as GKE's cluster issuer,
-  `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`.
+  else gets 401, except a token it cannot yet check (below). A calling pod mounts such a token with
+  a projected volume of its own (`serviceAccountToken` with `audience: <l>.oidcAudience`) and sends
+  it as `Authorization: Bearer <token>`. The NetworkPolicy then narrows who may try, and is not the
+  only guard. The listener renders no `ENVOY_ALLOWED_HOSTS`, since a listener that requires a
+  bearer serves `/v1` to any `Host`, so `<l>.allowedHosts` is refused. The listener does not read
+  the issuer's discovery document before it starts: it starts, reads the document in the
+  background, and answers every projected token 503 with `Retry-After: 1` until it has read it.
+  Its pod still needs egress to the issuer, such as GKE's cluster issuer,
+  `https://container.googleapis.com/v1/projects/<project>/locations/<location>/clusters/<cluster>`:
+  without it, or with a wrong `<l>.oidcIssuer`, the pod becomes Ready, the rolling update replaces
+  the old pod, and every `/v1` caller then gets that 503. `/healthz`'s `oidc` field reads `false`
+  and `envoy_listener_oidc_issuer_discovered{issuer="cluster"}` reads `0` while the listener has
+  not read the issuer. None of the probes below reads either, and this component renders no scrape
+  of the listener's `/metrics` (its one `PodMonitoring` scrapes the hub's NATS pods), so the
+  deployment that runs the listener adds a scrape of the listener's `/metrics` on 9020, which takes
+  no credential, and an alert on that gauge reading `0`: without them nothing shows this state.
 
 Three probes read the pod's own loopback, two routes between them:
 
@@ -1370,20 +1378,24 @@ unsetting it replaces the app's pods as any change to its pod template does.
 
 `parentStatusRule`, `false` by default, turns on Dispatch's parent-status rule: `true` renders
 `DISPATCH_PARENT_STATUS_RULE=on` on the `envoy-dispatch` container alone, in every mode that runs
-Dispatch, right after `DISPATCH_SERVER_URL` and, with `outsideOrigin`, `DISPATCH_OUTSIDE_ORIGIN`.
-With it Dispatch refuses a write that leaves a parent's status out of line with its children's,
-and at boot it runs the one-time fix of the parents and children that break the rule. The fix
-runs once per database, so turning the input off and on again runs nothing. Set it only when two
-conditions hold. First, each Legion daemon that writes to this Dispatch runs the releases with
-the daemon's side of the rule, which send the parent-status options. Second, each project's
-instructions retry a failed root architect with a status write of `todo` alone, not `backlog`
-and then `todo`, and that project's daemon and controller have read them. The rule refuses that
-`backlog` while an issue under the root is in work. Set it with no process of the earlier
-setting serving beside the new one ([The pods](#the-pods)). Unset, nothing is rendered, so a
-deployment that leaves it unset renders the pod it always had. An `envoyImage` whose
-`envoy-dispatch` predates the setting ignores it, as it ignores every variable its settings
-table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Setting or unsetting it
-replaces the app's pods as any change to its pod template does.
+Dispatch, right after `DISPATCH_SERVER_URL` and the variables that follow it with the outside
+inputs: `DISPATCH_OUTSIDE_ORIGIN` with `outsideOrigin`, then `DISPATCH_SIGNIN_PASSKEY` with
+`signInPasskey`. With it Dispatch refuses a write that leaves a parent's status out of line with
+its children's, and at boot it runs the one-time fix of the parents and children that break the
+rule. The fix runs once per database, so turning the input off and on again runs nothing: a
+parent and a child that came to break the rule while it was off still break it once it is on
+again, and each status move of that child is refused until a person takes the child off that
+parent or closes it (`packages/envoy/cmd/dispatch/README.md`, the fix's bullet). Set
+it only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs
+the releases with the daemon's side of the rule, which send the parent-status options. Second,
+each project's instructions retry a failed root architect with a status write of `todo` alone,
+not `backlog` and then `todo`, and that project's daemon and controller have read them. The
+rule refuses that `backlog` while an issue under the root is in work. Set it with no process
+of the earlier setting serving beside the new one ([The pods](#the-pods)). Unset, nothing is
+rendered, so a deployment that leaves it unset renders the pod it always had. An `envoyImage`
+whose `envoy-dispatch` predates the setting ignores it, as it ignores every variable its
+settings table (`packages/envoy/cmd/dispatch/settings.go`) does not list. Setting or unsetting
+it replaces the app's pods as any change to its pod template does.
 
 `priorityClassName`, `appPdbMinAvailable`, `frontDoorPdbMinAvailable` and
 `listenerPdbMinAvailable` protect the pods from being displaced; with none set the component

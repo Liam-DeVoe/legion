@@ -106,6 +106,18 @@ const refGrammarProblem =
 
 const ownerRequiredProblem = "issue is required; supply issue or set LEGION_ISSUE";
 /**
+ * The issue `checkDispatchCall` parses an owner-missing call with, in place of the one it lacks.
+ * Some tools' schemas require `issue` (dispatch_issue_update, dispatch_review and the handoff tools
+ * among them), and zod stops at that missing field without running the tool's own rule, so the
+ * refusal would name the owner alone and the call made again with its owner would be refused for
+ * the rest. Every tool's `issue` is a plain string (packages/contracts/src/dispatch-tools.ts), so
+ * this native key passes each of them and the owner part of every owner rule: nothing the parse
+ * finds is about the stand-in, and the parse's problems are kept as they are. It never leaves the
+ * check: the owner problem keeps the call from being sent, and the arguments the check returns are
+ * the caller's.
+ */
+const ownerStandInIssue = "OWNER-1";
+/**
  * Cross-field checks the schema cannot express, run as predicates over the (possibly
  * unparsed) arguments so every problem is reported in the same refusal.
  */
@@ -385,6 +397,7 @@ function toolSchema(tool: string): z.ZodType {
  * every defect onto `problems` and continuing so the caller reports them all at once.
  * A `ref` given as a dashboard URL on any of `dashboardUrls` (the API's own address, then the
  * public dashboard when there is one) is rewritten to its dispatch:// form.
+ * `ownerMissing` is set at each exit that pushes a missing-owner problem (see `OwnerResolution`).
  */
 export async function resolveOwnerArguments(
   tool: string,
@@ -542,7 +555,7 @@ export async function resolveOwnerArguments(
   const legionIssue = env.LEGION_ISSUE;
   if (!legionIssue) {
     problems.push(ownerRequiredProblem);
-    return { args, ref, owner: null };
+    return { args, ref, owner: null, ownerMissing: true };
   }
   if (nativeIssueKeyPattern.test(legionIssue) || externalIssueRefPattern.test(legionIssue)) {
     const issue = canonicalExternalIssueRef(legionIssue);
@@ -552,21 +565,23 @@ export async function resolveOwnerArguments(
     problems.push(
       "LEGION_ISSUE must be a native issue key (e.g. LEGION-3), an external owner/repo#n reference, or a bare positive issue number"
     );
-    return { args, ref, owner: null };
+    return { args, ref, owner: null, ownerMissing: true };
   }
   const repo = await resolveCwdRepo(cwd, exec);
   if (!repo) {
     problems.push("issue is required; LEGION_ISSUE needs a GitHub repository in cwd");
-    return { args, ref, owner: null };
+    return { args, ref, owner: null, ownerMissing: true };
   }
   const issue = `${repo}#${legionIssue}`;
   return { args: { ...args, issue }, ref, owner: { kind: "issue", issue } };
 }
 /**
- * `issue` without what restates a missing owner, or undefined when nothing else is left. The
- * schema's own "issue is required", a required `issue` field left out, is dropped whole. A refusal
- * of the tool's rule (a `custom` issue at the root) loses the owner rule it opens with when the
- * call broke it (`withoutOwnerRule`), and keeps every other part of the rule the call broke.
+ * `issue` without what restates a missing owner, or undefined when nothing else is left: what
+ * `checkDispatchCall` keeps of the parse of a call that rightly names no owner, or of one whose
+ * owners conflict. The schema's own "issue is required", a required `issue` field left out, is
+ * dropped whole. A refusal of the tool's rule (a `custom` issue at the root) loses the owner rule
+ * it opens with when the call broke it (`withoutOwnerRule`), as a conflict's call or a call whose
+ * schema lets `issue` be absent can, and keeps every other part of the rule the call broke.
  */
 function withoutMissingOwner(issue: z.core.$ZodIssue): z.core.$ZodIssue | undefined {
   if (
@@ -597,7 +612,9 @@ export function dispatchServerUrls(
  * The check a call makes before it sends anything, the one `--dry-run` runs too: the owner (from
  * the arguments, the ref, or LEGION_ISSUE), the strict schema, the cross-field checks, and the
  * picture files `images` names. The schema sees the owner-resolved arguments, so it judges an
- * issue, artifact or version the ref supplies, and its validation sees the owner it requires.
+ * issue, artifact or version the ref supplies, and its validation sees the owner it requires. A
+ * call with no owner where it needs one is judged with `ownerStandInIssue` in its place, so the
+ * refusal names every other problem beside the missing owner.
  */
 export async function checkDispatchCall(input: DispatchCallCheckInput): Promise<CheckedCall> {
   const { tool, args, cwd } = input;
@@ -618,19 +635,28 @@ export async function checkDispatchCall(input: DispatchCallCheckInput): Promise<
       ? []
       : ownerConflictProblems(tool, args, owner.ref, optionalString(owner.args, "ref"));
   problems.push(...conflicts);
-  // Every owner-missing exit (no issue, bad LEGION_ISSUE, no repo in cwd) leaves owner null, and
-  // a conflict already names the owners. The schema's own "issue is required" and the owner rule
-  // a refusal of the tool's rule opens with would only restate the actionable line already
-  // pushed, so they are left out; every other part of the rule the call broke stays, so the
+  // A call left without an owner, or one whose owners conflict, already has its owner said: an
+  // owner-missing exit (`OwnerResolution.ownerMissing`) pushed the actionable line, a call that
+  // rightly names none (a direct message's reply, a read by message, a retraction, an upload's
+  // ref, a ref that names nothing) needs none, and a conflict names the owners. The schema's own
+  // "issue is required" and the owner rule a refusal of the tool's rule opens with would only
+  // restate that, so they are left out; every other part of the rule the call broke stays, so the
   // refusal names all of the call's problems at once.
-  const ownerMissing =
+  const ownerAlreadySaid =
     issueFreeTools[tool] !== true && (owner.owner === null || conflicts.length > 0);
   const schema = toolSchema(tool);
-  const parsed = schema.safeParse(owner.args, { reportInput: true });
+  // An owner-missing call is parsed with `ownerStandInIssue` as its issue; see there for why.
+  const standIn = owner.ownerMissing === true;
+  const parsed = schema.safeParse(
+    standIn ? { ...owner.args, issue: ownerStandInIssue } : owner.args,
+    { reportInput: true }
+  );
   if (!parsed.success) {
-    const issues = ownerMissing
-      ? parsed.error.issues.flatMap((issue) => withoutMissingOwner(issue) ?? [])
-      : parsed.error.issues;
+    const issues = standIn
+      ? parsed.error.issues
+      : ownerAlreadySaid
+        ? parsed.error.issues.flatMap((issue) => withoutMissingOwner(issue) ?? [])
+        : parsed.error.issues;
     problems.push(...formatZodIssues(issues, schema, tool));
   }
   problems.push(...argumentProblems(tool, owner.args));
@@ -639,7 +665,8 @@ export async function checkDispatchCall(input: DispatchCallCheckInput): Promise<
   return {
     problems,
     owner,
-    args: parsed.success ? (parsed.data as ToolArguments) : owner.args,
+    // The stand-in's parse is never the call's arguments; its owner problem refuses the call.
+    args: parsed.success && !standIn ? (parsed.data as ToolArguments) : owner.args,
     pictures,
   };
 }
