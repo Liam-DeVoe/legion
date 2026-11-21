@@ -892,6 +892,79 @@ func TestAStatusChangeRefusedByItsRequestKeyAnswersChanged(t *testing.T) {
 		http.StatusBadRequest, contracts.IdempotencyKeyInvalid)
 }
 
+// TestARefusalBeforeTheKeyedLayerAnswersChanged: a refusal by a layer register puts outside the
+// route's keyed layer carries changed [] too, since the route's declared 403 and 409 bodies
+// (StatusChangeRefusal) require changed, and nothing ran under such a refusal. The layers here are
+// the read-only gate (a read-only token), the sign-in check (a broker token that names a service
+// and no person) and the Dispatch-Login check (a write pressed by another person). Each answers a
+// status change with the status, the code and every other member it answers PATCH
+// /api/v1/issues/{key} with for the same credential, and with changed [] beside them, which the
+// PATCH's answer does not carry, under a Content-Length that counts it. Nothing is written.
+func TestARefusalBeforeTheKeyedLayerAnswersChanged(t *testing.T) {
+	rig := newBrokerTokenRigOn(t, testServerOptions{parentStatusRule: true})
+	agent := newBrokerCaller(t)
+	const readOnly, serviceOnly = "a-read-only-token-that-changes-a-status", "a-token-naming-no-person-that-changes-a-status"
+	rig.broker.Says(readOnly, readOnlyToken(agent.jkt))
+	rig.broker.Says(serviceOnly, serviceOnlyToken(agent.jkt))
+	server := statusChangeServer{
+		name: "the token server", project: brokerTestProject, database: rig.database,
+		beside: func(t *testing.T, method, path string, body map[string]any, authorization string) *httptest.ResponseRecorder {
+			return rig.serve(withPerson(brokerRequest(t, method, path, body, authorization, ""), brokerTestPerson))
+		},
+	}
+	server.createProject(t)
+	named := server.seed(t, "Issue refused before the keyed layer", "todo", "")
+	broker := func(token string) func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+		return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+			return rig.serve(agent.presenting(t, method, path, token, body))
+		}
+	}
+	pressedByAnother := func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+		request := withPerson(brokerRequest(t, method, path, body, "", ""), brokerTestPerson)
+		request.Header.Set(contracts.DispatchLoginHeader, "someone-else@d.example")
+		return rig.serve(request)
+	}
+	changePath, patchPath := "/api/v1/issues/"+named+"/status-change", "/api/v1/issues/"+named
+	for _, refused := range []struct {
+		name   string
+		send   func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder
+		status int
+		code   string
+	}{
+		{"a read-only token", broker(readOnly), http.StatusForbidden, contracts.DispatchReadOnlyToken},
+		{"a broker token that names no person", broker(serviceOnly), http.StatusForbidden, contracts.DispatchSignInRequired},
+		{"a write pressed by another person", pressedByAnother, http.StatusConflict, contracts.DispatchLoginChanged},
+	} {
+		t.Run(refused.name, func(t *testing.T) {
+			change := refused.send(t, http.MethodPost, changePath, map[string]any{"status": "done"})
+			patch := refused.send(t, http.MethodPatch, patchPath, map[string]any{"status": "done"})
+			var changeBody, patchBody map[string]any
+			if err := json.Unmarshal(change.Body.Bytes(), &changeBody); err != nil {
+				t.Fatalf("POST %s from %s: decode the answer %s: %v", changePath, refused.name, change.Body.String(), err)
+			}
+			if err := json.Unmarshal(patch.Body.Bytes(), &patchBody); err != nil {
+				t.Fatalf("PATCH %s from %s: decode the answer %s: %v", patchPath, refused.name, patch.Body.String(), err)
+			}
+			if _, carries := patchBody["changed"]; patch.Code != refused.status || patchBody["code"] != refused.code || carries {
+				t.Fatalf("PATCH %s from %s answered %d %s, want %d %s with no changed",
+					patchPath, refused.name, patch.Code, patch.Body.String(), refused.status, refused.code)
+			}
+			changed, listed := changeBody["changed"].([]any)
+			others := maps.Clone(changeBody)
+			delete(others, "changed")
+			if change.Code != patch.Code || !listed || len(changed) != 0 || !reflect.DeepEqual(others, patchBody) {
+				t.Errorf("POST %s from %s answered %d %s, want the PATCH's %d %s with changed [] beside it",
+					changePath, refused.name, change.Code, change.Body.String(), patch.Code, patch.Body.String())
+			}
+			if length := change.Header().Get("Content-Length"); length != fmt.Sprint(change.Body.Len()) {
+				t.Errorf("POST %s from %s answered Content-Length %q for its body of %d bytes",
+					changePath, refused.name, length, change.Body.Len())
+			}
+		})
+	}
+	ruleRig{database: rig.database}.requireIssue(t, named, "todo", "")
+}
+
 // ruleState is an issue's status and parent, as a replay of the call's writes holds them.
 type ruleState struct {
 	status string

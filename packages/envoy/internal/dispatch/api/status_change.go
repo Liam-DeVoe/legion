@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"slices"
@@ -92,7 +93,9 @@ type statusChangeEntry struct {
 // and its request key's (refuseStatusChangeKey): its code and its message, and the entries of the
 // writes that committed before it ([] when none did; for a 409 KEY_IN_FLIGHT, those the run that
 // holds the key had committed when the key was read, and for an ANSWER_NOT_KEPT, those the first
-// run committed).
+// run committed). A layer register puts outside the keyed layer refuses before any step runs with
+// the {code, error} it answers every route, and addChangedToRefusals, outside every layer of the
+// route's chain, adds changed [] to it, so it reads as this shape too.
 type statusChangeRefusal struct {
 	Code    string              `json:"code"`
 	Error   string              `json:"error"`
@@ -601,8 +604,13 @@ func statusChangeCallerName(actor model.Actor) string {
 
 // writeStatusChangeRefusal answers err as every other route answers it (writeAuthenticationError,
 // which answers every error that is not an identity's as writeHandlerError does), with changed
-// beside the refusal: the entries of the steps that committed before it.
+// beside the refusal: the entries of the steps that committed before it, [] when changed is nil.
+// It shapes the refusals of the handler and of the keyed layer (refuseStatusChangeKey); those of
+// the layers outside the keyed layer get their changed from addChangedToRefusals.
 func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, changed []statusChangeEntry) {
+	if changed == nil {
+		changed = []statusChangeEntry{}
+	}
 	var conflict *parentStatusConflict
 	if errors.As(err, &conflict) {
 		body := conflict.body()
@@ -614,8 +622,10 @@ func (s *server) writeStatusChangeRefusal(w http.ResponseWriter, err error, chan
 	var body errorBody
 	if decodeErr := json.Unmarshal(refused.body.Bytes(), &body); decodeErr != nil {
 		// Every refusal writeAuthenticationError writes is {code, error}, so this is a fault of
-		// the server's own.
-		s.writeHandlerError(w, fmt.Errorf("read the refusal of a status change: %w", decodeErr))
+		// the server's own: logged as writeHandlerError logs one, and answered 500 in the route's
+		// refusal shape, with changed, as every refusal of the route is.
+		slog.Error("dispatch: API handler failed", "error", fmt.Errorf("read the refusal of a status change: %w", decodeErr))
+		WriteJSON(w, http.StatusInternalServerError, statusChangeRefusal{Code: codeInternal, Error: "internal server error", Changed: changed})
 		return
 	}
 	maps.Copy(w.Header(), refused.header)

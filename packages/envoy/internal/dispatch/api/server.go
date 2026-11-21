@@ -948,13 +948,23 @@ func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc
 		// pins: without either, the client is told to continue and the answer waits on its body.
 		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
 	}
+	answered := s.decideBrokerToken(trackTransactions(handler))
+	if route.Method+" "+route.Pattern == statusChangeRoute {
+		// Outside every layer above and outside decideBrokerToken, so it sees each answer the
+		// route gives, and inside compression, so it reads the JSON a layer wrote rather than
+		// gzip. The route's declared refusals carry changed: the handler and the keyed layer
+		// write it, and every layer outside the keyed layer refuses before any step runs with
+		// the {code, error} it answers every route, to which this adds changed []
+		// (addChangedToRefusals).
+		answered = addChangedToRefusals(answered)
+	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
 	// them resolved. Compression sits just inside it, so every one of those answers is
 	// compressed for a caller that takes gzip and the line counts the bytes that went on the
 	// wire. The two websockets register mounts beside the table carry no compressed answer: the
 	// upgrade is not a body, and the frames after it are the socket's (compressAnswers).
-	return accesslog.HandlerFunc(route.Pattern, compressAnswers(s.decideBrokerToken(trackTransactions(handler))))
+	return accesslog.HandlerFunc(route.Pattern, compressAnswers(answered))
 }
 
 // liveSocketPattern is the path of the live socket, which register mounts beside the table.
