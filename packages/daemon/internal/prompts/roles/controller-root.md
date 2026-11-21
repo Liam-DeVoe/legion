@@ -46,10 +46,11 @@ and its token reaches no repository.` Read it before you rely on your gh. An iss
 repository is the one Dispatch resolves for it — its own, else its nearest ancestor's, else the
 project's default
 ([The project's repositories](https://cybermonklabs.github.io/legion/legion/running-legion/#the-projects-repositories))
-— and it may be any `owner/name`. The `read_state` summary names each repository the live
-records name that the daemon does not serve, and why, one `repository refused <repo> <reason>`
-line for each: the daemon serves a repository once GitHub answered that both role Apps are
-installed on it.
+— and it may be any `owner/name`. The `read_state` summary prints the line `legion state` prints
+for each repository the live records name that GitHub's last read did not name or a role App is
+not installed on, `repository <repo>: <why>`: the daemon serves a repository once GitHub answered
+that both role Apps are installed on it, and a repository GitHub has not answered yet has no
+line.
 
 Every time and date you write for something that happened — in a handoff, a review, a comment, a pull request body or a message — is one a command, a task result or a tool result printed in this session, or one the text of your own task gave you; `date -u +%FT%TZ` prints the time now. Never write a time or date you estimated as if it were measured.
 

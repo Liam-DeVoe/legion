@@ -267,8 +267,9 @@ const SUMMARY_LEGEND =
   "admission cap; active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
   "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; " +
-  "repository refused <repo> <reason>, for each repository the live records name that the " +
-  "daemon does not serve; issues <count>; then " +
+  "repository <repo> [(served as <name>)]: <why>, as `legion state` prints it, for each " +
+  "repository the live records name that GitHub's last read did not name or a role App is not " +
+  "installed on; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
   "runs its slot, hold, gate <current> approved <version|none> and <role> <claim state> " +
   "<last turn start> <last turn end> lines, - for a value the daemon has none for. " +
@@ -277,9 +278,9 @@ const SUMMARY_LEGEND =
 /**
  * The whole state as the controller reads it between its filtered reads: the project, its pause
  * or its last pause, the admission lists, the wakes the pacing holds, each capability's status,
- * each repository the live records name that the daemon does not serve and why, one line per
- * recorded issue, and under each issue Legion still runs its slot, its hold, its gate and its
- * claims.
+ * each repository the live records name that GitHub's last read did not name or a role App is not
+ * installed on, and why, one line per recorded issue, and under each issue Legion still runs its
+ * slot, its hold, its gate and its claims.
  *
  * Line-oriented, not JSON: the INFRA deployment's state is about 160 KB of JSON for the 92 issues
  * it records, and the tool's output reaches the controller cut at about 41 KB
@@ -321,22 +322,26 @@ function stateSummary(state: LegionState): string {
   }
   for (const liveRepository of state.repositories?.live ?? []) {
     // The controller files a clear defect only on a repository both role Apps are installed on
-    // (finding-asks.md), and no filter answers for repositories, so each repository a live record
-    // names that the daemon does not serve is named here, with why. These are the entries the
-    // daemon's block in contract 152's shape lists as `refused`, with its reasons (api's at152):
-    // GitHub's last read did not name it (`readError`), GitHub answered that a role App is not
-    // installed on the name it is served under, or GitHub has not answered both Apps' reads yet.
-    // Every field of an entry is optional (LEGION_ANSWER_READS), so an entry with no repository
-    // is left out.
+    // (finding-asks.md), and no filter answers for repositories, so the summary prints the lines
+    // an operator's `legion state` prints for them, in the same words (cmd/legion's
+    // repositoryLines, main.go:1431): one line for each repository GitHub's last read did not name
+    // (`readError`) or GitHub answered a role App is not installed on, with both reasons where
+    // both hold, and none for a repository GitHub has not answered both reads of yet. A live
+    // entry carries no verdict word of the daemon's (api's LiveRepositoryView, state.go:237, holds
+    // only `repo`, `servedAs`, `apps`, `readError` and `cache`), so the reason is built here from
+    // `apps` as the daemon's own NotInstalled (state.go:250) builds it. Every field of an entry is
+    // optional (LEGION_ANSWER_READS), so an entry with no repository is left out.
     if (liveRepository.repo === undefined) continue;
-    const apps = liveRepository.apps;
-    if (apps?.implement === true && apps.review === true) continue;
     const served = liveRepository.servedAs ?? liveRepository.repo;
-    const reason =
-      liveRepository.readError ??
-      appsNotInstalled(apps, served) ??
-      "GitHub has not answered for it yet";
-    lines.push(`repository refused ${liveRepository.repo} ${reason}`);
+    const why = [liveRepository.readError, appsNotInstalled(liveRepository.apps, served)].filter(
+      (reason): reason is string => reason !== undefined && reason !== ""
+    );
+    if (why.length === 0) continue;
+    const name =
+      liveRepository.servedAs === undefined
+        ? liveRepository.repo
+        : `${liveRepository.repo} (served as ${liveRepository.servedAs})`;
+    lines.push(`repository ${name}: ${why.join("; ")}`);
   }
   const keys = Object.keys(state.issues).sort();
   lines.push(`issues ${keys.length}`);
@@ -598,7 +603,7 @@ export function createLegionTool(deps: {
         "under it now: wait for the ancestor to close, then release it. " +
         "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
         "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
-        "capability, each repository the daemon refuses with its reason, one line per recorded issue, and under each issue " +
+        "capability, each repository not served with why, as legion state prints it, one line per recorded issue, and under each issue " +
         "Legion still runs its slot, hold, gate and each claim's state with its last turn times — and with issue, issues, " +
         "phase or settings returns the full records it names; " +
         "set_status moves an issue to todo, backlog or icebox. " +

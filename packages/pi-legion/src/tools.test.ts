@@ -264,7 +264,7 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "under it now: wait for the ancestor to close, then release it. " +
   "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
   "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
-  "capability, each repository the daemon refuses with its reason, one line per recorded issue, and under each issue " +
+  "capability, each repository not served with why, as legion state prints it, one line per recorded issue, and under each issue " +
   "Legion still runs its slot, hold, gate and each claim's state with its last turn times — and with issue, issues, " +
   "phase or settings returns the full records it names; " +
   "set_status moves an issue to todo, backlog or icebox. " +
@@ -2686,13 +2686,13 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
 
 // The controller files a clear defect only on a repository both role GitHub Apps are installed on
 // (finding-asks.md, step 1 of "File a clear defect no tree owns"), and its role prompt tells it
-// that the summary names each repository the live records name that the daemon does not serve,
-// with why (packages/daemon/internal/prompts/roles/controller-root.md). No filter answers for
-// repositories, so the summary names each such entry of `repositories.live`, after the
-// capabilities, with the reason the daemon's block in contract 152's shape gives it under
-// `refused`: GitHub's read error, the Apps GitHub answered are not installed on the name it is
-// served under, or GitHub's answer not come yet.
-test("read_state with no field names each repository the daemon refuses, with its reason", async () => {
+// that the summary prints the repository lines an operator's `legion state` prints
+// (packages/daemon/internal/prompts/roles/controller-root.md). No filter answers for
+// repositories, so the summary prints, after the capabilities, cmd/legion's repositoryLines for
+// `repositories.live`: one line for each entry GitHub's last read did not name or GitHub answered
+// a role App is not installed on, with both reasons where both hold and the name it is served
+// under, and none for a repository served or not answered yet.
+test("read_state with no field prints legion state's line for each repository not served", async () => {
   const state = legionState({
     capabilities: [{ name: "subagents", status: "present", detail: "6 agents discovered" }],
     repositories: {
@@ -2706,6 +2706,11 @@ test("read_state with no field names each repository the daemon refuses, with it
           apps: { implement: false, review: false },
         },
         { repo: "zeta/archive", readError: "GitHub answered 404 for zeta/archive" },
+        {
+          repo: "zeta/both",
+          readError: "GitHub did not answer for zeta/both",
+          apps: { implement: true, review: false },
+        },
         { repo: "zeta/new" },
       ],
       withoutWebhookApp: [],
@@ -2726,16 +2731,18 @@ test("read_state with no field names each repository the daemon refuses, with it
   expect(summary).toContain(
     [
       "\ncapability subagents present",
-      "repository refused acme/gadgets the review App is not installed on acme/gadgets",
-      "repository refused other/tools the implement App is not installed on other/tools",
-      "repository refused sjawhar/legion the implement and review Apps are not installed on cybermonklabs/legion",
-      "repository refused zeta/archive GitHub answered 404 for zeta/archive",
-      "repository refused zeta/new GitHub has not answered for it yet",
+      "repository acme/gadgets: the review App is not installed on acme/gadgets",
+      "repository other/tools: the implement App is not installed on other/tools",
+      "repository sjawhar/legion (served as cybermonklabs/legion): the implement and review Apps are not installed on cybermonklabs/legion",
+      "repository zeta/archive: GitHub answered 404 for zeta/archive",
+      "repository zeta/both: GitHub did not answer for zeta/both; the review App is not installed on zeta/both",
       "issues 0",
     ].join("\n")
   );
-  // A served repository is no refusal, so it has no line of its own.
+  // A served repository, and one GitHub has not answered both reads of yet, have no line, as in
+  // `legion state`.
   expect(summary).not.toContain("acme/widgets");
+  expect(summary).not.toContain("zeta/new");
 });
 
 // What the controller reads of the pause in `read_state` with no field (dispatch://INFRA-3759,
