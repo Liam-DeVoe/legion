@@ -588,7 +588,7 @@ func getOK(ctx context.Context, client *http.Client, url string) (io.ReadCloser,
 	if resp.StatusCode != http.StatusOK {
 		refused, _ := redact.ReadAnswer(resp, 4096)
 		resp.Body.Close()
-		return nil, fmt.Errorf("GET %s answered %d %s", redactURL(url), resp.StatusCode, trunc([]byte(refused.Words().String())))
+		return nil, fmt.Errorf("GET %s answered %d %s", redactURL(url), resp.StatusCode, answerWords(refused))
 	}
 	return redact.StreamAnswer(resp, answerLimit), nil
 }

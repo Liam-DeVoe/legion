@@ -185,7 +185,7 @@ func cloudsqlMetadataToken(ctx context.Context, client *http.Client, tokenURL st
 		return "", fmt.Errorf("the metadata server at %s gave no access token: %w", redactURL(tokenURL), err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("the metadata server at %s answered %d %s, so this pod has no access token", redactURL(tokenURL), resp.StatusCode, trunc([]byte(read.Words().String())))
+		return "", fmt.Errorf("the metadata server at %s answered %d %s, so this pod has no access token", redactURL(tokenURL), resp.StatusCode, answerWords(read))
 	}
 	var answer struct {
 		AccessToken string `json:"access_token"`
@@ -237,24 +237,21 @@ func readCloudSQLSeries(ctx context.Context, client *http.Client, base, token, p
 		if readErr != nil {
 			return nil, fmt.Errorf("the read of %s for %s failed: %w", metric, databaseID, readErr)
 		}
-		// Cloud Monitoring's words, or a stand-in's, print as the rule reads them, with the bearer
-		// the read carried redacted (redact.Answer.Words).
-		said := trunc([]byte(read.Words().String()))
 		switch resp.StatusCode {
 		case http.StatusOK:
 		case http.StatusForbidden:
 			return nil, fmt.Errorf("Cloud Monitoring answered 403 to the read of %s for %s: this pod's Google identity may not read project %s's time series: %s",
-				metric, databaseID, project, said)
+				metric, databaseID, project, answerWords(read))
 		case http.StatusNotFound:
 			return nil, fmt.Errorf("Cloud Monitoring answered 404 to the read of %s for %s: project %s or the timeSeries route is not there: %s",
-				metric, databaseID, project, said)
+				metric, databaseID, project, answerWords(read))
 		default:
 			return nil, fmt.Errorf("Cloud Monitoring answered %d to the read of %s for %s: %s",
-				resp.StatusCode, metric, databaseID, said)
+				resp.StatusCode, metric, databaseID, answerWords(read))
 		}
 		var answer cloudsqlTimeSeriesAnswer
 		if err := read.Decode(&answer); err != nil {
-			return nil, fmt.Errorf("Cloud Monitoring's answer for %s did not decode as a timeSeries list: %w: %s", databaseID, err, said)
+			return nil, fmt.Errorf("Cloud Monitoring's answer for %s did not decode as a timeSeries list: %w: %s", databaseID, err, answerWords(read))
 		}
 		if len(answer.TimeSeries) > 1 {
 			return nil, fmt.Errorf("the filter for %s matched %d series of %s, not one; name one instance", databaseID, len(answer.TimeSeries), metric)

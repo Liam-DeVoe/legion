@@ -66,9 +66,12 @@ const answerLimit = 64 << 20
 
 func (r callResult) ok() bool { return r.err == nil && r.status/100 == 2 }
 
-// text is the answer's words as a message prints them: the rule's reading, with every credential
-// the request carried redacted (redact.Answer.Words), cut to 300 bytes (trunc).
-func (r callResult) text() string { return trunc([]byte(r.answer.Words().String())) }
+// text is the answer's words as a message prints them (answerWords).
+func (r callResult) text() string { return answerWords(r.answer) }
+
+// answerWords is answer's words as a message prints them: the rule's reading, with every
+// credential the request carried redacted (redact.Answer.Words), cut to 300 bytes (trunc).
+func answerWords(answer redact.Answer) string { return trunc([]byte(answer.Words().String())) }
 
 // errorCode is the code a non-2xx answer's body names (writeError writes {"error": ..., "code":
 // ...}); empty for a 2xx answer, a transport error, and a body that names none or is not JSON at

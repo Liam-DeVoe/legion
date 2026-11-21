@@ -51,7 +51,7 @@ func fetchTo(url, path string, timeout time.Duration, lg *log.Logger) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		refused, _ := redact.ReadAnswer(resp, 4096)
-		lg.Printf("fetch %s: %d %s", redactURL(url), resp.StatusCode, trunc([]byte(refused.Words().String())))
+		lg.Printf("fetch %s: %d %s", redactURL(url), resp.StatusCode, answerWords(refused))
 		return
 	}
 	f, err := os.Create(path)
@@ -60,7 +60,6 @@ func fetchTo(url, path string, timeout time.Duration, lg *log.Logger) {
 		return
 	}
 	defer f.Close()
-	// The file is data saved whole, streamed through redact.StreamAnswer.
 	if _, err := io.Copy(f, redact.StreamAnswer(resp, math.MaxInt64)); err != nil {
 		lg.Printf("fetch %s: %v", redactURL(url), err)
 	}

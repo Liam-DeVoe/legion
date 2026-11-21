@@ -723,14 +723,14 @@ func checkStack(ctx context.Context, e endpoints) error {
 		return fmt.Errorf("guard: dispatch check failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("guard: dispatch check failed: GET %s/api/v1/projects with the stack's agent token answered %d %s", redactURL(e.dispatch), status, trunc([]byte(body.Words().String())))
+		return fmt.Errorf("guard: dispatch check failed: GET %s/api/v1/projects with the stack's agent token answered %d %s", redactURL(e.dispatch), status, answerWords(body))
 	}
 	status, body, err = (&listenerclient.Client{URL: e.listener, Token: e.listenerToken, HTTP: client}).Sessions(ctx)
 	if err != nil {
 		return fmt.Errorf("guard: listener check failed: %w", err)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("guard: listener check failed: GET %s%s with the stack's listener token answered %d %s", redactURL(e.listener), listenerclient.SessionsRoute, status, trunc([]byte(body.Words().String())))
+		return fmt.Errorf("guard: listener check failed: GET %s%s with the stack's listener token answered %d %s", redactURL(e.listener), listenerclient.SessionsRoute, status, answerWords(body))
 	}
 	other := make([]byte, 16)
 	_, _ = rand.Read(other)
