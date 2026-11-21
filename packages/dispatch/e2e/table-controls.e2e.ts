@@ -26,6 +26,7 @@ import {
 } from "./agents";
 import {
   answerAsk,
+  baseUrl,
   createAgentMessage,
   createAsk,
   createComment,
@@ -49,6 +50,7 @@ import {
   replyToMessageDelivery,
   resolveAsk,
   resolveComment,
+  userHeaders,
 } from "./api";
 import { recordClipboard } from "./clipboard";
 import {
@@ -6750,6 +6752,88 @@ test("Change answer opens the answer form with the focus in it, at 1440 and 390 
           () => false
         );
       if (!whole) wrong.push(`${at}: the form's first choice, Ship, is not whole in the window`);
+    }
+  }
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): the Session groups dialog opened four times at two widths, a group made and
+// deleted in each.
+// INFRA-3135, round 22 (the tester's, measured in builds Jobs infra-3135-p1-h and -p1-b at
+// da0804df and a1c78223): the reader's focus is on a session group's Rename in the Session
+// groups dialog when the group is deleted on another device, so its card goes, a loss the reader
+// did not cause. At da0804df, once a Rename by Enter has landed on the card and its hold has
+// ended, the focus goes to a link of the dialog's session list, "Open live conversation with
+// Reviewer", in Chromium, Firefox and WebKit at 1440 and 390 px; with nothing pressed it goes to
+// that link in Chromium, and to the dialog in Firefox and WebKit. At a1c78223 Chromium with
+// nothing pressed puts it in New group name, which takes the reader's next key as text. The
+// architect's rule of 2026-11-20 02:1xZ (open-items.md, "The uncaused path, narrowed"): a loss
+// the reader did not cause lands on no control, but on the focus stop of the nearest region that
+// still stands - here the open dialog - with no scroll. A focused control taken away, for which
+// Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox` projects that
+// names the page-own focus row (e2e/playwright.config.ts).
+test("a group card deleted on another device while it holds the focus leaves the focus on the Session groups dialog @firefox @webkit", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  // Once: the fixture's rows carry no ON CONFLICT. Each pass deletes the group it makes, so the
+  // planner it groups is free again for the next pass.
+  await seedSessionGroupsFixture();
+  const wrong: string[] = [];
+  let made = 0;
+  for (const [height, width] of [
+    [900, 1440],
+    [664, 390],
+  ] as const) {
+    for (const how of ["nothing pressed", "a Rename landed"] as const) {
+      made += 1;
+      const name = `Crew ${made}`;
+      await page.setViewportSize({ height, width });
+      await page.goto("/delivery?mode=list");
+      await expect(page.getByText("3 PRs in current filter/window")).toBeVisible();
+      await openFilterPanel(page);
+      await page.getByRole("button", { name: "Edit groups" }).click();
+      const editor = page.getByRole("dialog", { name: "Session groups" });
+      await editor.getByRole("checkbox", { exact: true, name: "Planner, first run" }).check();
+      await editor.getByLabel("New group name").fill(name);
+      const created = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          response.url().endsWith("/api/v1/delivery/session-groups")
+      );
+      await editor.getByRole("button", { name: "Create group" }).click();
+      const group = (await (await created).json()) as { id: string };
+      let card = editor.getByRole("group", { name });
+      // Every button of a card is disabled while a write of the editor is out, and Delete group
+      // by nothing else, so its coming back is the create's end.
+      await expect(card.getByRole("button", { name: "Delete group" })).toBeEnabled();
+      const renamed = `${name}, renamed`;
+      await card.getByLabel("Name", { exact: true }).fill(renamed);
+      await card.getByRole("button", { exact: true, name: "Rename" }).focus();
+      if (how === "a Rename landed") {
+        await page.keyboard.press("Enter");
+        card = editor.getByRole("group", { name: renamed });
+        // The card's hold ends once the live update carrying the rename has drawn it.
+        await expect(card.getByRole("button", { name: "Delete group" })).toBeEnabled();
+        await expect(card.getByRole("button", { exact: true, name: "Rename" })).toBeFocused();
+      }
+      const removed = await fetch(new URL(`/api/v1/delivery/session-groups/${group.id}`, baseUrl), {
+        headers: await userHeaders("alice"),
+        method: "DELETE",
+      });
+      expect(removed.status).toBe(204);
+      await expect(card).toHaveCount(0);
+      // The page's rescue runs a frame and a task after the loss, so it is done by now.
+      await nextFrames(page);
+      await nextFrames(page);
+      // One read is the answer: every hand-off of the loss has run, and nothing moves the focus.
+      const onDialog = await editor.evaluate((dialog) => dialog === document.activeElement);
+      // Read after the same hand-offs as the read above, so where the focus is is settled.
+      const holder = await focusHolder(page);
+      if (!onDialog)
+        wrong.push(
+          `${width} px, ${how}: the focus is on ${holder.name}, not the Session groups dialog`
+        );
     }
   }
   expect(wrong, wrong.join("; ")).toEqual([]);
