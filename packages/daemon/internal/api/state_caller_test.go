@@ -624,11 +624,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// is served the key and every older pod is not.
 		pause bool
 		// questions is whether the caller is served `questionsForController`, the questions the
-		// answer loop passed to the controller (questionsForControllerContract, the contract 217
+		// answer loop passed to the controller (questionsForControllerContract, the contract 211
 		// added), `[]` where no question was passed, so a pod below it is served no key at all. A
 		// pod's claims at shapedAnswersContract or later place it in no band (podContracts), so
 		// a pod row is served the key only where it is served this daemon's own body; the callers
-		// from shapedAnswersContract to below 217 state their contract, and
+		// from shapedAnswersContract to below 211 state their contract, and
 		// TestACallerStatingAContractBelowTheQuestionsIsServedNone reads them.
 		questions bool
 		// repos is whether the caller is served the repositories block this contract writes,
@@ -869,7 +869,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// every entry of `repositories.mapped` and `repositories.refused`, the key
 			// repositoryAppsContract added (withoutRepositoryApps), with the project's pause
 			// gone, the `paused` contract 178 added (withoutPause), and with
-			// `questionsForController` gone, the key contract 217 added, which a reader before it
+			// `questionsForController` gone, the key contract 211 added, which a reader before it
 			// refuses empty as surely as filled (withoutQuestionsForController).
 			// Every row that reaches here is below all of them, so every one of them goes whatever
 			// the row is; contract 132's strip takes a word of the line's `kind` and no key, and

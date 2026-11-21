@@ -3019,29 +3019,29 @@ package api
 // 2026-11-21T12:31:48Z, found 205 declared by no other, so this entry kept 205. Read the base's own
 // number and every open pull request again at every forward merge rather than from this line.)
 //
-// 217: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
+// 211: INFRA-204 (cybermonklabs/legion) -- api.State gains `questionsForController`, every
 // question to a stopped agent that the daemon's answer loop passed to the controller in the last
 // seven days (id, issue, role, session, asker, ref, reason, passedAt, and writes, each gh call
 // that writes which the loop ran for it), newest first and at most 100: the controller's
 // `agent-question` notice is a live wake only, so a controller that starts later reads what it
 // missed here. A body this contract writes carries it on every state, never null, and a caller
-// whose contract is under 217 — the one its `Legion-Plugin-Contract` header states, else the
+// whose contract is under 211 — the one its `Legion-Plugin-Contract` header states, else the
 // highest its pod's claims record below 193, since a plugin from 193 states its contract — is
 // served the state without the key (shaping.go's stateNarrowings, questionsForControllerContract,
-// withoutQuestionsForController), since a reader before 217 does not take it. The bands compose
+// withoutQuestionsForController), since a reader before 211 does not take it. The bands compose
 // with the pause's: a caller below 178 is served neither the pause's keys nor this one, and a
-// caller from 178 to 216 is served the pause alone of the two; 193's and 202's bands, between
+// caller from 178 to 210 is served the pause alone of the two; 193's and 202's bands, between
 // them, decide their own keys, and 205 has no band, since it moves no key path or value of any
-// answer (205's entry). The 217 reader takes the key as optional for that body alone, as it takes
-// `wakesWaiting`; a daemon below 217 is not what serves it a body without the key, since the boot
+// answer (205's entry). The 211 reader takes the key as optional for that body alone, as it takes
+// `wakesWaiting`; a daemon below 211 is not what serves it a body without the key, since the boot
 // gate and `legion probe-image` refuse that mixed pair. The key's one enumerated field is each
 // question's `role` (answers.go's questionRoles), whose values arrived with the key and ride its
-// band. 217's records are 205's under its own number with the key paths of
+// band. 211's records are 205's under its own number with the key paths of
 // `questionsForController` and that field's domain on the state's. Each state record from 46 to
 // 205 gains that domain empty, as `"questionsForController.*.role": []`, since a record holds the
 // domain of every enumerated field of its answer at every contract
-// (TestTheRecordSetIsOneRecordPerAnswerPerContract) and no value of this one arrived below 217;
-// nothing else of a record below 217 moves. No request a plugin sends moves. (This branch
+// (TestTheRecordSetIsOneRecordPerAnswerPerContract) and no value of this one arrived below 211;
+// nothing else of a record below 211 moves. No request a plugin sends moves. (This branch
 // took 38, then 52 while main stood at 51, then 57 while main stood at 56, then 58 while main
 // stood at 57, then 59 while main stood at 58, then 60 while main stood at 59, then 61 while main
 // stood at 59 and #2539 and #2731 also declared 60, then 122 while main stood at 111, then 126
@@ -3053,8 +3053,9 @@ package api
 // brought main in at 193 (#3659), which is below it, then 203 while main stood at 199, 198 being
 // declared by #4175 and #4589 too, then 208 while main stood at 202, 203 being declared by #3993,
 // #4065, #4175, #4553, #4592, #4596 and #4661 too, then 217 while main stood at 205, 208 being
-// declared by #4175 too. It took 198 because a census of every open pull request at
-// 2026-11-20T19:29Z, read with the `declared_by_open_pull_requests` of main's
+// declared by #4175 too, then 211 while main stood at 205, 217 being declared by #4273, #4590 and
+// #4771 too. It took 198 because a census of every open pull request at 2026-11-20T19:29Z, read
+// with the `declared_by_open_pull_requests` of main's
 // .github/scripts/check-daemon-api-contract.sh, found 189 declared by #2402, #3512, #3995, #4184,
 // #4206, #4209, #4274, #4533, #4631, #4634 and #4639, 190 by this change's own earlier head and
 // #4611, 191 by #4049 and #4573, 192 by #4175, #4180, #4182 and #4193, 193 by #3659 and #3712,
@@ -3070,13 +3071,13 @@ package api
 // #3729, #4273, #4274, #4392, #4438, #4457, #4557, #4580, #4590 and #4726, 203 by #3993, #4065,
 // #4175, #4553, #4592, #4596 and #4661, 204 by #3831, 205 by #3712 and #4573, 206 by #4540, 207
 // by #4030 and #4432, and nothing at 208, so 208 was then the lowest number above main's 202 that
-// no open pull request declared. It took 217 because a census of every open pull request at
-// 2026-11-21T20:27Z, read the same way, found 208 declared by #4175, 209 by #4049, #4540 and
-// #4580, 210 by #4661, 211 by #4611, 212 by #3831 and #4771, 213 by #4030 and #4553, 214 by #4592
-// and #4596, 215 by #4065 and 216 by #4259, and nothing at 217, so 217 is the lowest number above
-// 208 that main and no open pull request declares (208 being #4175's, which merges first). main
-// held 205 at the forward merge that last read this number, main's 98987d3f; read main's own
-// number and every open pull request's again at the next merge rather than from this line. A
-// renumber moves `questionsForControllerContract` in shaping.go with it, the last number of
-// answers.go's SupportedContracts.)
-const DaemonAPIVersion = 217
+// no open pull request declared. It took 211 because a census of every open pull request at
+// 2026-11-21T22:52Z, read the same way, found 208 declared by #4175, 209 by #4049 and #4580, 210
+// by #4661, 212 by #4030, #4392, #4540 and #4611, 213 by #4553, 214 by #4592 and #4596, 215 by
+// #4065, 216 by #3831, #4173, #4180, #4259, #4261 and #4290, and 217 by #4273, #4590 and #4771
+// too, and nothing at 211, so 211 is the lowest number above 208, #4175's, that main and no other
+// open pull request declares. main held 205 at the forward merge that last read this number,
+// main's 98987d3f; read main's own number and every open pull request's again at the next merge
+// rather than from this line. A renumber moves `questionsForControllerContract` in shaping.go with
+// it, the last number of answers.go's SupportedContracts.)
+const DaemonAPIVersion = 211
