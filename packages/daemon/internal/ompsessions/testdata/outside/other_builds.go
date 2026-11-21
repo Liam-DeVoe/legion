@@ -2,10 +2,12 @@
 // literal or conversion names its type. An element of a composite literal of pointers, whose &T
 // the literal elides; a pointer converted to a pointer to one; a struct type of its shape written
 // out, whose values are assignable to it, built by a composite literal or from its zero value with
-// its field set; and a composite literal or a conversion of a type parameter it satisfies. A
-// composite literal of a type of its own with the same shape builds none, nor does one of a type
-// parameter it does not satisfy. The check must name each line that carries a want comment, and no
-// other.
+// its field set, and then assigned to one; and a composite literal or a conversion of a type
+// parameter it satisfies. A composite literal of a type of its own with the same shape builds
+// none, nor does one of a type parameter it does not satisfy, nor a conversion of a type parameter
+// whose constraint names no type (any, comparable), which converts only a value of its own type,
+// nor nil converted to a pointer to one. The check must name each line that carries a want
+// comment, and no other.
 package fixture
 
 import (
@@ -80,8 +82,8 @@ func writtenOut(ctx context.Context, caller pgx.Tx) error {
 
 func writtenOutAndFielded(ctx context.Context, caller pgx.Tx) error {
 	var shaped struct{ tx pgx.Tx }
-	shaped.tx = caller // want "shaped.tx (the transaction a pinned holds, reached outside pinned's methods)"
-	var p pinned = shaped
+	shaped.tx = caller    // want "shaped.tx (the transaction a pinned holds, reached outside pinned's methods)"
+	var p pinned = shaped // want "shaped (a value of pinned's struct type, which becomes a pinned with no conversion, outside inTransaction)"
 	_, err := p.exec(ctx, "SELECT 1")
 	return err
 }
@@ -115,7 +117,7 @@ func writtenOutConn(raw *pgx.Conn) Conn {
 func writtenOutAndFieldedConn(raw *pgx.Conn) Conn {
 	var shaped struct{ c *pgx.Conn }
 	shaped.c = raw // want "shaped.c (the connection a Conn holds, reached outside inTransaction, ConnectURL and Conn's Close and IsClosed)"
-	return shaped
+	return shaped  // want "shaped (a value of Conn's struct type, which becomes a Conn with no conversion, outside ConnectURL)"
 }
 
 func genericConn[T ~struct{ c *pgx.Conn }](raw *pgx.Conn) T {
@@ -135,3 +137,15 @@ func ownShapes(caller pgx.Tx, raw *pgx.Conn) ([]*holder, looseConnection) {
 func otherParameter[T ~struct{ n int }]() T {
 	return T{n: 1}
 }
+
+func identity[T any](v T) T {
+	return T(v)
+}
+
+func identityComparable[T comparable](v T) T {
+	return T(v)
+}
+
+var _ any = (*Conn)(nil)
+
+var _ any = (*pinned)(nil)

@@ -2,8 +2,10 @@
 // type declared under a name of its own, whose methods are pinned's, and Conn of a struct type
 // written out, to which a value of any type of its shape is assignable. A pinned built under either
 // of its names, and a Conn built as any type of its shape, or one given a connection through such a
-// type's field, are named as they are where each is declared as a type of its own. The check must
-// name each line that carries a want comment, and no other.
+// type's field, are named as they are where each is declared as a type of its own. Conn being that
+// struct type itself, each value of it outside ConnectURL is a value of Conn's struct type, which
+// no reader can tell from one built there, so each is named too. The check must name each line
+// that carries a want comment, and no other.
 package fixture
 
 import (
@@ -84,12 +86,12 @@ type looseConnection struct{ c *pgx.Conn }
 
 func assigned(raw *pgx.Conn) *Conn {
 	var conn Conn = looseConnection{c: raw} // want "looseConnection{…} (a Conn built outside ConnectURL)"
-	return &conn
+	return &conn                            // want "conn (a value of Conn's struct type, which becomes a Conn with no conversion, outside ConnectURL)"
 }
 
 func fielded(raw *pgx.Conn) *Conn {
 	var loose looseConnection
 	loose.c = raw // want "loose.c (the connection a Conn holds, reached outside inTransaction, ConnectURL and Conn's Close and IsClosed)"
 	var conn Conn = loose
-	return &conn
+	return &conn // want "conn (a value of Conn's struct type, which becomes a Conn with no conversion, outside ConnectURL)"
 }

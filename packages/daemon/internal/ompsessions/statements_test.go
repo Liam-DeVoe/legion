@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -93,6 +94,12 @@ var constructorFunctions = []string{
 	"database/sql.Open",
 }
 
+// refusedImports are the packages the package's code may not import: reflect, which builds a
+// value of any type and sets one whole from a value of its shape, and unsafe, which reads and
+// writes any memory. Through either, code builds a pinned or a Conn, or sets the field of one,
+// with no composite literal, conversion or selector the check reads.
+var refusedImports = []string{"reflect", "unsafe"}
+
 // place is where statementsOutside found a statement can run outside the helper, and what runs.
 type place struct {
 	pos  token.Pos
@@ -112,9 +119,15 @@ type place struct {
 //     constructor's body, since only the connection the constructor opened may be one. What is
 //     built is a value of a type whose values are a pinned or a Conn, or point at one (isOf): the
 //     type under any alias of it, a struct type of its shape written out, which is assignable to
-//     it, and a type parameter it satisfies; so an element of a composite literal of pointers,
-//     whose &T the literal elides, a pointer conversion, and a generic literal or conversion each
-//     build one too;
+//     it, and a type parameter whose constraint names types (namesTypes) and which it satisfies;
+//     so an element of a composite literal of pointers, whose &T the literal elides, a pointer
+//     conversion, and a generic literal or conversion each build one too. A conversion of nil
+//     builds none;
+//   - a value of the struct type pinned or Conn is declared with, written out with no name of its
+//     own, outside the body that may build one: it becomes one with no conversion wherever one is
+//     wanted, returned as one, handed to a function as one or assigned whole to one. A composite
+//     literal and a conversion are the rule above's to name, and the value a field is selected
+//     from the rule below's;
 //   - a field of pinned, or of a type whose values are a pinned, reached outside pinned's methods,
 //     and one of Conn reached outside the helper's body, the constructor's and Conn's
 //     connMethods: how a pinned or a Conn made from its zero value, by new, or as a struct of its
@@ -125,7 +138,10 @@ type place struct {
 //     rule above cannot see;
 //   - an interface, declared or written as a constraint anywhere in the files, that a type of a
 //     driver package implements: a driver handle held in one runs its statements through methods
-//     no driver package declares, which the first rule cannot see.
+//     no driver package declares, which the first rule cannot see;
+//   - an import of reflect or unsafe (refusedImports), through which code builds a pinned or a
+//     Conn, or sets the field of one, with no composite literal, conversion or selector the rules
+//     above read.
 //
 // So the only raw connections in the package's code are the constructor's and the helper's, and a
 // caller holds a Conn no other package's interface or function takes. Inside is a watched call in
@@ -147,8 +163,8 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 	var bodies, pinnedMethods, connMethodBodies []*ast.BlockStmt
 	// isOf reports whether a value of typ is a value of typeName, or points at one: typ, or the type
 	// it points at, is assignable to typeName's type, as it is under any alias of either and as a
-	// struct type of its shape written out, or is a type parameter typeName's type, or a pointer to
-	// it, satisfies.
+	// struct type of its shape written out, or is a type parameter whose constraint names types and
+	// which typeName's type, or a pointer to it, satisfies.
 	isOf := func(typ types.Type, typeName *types.TypeName) bool {
 		if typ == nil || typeName == nil {
 			return false
@@ -158,7 +174,8 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 		}
 		if parameter, ok := types.Unalias(typ).(*types.TypeParam); ok {
 			constraint, ok := parameter.Constraint().Underlying().(*types.Interface)
-			return ok && (types.Satisfies(typeName.Type(), constraint) || types.Satisfies(types.NewPointer(typeName.Type()), constraint))
+			return ok && namesTypes(constraint) &&
+				(types.Satisfies(typeName.Type(), constraint) || types.Satisfies(types.NewPointer(typeName.Type()), constraint))
 		}
 		return types.AssignableTo(typ, typeName.Type())
 	}
@@ -305,14 +322,58 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 			places = append(places, place{expression.Pos(), fmt.Sprintf("%s (a %s built outside %s)", written, connName, constructorName)})
 		}
 	}
+	// shapeOf is the struct type typeName is declared with, nil where there is none.
+	shapeOf := func(typeName *types.TypeName) *types.Struct {
+		if typeName == nil {
+			return nil
+		}
+		structure, _ := typeName.Type().Underlying().(*types.Struct)
+		return structure
+	}
+	pinnedShape, connShape := shapeOf(pinnedType), shapeOf(connType)
+	// selected is every expression a field or a method is selected from: the field rule names a
+	// field reached, and the value it is reached on becomes no pinned and no Conn there.
+	selected := map[ast.Expr]bool{}
+	for selector := range info.Selections {
+		selected[ast.Unparen(selector.X)] = true
+	}
+	// shaped names a value expression is of pinned's or Conn's struct type, written out with no
+	// name of its own, outside the one body that may build one.
+	shaped := func(expression ast.Expr) {
+		value, ok := info.Types[expression]
+		if !ok || !value.IsValue() || selected[expression] {
+			return
+		}
+		structure, ok := types.Unalias(value.Type).(*types.Struct)
+		switch {
+		case !ok:
+		case pinnedShape != nil && types.Identical(structure, pinnedShape) && !within(helperBody, expression.Pos()):
+			places = append(places, place{expression.Pos(), fmt.Sprintf("%s (a value of %s's struct type, which becomes a %s with no conversion, outside %s)",
+				types.ExprString(expression), pinnedName, pinnedName, helperName)})
+		case connShape != nil && types.Identical(structure, connShape) && !within(constructorBody, expression.Pos()):
+			places = append(places, place{expression.Pos(), fmt.Sprintf("%s (a value of %s's struct type, which becomes a %s with no conversion, outside %s)",
+				types.ExprString(expression), connName, connName, constructorName)})
+		}
+	}
 	handles := driverTypes(pkg)
 	for _, file := range files {
+		for _, spec := range file.Imports {
+			if path, _ := strconv.Unquote(spec.Path.Value); slices.Contains(refusedImports, path) {
+				places = append(places, place{spec.Path.Pos(), fmt.Sprintf("the import of %s (through which code builds a %s or a %s, or reaches a field of one, where the check cannot see)",
+					path, pinnedName, connName)})
+			}
+		}
 		ast.Inspect(file, func(node ast.Node) bool {
 			switch node := node.(type) {
 			case *ast.CompositeLit:
 				built(node)
 			case *ast.CallExpr:
-				if info.Types[node.Fun].IsType() {
+				switch {
+				case !info.Types[node.Fun].IsType():
+					shaped(node)
+				case len(node.Args) == 1 && info.Types[node.Args[0]].IsNil():
+					// A conversion of nil is a nil pointer, which holds nothing.
+				default:
 					built(node)
 				}
 			case *ast.InterfaceType:
@@ -323,6 +384,10 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 				if slices.ContainsFunc(handles, func(handle types.Type) bool { return types.Implements(handle, iface) }) {
 					places = append(places, place{node.Pos(), "an interface a driver handle implements"})
 				}
+			case *ast.ParenExpr:
+				// The expression it holds is read for itself.
+			case ast.Expr:
+				shaped(node)
 			}
 			return true
 		})
@@ -332,6 +397,20 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 		outside = append(outside, describePlace(fset.Position(p.pos), p.what, helperName))
 	}
 	return outside, inside
+}
+
+// namesTypes reports whether constraint names a type: a union, or an embedded type that is no
+// interface, in it or in a constraint it embeds. A type parameter whose constraint names none
+// (any, comparable, a set of methods) converts only a value of its own type and has no composite
+// literal, so it builds no pinned and no Conn, though each satisfies it.
+func namesTypes(constraint *types.Interface) bool {
+	for i := range constraint.NumEmbeddeds() {
+		embedded, ok := constraint.EmbeddedType(i).Underlying().(*types.Interface)
+		if !ok || namesTypes(embedded) {
+			return true
+		}
+	}
+	return false
 }
 
 // driverTypes is every named type the driver packages pkg imports, directly or not, declare, and
@@ -473,18 +552,21 @@ func wanted(fset *token.FileSet, file *ast.File) []string {
 // one. So outside the helper's body and pinned's methods no method or function of pgx's or
 // database/sql's packages is called, or taken as a value, but the few allowedMethods, each named
 // with its type, and constructorFunctions in the constructor's body; no pinned or Conn is built
-// elsewhere, and no field of either is reached elsewhere; Conn exports and embeds no field; and
-// no interface the package declares or writes is one a driver handle implements
+// elsewhere, by a literal, a conversion or a value of its struct type written out, and no field of
+// either is reached elsewhere; Conn exports and embeds no field; no interface the package declares
+// or writes is one a driver handle implements; and the package imports neither reflect nor unsafe
 // (statementsOutside). The check type-checks the package's own files, test files aside, since
 // those seed fixtures. Its controls are the fixtures of testdata/outside, each type-checked alone
 // with a helper and a pinned of its own: a pgx call outside the helper, a database/sql call, a
 // pool's connection acquired and run, the other ways a transaction the helper did not open runs a
 // statement, the Go shapes that carry one into the helper's function or a driver handle past the
-// check, the ways a Conn's connection reaches other code, and a pinned or a Conn built, or its
-// methods declared, through an alias of it, with it declared as an alias, or where no composite
-// literal or conversion names its type. The check must name exactly the lines their want comments
-// mark and none of the calls inside their helper, and it must find statements inside the helper
-// in each, or it read nothing.
+// check, the ways a Conn's connection reaches other code, a pinned or a Conn built, or its methods
+// declared, through an alias of it, with it declared as an alias, where no composite literal or
+// conversion names its type, or from a value of its struct type written out with no conversion at
+// all, and reflect and unsafe imported; and conversions that build nothing, of a type parameter
+// whose constraint names no type and of nil. The check must name exactly the lines their want
+// comments mark and none of the calls inside their helper, and it must find statements inside the
+// helper in each, or it read nothing.
 func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 	t.Run("this package", func(t *testing.T) {
 		entries, err := os.ReadDir(".")
