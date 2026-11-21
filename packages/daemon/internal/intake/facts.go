@@ -616,17 +616,10 @@ type PullRequestReview struct {
 	// performs no I/O). It is never looked up, and stays false, for a review that does not decide
 	// (Decides), one with no author, one on a pull request the daemon does not record, and one the
 	// one App wrote, which decides nothing whatever GitHub gives its bot account (workflow's
-	// RefusesRound). It is also false for an author GitHub does not give write access.
+	// RefusesRound); an OutsideReview's is read for an approval too (OutsideReview). It is also
+	// false for an author GitHub does not give write access.
 	AuthorCanWrite bool
 	Body           string
-	// ReadFromList is whether the daemon's own read of GitHub's list of the pull request's
-	// reviews produced this fact (daemon's reviewToApply) rather than the review's webhook, which
-	// the decoder never sets it from. The list answers with GitHub's current commit_id for every
-	// review it holds (dispatch://INFRA-1557), where the webhook's envelope carries the commit_id
-	// the event was delivered with, so the workflow lets a person's listed review decide no round
-	// while the same person's request for changes by webhook refuses the head (workflow's
-	// RefusesRound).
-	ReadFromList bool
 }
 
 func (PullRequestReview) namedIssue() (string, bool) { return "", false }
@@ -647,6 +640,36 @@ func (r PullRequestReview) Decides() bool {
 func (r PullRequestReview) Order() record.ReviewOrder {
 	return record.ReviewOrder{SubmittedAt: r.SubmittedAt, ID: r.ID}
 }
+
+// OutsideReview is a review delivered by webhook of a verdict repository's pull request that no
+// recorded issue owns (ConsumerSpec.VerdictRepositories): the consumer turns a PullRequestReview
+// the record does not hold into one there, and acknowledges it with no transaction on every other
+// repository. Its AuthorCanWrite is read for an approval as for a request for changes
+// (Deciding), since a person's approval is the verdict of a head no Legion issue owns. The daemon
+// records it with the head it read and writes legion-verdict from it.
+type OutsideReview struct{ PullRequestReview }
+
+func (OutsideReview) namedIssue() (string, bool) { return "", false }
+
+// Deciding says whether the review's state is one a verdict reads: an approval or a request for
+// changes, in whatever case its producer spelled it. A comment decides nothing.
+func (r PullRequestReview) Deciding() bool {
+	return r.Decides() || strings.EqualFold(r.State, "approved")
+}
+
+// OutsidePullRequest is one sighting of a pull request on a branch that is no issue's
+// (claim.BranchIssue) at its head: opened, reopened, or moved by a push (decodePullRequest). It is
+// a fact only on a repository the daemon writes legion-verdict on (ConsumerSpec.VerdictRepositories);
+// the consumer acknowledges it with no transaction on every other repository. The daemon records
+// the pull request with its head, since pull_requests holds only a Legion issue's.
+type OutsidePullRequest struct {
+	Repo    string
+	Number  int
+	Branch  string
+	HeadSHA string
+}
+
+func (OutsidePullRequest) namedIssue() (string, bool) { return "", false }
 
 // CheckRun is one latest-run identity in a checks settlement.
 type CheckRun = record.AttemptRun

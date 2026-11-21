@@ -181,8 +181,6 @@ the next of them:
   may change code.
 - **A mergeability and a merge state.** GitHub's own answer for the head is recorded. It is what
   a head conflicting with its base is read from, and what an approval waits on in `reviewing`.
-- **A review.** A deciding review whose webhook never arrived is applied, whatever phase the issue
-  is in.
 - **A missing pull request.** An issue in `implementing` whose implementer completed, with no open
   or merged pull request recorded and none GitHub lists on its branch, is told to its architect as
   `pull-request-missing`, once per handoff commit

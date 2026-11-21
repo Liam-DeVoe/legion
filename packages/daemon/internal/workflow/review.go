@@ -12,12 +12,35 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/verdict"
 )
+
+// withoutVerdictCheck is fact with the daemon's own required check, legion-verdict
+// (verdict.CheckName), taken out of its check runs, the checks it names failed and cancelled, and
+// its commit statuses, and whether that check was all it named. The daemon writes that check
+// from the verdicts, so it is no CI a role reads or waits on: a settlement of it alone wakes and
+// tells nobody (spec R4, "the daemon's own write wakes no role"). Envoy leaves the verdict App's
+// runs out of a head's CI record already; this holds the daemon to the same rule whatever a
+// listener sends. A settlement that names no such check is fact itself, copied nowhere.
+func withoutVerdictCheck(fact intake.PullRequestChecks) (intake.PullRequestChecks, bool) {
+	isRun := func(run record.AttemptRun) bool { return run.Name == verdict.CheckName }
+	isStatus := func(status record.CommitStatus) bool { return status.Context == verdict.CheckName }
+	if !slices.ContainsFunc(fact.CheckRuns, isRun) && !slices.ContainsFunc(fact.Statuses, isStatus) {
+		return fact, false
+	}
+	isName := func(name string) bool { return name == verdict.CheckName }
+	fact.CheckRuns = slices.DeleteFunc(slices.Clone(fact.CheckRuns), isRun)
+	fact.Failing = slices.DeleteFunc(slices.Clone(fact.Failing), isName)
+	fact.Cancelled = slices.DeleteFunc(slices.Clone(fact.Cancelled), isName)
+	fact.Statuses = slices.DeleteFunc(slices.Clone(fact.Statuses), isStatus)
+	return fact, len(fact.CheckRuns)+len(fact.Statuses) == 0
+}
 
 // checks applies a CI settlement to the pull request and tells the roles that work the issue what
 // it says (tellChecks). It moves nothing: a failed CI check is information the worker holding the
@@ -592,20 +615,15 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 // changes), must not decide its pull request's review round, "" when nothing refuses it. A
 // round's verdict is the reviewer's, which reaches the daemon with its completion of reviewing
 // (handoff, decisionOf), so the one GitHub review that decides is a person's request for changes,
-// which refuses the head; no approval decides at all, since on a head a Legion issue owns only the
-// reviewer's verdict approves it, which is what writes its success. Two places judge a review -
-// this engine, for the review a webhook delivers, and the daemon's read of GitHub's list of a pull
-// request's reviews (daemon's reviewToApply), which applies only a review this takes - and both
-// ask this one judgement, so neither judges by a narrower rule than the other. The whole rule, in
-// this order:
+// delivered by its webhook, which refuses the head; no approval decides at all, since on a head a
+// Legion issue owns only the reviewer's verdict approves it, which is what writes its success. The
+// daemon reads no list of a pull request's reviews: GitHub's list moves each review's commit_id to
+// the pull request's current head (dispatch://INFRA-1557), so a listed review is no evidence of
+// the code it read. The whole rule, in this order:
 //
 //   - A review written with a token of the one App (Config.AppLogin) decides nothing. Every role
 //     acts as that App, so its login says nothing of who wrote the review, and the reviewer posts
 //     its findings as a COMMENT, which decides nothing either.
-//   - A review the daemon read from GitHub's list of the pull request's reviews
-//     (intake.PullRequestReview.ReadFromList) decides nothing. The list answers with GitHub's own
-//     commit_id for every review it holds, and that id moves to the pull request's current head
-//     (dispatch://INFRA-1557), so a listed review is no evidence of the code it read.
 //   - A request for changes from an account with no write access to the repository, or of
 //     another type than User (intake.PullRequestReview.AuthorCanWrite, which the daemon's
 //     reviewerCanWrite reads from GitHub before the fact reaches this transaction), decides
@@ -615,14 +633,11 @@ func (e *Engine) owningArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 //     the event carried, and so decides the round.
 //
 // No rule turns on the head the record holds, so a refusal stands at every head the record can
-// come to hold, which is what lets the daemon's read judge a listed review once (daemon's
-// refusedReviews).
+// come to hold.
 func (e *Engine) RefusesRound(review intake.PullRequestReview) string {
 	switch {
 	case e.appWrote(review.Author):
 		return "the one App wrote it, and no review of the App decides a round"
-	case review.ReadFromList:
-		return "a person's review read from the list"
 	case !review.AuthorCanWrite:
 		return "its author is no account of type User with write access to the repository"
 	}
@@ -655,7 +670,7 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	if decides {
 		if reason := e.RefusesRound(fact); reason != "" {
 			args := []any{"issue", issue.Key, "pull_request", pr.Number, "author", fact.Author, "state", state,
-				"commit_id", fact.CommitID, "head", pr.HeadSHA, "read_from_list", fact.ReadFromList}
+				"commit_id", fact.CommitID, "head", pr.HeadSHA}
 			// A request for changes the App wrote is a role acting as a reviewer did before the
 			// verdict, which the operator is told of; any other is an account that may not decide.
 			if e.appWrote(fact.Author) {
@@ -1115,17 +1130,26 @@ func told(row record.PhaseRow, r round) bool {
 // for as long as GitHub kept answering the same way. What a read answers is the ladder's to decide
 // (daemon's mergeStateLadder), and the next fact of the issue asks again.
 //
+// The switch also names the head whose verdict a fact can change, which has legion-verdict written
+// before any read (Config.WriteVerdict, askVerdictWrite): the reviewer's verdict, at the commit it
+// names, whether its completion of reviewing carries it or its call past review does; a webhook's
+// approval or request for changes not written with the one App's token, at the commit it read;
+// and the tester's verdict, at the commit it tested, which owes no read, since nothing GitHub
+// answers waits on it. No other fact changes a verdict, and a push writes nothing on the head it
+// makes: a check run belongs to one commit, so the new head has no legion-verdict until a verdict
+// names it (spec R4).
+//
 // A base push is the one fact of many pull requests, and the one this leaves alone: its handler
 // walks the open pull requests recorded on the base once, and asks for each read inside that
 // walk (basePush), since the record it overwrites as it goes is what tells a redelivered push
 // from a first delivery.
 func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact) error {
-	if e.cfg.ReadMergeState == nil {
+	if e.cfg.ReadMergeState == nil && e.cfg.WriteVerdict == nil {
 		return nil
 	}
 	var pr *record.PullRequest
 	var err error
-	kind := classify.MergeStateFactOther
+	kind, verdict := classify.MergeStateFactOther, ""
 	switch fact := fact.(type) {
 	case intake.PullRequestOpened:
 		pr, err = e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
@@ -1143,14 +1167,33 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	case intake.PullRequestReview:
 		pr, err = e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+		if fact.Deciding() && !e.appWrote(fact.Author) {
+			verdict = fact.CommitID
+		}
 	case intake.HandoffComplete:
 		// The reviewer's verdict decides the round with its completion, so its approval is the
 		// fact that leaves the round waiting on GitHub's answer for the head; no other role's
-		// completion changes what GitHub answers.
-		if fact.Role != claim.RoleReviewer {
+		// completion changes what GitHub answers, and the tester's alone changes a verdict.
+		switch fact.Role {
+		case claim.RoleReviewer:
+			if fact.Verdict != "" {
+				verdict = fact.Commit
+			}
+		case claim.RoleTester:
+			if fact.Verdict == "" {
+				return nil
+			}
+			if pr, err = e.store.PullRequest(ctx, tx, fact.Issue); err != nil || pr == nil {
+				return err
+			}
+			return e.askVerdictWrite(ctx, tx, pr, fact.Commit)
+		default:
 			return nil
 		}
 		pr, err = e.store.PullRequest(ctx, tx, fact.Issue)
+	case intake.ReviewVerdict:
+		pr, err = e.store.PullRequest(ctx, tx, fact.Issue)
+		verdict = fact.Commit
 	case intake.BasePush:
 		// Asked for inside the walk that records the push, which is the last reader of what
 		// tells a redelivery from a first delivery (basePush).
@@ -1161,7 +1204,30 @@ func (e *Engine) askMergeState(ctx context.Context, tx pgx.Tx, fact intake.Fact)
 	if err != nil || pr == nil {
 		return err
 	}
+	if err := e.askVerdictWrite(ctx, tx, pr, verdict); err != nil {
+		return err
+	}
 	return e.askMergeStateFor(ctx, tx, pr, kind)
+}
+
+// askVerdictWrite asks the daemon, on the commit, to write legion-verdict on head of pr
+// (Config.WriteVerdict), "" asking nothing. Only an open pull request of an issue of the project's
+// own is written on: a closed one merges nothing, and the record a fact finds by its repository and
+// number can be another project's issue's, whose daemon writes its check. It is registered before
+// askMergeStateFor registers the read on the same commit, and commit hooks run in order
+// (intake.WithCommitHooks), so the daemon has the write pending when the read is asked for, and
+// holds the read until the write ends.
+func (e *Engine) askVerdictWrite(ctx context.Context, tx pgx.Tx, pr *record.PullRequest, head string) error {
+	if e.cfg.WriteVerdict == nil || head == "" || pr.State != record.PullRequestOpen {
+		return nil
+	}
+	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	if err != nil || issue == nil {
+		return err
+	}
+	key, repo, number := issue.Key, pr.Repo, pr.Number
+	intake.OnCommit(ctx, func() { e.cfg.WriteVerdict(key, repo, number, head) })
+	return nil
 }
 
 // askMergeStateFor queues the read for one pull request when a fact of kind fact asks for it, by
@@ -1199,6 +1265,26 @@ func (e *Engine) askMergeStateFor(ctx context.Context, tx pgx.Tx, pr *record.Pul
 	key := issue.Key
 	intake.OnCommit(ctx, func() { e.cfg.ReadMergeState(key) })
 	return nil
+}
+
+// recordVerdict records the verdict of issue's reviewer, claim by, on pr at commit, with the
+// commit of the tester's pass it carries there ("" for none): the row the writer of legion-verdict
+// reads a Legion head's reviewer's verdict from (store.Verdict, the daemon's writeVerdict). The
+// round's decision (record.PhaseRow.Decision) cannot be that row, since a person's request for
+// changes replaces it, and a person's later approval of the same head lifts that refusal and
+// leaves the reviewer's approve to write success again (spec R4). A pull request not recorded yet
+// records nothing, since there is no head to write on.
+func (e *Engine) recordVerdict(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest, by claim.Token, word, commit, tested string) error {
+	if pr == nil {
+		return nil
+	}
+	repository, err := ghrepo.Parse("the repository of "+issue+"'s pull request", pr.Repo)
+	if err != nil {
+		return err
+	}
+	_, err = store.RecordVerdictTx(ctx, tx, store.Verdict{Repository: repository, Number: pr.Number, Head: commit, Issue: issue,
+		Verdict: store.VerdictWord(word), TestedCommit: tested, Session: string(by), RecordedAt: e.now()})
+	return err
 }
 
 // recordPass counts the implementer one more pass through the implementing, testing and reviewing

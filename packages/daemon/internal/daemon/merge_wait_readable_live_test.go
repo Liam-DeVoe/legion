@@ -753,7 +753,7 @@ func mergeWaitShort(sha string) string {
 // request the proof drives answered as GET /pulls/{number} answers one (daemon's
 // githubPullRequest) — its number, its state, the base it sits on, the head it stands at, GitHub's
 // clock for it, its lazily computed `mergeable` and `mergeable_state`, GitHub's own merge state
-// for that head — with its reviews as none (readReviews) and the branch's open pull requests as
+// for that head — with its reviews as none, which no read of the daemon asks for, and the branch's open pull requests as
 // none, which is what the per-issue read lists for an issue whose record holds none open. It also
 // answers what a launch reads: any repository, with default branch main, and a GraphQL root that
 // knows no pull request. Anything else is answered 404, so a read this proof did not foresee fails

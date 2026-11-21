@@ -2762,6 +2762,13 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx, serv
 	for _, repo := range served {
 		heard[strings.ToLower(repo.String())] = repo
 	}
+	// A verdict repository is heard whatever the mapping names, so the writer of legion-verdict
+	// hears its pull requests and reviews (verdictWriter).
+	for _, repo := range w.verdicts.repositories() {
+		if _, ok := heard[strings.ToLower(repo.String())]; !ok {
+			heard[strings.ToLower(repo.String())] = repo
+		}
+	}
 	issues, err := w.records.Issues(ctx, tx)
 	if err != nil {
 		return nil, fmt.Errorf("read the repositories the project's records name: %w", err)

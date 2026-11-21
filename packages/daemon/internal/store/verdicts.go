@@ -13,8 +13,9 @@ import (
 
 // The records the daemon's writer of the required check legion-verdict keeps, in the five tables of
 // migration 20261120185521_verdicts: the pull requests of a verdict repository that no Legion issue
-// owns, with their heads and their reviews; the side reviewer a controller named for such a pull
-// request and head; the verdicts given on a head; and each check run and commit status the writer
+// owns, with their heads; the reviews of a verdict repository's pull requests, Legion heads and
+// outside ones alike; the side reviewer a controller named for such a pull request and head; the
+// verdicts given on a head; and each check run and commit status the writer
 // wrote. Each table is a record of what was seen or done, one row each time: a row is never
 // changed, so the tables need no unique key, and a read of the newest row takes the one with the
 // highest id. The tables hold no constraint (the migration says why), so each write refuses, before
@@ -40,8 +41,10 @@ type OutsidePullRequest struct {
 	RecordedAt time.Time
 }
 
-// OutsideReview is one review of a pull request that no Legion issue owns, as intake recorded it.
-type OutsideReview struct {
+// VerdictReview is one review of a verdict repository's pull request at a head, delivered by
+// webhook, of a Legion head or an outside one, as intake recorded it: the writer reads a person's
+// last review at a head, and the CI reviewer's, from these rows.
+type VerdictReview struct {
 	// ID is the row's own id, which the store fills.
 	ID         int64
 	Repository ghrepo.Repository
@@ -203,40 +206,41 @@ func OutsidePullRequestTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repo
 	return pr, true, nil
 }
 
-// RecordOutsideReviewTx records one review of an outside pull request and answers the row's id.
-// A review GitHub gave no submission time is stored with none (null).
-func RecordOutsideReviewTx(ctx context.Context, tx pgx.Tx, r OutsideReview) (int64, error) {
-	what := fmt.Sprintf("the review %d of the outside pull request %s#%d", r.GitHubID, r.Repository, r.Number)
+// RecordVerdictReviewTx records one review of a verdict repository's pull request and answers the
+// row's id. A review GitHub gave no submission time is stored with none (null).
+func RecordVerdictReviewTx(ctx context.Context, tx pgx.Tx, r VerdictReview) (int64, error) {
+	what := fmt.Sprintf("the review %d of the pull request %s#%d", r.GitHubID, r.Repository, r.Number)
 	if err := validPullRequestRow(what, r.Repository, r.Number, r.Head, r.RecordedAt); err != nil {
 		return 0, err
 	}
 	if r.State == "" {
 		return 0, fmt.Errorf("%s needs its state", what)
 	}
-	return insertID(ctx, tx, what, `insert into outside_reviews
+	return insertID(ctx, tx, what, `insert into verdict_reviews
 		(repository, number, github_id, head, author, author_can_write, state, submitted_at, recorded_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
 		r.Repository.String(), r.Number, r.GitHubID, r.Head, r.Author, r.AuthorCanWrite, r.State, instant(r.SubmittedAt), r.RecordedAt)
 }
 
-// OutsideReviewsTx is every review recorded of an outside pull request, oldest record first.
-func OutsideReviewsTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, number int) ([]OutsideReview, error) {
-	what := fmt.Sprintf("read the reviews of the outside pull request %s#%d", repository, number)
+// VerdictReviewsTx is every review recorded of a verdict repository's pull request, oldest record
+// first.
+func VerdictReviewsTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository, number int) ([]VerdictReview, error) {
+	what := fmt.Sprintf("read the reviews of the pull request %s#%d", repository, number)
 	rows, err := tx.Query(ctx, `select id, repository, number, github_id, head, author, author_can_write, state,
-		submitted_at, recorded_at from outside_reviews where lower(repository) = lower($1) and number = $2 order by id`,
+		submitted_at, recorded_at from verdict_reviews where lower(repository) = lower($1) and number = $2 order by id`,
 		repository.String(), number)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", what, err)
 	}
-	reviews, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (r OutsideReview, err error) {
+	reviews, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (r VerdictReview, err error) {
 		var stored string
 		var submitted *time.Time
 		if err = row.Scan(&r.ID, &stored, &r.Number, &r.GitHubID, &r.Head, &r.Author, &r.AuthorCanWrite, &r.State,
 			&submitted, &r.RecordedAt); err != nil {
-			return OutsideReview{}, err
+			return VerdictReview{}, err
 		}
 		r.SubmittedAt = orZero(submitted)
-		r.Repository, err = parseRepository("outside_reviews", r.ID, stored)
+		r.Repository, err = parseRepository("verdict_reviews", r.ID, stored)
 		return r, err
 	})
 	if err != nil {

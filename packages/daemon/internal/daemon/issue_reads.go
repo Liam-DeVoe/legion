@@ -19,22 +19,24 @@ import (
 )
 
 // issueRead bounds one GitHub read the per-issue read makes: the pull request itself, the list of
-// the issue's branch when the record holds none, the reviews, and the compare of an approved head
-// with the head. Each is a single answer that comes in well under a second, so a read that runs
-// this long holds a request GitHub never answered.
+// the issue's branch when the record holds none, and the compare of an approved head with the
+// head. Each is a single answer that comes in well under a second, so a read that runs this long
+// holds a request GitHub never answered.
 const issueRead = 30 * time.Second
 
 // readIssuePullRequest reads one issue's pull request from GitHub and applies what it shows, as the
-// webhook would have: the head GitHub holds it at (followHead, and the pushes that reached it),
+// webhook would have: the head GitHub holds it at (followHead, and the pushes that reached it), and
 // whether that head can be merged into its base and GitHub's own merge state (applyMergeability),
-// and a deciding review the daemon has not recorded (readReviews), in that order. An issue
-// whose record holds no open pull request is looked up by its branch instead (openPullRequestOn),
-// and the opened its webhook would have carried is applied first, so the reads that follow judge
-// the pull request that leaves.
+// in that order. It reads no review: GitHub's list of a pull request's reviews moves each
+// review's commit_id to the current head (dispatch://INFRA-1557), so a listed review is no
+// evidence of the head it read and decides nothing, and a person's request for changes refuses a
+// head only by its webhook. An issue whose record holds no open pull request is looked up by its
+// branch instead (openPullRequestOn), and the opened its webhook would have carried is applied
+// first, so the reads that follow judge the pull request that leaves.
 //
 // It is the backstop for a webhook that never arrived: GitHub can fail to deliver one, and
-// Dispatch's redelivery sweep gives up after five attempts, which leaves the record holding a head,
-// a review or a mergeability GitHub has moved past, and every later decision judged against it.
+// Dispatch's redelivery sweep gives up after five attempts, which leaves the record holding a head
+// or a mergeability GitHub has moved past, and every later decision judged against it.
 //
 // It runs at two moments and at no other: as the workflow runtime starts (readIssuesAtStart), which
 // covers the deliveries made while the daemon was down, and once an agent's handoff has been
@@ -52,8 +54,6 @@ const issueRead = 30 * time.Second
 // It answers whether GitHub is still computing the merge of the pull request's head: its read
 // found the pull request open with merge state `unknown` or `mergeable` null. The start read
 // queues a ladder of reads for such an issue (readIssuesAtStart), which a handoff's read does not.
-// A read whose reviews read must stop - ctx ended, or GitHub's rate limit, which the ladder's reads
-// would meet as well - answers false.
 func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string) (bool, error) {
 	recorded, err := w.issuePullRequest(ctx, issue)
 	if err != nil || recorded == nil {
@@ -79,15 +79,8 @@ func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string
 		w.log.Warn("follow the head GitHub shows for an issue's pull request; this read judges it at the recorded head",
 			"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "recorded", pr.HeadSHA, "head", pull.Head.SHA, "error", err)
 	}
-	// The reads after the head start their bound only now: following a head waits on the fact lock,
-	// which the GitHub consumer's backlog can hold for a while.
-	prCtx, cancelReads := context.WithTimeout(ctx, issueRead)
-	defer cancelReads()
 	// A failed apply is logged there, and the next read of the issue applies it again.
 	_ = w.applyMergeability(ctx, github, pr, pull, answeredAt, w.mergeabilityEventID(pr, answeredAt))
-	if w.readReviews(ctx, prCtx, github, pr) {
-		return false, nil
-	}
 	return pull.State == "open" && (pull.mergeState() == record.MergeStateUnknown || pull.mergeability() == record.MergeabilityUnknown), nil
 }
 

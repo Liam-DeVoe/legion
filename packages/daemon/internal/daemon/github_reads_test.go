@@ -38,7 +38,7 @@ func outboxAuthorized(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // pullStandIn is GitHub's REST API for acme/widgets as the per-issue read sees it: pull request 86
-// answered with pull, and no review on it.
+// answered with pull.
 func pullStandIn(t *testing.T, pull string) *httptest.Server {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -48,8 +48,6 @@ func pullStandIn(t *testing.T, pull string) *httptest.Server {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(pull))
-		case "/repos/acme/widgets/pulls/86/reviews":
-			w.Write([]byte(`[]`))
 		default:
 			http.NotFound(w, r)
 		}

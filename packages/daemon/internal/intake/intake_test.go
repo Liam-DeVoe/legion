@@ -514,8 +514,8 @@ func TestASynchronizeFromAListenerWithoutBeforeNamesNoMove(t *testing.T) {
 // normalizer, packages/envoy/internal/contracts/normalize.go): GitHub's reason for the removal is
 // not one of them. On an issue's branch the event is the pull request and the head it left the
 // queue at. One with no head names no head, so it is no fact, as a synchronize with none is no fact.
-// One on a branch that is no issue's is no fact either, as every pull request event there is
-// (decodePullRequest), so it is acknowledged without a transaction.
+// One on a branch that is no issue's is no fact either: there only an open, a reopen and a push
+// are, the sighting of an outside pull request (decodePullRequest).
 func TestDecodeADequeuedPullRequest(t *testing.T) {
 	const subject = "notifications.github.sjawhar.legion.pr.42"
 	envelope := func(branch, head string) []byte {
@@ -847,11 +847,11 @@ func TestConsumePreparesAnIssueEventsRepositoryBeforeApplyingIt(t *testing.T) {
 // with the payload's repository filters on a prefix of the golden's topic and decodes the workflow
 // fact the golden carries: the two sides spell a repository's subject segments alike, a dotted name
 // included. The golden push, which is to main, decodes to the BasePush of that base, and the same
-// push to an issue's branch decodes to its Push. A pull request event decodes to a fact only on an
-// issue's branch, so the golden pull requests, on a branch of their own, decode to none, and the
-// same event on an issue's branch decodes to its fact. The push golden's fact is compared whole
-// with the golden's own payload, so a listener change that stops sending a key the daemon reads
-// fails here.
+// push to an issue's branch decodes to its Push. A golden pull request, on a branch of its own,
+// decodes to the sighting of an outside pull request where it opens, reopens or moves, and to no
+// fact for any other action, and the same event on an issue's branch decodes to its fact. The push
+// golden's fact is compared whole with the golden's own payload, so a listener change that stops
+// sending a key the daemon reads fails here.
 func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 	goldens, err := filepath.Glob(filepath.Join("..", "..", "..", "contracts", "fixtures", "github-envelopes", "*.json"))
 	if err != nil || len(goldens) == 0 {
@@ -910,8 +910,17 @@ func TestEnvoyGoldenSubjectsReachTheirRepositorysConsumer(t *testing.T) {
 					t.Fatalf("%s's push to an issue's branch decoded %#v, want its push", repository, decoded.Fact)
 				}
 			case "pr":
-				if decoded.Fact != nil {
-					t.Fatalf("%s's pull request on %v decoded %#v, want no fact for a branch that is no issue's", repository, golden.Payload["head_ref"], decoded.Fact)
+				switch action := golden.Payload["action"]; decoded.Fact.(type) {
+				case OutsidePullRequest:
+					if action != "opened" && action != "reopened" && action != "synchronize" {
+						t.Fatalf("%s's pull request %v on %v decoded %#v, want no fact for that action on a branch that is no issue's", repository, action, golden.Payload["head_ref"], decoded.Fact)
+					}
+				case nil:
+					if action == "opened" || action == "reopened" || action == "synchronize" {
+						t.Fatalf("%s's pull request %v on %v decoded no fact, want the outside pull request's sighting", repository, action, golden.Payload["head_ref"])
+					}
+				default:
+					t.Fatalf("%s's pull request on %v decoded %#v, want no issue's fact for a branch that is no issue's", repository, golden.Payload["head_ref"], decoded.Fact)
 				}
 				golden.Payload["head_ref"] = issueBranch
 				decoded = decode()
@@ -1859,13 +1868,12 @@ func TestDecodingCarriesTheReviewOrder(t *testing.T) {
 
 // The workflow decides a review round inside a transaction and performs no I/O, so whether the
 // review's author may write to the repository is read before the fact is applied, and only for a
-// review that decides a round, names its author and came by its webhook: an approval and a
-// comment cost no GitHub call, since neither decides a round whoever writes it, and neither does
-// a review the producer gave no author or one the daemon read from GitHub's list, which the
-// workflow refuses for the list. A request for changes in GitHub's upper case is looked up as the
-// workflow counts it (PullRequestReview.Decides). A read that fails is returned, so the delivery
-// is retried rather than applied with a permission nobody read, and a daemon with no reader
-// leaves every review's write access false.
+// review that decides a round and names its author: an approval and a comment cost no GitHub
+// call, since neither decides a round whoever writes it, and neither does a review the producer
+// gave no author. A request for changes in GitHub's upper case is looked up as the workflow counts
+// it (PullRequestReview.Decides). A read that fails is returned, so the delivery is retried rather
+// than applied with a permission nobody read, and a daemon with no reader leaves every review's
+// write access false.
 func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing.T) {
 	review := PullRequestReview{Repo: "acme/widgets", Number: 42, State: "changes_requested", Author: "a-writer", CommitID: "head"}
 	var asked []string
@@ -1879,8 +1887,6 @@ func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing
 		review.Author = author
 		return review
 	}
-	listed := review
-	listed.ReadFromList = true
 	for _, tc := range []struct {
 		name     string
 		fact     Fact
@@ -1898,7 +1904,6 @@ func TestADecidingReviewCarriesItsAuthorsWriteAccessBeforeItIsApplied(t *testing
 			wantAsks: nil},
 		{name: "a comment, which decides nothing whoever writes it", fact: withState(review, "commented"), spec: answering(true, nil),
 			wantAsks: nil},
-		{name: "a request for changes read from the list", fact: listed, spec: answering(true, nil), wantAsks: nil},
 		{name: "a request for changes with no author", fact: withAuthor(review, ""), spec: answering(true, nil), wantAsks: nil},
 		{name: "a daemon with no reader", fact: review, spec: ConsumerSpec{}, wantAsks: nil},
 	} {

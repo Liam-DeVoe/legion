@@ -34,9 +34,9 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 
 	firstHead := OutsidePullRequest{Repository: widgets, Number: 42, Head: "h1", RecordedAt: minute(1)}
 	movedHead := OutsidePullRequest{Repository: widgets, Number: 42, Head: "h2", RecordedAt: minute(0)}
-	approval := OutsideReview{Repository: widgets, Number: 42, GitHubID: 5001, Head: "h2", Author: "a-writer",
+	approval := VerdictReview{Repository: widgets, Number: 42, GitHubID: 5001, Head: "h2", Author: "a-writer",
 		AuthorCanWrite: true, State: "approved", SubmittedAt: minute(3), RecordedAt: minute(4)}
-	ciRefusal := OutsideReview{Repository: widgets, Number: 42, GitHubID: 5002, Head: "h2", Author: "example-ci-review[bot]",
+	ciRefusal := VerdictReview{Repository: widgets, Number: 42, GitHubID: 5002, Head: "h2", Author: "example-ci-review[bot]",
 		State: "changes_requested", RecordedAt: minute(2)}
 	firstNamed := SideReviewer{Repository: widgets, Number: 42, Head: "h2", Session: "ses-first", RecordedAt: minute(6)}
 	namedAgain := SideReviewer{Repository: widgets, Number: 42, Head: "h2", Session: "ses-second", RecordedAt: minute(5)}
@@ -61,8 +61,8 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
 		firstHead.ID = written(RecordOutsidePullRequestTx(ctx, tx, firstHead))
 		movedHead.ID = written(RecordOutsidePullRequestTx(ctx, tx, movedHead))
-		approval.ID = written(RecordOutsideReviewTx(ctx, tx, approval))
-		ciRefusal.ID = written(RecordOutsideReviewTx(ctx, tx, ciRefusal))
+		approval.ID = written(RecordVerdictReviewTx(ctx, tx, approval))
+		ciRefusal.ID = written(RecordVerdictReviewTx(ctx, tx, ciRefusal))
 		firstNamed.ID = written(RecordSideReviewerTx(ctx, tx, firstNamed))
 		namedAgain.ID = written(RecordSideReviewerTx(ctx, tx, namedAgain))
 		legionVerdict.ID = written(RecordVerdictTx(ctx, tx, legionVerdict))
@@ -78,11 +78,11 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 		} {
 			written(RecordOutsidePullRequestTx(ctx, tx, pr))
 		}
-		for _, r := range []OutsideReview{
+		for _, r := range []VerdictReview{
 			{Repository: gadgets, Number: 42, GitHubID: 5003, Head: "h2", State: "approved", RecordedAt: minute(-1)},
 			{Repository: widgets, Number: 43, GitHubID: 5004, Head: "h2", State: "approved", RecordedAt: minute(-1)},
 		} {
-			written(RecordOutsideReviewTx(ctx, tx, r))
+			written(RecordVerdictReviewTx(ctx, tx, r))
 		}
 		for _, n := range []SideReviewer{
 			{Repository: gadgets, Number: 42, Head: "h2", Session: "ses-gadgets", RecordedAt: minute(-1)},
@@ -131,7 +131,7 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 			t.Errorf("the outside pull request %s#44, which no row records, reads %+v (found %v, %v), want none", widgets, pr, ok, err)
 		}
 
-		reviews, err := OutsideReviewsTx(ctx, tx, spelledOtherwise, 42)
+		reviews, err := VerdictReviewsTx(ctx, tx, spelledOtherwise, 42)
 		if err != nil {
 			return err
 		}
@@ -139,16 +139,16 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 			reviews[i].SubmittedAt = reviews[i].SubmittedAt.UTC()
 			reviews[i].RecordedAt = reviews[i].RecordedAt.UTC()
 		}
-		if want := []OutsideReview{approval, ciRefusal}; !reflect.DeepEqual(reviews, want) {
-			t.Errorf("the outside reviews of %s#42 read %+v, want its two rows, oldest first: %+v", spelledOtherwise, reviews, want)
+		if want := []VerdictReview{approval, ciRefusal}; !reflect.DeepEqual(reviews, want) {
+			t.Errorf("the reviews of %s#42 read %+v, want its two rows, oldest first: %+v", spelledOtherwise, reviews, want)
 		}
 		for review, wantNull := range map[int64]bool{approval.ID: false, ciRefusal.ID: true} {
 			var null bool
-			if err := tx.QueryRow(ctx, `select submitted_at is null from outside_reviews where id = $1`, review).Scan(&null); err != nil {
+			if err := tx.QueryRow(ctx, `select submitted_at is null from verdict_reviews where id = $1`, review).Scan(&null); err != nil {
 				return err
 			}
 			if null != wantNull {
-				t.Errorf("the outside review row %d holds a null submission time: %v, want %v", review, null, wantNull)
+				t.Errorf("the review row %d holds a null submission time: %v, want %v", review, null, wantNull)
 			}
 		}
 
@@ -190,8 +190,8 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 		if v, ok, err := VerdictTx(ctx, tx, widgets, 42, "h9"); err != nil || ok {
 			t.Errorf("the verdict on %s#42 at h9, which no row records, reads %+v (found %v, %v), want none", widgets, v, ok, err)
 		}
-		if reviews, err := OutsideReviewsTx(ctx, tx, widgets, 44); err != nil || len(reviews) != 0 {
-			t.Errorf("the outside reviews of %s#44, which no row records, read %+v (%v), want none", widgets, reviews, err)
+		if reviews, err := VerdictReviewsTx(ctx, tx, widgets, 44); err != nil || len(reviews) != 0 {
+			t.Errorf("the reviews of %s#44, which no row records, read %+v (%v), want none", widgets, reviews, err)
 		}
 		if writes, err := VerdictWritesTx(ctx, tx, widgets, "h9"); err != nil || len(writes) != 0 {
 			t.Errorf("the writes of legion-verdict on %s at h9, which no row records, read %+v (%v), want none", widgets, writes, err)
@@ -210,7 +210,7 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 func TestTheVerdictTablesHoldNoConstraintAndNoUniqueIndex(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
-	tables := []string{"outside_pull_requests", "outside_reviews", "side_reviewers", "verdicts", "verdict_writes"}
+	tables := []string{"outside_pull_requests", "verdict_reviews", "side_reviewers", "verdicts", "verdict_writes"}
 	const relations = `select c.oid from pg_class c where c.relname = any($1) and c.relnamespace = current_schema()::regnamespace`
 	var found, columns int
 	if err := st.Pool().QueryRow(ctx, `select count(*), (select count(*) from pg_attribute
@@ -254,7 +254,7 @@ func TestTheVerdictTableWritesRefuseAnIncompleteRow(t *testing.T) {
 	widgets := ghrepo.MustParse("acme/widgets")
 	at := time.Date(2026, 11, 20, 18, 55, 21, 0, time.UTC)
 	pr := OutsidePullRequest{Repository: widgets, Number: 42, Head: "h1", RecordedAt: at}
-	review := OutsideReview{Repository: widgets, Number: 42, Head: "h1", State: "approved", RecordedAt: at}
+	review := VerdictReview{Repository: widgets, Number: 42, Head: "h1", State: "approved", RecordedAt: at}
 	named := SideReviewer{Repository: widgets, Number: 42, Head: "h1", Session: "ses-side", RecordedAt: at}
 	verdict := Verdict{Repository: widgets, Number: 42, Head: "h1", Verdict: VerdictApprove, Session: "ses-side", RecordedAt: at}
 	written := VerdictWrite{Repository: widgets, Head: "h1", Kind: VerdictWriteCheckRun, GitHubID: 1, Conclusion: VerdictConclusionSuccess, WrittenAt: at}
@@ -283,15 +283,15 @@ func TestTheVerdictTableWritesRefuseAnIncompleteRow(t *testing.T) {
 			p.RecordedAt = time.Time{}
 			return RecordOutsidePullRequestTx(ctx, tx, p)
 		}, "time"},
-		{"an outside review of no state", func(tx pgx.Tx) (int64, error) {
+		{"a review of no state", func(tx pgx.Tx) (int64, error) {
 			r := review
 			r.State = ""
-			return RecordOutsideReviewTx(ctx, tx, r)
+			return RecordVerdictReviewTx(ctx, tx, r)
 		}, "state"},
-		{"an outside review of no head", func(tx pgx.Tx) (int64, error) {
+		{"a review of no head", func(tx pgx.Tx) (int64, error) {
 			r := review
 			r.Head = ""
-			return RecordOutsideReviewTx(ctx, tx, r)
+			return RecordVerdictReviewTx(ctx, tx, r)
 		}, "head"},
 		{"a side reviewer of no session", func(tx pgx.Tx) (int64, error) {
 			n := named

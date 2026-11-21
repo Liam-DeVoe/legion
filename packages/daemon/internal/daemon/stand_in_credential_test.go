@@ -63,7 +63,7 @@ func workflowBranchGitHub(t *testing.T, answer func() (int, string)) *branchGitH
 // another process's bearer, with the daemon's token under another scheme, with more after the
 // daemon's token, and with a prefix of it. A Dispatch board (dispatchBoard) does not reach its
 // handler. The dequeue rig's GitHub takes no hold of a held read and counts no read of the pull
-// request or of its reviews, the counts TestADequeuedPullRequestReachesItsMerger reads. Its Envoy
+// request, the count TestADequeuedPullRequestReachesItsMerger reads. Its Envoy
 // listener counts no refusal on a merger's topic no session holds and delivers nothing on one a
 // session holds. The moved issue's GitHub (workflowBranchGitHub) records no create of a branch,
 // the record TestAnIssueMovedWhileBootListsIsStillAdmitted reads. The first row's request is the
@@ -88,7 +88,6 @@ func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
 	type stand struct{ name, token, method, url, body string }
 	dispatch := stand{"a Dispatch board", workflowDispatchToken, http.MethodGet, board + "/computeMetadata/v1/instance/service-accounts/default/identity", ""}
 	heldRead := stand{"the dequeue rig's GitHub at a held read", workflowAppToken, http.MethodGet, pull, ""}
-	reviews := stand{"the dequeue rig's GitHub at the reviews", workflowAppToken, http.MethodGet, pull + "/reviews", ""}
 	refusal := stand{"the dequeue rig's Envoy listener on an unheld merger's topic", dequeueEnvoyToken, http.MethodPost,
 		cfg.EnvoyURL + "/v1/messages/publish", `{"topic":"` + unheld + `","message":"m"}`}
 	delivery := stand{"the dequeue rig's Envoy listener on a held merger's topic", dequeueEnvoyToken, http.MethodPost,
@@ -113,7 +112,7 @@ func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
 		return response.StatusCode
 	}
 
-	for _, s := range []stand{dispatch, heldRead, reviews, refusal, delivery, branch} {
+	for _, s := range []stand{dispatch, heldRead, refusal, delivery, branch} {
 		for _, stranger := range []struct{ name, authorization string }{
 			{"with no credential", ""},
 			{"with another process's bearer", "Bearer another-process-token-not-a-secret"},
@@ -129,14 +128,14 @@ func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
 		}
 	}
 	type counted struct {
-		handler, reads, reviewReads, heldReads int
-		holdSet                                bool
-		refusals, deliveries, creates          int
+		handler, reads, heldReads     int
+		holdSet                       bool
+		refusals, deliveries, creates int
 	}
 	counts := func() counted {
 		github.mu.Lock()
 		p := github.pulls[issue.number]
-		c := counted{handler: int(reached.Load()), reads: p.reads, reviewReads: p.reviewReads, heldReads: p.heldReads, holdSet: p.hold != nil}
+		c := counted{handler: int(reached.Load()), reads: p.reads, heldReads: p.heldReads, holdSet: p.hold != nil}
 		github.mu.Unlock()
 		c.refusals, c.deliveries, c.creates = listener.refused(unheld), len(listener.accepted(held)), len(branches.created())
 		return c
@@ -144,7 +143,7 @@ func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
 	if got, want := counts(), (counted{holdSet: true}); got != want {
 		t.Errorf("after the strangers' requests the stand-ins counted %+v, want %+v", got, want)
 	}
-	for _, s := range []stand{dispatch, reviews, refusal, delivery, branch} {
+	for _, s := range []stand{dispatch, refusal, delivery, branch} {
 		send(t, s, "Bearer "+s.token)
 	}
 	// The daemon's own read of the held pull request waits for the hold, which is released once it
@@ -160,7 +159,7 @@ func TestAStandInAnswersARequestWithoutTheDaemonsCredential404(t *testing.T) {
 		release()
 	}()
 	send(t, heldRead, "Bearer "+heldRead.token)
-	if got, want := counts(), (counted{handler: 1, reads: 1, reviewReads: 1, heldReads: 1, refusals: 1, deliveries: 1, creates: 1}); got != want {
+	if got, want := counts(), (counted{handler: 1, reads: 1, heldReads: 1, refusals: 1, deliveries: 1, creates: 1}); got != want {
 		t.Errorf("after the daemon's own requests the stand-ins counted %+v, want %+v", got, want)
 	}
 }

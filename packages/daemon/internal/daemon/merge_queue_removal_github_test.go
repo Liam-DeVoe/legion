@@ -27,7 +27,7 @@ const (
 
 // dequeueGitHub is GitHub's REST API for acme/widgets as this test's daemon reads it: each case's
 // pull request, answered as its case sets it, held unanswered when its case says so, and counted at
-// every read, with its reviews as none; its list of open pull requests as empty; and the
+// every read; its list of open pull requests as empty; and the
 // repository, and any other a launch reads, with main its default branch. Anything else is answered
 // 404 and logged, so a read the test did not foresee is named in its output rather than reaching
 // github.com. A request without the daemon's App token (workflowAppToken) is another process's: it
@@ -39,13 +39,11 @@ type dequeueGitHub struct {
 }
 
 // dequeuePull is one pull request as dequeueGitHub holds it: the issue's branch and the head it
-// stands at, its answer, and the reads of it and of its reviews so far.
+// stands at, its answer, and the reads of it so far.
 type dequeuePull struct {
 	issue  dequeueIssue
 	answer dequeueAnswer
 	reads  int
-	// reviewReads counts the reads of its reviews, the per-issue read's last call (readReviews).
-	reviewReads int
 	// hold is what the next read of the pull request waits for before it is answered (holdRead),
 	// nil for none, and heldReads counts the reads that waited.
 	hold      chan struct{}
@@ -91,13 +89,11 @@ func (g *dequeueGitHub) reads(number int) int {
 	return g.pulls[number].reads
 }
 
-// startRead is whether the per-issue read has made both its calls of pull request number: the
-// pull request, and then its reviews.
+// startRead is whether the per-issue read has made its call of pull request number.
 func (g *dequeueGitHub) startRead(number int) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	pull := g.pulls[number]
-	return pull.reads >= 1 && pull.reviewReads >= 1
+	return g.pulls[number].reads >= 1
 }
 
 // holdRead makes GitHub keep the next read of pull request number unanswered until release is
@@ -160,15 +156,10 @@ func (g *dequeueGitHub) answered(w http.ResponseWriter, path string) bool {
 	if pull == nil {
 		return false
 	}
-	switch tail {
-	case "reviews":
-		pull.reviewReads++
-		return g.write(w, []any{})
-	case "":
-		pull.reads++
-	default:
+	if tail != "" {
 		return false
 	}
+	pull.reads++
 	answer := map[string]any{
 		"number": n, "state": "open", "merged": false, "html_url": fmt.Sprintf("https://github.com/%s/pull/%d", startedAgainRepo, n),
 		"mergeable": true, "mergeable_state": "clean", "base": map[string]string{"ref": "main"},

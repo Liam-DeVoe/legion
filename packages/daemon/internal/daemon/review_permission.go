@@ -99,8 +99,9 @@ func (w *workflowRuntime) reviewerCanWrite(ctx context.Context, review intake.Pu
 // names it (ghrepo.Under, repositories.renames): a pull request already open when its repository
 // was transferred is recorded under the name it moved from, while the review names the one it
 // moved to. A review on a pull request neither name finds answers recorded=false, which the caller
-// takes as nothing left to do: the workflow drops such a review unread, so no permission of it is
-// ever read.
+// takes as nothing left to do, unless its repository is a verdict repository: there the review is
+// an outside review (intake.OutsideReview), which the daemon records and writes legion-verdict
+// from, so its author's permission is read.
 func (w *workflowRuntime) reviewedRepository(ctx context.Context, review intake.PullRequestReview) (repository ghrepo.Repository, recorded bool, err error) {
 	var pr *record.PullRequest
 	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
@@ -113,7 +114,9 @@ func (w *workflowRuntime) reviewedRepository(ctx context.Context, review intake.
 		return ghrepo.Repository{}, false, fmt.Errorf("read the record of pull request %s#%d: %w", review.Repo, review.Number, err)
 	}
 	if pr == nil {
-		return ghrepo.Repository{}, false, nil
+		if _, verdicts := w.verdicts.entry(review.Repo); !verdicts {
+			return ghrepo.Repository{}, false, nil
+		}
 	}
 	repository, err = ghrepo.Parse("the review's repository", review.Repo)
 	if err != nil {
