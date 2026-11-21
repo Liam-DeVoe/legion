@@ -350,7 +350,7 @@ func TestTheAccountBindingStartsOnlyOnceNoBuildWithoutItIsInTheFleet(t *testing.
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
 
 	// 1. This tree alone.
-	options := builds.options(bindingSignIn(t, issuer))
+	options := builds.options(bindingSignIn(t, issuer), nil)
 	options.Binary = builds.binary
 	builds.b = startDispatchProcessWith(t, builds.databaseURL(t)+"&application_name="+currentApplication, options)
 	builds.b.waitHealthy(t)
@@ -375,7 +375,7 @@ func TestTheAccountBindingStartsOnlyOnceNoBuildWithoutItIsInTheFleet(t *testing.
 	if _, err := hold.Exec(ctx, `lock table server_processes in share mode`); err != nil {
 		t.Fatal(err)
 	}
-	previousOptions := builds.options(nil)
+	previousOptions := builds.options(nil, nil)
 	previousOptions.Binary, previousOptions.WebDist = builds.build.path("envoy-dispatch"), builds.build.path("web")
 	builds.a = startDispatchProcessWith(t, builds.databaseURL(t)+"&application_name="+previousApplication, previousOptions)
 	previous := builds.a

@@ -2458,23 +2458,39 @@ func signInCredential(subject *string) bool {
 	return exchange.ReadSubject(*subject).Kind == exchange.SubjectSignIn
 }
 
-// liveCredentials is LiveCredentials, every service's login among them only when services is set.
-// It gives the statement two arrays: the subjects that BROKER_POD_OPERATORS maps to person ($3),
-// and every subject that the setting maps ($4). So one statement holds the whole rule. A
-// credential with no subject matches neither array, and the rule of an unmapped credential
-// decides it.
-func (s *Service) liveCredentials(ctx context.Context, person string, services bool) ([]LiveCredential, error) {
-	person = record.CanonicalLogin(person)
-	if person == "" || person == record.AnyoneApprover {
-		return nil, nil
-	}
-	mine, mapped := []string{}, make([]string, 0, len(s.PodOperators))
+// PodOperatorMappings counts the Kubernetes service accounts that BROKER_POD_OPERATORS maps to
+// person (record.CanonicalLogin), whether or not a pod of one holds a live login: a pod of each can
+// log in as person at any time with its own token, with no step of theirs. GET /v1/person-access
+// counts it as access that outlives the browser, as it counts an exchange entry.
+func (s *Service) PodOperatorMappings(person string) int {
+	mine, _ := s.podAccounts(record.CanonicalLogin(person))
+	return len(mine)
+}
+
+// podAccounts answers the subjects BROKER_POD_OPERATORS maps to person, a login as
+// record.CanonicalLogin spells it (mine), and every subject it maps (mapped).
+func (s *Service) podAccounts(person string) (mine, mapped []string) {
+	mine, mapped = []string{}, make([]string, 0, len(s.PodOperators))
 	for subject := range s.PodOperators {
 		mapped = append(mapped, subject)
 		if s.PodOperator(&subject) == person {
 			mine = append(mine, subject)
 		}
 	}
+	return mine, mapped
+}
+
+// liveCredentials is LiveCredentials, every service's login among them only when services is set.
+// It gives the statement two arrays: the subjects that BROKER_POD_OPERATORS maps to person ($3),
+// and every subject that the setting maps ($4) (podAccounts). So one statement holds the whole
+// rule. A credential with no subject matches neither array, and the rule of an unmapped credential
+// decides it.
+func (s *Service) liveCredentials(ctx context.Context, person string, services bool) ([]LiveCredential, error) {
+	person = record.CanonicalLogin(person)
+	if person == "" || person == record.AnyoneApprover {
+		return nil, nil
+	}
+	mine, mapped := s.podAccounts(person)
 	// c.subject = any(...) is null for a credential with no subject, and coalesce reads that
 	// null as "not mapped". So a login a person approved, which has no subject, keeps the rule of
 	// an unmapped credential.

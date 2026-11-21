@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -217,6 +218,65 @@ func TestDomainMembershipEndsTheSessionOfARowWithNoSubject(t *testing.T) {
 		t.Fatalf("Confirm of a row with no subject refreshed at the issuer (%d refreshes, want %d)", got, refreshes)
 	}
 	assertSessionEnded(t, rig)
+}
+
+// failingWrites is testPeopleStore whose two writes of a refresh's outcome, ConfirmSubject and
+// EndSubject, fail with err, as a database that stops answering between a confirmation's read of
+// the row and its write does.
+type failingWrites struct {
+	*testPeopleStore
+	err error
+}
+
+func (s failingWrites) ConfirmSubject(context.Context, string, string, string, string, string, model.MemberKind) error {
+	return s.err
+}
+
+func (s failingWrites) EndSubject(context.Context, string, string, string, auth.EndMode) (bool, error) {
+	return false, s.err
+}
+
+// A Google rule's confirmation whose write fails logs a WARN line naming the person and the
+// write's error, as a Workspace Directory check's failed write does: the write of a refresh Google
+// confirmed, and the end of a refresh Google refused (invalid_grant). Either refresh records
+// nothing, so the request is refused (RefreshFailed, with the write's error) and the next
+// confirmation asks Google again. The membership pass drops the error and counts the person
+// unasked, so the WARN line is the only record of the failure.
+//
+// Control: remove either slog.Warn (Membership.refresh's after WriteConfirm, endSubject's after
+// EndSubject) and its row fails, naming what was logged.
+func TestDomainMembershipLogsAFailedWriteAtWarn(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		refuse  bool
+		message string
+	}{
+		{"the write of a refresh Google confirmed", false, "dispatch: the sign-in issuer confirmed a lapsed membership, and its write failed"},
+		{"the end of a refresh Google refused", true, "dispatch: a failed confirmation could not end the sign-in, as its write failed"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
+			rig := newDomainMembershipRig(t)
+			if c.refuse {
+				rig.issuer.RevokeGrants()
+			}
+			down := errors.New("the database is down")
+			rig.membership.People = failingWrites{testPeopleStore: rig.people, err: down}
+			rig.now = rig.now.Add(2 * time.Hour)
+			if outcome, err := rig.membership.ConfirmFor(context.Background(), memberEmail); !errors.Is(err, down) || outcome != RefreshFailed {
+				t.Fatalf("ConfirmFor with the write failing: outcome %d, err = %v; want RefreshFailed and the write's error", outcome, err)
+			}
+			warned := false
+			for line := range strings.Lines(logs.String()) {
+				warned = warned || strings.Contains(line, "level=WARN") && strings.Contains(line, c.message) &&
+					strings.Contains(line, "email="+memberEmail) && strings.Contains(line, `error="the database is down"`)
+			}
+			if !warned {
+				t.Fatalf("logged %q; want a WARN line %q with the email and the write's error", strings.TrimSpace(logs.String()), c.message)
+			}
+		})
+	}
 }
 
 func TestMembershipConfirmedWithinTheHourAsksTheIssuerNothing(t *testing.T) {
@@ -432,7 +492,7 @@ func TestDomainMembershipWhoseRefreshFailsAfterAnotherAccountSignedInLeavesThatA
 	rig.now = rig.now.Add(2 * time.Hour)
 	var newGeneration int64
 	rig.membership.SignIn = refresherFunc(func(ctx context.Context, _ string) (oidc.Session, error) {
-		if err := rig.people.SignInSubject(ctx, memberEmail, "google-subject-B", "refresh-B", model.MemberFull); err != nil {
+		if err := rig.people.SignInSubject(ctx, memberEmail, "google-subject-B", "refresh-B", "", model.MemberFull); err != nil {
 			t.Errorf("the new account's sign-in: %v", err)
 		}
 		generation, err := rig.sessions.EnsureSession(ctx, memberEmail)
@@ -482,27 +542,41 @@ func (l *stubLister) set(email string, listed bool, err error) {
 
 // The hourly confirmation runs the outside rule again: once no access list names the account, the
 // refresh ends every session, as a person who left the domain's Workspace ends under the domain
-// rule, and its row keeps no refresh token. The log line says the confirmation no longer admits
-// the person, with the reason, rather than that Google did not confirm a membership of the domain,
-// which this person never had.
+// rule. The restricted member is not held: the row keeps its refresh token for membership checks,
+// reads signed out, and records the end's time as its confirmation, and the session's next request
+// is told why it ended. The log line says the confirmation no longer admits the person, with the
+// reason, rather than that Google did not confirm a membership of the domain, which this person
+// never had.
 func TestOutsideSignInMembershipEndsWhenNoListNamesTheAccount(t *testing.T) {
 	var logs bytes.Buffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 	lister := &stubLister{listed: map[string]bool{memberEmail: true}}
 	rig := newOutsideMembershipRig(t, lister)
+	signedIn, _ := rig.people.get(memberEmail)
 	rig.now = rig.now.Add(30 * time.Minute)
 	lister.set(memberEmail, false, nil)
 	if err := rig.membership.Confirm(context.Background(), memberEmail); err != nil {
 		t.Fatalf("Confirm within the hour of the delisting: %v, want the sign-in kept until the hourly check", err)
 	}
 	rig.now = rig.now.Add(time.Hour)
-	if err := rig.membership.Confirm(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) {
-		t.Fatalf("Confirm past the hour with no list naming the account: err = %v, want ErrNoIdentity", err)
+	if outcome, err := rig.membership.ConfirmFor(context.Background(), memberEmail); !errors.Is(err, ErrNoIdentity) || outcome != RefreshKept {
+		t.Fatalf("Confirm past the hour with no list naming the account: outcome %d, err = %v; want RefreshKept and ErrNoIdentity", outcome, err)
 	}
 	if asked := lister.calls(); len(asked) != 2 || asked[1] != memberEmail {
 		t.Fatalf("the lister was asked %q, want the sign-in's question and the hourly check's", asked)
 	}
-	assertSessionEnded(t, rig)
+	if generation := rig.sessions.generation(memberEmail); generation != 1 {
+		t.Fatalf("session generation after the delisting = %d, want 1 (every cookie revoked)", generation)
+	}
+	kept, _ := rig.people.get(memberEmail)
+	if kept.RefreshToken != signedIn.RefreshToken || !kept.SignedOut || kept.Held || !kept.ConfirmedAt.Equal(rig.now) {
+		t.Fatalf("the delisted row = %#v, want its refresh token kept, signed out, not held, and confirmed at the end's time %s", kept, rig.now)
+	}
+	login := CookieIdentity{SigningKey: testSigningKey, Sessions: rig.sessions, Membership: rig.membership}
+	var told *SignedOut
+	if _, err := login.Login(cookieRequest(t, memberEmail, 0)); !errors.As(err, &told) || told.Reason != SignedOutNotListed {
+		t.Fatalf("the ended session's next request: err = %v, want SignedOut with reason %s", err, SignedOutNotListed)
+	}
 	logged := logs.String()
 	if !strings.Contains(logged, "sign-in ended: the hourly confirmation no longer admits the person") ||
 		!strings.Contains(logged, "no Dispatch project's access list names this account") ||

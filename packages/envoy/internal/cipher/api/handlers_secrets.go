@@ -155,8 +155,10 @@ const RereadAcceptedReason = "the reread was taken; this broker says what it ser
 //
 // A caller that sends a Proof header must be a session the broker authenticates, as on every
 // session route (sessionCaller: 401 PROOF_INVALID, or 503 when the proof cannot be checked), and
-// is answered as before, once the reread is done: whether the broker serves the name, why not, and
-// as which type. That is more than a request for the secret tells a session, which is refused
+// one whose enrollment names a person Dispatch holds is refused as on every session route
+// (refuseHeldSession: 403 MEMBERSHIP_HELD, or 503 HOLD_UNCHECKABLE). Any other is answered as
+// before, once the reread is done: whether the broker serves the name, why not, and as which
+// type. That is more than a request for the secret tells a session, which is refused
 // UNKNOWN_SECRET alike for a name no secret carries and for a secret the broker refuses. A
 // session's reread whose request ended first - its caller went away, or its deadline passed - is
 // the request's failure, not the broker's, so it logs nothing, as the miss path logs nothing for
@@ -188,6 +190,9 @@ func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	recorder.NoteCaller(answer.CallerSession, who.enrollment)
+	if s.refuseHeldSession(w, r, who.enrollment) {
+		return
+	}
 	lk, err := s.refreshAndTell(r.Context(), name, nil)
 	switch {
 	case err != nil && r.Context().Err() != nil:

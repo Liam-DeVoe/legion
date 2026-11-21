@@ -766,7 +766,7 @@ func TestASignInThatReadsTheBindingOffKeepsItsChangeWhateverTheTriggerReads(t *t
 			}
 
 			c.window(t, database, email, func() error {
-				return people.SignInSubject(ctx, email, "account-b", "refresh-account-b", model.MemberFull)
+				return people.SignInSubject(ctx, email, "account-b", "refresh-account-b", "", model.MemberFull)
 			})
 			overlap := mintToken(t, database.Pool, email, "made in the overlap", "")
 			if _, revoked := tokenState(t, database.Pool, before); revoked {

@@ -157,10 +157,12 @@ func LogUnprovisionedPrivateProjects(keys []string) {
 // RunMaintenanceSweep deletes every Idempotency-Key past its window (sweepRequestKeys) and every
 // spent DPoP proof past its acceptance window (store.DPoPProofs.Sweep), ends every answer run
 // past its window that stored no terminal event and deletes every run past its TTL
-// (sweepGoingRequests), and then sends every delivery a process that died left owed
-// (resumeDeliveries, the server's resumeOwedDeliveries). resumeDeliveries is nil where nothing
-// delivers. Every pass also logs an ERROR line for each project the database holds private that
-// neither privateProjects (DISPATCH_PRIVATE_PROJECTS) nor beforeFullSwitch
+// (sweepGoingRequests), then sends every delivery a process that died left owed
+// (resumeDeliveries, the server's resumeOwedDeliveries), and last runs the membership pass
+// (confirmMemberships, identity.MembershipPass.Run), which checks every stored refresh token about
+// once an hour. resumeDeliveries is nil where nothing delivers, and confirmMemberships where no
+// Google rule signs people in. Every pass also logs an ERROR line for each project the database
+// holds private that neither privateProjects (DISPATCH_PRIVATE_PROJECTS) nor beforeFullSwitch
 // (DISPATCH_PRIVATE_BEFORE_FULL_SWITCH) names (reportUnprovisionedPrivateProjects). Where either
 // names a project, it logs an ERROR line when the store cannot yet hold a private project
 // (storeIncomplete) once as it starts, before its first tick and on no lease, so each process
@@ -171,8 +173,9 @@ func LogUnprovisionedPrivateProjects(keys []string) {
 //
 // It is a timer and not a woken loop (duty.RunWoken), the shape every other sweep of this server
 // took, because no commit announces any of its work: a key and a proof record pass their windows
-// by the clock alone, an answer run passes its ends_at by the clock too, and a delivery is owed
-// because the process that claimed it died, which commits nothing for a notification to carry.
+// by the clock alone, an answer run passes its ends_at by the clock too, a delivery is owed
+// because the process that claimed it died, which commits nothing for a notification to carry,
+// and a confirmation lapses by the clock.
 // They share one loop rather than taking one each: a loop of its own would need a lease
 // connection of its own (store.LeasePoolSize, whose headroom is zero) for statements that cost
 // milliseconds.
@@ -180,7 +183,9 @@ func LogUnprovisionedPrivateProjects(keys []string) {
 // Each pass runs under maintenanceLease for one interval, so one process sweeps per interval
 // however many serve the database and a second process's tick, which falls between the first's
 // rather than on it, finds that interval served; leases is required, as it is of every leased
-// loop (cmd/dispatch exits at boot if the lease pool cannot be opened). The period is interval
+// loop (cmd/dispatch exits at boot if the lease pool cannot be opened). The lease holds until the
+// pass returns, so no two processes run a membership pass at once, and the membership pass runs
+// last, so a slow one (up to 50 seconds) delays only the next pass. The period is interval
 // itself and not MaintenanceSweepInterval: this loop ticks on what its caller asked for. The
 // ticks are duty.RunLeased's, a ticker's: the first one interval after the call, then one each
 // interval; the first tick a pass overran comes at once with the moment it was due, and only the
@@ -189,6 +194,7 @@ func LogUnprovisionedPrivateProjects(keys []string) {
 func RunMaintenanceSweep(
 	ctx context.Context, pool *store.Pool, interval time.Duration, leases duty.Leases,
 	resumeDeliveries func(context.Context) error, privateProjects, beforeFullSwitch []string,
+	confirmMemberships func(context.Context) error,
 ) {
 	mayBePrivate := slices.Concat(privateProjects, beforeFullSwitch)
 	var storeChecked time.Time
@@ -213,11 +219,15 @@ func RunMaintenanceSweep(
 			storeChecked = time.Now()
 			logStoreIncomplete(ctx, pool)
 		}
-		if resumeDeliveries == nil {
-			return
+		if resumeDeliveries != nil {
+			if err := resumeDeliveries(ctx); err != nil {
+				slog.Warn("dispatch: delivery sweep failed", "error", err)
+			}
 		}
-		if err := resumeDeliveries(ctx); err != nil {
-			slog.Warn("dispatch: delivery sweep failed", "error", err)
+		if confirmMemberships != nil {
+			if err := confirmMemberships(ctx); err != nil {
+				slog.Warn("dispatch: membership pass failed", "error", err)
+			}
 		}
 	})
 }

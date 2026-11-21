@@ -93,7 +93,7 @@ func TestAccessCachesThirtySeconds(t *testing.T) {
 	server := standIn(t)
 	client := clientOf(server)
 	now := time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)
-	projectaccess.SetClock(client, func() time.Time { return now })
+	client.UseClock(func() time.Time { return now })
 	ask := func() {
 		t.Helper()
 		if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil {
@@ -455,7 +455,7 @@ func TestAnAnswerIsAgedFromBeforeItsQuestion(t *testing.T) {
 		return true
 	})
 	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
-	projectaccess.SetClock(client, clock.read)
+	client.UseClock(clock.read)
 	ask := func() {
 		t.Helper()
 		if _, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil {
@@ -488,7 +488,7 @@ func TestVisibleAsksAgainForAnAnswerThatAgedDuringTheCheck(t *testing.T) {
 		return true
 	})
 	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
-	projectaccess.SetClock(client, clock.read)
+	client.UseClock(clock.read)
 	if _, err := client.Access(t.Context(), "AGED", "carol@example.com"); err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +517,7 @@ func TestStatesAsksAgainForAnAnswerThatAgedDuringTheCall(t *testing.T) {
 			return true
 		})
 		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
-		projectaccess.SetClock(client, clock.read)
+		client.UseClock(clock.read)
 		if _, err := client.Access(t.Context(), "AGED", ""); err != nil {
 			t.Fatal(err)
 		}
@@ -542,7 +542,7 @@ func TestStatesAsksAgainForAnAnswerThatAgedDuringTheCall(t *testing.T) {
 			return true
 		})
 		client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
-		projectaccess.SetClock(client, clock.read)
+		client.UseClock(clock.read)
 		states, err := client.States(t.Context(), []string{"ONE", "TWO"})
 		if err == nil {
 			t.Fatalf("States, each answer taking 20 s, answered %+v; want a failure, since each pass leaves one answer older than %s", states, projectaccess.CacheTTL)
@@ -574,7 +574,7 @@ func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
 	})
 	t.Cleanup(free)
 	client := projectaccess.New(server.URL, projectaccesstest.StaticAccount("token"), nil)
-	projectaccess.SetClock(client, clock.read)
+	client.UseClock(clock.read)
 	first := make(chan error, 1)
 	go func() {
 		_, err := client.Access(context.Background(), "PRIV", "carol@example.com")
@@ -733,7 +733,7 @@ func TestAFailedMemberKindReadIsTheAnswerForTwoSecondsAndNoLonger(t *testing.T) 
 	server := standIn(t)
 	client := clientOf(server)
 	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
-	projectaccess.SetClock(client, clock.read)
+	client.UseClock(clock.read)
 	server.SetDown(true)
 	if _, err := client.MemberKind(t.Context(), "bob@example.com"); err == nil {
 		t.Fatal("MemberKind(bob) while Dispatch is down answered, want a failure")
@@ -831,7 +831,7 @@ func TestAnEmptyListAsksDispatchAfreshOnceItAnswersAgain(t *testing.T) {
 	server := standIn(t)
 	client := clientOf(server)
 	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
-	projectaccess.SetClock(client, clock.read)
+	client.UseClock(clock.read)
 	server.SetDown(true)
 	if err := projectaccess.ListAllowed(t.Context(), client, "bob@example.com", nil); !errors.Is(err, projectaccess.ErrUnchecked) {
 		t.Fatalf("ListAllowed(bob, none) while Dispatch is down = %v, want ErrUnchecked", err)
@@ -874,7 +874,7 @@ func TestAReadWhoseCallerEndedKeepsNoFailure(t *testing.T) {
 			server := standIn(t)
 			client := clientOf(server)
 			clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
-			projectaccess.SetClock(client, clock.read)
+			client.UseClock(clock.read)
 			if _, err := client.MemberKind(projectaccess.Fresh(c.ctx()), "bob@example.com"); err == nil {
 				t.Fatal("MemberKind(bob) on an ended context answered, want its context's error")
 			}

@@ -54,7 +54,7 @@ func TestARefusedTokenThatOutlivedItsRecordingIsRevokedWithWhatItMintedOnceTheBi
 	t.Cleanup(func() { waitBackgroundOf(t, served) })
 	const carol, dave = "carol-outlived@example.com", "dave-outlived@example.com"
 	for _, email := range []string{carol, dave} {
-		if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", model.MemberFull); err != nil {
+		if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", "", model.MemberFull); err != nil {
 			t.Fatal(err)
 		}
 	}

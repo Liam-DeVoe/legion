@@ -1848,7 +1848,13 @@ Dispatch store's tests
 (storetest.go:64-66), which reads DISPATCH_TEST_DATABASE_URL and skips without it, and
 cmd/listener/dispatch_resolution_test.go:158 gets its database through internal/testpg, so the
 job carries the lane's Postgres service; the registry store itself is the NATS KV view, and
-natscred's, the auth service's and the code flow's tests open no store, so they need none.
+natscred's and the code flow's tests open no store. One test of the NATS auth service does:
+hold_budget_test.go reads the broker's person_standing through the broker's storetest, which
+reads BROKER_TEST_DATABASE_URL and skips without it, so the job sets that variable too, to the
+same service. The auth service runs in a step of its own, through
+packages/envoy/scripts/database-skips.sh, which fails on any skip of it: go test without -v
+prints nothing for a skipped test, and the race step's other packages skip some tests in every
+CI run by design, which the counter would count.
 
 ## The mention sender's claim model alone, on a runner of its own
 

@@ -40,15 +40,19 @@ jobs:
     # 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s, and the API's
     # claim model is not among them, running in envoy-go-claim-model) the unit step's
     # own 20 is 26; after the unit step, which runs strictly fewer packages than the 35 minutes it
-    # measured before the race lane's left it and so cannot exceed that, the store-form count's
-    # own 5 is 46 (two packages, which go test starts at once with -p at least 2, so its -timeout
+    # measured before the race lane's left it and so cannot exceed that, the leaver hold step's own
+    # 15 is 56 (one package, so its -timeout bounds the step); after that step's measured 4
+    # minutes at most (its four tests in parallel took 260 s on a dev box with GOMAXPROCS=4, and
+    # this runner takes about 0.75 of that box's time: cmd/dispatch took 642.9 s here in job
+    # 136853209152 and 853 s there), the store-form count's
+    # own 5 is 50 (two packages, which go test starts at once with -p at least 2, so its -timeout
     # bounds the step); after that step's seconds, the skip counter's test's own timeout-minutes
-    # of 15 is 56; after that step's 15 at most, the database skip count's own timeout-minutes of
-    # 30 is 86 (its -timeout bounds each package, not the step, so the step has a limit of its
+    # of 15 is 60; after that step's 15 at most, the database skip count's own timeout-minutes of
+    # 30 is 90 (its -timeout bounds each package, not the step, so the step has a limit of its
     # own, and its comment below says why 30); after that step's 30 at most, natslive's default
-    # 10, the bus matrix's own 5 and the auth service's own 5 are 106, the integration step's 5 is
+    # 10, the bus matrix's own 5 and the auth service's own 5 are 110, the integration step's 5 is
     # less, and the callout check's own 6, after the seconds those two steps measure, is less too.
-    timeout-minutes: 110
+    timeout-minutes: 115
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -169,11 +173,30 @@ jobs:
       # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it
       # a read of this job; envoy-go-checks runs both, the first with the check, and both texts
       # are built from the same list. So are the backend count's four tests of cmd/cipher,
-      # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS).
+      # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS), and the
+      # leaver hold's four real-time tests of cmd/dispatch, which the next step runs
+      # (LEAVER_BOUND_TESTS).
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/cipher($|/)|/cmd/cipherd$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/cipher/natscallout$|/internal/oidc$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestIAPLeaverHoldThroughTheRealBroker|TestLeaverHoldBound|TestLeaverHoldBoundByThePass|TestLeaverHoldRelease|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
         working-directory: packages/envoy
+      # The leaver hold's four real-time tests of cmd/dispatch (LEAVER_BOUND_TESTS in
+      # .github/scripts/ci_job_reads.py, which builds this run: and the unit step's -skip): a
+      # refresh Google answers slowly, the membership pass's schedule, the broker's cache and the
+      # release a day later, each waited out on the wall clock. In the unit step they took
+      # cmd/dispatch past its 20-minute -timeout (job 136860339963 timed out at 1200 s, where the
+      # package took 642.9 s without them, job 136853209152). Here they run alone, in parallel with
+      # one another, each on a rig of its own, through packages/envoy/scripts/named-tests.sh, which
+      # fails unless each named test ran and passed: a -run that matches nothing is a pass to go
+      # test, so a renamed or deleted test would otherwise leave this step green while it ran fewer
+      # tests than it names. Its --timeout 15m bounds the one package's test binary, and so the step.
+      # Measured: 260 s on a dev box with GOMAXPROCS=4, build included, where cmd/dispatch's unit
+      # run without them took 786 s. It runs unless the job was cancelled, whatever the unit step
+      # answered: it is a test step of its own, and a failure in the unit step must not hide its
+      # result.
+      - name: Test the leaver hold's real-time bounds
+        if: ${{ !cancelled() }}
+        run: packages/envoy/scripts/named-tests.sh --timeout 15m ./cmd/dispatch/ -- TestIAPLeaverHoldThroughTheRealBroker TestLeaverHoldBound TestLeaverHoldBoundByThePass TestLeaverHoldRelease
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
       # in-process AWS store (onEachStore) and the use chain against a broker whose settings name

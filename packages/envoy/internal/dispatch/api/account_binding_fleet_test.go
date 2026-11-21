@@ -123,11 +123,11 @@ func TestARevocationOfAnAccountThatTookItsAddressBackThroughABuildWithoutTheBind
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "takeback-unbound@example.com"
-	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	machine := r.signInMachine(t, email, "account-a", strings.Repeat("t", 43))
-	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	if owing, err := r.revocations.Owing(ctx, email); err != nil || len(owing) != 1 || owing[0].Subject != "account-a" {
@@ -312,12 +312,12 @@ func TestTheRevocationPassCatchesUpAReplacementOnceTheBindingHolds(t *testing.T)
 	r := newRecoveryRig(t)
 	r.served.deps.SignInIssuer = recoveryIssuer
 	const email = "catch-up-pass@example.com"
-	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	machine := r.signInMachine(t, email, "account-a", strings.Repeat("u", 43))
 	registerUnboundProcess(t, r.dispatch)
-	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	next := r.served.revokeOwedBrokerCredentials(ctx)

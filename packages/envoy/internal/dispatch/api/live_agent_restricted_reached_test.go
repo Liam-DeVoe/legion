@@ -40,17 +40,17 @@ func TestAFullMemberTheSignInRuleRestrictsKeepsWhatTheyLostOnTheirSessions(t *te
 		restrict func(ctx context.Context, people *store.PgPeopleStore) error
 	}{
 		{"sign-in", func(ctx context.Context, people *store.PgPeopleStore) error {
-			return people.SignInSubject(ctx, reachedGina, account, "refresh-gina-restricted", model.MemberRestricted)
+			return people.SignInSubject(ctx, reachedGina, account, "refresh-gina-restricted", "", model.MemberRestricted)
 		}},
 		{"confirmation", func(ctx context.Context, people *store.PgPeopleStore) error {
-			return people.ConfirmSubject(ctx, reachedGina, account, "refresh-gina", "refresh-gina-restricted", model.MemberRestricted)
+			return people.ConfirmSubject(ctx, reachedGina, account, "refresh-gina", "refresh-gina-restricted", "", model.MemberRestricted)
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := context.Background()
 			rig := newReachedRig(t)
 			people := store.NewPgPeopleStore(rig.seed.database.Pool, testSigningKey, nil)
-			if err := people.SignInSubject(ctx, reachedGina, account, "refresh-gina", model.MemberFull); err != nil {
+			if err := people.SignInSubject(ctx, reachedGina, account, "refresh-gina", "", model.MemberFull); err != nil {
 				t.Fatalf("gina's sign-in as a full member: %v", err)
 			}
 			reachedGroupOnPRIV(t, rig)

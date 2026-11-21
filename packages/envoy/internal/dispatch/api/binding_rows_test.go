@@ -47,13 +47,13 @@ func TestAnEntryTokenActsWhateverItsPersonsAccount(t *testing.T) {
 	}
 	acts("the entry's token before any sign-in", entry)
 	acts("the person's own token recording no account before any sign-in", own)
-	if err := people.SignInSubject(ctx, person, "account-a", "refresh-a", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, person, "account-a", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatalf("A's first sign-in: %v", err)
 	}
 	acts("the entry's token after the first recording", entry)
 	_, err := served.brokerPersonAdmitted(ctx, own)
 	wantAPIError(t, err, http.StatusUnauthorized, "BROKER_TOKEN_RECORDS_NO_ACCOUNT", "the person's own token recording no account, made before the first recording")
-	if err := people.SignInSubject(ctx, person, "account-b", "refresh-b", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, person, "account-b", "refresh-b", "", model.MemberFull); err != nil {
 		t.Fatalf("B's sign-in: %v", err)
 	}
 	acts("the entry's token after B replaced A", entry)
@@ -88,7 +88,7 @@ func TestARestrictedMembersNamedTokenIsHeldToItsAccount(t *testing.T) {
 	personScopeRecordsA.ProjectScope, personScopeRecordsA.Projects = ciphertoken.ProjectScopePerson, nil
 	recordsNone := ciphertoken.Caller{Person: accessErin, ProjectScope: ciphertoken.ProjectScopeNamed, Projects: []string{"ACC"}, CredentialCreatedAt: before}
 	people := store.NewPgPeopleStore(rig.database.Pool, testSigningKey, nil)
-	if err := people.SignInSubject(ctx, accessErin, "account-a", "refresh-a", model.MemberRestricted); err != nil {
+	if err := people.SignInSubject(ctx, accessErin, "account-a", "refresh-a", "", model.MemberRestricted); err != nil {
 		t.Fatalf("erin's first sign-in as account A: %v", err)
 	}
 	if _, err := served.brokerPersonAdmitted(ctx, recordsA); err != nil {
@@ -96,7 +96,7 @@ func TestARestrictedMembersNamedTokenIsHeldToItsAccount(t *testing.T) {
 	}
 	_, err := served.brokerPersonAdmitted(ctx, recordsNone)
 	wantAPIError(t, err, http.StatusUnauthorized, "BROKER_TOKEN_RECORDS_NO_ACCOUNT", "erin's agent's token recording no account, its credential made before the first recording")
-	if err := people.SignInSubject(ctx, accessErin, "account-b", "refresh-b", model.MemberRestricted); err != nil {
+	if err := people.SignInSubject(ctx, accessErin, "account-b", "refresh-b", "", model.MemberRestricted); err != nil {
 		t.Fatalf("B's sign-in to erin's address: %v", err)
 	}
 	_, named := served.brokerPersonAdmitted(ctx, recordsA)
@@ -228,7 +228,7 @@ func TestNoCredentialIsMintedForOrApprovedWhileASignInIsInFlight(t *testing.T) {
 
 	signedIn := make(chan error, 1)
 	go func() {
-		signedIn <- store.NewPgPeopleStore(rig.database.Pool, testSigningKey, nil).SignInSubject(ctx, person, "account-b", "refresh-b", model.MemberFull)
+		signedIn <- store.NewPgPeopleStore(rig.database.Pool, testSigningKey, nil).SignInSubject(ctx, person, "account-b", "refresh-b", "", model.MemberFull)
 	}()
 	// A call must still be waiting while the sign-in is held; one that is not is named, with what
 	// it answered.

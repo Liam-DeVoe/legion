@@ -1659,8 +1659,10 @@ A read its bound cuts short fails its check, and the request goes to its person.
 with the same token, is one GET of the issue a Legion worker pod's claim names, for its assignee
 alone ([Approvals](#approvals)); the reads of a person's project access and member kind at
 `BROKER_PROJECT_ACCESS_URL`, by the token exchange, an enrollment, a secret request, an approval, a
-release and every airlock connection, and those for a private project's secrets
-([A private project's secrets](#a-private-projects-secrets)), are the last
+release and every airlock connection, those for a private project's secrets
+([A private project's secrets](#a-private-projects-secrets)), and each read of whether Dispatch
+holds the person a credential names
+([A person Dispatch holds](/legion/broker/operate/#a-person-dispatch-holds)), are the last
 ([Operating the broker](/legion/broker/operate/)). An approval asks Dispatch again before it is
 written, under a 5-second bound of its own that ends a second before the run does, so a Dispatch
 slow to answer then fails the approval, and the request goes to its person. A run with a verdict
