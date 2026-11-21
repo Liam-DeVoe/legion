@@ -177,7 +177,7 @@ func TestTheFreshModeCreatesAFreshNameAtEachCreation(t *testing.T) {
 		t.Fatalf("a second Ensure = %+v, %v; want %s kept", again, err, created.Name)
 	}
 
-	pull, err := consumers.Pull(ctx, created.Name)
+	pull, err := consumers.Pull(ctx, session, created.Name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestTheFreshModeCreatesAFreshNameAtEachCreation(t *testing.T) {
 		t.Fatalf("the predecessor %s: %v, want it deleted", created.Name, err)
 	}
 
-	pull = pullSessionNamed(t, consumers, restarted.Name)
+	pull = pullSessionNamed(t, consumers, session, restarted.Name)
 	msg := next(t, pull)
 	if err := msg.Ack(); err != nil {
 		t.Fatal(err)
@@ -225,16 +225,16 @@ func TestTheFreshModeCreatesAFreshNameAtEachCreation(t *testing.T) {
 	if !back.Created || back.Name == created.Name || back.Name == restarted.Name || back.StartSeq != first+1 {
 		t.Fatalf("Ensure after the delete = %+v, want a third fresh name at the record's start %d", back, first+1)
 	}
-	pull = pullSessionNamed(t, consumers, back.Name)
+	pull = pullSessionNamed(t, consumers, session, back.Name)
 	if msg := next(t, pull); msg.StreamSeq != second {
 		t.Fatalf("the consumer after the delete first delivered %d, want %d", msg.StreamSeq, second)
 	}
 }
 
-// pullSessionNamed starts a pull of consumer name, stopped when the test ends.
-func pullSessionNamed(t *testing.T, consumers *SessionConsumers, name string) *SessionPull {
+// pullSessionNamed starts a pull of sessionID's consumer name, stopped when the test ends.
+func pullSessionNamed(t *testing.T, consumers *SessionConsumers, sessionID, name string) *SessionPull {
 	t.Helper()
-	pull, err := consumers.Pull(context.Background(), name)
+	pull, err := consumers.Pull(context.Background(), sessionID, name)
 	if err != nil {
 		t.Fatalf("pull %s: %v", name, err)
 	}
@@ -358,7 +358,7 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 			t.Fatal(err)
 		}
 		for range 3 {
-			pull := pullSessionNamed(t, consumers, start.Name)
+			pull := pullSessionNamed(t, consumers, session, start.Name)
 			next(t, pull)
 			pull.Stop()
 			waitForAckPending(t, consumers, session, 1)
@@ -367,7 +367,7 @@ func TestNoConsumerNameIsCreatedTwice(t *testing.T) {
 			}
 		}
 		// A create that faults before it is sent, and the recovery that follows.
-		pull := pullSessionNamed(t, consumers, start.Name)
+		pull := pullSessionNamed(t, consumers, session, start.Name)
 		next(t, pull)
 		pull.Stop()
 		waitForAckPending(t, consumers, session, 1)

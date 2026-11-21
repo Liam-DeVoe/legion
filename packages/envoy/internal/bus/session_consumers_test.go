@@ -161,7 +161,7 @@ func streamIDOf(t *testing.T, consumers *SessionConsumers) string {
 // run in, stopped when the test ends.
 func pullSession(t *testing.T, consumers *SessionConsumers, sessionID string) *SessionPull {
 	t.Helper()
-	pull, err := consumers.Pull(context.Background(), fixedName(t, sessionID))
+	pull, err := consumers.Pull(context.Background(), sessionID, fixedName(t, sessionID))
 	if err != nil {
 		t.Fatalf("pull %s: %v", sessionID, err)
 	}
@@ -1092,7 +1092,7 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 		t.Fatalf("connect a session consumers connection of this row's own: %v", err)
 	}
 	t.Cleanup(mine.Close)
-	pull, err := mine.Pull(ctx, fixedName(t, session))
+	pull, err := mine.Pull(ctx, session, fixedName(t, session))
 	if err != nil {
 		t.Fatalf("pull %s: %v", session, err)
 	}

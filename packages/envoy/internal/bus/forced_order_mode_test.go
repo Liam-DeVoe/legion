@@ -43,8 +43,8 @@ func forcedProcess(t *testing.T, urls []string) *SessionConsumers {
 func forcedName(start SessionConsumerStart, _ string) string { return start.Name }
 
 // forcedPull pulls the consumer a call answered as start, for sessionID.
-func forcedPull(ctx context.Context, consumers *SessionConsumers, start SessionConsumerStart, _ string) (*SessionPull, error) {
-	return consumers.Pull(ctx, start.Name)
+func forcedPull(ctx context.Context, consumers *SessionConsumers, start SessionConsumerStart, sessionID string) (*SessionPull, error) {
+	return consumers.Pull(ctx, sessionID, start.Name)
 }
 
 // forcedLostState reports whether err refuses a call for lost selection state.
