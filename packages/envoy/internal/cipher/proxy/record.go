@@ -39,6 +39,9 @@ const (
 	// serveConnect and servePlain: a host that resolves nowhere, or somewhere this proxy never
 	// dials (checkedAddresses).
 	codeAddressRefused = "ADDRESS_REFUSED"
+	// serveConnect and servePlain: a CI run's result grant asked for a tunnel or a plain forward
+	// to anything but the one host its grant binds (resultHostOnly).
+	codeResultHostOnly = "RESULT_GRANT_HOST_ONLY"
 	// servePlain: plain HTTP to a host a name of the grant is bound to.
 	codePlainHTTP = "PLAIN_HTTP_TO_BOUND_HOST"
 	// serveConnect's 500: a connection the outer server cannot hand over.

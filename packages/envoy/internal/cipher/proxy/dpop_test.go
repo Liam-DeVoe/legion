@@ -370,6 +370,44 @@ func TestAnAnswerAfterTheWriteMayHaveLeftSaysItsOutcomeIsUnknown(t *testing.T) {
 	})
 }
 
+// TestAResultGrantReachesNoHostItsGrantDoesNotBind: a CI run's result grant carries one write to
+// the one host its grant binds, so its placeholder as the proxy password opens no tunnel and no
+// plain-HTTP forward anywhere else: a CONNECT to a host no entry binds, a CONNECT to the bound host
+// on another port, and a plain-HTTP request to an unbound host are each refused 403
+// RESULT_GRANT_HOST_ONLY, naming the rule, before any dial. A secret grant's CONNECT to the same
+// unbound host still opens its tunnel, the airlock's rule for every other grant.
+func TestAResultGrantReachesNoHostItsGrantDoesNotBind(t *testing.T) {
+	r, _ := newDPoPRig(t)
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, "the plain service answered")
+	}))
+	t.Cleanup(plain.Close)
+	r.addresses["plain.example.net"] = []netip.Addr{netip.MustParseAddr("93.184.216.50")}
+	r.dialTo["plain.example.net:80"] = plain.Listener.Addr().String()
+	const rule = "a CI run's result grant carries its write to the host its grant binds and nowhere else"
+	refused := func(what string, answer *http.Response, body string, dialsBefore int64) {
+		t.Helper()
+		if answer.StatusCode != http.StatusForbidden || answer.Header.Get("Airlock-Code") != codeResultHostOnly || !strings.Contains(body, rule) || r.dials.Load() != dialsBefore {
+			t.Errorf("%s with a result grant = %d, Airlock-Code %q (%q) after %d new dial(s); want 403 %s naming the rule, and no dial", what, answer.StatusCode, answer.Header.Get("Airlock-Code"), body, r.dials.Load()-dialsBefore, codeResultHostOnly)
+		}
+	}
+	for _, target := range []string{net.JoinHostPort(echoHost, "443"), net.JoinHostPort(boundHost, "8443")} {
+		before := r.dials.Load()
+		answer, body := r.requestRaw(http.MethodConnect, target, target, basic(resultsPlaceholder))
+		refused("a CONNECT to "+target, answer, body, before)
+	}
+	before := r.dials.Load()
+	answer, body := r.plainRaw("plain.example.net", "/anything", basic(resultsPlaceholder))
+	refused("a plain-HTTP request to plain.example.net", answer, body, before)
+
+	// The control: the same tunnel under a secret grant opens, as the airlock blocks nothing it
+	// does not bind for one.
+	answer, _, _ = r.connectRaw(net.JoinHostPort(echoHost, "443"), basic(workerPlaceholder))
+	if answer.StatusCode != http.StatusOK {
+		t.Errorf("a secret grant's CONNECT to %s:443 = %d, want its tunnel (200)", echoHost, answer.StatusCode)
+	}
+}
+
 // recordingRoundTripper counts what it was handed, keeps the last, and sends nothing.
 type recordingRoundTripper struct {
 	sent int

@@ -45,6 +45,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
@@ -682,6 +683,9 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	}
 	port = strconv.FormatUint(uint64(connectPort), 10)
 	target = net.JoinHostPort(host, port)
+	if s.resultHostOnly(w, r, grant, host, connectPort) {
+		return
+	}
 	// The addresses this name has, read and checked once: the tunnel below dials these and
 	// resolves nothing of its own, and a bound host's requests are checked and dialled the
 	// same way by the transport they go out on (dialChecked).
@@ -703,7 +707,8 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// An empty answer is a tunnel rather than a refusal, whether it is a host no name binds or
 	// another port of a bound name: the airlock blocks nothing it does not bind (R3), the
 	// proxy reads nothing on such a connection and puts nothing into it, and the command
-	// reaches that service exactly as it reaches every host the rules say nothing about. The
+	// reaches that service exactly as it reaches every host the rules say nothing about. A CI
+	// run's result grant is the one exception, refused above (resultHostOnly). The
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
 	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
 	// about and another port of one name is another service.
@@ -727,6 +732,22 @@ func portNumber(port string) (uint16, bool) {
 		return 0, false
 	}
 	return uint16(number), true
+}
+
+// resultHostOnly refuses, and answers true for, a CONNECT or a plain-HTTP request of a CI run's
+// result grant (oauthwire.ResultGrantIDPrefix) to anything but the one host its grant binds, on
+// 443: a result grant's work is one write to Dispatch's host, which the proxy decrypts and reads,
+// so its placeholder opens no tunnel and no plain forward to any other host or port, and is no
+// egress password of the broker's address. Every other grant keeps the airlock's rule that it
+// blocks nothing it does not bind. It is answered before anything is resolved or dialled, with
+// codeResultHostOnly and the rule's words.
+func (s *Server) resultHostOnly(w http.ResponseWriter, r *http.Request, grant requests.AirlockConnection, host string, port uint16) bool {
+	if !strings.HasPrefix(grant.GrantID, oauthwire.ResultGrantIDPrefix) || len(s.candidates(grant, host, port)) > 0 {
+		return false
+	}
+	s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeResultHostOnly,
+		"a CI run's result grant carries its write to the host its grant binds and nowhere else: refusing "+net.JoinHostPort(host, strconv.FormatUint(uint64(port), 10)))
+	return true
 }
 
 // connectBound answers a CONNECT to a host one of the grant's names is bound to, on port 443:
@@ -870,6 +891,11 @@ func (s *Server) servePlain(w http.ResponseWriter, r *http.Request, grant reques
 		return
 	}
 	port = strconv.FormatUint(uint64(number), 10)
+	// A result grant's plain request is refused here whatever its host: to a host its grant
+	// does not bind by resultHostOnly, and to its bound host as every grant's is, below.
+	if s.resultHostOnly(w, r, grant, host, number) {
+		return
+	}
 	// The authority the transport dials, in the one spelling every check and line here reads:
 	// the host lowercased and without a zone, and the port as its number. The transport dials
 	// the URL's own authority (dialForwarded), so a URL left as the command wrote it would be
