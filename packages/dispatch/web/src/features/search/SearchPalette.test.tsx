@@ -18,6 +18,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { IssueReferenceSummary, Project, SearchResponse, SearchResult } from "../../api/types";
 import { CONTROL } from "../../components/control-names";
+import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -602,6 +603,51 @@ test("arrow keys, Enter and Backspace inside an IME composition move no highligh
     getIssue.mockRestore();
     view.unmount();
     view.queryClient.clear();
+  }
+});
+
+// A Tab that is part of an input method's composition is the composition's too: it narrows no
+// chip, and its default stays the browser's. The bar is opened with the writing cursor in a block
+// of a document behind it, which is where a plain Tab narrows the chip to that block. It is opened
+// over an issue page, so the chip names the issue before any key is pressed.
+test("Tab inside an IME composition moves no chip, where a plain Tab would", async () => {
+  const user = userOnFakeClock();
+  // The bar reads the writing cursor on the render that opens it (`scopeAtCursor`), so the cursor
+  // is put in a block of a writing surface before the bar is drawn.
+  const editable = document.createElement("div");
+  editable.setAttribute("contenteditable", "true");
+  const block = document.createElement("p");
+  block.setAttribute(BLOCK_ID_ATTRIBUTE, "b-1");
+  block.textContent = "The sextant sights the horizon.";
+  editable.append(block);
+  document.body.append(editable);
+  editable.focus();
+  const caret = document.createRange();
+  caret.setStart(block.firstChild ?? block, 0);
+  caret.collapse(true);
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(caret);
+  const view = renderPalette({ entries: ["/issues/LEGION-2/spec"] });
+  const box = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
+  const chip = () => screen.getByTestId("search-scope").textContent;
+
+  try {
+    // `fireEvent` answers false for a key whose default was cancelled, which the bar does to
+    // each key it spends. user-event has no form for this: it cannot mark a key as an IME
+    // composition.
+    expect(chip()).toContain("Acting on LEGION-2");
+    expect(fireEvent.keyDown(box, { isComposing: true, key: "Tab" })).toBe(true);
+    expect(chip()).toContain("Acting on LEGION-2");
+
+    // The plain Tab is the bar's: it narrows the chip to the block the composing one left alone.
+    await user.click(box);
+    await user.keyboard("{Tab}");
+    expect(chip()).toContain("Acting on the block “The sextant sights the horizon.”");
+  } finally {
+    view.unmount();
+    view.queryClient.clear();
+    editable.remove();
+    window.getSelection()?.removeAllRanges();
   }
 });
 
