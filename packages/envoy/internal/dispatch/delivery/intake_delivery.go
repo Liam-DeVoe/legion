@@ -406,12 +406,12 @@ func (d *intakeDelivery) handBack(msg *natsgo.Msg) {
 // before or after any stop begins, and the stop waits for that handler.
 func (d *intakeDelivery) handBackOwn(msg *natsgo.Msg, after time.Duration) {
 	if !d.mayAnswer() {
-		slog.Warn("dispatch delivery: the hold no longer covers this delivery, so the envelope whose head row was not stored is left with the durable for the next holder's take-over",
+		slog.Warn("dispatch delivery: the hold no longer covers this delivery or its subscription has stopped, so the envelope its handler asked to have redelivered is left with the durable for the next holder's take-over",
 			"subject", msg.Subject)
 		return
 	}
 	if !d.mayHandBack() {
-		slog.Info("dispatch delivery: the hand-back is withheld, so the envelope whose head row was not stored is left with the durable", "subject", msg.Subject)
+		slog.Info("dispatch delivery: the hand-back is withheld, so the envelope its handler asked to have redelivered is left with the durable", "subject", msg.Subject)
 		return
 	}
 	d.publishHandBack(msg, after)
