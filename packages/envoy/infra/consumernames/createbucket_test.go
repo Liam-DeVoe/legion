@@ -3,6 +3,7 @@ package consumernames
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,6 +25,7 @@ import (
 	selection "github.com/sjawhar/envoy/consumernames"
 	"github.com/sjawhar/envoy/infra/writerhold/holdtest"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/kvrecords"
 	"github.com/sjawhar/envoy/internal/holdrecord"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/natsgrant"
@@ -156,7 +158,8 @@ func createBucketSessionMetadata(session string) map[string]string {
 
 // createBucketBackupOf makes a jsm.go backup of a selection bucket on a hub of the test's own, of n
 // servers with an admin as its no-auth user, at n copies: its sentinel, each of records, and filler
-// keys of 4 KiB each, whose values differ so the archive does not compress to one 64 KiB chunk. It
+// keys, each an exact selection record (as create-bucket --after-loss takes only those) holding 4
+// KiB of pseudo-random bytes in base64, so the archive does not compress to one 64 KiB chunk. It
 // answers the backup's directory and the bucket's message count.
 func createBucketBackupOf(t *testing.T, n int, sentinel selection.StoreState, records map[string]selection.Record, filler int) (string, uint64) {
 	t.Helper()
@@ -190,7 +193,7 @@ func createBucketBackupOf(t *testing.T, n int, sentinel selection.StoreState, re
 		for j := range value {
 			value[j] = byte(random.Uint32())
 		}
-		_, err := js.Publish(ctx, fmt.Sprintf("$KV.%s.filler-%d", selection.SessionBucket, i), value)
+		_, err := store.Write(ctx, fmt.Sprintf("filler-%d", i), selection.Record{Current: base64.StdEncoding.EncodeToString(value)}, 0)
 		require.NoError(t, err)
 	}
 	mgr, err := jsm.New(nc, jsm.WithTimeout(30*time.Second))
@@ -573,6 +576,13 @@ func TestARecoverysPostcheckFindingStopsItsCompletion(t *testing.T) {
 // moved past it; and a rerun given other inputs than the selection record's stops, changing
 // nothing.
 //
+// From a walk backup (plan v66), a create-bucket --after-loss killed after its load, at its
+// sentinel's write, leaves the walk's records and no sentinel; the rerun adopts the bucket by each
+// key's last value and the count of its keys, writes the sentinel with the walk's boundary, loads
+// nothing again, passes its postcheck and completes. Control: an adoption by last_seq, the
+// snapshot's rule over the walk's recorded state, reads that load, whose sequences started over, as
+// not this recovery's and stops. (A partly loaded bucket is TestACutWalkLoadIsDeletedAndLoadedAgain.)
+//
 // On three servers, a create-bucket --after-loss killed after a cut chunk of its restore leaves
 // the empty leftover stream, which the rerun deletes before it restores again, and the recovery
 // completes. Control: a rerun without the leftover rule reads the leftover as another recovery's
@@ -651,6 +661,60 @@ func TestACompletedRecoveryAdopted(t *testing.T) {
 		d := h.journal(id)
 		require.Equal(t, []string{"intent", "intent", "done"}, createBucketEntries(d, createBucketAfterLossCommand))
 		require.True(t, d.Complete)
+	})
+
+	t.Run("a walk load adopted by its keys, never by last_seq", func(t *testing.T) {
+		h := newStack(t)
+		createBucketNotifications(t, h, 3)
+		// The walk of a bucket whose every record was written twice: its sequences have gaps, as a
+		// bucket's history of one leaves them, and its last_seq is past its record count.
+		records := createBucketWalkOfRecords(t, 5)
+		for i := range records {
+			records[i].Seq = uint64(2*i + 1)
+		}
+		dir := filepath.Join(t.TempDir(), "walk")
+		createBucketWriteWalk(t, dir, records, 1, uint64(2*len(records)))
+		id := h.heldHold(holdrecord.WorkflowSelectionRecovery)
+		createBucketKilledRun(t, h, id, dir, &createBucketPutCutDialer{on: "$KV." + selection.SessionBucket + "." + selection.SentinelKey, after: 1})
+		loaded, present, _, found := createBucketState(h)
+		require.True(t, present)
+		require.False(t, found, "the killed run wrote the sentinel")
+		require.Len(t, createBucketKeys(loaded, id), 5, "the killed run's load: the walk's 5 records")
+
+		// Control: an adoption by last_seq, the snapshot's rule (createBucketArchiveIntact) over the
+		// walk's recorded state (its manifest's first_seq, last_seq and records), stops on this load.
+		manifest, _, err := kvrecords.Read(dir)
+		require.NoError(t, err)
+		require.NotEqual(t, manifest.LastSeq, loaded.State.LastSeq, "control: the load kept the walk's last_seq")
+		in, recorded := createBucketSelection(t, h, id)
+		require.True(t, recorded)
+		byLastSeq := in
+		byLastSeq.Format = createBucketFormatSnapshot
+		byLastSeq.Archive = &createBucketArchive{FirstSeq: manifest.FirstSeq, LastSeq: manifest.LastSeq, Msgs: uint64(manifest.Records)}
+		nc, _ := h.operator()
+		adoption, err := createBucketAdopt(ctx, nc, loaded, createBucketSentinelRead{}, false, byLastSeq, nil, id)
+		require.NoError(t, err)
+		require.Equal(t, createBucketStop, adoption.action, "control: an adoption by last_seq took the load: %s", adoption.why)
+		require.Contains(t, adoption.why, "selection bucket exists and is not this recovery's")
+
+		code, stdout, stderr := h.run("create-bucket", "--hold", id, "--after-loss", "--backup", dir)
+		require.Equal(t, 0, code, stderr)
+		require.Contains(t, stdout, "adopted: it holds the walk's 5 records as replayed; its sentinel written")
+		require.Contains(t, stdout, "postcheck passed")
+		require.True(t, h.journal(id).Complete)
+		after, _, sentinel, found := createBucketState(h)
+		require.True(t, found)
+		require.True(t, after.Created.Equal(loaded.Created), "the rerun made the loaded bucket again")
+		require.Equal(t, uint64(5+2), after.State.Msgs, "the adopted bucket: the walk's 5 records, the sentinel and this hold's barrier")
+		require.Equal(t, uint64(2), sentinel.state.Boundary)
+		require.Equal(t, in.BackupSHA256, sentinel.state.BackupSHA256)
+		nc, _ = h.operator()
+		store := selection.NewKVStore(selection.SessionBucket, selection.ConnRequester{Conn: nc})
+		for i := range 5 {
+			got, _, err := store.Read(ctx, fmt.Sprintf("ses_%02d", i))
+			require.NoError(t, err)
+			require.Equal(t, uint64(i+1), got.Start)
+		}
 	})
 
 	t.Run("a cut restore's leftover on three servers", func(t *testing.T) {

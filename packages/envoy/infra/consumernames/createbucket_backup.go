@@ -1,16 +1,15 @@
 package consumernames
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,18 +22,23 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	selection "github.com/sjawhar/envoy/consumernames"
+	"github.com/sjawhar/envoy/internal/bus/kvrecords"
 )
 
-// The --backup formats create-bucket --after-loss restores from, each read by one function
-// (createBucketReadBackup):
-//   - a snapshot, jsm.go's backup of the selection bucket's stream (backup.json and its archive),
-//     which only a hold's operator takes: a snapshot's chunks go to a deliver subject the server
-//     publishes to without checking the requester's publish rights, so the grant names
-//     STREAM.SNAPSHOT only while every other client is refused. It is restored with STREAM.RESTORE;
-//   - a walk, the released operator's read-only backup: every message of the bucket's stream read
-//     by sequence with STREAM.MSG.GET, in the format envoy-kv-records-v1
-//     (createBucketWalkFormat). It is restored by a replay: a fresh bucket, and one put of each
-//     record key that holds no message yet (createBucketReplayWalk), so its sequences start over.
+// The --backup formats create-bucket --after-loss restores from (createBucketReadBackup), told
+// apart by their files:
+//   - a walk, the released operator's read-only backup (kvrecords.Write): every message of the
+//     bucket's stream read by sequence with STREAM.MSG.GET, in kvrecords.Format
+//     (envoy-kv-records-v1: kvrecords.ManifestFile, kvrecords.RecordsFile and kvrecords.SumsFile).
+//     A directory holding kvrecords.ManifestFile is a walk, read through kvrecords.Read and
+//     kvrecords.ForRestore (createBucketReadWalk), and loaded by publishing each key's last value
+//     into a fresh bucket (createBucketReplayWalk), so its sequences start over;
+//   - a snapshot, jsm.go's backup of the selection bucket's stream (jsm.SnapshotMetaFile and its
+//     archive), which only a hold's operator takes: a snapshot's chunks go to a deliver subject the
+//     server publishes to without checking the requester's publish rights, so the grant names
+//     STREAM.SNAPSHOT only while every other client is refused. Any other directory is read as a
+//     snapshot (createBucketReadSnapshot), which refuses one holding none, and restored with
+//     STREAM.RESTORE.
 const (
 	createBucketFormatSnapshot = "snapshot"
 	createBucketFormatWalk     = "walk"
@@ -49,18 +53,18 @@ type createBucketBackup struct {
 	// sha256 identifies the backup: a snapshot's meta file and archive (createBucketReadSnapshot),
 	// or a walk's SHA256SUMS, which names the sum of each of its files.
 	sha256 string
-	// archive is the stream state a restore of the backup reproduces: a snapshot's recorded state,
-	// and for a walk the state its replay leaves in a fresh bucket, one message for each record.
-	archive createBucketArchive
+	// archive is a snapshot's recorded stream state, which its restore reproduces; nil for a walk,
+	// whose load publishes each record again and so reproduces no sequence (kvrecords).
+	archive *createBucketArchive
 	// walk is a walk backup's records, nil for a snapshot.
 	walk *createBucketWalk
 }
 
-// createBucketReadBackup reads dir in whichever of the formats it holds: a walk when the walk
-// format recognises it, and otherwise a snapshot, whose reader refuses a directory that holds
-// none.
+// createBucketReadBackup reads dir in the format its files show: a walk when it holds
+// kvrecords.ManifestFile, whose reader refuses a manifest of any format but kvrecords.Format, and
+// otherwise a snapshot, whose reader refuses a directory that holds none.
 func createBucketReadBackup(dir string) (*createBucketBackup, error) {
-	if createBucketWalkFormat.holds(dir) {
+	if _, err := os.Lstat(filepath.Join(dir, kvrecords.ManifestFile)); !errors.Is(err, fs.ErrNotExist) {
 		return createBucketReadWalk(dir)
 	}
 	return createBucketReadSnapshot(dir)
@@ -73,7 +77,7 @@ func createBucketReadBackup(dir string) (*createBucketBackup, error) {
 func createBucketReadSnapshot(dir string) (*createBucketBackup, error) {
 	dataPath, err := jsm.SnapshotDataPath(dir)
 	if err != nil {
-		return nil, fmt.Errorf("--backup %s holds neither a jsm.go snapshot nor a %s walk: %w", dir, createBucketWalkFormatName, err)
+		return nil, fmt.Errorf("--backup %s holds neither a jsm.go snapshot nor a %s walk: %w", dir, kvrecords.Format, err)
 	}
 	meta, err := os.ReadFile(filepath.Join(dir, jsm.SnapshotMetaFile))
 	if err != nil {
@@ -96,246 +100,97 @@ func createBucketReadSnapshot(dir string) (*createBucketBackup, error) {
 	if _, err := io.Copy(sum, data); err != nil {
 		return nil, fmt.Errorf("--backup %s: read its archive: %w", dir, err)
 	}
-	return &createBucketBackup{dir: dir, format: createBucketFormatSnapshot, sha256: hex.EncodeToString(sum.Sum(nil)), archive: createBucketArchive{
+	return &createBucketBackup{dir: dir, format: createBucketFormatSnapshot, sha256: hex.EncodeToString(sum.Sum(nil)), archive: &createBucketArchive{
 		FirstSeq: request.State.FirstSeq, LastSeq: request.State.LastSeq, Msgs: request.State.Msgs,
 	}}, nil
 }
 
-// createBucketWalkMessage is one message of the selection bucket's stream as a walk recorded it:
-// its sequence, subject, data and headers, a KV delete or purge marker's KV-Operation among them.
-type createBucketWalkMessage struct {
-	Seq     uint64
-	Subject string
-	Data    []byte
-	Header  nats.Header
-}
-
-// createBucketWalkDecoder is one walk backup format: how to recognise a directory of it, and how
-// to read its messages and its sha256. Everything after the decode is this file's, so a format
-// slots in as createBucketWalkFormat alone.
-type createBucketWalkDecoder interface {
-	// holds reports whether dir holds a walk backup of this format.
-	holds(dir string) bool
-	// decode reads dir's walk: every message it recorded, in sequence order, and the backup's
-	// sha256.
-	decode(dir string) ([]createBucketWalkMessage, string, error)
-}
-
-// createBucketWalkFormat is the walk format this build reads, envoy-kv-records-v1.
-var createBucketWalkFormat createBucketWalkDecoder = createBucketRecordsV1{}
-
-// createBucketWalkFormatName is the walk format's name, its manifest's format.
-const createBucketWalkFormatName = "envoy-kv-records-v1"
-
-// The files of an envoy-kv-records-v1 backup.
-const (
-	createBucketWalkManifest = "manifest.json"
-	createBucketWalkRecords  = "records.jsonl"
-	createBucketWalkSums     = "SHA256SUMS"
-)
-
-// createBucketRecordsV1 reads envoy-kv-records-v1, the released operator's walk of a KV bucket's
-// stream (the hold owner's format, kvrecords on its branch, which this reader follows until that
-// package's own reader is in this module): manifest.json, records.jsonl (one message a line, in
-// sequence order) and SHA256SUMS (sha256sum's lines for manifest.json, then records.jsonl).
-type createBucketRecordsV1 struct{}
-
-// createBucketWalkManifestV1 is an envoy-kv-records-v1 manifest.
-type createBucketWalkManifestV1 struct {
-	Format        string `json:"format"`
-	Bucket        string `json:"bucket"`
-	Stream        string `json:"stream"`
-	TakenAt       string `json:"taken_at"`
-	FirstSeq      uint64 `json:"first_seq"`
-	LastSeq       uint64 `json:"last_seq"`
-	Records       int    `json:"records"`
-	RecordsSHA256 string `json:"records_sha256"`
-}
-
-// createBucketWalkRecordV1 is one line of an envoy-kv-records-v1 records.jsonl.
-type createBucketWalkRecordV1 struct {
-	Seq     uint64              `json:"seq"`
-	Subject string              `json:"subject"`
-	Key     string              `json:"key"`
-	Time    string              `json:"time"`
-	Headers map[string][]string `json:"headers"`
-	Data    string              `json:"data"`
-}
-
-// holds reports whether dir's manifest names envoy-kv-records-v1.
-func (createBucketRecordsV1) holds(dir string) bool {
-	raw, err := os.ReadFile(filepath.Join(dir, createBucketWalkManifest))
-	if err != nil {
-		return false
-	}
-	var m createBucketWalkManifestV1
-	return json.Unmarshal(raw, &m) == nil && m.Format == createBucketWalkFormatName
-}
-
-// decode reads dir as envoy-kv-records-v1, refusing, naming what failed: a missing file, a
-// SHA256SUMS line that does not match its file, another format, bucket or stream, a records count
-// or records_sha256 that disagree with records.jsonl, a sequence that does not increase or falls
-// outside first_seq..last_seq, a subject outside the bucket or whose key disagrees, data that is
-// not base64. The backup's sha256 is SHA256SUMS's own, which names both files' sums.
-func (createBucketRecordsV1) decode(dir string) ([]createBucketWalkMessage, string, error) {
-	sums, err := os.ReadFile(filepath.Join(dir, createBucketWalkSums))
-	if err != nil {
-		return nil, "", fmt.Errorf("--backup %s: %w", dir, err)
-	}
-	want := map[string]string{}
-	for _, line := range strings.Split(strings.TrimSuffix(string(sums), "\n"), "\n") {
-		sum, name, ok := strings.Cut(line, "  ")
-		if !ok || len(sum) != 64 {
-			return nil, "", fmt.Errorf("--backup %s: %s holds %q, no sha256sum line", dir, createBucketWalkSums, line)
-		}
-		want[name] = sum
-	}
-	files := map[string][]byte{}
-	for _, name := range []string{createBucketWalkManifest, createBucketWalkRecords} {
-		raw, err := os.ReadFile(filepath.Join(dir, name))
-		if err != nil {
-			return nil, "", fmt.Errorf("--backup %s: %w", dir, err)
-		}
-		got := sha256.Sum256(raw)
-		if hex.EncodeToString(got[:]) != want[name] {
-			return nil, "", fmt.Errorf("--backup %s: %s's sha256 is %x, and %s names %q", dir, name, got, createBucketWalkSums, want[name])
-		}
-		files[name] = raw
-	}
-	var m createBucketWalkManifestV1
-	if err := json.Unmarshal(files[createBucketWalkManifest], &m); err != nil {
-		return nil, "", fmt.Errorf("--backup %s: its %s does not decode: %w", dir, createBucketWalkManifest, err)
-	}
-	switch {
-	case m.Format != createBucketWalkFormatName:
-		return nil, "", fmt.Errorf("--backup %s is format %q, not %s", dir, m.Format, createBucketWalkFormatName)
-	case m.Bucket != selection.SessionBucket || m.Stream != createBucketStreamName:
-		return nil, "", fmt.Errorf("--backup %s is a walk of %q (%s), not of %s", dir, m.Bucket, m.Stream, selection.SessionBucket)
-	case m.RecordsSHA256 != want[createBucketWalkRecords]:
-		return nil, "", fmt.Errorf("--backup %s: its manifest's records_sha256 %q is not %s's %q", dir, m.RecordsSHA256, createBucketWalkSums, want[createBucketWalkRecords])
-	}
-	var messages []createBucketWalkMessage
-	prefix := "$KV." + m.Bucket + "."
-	scanner := bufio.NewScanner(bytes.NewReader(files[createBucketWalkRecords]))
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		var rec createBucketWalkRecordV1
-		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
-			return nil, "", fmt.Errorf("--backup %s: line %d of %s does not decode: %w", dir, len(messages)+1, createBucketWalkRecords, err)
-		}
-		key, ok := strings.CutPrefix(rec.Subject, prefix)
-		switch {
-		case rec.Seq < m.FirstSeq || rec.Seq > m.LastSeq:
-			return nil, "", fmt.Errorf("--backup %s: sequence %d is outside the manifest's %d..%d", dir, rec.Seq, m.FirstSeq, m.LastSeq)
-		case len(messages) > 0 && rec.Seq <= messages[len(messages)-1].Seq:
-			return nil, "", fmt.Errorf("--backup %s: sequence %d follows %d", dir, rec.Seq, messages[len(messages)-1].Seq)
-		case !ok || key != rec.Key:
-			return nil, "", fmt.Errorf("--backup %s: sequence %d's subject %q is not the key %q of %s", dir, rec.Seq, rec.Subject, rec.Key, m.Bucket)
-		}
-		data, err := base64.StdEncoding.DecodeString(rec.Data)
-		if err != nil {
-			return nil, "", fmt.Errorf("--backup %s: sequence %d's data is not base64: %w", dir, rec.Seq, err)
-		}
-		var header nats.Header
-		if len(rec.Headers) > 0 {
-			header = nats.Header(rec.Headers)
-		}
-		messages = append(messages, createBucketWalkMessage{Seq: rec.Seq, Subject: rec.Subject, Data: data, Header: header})
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, "", fmt.Errorf("--backup %s: %s: %w", dir, createBucketWalkRecords, err)
-	}
-	if len(messages) != m.Records {
-		return nil, "", fmt.Errorf("--backup %s: %s holds %d lines, and its manifest names %d records", dir, createBucketWalkRecords, len(messages), m.Records)
-	}
-	all := sha256.Sum256(sums)
-	return messages, hex.EncodeToString(all[:]), nil
-}
-
-// createBucketReadWalk reads dir, a walk backup of the selection bucket, through
-// createBucketWalkFormat, into its records (createBucketWalkFrom).
+// createBucketReadWalk reads dir, a walk backup of the selection bucket, through kvrecords.Read,
+// which refuses a walk whose files, sums, format, records count, sequences or subjects disagree,
+// naming what failed; holds its manifest to the selection bucket and its stream; and reads its
+// records into the bucket's (createBucketWalkFrom). Its sha256 is that of its SHA256SUMS, which
+// names the sum of each of its files and which kvrecords.Read holds to them.
 func createBucketReadWalk(dir string) (*createBucketBackup, error) {
-	messages, sum, err := createBucketWalkFormat.decode(dir)
-	if err != nil {
-		return nil, err
-	}
-	walk, err := createBucketWalkFrom(messages)
+	sums, err := os.ReadFile(filepath.Join(dir, kvrecords.SumsFile))
 	if err != nil {
 		return nil, fmt.Errorf("--backup %s: %w", dir, err)
 	}
-	backup := &createBucketBackup{dir: dir, format: createBucketFormatWalk, sha256: sum, walk: walk}
-	if n := uint64(len(walk.Entries)); n > 0 {
-		backup.archive = createBucketArchive{FirstSeq: 1, LastSeq: n, Msgs: n}
+	manifest, records, err := kvrecords.Read(dir)
+	if err != nil {
+		return nil, fmt.Errorf("--backup %s: %w", dir, err)
 	}
-	return backup, nil
+	if manifest.Bucket != selection.SessionBucket || manifest.Stream != createBucketStreamName {
+		return nil, fmt.Errorf("--backup %s is a walk of %q (%s), not of %s", dir, manifest.Bucket, manifest.Stream, selection.SessionBucket)
+	}
+	walk, err := createBucketWalkFrom(records)
+	if err != nil {
+		return nil, fmt.Errorf("--backup %s: %w", dir, err)
+	}
+	sum := sha256.Sum256(sums)
+	return &createBucketBackup{dir: dir, format: createBucketFormatWalk, sha256: hex.EncodeToString(sum[:]), walk: walk}, nil
 }
 
-// createBucketWalk is a walk backup's content: each record key's last message, in the order the
-// walk read them, and the walked sentinel's state, nil when the bucket held none (or a marker in
-// its place). Of the system keys, every key holding a '.' (plan §1, "Keys holding a . are the
-// system's"), only the listener durables' records (selection.DurableKey, durable.<name>) are
-// records the recovery keeps: the sentinel is written new by the recovery, with the walked one's
-// boundary and cutover marker, and a hold's barrier key is one no reader reads. A walk holding any
-// other key with a '.' is refused, since nothing says what it is.
+// createBucketWalk is a walk backup's content: the records a restore writes back
+// (kvrecords.ForRestore: each listener durable's record, selection.DurableKey's durable.<name>,
+// and every key holding no '.'), each key's last message in the order of those last messages, and
+// the walked sentinel's state, nil when the bucket held none (or a marker in its place). The
+// sentinel is not loaded: the recovery writes it new, with the walked one's boundary and cutover
+// marker (createBucketSentinelState), and a hold's barrier key is one no reader reads.
+// kvrecords.ForRestore refuses a walk holding any other key with a '.', since nothing says what it
+// is.
 type createBucketWalk struct {
 	Entries  []createBucketWalkEntry
 	Sentinel *selection.StoreState
 }
 
 // createBucketWalkEntry is one record key's last message: its value and headers, a KV delete or
-// purge marker's among them (Op "DEL" or "PURGE"), which the replay writes again, so a key whose
+// purge marker's among them (Op "DEL" or "PURGE"), which the load writes again, so a key whose
 // record was deleted is refused after the recovery as before it (selection.ErrRecordDeleted).
 type createBucketWalkEntry struct {
 	Key    string
 	Value  []byte
-	Header nats.Header
+	Header kvrecords.Headers
 	Op     string
 }
 
-// createBucketWalkFrom is the walk messages' content (createBucketWalk). The messages must be in
-// increasing sequence order and each a key of the selection bucket; a key the walk read twice
-// keeps its later message, as the bucket's history of one does.
-func createBucketWalkFrom(messages []createBucketWalkMessage) (*createBucketWalk, error) {
-	prefix := "$KV." + selection.SessionBucket + "."
+// createBucketWalkFrom is the content (createBucketWalk) of records, a walk's records in sequence
+// order as kvrecords.Read answers them. A key the walk holds twice keeps its later message, as the
+// bucket's history of one does. Each value it keeps, the sentinel's among them, must be an exact
+// value of its key's kind (createBucketExactValue), or the walk is refused, naming the key and its
+// sequence, before anything is loaded.
+func createBucketWalkFrom(records []kvrecords.Record) (*createBucketWalk, error) {
 	walk := &createBucketWalk{}
-	at := map[string]int{}
-	var last uint64
-	for _, m := range messages {
-		if m.Seq <= last {
-			return nil, fmt.Errorf("the walk's message at sequence %d follows sequence %d: a walk is in sequence order", m.Seq, last)
+	var sentinel *kvrecords.Record
+	for i := range records {
+		if records[i].Key == selection.SentinelKey {
+			sentinel = &records[i]
 		}
-		last = m.Seq
-		key, ok := strings.CutPrefix(m.Subject, prefix)
-		if !ok || key == "" {
-			return nil, fmt.Errorf("the walk's message at sequence %d is on %q, no key of %s", m.Seq, m.Subject, selection.SessionBucket)
+	}
+	if sentinel != nil {
+		state, err := createBucketExactValue(sentinel.Key, createBucketWalkOp(sentinel.Headers), sentinel.Data)
+		if err != nil {
+			return nil, fmt.Errorf("the walk's key %s at sequence %d %w", sentinel.Key, sentinel.Seq, err)
 		}
-		op := m.Header.Get(kvOperationHeader)
-		switch {
-		case key == selection.SentinelKey:
-			walk.Sentinel = nil
-			if op == "" {
-				var state selection.StoreState
-				if err := json.Unmarshal(m.Data, &state); err != nil {
-					return nil, fmt.Errorf("the walk's sentinel at sequence %d does not decode: %w", m.Seq, err)
-				}
-				walk.Sentinel = &state
-			}
+		walk.Sentinel = state
+	}
+	restore, err := kvrecords.ForRestore(records)
+	if err != nil {
+		return nil, err
+	}
+	last := make(map[string]int, len(restore))
+	for i, record := range restore {
+		last[record.Key] = i
+	}
+	walk.Entries = make([]createBucketWalkEntry, 0, len(last))
+	for i, record := range restore {
+		if last[record.Key] != i {
 			continue
-		case strings.HasPrefix(key, "hold.barrier."):
-			continue
-		case strings.Contains(key, ".") && selection.CheckDurableKey(key) != nil:
-			return nil, fmt.Errorf("the walk's message at sequence %d is on the key %q, which holds a '.' and is neither the sentinel, a hold's barrier nor a listener durable's record", m.Seq, key)
 		}
-		if i, seen := at[key]; seen {
-			walk.Entries = append(walk.Entries[:i], walk.Entries[i+1:]...)
-			for k, j := range at {
-				if j > i {
-					at[k] = j - 1
-				}
-			}
+		op := createBucketWalkOp(record.Headers)
+		if _, err := createBucketExactValue(record.Key, op, record.Data); err != nil {
+			return nil, fmt.Errorf("the walk's key %s at sequence %d %w", record.Key, record.Seq, err)
 		}
-		at[key] = len(walk.Entries)
-		walk.Entries = append(walk.Entries, createBucketWalkEntry{Key: key, Value: m.Data, Header: m.Header, Op: op})
+		walk.Entries = append(walk.Entries, createBucketWalkEntry{Key: record.Key, Value: record.Data, Header: record.Headers, Op: op})
 	}
 	return walk, nil
 }
@@ -343,11 +198,78 @@ func createBucketWalkFrom(messages []createBucketWalkMessage) (*createBucketWalk
 // kvOperationHeader marks a KV delete or purge marker (nats.go kv.go).
 const kvOperationHeader = "KV-Operation"
 
+// createBucketWalkOp is the KV operation a walk's record carries (kvOperationHeader): "DEL" or
+// "PURGE" for a marker, and "" for a value.
+func createBucketWalkOp(headers kvrecords.Headers) string {
+	for _, header := range headers {
+		if header.Name == kvOperationHeader && len(header.Values) > 0 {
+			return header.Values[0]
+		}
+	}
+	return ""
+}
+
+// createBucketExactValue is create-bucket --after-loss's one check of a value it loads or adopts (a
+// walk's, a restored snapshot's or a present bucket's, createBucketCheckValues): a KV delete or
+// purge marker holds no data, and any other value is an exact value of its key's kind as
+// readSelectionValue reads it, the package's one decode of the bucket's values (strictdecode.go: a
+// session's or a durable's selection.Record, the sentinel's selection.StoreState, which this
+// answers, nil for a marker or another key; a hold's barrier, its hold id; no other key). Any
+// principal with a JetStream API grant can have the server store its JSON answer under any key of
+// the bucket through a request's reply subject, which a lenient decode takes as an empty record.
+// Its errors begin "holds", for the caller to name the key and its sequence before them.
+func createBucketExactValue(key, op string, data []byte) (*selection.StoreState, error) {
+	switch op {
+	case "":
+	case "DEL", "PURGE":
+		if len(data) > 0 {
+			return nil, fmt.Errorf("holds a %s marker with %d bytes of data", op, len(data))
+		}
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("holds the KV operation %q, which is neither DEL nor PURGE", op)
+	}
+	value, err := readSelectionValue(statusKey{Key: key, Value: data})
+	if err != nil {
+		return nil, fmt.Errorf("holds %w", err)
+	}
+	return value.state, nil
+}
+
+// createBucketCheckValues reads every message the selection bucket's stream holds through its
+// sequence last, one STREAM.MSG.GET each (next_by_subj over the bucket's keys from the sequence
+// after the one before, so a sequence the stream no longer holds costs no request), and refuses
+// the first that is no exact value of its key's kind (createBucketExactValue), naming its key and
+// sequence.
+func createBucketCheckValues(ctx context.Context, nc *nats.Conn, last uint64) error {
+	prefix := "$KV." + selection.SessionBucket + "."
+	for seq := uint64(1); seq <= last; {
+		m, held, err := replayStreamMessage(ctx, nc, selection.SessionBucket, map[string]any{"seq": seq, "next_by_subj": prefix + ">"})
+		if err != nil {
+			return err
+		}
+		if !held || m.Seq > last {
+			return nil
+		}
+		if m.Seq < seq {
+			return unknownf(nil, "%s answered sequence %d for the next message from %d", createBucketStreamName, m.Seq, seq)
+		}
+		key := strings.TrimPrefix(m.Subject, prefix)
+		if _, err := createBucketExactValue(key, m.Op, m.Data); err != nil {
+			return fmt.Errorf("selection bucket %s's key %s at sequence %d %w", selection.SessionBucket, key, m.Seq, err)
+		}
+		seq = m.Seq + 1
+	}
+	return nil
+}
+
 // createBucketWalkHolds reads what the selection bucket holds against walk, behind the caller's
-// barrier, for a bucket with no sentinel: each of walk's keys the bucket holds (held), which must
-// hold the walk's message, and how many of the bucket's messages are no record of the walk
-// (extra): any key other than the walk's and this hold's barrier. A key that holds another message
-// than the walk's is named in foreign.
+// barrier, for a bucket with no sentinel, by each key's last message and the count of its keys,
+// never by a sequence: a load publishes each record again, so its sequences start over (plan v66).
+// It answers held, each of walk's keys whose last message is the walk's (createBucketSameEntry);
+// extra, how many of the bucket's keys (info's num_subjects) are neither one of those nor this
+// hold's barrier; and foreign, the first of walk's keys whose last message is another than the
+// walk's.
 func createBucketWalkHolds(ctx context.Context, nc *nats.Conn, info *jetstream.StreamInfo, walk *createBucketWalk, holdID string) (held map[string]bool, extra uint64, foreign string, err error) {
 	held = map[string]bool{}
 	for _, entry := range walk.Entries {
@@ -369,8 +291,8 @@ func createBucketWalkHolds(ctx context.Context, nc *nats.Conn, info *jetstream.S
 	} else if found {
 		counted++
 	}
-	if info.State.Msgs > counted {
-		extra = info.State.Msgs - counted
+	if info.State.NumSubjects > counted {
+		extra = info.State.NumSubjects - counted
 	}
 	return held, extra, "", nil
 }
@@ -380,10 +302,10 @@ func createBucketSameEntry(m replayMessage, entry createBucketWalkEntry) bool {
 	return m.Op == entry.Op && bytes.Equal(m.Data, entry.Value)
 }
 
-// createBucketReplayWalk loads walk into the fresh bucket: each record's last message published
-// again, in the walk's order (the plan gate's v66 decision: no snapshot restore on this path), and
-// adds the sequence each put was acknowledged at to own: the postcheck's account of the command's
-// own writes, whose count is also what a stop says the load left.
+// createBucketReplayWalk loads walk into the fresh bucket: each key's last message published
+// again, in the walk's order (plan v66: a walk is loaded by publishing, never restored as a
+// snapshot), and adds the sequence each put was acknowledged at to own: the postcheck's account of
+// the command's own writes, whose count is also what a stop says the load left.
 func createBucketReplayWalk(ctx context.Context, nc *nats.Conn, walk *createBucketWalk, own map[uint64]bool) error {
 	for _, entry := range walk.Entries {
 		seq, err := createBucketPutWalkEntry(ctx, nc, entry)
@@ -440,9 +362,9 @@ func createBucketPutWalkEntry(ctx context.Context, nc *nats.Conn, entry createBu
 	}
 }
 
-// createBucketPutNew publishes entry on its key in the selection bucket with the walk's headers,
-// conditional on the key's last sequence being 0 (no message yet), and answers the acknowledged
-// sequence. A header the publish's own condition sets is not taken from the walk.
+// createBucketPutNew publishes entry on its key in the selection bucket with the walk's headers in
+// their order, conditional on the key's last sequence being 0 (no message yet), and answers the
+// acknowledged sequence. A header the publish's own condition sets is not taken from the walk.
 func createBucketPutNew(ctx context.Context, nc *nats.Conn, entry createBucketWalkEntry) (uint64, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
@@ -450,12 +372,12 @@ func createBucketPutNew(ctx context.Context, nc *nats.Conn, entry createBucketWa
 		defer cancel()
 	}
 	msg := nats.NewMsg("$KV." + selection.SessionBucket + "." + entry.Key)
-	for name, values := range entry.Header {
-		if strings.HasPrefix(name, "Nats-Expected-") {
+	for _, header := range entry.Header {
+		if strings.HasPrefix(header.Name, "Nats-Expected-") {
 			continue
 		}
-		for _, value := range values {
-			msg.Header.Add(name, value)
+		for _, value := range header.Values {
+			msg.Header.Add(header.Name, value)
 		}
 	}
 	msg.Header.Set(jetstream.ExpectedLastSubjSeqHeader, strconv.FormatUint(0, 10))

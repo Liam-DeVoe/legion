@@ -219,8 +219,9 @@ type createBucketLeft struct {
 	// barrier: this hold's barrier key put in the selection bucket (writerhold.ReadBucket).
 	barrier bool
 	// created and restored: the selection bucket created empty, or restored from a snapshot, by
-	// this run; deleted: a cut restore's leftover deleted.
-	created, restored, deleted bool
+	// this run; deleted: a cut restore's leftover deleted; unloaded: a restored snapshot deleted
+	// again, as it held a value that is no exact value of its key's kind (createBucketCheckRestored).
+	created, restored, deleted, unloaded bool
 	// replayed counts a walk's records put in the bucket.
 	replayed int
 	// sentinel: the bucket's sentinel written.
@@ -243,6 +244,7 @@ func (l *createBucketLeft) String() string {
 	add(l.deleted, "the leftover of a cut restore or load of "+createBucketStreamName+" deleted")
 	add(l.created, "the bucket "+createBucketStreamName+" created")
 	add(l.restored, "the bucket "+createBucketStreamName+" restored from the backup")
+	add(l.unloaded, "the bucket "+createBucketStreamName+" restored from the backup and deleted again")
 	add(l.replayed > 0, fmt.Sprintf("%d of the walk's records put in %s", l.replayed, createBucketStreamName))
 	add(l.barrier, "this hold's barrier key in "+createBucketStreamName)
 	add(l.sentinel, "the sentinel of "+createBucketStreamName+" written")
@@ -393,17 +395,20 @@ type createBucketSentinelRead struct {
 }
 
 // createBucketSentinel reads the selection bucket's sentinel from its stream's leader, and false
-// for a bucket that holds none.
+// for a bucket that holds none. A sentinel that is no exact selection.StoreState
+// (createBucketExactValue) is refused, naming the key and its sequence.
 func createBucketSentinel(ctx context.Context, nc *nats.Conn) (createBucketSentinelRead, bool, error) {
 	last, found, err := replayLeaderRead(ctx, nc, selection.SessionBucket, selection.SentinelKey)
 	if err != nil || !found {
 		return createBucketSentinelRead{}, false, err
 	}
+	state, err := createBucketExactValue(selection.SentinelKey, last.Op, last.Data)
+	if err != nil {
+		return createBucketSentinelRead{}, false, fmt.Errorf("selection bucket %s's key %s at sequence %d %w", selection.SessionBucket, selection.SentinelKey, last.Seq, err)
+	}
 	read := createBucketSentinelRead{revision: last.Seq, marker: last.Op}
-	if last.Op == "" {
-		if err := json.Unmarshal(last.Data, &read.state); err != nil {
-			return createBucketSentinelRead{}, false, unknownf(err, "the sentinel %s of %s", selection.SentinelKey, selection.SessionBucket)
-		}
+	if state != nil {
+		read.state = *state
 	}
 	return read, true, nil
 }
@@ -440,9 +445,10 @@ type createBucketInputs struct {
 	// Format is the backup's format, createBucketFormatSnapshot or createBucketFormatWalk; empty
 	// with no backup. A record written before formats were named holds none for a snapshot.
 	Format string `json:"format,omitempty"`
-	// Archive is the backup's recorded state, which its restore reproduces, so a rerun that finds
+	// Archive is a snapshot's recorded state, which its restore reproduces, so a rerun that finds
 	// the bucket can tell a restore of it from anything else without the backup at hand; nil with
-	// no backup.
+	// no backup and for a walk, whose load starts the sequences over, so a rerun tells it by its
+	// records with the walk at hand (createBucketWalkHolds).
 	Archive *createBucketArchive `json:"archive,omitempty"`
 }
 
@@ -457,8 +463,8 @@ func (in createBucketInputs) format() string {
 	return in.Format
 }
 
-// createBucketArchive is the stream state a restore of a backup reproduces: a snapshot's recorded
-// state (jsm.go's backup.json), or for a walk the state its replay leaves in a fresh bucket.
+// createBucketArchive is a snapshot's recorded stream state (jsm.go's backup.json), which its
+// restore reproduces. A walk has none: its load publishes each record again (kvrecords).
 type createBucketArchive struct {
 	FirstSeq uint64 `json:"first_seq"`
 	LastSeq  uint64 `json:"last_seq"`
@@ -532,7 +538,7 @@ func (r *run) createBucketAfterLoss(ctx context.Context) error {
 			in.ReplayFrom = max(1, stream.State.FirstSeq)
 		}
 		if backup != nil {
-			in.BackupSHA256, in.Format, in.Archive = backup.sha256, backup.format, &backup.archive
+			in.BackupSHA256, in.Format, in.Archive = backup.sha256, backup.format, backup.archive
 		}
 	}
 	a, err := r.admit(ctx, createBucketAfterLossCommand, map[string]string{"replay_from": formatSeq(in.ReplayFrom),
@@ -693,7 +699,10 @@ func createBucketSameInputs(in createBucketInputs, replayFrom uint64, backup *cr
 // account of the bucket for the postcheck (createBucketMade), from step1, the reading at its start,
 // each change it makes counted in left. Before each mutation step (the restore, the create or the
 // load of a walk, a leftover's delete, the sentinel's write) it runs the held re-read again
-// (admission.reread, plan §3a "Every held command").
+// (admission.reread, plan §3a "Every held command"). Every value it loads or adopts is an exact
+// value of its key's kind (createBucketExactValue): a walk's, as the backup is read; a snapshot's,
+// once restored (createBucketCheckRestored); and a bucket present at its start, before it adopts
+// it (createBucketCheckValues).
 func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Conn, js jetstream.JetStream, store familyStore, in createBucketInputs, backup *createBucketBackup, replicas int, step1 []writerhold.StreamReading, left *createBucketLeft) (string, createBucketMade, error) {
 	made := createBucketMade{kind: writerhold.ChangeKept, own: map[uint64]bool{}}
 	for _, reading := range step1 {
@@ -701,7 +710,9 @@ func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Co
 			made.base = reading
 		}
 	}
-	restored := false
+	// restored: this run loaded the backup; checked: this run made the bucket, so each of its values
+	// is checked already.
+	restored, checked := false, false
 	if made.base.Absent {
 		if err := a.reread(ctx); err != nil {
 			return "", made, err
@@ -710,7 +721,10 @@ func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Co
 		if made, err = r.createBucketMake(ctx, nc, js, in, backup, replicas, left); err != nil {
 			return "", made, err
 		}
-		restored = in.format() != ""
+		if err := r.createBucketCheckRestored(ctx, a, nc, in, left); err != nil {
+			return "", made, err
+		}
+		restored, checked = in.format() != "", true
 	}
 	// A leftover of this recovery's own cut restore, or a bucket its cut walk load left partly
 	// loaded, is deleted and made again once; a bucket that is still not adopted after that stops
@@ -735,6 +749,11 @@ func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Co
 			}
 			if adopt, err = createBucketAdopt(ctx, nc, info, sentinel, found, in, backup, r.o.holdID); err != nil {
 				return err
+			}
+			if (adopt.action == createBucketAdopted || adopt.action == createBucketWriteSentinel) && !checked {
+				if err := createBucketCheckValues(ctx, nc, info.State.LastSeq); err != nil {
+					return err
+				}
 			}
 			if adopt.action == createBucketWriteSentinel {
 				orphans, err = createBucketOrphans(ctx, nc, store)
@@ -763,7 +782,10 @@ func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Co
 			if made, err = r.createBucketMake(ctx, nc, js, in, backup, replicas, left); err != nil {
 				return "", made, err
 			}
-			restored = true
+			if err := r.createBucketCheckRestored(ctx, a, nc, in, left); err != nil {
+				return "", made, err
+			}
+			restored, checked = true, true
 			continue
 		}
 		state, err := r.createBucketSentinelState(ctx, in, backup, sentinel, found, adopt, orphans)
@@ -786,6 +808,37 @@ func (r *run) createBucketRecover(ctx context.Context, a *admission, nc *nats.Co
 		return adopt.why + "; its sentinel written", made, nil
 	}
 	return "", made, fmt.Errorf("selection bucket exists and is not this recovery's: %s is still not this recovery's after its restore was made again", selection.SessionBucket)
+}
+
+// createBucketCheckRestored checks each value of the snapshot this run just restored
+// (createBucketCheckValues): a snapshot's values can be read only once restored, as its archive
+// holds the server's own block files. A restored bucket holding a value that is no exact value of
+// its key's kind is deleted again (createBucketDeleteLeftover, after the held re-read), so the
+// refused load leaves no bucket, and the command stops naming the key and its sequence. With no
+// snapshot it does nothing: a walk's values are checked as it is read.
+func (r *run) createBucketCheckRestored(ctx context.Context, a *admission, nc *nats.Conn, in createBucketInputs, left *createBucketLeft) error {
+	if in.format() != createBucketFormatSnapshot {
+		return nil
+	}
+	info, present, err := createBucketStream(ctx, nc, false)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return unknownf(nil, "selection bucket %s is absent after its restore", selection.SessionBucket)
+	}
+	refused := createBucketCheckValues(ctx, nc, info.State.LastSeq)
+	if refused == nil {
+		return nil
+	}
+	if err := a.reread(ctx); err != nil {
+		return fmt.Errorf("%w; and the held re-read before the restored bucket's delete: %w", refused, err)
+	}
+	if err := createBucketDeleteLeftover(ctx, nc); err != nil {
+		return fmt.Errorf("%w; and the delete of the restored bucket: %w", refused, err)
+	}
+	left.restored, left.unloaded = false, true
+	return refused
 }
 
 // createBucketRestoresLeftover is the leftover rule of "Adopting a completed recovery": an empty
@@ -825,12 +878,12 @@ type createBucketAdoption struct {
 // replay_from:
 //   - a sentinel that names the selection record's inputs is this recovery's: adopted as it is,
 //     its orphan list and every record replay wrote kept;
-//   - for a walk, whose load publishes each key's last message again and so starts the sequences
-//     over, a bucket with no sentinel is told by each key's last message and the count of its
-//     messages, never by its last_seq (the plan gate's v66 decision): when every message is one of
-//     the walk's records as the walk holds it (and this hold's barrier), it is this recovery's
-//     load, adopted with its sentinel written when it holds every record, and otherwise the
-//     leftover of its cut load, deleted and loaded again;
+//   - for a walk, whose load publishes each key's last value again and so starts the sequences
+//     over, a bucket with no sentinel is told by each key's last value and the count of its keys,
+//     never by its last_seq (plan v66, createBucketWalkHolds): when each of its keys is one of the
+//     walk's holding the walk's value (or this hold's barrier), it is this recovery's load, adopted
+//     with its sentinel written when it holds every key of the walk, and otherwise, its keys a
+//     subset of the walk's, the leftover of its cut load, deleted and loaded again;
 //   - for a snapshot, a bucket whose stream holds exactly the archive, and since then only this
 //     hold's barrier, is this recovery's restore: adopted, and its sentinel written;
 //   - an empty bucket (no key but the barrier) with no sentinel is, after a non-empty archive, the
@@ -857,7 +910,7 @@ func createBucketAdopt(ctx context.Context, nc *nats.Conn, info *jetstream.Strea
 		case foreign != "":
 			return createBucketAdoption{action: createBucketStop, why: fmt.Sprintf("selection bucket exists and is not this recovery's: %s's key %s holds another message than the walk's", selection.SessionBucket, foreign)}, nil
 		case extra > 0:
-			return createBucketAdoption{action: createBucketStop, why: fmt.Sprintf("selection bucket exists and is not this recovery's: %s holds %d messages that are no record of the walk (%s)", selection.SessionBucket, extra, createBucketHeld(keys, sentinel, found))}, nil
+			return createBucketAdoption{action: createBucketStop, why: fmt.Sprintf("selection bucket exists and is not this recovery's: %s holds %d keys that are no record of the walk (%s)", selection.SessionBucket, extra, createBucketHeld(keys, sentinel, found))}, nil
 		case len(held) == len(backup.walk.Entries):
 			return createBucketAdoption{action: createBucketWriteSentinel, why: fmt.Sprintf("adopted: it holds the walk's %d records as replayed", len(held))}, nil
 		}
