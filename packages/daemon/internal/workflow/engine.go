@@ -65,8 +65,8 @@ type Config struct {
 	// Hold is what a closed standing gate holds of its tree (`gates.hold`, config.Gates.Holds):
 	// config.HoldMerge, the merger's start and the first phase of each member that has not
 	// started, which today's hold has always been; or config.HoldWork, the tree's running work as
-	// well, which the close stops and the opening starts again (work_hold.go,
-	// dispatch://INFRA-4528). The empty word, an engine built without it, is HoldMerge (New).
+	// well, which the close stops and the opening starts again (work_hold.go). The empty word, an
+	// engine built without it, is HoldMerge (New).
 	Hold           config.Hold
 	ReviewRoundCap int
 	Linger         time.Duration

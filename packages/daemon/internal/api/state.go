@@ -1476,8 +1476,8 @@ type WhyState string
 // hold holds its tree's work (WhyHeld), it waits in the admission line (WhyWaiting), something
 // holds it where it stands (WhyBlocked), or it stands in neither the line nor the work at all
 // (WhyUnlisted). WhyHeld is an issue whose work is a phase worker's in a running tree the work
-// hold holds (`gates.hold: work`, record.WorkHold, dispatch://INFRA-4528); its sentence names the
-// version that closed the tree's design gate.
+// hold holds (`gates.hold: work`, record.WorkHold); its sentence names the version that closed
+// the tree's design gate.
 const (
 	WhyClaimStopped WhyState = "claim_stopped"
 	WhyHeld         WhyState = "held"

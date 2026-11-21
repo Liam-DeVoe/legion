@@ -33,8 +33,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
-// The work hold (`gates.hold: work`, dispatch://INFRA-4528's spec, steps 1 to 7 under `work`, and
-// its plan's decisions 13 to 19) as the workflow writes it: at the close, the record of the hold,
+// The work hold (`gates.hold: work`, steps 1 to 7 of its spec under `work`, and its plan's
+// decisions 13 to 19) as the workflow writes it: at the close, the record of the hold,
 // a message to every live architect and phase worker of the tree carrying each worker's stop, and
 // the stop of a released worker that is not a merger; at the opening, today's open message to
 // every live holder and one start for each claim the hold stopped; at the boot, the close a tree
@@ -45,7 +45,7 @@ import (
 var holdNow = time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 
 // workHoldWords is the sentence the close message adds under `work`, after today's first one
-// (spec step 2), and which every opening task repeats (hold-decisions point 2).
+// (spec step 2), and which every opening task repeats.
 const workHoldWords = "The deployment holds the tree's work until every gated step stands open again: no phase " +
 	"starts, and the daemon stops each phase worker, with its session kept, when its turn ends or 2 minutes after this message."
 
@@ -88,7 +88,7 @@ func (w holdWords) architectClose(version int) string {
 	return w.closed(version) + " " + workHoldWords + " Your own work goes on."
 }
 
-// opening is the sentences the one task of the opening starts with (hold-decisions point 2): the
+// opening is the sentences the one task of the opening starts with: the
 // close message's two sentences, which name the version that closed the gate, that the hold
 // stopped the turn, today's open message, and the check of what the turn already did.
 func (w holdWords) opening(closedAt, openedAt int) string {

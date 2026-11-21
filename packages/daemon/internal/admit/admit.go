@@ -3128,7 +3128,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		// claims suspend` suspended that worker, and an operator's suspension holds against every
 		// rule of the daemon's (supervise's RuleHolds, which no start the daemon queues gets
 		// past). So is a claim the work hold stopped (supervise.SuspendedByHold, row H23 of
-		// dispatch://INFRA-4528's plan): the hold's end starts it with its one task, and a repair
+		// the work hold's design): the hold's end starts it with its one task, and a repair
 		// written now would wait on the hold and give it a second. A claim the daemon itself
 		// suspended is repaired, which is what the idle rule's release and the daemon's own
 		// suspend both leave behind.

@@ -725,11 +725,11 @@ func (g TreeGate) Standing() (DesignGate, bool) {
 	return DesignGate{}, false
 }
 
-// HoldsWork is whether the work hold holds the tree's work (`gates.hold: work`,
-// dispatch://INFRA-4528): work is whether the deployment's hold is `work` (config.HoldWork; this
-// package may not read internal/config, which reads it), and under it the tree's work is held while
-// its standing gate stands closed (Standing), whose row names the step, the document and the
-// version that closed it. Under `merge` it holds nothing, whatever the gate: that hold is the
+// HoldsWork is whether the work hold holds the tree's work (`gates.hold: work`): work is whether
+// the deployment's hold is `work` (config.HoldWork; this package may not read internal/config,
+// which reads it), and under it the tree's work is held while its standing gate stands closed
+// (Standing), whose row names the step, the document and the version that closed it. Under
+// `merge` it holds nothing, whatever the gate: that hold is the
 // merger's start and the first phases alone, which their own readers ask Standing and the line
 // of. It is the one predicate the hold's close and opening, the boot's reconcile, the outbox's
 // fence and the state read, so none of them can tell the tree held while another lets it go.

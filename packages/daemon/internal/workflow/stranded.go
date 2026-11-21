@@ -148,9 +148,9 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // a released pod is meant to.
 //
 // A claim the work hold stopped (supervise.Claim.WorkHeld, `gates.hold: work`) is left out of both
-// cases: the hold says why it waits, and the hold's opening starts it (row H35 of
-// dispatch://INFRA-4528's plan). An operator's suspension or the daemon's own takes such a claim
-// over, and is then read as that source is.
+// cases: the hold says why it waits, and the hold's opening starts it (row H35 of the work hold's
+// design). An operator's suspension or the daemon's own takes such a claim over, and is then read
+// as that source is.
 //
 // Candidates' queued starts and their claims are read through RoleRuns in bounded batches: a
 // fleet of hundreds of suspended claims makes a few snapshot queries, never one pair per claim.
@@ -207,8 +207,8 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 			continue
 		}
 		// A claim the work hold stopped waits for its tree's standing design gate to open, which
-		// the hold says of it and whose opening starts it (row H35 of dispatch://INFRA-4528's
-		// plan): it is nothing the daemon has lost.
+		// the hold says of it and whose opening starts it (row H35 of the work hold's design): it
+		// is nothing the daemon has lost.
 		if c.WorkHeld() {
 			continue
 		}

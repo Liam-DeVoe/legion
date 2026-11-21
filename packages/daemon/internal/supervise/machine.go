@@ -117,8 +117,8 @@ const (
 	// its pod back, the stranded report once a wake has run out with no turn, and that cutover
 	// repair.
 	SuspendedByReleased SuspendSource = "released"
-	// SuspendedByHold: the work hold stopped the claim (`gates.hold: work`, dispatch://INFRA-4528):
-	// its tree's standing design gate closed, so no phase of the tree may run, and the daemon
+	// SuspendedByHold: the work hold stopped the claim (`gates.hold: work`): its tree's standing
+	// design gate closed, so no phase of the tree may run, and the daemon
 	// stopped this phase worker when its turn ended or at the deadline its stop named, its session
 	// kept. The claim keeps its phase and its pending task, as an operator's suspension does. No
 	// rule resumes it — no start row, task delivery, notice, wake, CI settlement, Envoy message, the
@@ -824,7 +824,7 @@ type Event interface{ door() turnDoor }
 
 // turnDoor is whether an event can start or resume a turn of its claim's agent, and whose act it
 // is when it can (Event.door). It is the one list of those doors, which the work hold reads to
-// hold a claim it stopped (Machine.fence; I2 of dispatch://INFRA-4528's plan).
+// hold a claim it stopped (Machine.fence; inventory test I2 of the work hold's design).
 type turnDoor int
 
 const (
@@ -838,7 +838,7 @@ const (
 	ruleDoor
 	// ownerDoor is the operator's own resume or retry of this claim (the operator route's and
 	// fresh_session's RequestResume, RequestOperatorRetry): an operator's act on a claim overrides
-	// the work hold (spec step 5 of dispatch://INFRA-4528), so it starts a claim the hold stopped.
+	// the work hold (step 5 of its spec), so it starts a claim the hold stopped.
 	ownerDoor
 )
 

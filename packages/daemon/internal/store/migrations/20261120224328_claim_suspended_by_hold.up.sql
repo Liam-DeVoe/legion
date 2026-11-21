@@ -1,6 +1,6 @@
 -- 20261120224328_claim_suspended_by_hold.up.sql — 'hold' joins the sources of
--- supervise.Claim.SuspendedBy: the work hold (`gates.hold: work`, dispatch://INFRA-4528) stopped
--- the claim because its tree's standing design gate closed. The claim keeps its session, its phase
+-- supervise.Claim.SuspendedBy: the work hold (`gates.hold: work`) stopped the claim because its
+-- tree's standing design gate closed. The claim keeps its session, its phase
 -- and its pending delivery; no rule resumes it, and the hold's end starts it again with one task.
 -- 0038 wrote the check with the column and 20261101201850 wrote it again with 'released', so
 -- Postgres names it claims_suspended_by_check; it is dropped and written again with the new value.

@@ -297,7 +297,7 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // would hold the notice and the hook prompt behind a Sandbox relaunch waiting on the
 // cluster, which is the defect LEGION-650 fixed in the routing beside this read.
 //
-// The work hold holds the wake (dispatch://INFRA-4528, spec step 4): a claim the hold holds
+// The work hold holds the wake (step 4 of its spec): a claim the hold holds
 // (supervise.Claim.WorkHeld) — stopped by it, or with its stop held for its agent's turn — is
 // woken by nothing and told nothing, and the row waits, a routine wait the hold's opening ends;
 // the opening starts the claim, and the row's next attempt after that start publishes. A released

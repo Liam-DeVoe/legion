@@ -15,7 +15,7 @@ import (
 
 // The work hold holds a tree's work while the tree's standing design gate stands closed: the first
 // required step, in the configured order, whose row is registered and not approved at its latest
-// version (dispatch://INFRA-4528's spec, "Under `work`"). It is the one predicate the message, the
+// version (the work hold's spec, "Under `work`"). It is the one predicate the message, the
 // merger's start and the state read, so it is held here for every step a deployment can gate, for
 // each mode, and for the shapes the standing gate has always passed over: a step nobody has
 // registered, and a deployment that gates no step.
@@ -204,9 +204,9 @@ func TestWorkHoldOldSuspendRowsDecode(t *testing.T) {
 }
 
 // The work hold's record is one row per held tree: written at the close, read by the boot and the
-// state, and deleted at the opening (hold-decisions point 1). A re-admission starts a new generation
-// of the tree, and the hold of the generation that ended goes with the rest of it
-// (ClearTreeGeneration), so it never holds the newer one.
+// state, and deleted at the opening. A re-admission starts a new generation of the tree, and the
+// hold of the generation that ended goes with the rest of it (ClearTreeGeneration), so it never
+// holds the newer one.
 func TestWorkHoldRecordGoesWithItsTreesGeneration(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

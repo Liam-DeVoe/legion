@@ -2736,8 +2736,8 @@ func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // operatorRetryHeld is the operator's retry of a suspended claim. The work hold's suspension is
-// the one it ends: an operator's own act on a claim overrides the hold (spec step 5 of
-// dispatch://INFRA-4528), so a claim the hold stopped is retried as a stopped one is
+// the one it ends: an operator's own act on a claim overrides the hold (step 5 of the work hold's
+// spec), so a claim the hold stopped is retried as a stopped one is
 // (operatorRetry), its session relaunched with the task it kept. Every other suspended claim is
 // refused in the words the row of that state gave before the hold existed: it is resumed, not
 // retried.

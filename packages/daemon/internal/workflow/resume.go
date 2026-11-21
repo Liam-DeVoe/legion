@@ -68,7 +68,7 @@ import (
 // what it would answer after the repair.
 //
 // A claim the work hold stopped is none of the resume's: the hold's source is no ByRule source,
-// so the boot starts no held claim (row H24 of dispatch://INFRA-4528's plan). The work hold's own
+// so the boot starts no held claim (row H24 of the work hold's design). The work hold's own
 // reconcile runs last (workHoldBooted): it closes a running tree that holds work and has no record
 // of the hold, and ends the hold of one that no longer holds work.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {

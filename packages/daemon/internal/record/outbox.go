@@ -1231,10 +1231,10 @@ type SuperviseRequest struct {
 	// a moved phase took the role over while the row waited (decision 10).
 	// A start that is no wake, and every request of another op, carries none.
 	WakeKind string `json:"wakeKind,omitempty"`
-	// SuspendedBy, Deadline and TurnAfter are the work hold's stop (`gates.hold: work`,
-	// dispatch://INFRA-4528), and a suspend alone carries them. SuspendedBy is the source the stop
-	// records: supervise.SuspendedByHold and no other, so a suspend that names none is the daemon's
-	// own stop as it always was. Deadline is when a turn still running is cut
+	// SuspendedBy, Deadline and TurnAfter are the work hold's stop (`gates.hold: work`), and a
+	// suspend alone carries them. SuspendedBy is the source the stop records:
+	// supervise.SuspendedByHold and no other, so a suspend that names none is the daemon's own stop
+	// as it always was. Deadline is when a turn still running is cut
 	// (supervise.RequestSuspend.Deadline), and TurnAfter the moment the close message reached the
 	// claim, which holds the stop of a ready or idle claim for the turn the message starts
 	// (supervise.RequestSuspend.TurnAfter). The workflow writes neither of the two: the stop a
@@ -1254,7 +1254,8 @@ type SuperviseRequest struct {
 	// claim the hold stopped (workflow's openHeldClaims). Task is those sentences, a blank line and
 	// the claim's work, and the outbox hands the sentences apart to supervise.Machine.EndHold, which
 	// puts them in front of a task the claim kept instead where that kept task is the one task the
-	// opening gives (hold-decisions point 4). Every other start, and every other op, carries none.
+	// opening gives: a claim the hold stopped is given one task, never a second. Every other start,
+	// and every other op, carries none.
 	Opening string `json:"opening,omitempty"`
 }
 
@@ -1367,7 +1368,7 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // beside either, so the pod would come back for a message the row had already dropped. Two
 // exceptions stand. A row a project's pause held for a role a pause stopped: without the pause the
 // role would have had the message, so the row is published to the role after the resume, and that
-// publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759). And a row
+// publish wakes it (internal/daemon's outbox.roleMessage, the project pause's R4). And a row
 // marked Wake, the design gate's close message to a merger whose claim was released when the gate
 // closed (workflow's tellGateMoved).
 type RoleMessage struct {
@@ -1376,7 +1377,7 @@ type RoleMessage struct {
 	// Wake marks the design gate's close message to a merger whose claim was released when the
 	// gate closed, under either hold: the outbox wakes the released merger for the message rather
 	// than dropping it, so the merger can take its pull request out of GitHub's merge queue
-	// (decision 13 of dispatch://INFRA-4528's plan). It is the one start of a merger the closed gate
+	// (decision 13 of the work hold's design). It is the one start of a merger the closed gate
 	// lets through, and every other message carries none.
 	Wake bool `json:"wake,omitempty"`
 	// Stop is the work hold's stop of the role the message tells to end its turn (`gates.hold:

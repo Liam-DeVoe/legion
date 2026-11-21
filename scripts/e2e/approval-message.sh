@@ -171,7 +171,7 @@ pass
 
 begin nats
 # A session whose Envoy plugin reaches no NATS server is given no consumer, and its claim boot then
-# ends it (INFRA-771), so the run starts a server of its own on a port the kernel picks (`-p -1`),
+# ends it, so the run starts a server of its own on a port the kernel picks (`-p -1`),
 # read back from the line it logs once it listens.
 go -C "$root/packages/envoy" build -o "$work/bin/natsd" ./internal/testnats/cmd/natsd ||
   fail "./internal/testnats/cmd/natsd did not build"

@@ -30,7 +30,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// The work hold (`gates.hold: work`, dispatch://INFRA-4528's spec, steps 1 to 7 under `work`) and
+// The work hold (`gates.hold: work`, steps 1 to 7 of its spec under `work`) and
 // the merge hold's one fix (decision 13) as the outbox runs the rows the workflow writes for them:
 // the close's messages and stops, every start of a phase worker of a held tree, and the opening's
 // starts. Each test runs the daemon's own engine, admission and outbox over a database of its own,
@@ -39,7 +39,7 @@ import (
 // fires.
 
 // holdSentence is the sentence the close message adds under `work` after today's first one, which
-// every opening task repeats (spec step 2, hold-decisions point 2). It is written out here, never
+// every opening task repeats after that first sentence (spec step 2). It is written out here, never
 // read from the code under test.
 const holdSentence = "The deployment holds the tree's work until every gated step stands open again: no phase " +
 	"starts, and the daemon stops each phase worker, with its session kept, when its turn ends or 2 minutes after this message."
@@ -410,7 +410,8 @@ func (r *workHoldRig) openedMessage(version int) string {
 		"A merge the closed gate held is released.", r.tree.key, version, r.tree.document)
 }
 
-// opening is the sentences the one task of the opening starts with (hold-decisions point 2).
+// opening is the sentences the one task of the opening starts with: the close message's two, that
+// the hold stopped the turn, today's open message, and the check of what the turn already did.
 func (r *workHoldRig) opening(closedAt, openedAt int) string {
 	return r.closedSentence(closedAt) + " " + holdSentence + " The work hold stopped your turn. " + r.openedMessage(openedAt) +
 		" Check what your turn already did: a tool call may not have finished."

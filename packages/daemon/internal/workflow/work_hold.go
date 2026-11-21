@@ -14,8 +14,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The work hold (`gates.hold: work`, dispatch://INFRA-4528's spec, steps 1 to 7 under `work`, and
-// its plan's decisions 13 to 19) as the workflow writes it. Under that hold a tree's closed
+// The work hold (`gates.hold: work`, steps 1 to 7 of its spec under `work`, and its plan's
+// decisions 13 to 19) as the workflow writes it. Under that hold a tree's closed
 // standing design gate holds its running work as well as its merge: at the close every phase
 // worker of the tree is told to end its turn and is stopped with its session kept, and at the
 // opening each claim the hold stopped is started again with one task. The workflow writes the
@@ -31,7 +31,7 @@ import (
 // gateOpenedMessage). Every one is a reader's words and part of the contract (H12).
 const (
 	// workHoldSentence follows today's first sentence of the close under `work` (spec step 2),
-	// and every opening task repeats it (hold-decisions point 2).
+	// and every opening task repeats it.
 	workHoldSentence = "The deployment holds the tree's work until every gated step stands open again: no phase " +
 		"starts, and the daemon stops each phase worker, with its session kept, when its turn ends or 2 minutes after this message."
 	// workerCloseEnd ends the close message to a phase worker, and architectCloseEnd the one to an
@@ -48,7 +48,7 @@ const (
 // gateClosedSentence is today's first sentence of the close message: the tree whose gate closed,
 // and the version, the step and the document that closed it. The step and its own document, never
 // "spec version": under more than one gated step the version is that step's document's, and a
-// message naming the spec would send a reader to the wrong one (INFRA-1272).
+// message naming the spec would send a reader to the wrong one.
 func gateClosedSentence(tree string, step record.DesignStep, document string, version int) string {
 	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
 		"so the design you are working to may change.", tree, version, step, document)
@@ -85,8 +85,8 @@ func bootOpenedSentence(tree string) string {
 	return "The deployment no longer holds the work of " + tree + "'s tree."
 }
 
-// openingSentences is what the one task of the opening starts with (hold-decisions point 2): the
-// close message's two sentences, which name the version that closed the gate, that the hold
+// openingSentences is what the one task of the opening starts with: the close message's two
+// sentences, which name the version that closed the gate, that the hold
 // stopped the turn, what ended the hold (today's open message, or the boot's sentence), and the
 // check of what the turn already did, since a cut turn can leave a tool call unfinished. A hold no
 // record names the closing version of says the hold's own sentence alone in front.
@@ -313,9 +313,9 @@ func (e *Engine) endWorkHold(ctx context.Context, tx pgx.Tx, root record.Issue, 
 }
 
 // openHeldClaims starts each claim of claims the hold stopped (stored suspended by hold), and no
-// other, with one task that starts with opening (decision 18, hold-decisions points 2 and 4; rows
-// H10, H11, H14). A claim that holds its issue's unfinished phase is given its phase's work built
-// as the boot builds it (startSuspendedOwner): the work of the entry its phases row names where
+// other, with one task that starts with opening, never a second (decision 18; rows H10, H11,
+// H14). A claim that holds its issue's unfinished phase is given its phase's work built as the
+// boot builds it (startSuspendedOwner): the work of the entry its phases row names where
 // the claim stands behind that entry — a start written for the role while the gate was closed,
 // a backward move's or an owed entry's, whose row this start is written in place of, so the role
 // gets one task, the newest entry's (Store.EnqueueStart, row H30) — and the phase's resume task

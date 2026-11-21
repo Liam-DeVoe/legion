@@ -979,7 +979,7 @@ const pauseContract = 178
 // than its number for that reason.
 const repositoriesLiveContract = 202
 
-// approvalRouteContract is the daemon contract of dispatch://INFRA-4528 (version.go's 210). It
+// approvalRouteContract is the daemon contract of the approval route (version.go's 210). It
 // added one answer whole with its route, `POST /legion/v1/claims/approval` (answers.go's
 // AnswerClaimApproval), which no contract below it records, and the route's request, which
 // request-shapes.json records from it on. A plugin of an earlier contract never calls the route,

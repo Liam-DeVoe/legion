@@ -1,6 +1,6 @@
--- 20261121000254_work_holds.up.sql — the record of the work hold (`gates.hold: work`,
--- dispatch://INFRA-4528): one row for each tree whose standing design gate closed under the hold,
--- naming the root's generation, the step, the document and the version that closed it, and when
+-- 20261121000254_work_holds.up.sql — the record of the work hold (`gates.hold: work`): one row
+-- for each tree whose standing design gate closed under the hold, naming the root's generation,
+-- the step, the document and the version that closed it, and when
 -- (record.WorkHold). The close writes it (workflow's workHoldClose); the opening deletes it, and so
 -- does a new generation of the tree (record.Store.ClearTreeGeneration). It is how the daemon's
 -- record holds the hold across a restart: the boot applies the close to a tree that holds work

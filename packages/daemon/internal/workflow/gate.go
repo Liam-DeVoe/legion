@@ -988,7 +988,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 //
 // What the move does beyond telling is the deployment's hold (Config.Hold, `gates.hold`). Under
 // `merge`, the default, it is what this comment says, word for word as it always was (row H1 of
-// dispatch://INFRA-4528's plan), with one fix: the close message to a merger whose claim the idle
+// the work hold's design), with one fix: the close message to a merger whose claim the idle
 // release suspended is marked to wake it (record.RoleMessage.Wake), so it can take its pull request
 // out of GitHub's merge queue rather than leave it to merge a head the gate holds (decision 13,
 // row H16). Under `work` the move is the work hold's close or its opening, with recipients and

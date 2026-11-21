@@ -92,7 +92,7 @@ func (m *Machine) awaitsTurn(request RequestSuspend) bool {
 //     (suspendHeld), charged nothing.
 //   - A start run against the claim drops a daemon's hold (StartedBy); one the operator's
 //     suspension or the work hold's stop holds waits instead, and a project pause's hold whose
-//     pause is still the open one stays (decision 5 of dispatch://INFRA-3759's plan). The work
+//     pause is still the open one stays (decision 5 of the project pause's plan). The work
 //     hold's end drops the hold's stop (Machine.EndHold). Every other end of the process drops it
 //     with the process (letGo).
 //   - A project pause's hold (RequestSuspend.Pause) whose pause has ended is dropped at the start

@@ -1717,10 +1717,10 @@ type ClearedSpecApproval struct {
 	Mark       EventMark
 }
 
-// WorkHold is the record of the work hold of one tree (`gates.hold: work`, dispatch://INFRA-4528):
-// its project (the Dispatch project key, as Issue.Project holds it), its root (Tree), the root's
-// generation the hold was applied at, and the gate row that closed it, by its step, its document
-// and the version that closed it, with the moment of the close (ClosedAt). The close writes it
+// WorkHold is the record of the work hold of one tree (`gates.hold: work`): its project (the
+// Dispatch project key, as Issue.Project holds it), its root (Tree), the root's generation the
+// hold was applied at, and the gate row that closed it, by its step, its document and the version
+// that closed it, with the moment of the close (ClosedAt). The close writes it
 // (workflow's workHoldClose), and the opening deletes it, as does a new generation of the tree
 // (Store.ClearTreeGeneration). It is how the daemon's record holds the hold across a restart (spec
 // step 4): the boot tells a tree whose close has not been applied, which holds no record, from

@@ -1,6 +1,6 @@
 package supervise
 
-// The work hold (`gates.hold: work`, dispatch://INFRA-4528's spec, steps 3 to 5 under `work`, and
+// The work hold (`gates.hold: work`, steps 3 to 5 of its spec under `work`, and
 // its plan's decisions 14 to 16) as one claim's machine keeps it. Its stop is a suspension like
 // any other (RequestSuspend, By SuspendedByHold): held for the agent's turn and cut at a deadline
 // the outbox stores (holdSuspension, suspendAtTimeout), and for a ready or idle claim held for the
@@ -19,7 +19,7 @@ import (
 // (ErrHeldByWorkHold) — a start's resume by rule, a task, a wake, a CI settlement's or a hook's
 // task, the boot's relaunch, a pause's resume and the resume of a launch it owed, the controller
 // keeper's resume or retry, a compaction, a ready — except the operator's own resume and retry,
-// which start it (turnDoor; I2 of dispatch://INFRA-4528's plan). Each request answers it before its
+// which start it (turnDoor; test I2 of the hold's design). Each request answers it before its
 // row is reached, so no row of the table has to know the hold, and a request added later is held
 // by the door it declares. The claim is left exactly as it was: the task it kept stays kept, and
 // the turn-starting request is asked again by whoever holds it (the outbox's backoff) or is a
@@ -51,7 +51,7 @@ func (m *Machine) workHoldWaits(ev Event) error {
 //     back is sent where it may go now. EndHold reports false: the claim runs on, and nothing of
 //     task is used.
 //   - A claim the hold stopped is started again, paced as any start by rule is, with one task
-//     (decision 18 and point 4 of the orchestrator's hold decisions): task, the opening start's,
+//     (decision 18 of the hold's design: one task, never two): task, the opening start's,
 //     whose text starts with the opening's sentences (opening). Where the claim kept a task of its
 //     own that no turn has taken — a released worker's pending task, a task the hold's stop held
 //     back, a task its cut turn was working — and task carries no newer work than it, the one task

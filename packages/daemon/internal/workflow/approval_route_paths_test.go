@@ -93,8 +93,7 @@ type approvalPath struct {
 }
 
 // approvalPaths is every path that tells an architect of an approval, the rows of inventory test
-// I1 (dispatch://INFRA-4528/artifact/plan-md, task t-9), the six paths of the spec's Problem among
-// them.
+// I1 of the approval route's plan (task t-9), the six paths of the spec's Problem among them.
 var approvalPaths = []approvalPath{
 	// Path 1: a person's approval of the root's own spec opens its gate (applyArtifact).
 	{name: "notice-design-approved-from-artifact-approved", notice: "design-approved", drive: func(r *pathRig) string {

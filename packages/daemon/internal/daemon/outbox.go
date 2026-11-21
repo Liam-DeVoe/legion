@@ -98,8 +98,7 @@ type outbox struct {
 	// hold is what a closed standing design gate holds of its tree (`gates.hold`,
 	// config.Gates.Holds), set by attach after newOutbox: config.HoldMerge, the merger's start
 	// alone, or config.HoldWork, every phase worker of the tree (startWaitsForTheHold, the work
-	// hold of dispatch://INFRA-4528). The zero value, a runner a test builds by hand, is
-	// HoldMerge.
+	// hold). The zero value, a runner a test builds by hand, is HoldMerge.
 	hold config.Hold
 	log  *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
@@ -1969,7 +1968,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 //
 // The design gate's close message to a merger whose claim was released when the gate closed
 // (record.RoleMessage.Wake) is the one message a released role is woken for, under either hold
-// (decision 13 of dispatch://INFRA-4528's plan), so the merger can take its pull request out of
+// (decision 13 of the work hold's design), so the merger can take its pull request out of
 // GitHub's merge queue: the row wakes the claim (wakeForTheClose) and waits for its woken session,
 // a holder that does not hold the role's topic yet being a routine wait while the claim has not
 // gone, and publishes once the merger is ready. It is the one start of a merger the closed gate
@@ -2058,7 +2057,7 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 }
 
 // wakeForTheClose is the design gate's close message to a merger whose claim was released when the
-// gate closed (record.RoleMessage.Wake, decision 13 of dispatch://INFRA-4528's plan), before its
+// gate closed (record.RoleMessage.Wake, decision 13 of the work hold's design), before its
 // publish, and answers whether the row is done for this attempt. A claim still released is woken
 // (wakeReleasedFor, past the hold's fence, since this wake is the one start of a merger the closed
 // gate lets through), and the row waits for it on its backoff; a woken launch the wake pacing
@@ -3793,7 +3792,7 @@ func (r *outbox) linger(ctx context.Context, row record.OutboxRow, payload recor
 }
 
 // holdStopGrace is how long after the work hold's close message reached a claim a turn still
-// running is cut (spec step 3 of dispatch://INFRA-4528): long enough for a worker to end its turn
+// running is cut (spec step 3 of the work hold): long enough for a worker to end its turn
 // at its next step and for a merger to take its pull request out of the merge queue.
 const holdStopGrace = 2 * time.Minute
 
@@ -3834,10 +3833,9 @@ func phaseWorker(role claim.Role) bool {
 // and nil for every start the gate does not hold:
 //
 //   - the merger, under either hold: it merges nothing while the gate is closed, because a new
-//     version of the design is with its reviewer and what may merge is what that review decides
-//     (dispatch://INFRA-714/spec R5);
+//     version of the design is with its reviewer and what may merge is what that review decides;
 //   - under `work`, every phase worker of the tree (phaseWorker), from the close: no phase of the
-//     tree starts while the gate is closed (spec step 1 of dispatch://INFRA-4528), so its member's
+//     tree starts while the gate is closed (spec step 1 of the work hold), so its member's
 //     first phase, the next phase of a transition, a retry, an owed entry, a wake and every other
 //     start of such a role wait. A production check's look (checkLook) is not held: its issue has
 //     left the workflow (row H29). That wait is routine (routineWaiting): the gate's opening ends
