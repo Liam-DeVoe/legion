@@ -34,11 +34,18 @@ import (
 // Dispatch is never asked inside a decision: a decision reads only the answers the service holds.
 //
 // A daemon entry held this way is narrowed to natsgrant.WithinProjects(natsgrant.Daemon(), scope),
-// whose consumers are the ones a Legion daemon opens once it opens its consumers per project. So
-// no deployment may list a daemon entry with "-" until the release gate for that daemon opens:
-// both `packages/envoy/scripts/daemon-release-gate.sh --listeners <the commit that lands it>` and
-// `daemon-release-gate.sh <that commit>` print GATE OPEN, each read once, and the stored wakes a
-// legion-go-<project>-ready consumer created then would deliver hold nothing but listener_ready.
+// whose consumers are the ones a Legion daemon opens once it opens its consumers per project, and
+// which holds a daemon to those consumers by name, not by their filter. So no deployment may list
+// a daemon entry with "-" until the release gate for that daemon opens, each reading below read
+// once:
+//   - both `packages/envoy/scripts/daemon-release-gate.sh --listeners <the commit that lands it>`
+//     and `daemon-release-gate.sh <that commit>` print GATE OPEN;
+//   - the stored-wake read: a legion-go-<project>-ready consumer created then would deliver
+//     nothing but listener_ready;
+//   - the consumer-filter read: each legion-go-<project>-* durable of the daemon, read with
+//     CONSUMER.INFO, filters on that project's own lane and nothing wider, since the held grant
+//     reads a wider durable whole.
+//
 // The change that lists daemon entries with "-" waits on that gate, with those readings quoted in
 // its pull request.
 func scopeGrant(deps Deps, entry ServiceEntry, grant natsgrant.Permissions) (natsgrant.Permissions, error) {
