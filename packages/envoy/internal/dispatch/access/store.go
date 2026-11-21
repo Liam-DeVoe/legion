@@ -172,10 +172,11 @@ func readProject(ctx context.Context, q Querier, key, where string, args ...any)
 			array(select listed.principal from project_access listed
 				where listed.project_key = p.key and listed.principal_kind = 'person'
 					and not exists (select 1 from people where email = listed.principal)
-				order by listed.principal collate "C")
+				order by listed.principal collate "C"),
+			p.closing_since
 		from projects p
 		where `+where, args...).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups,
-		&access.SlackChannels, &access.SlackChannelsChangedAt, &access.NotSignedIn)
+		&access.SlackChannels, &access.SlackChannelsChangedAt, &access.NotSignedIn, &access.ClosingSince)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.ProjectAccess{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
@@ -238,13 +239,14 @@ func OwnerNotAllowed(login string) error {
 // SetVisibility makes project key public or private. It appends project.access_changed in tx.
 // Whether the deployment lets a project be private at all is the caller's to decide first. A switch
 // to public clears the project's full switch (full_switch_at), so a later private stretch is judged
-// afresh (RecordFullSwitch).
+// afresh (RecordFullSwitch). Either way it ends the project's closing state (StartClosing): a switch
+// to private completes it, and a switch to public, the owner's or the repair command's, abandons it.
 func SetVisibility(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, visibility string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	if visibility != model.ProjectPublic && visibility != model.ProjectPrivate {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w, not %q", ErrVisibilityInput, visibility)
 	}
 	if err := updateProject(ctx, tx, key, `
-		update projects set visibility = $2,
+		update projects set visibility = $2, closing_since = null,
 			full_switch_at = case when $2::text = 'public' then null else full_switch_at end
 		where key = $1
 	`, visibility); err != nil {

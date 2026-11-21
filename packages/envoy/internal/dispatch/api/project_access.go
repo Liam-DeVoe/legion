@@ -232,6 +232,14 @@ func (s *server) patchProjectAccess(w http.ResponseWriter, r *http.Request) {
 				if err := privateProjectIncomplete(ctx, tx, key); err != nil {
 					return model.ProjectAccess{}, nil, err
 				}
+				// The closing state comes after every gate that writes nothing and before any
+				// write of the body, so a switch it refuses keeps the closing state and nothing
+				// else.
+				closing, err := s.closeForDeveloperBoxes(ctx, tx, key, by)
+				if err != nil {
+					return model.ProjectAccess{}, closing, err
+				}
+				appended = append(appended, closing...)
 			}
 		}
 		if input.SlackChannels != nil {
@@ -419,7 +427,8 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 		return
 	}
 	answer, appended, err := write(r.Context(), tx, key, actor, who.Viewer)
-	if err != nil {
+	var kept refusalKept
+	if err != nil && !errors.As(err, &kept) {
 		s.writeAccessError(w, err)
 		return
 	}
@@ -428,6 +437,10 @@ func (s *server) ownerWrite(w http.ResponseWriter, r *http.Request, group string
 		return
 	}
 	s.publish(r.Context(), appended...)
+	if kept.err != nil {
+		s.writeAccessError(w, kept.err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, answer)
 }
 
@@ -459,6 +472,8 @@ func (s *server) writeAccessError(w http.ResponseWriter, err error) {
 		{access.ErrPrincipalInput, "PROJECT_ACCESS_INPUT", http.StatusBadRequest},
 		{access.ErrVisibilityInput, "PROJECT_ACCESS_INPUT", http.StatusBadRequest},
 		{errPrivateProjectsUnavailable, "PRIVATE_PROJECTS_UNAVAILABLE", http.StatusConflict},
+		{errDeveloperBoxTokensLive, "DEVELOPER_BOX_TOKENS_LIVE", http.StatusConflict},
+		{errDeveloperBoxTokensUnknown, "DEVELOPER_BOX_TOKENS_UNAVAILABLE", http.StatusServiceUnavailable},
 		{errPrivateProjectNotProvisioned, "PRIVATE_PROJECT_NOT_PROVISIONED", http.StatusConflict},
 		{errPrivateProjectsIncomplete, "PRIVATE_PROJECTS_INCOMPLETE", http.StatusConflict},
 		{access.ErrListFull, "ACCESS_LIST_FULL", http.StatusConflict},

@@ -161,6 +161,39 @@ func (c *Client) Pending(ctx context.Context, approver string) (json.RawMessage,
 	return c.do(ctx, http.MethodGet, "/v1/pending?"+query.Encode(), nil)
 }
 
+// DeveloperBoxTokens is the broker's count of the live tokens a developer box holds that list one
+// project: the tokens of a machine login's trades and of a person's sign-ins on a machine, and
+// when the last of them expires, nil when none is live.
+type DeveloperBoxTokens struct {
+	Project       string     `json:"project"`
+	Live          int        `json:"live_tokens"`
+	LastExpiresAt *time.Time `json:"last_expires_at"`
+}
+
+// DeveloperBoxTokens asks the broker how many live developer-box tokens list project (GET
+// /v1/admin/machine-tokens), which a switch to private waits to read as 0. The broker answers it
+// to Dispatch's caller name alone. An answer that is not the broker's count of that project is an
+// error, never a count.
+func (c *Client) DeveloperBoxTokens(ctx context.Context, project string) (DeveloperBoxTokens, error) {
+	raw, err := c.do(ctx, http.MethodGet, "/v1/admin/machine-tokens?"+url.Values{"project": {project}}.Encode(), nil)
+	if err != nil {
+		return DeveloperBoxTokens{}, err
+	}
+	var answer struct {
+		DeveloperBoxTokens
+		Live *int `json:"live_tokens"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return DeveloperBoxTokens{}, fmt.Errorf("agent-secrets: decode the developer-box token count of %s: %w", project, err)
+	}
+	if answer.Project != project || answer.Live == nil || *answer.Live < 0 {
+		return DeveloperBoxTokens{}, fmt.Errorf("agent-secrets: the broker answered no developer-box token count of %s", project)
+	}
+	count := answer.DeveloperBoxTokens
+	count.Live = *answer.Live
+	return count, nil
+}
+
 // Decision is every approve, deny, dismiss and revoke body Dispatch sends: Approver is the
 // deciding human's canonical login as Dispatch's session resolved it, and Code, for a machine
 // login, is the typed confirmation code the human entered.
