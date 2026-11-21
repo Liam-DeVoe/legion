@@ -265,9 +265,10 @@ func TestTheGrantLifetimeIsTheShorterOfFifteenMinutesAndTheAccessLifetime(t *tes
 // for a result grant (MintResultToken) is live, bound to the pod's key and to the grant's run, and
 // ends with the grant; presented as the subject token of another exchange it mints nothing, since
 // the library refuses a client's own token, so the capability the airlock holds never turns into
-// a token of another session.
+// a token of another session. The access lifetime is an hour, longer than the grant's fifteen
+// minutes, so a token that ended with the access lifetime and not with its grant reads apart.
 func TestAMintedResultsTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
-	f := newResultsFixture(t, func(*oauth.Config) {})
+	f := newResultsFixture(t, func(c *oauth.Config) { c.AccessLifetime = time.Hour })
 	run := newKey(t)
 	grant := f.grantOf(t, f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "7")), run))
 	pod := newKey(t)
