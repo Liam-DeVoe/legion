@@ -159,6 +159,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"projects.<KEY>.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {memory: {unit: issue, variants: [{name: memory}, {name: none}]}}\n"}.refuse(t)
 	},
+	"projects.<KEY>.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {memory: {mode: random, variants: [{name: memory, plan: owner}, {name: none, plan: default}]}}\n"}.refuse(t)
+	},
 	"projects.<KEY>.experiments must be a mapping of an experiment's name to its block": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: [plan-length]\n"}.refuse(t)
 	},
