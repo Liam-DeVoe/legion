@@ -22,10 +22,10 @@ import (
 // notifications.github.> and pulls the GitHub events a static publisher put on
 // notifications.github.acme.priv.pull_request, a repository only PRIV's issues resolve to, and on
 // notifications.github.acme.none.pull_request, which no issue names. Dispatch's answers carry no
-// repository, and the grant does not change when the repositories Dispatch maps change. The
-// control builds the held daemon's grant without its GitHub consumer's create, pull and
-// acknowledgements: the hub refuses the create, the daemon pulls no GitHub event, and the test
-// fails naming the create subject.
+// repository (projectaccess.Answer has no such field), so nothing a refresh reads can change what
+// the grant holds of GitHub. The control builds the held daemon's grant without its GitHub
+// consumer's create, pull and acknowledgements: the hub refuses the create, the daemon pulls no
+// GitHub event, and the test fails naming the create subject.
 func TestAHeldDaemonHearsEveryRepositorysGitHubEvents(t *testing.T) {
 	const (
 		consumer = "legion-go-PUB-github"
@@ -37,21 +37,9 @@ func TestAHeldDaemonHearsEveryRepositorysGitHubEvents(t *testing.T) {
 	tokens := map[string]platformToken{"pub-daemon-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 	exchange := map[string][]string{pubDaemonAccount: {"PUB"}}
 	dispatch := &dispatchAnswers{
-		answers: map[string][]string{"PUB": {"acme/pub"}, "PRIV": {"acme/priv"}},
-		private: map[string]bool{"PRIV": true},
+		projects: map[string]bool{"PUB": true, "PRIV": true},
+		private:  map[string]bool{"PRIV": true},
 	}
-
-	deps := heldDeps(t, tokens, exchange, dispatch, services)
-	before, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
-	require.NoError(t, err)
-	dispatch.mu.Lock()
-	dispatch.answers["PUB"] = []string{"acme/pub", "acme/priv", "acme/none"}
-	dispatch.answers["PRIV"] = nil
-	dispatch.mu.Unlock()
-	deps.held.refresh(t.Context())
-	after, err := Decide(t.Context(), deps, services, serviceRequest("pub-daemon-token"))
-	require.NoError(t, err)
-	require.Equal(t, before.Grant, after.Grant, "the held grant changed with the repositories Dispatch maps")
 
 	// Through the hub: a static user that creates the notification stream and publishes the two
 	// events, and PUB's daemon admitted by the service on its token.

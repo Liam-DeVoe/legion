@@ -37,8 +37,8 @@ func TestARefusalAppliesWhileAnotherProjectFails(t *testing.T) {
 			services := []ServiceEntry{{Kind: KindDaemon, Account: pubDaemonAccount}, {Kind: KindDaemon, Account: otherDaemonAccount}}
 			tokens := map[string]platformToken{"pub-token": {account: pubDaemonAccount, issued: now, expiry: now.Add(time.Hour)}}
 			dispatch := &dispatchAnswers{
-				answers: map[string][]string{"PUB": {"acme/pub"}, "OTHER": {"acme/other"}},
-				private: map[string]bool{"PUB": true},
+				projects: map[string]bool{"PUB": true, "OTHER": true},
+				private:  map[string]bool{"PUB": true},
 			}
 			deps := heldDeps(t, tokens, map[string][]string{pubDaemonAccount: {"PUB"}, otherDaemonAccount: {"OTHER"}}, dispatch, services)
 			_, err := Decide(t.Context(), deps, services, serviceRequest("pub-token"))
@@ -74,7 +74,7 @@ func TestAProjectIsAdmittedOnItsOwnAnswerWhileAnotherFails(t *testing.T) {
 		"other-token": {account: otherDaemonAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	dispatch := &dispatchAnswers{
-		answers:    map[string][]string{"PUB": {"acme/pub"}, "OTHER": {"acme/other"}},
+		projects:   map[string]bool{"PUB": true, "OTHER": true},
 		private:    map[string]bool{"PUB": true},
 		failingFor: map[string]error{"OTHER": otherFails},
 	}
