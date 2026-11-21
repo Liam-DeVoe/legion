@@ -1534,10 +1534,10 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // Such a claim is queued, launching, registered but not ready, or suspended, and no live session
 // of it holds the role's topic, so the publish would end at notify.ErrNoHolder at every sweep: a
 // row and a log line a minute for a claim that may stay suspended until its round's bound. The
-// first tick after the agent says it is ready asks it. A ready session claims its topic inside
-// its first turn or at the first-turn bound (supervise.SaidReady), so an ask in that short window
-// can still end at notify.ErrNoHolder, and the claim is then asked again at a later sweep, as
-// above.
+// first tick after the agent says it is ready asks it. A ready session claims its topic right
+// after its ready and the read of its task value have answered (supervise.SaidReady), so an ask
+// in that short window can still end at notify.ErrNoHolder, and the claim is then asked again at
+// a later sweep, as above.
 //
 // The ask states the round's bound (roundClock.roundBound), read at the clock's now with the time
 // a project's pause held the pod. A round no claim of group records the opening of has no bound
