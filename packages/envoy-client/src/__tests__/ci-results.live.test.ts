@@ -360,17 +360,21 @@ describe.skipIf(!dispatchStackEnabled)(
       expect(await running().results(at)).toEqual([]);
     }, 120_000);
 
-    test("the results token reaches no other route: a read, a write and the results read are refused", async () => {
+    test("the results token reaches no other route: the airlock refuses what its rule does not allow, and Dispatch the rest", async () => {
       const at = commit("9");
       const project = running().project;
 
-      // A separate real child receives only the airlock placeholder and uses it on three
-      // other routes. The real proxy proves the broker's key; Dispatch must refuse the scope.
+      // A separate real child receives only the airlock placeholder and uses it on four other
+      // routes. The rule allows POST under /api/v1/projects/ alone, so the proxy refuses the
+      // first three itself, before it dials, and says so (Airlock-Forwarded: false and its
+      // Airlock-Code); the fourth is under the prefix, so the proxy carries it with the run's
+      // token and a proof of the broker's key, and Dispatch's own gate refuses the scope.
       const env = running().jobEnv(runAt(at, 106));
       const routes = [
         ["GET", `/api/v1/issues?project=${project}`, null],
         ["POST", "/api/v1/issues", { project, title: "An issue a CI job writes" }],
         ["GET", `/api/v1/projects/${project}/results?commit=${at}`, null],
+        ["POST", `/api/v1/projects/${project}/artifacts`, { name: "an artifact a CI job writes" }],
       ];
       const probe = `import { ownIdentityDispatch } from ${JSON.stringify(join(import.meta.dir, "..", "dispatch-config.ts"))};
 const resolution=ownIdentityDispatch(process.env);
@@ -380,8 +384,10 @@ for(const [method,route,body] of ${JSON.stringify(routes)}) {
  const url=resolution.url+route;
  const response=await fetch(url,{method,headers:{...(body===null?{}:{"Content-Type":"application/json"}),...await resolution.credential.headers(method,url)},...(body===null?{}:{body:JSON.stringify(body)})});
  const text=await response.text();
- if (!text.startsWith("{")) throw new Error("scope response: "+response.status+" "+response.headers.get("X-Airlock-Code")+" "+text);
- const answer=JSON.parse(text);answers.push(method+" "+route+": "+response.status+" "+answer.code);
+ const forwarded=response.headers.get("Airlock-Forwarded");
+ let code=response.headers.get("Airlock-Code");
+ if (forwarded!=="false") { if (!text.startsWith("{")) throw new Error("scope response: "+response.status+" "+text); code=JSON.parse(text).code; }
+ answers.push(method+" "+route+": "+response.status+" "+(forwarded==="false"?"airlock":"dispatch")+" "+code);
 }
 console.log(JSON.stringify(answers));
 `;
@@ -398,9 +404,10 @@ console.log(JSON.stringify(answers));
       const answers = JSON.parse(output);
 
       expect(answers).toEqual([
-        `GET /api/v1/issues?project=${project}: 403 RESULTS_ONLY_TOKEN`,
-        "POST /api/v1/issues: 403 RESULTS_ONLY_TOKEN",
-        `GET /api/v1/projects/${project}/results?commit=${at}: 403 RESULTS_ONLY_TOKEN`,
+        `GET /api/v1/issues?project=${project}: 403 airlock REQUEST_NOT_ALLOWED`,
+        "POST /api/v1/issues: 403 airlock REQUEST_NOT_ALLOWED",
+        `GET /api/v1/projects/${project}/results?commit=${at}: 403 airlock REQUEST_NOT_ALLOWED`,
+        `POST /api/v1/projects/${project}/artifacts: 403 dispatch RESULTS_ONLY_TOKEN`,
       ]);
     }, 120_000);
 
