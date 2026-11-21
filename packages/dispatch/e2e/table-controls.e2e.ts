@@ -6339,6 +6339,12 @@ test("every list of options a reader picks from holds a text box that narrows it
         missing.push(`${at}: no control opens the list`);
         continue;
       }
+      // A trigger says its list is loading until the read of its options lands, as the issue
+      // header's Priority to advance says "Loading priorities…": read before then, the value
+      // the row compares each later read with would be one no press of the reader's gave.
+      await expect
+        .poll(() => list.value(), { message: `${at}: the list's options never loaded` })
+        .not.toMatch(/^Loading/);
       const before = await list.value();
       expect(
         before,
