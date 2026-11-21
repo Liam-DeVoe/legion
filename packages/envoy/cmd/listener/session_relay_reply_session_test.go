@@ -410,3 +410,80 @@ func TestAReplyWithATokenPastItsSessionIDMovesNoFrameAndLogsNothing(t *testing.T
 		t.Fatal("ses_three's done moved ses_two's frame")
 	}
 }
+
+// onReply is the one callback that carries every session's receipts on an edge replica's relay
+// connection, run one at a time (nats.go). The re-mark a nak'd gap-marked frame owes is a KV read
+// and write (reMarkWithheldGap), so onReply runs it in a goroutine: a slow re-mark of one
+// session's frame holds up no other session's receipt.
+func TestANakGapReMarkRunsOffTheReceiptCallback(t *testing.T) {
+	frameFor := func(relays *sessionRelays, sessionID, token, gapMark string) *countingAcker {
+		run := &relayRun{sessionID: sessionID, outstanding: map[string]*relayFrame{}}
+		acker := &countingAcker{}
+		frame := &relayFrame{run: run, acker: acker, sentAt: time.Now(), delivered: 1, gapMark: gapMark}
+		relays.framesMu.Lock()
+		relays.frames[token] = frame
+		run.outstanding[token] = frame
+		relays.framesMu.Unlock()
+		return acker
+	}
+	nak := func(relays *sessionRelays, sessionID, token string) {
+		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + sessionID + "." + token, Data: []byte(relayReplyNak)})
+	}
+
+	t.Run("a slow re-mark does not block another session's receipt", func(t *testing.T) {
+		relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.New("test")}
+		started, release := make(chan struct{}), make(chan struct{})
+		relays.reMark = func(string) {
+			close(started)
+			<-release
+		}
+		frameFor(relays, "ses_slow", "TOKENOFTHESLOWSESSIONSFRAME1", "a-gap-mark")
+		otherAcker := frameFor(relays, "ses_other", "TOKENOFTHEOTHERSESSIONFRAME2", "")
+
+		// The slow session's gap-marked frame is nak'd: onReply hands its re-mark to a goroutine.
+		nak(relays, "ses_slow", "TOKENOFTHESLOWSESSIONSFRAME1")
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("onReply never started the re-mark; it was not run off the callback")
+		}
+		// The re-mark is still blocked. The other session's done is acked at once.
+		done := make(chan struct{})
+		go func() {
+			relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + "ses_other.TOKENOFTHEOTHERSESSIONFRAME2", Data: []byte(relayReplyDone)})
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("the other session's receipt was blocked behind the slow re-mark")
+		}
+		if otherAcker.acks.Load() != 1 {
+			t.Fatalf("the other session's done acked %d times while the re-mark blocked, want 1", otherAcker.acks.Load())
+		}
+		close(release)
+	})
+
+	t.Run("a re-mark runs only for a nak carrying a gap mark", func(t *testing.T) {
+		relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.New("test")}
+		var reMarked atomic.Int32
+		relays.reMark = func(string) { reMarked.Add(1) }
+		// Control: a nak of a frame with no gap mark runs no re-mark.
+		frameFor(relays, "ses_plain", "TOKENOFAPLAINSESSIONFRAME001", "")
+		nak(relays, "ses_plain", "TOKENOFAPLAINSESSIONFRAME001")
+		time.Sleep(50 * time.Millisecond)
+		if got := reMarked.Load(); got != 0 {
+			t.Fatalf("a nak with no gap mark ran the re-mark %d times, want 0", got)
+		}
+		// A nak of a gap-marked frame runs the re-mark once.
+		frameFor(relays, "ses_marked", "TOKENOFAMARKEDSESSIONFRAME01", "a-gap-mark")
+		nak(relays, "ses_marked", "TOKENOFAMARKEDSESSIONFRAME01")
+		deadline := time.Now().Add(2 * time.Second)
+		for reMarked.Load() == 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if got := reMarked.Load(); got != 1 {
+			t.Fatalf("a nak with a gap mark ran the re-mark %d times, want 1", got)
+		}
+	})
+}

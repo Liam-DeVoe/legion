@@ -248,6 +248,11 @@ type sessionRelays struct {
 	// (forgetRepositoryGap), which leaves the entry's mark to the next owner.
 	repositoryGapsMu sync.Mutex
 	repositoryGaps   map[string]string
+	// reMark re-marks a session whose nak'd frame carried a gap mark, off the receipt callback
+	// (onReply, reMarkWithheldGap). startSessionRelays sets it; onReply runs it in a goroutine so
+	// the KV read and write it makes never stalls the receipts the one callback carries. A test
+	// sets it to hold the write, so it can show onReply does not wait on it.
+	reMark func(sessionID string)
 
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -583,6 +588,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 		restarts:    make(chan struct{}, relayRestartLimit),
 		frames:      map[string]*relayFrame{},
 	}
+	m.reMark = m.reMarkWithheldGap
 	if err := delivery.consumers.SubscribeReplies(inbox+".>", m.onReply); err != nil {
 		return nil, err
 	}
@@ -1318,11 +1324,11 @@ func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) 
 func (m *sessionRelays) acknowledgeWithheld(sessionID string, msg bus.SessionMessage, reason string) {
 	m.repositories.withheld.Inc([2]string{"reason", reason})
 	if err := msg.Ack(); err != nil {
-		m.logger.Warn("edge listener could not acknowledge a GitHub event it withholds; the consumer delivers it again",
+		m.logger.Warn("edge listener could not acknowledge a frame it withholds; the consumer delivers it again",
 			slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("error", err.Error()))
 		return
 	}
-	m.logger.Info("edge listener withheld a GitHub event from a session",
+	m.logger.Info("edge listener withheld a frame from a session",
 		slog.String("session_id", sessionID), slog.String("subject", msg.Subject), slog.String("reason", reason))
 }
 
@@ -1523,16 +1529,32 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 	case relayReplyNak:
 		err = frame.acker.NakWithDelay(relayNakDelayFor(frame.delivered))
 		if frame.gapMark != "" {
-			noteCtx, cancel := context.WithTimeout(context.Background(), sendRequestBudget)
-			if _, noteErr := m.noteRepositoryGap(noteCtx, frame.run.sessionID); noteErr != nil {
-				m.logger.Warn("session relay could not re-mark a withheld gap frame's session; its next run sends the mark",
-					slog.String("session_id", frame.run.sessionID), slog.String("error", noteErr.Error()))
-			}
-			cancel()
+			// onReply is the one callback for every session's receipts on this connection's core
+			// subscription, run one at a time (nats.go), so the re-mark's KV read and write
+			// (noteRepositoryGap, up to sendRequestBudget) runs in its own goroutine: a slow write
+			// stalls no other session's receipt. The owed mark is on the frame already (gapMark),
+			// so the relay loop needs nothing back from the write; a write that fails is logged,
+			// and the session's next relay run sends the mark (owedRepositoryGap).
+			go m.reMark(frame.run.sessionID)
 		}
 	}
 	if err != nil {
 		m.logger.Warn("session relay could not answer the consumer for a frame", slog.String("session_id", frame.run.sessionID), slog.String("reply", reply), slog.String("error", err.Error()))
+	}
+}
+
+// reMarkWithheldGap re-marks sessionID's entry with the repository gap mark it still owes, a frame
+// that carried the mark having been answered nak (onReply): the frame did not reach the client, so
+// the mark is not lost to it. It runs off onReply's callback, in its own goroutine, within
+// sendRequestBudget, since the write is a KV read and write that must not stall the other
+// sessions' receipts that one callback carries. A write that fails is logged; the session's next
+// relay run sends the mark (owedRepositoryGap).
+func (m *sessionRelays) reMarkWithheldGap(sessionID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), sendRequestBudget)
+	defer cancel()
+	if _, err := m.noteRepositoryGap(ctx, sessionID); err != nil {
+		m.logger.Warn("session relay could not re-mark a withheld gap frame's session; its next run sends the mark",
+			slog.String("session_id", sessionID), slog.String("error", err.Error()))
 	}
 }
 
