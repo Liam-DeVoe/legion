@@ -2356,6 +2356,13 @@
       "production": "github.com/sjawhar/envoy/internal/dispatch/api.ciUnreadDetail over github.com/sjawhar/envoy/internal/dispatch/githubapp.CheckResponse: its rule call is the box's own printer now"
     },
     {
+      "id": "answer-printed",
+      "requirement": "r2-held",
+      "package": "./internal/redact",
+      "test": "TestAnAnswerPrintsNothingOfItsBody",
+      "production": "github.com/sjawhar/envoy/internal/redact.Answer: its body and its request's credentials sit behind pointers fmt prints as addresses"
+    },
+    {
       "id": "listener-build-unsubscribe",
       "requirement": "r3-each-site",
       "package": "./internal/dispatch/envoy",
