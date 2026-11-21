@@ -362,20 +362,28 @@ It prints one line for each commit it rewrote,
 `legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
 own arguments, but for a revision argument that names a commit the step moved.
 Before it rewrites anything, the step has jj resolve each argument of `--change`, `--named` and
-`--revisions`, and reads which of its mutable commits that no remote bookmark holds are hidden and
-which is the working-copy commit; a hidden commit whose change has one visible commit stands for
-that commit, and for `@` where that commit is the working-copy commit.
-Where the commits an argument names include one that the step rewrote or rebased, or a hidden one
-that stands for another, the push gets `(<the argument as written>) ~ (<their old ids>) | <their
-new ids>`, with `@` for the working-copy commit, so that the push's own snapshot still resolves it.
-So any revset sends the commits it named, as rewritten: `C1 | C2`, `::C`, `latest(C, 2)`, a quoted
-id, a prefix of an id.
-An argument none of whose commits moved reaches the push as written, and so does one that jj, read
-again before the push, already resolves to the new commits, such as `@`, a bookmark or a change id;
-the text the step adds grows only with the commits it moved.
-A revset whose result depends on a commit's author, such as `author(...)` or `mine()`, still sends
-the commits it named before the rewrite, as rewritten, and the push's own evaluation can add a
-commit whose author the rewrite made match.
+`--revisions` to the whole set of commits it names, and reads which of its mutable commits that no
+remote bookmark holds are hidden and which is the working-copy commit; a hidden commit whose change
+has one visible commit stands for that commit, and for `@` where that commit is the working-copy
+commit.
+The set the push must send is that set with each commit the step rewrote or rebased, and each
+hidden one that stands for another, replaced by the commit that stands for it.
+An argument none of whose commits moved reaches the push as written, and so does one that jj,
+resolving it again after the rewrite, resolves to that set, such as `@`, a bookmark or a change id.
+Any other argument can name other commits once the step has rewritten some, as a change offset
+`<change>/<n>`, `latest(...)` or `author(...)` can, so the push gets
+`(<the argument as written>) ~ (<the old ids>) ~ (<the ids it now names and must not>) | <the new
+ids> | <the ids it must send and no longer names>`, with `@` for the working-copy commit, so that
+the push's own snapshot still resolves it, and with each empty part left out.
+The step has jj resolve that text once more and checks that it names the set; where it does not,
+or where jj refuses one of those reads, the push gets the set as ids joined by ` | `, `@` for the
+working-copy commit, while that word stays under 100,000 bytes, and otherwise the text above, and
+the step prints one `legion jj:` line that says which.
+No word the step writes passes Linux's 131,072-byte limit on one argument, but for a role's own
+argument that is that long already: the text it adds to an argument grows with the commits it
+moved and the ones whose naming the rewrite changed, never with the whole set that, for example,
+`::C` names, and each of its reads that lists commit or change ids runs once for each part of the
+list under 100,000 bytes, so a push of thousands of commits still runs.
 It changes no commit that a remote bookmark holds and no immutable commit.
 It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
 the table.
