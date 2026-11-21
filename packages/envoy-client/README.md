@@ -610,8 +610,10 @@ before; `listener` is the relay socket at `<ENVOY_URL>/v1/sessions/<session>/rel
 session's broker credential (`relayCredential`, `brokerCredential`), which is the only credential
 the socket admits. `listener` is refused, turning off inbound messages alone, beside a NATS server
 (`ENVOY_INBOUND is listener, and ENVOY_NATS_URL names NATS servers: set one of the two`, or the
-file's `envoy.natsUrls`), with a bearer for the listener, on a machine with no broker route, and
-for a caller that names no session (`noSessionNamed`); any other value is refused as `ENVOY_INBOUND
+file's `envoy.natsUrls`), with a bearer for the listener, on a machine with no broker route, for a
+caller that names no session (`noSessionNamed`), and for a listener at a plain http address of
+another machine, where the socket would carry the token unencrypted (`localhost`, 127.0.0.0/8 and
+`::1` may stay plain http); any other value is refused as `ENVOY_INBOUND
 is neither nats nor listener`, never echoing it. The NATS credential is resolved only when there
 are NATS servers to use it on, so a caller that opens no NATS connection resolves none.
 A seed is the credential wherever one is set. Otherwise
