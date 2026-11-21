@@ -637,6 +637,32 @@
   },
   {
     "answer": "state",
+    "keyPath": "repositories.live.*.cache.state",
+    "values": [
+      {
+        "value": "cloning",
+        "since": 202
+      },
+      {
+        "value": "failing",
+        "since": 202
+      },
+      {
+        "value": "ready",
+        "since": 202
+      },
+      {
+        "value": "refused",
+        "since": 202
+      },
+      {
+        "value": "starting",
+        "since": 202
+      }
+    ]
+  },
+  {
+    "answer": "state",
     "keyPath": "repositories.caches.*.state",
     "values": [
       {
@@ -1095,7 +1121,7 @@
     "values": [
       {
         "value": "boot",
-        "since": 200
+        "since": 209
       }
     ]
   },
@@ -1105,23 +1131,23 @@
     "values": [
       {
         "value": "cache",
-        "since": 200
+        "since": 209
       },
       {
         "value": "controller",
-        "since": 200
+        "since": 209
       },
       {
         "value": "issue",
-        "since": 200
+        "since": 209
       },
       {
         "value": "probe",
-        "since": 200
+        "since": 209
       },
       {
         "value": "unknown",
-        "since": 200
+        "since": 209
       }
     ]
   },
@@ -1131,31 +1157,31 @@
     "values": [
       {
         "value": "deleted",
-        "since": 200
+        "since": 209
       },
       {
         "value": "deleted_clean",
-        "since": 200
+        "since": 209
       },
       {
         "value": "deleted_lost",
-        "since": 200
+        "since": 209
       },
       {
         "value": "deleted_read_refused",
-        "since": 200
+        "since": 209
       },
       {
         "value": "deleted_unread",
-        "since": 200
+        "since": 209
       },
       {
         "value": "left",
-        "since": 200
+        "since": 209
       },
       {
         "value": "waiting",
-        "since": 200
+        "since": 209
       }
     ]
   },
@@ -1165,27 +1191,27 @@
     "values": [
       {
         "value": "architect",
-        "since": 200
+        "since": 209
       },
       {
         "value": "implementer",
-        "since": 200
+        "since": 209
       },
       {
         "value": "merger",
-        "since": 200
+        "since": 209
       },
       {
         "value": "planner",
-        "since": 200
+        "since": 209
       },
       {
         "value": "reviewer",
-        "since": 200
+        "since": 209
       },
       {
         "value": "tester",
-        "since": 200
+        "since": 209
       }
     ]
   },
@@ -1195,31 +1221,31 @@
     "values": [
       {
         "value": "architect",
-        "since": 200
+        "since": 209
       },
       {
         "value": "controller",
-        "since": 200
+        "since": 209
       },
       {
         "value": "implementer",
-        "since": 200
+        "since": 209
       },
       {
         "value": "merger",
-        "since": 200
+        "since": 209
       },
       {
         "value": "planner",
-        "since": 200
+        "since": 209
       },
       {
         "value": "reviewer",
-        "since": 200
+        "since": 209
       },
       {
         "value": "tester",
-        "since": 200
+        "since": 209
       }
     ]
   },
@@ -1229,71 +1255,71 @@
     "values": [
       {
         "value": "daemon",
-        "since": 200
+        "since": 209
       },
       {
         "value": "exit",
-        "since": 200
+        "since": 209
       },
       {
         "value": "failed",
-        "since": 200
+        "since": 209
       },
       {
         "value": "idle",
-        "since": 200
+        "since": 209
       },
       {
         "value": "launch_uncertain",
-        "since": 200
+        "since": 209
       },
       {
         "value": "launching",
-        "since": 200
+        "since": 209
       },
       {
         "value": "operator",
-        "since": 200
+        "since": 209
       },
       {
         "value": "project_release",
-        "since": 200
+        "since": 209
       },
       {
         "value": "queued",
-        "since": 200
+        "since": 209
       },
       {
         "value": "ready",
-        "since": 200
+        "since": 209
       },
       {
         "value": "registered",
-        "since": 200
+        "since": 209
       },
       {
         "value": "released",
-        "since": 200
+        "since": 209
       },
       {
         "value": "retired",
-        "since": 200
+        "since": 209
       },
       {
         "value": "shim_connected",
-        "since": 200
+        "since": 209
       },
       {
         "value": "unknown",
-        "since": 200
+        "since": 209
       },
       {
         "value": "unrecorded",
-        "since": 200
+        "since": 209
       },
       {
         "value": "working",
-        "since": 200
+        "since": 209
       }
     ]
   },
