@@ -4291,6 +4291,29 @@ async function launchedController(options: {
   };
 }
 
+/** Writes `token`, the launch's unless a test names a stale one, as the boot token the daemon
+ * hands the session it launches: a 0600 file in `dir` behind `LEGION_BOOT_TOKEN_FILE`. */
+async function writeBootToken(dir: string, token = LAUNCH_BOOT_TOKEN): Promise<void> {
+  const bootFile = path.join(dir, "LEGION_BOOT_TOKEN");
+  await writeFile(bootFile, `${token}\n`, { mode: 0o600 });
+  process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+}
+
+/** Makes `controller` the one `controller: daemon` launches: its boot token (`token`, the
+ * launch's unless given) in place of the operator's capability, no start message unless
+ * `keepStartMessage`, and LEGION_SLACK_CHANNELS, which the daemon always names for its controller,
+ * set empty for a project with no Slack channels. The test deletes LEGION_BOOT_TOKEN_FILE when it
+ * is done. */
+async function bootAsDaemonLaunched(
+  controller: LaunchedController,
+  options: { readonly token?: string; readonly keepStartMessage?: boolean } = {}
+): Promise<void> {
+  await writeBootToken(controller.secretsDir, options.token);
+  delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+  if (options.keepStartMessage !== true) delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+  process.env.LEGION_SLACK_CHANNELS = "";
+}
+
 /** What a command's `context.ui.notify` told the operator. */
 interface CommandNotice {
   readonly message: string;
@@ -5446,11 +5469,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     [
       "the daemon-launched controller",
       async (controller: LaunchedController) => {
-        const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-        await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-        delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-        process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-        process.env.LEGION_SLACK_CHANNELS = "";
+        await bootAsDaemonLaunched(controller, { keepStartMessage: true });
       },
       [
         { path: "/legion/v1/claims/register", mark: undefined },
@@ -5555,13 +5574,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           markAtReady.push(envoyPluginInterface().startupTurn);
       },
     });
-    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
-    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-    // The daemon always names its controller's Slack channels; this project has none.
-    process.env.LEGION_SLACK_CHANNELS = "";
+    await bootAsDaemonLaunched(controller);
     const before = Date.now();
     let commandNotices: CommandNotice[];
     try {
@@ -5617,11 +5630,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       register: () => Response.json({ error: "invalid boot token" }, { status: 403 }),
     });
     const staleBootToken = fixtureSecret("boot");
-    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, `${staleBootToken}\n`, { mode: 0o600 });
-    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-    process.env.LEGION_SLACK_CHANNELS = "";
+    await bootAsDaemonLaunched(controller, { token: staleBootToken, keepStartMessage: true });
     try {
       // The test's exit hook throws in place of exiting; the throw ends the handler.
       await controller.handlers.get("session_start")?.(
@@ -5658,12 +5667,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
             )
           : undefined,
     });
-    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
-    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-    process.env.LEGION_SLACK_CHANNELS = "";
+    await bootAsDaemonLaunched(controller);
     let warnings: LoggedWarning[];
     try {
       ({ warnings } = await loggedWarnings(async () => {
@@ -5711,12 +5715,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       sessionId: "ses_controller_norelay",
       stateFixture: "state-controller-claim.json",
     });
-    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
-    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-    process.env.LEGION_SLACK_CHANNELS = "";
+    await bootAsDaemonLaunched(controller);
     let warnings: LoggedWarning[];
     try {
       ({ warnings } = await loggedWarnings(async () => {
@@ -5764,12 +5763,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         );
       }
     });
-    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
-    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-    process.env.LEGION_SLACK_CHANNELS = "";
+    await bootAsDaemonLaunched(controller);
     let warnings: LoggedWarning[] = [];
     let errors: string[] = [];
     try {
@@ -5813,12 +5807,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       sessionId: "ses_controller_six",
       stateFixture: "state-controller-claim.json",
     });
-    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
-    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-    process.env.LEGION_SLACK_CHANNELS = "";
+    await bootAsDaemonLaunched(controller);
     let warnings: LoggedWarning[];
     try {
       ({ warnings } = await loggedWarnings(async () => {
@@ -5865,12 +5854,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         return undefined;
       },
     });
-    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
-    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-    process.env.LEGION_SLACK_CHANNELS = "";
+    await bootAsDaemonLaunched(controller);
     try {
       await controller.handlers.get("session_start")?.(
         {},
@@ -5918,12 +5902,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         );
       },
     });
-    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
-    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-    process.env.LEGION_SLACK_CHANNELS = "";
+    await bootAsDaemonLaunched(controller);
     const notices: CommandNotice[] = [];
     let failure: unknown;
     try {
@@ -5980,12 +5959,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       sessionId,
       stateFixture: "state-controller-claim.json",
     });
-    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
-    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-    process.env.LEGION_SLACK_CHANNELS = "";
+    await bootAsDaemonLaunched(controller);
     setLegionClaimRetryDelayForTests(1);
     const notices: CommandNotice[] = [];
     let failure: unknown;
@@ -6134,12 +6108,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
           ? Response.json({ error: "envoy: session registry unavailable" }, { status: 503 })
           : undefined,
     });
-    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
-    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
-    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
-    process.env.LEGION_SLACK_CHANNELS = "";
+    await bootAsDaemonLaunched(controller);
     try {
       await controller.handlers.get("session_start")?.(
         {},
@@ -6609,9 +6578,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     const daemonController = async (sessionId: string, channels: string | undefined) => {
       const secrets = await mkdtemp(path.join(os.tmpdir(), "legion-controller-boot-"));
       temporaryPaths.push(secrets);
-      const bootFile = path.join(secrets, "LEGION_BOOT_TOKEN");
-      await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
-      process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+      await writeBootToken(secrets);
       if (channels === undefined) delete process.env.LEGION_SLACK_CHANNELS;
       else process.env.LEGION_SLACK_CHANNELS = channels;
       const controller = await launchedController({

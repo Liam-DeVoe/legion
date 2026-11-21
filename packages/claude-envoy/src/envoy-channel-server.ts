@@ -657,11 +657,14 @@ export function createChannelDelivery(input: {
     },
     notice(content, addressed) {
       return queued(async () => {
-        if (addressed !== undefined && addressed !== input.identity.id) {
-          throw new Error(
-            `the notice names session ${addressed}, and this process serves ${input.identity.id}`,
-          )
+        const refuseOtherId = (): void => {
+          if (addressed !== undefined && addressed !== input.identity.id) {
+            throw new Error(
+              `the notice names session ${addressed}, and this process serves ${input.identity.id}`,
+            )
+          }
         }
+        refuseOtherId()
         // Read at the notice's turn rather than when the server takes the `/clear` up: one that
         // waits for a connection closed for good, or for the old id's DELETE the listener
         // refused, has moved Claude Code already. A handoff file that cannot be read names no move.
@@ -674,6 +677,9 @@ export function createChannelDelivery(input: {
             `the notice names session ${addressed}, and Claude Code moved to ${on}, which this process has not taken up yet`,
           )
         }
+        // Checked again after the read: a `/clear` the server took up while the file was read
+        // (the read can return the file as it stood before) moved the served id itself.
+        refuseOtherId()
         await input.notifier.notification({ content })
       })
     },
