@@ -51,8 +51,11 @@ var privateReads = []struct {
 // failure to read one, never an empty list: a caller that read it as empty would serve every
 // private project's channel as a public one's. Each such answer is an error that is not
 // ErrBrokerRefused, beside a nil list, and is not kept, so the next call asks Dispatch again. Only
-// "projects": [] is the empty list. Each row runs through both reads; a private project with no
-// slack_channels key is the fresh read's failure alone, and PrivateProjects keeps it, marked.
+// "projects": [] is the empty list. An answer holding one key twice in an object is no list
+// either: encoding/json would keep the last member, so a second "projects": [] would read as no
+// private project, and a second "slack_channels": [] as a project with no channel. Each row runs
+// through both reads; a private project with no slack_channels key is the fresh read's failure
+// alone, and PrivateProjects keeps it, marked.
 func TestThePrivateProjectsAnswerIsNeverReadShort(t *testing.T) {
 	failures := []struct {
 		status int
@@ -69,6 +72,11 @@ func TestThePrivateProjectsAnswerIsNeverReadShort(t *testing.T) {
 		{http.StatusServiceUnavailable, `{"code":"UNAVAILABLE"}`},
 		{http.StatusOK, `{"projects": [`},
 		{http.StatusOK, `{"projects": [{"slack_channels": ["C0PRIV00001"]}]}`},
+		// Two readings of one answer, which encoding/json reads as the last member's: projects
+		// twice, in the same case and in another, and an entry's slack_channels twice.
+		{http.StatusOK, `{"projects": [{"project": "PRIV", "slack_channels": ["C0PRIV00001"]}], "projects": []}`},
+		{http.StatusOK, `{"projects": [{"project": "PRIV", "slack_channels": ["C0PRIV00001"]}], "PROJECTS": []}`},
+		{http.StatusOK, `{"projects": [{"project": "PRIV", "slack_channels": ["C0PRIV00001"], "slack_channels": []}]}`},
 	}
 	for _, read := range privateReads {
 		for _, row := range failures {
@@ -217,4 +225,34 @@ func TestTheFreshPrivateProjectsReadAsksDispatchEachTime(t *testing.T) {
 	projectaccess.SetClock(empty, func() time.Time { return now })
 	expect("PrivateProjectsFresh on a new client", empty.PrivateProjectsFresh, third, 1)
 	expect("PrivateProjects on that client, after its one fresh call", empty.PrivateProjects, third, 1)
+}
+
+// TestThePrivateProjectsListAnswersWhenItWasAsked: PrivateProjectsAsOf answers a kept list beside
+// the time its question was asked, not the time it was read back, so a caller ages it as it ages
+// any other answer; and under a context Fresh made it asks Dispatch whatever the cache holds,
+// answers that question's time, and keeps that answer.
+func TestThePrivateProjectsListAnswersWhenItWasAsked(t *testing.T) {
+	server := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+		"PRIV": {Visibility: "private", Owner: "carol@example.com", SlackChannels: []string{"C0PRIV00001"}},
+	}, nil)
+	client := projectaccess.New(server.URL, server.Account, nil)
+	asked := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	now := asked
+	projectaccess.SetClock(client, func() time.Time { return now })
+	read := func(call string, ctx context.Context, wantAsked time.Time, asks int) {
+		t.Helper()
+		before := server.Calls()
+		projects, at, err := client.PrivateProjectsAsOf(ctx)
+		if err != nil || len(projects) != 1 || !at.Equal(wantAsked) {
+			t.Fatalf("%s = %#v, %v, %v; want PRIV, asked at %v", call, projects, at, err, wantAsked)
+		}
+		if got := server.Calls() - before; got != asks {
+			t.Fatalf("%s asked Dispatch %d times, want %d", call, got, asks)
+		}
+	}
+	read("PrivateProjectsAsOf, the first call", t.Context(), asked, 1)
+	now = asked.Add(projectaccess.CacheTTL - time.Second)
+	read("PrivateProjectsAsOf within CacheTTL", t.Context(), asked, 0)
+	read("PrivateProjectsAsOf under Fresh", projectaccess.Fresh(t.Context()), now, 1)
+	read("PrivateProjectsAsOf after the fresh call", t.Context(), now, 0)
 }

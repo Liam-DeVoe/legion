@@ -30,6 +30,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -298,11 +299,11 @@ func New(baseURL string, account ciphertoken.Account, httpClient *http.Client) *
 // freshKey marks a context whose questions are asked of Dispatch whatever the cache holds (Fresh).
 type freshKey struct{}
 
-// Fresh is ctx for questions Dispatch must answer now rather than the cache: Access and
-// MemberKind under it ask Dispatch even while the cache holds a young answer, and keep what it
-// answers as any other answer is kept. It is for a check that must see a change younger than
-// CacheTTL, as the model judge's approval does when it checks the project rule again before it
-// is written (requests.Machine.ApplyJudgeDecision): the run's own reads filled the cache well
+// Fresh is ctx for questions Dispatch must answer now rather than the cache: Access, MemberKind
+// and PrivateProjects under it ask Dispatch even while the cache holds a young answer, and keep
+// what it answers as any other answer is kept. It is for a check that must see a change younger
+// than CacheTTL, as the model judge's approval does when it checks the project rule again before
+// it is written (requests.Machine.ApplyJudgeDecision): the run's own reads filled the cache well
 // inside CacheTTL, so a check that read them back could not see a project that turned private
 // while the model was asked.
 func Fresh(ctx context.Context) context.Context {
@@ -450,30 +451,40 @@ func (c *Client) States(ctx context.Context, projects []string) (map[string]Answ
 
 // PrivateProjects is every private project Dispatch holds, with the Slack channels each one's
 // owner named, from the cache while the list it kept is younger than CacheTTL, aged from before
-// its question was sent. It never answers a short list: a 401 or a 403 is ErrBrokerRefused, and
-// any other status but 200, a 404 of any code included, an answer it cannot decode, one with no
-// projects key, a null projects, a projects that is not an array and an entry with no key are each
-// an error, never kept and never an empty list, so every caller treats them as a list it could
-// not read. Only "projects": [] is the empty list. An entry with no slack_channels key is kept,
-// SlackChannelsPresent false, for the caller to fail closed on by name.
+// its question was sent, unless ctx is one Fresh made. It never answers a short list: a 401 or a
+// 403 is ErrBrokerRefused, and any other status but 200, a 404 of any code included, an answer it
+// cannot decode, one with no projects key, a null projects, a projects that is not an array and an
+// entry with no key are each an error, never kept and never an empty list, so every caller treats
+// them as a list it could not read. Only "projects": [] is the empty list. An entry with no
+// slack_channels key is kept, SlackChannelsPresent false, for the caller to fail closed on by name.
 func (c *Client) PrivateProjects(ctx context.Context) ([]PrivateProject, error) {
+	projects, _, err := c.PrivateProjectsAsOf(ctx)
+	return projects, err
+}
+
+// PrivateProjectsAsOf is PrivateProjects, answering beside the list when its question was asked:
+// the kept list's own time, or this call's, read before the question was sent. A caller that
+// decides on the list ages it as it ages any other answer (Stale), so a list kept 29 seconds is
+// not decided on 2 seconds later. It is a method of *Client alone, beside PrivateLister, so that
+// interface and every implementation of it are unchanged.
+func (c *Client) PrivateProjectsAsOf(ctx context.Context) ([]PrivateProject, time.Time, error) {
 	c.mu.Lock()
 	held := c.private
 	c.mu.Unlock()
-	if held != nil && c.now().Sub(held.at) < CacheTTL {
-		return held.projects, nil
+	if held != nil && !fresh(ctx) && c.now().Sub(held.at) < CacheTTL {
+		return held.projects, held.at, nil
 	}
 	asked := c.now()
 	projects, err := c.readPrivateProjects(ctx)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	c.mu.Lock()
 	if c.private == nil || c.private.at.Before(asked) {
 		c.private = &cachedPrivate{projects: projects, at: asked}
 	}
 	c.mu.Unlock()
-	return projects, nil
+	return projects, asked, nil
 }
 
 // PrivateProjectsFresh is every private project as Dispatch answers it now: the request and the
@@ -503,7 +514,8 @@ func (c *Client) SawPrivate() bool { return c.sawPrivate.Load() }
 // readPrivateProjects asks Dispatch's private-projects route once. The answer is decoded with
 // projects held raw, and refused unless that value opens a JSON array before the array itself is
 // decoded: a missing key and a null would otherwise decode to the same nil a [] does, and a list
-// read short is the one answer no caller can tell from the truth.
+// read short is the one answer no caller can tell from the truth. An answer holding one key twice
+// in an object, "projects" or an entry's "slack_channels", is get's refusal (duplicateKey).
 func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, error) {
 	var wire struct {
 		Projects json.RawMessage `json:"projects"`
@@ -550,6 +562,46 @@ func (c *Client) readPrivateProjects(ctx context.Context) ([]PrivateProject, err
 		c.sawPrivate.Store(true)
 	}
 	return projects, nil
+}
+
+// duplicateKey is the first key that an object of raw, at any depth, holds twice, compared without
+// regard to case, as encoding/json matches a key to a field; "" when no object does. raw is one
+// JSON value, which get has already decoded once.
+func duplicateKey(raw []byte) (string, error) {
+	return duplicateIn(json.NewDecoder(bytes.NewReader(raw)))
+}
+
+// duplicateIn reads the next value of decoder whole, and answers duplicateKey's answer for it.
+func duplicateIn(decoder *json.Decoder) (string, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return "", err
+	}
+	delim, open := token.(json.Delim)
+	if !open {
+		return "", nil
+	}
+	var keys []string
+	for decoder.More() {
+		if delim == '{' {
+			token, err := decoder.Token()
+			if err != nil {
+				return "", err
+			}
+			// An object's key is always a string token.
+			key, _ := token.(string)
+			if slices.ContainsFunc(keys, func(seen string) bool { return strings.EqualFold(seen, key) }) {
+				return key, nil
+			}
+			keys = append(keys, key)
+		}
+		if key, err := duplicateIn(decoder); key != "" || err != nil {
+			return key, err
+		}
+	}
+	// The closing delimiter.
+	_, err = decoder.Token()
+	return "", err
 }
 
 func (c *Client) cachedAnswer(key accessKey) (cachedAnswer, bool) {
@@ -602,6 +654,9 @@ func (c *Client) sweepLocked() {
 // returned as its status with no error, only when its body's code is PROJECT_NOT_FOUND, the code
 // Dispatch's project route answers a project it does not hold with; any other 404 (a Dispatch
 // that does not serve the route, a wrong path behind an ingress) is a failure naming its code.
+// A 200 whose body holds one key twice in an object, at any depth, is an error too (duplicateKey):
+// encoding/json keeps the last of the two, so a project answer carrying "visibility" as "private"
+// and then "public" would read as public, and a list carrying "projects" twice as its last one.
 // Every other status, a transport failure and a body it could not read or decode are errors naming
 // what failed and never the token.
 func (c *Client) get(ctx context.Context, path string, query url.Values, limit int64, into any) (int, error) {
@@ -649,6 +704,9 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, limit i
 	}
 	if err := json.Unmarshal(body, into); err != nil {
 		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
+	}
+	if key, err := duplicateKey(body); err != nil || key != "" {
+		return 0, fmt.Errorf("projectaccess: dispatch's answer to %s holds the key %q twice in one object, so it has two readings and is no answer (%v)", path, key, err)
 	}
 	return http.StatusOK, nil
 }

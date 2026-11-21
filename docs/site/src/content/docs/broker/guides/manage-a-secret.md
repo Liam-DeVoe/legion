@@ -243,10 +243,12 @@ refuses names the identity it refused ([Which sign-in may do what](#which-sign-i
   `POST /api/chat.postMessage`, carrying `channel`, `thread_ts` and `text`, to a channel id the
   owner of every private project it names allows; the proxy refuses every other call
   `CHANNEL_NOT_ALLOWED`. Where the secret has no airlock entry, such a credential is denied it
-  `project-channels-need-airlock`. A credential that names no private project gets the secret as
-  before, and behind the airlock, once the broker knows a project is private, the proxy refuses it
-  `PRIVATE_CHANNEL` any call naming a channel a private project's owner named, and any search. Any
-  other value, and on `create` the word `none`, is refused before anything is written.
+  `project-channels-need-airlock`, and so is every credential while a private project's owner
+  lists a Slack channel. A credential that names no private project gets the secret as before,
+  and behind the airlock, while a private project's owner lists a channel, the proxy carries for it
+  only `chat.postMessage`, `conversations.replies` and `auth.test`, refusing `PRIVATE_CHANNEL` any
+  other method and any call naming a channel a private project's owner listed. Any other value,
+  and on `create` the word `none`, is refused before anything is written.
 - **`--max-grant`** is optional, except with `--admin true` and with
   `--type google-service-account`, where each needs it, of an hour or less. It is the longest
   `--ttl` a request for this secret may use.

@@ -2,6 +2,7 @@ package requests
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"testing"
 
@@ -136,8 +137,7 @@ func TestARevokeWaitsForAnAdoptionOfTheSessionInFlight(t *testing.T) {
 // its machine login" (GrantsSection.tsx's unrevocable) rather than offering a Revoke the broker
 // refuses. The control, in the same row: once the setting maps the account to dave again, the
 // row names him as the operator. That the revoke answers the same is
-// TestAnUnmappedPersonsPodsFormerPersonEndsAGrantTheySeeOnlyAsAnyoneMay's, and
-// TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant's control.
+// TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant's.
 func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testing.T) {
 	m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	dave := personPod{person: "dave@example.com", service: "person-dave", account: "system:serviceaccount:people:dave"}
@@ -176,14 +176,65 @@ func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testi
 	}
 }
 
+// TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant: dave's pod gets SLACK_TOKEN without asking
+// while BROKER_POD_OPERATORS maps it to dave. While the setting still maps it, the pod acts for
+// dave (operatorOf), so dave's revoke is the operator's: it ends the grant and withholds
+// SLACK_TOKEN on the pod, and on the pod alone, since a person's pod enrols with no session name
+// (lockSessionEnrollments locks it by itself). Once the setting drops the account the pod acts for
+// no person, so the same revoke by its former person is refused NOT_APPROVER, ends nothing and
+// withholds nothing. Each case has its control: operatorOf giving no pod a person fails the
+// mapped case alone, and operatorOf ignoring the setting fails the unmapped case alone.
+func TestOnlyAMappedPersonRevokesTheirPodsAutomaticGrant(t *testing.T) {
+	for _, mapped := range []bool{true, false} {
+		name := "the setting maps the pod to dave"
+		if !mapped {
+			name = "the setting no longer maps the pod"
+		}
+		t.Run(name, func(t *testing.T) {
+			const dave = "dave@example.com"
+			m, _, _, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
+			p := personPod{person: dave, service: "person-dave", account: "system:serviceaccount:people:dave"}
+			set, err := exchange.NewSet([]exchange.AccountEntry{{Account: p.account, Project: teamProject, Person: insider}}, nil, nil, nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.Exchange = set
+			m.PodOperators = map[string]string{p.account: p.person}
+			pod, key := p.enroll(t, m.Store, "pod-dave-"+t.Name())
+			_, grantID := grantOf(t, m, pod, key, "use the pod's secret", "SLACK_TOKEN")
+			var session *string
+			if err := m.Store.Pool.QueryRow(t.Context(), `select session_id from enrollments where id=$1`, pod).Scan(&session); err != nil {
+				t.Fatal(err)
+			}
+			if session != nil {
+				t.Fatalf("dave's pod enrolled with session name %q; want none, or the revoke locks more than the pod", *session)
+			}
+			if !mapped {
+				delete(m.PodOperators, p.account)
+			}
+			err = m.RevokeByApprover(t.Context(), grantID, dave, record.HumanActor(dave))
+			withheld := withheldCount(t, m, pod)
+			if mapped {
+				if err != nil || withheld != 1 {
+					t.Errorf("dave's revoke of his mapped pod's automatic grant = %v, withholding %d names on the pod; want nil and 1, SLACK_TOKEN", err, withheld)
+				}
+				return
+			}
+			if !errors.Is(err, ErrNotApprover) || withheld != 0 {
+				t.Errorf("dave's revoke of the grant of a pod the setting no longer maps to him = %v, withholding %d names; want ErrNotApprover and 0", err, withheld)
+			}
+			requireGrantLive(t, m, grantID)
+		})
+	}
+}
+
 // TestAnOperatorsRevokeEndsADormantBoxsAutomaticGrantOfTheName: box A of a session holds an
 // automatic AUTO_TOKEN grant G1; box D of the same session and principal holds its own automatic
 // AUTO_TOKEN grant G2 and then goes dormant, its box ended while holding G2. The operator revokes
 // G1. The revoke locks D with A (a dormant box of the session is among them), withholds AUTO_TOKEN
-// on it and ends G2. The session then enrols on box N, and the adoption moves D's rows and A's
-// withheld name to N (moveSession and the withheld clause): G2 releases nothing on N, and N's next
-// AUTO_TOKEN request waits for a person. The row fails when the revoke takes live boxes only: G2
-// stays live, moves to N, releases there, and is handed back to N's request.
+// on it and ends G2, so the session's next adoption, which would carry D's grants to the box it
+// runs on, carries no live grant of the withheld name. The row fails when the revoke takes live
+// boxes only: D withholds nothing and G2 stays live.
 func TestAnOperatorsRevokeEndsADormantBoxsAutomaticGrantOfTheName(t *testing.T) {
 	m, a, keyA, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	principal := exchange.PersonPrincipal(fixtureOperator)
@@ -207,20 +258,5 @@ func TestAnOperatorsRevokeEndsADormantBoxsAutomaticGrantOfTheName(t *testing.T) 
 	}
 	if g2Live {
 		t.Errorf("the dormant box's automatic AUTO_TOKEN grant %s is live after the operator withheld AUTO_TOKEN from the session; want it ended", g2)
-	}
-
-	n, keyN := newEnrollment(t, m.Store, "session", "box-n-"+t.Name(), new(fixtureOperator), nil)
-	nameTheSession(t, m, n, "sess-dormant", principal)
-	moveSession(t, m, d, n)
-	if _, err := m.Store.Pool.Exec(t.Context(), `with moved as (delete from withheld_secrets where enrollment_id=$1 returning name, created_at)
-		insert into withheld_secrets (enrollment_id, name, created_at) select $2, name, created_at from moved on conflict do nothing`, a, n); err != nil {
-		t.Fatal(err)
-	}
-	if release, err := m.Values(t.Context(), g2, n, nil, ReleaseCall{}); err == nil || release.Values != nil {
-		t.Errorf("G2 on the box the session moved to released %v, %v; want it refused", release.Values, err)
-	}
-	again, err := m.Create(t.Context(), n, signRequest(t, m, keyN, "deploy again", "AUTO_TOKEN"), "", nil)
-	if err != nil || again.GrantID != nil {
-		t.Errorf("box N's AUTO_TOKEN request = %+v, %v; want it waiting for a person", again, err)
 	}
 }

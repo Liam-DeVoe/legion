@@ -689,16 +689,26 @@ ten minutes.
 
 Every other credential that gets the secret behind the airlock is fenced from the private
 projects' channels. Once the broker knows a project is private, because Dispatch has answered it
-so, the proxy refuses it `PRIVATE_CHANNEL`, without calling Slack, any call naming a channel id a
-private project's owner listed: under `channel`, `channel_id` or `channels`, in the query, a JSON
-body or a form, in any case and with white space or commas around it. It refuses a search too,
-which reads every channel at once, and a call whose body it cannot read: one of another type than
-JSON or a form, compressed, or over 1 MiB. The broker reads that list with its own token, keeps it
-30 seconds, and reads it again for a pod holding the secret within ten minutes; while it cannot
-read the list, or a private project's entry carries no channel list, every call on the secret is
-refused `PRIVATE_CHANNELS_UNREAD`, and the broker reads it again within a minute. While no project
-is private, the broker asks Dispatch nothing for it and the proxy reads no body: every call is
-carried as before.
+so, and a private project's owner lists a channel, the proxy carries only the Slack methods
+Legion itself calls with the token: `chat.postMessage` and `conversations.replies`, each to a
+channel no private project lists, and `auth.test`. It refuses `PRIVATE_CHANNEL`, without calling
+Slack, every other method, since a method that names no channel can still answer a private
+channel's content (`reactions.list`, `stars.list`, `files.list`, `files.info`, the searches) or
+its name (`conversations.list`); any call naming a channel id a private project's owner listed,
+under `channel`, `channel_id` or `channels`, in the query, a JSON body or a form, in any case and
+with white space or commas around it; and a call whose body it cannot read: one of another type
+than JSON or a form, compressed, or over 1 MiB. The broker reads that list with its own token,
+keeps it 30 seconds, and reads it again for a pod holding the secret within ten minutes; while it
+cannot read the list, or a private project's entry carries no channel list, every call on the
+secret is refused `PRIVATE_CHANNELS_UNREAD`, and the broker reads it again within a minute. While
+no project is private, the broker asks Dispatch nothing for it and the proxy reads no body: every
+call is carried as before.
+
+The fence holds only behind the airlock. So while a private project's owner lists a channel, the
+broker gives a `project-channels` secret with no airlock entry to no credential at all, denying it
+`project-channels-need-airlock`, and a grant made before then is not released again. While it
+cannot read the list, such a request or release is answered `503 PROJECT_ACCESS_UNAVAILABLE` and
+decided once it can.
 
 A channel an owner names is fenced from every other credential before the owner's own project
 posts to it. A private project's credential posts to none of its project's channels for 16
@@ -1179,7 +1189,7 @@ behind the airlock is the exception: the broker releases a placeholder for it an
 
 A grant ends when its lifetime runs out, when its session revokes it (`agent-secrets revoke`, or
 `agent-secrets grant revoke` run inside the session), when
-its approver or its enrollment's operator revokes it in Dispatch or from one of their machines
+its approver or the person its session acts for revokes it in Dispatch or from one of their machines
 (`agent-secrets grant revoke`), and when the enrollment holding it ends for good: a person's revoke
 of the machine login or the sign-in behind it, or the carry window closing on an enrollment the
 box's end left dormant.
