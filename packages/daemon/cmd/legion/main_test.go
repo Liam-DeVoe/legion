@@ -58,6 +58,13 @@ func TestMain(m *testing.M) {
 		if curl := os.Getenv(testCurlEnv); curl != "" {
 			leakguardCurl = curl
 		}
+		// The bounds legion sets on a program it starts, at what is left of the deadline of the
+		// test binary that started this run (testBounds). Only this test binary reads the
+		// variable; the legion binary has none.
+		if err := boundByTheEnvironment(); err != nil {
+			fmt.Fprintln(os.Stderr, "TestMain:", err)
+			os.Exit(2)
+		}
 		// The environment these tests hand gh beside ghChildEnviron's allowlist
 		// (testGhChildEnviron); the legion binary has no such hook.
 		ghChildTestEnviron = testGhChildEnviron(os.Environ())
@@ -70,6 +77,15 @@ func TestMain(m *testing.M) {
 	// The tests run real git and jj, in-process and as children (fixtureenv.MustGuard).
 	// LEGION_GH_PATH is kept: it names the real gh a capture test runs, a binary and no credential.
 	fixtureenv.MustGuard("LEGION_GH_PATH")
+	// The bounds legion sets on a program it starts, at what is left of this binary's deadline,
+	// here and in every run of it as `legion` (testBounds). After MustGuard, which takes LEGION_*
+	// variables out of the environment.
+	if deadline, ok := testBinaryDeadline(); ok {
+		if err := boundByTheDeadline(deadline); err != nil {
+			fmt.Fprintln(os.Stderr, "TestMain:", err)
+			os.Exit(1)
+		}
+	}
 	// testpg.Main lets TestPauseCommands clone a migrated database of its own, and drops what it
 	// cloned once the run ends; a run that clones nothing, as every other test here, costs nothing,
 	// and with no LEGION_TEST_PG_DSN the cloning test is skipped (testpg.Clone).

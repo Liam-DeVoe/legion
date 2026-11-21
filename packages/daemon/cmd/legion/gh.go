@@ -1248,6 +1248,11 @@ func refuseLegionGhAsRealGh(gh string) error {
 	return nil
 }
 
+// ghHelpTimeout is the longest readGhHelp waits for the real gh to print a command's help. The
+// real gh prints it from its own binary in well under a second; a gh that has not in 30 s is
+// hung, and the person running `legion gh` gets a refusal that names the wait rather than a call
+// that never returns. It is a variable so that this package's tests can give it their own deadline
+// (testBounds), or a second to read that the stop comes.
 var ghHelpTimeout = 30 * time.Second
 
 // readGhHelp is the real gh's help of the command path, `gh <path> --help` (`gh --help` for
