@@ -52,19 +52,20 @@ func TestAFailedStepReturnsToThePlaceItNames(t *testing.T) {
 		seedStepsAt(t, pool, root.Key, root.Generation, 4, types, "implementer", "checker", "linter", "critic")
 
 		issue, w := issueAndWalkOf(t, pool, engine, root.Key)
-		got, why, err := returnStep(issue, w, w.Place, 3, failReport)
-		if err != nil || why != "" || got != stepPlace(3) {
-			t.Fatalf("returnStep(3) at step 4 = %+v, %q, %v; want step 3 and no refusal", got, why, err)
+		from := placeNamed(w.Place, issue.Phase)
+		got, why := returnStep(issue, w, from, 3, failReport)
+		if why != "" || got != stepPlace(3) {
+			t.Fatalf("returnStep(3) at step 4 = %+v, %q; want step 3 and no refusal", got, why)
 		}
 		const refusal = "returnTo is 4, and step 4 (critic) of task a of LEGION-208 is not before step 4 (critic), the step that failed; " +
 			"send the fail again naming an earlier step, or without returnTo; nothing was recorded"
-		if got, why, err := returnStep(issue, w, w.Place, 4, failReport); err != nil || why != refusal || got != (record.TaskPlace{}) {
-			t.Fatalf("returnStep(4) at step 4 = %+v, %q, %v; want the refusal %q", got, why, err, refusal)
+		if got, why := returnStep(issue, w, from, 4, failReport); why != refusal || got != (record.TaskPlace{}) {
+			t.Fatalf("returnStep(4) at step 4 = %+v, %q; want the refusal %q", got, why, refusal)
 		}
 		// A move back is judged by the same judge, in its own words.
 		const moveRefusal = "returnTo is 4, and step 4 (critic) of task a of LEGION-208 is not before step 4 (critic), the step that moves back; " +
 			"send the move again naming an earlier step, or without returnTo; nothing was recorded"
-		if _, why, _ := returnStep(issue, w, w.Place, 4, backwardMove); why != moveRefusal {
+		if _, why := returnStep(issue, w, from, 4, backwardMove); why != moveRefusal {
 			t.Fatalf("returnStep(4) of a move back at step 4 refuses %q, want %q", why, moveRefusal)
 		}
 
@@ -79,8 +80,8 @@ func TestAFailedStepReturnsToThePlaceItNames(t *testing.T) {
 		seedStepsAt(t, pool, root.Key, root.Generation, 3, types, "implementer", "checker", "linter")
 
 		issue, w := issueAndWalkOf(t, pool, engine, root.Key)
-		if got, why, err := returnStep(issue, w, w.Place, 2, failReport); err != nil || why != "" || got != stepPlace(2) {
-			t.Fatalf("returnStep(2) at step 3 = %+v, %q, %v; want step 2 and no refusal", got, why, err)
+		if got, why := returnStep(issue, w, placeNamed(w.Place, issue.Phase), 2, failReport); why != "" || got != stepPlace(2) {
+			t.Fatalf("returnStep(2) at step 3 = %+v, %q; want step 2 and no refusal", got, why)
 		}
 	})
 }

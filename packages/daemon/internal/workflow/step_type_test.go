@@ -60,8 +60,8 @@ func TestAStoredStepTakesTheTypeOfItsRoleInTheDeployment(t *testing.T) {
 
 		firstStep(t, pool, engine, root.Key)
 
-		if got := stepsOfTask(planStandingOf(t, pool, engine, root.Key, root.Generation).plan, plan.DefaultTask); !reflect.DeepEqual(got, todaysDefaultSteps) {
-			t.Fatalf("the stored default steps = %v, want Legion's own roles with theirs, %v", got, todaysDefaultSteps)
+		if got := stepsOfTask(planStandingOf(t, pool, engine, root.Key, root.Generation).plan, plan.DefaultTask); !reflect.DeepEqual(got, todaysStoredSteps) {
+			t.Fatalf("the stored default steps = %v, want Legion's own roles with theirs, %v", got, todaysStoredSteps)
 		}
 	})
 }

@@ -19,11 +19,13 @@ const (
 	wayBackClosing = "SQL"
 )
 
-// wayBackOf is the way back in the header of migration version as an operator copies it out of
-// the file: the lines between the psql line and the heredoc's end, each without the comment
+// heredocWayBackOf is the way back in the header of migration version as an operator copies it
+// out of the file: the lines between the psql line and the heredoc's end, each without the comment
 // marker and the header's own indent. A header with no such block, or a block that never ends,
-// stops the test, since running nothing would pass every assertion that the way back refuses.
-func wayBackOf(t *testing.T, version int) string {
+// stops the test, since running nothing would pass every assertion that the way back refuses. It
+// is not migrations.WayBack (wayBackOf), which reads a header whose last paragraph is the block
+// itself: this header ends with the heredoc's closing line.
+func heredocWayBackOf(t *testing.T, version int) string {
 	t.Helper()
 	all, err := migrations.All()
 	if err != nil {
@@ -166,7 +168,7 @@ func TestTheStoreTakesADeploymentRoleAndTheStepPhase(t *testing.T) {
 		refusedBy(refusal.what, refusal.sql, refusal.constraint)
 	}
 
-	wayBack := wayBackOf(t, deploymentRolesVersion)
+	wayBack := heredocWayBackOf(t, deploymentRolesVersion)
 	for _, stand := range []struct {
 		named, then string
 	}{

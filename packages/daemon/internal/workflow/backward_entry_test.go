@@ -12,9 +12,9 @@ import (
 // A phase worker's move back is the decision of a turn on the task of the entry its claim serves,
 // which the route reads and the move carries (intake.BackwardMove.PhaseEntry), and the workflow
 // judges it on the requester's phases row under the fact's lock. Here the checker, a role of the
-// deployment, took the task of entry `first` at step 2 of `implementer checker`; the daemon's
-// conflict move sent the work back while that turn ran, and the implementer's completion entered
-// step 2 again on entry `second`. The checker's move back of entry `first` is refused
+// deployment, took the task of entry `first` at step 2 of `implementer checker`; a move back the
+// checker did not make sent the work back while that turn ran, and the implementer's completion
+// entered step 2 again on entry `second`. The checker's move back of entry `first` is refused
 // BACKWARD_REFUSED, unspent, and the task stays at step 2 with the checker's row as it stood. The
 // controls: the same move of entry `second`, and a move that names no entry (the architect's, or
 // a claim that serves none), each send the task back to implementing.
@@ -24,7 +24,7 @@ func TestAMoveBackOfAnEntryRaisedSinceMovesNothing(t *testing.T) {
 		entry func(first, second int64) int64
 		moves bool
 	}{
-		{"the checker's move of the entry the conflict left", func(first, _ int64) int64 { return first }, false},
+		{"the checker's move of the entry the earlier move back left", func(first, _ int64) int64 { return first }, false},
 		{"the control: the checker's move of the entry that stands", func(_, second int64) int64 { return second }, true},
 		{"the control: a move that names no entry", func(int64, int64) int64 { return 0 }, true},
 	} {
@@ -41,9 +41,9 @@ func TestAMoveBackOfAnEntryRaisedSinceMovesNothing(t *testing.T) {
 			assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(2))
 			first := roleRowOf(t, pool, engine, root.Key, "checker").Entry
 
-			// The daemon's own move on a head that conflicts with its base, while the checker's turn
-			// of entry `first` still runs; then the implementer's fix enters step 2 again.
-			move(t, pool, engine, root.Key, TriggerConflict, record.TaskPlace{}, record.PhaseRow{})
+			// A move back the checker did not make, while its turn of entry `first` still runs; then
+			// the implementer's fix enters step 2 again.
+			move(t, pool, engine, root.Key, TriggerBackward, stepPlace(1), record.PhaseRow{})
 			stepReports(t, pool, engine, root.Key, claim.RoleImplementer, "", "rebased", "impl-2", 0)
 			assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(2))
 			second := roleRowOf(t, pool, engine, root.Key, "checker")

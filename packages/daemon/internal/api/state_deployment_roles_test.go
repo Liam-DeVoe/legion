@@ -17,7 +17,8 @@ import (
 )
 
 // servedRoles is what a state body serves of the roles a deployment defines: the issues by key, the
-// admission's active issues, and the role of each stranded claim and waiting wake by issue.
+// admission's active issues, and the role of each stranded claim, waiting wake and pause stop by
+// issue.
 type servedRoles struct {
 	Issues    map[string]map[string]any `json:"issues"`
 	Admission struct {
@@ -31,6 +32,12 @@ type servedRoles struct {
 		Issue string `json:"issue"`
 		Role  string `json:"role"`
 	} `json:"wakesWaiting"`
+	Paused *struct {
+		WaitsOn []struct {
+			Issue string `json:"issue"`
+			Role  string `json:"role"`
+		} `json:"waitsOn"`
+	} `json:"paused"`
 }
 
 // leftOutLine is one line the daemon writes for a claim a narrowing leaves out (leftAClaimOut).
@@ -40,14 +47,17 @@ type leftOutLine struct {
 	Claim          string `json:"claim"`
 }
 
-// stateServedWithLog is GET /legion/v1/state asked from a pod whose claims record contract, the
-// body decoded, the narrowing lines that call wrote and the lines of each claim left out.
+// stateServedWithLog is GET /legion/v1/state asked by a caller that states contract in
+// pluginContractHeader, the body decoded, the narrowing lines that call wrote and the lines of
+// each claim left out. A pod's claims could not place a caller just below deploymentRolesContract:
+// a pod's reckoning counts no claim at shapedAnswersContract or above (podContracts), since a
+// build of that contract or later states its own.
 func stateServedWithLog(t *testing.T, state State, contract int) (servedRoles, []narrowingLine, []leftOutLine) {
 	t.Helper()
 	var logged bytes.Buffer
-	options := stateOptions(state, podClaims(contract))
+	options := stateOptions(state, nil)
 	options.Log = slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	body := stateAsked(t, NewServer("127.0.0.1", 8437, options).Handler, statePodAddr+":41000")
+	body := stateStating(t, NewServer("127.0.0.1", 8437, options).Handler, "192.0.2.1:41000", contract)
 	var served servedRoles
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatalf("decode state %s: %v", body, err)
@@ -86,7 +96,7 @@ func deploymentRolesDropped() string {
 	return ""
 }
 
-// A caller older than deploymentRolesContract sees an issue at step as at work (ruling 4): for a
+// A caller older than deploymentRolesContract sees an issue at step as at work: for a
 // caller at each contract the daemon serves below it, LEGION-240, at step, is in `issues` with the
 // phase implementing and in `admission.active`, and names no start that waits for its pod;
 // LEGION-241, held from step, is held from implementing for a caller at recordFieldsContract or
@@ -200,17 +210,22 @@ func issueKeys(m map[string]map[string]any) []string {
 }
 
 // Each claim the row leaves out for an older caller is logged, one line each, naming the caller's
-// plugin contract and the claim: the checker's stranded claim on LEGION-241 and its waiting wake
-// are two lines.
+// plugin contract and the claim: the checker's stranded claim on LEGION-241, its waiting wake and
+// the open pause's wait on its stop are three lines, and none of the three is served.
 func TestEachClaimLeftOutForAnOlderCallerIsLogged(t *testing.T) {
 	state := populatedState(t)
 	state.WakesWaiting = append(slices.Clone(state.WakesWaiting), WakeWaiting{Claim: "legion-legion-legion-241-checker", Issue: "LEGION-241", Role: "checker",
 		Kind: "launch", DueAt: time.Date(2026, 9, 22, 9, 18, 20, 0, time.UTC)})
+	paused := *state.Paused
+	paused.WaitsOn = append(slices.Clone(paused.WaitsOn), PauseStopView{Claim: "legion-legion-legion-241-checker", Issue: "LEGION-241", Role: "checker",
+		AskedAt: time.Date(2026, 9, 22, 9, 18, 30, 0, time.UTC)})
+	state.Paused = &paused
 	contract := deploymentRolesContract - 1
 
 	served, _, left := stateServedWithLog(t, state, contract)
 
 	want := []leftOutLine{
+		{Message: leftAClaimOut, PluginContract: contract, Claim: "checker of LEGION-241"},
 		{Message: leftAClaimOut, PluginContract: contract, Claim: "checker of LEGION-241"},
 		{Message: leftAClaimOut, PluginContract: contract, Claim: "checker of LEGION-241"},
 	}
@@ -222,13 +237,21 @@ func TestEachClaimLeftOutForAnOlderCallerIsLogged(t *testing.T) {
 			t.Fatalf("the waiting wakes served name the checker on %s, want none for a caller below the contract", wake.Issue)
 		}
 	}
+	if served.Paused == nil {
+		t.Fatal("the state served carries no `paused`, want the open pause for a caller above pauseContract")
+	}
+	for _, stop := range served.Paused.WaitsOn {
+		if stop.Role == "checker" {
+			t.Fatalf("the open pause served waits on the checker's stop on %s, want none for a caller below the contract", stop.Issue)
+		}
+	}
 }
 
 // deploymentRolesContract is the contract whose entry in version.go added the roles a deployment
 // defines to the state. The number is pinned, as OwnerPlanContract's is: a constant left behind at
 // a renumber would serve a plugin that cannot parse step the phase step.
 func TestTheDeploymentRolesContractIsTheContractThatAddedTheRoles(t *testing.T) {
-	const addedDeploymentRoles = 161
+	const addedDeploymentRoles = 217
 	if deploymentRolesContract != addedDeploymentRoles {
 		t.Fatalf("deploymentRolesContract = %d, want %d, the contract whose entry in version.go added the phase step and stepRole",
 			deploymentRolesContract, addedDeploymentRoles)
@@ -238,11 +261,12 @@ func TestTheDeploymentRolesContractIsTheContractThatAddedTheRoles(t *testing.T) 
 	}
 }
 
-// servedWithoutDeploymentRoles changes want, a state body as decoded JSON, to what
-// withoutDeploymentRoles serves a caller below deploymentRolesContract: each phase, heldFrom and
-// pending task's phase of step served as implementing, no stepRole, no startWaitsForPod, and no
-// stranded claim or waiting wake of a role outside Legion's six. The tests that build a narrowed
-// body from the full one apply it as they take out the keys of every other row.
+// servedWithoutDeploymentRoles changes want, a state body as decoded JSON, to what the band of
+// deploymentRolesContract serves a caller below it (withoutDeploymentRoles and
+// withoutDeploymentRoleClaims): each phase, heldFrom and pending task's phase of step served as
+// implementing, no stepRole, no startWaitsForPod, and no stranded claim, waiting wake or pause
+// stop of a role outside Legion's six. The tests that build a narrowed body from the full one
+// apply it as they take out the keys of every other row.
 func servedWithoutDeploymentRoles(want map[string]any) {
 	issues, _ := want["issues"].(map[string]any)
 	for _, issue := range issues {
@@ -271,23 +295,29 @@ func servedWithoutDeploymentRoles(want map[string]any) {
 			}
 		}
 	}
-	for _, key := range []string{"strandedClaims", "wakesWaiting"} {
-		entries, ok := want[key].([]any)
-		if !ok {
-			continue
-		}
+	keepBuiltin := func(entries []any) []any {
 		kept := []any{}
 		for _, entry := range entries {
 			if role, _ := entry.(map[string]any)["role"].(string); claim.IsBuiltin(claim.Role(role)) {
 				kept = append(kept, entry)
 			}
 		}
-		want[key] = kept
+		return kept
+	}
+	for _, key := range []string{"strandedClaims", "wakesWaiting"} {
+		if entries, ok := want[key].([]any); ok {
+			want[key] = keepBuiltin(entries)
+		}
+	}
+	if paused, ok := want["paused"].(map[string]any); ok {
+		if stops, ok := paused["waitsOn"].([]any); ok {
+			paused["waitsOn"] = keepBuiltin(stops)
+		}
 	}
 }
 
-// withoutDeploymentRoleKeys is body, a state body, as withoutDeploymentRoles serves it
-// (servedWithoutDeploymentRoles), written back as JSON.
+// withoutDeploymentRoleKeys is body, a state body, as the band of deploymentRolesContract serves
+// it (servedWithoutDeploymentRoles), written back as JSON.
 func withoutDeploymentRoleKeys(t *testing.T, body []byte) []byte {
 	t.Helper()
 	var state map[string]any

@@ -93,14 +93,14 @@ func TestADeploymentRoleOfAnyTypeStartsAndReports(t *testing.T) {
 			if got := stepRoleOf(t, pool, engine, root.Key); got != tc.role {
 				t.Fatalf("the running role = %q, want %s", got, tc.role)
 			}
-			if starts := startsOf(t, pool, root.Key, tc.role); len(starts) != 1 || starts[0].Phase != phase.Step {
+			if starts := roleStartsOf(t, pool, root.Key, tc.role); len(starts) != 1 || starts[0].Phase != phase.Step {
 				t.Fatalf("the starts of the %s = %+v, want one, of step", tc.role, starts)
 			}
 
-			implementerStarts := len(startsOf(t, pool, root.Key, claim.RoleImplementer))
+			implementerStarts := len(roleStartsOf(t, pool, root.Key, claim.RoleImplementer))
 			stepReports(t, pool, engine, root.Key, tc.role, "fail", "The check found a gap.", "", 0)
 			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
-			starts := startsOf(t, pool, root.Key, claim.RoleImplementer)
+			starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer)
 			if len(starts) != implementerStarts+1 {
 				t.Fatalf("the implementer's starts after the fail = %d, want one more than %d", len(starts), implementerStarts)
 			}
@@ -114,7 +114,7 @@ func TestADeploymentRoleOfAnyTypeStartsAndReports(t *testing.T) {
 			if end := lastEndOfStep(t, pool, root.Key, 2); resultOf(end) != "failed" || end.ReturnedTo == nil || *end.ReturnedTo != 1 {
 				t.Fatalf("the end of step 2 = %+v, want failed, returned to 1", end)
 			}
-			if counts := taskCounts(t, pool, root.Key, root.Generation); counts.Rounds != tc.rounds {
+			if counts := taskCounts(t, pool, engine, root.Key, root.Generation); counts.Rounds != tc.rounds {
 				t.Fatalf("the task's rounds = %d, want %d", counts.Rounds, tc.rounds)
 			}
 
@@ -163,7 +163,7 @@ func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 		if got := stepRoleOf(t, pool, engine, root.Key); got != "linter" {
 			t.Fatalf("the running role = %q, want linter", got)
 		}
-		if starts := startsOf(t, pool, root.Key, "linter"); len(starts) != 1 {
+		if starts := roleStartsOf(t, pool, root.Key, "linter"); len(starts) != 1 {
 			t.Fatalf("the linter's starts = %+v, want one", starts)
 		}
 
@@ -174,10 +174,10 @@ func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 			t.Fatalf("after the checker's late completion the running role = %q, want linter", got)
 		}
 
-		checkers := len(startsOf(t, pool, root.Key, "checker"))
+		checkers := len(roleStartsOf(t, pool, root.Key, "checker"))
 		stepReports(t, pool, engine, root.Key, "linter", "fail", "Lint failed.", "", 2)
 		assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(2))
-		if got := len(startsOf(t, pool, root.Key, "checker")); got != checkers+1 {
+		if got := len(roleStartsOf(t, pool, root.Key, "checker")); got != checkers+1 {
 			t.Fatalf("the checker's starts after the linter's fail = %d, want %d", got, checkers+1)
 		}
 	})
@@ -190,7 +190,7 @@ func TestTwoDeploymentStepsAreTwoPlaces(t *testing.T) {
 
 		stepReports(t, pool, engine, root.Key, "critic", "fail", "Lint again.", "", 3)
 		assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(3))
-		if starts := startsOf(t, pool, root.Key, "linter"); len(starts) != 1 {
+		if starts := roleStartsOf(t, pool, root.Key, "linter"); len(starts) != 1 {
 			t.Fatalf("the linter's starts = %+v, want one", starts)
 		}
 		if end := lastEndOfStep(t, pool, root.Key, 4); resultOf(end) != "failed" || end.ReturnedTo == nil || *end.ReturnedTo != 3 {
@@ -212,7 +212,7 @@ func TestADeploymentRoleBeforeTheImplementerNeedsNoPullRequest(t *testing.T) {
 
 	stepReports(t, pool, engine, root.Key, "critic", "pass", "The design holds.", "", 0)
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(2))
-	if starts := startsOf(t, pool, root.Key, claim.RoleImplementer); len(starts) != 1 {
+	if starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer); len(starts) != 1 {
 		t.Fatalf("the implementer's starts = %+v, want one", starts)
 	}
 }
@@ -260,11 +260,11 @@ func TestAHeldStepOfTheDeploymentNamesItsRole(t *testing.T) {
 }
 
 // A completion that arrives after an event moved the issue on to a step of a role the deployment
-// defines is a report of a step whose run ended, as before any other step: in `implementer reviewer
-// checker`, the approving review moves the task from the reviewer's step 2 to the checker's step 3
-// before the reviewer completes, and the reviewer's completion is answered that its step 2 ended
-// and Legion runs step 3 now, its handoff record kept on its row, and the task stays at step 3.
-func TestALateCompletionBeforeADeploymentStepIsAnsweredAsAnEndedStep(t *testing.T) {
+// defines is the first report of a run that event ended, as before any other step: in `implementer
+// reviewer checker`, the approving review moves the task from the reviewer's step 2 to the checker's
+// step 3 before the reviewer completes, and the reviewer's completion is taken onto its row and
+// moves nothing: the task stays at step 3, the checker running.
+func TestALateCompletionBeforeADeploymentStepIsTakenAndMovesNothing(t *testing.T) {
 	pool := migratedPool(t)
 	engine := deploymentEngine()
 	root := stepRoot(t, pool, phase.Admitted)
@@ -281,12 +281,14 @@ func TestALateCompletionBeforeADeploymentStepIsAnsweredAsAnEndedStep(t *testing.
 	result := applyFacts(t, pool, engine)("reviewer-late", intake.HandoffComplete{Generation: 1, Issue: root.Key, Role: claim.RoleReviewer,
 		Claim: reviewer, Summary: "Approved.", Commit: stepHead, HandoffRecord: "review-1", HandoffVersion: 1})
 
-	const ended = "step 2 (reviewer) of task a of LEGION-208 has ended, and Legion runs step 3 (checker) now."
-	if result.Refusal == nil || result.Refusal.Code != "STEP_ENDED" || !strings.HasPrefix(result.Refusal.Message, ended) {
-		t.Fatalf("the reviewer's late completion = %+v, want STEP_ENDED beginning %q", result.Refusal, ended)
+	if result.Refusal != nil {
+		t.Fatalf("the reviewer's late completion = %+v, want it taken", result.Refusal)
 	}
-	if row := roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer); row.LastHandoff != "review-1" {
-		t.Fatalf("the reviewer's row keeps the handoff record %q, want review-1", row.LastHandoff)
+	if row := roleRowOf(t, pool, engine, root.Key, claim.RoleReviewer); row.HandoffRecord != "review-1" || row.LastHandoff != "review-1" {
+		t.Fatalf("the reviewer's row = %+v, want the taken report recorded on it", row)
+	}
+	if got := stepRoleOf(t, pool, engine, root.Key); got != "checker" {
+		t.Fatalf("after the reviewer's late completion the running role = %q, want checker", got)
 	}
 	assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(3))
 }
@@ -314,7 +316,7 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 		applyRefusingNothing(t, pool, engine, intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Reason: "try again"})
 
 		assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(2))
-		if starts := startsOf(t, pool, root.Key, "checker"); len(starts) != 1 || starts[0].Phase != phase.Step {
+		if starts := roleStartsOf(t, pool, root.Key, "checker"); len(starts) != 1 || starts[0].Phase != phase.Step {
 			t.Fatalf("the checker's starts after the retry = %+v, want one, of step", starts)
 		}
 	})
@@ -325,7 +327,7 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 		root := checkerAtStep2(t, pool)
 
 		applyRefusingNothing(t, pool, engine, intake.RestartPhase{Issue: root.Key, Role: "checker"})
-		if starts := startsOf(t, pool, root.Key, "checker"); len(starts) != 1 {
+		if starts := roleStartsOf(t, pool, root.Key, "checker"); len(starts) != 1 {
 			t.Fatalf("the checker's starts after its restart = %+v, want one", starts)
 		}
 		result := applyFacts(t, pool, engine)("restart-linter", intake.RestartPhase{Issue: root.Key, Role: "linter"})
@@ -339,7 +341,7 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 		engine := deploymentEngine()
 		root := stepRoot(t, pool, phase.Step)
 		seedStepsAt(t, pool, root.Key, root.Generation, 1, map[string]string{"critic": "review"}, "critic", "implementer")
-		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+		if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 			t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 		}
 
@@ -348,7 +350,7 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 		}
 
 		assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(1))
-		if starts := startsOf(t, pool, root.Key, "critic"); len(starts) != 1 {
+		if starts := roleStartsOf(t, pool, root.Key, "critic"); len(starts) != 1 {
 			t.Fatalf("the critic's starts after the todo = %+v, want one", starts)
 		}
 	})
@@ -365,7 +367,7 @@ func TestTheStartOfADeploymentStepNamesItsAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got claim.Token
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		got, err = engine.startAgent(ctx, tx, issue, phase.Step)
 		return err
 	})
@@ -403,8 +405,9 @@ func TestABackwardMoveNamesItsPlaceWithReturnTo(t *testing.T) {
 			seedStepsAt(t, pool, root.Key, root.Generation, 4, map[string]string{"checker": "testing", "linter": "testing"},
 				"implementer", "checker", "linter", "acceptance:owner")
 
-			result := applyFacts(t, pool, engine)("move-back", intake.BackwardMove{Issue: root.Key, Requester: claim.RoleArchitect, To: tc.to,
-				ReturnTo: tc.returnTo, Reason: "the check missed a case"})
+			moveBack := rootsMoveBack(t, pool, engine, root.Key, tc.to, "the check missed a case")
+			moveBack.ReturnTo = tc.returnTo
+			result := applyFacts(t, pool, engine)("move-back", moveBack)
 
 			if tc.refusal != "" {
 				if result.Refusal == nil || result.Refusal.Code != "BACKWARD_REFUSED" || result.Refusal.Message != tc.refusal {
@@ -417,7 +420,7 @@ func TestABackwardMoveNamesItsPlaceWithReturnTo(t *testing.T) {
 				t.Fatalf("the move to step %d was refused: %+v", tc.returnTo, result.Refusal)
 			}
 			assertWalksAt(t, pool, engine, root.Key, phase.Step, stepPlace(tc.returnTo))
-			if starts := startsOf(t, pool, root.Key, tc.starts); len(starts) != 1 {
+			if starts := roleStartsOf(t, pool, root.Key, tc.starts); len(starts) != 1 {
 				t.Fatalf("the %s's starts = %+v, want one", tc.starts, starts)
 			}
 		})
@@ -437,42 +440,7 @@ func TestADeploymentRoleMovesItsTaskBack(t *testing.T) {
 	}
 
 	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
-	if starts := startsOf(t, pool, root.Key, claim.RoleImplementer); len(starts) != 1 {
-		t.Fatalf("the implementer's starts = %+v, want one", starts)
-	}
-}
-
-// phaseEndsOf is every phase-ended message key's outbox holds, oldest first.
-func phaseEndsOf(t *testing.T, pool *pgxpool.Pool, key string) []record.PhaseEnded {
-	t.Helper()
-	var ends []record.PhaseEnded
-	for _, row := range issueOutboxOf(t, pool, key, string(record.OutboxKindPhaseEnded)) {
-		payload, err := record.DecodeOutboxPayload(record.OutboxRow{ID: row.id, Kind: record.OutboxKindPhaseEnded, Issue: key, Payload: row.payload})
-		if err != nil {
-			t.Fatalf("decode phase-ended row %d of %s: %v", row.id, key, err)
-		}
-		if ended, ok := payload.(record.PhaseEnded); ok {
-			ends = append(ends, ended)
-		}
-	}
-	return ends
-}
-
-// A head that conflicts with its base takes the issue from a step of a role the deployment defines
-// back to implementing, and that role is told its phase ended, as a tester is told when the
-// conflict ends testing; the implementer starts as it does for every conflict.
-func TestAConflictOutOfADeploymentStepTellsItsRole(t *testing.T) {
-	pool := migratedPool(t)
-	engine := deploymentEngine()
-	root := checkerAtStep2(t, pool)
-
-	move(t, pool, engine, root.Key, TriggerConflict, record.TaskPlace{}, record.PhaseRow{})
-
-	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
-	if ends := phaseEndsOf(t, pool, root.Key); len(ends) != 1 || ends[0].Role != "checker" || ends[0].From != phase.Step || ends[0].To != phase.Implementing {
-		t.Fatalf("the phase-ended messages = %+v, want the checker's one, from step to implementing", ends)
-	}
-	if starts := startsOf(t, pool, root.Key, claim.RoleImplementer); len(starts) != 1 {
+	if starts := roleStartsOf(t, pool, root.Key, claim.RoleImplementer); len(starts) != 1 {
 		t.Fatalf("the implementer's starts = %+v, want one", starts)
 	}
 }
@@ -484,7 +452,7 @@ func TestABackwardMoveToStepNamesWhichStep(t *testing.T) {
 	const refusal = "task a of LEGION-208 has two earlier steps that run as step, %s and %s, so a move back to step does not say which one the " +
 		"task returns to; this move changed nothing. The agent of a step names the place with handoff_complete, the verdict fail and returnTo; " +
 		"the owner names it with request_backward_move and returnTo."
-	moveBack := intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleArchitect, To: phase.Step, Reason: "the check missed a case"}
+	const reason = "the check missed a case"
 	for _, tc := range []struct {
 		name     string
 		words    []string
@@ -511,13 +479,13 @@ func TestABackwardMoveToStepNamesWhichStep(t *testing.T) {
 				t.Fatalf("backwardPlace(step) = %+v, %t, %+v; want %+v, %t, %+v", place, found, two, tc.returnTo, tc.two == nil, tc.two)
 			}
 
-			result := applyFacts(t, pool, engine)("move-back", moveBack)
+			result := applyFacts(t, pool, engine)("move-back", rootsMoveBack(t, pool, engine, root.Key, phase.Step, reason))
 			if tc.two == nil {
 				if result.Refusal != nil {
 					t.Fatalf("the move back to the one earlier step was refused: %+v", result.Refusal)
 				}
 				assertWalksAt(t, pool, engine, root.Key, phase.Step, tc.returnTo)
-				if starts := startsOf(t, pool, root.Key, "checker"); len(starts) != 1 {
+				if starts := roleStartsOf(t, pool, root.Key, "checker"); len(starts) != 1 {
 					t.Fatalf("the checker's starts = %+v, want one", starts)
 				}
 				return
@@ -652,7 +620,7 @@ func TestAStepWhoseRoleTheDeploymentLostStopsTheTask(t *testing.T) {
 
 	stepReports(t, pool, engine, root.Key, claim.RoleImplementer, "", "built", "impl-1", 0)
 
-	if starts := startsOf(t, pool, root.Key, "checker"); len(starts) != 0 {
+	if starts := roleStartsOf(t, pool, root.Key, "checker"); len(starts) != 0 {
 		t.Fatalf("the implementer's completion started the checker %+v, want none: the deployment no longer defines it", starts)
 	}
 	const why = "step 2 names the role checker, which the deployment no longer defines"
@@ -714,7 +682,7 @@ func TestAConfigWithoutADeploymentStartsLegionsRoles(t *testing.T) {
 	move(t, pool, engine, root.Key, TriggerGateOpened, record.TaskPlace{}, record.PhaseRow{})
 	stepReports(t, pool, engine, root.Key, claim.RoleImplementer, "", "built", "impl-1", 0)
 
-	if starts := startsOf(t, pool, root.Key, claim.RoleTester); len(starts) != 1 {
+	if starts := roleStartsOf(t, pool, root.Key, claim.RoleTester); len(starts) != 1 {
 		t.Fatalf("the tester's starts = %+v, want one", starts)
 	}
 	if task := taskOf(t, pool, engine, root.Key); task.State != record.TaskRunning {
@@ -732,7 +700,7 @@ func TestAStopReachesTheDeploymentRoleThatRuns(t *testing.T) {
 	engine := deploymentEngine()
 	root := checkerAtStep2(t, pool)
 
-	if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root.Key, "a")); result.Refusal != nil {
+	if result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, "a")); result.Refusal != nil {
 		t.Fatalf("the owner's stop was refused: %+v", result.Refusal)
 	}
 

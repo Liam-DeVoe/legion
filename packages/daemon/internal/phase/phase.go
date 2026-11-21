@@ -192,8 +192,13 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
 // writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
 // awaiting_person, done, held — has none, and neither has step, whose role is the one the issue's
-// plan names rather than one of the phase's. Admitted and accepting are the tree architect's, a
-// claim per tree that no row starts: every site that starts, resumes or reports a phase's worker
+// plan names rather than one of the phase's. Admitted and accepting are the architect's, and
+// neither phase starts a worker. On a root both are its own architect's. On a child both are the
+// architect that owns it: its own while that claim holds its role, else the one above. At
+// admitted that is the one above, since the child's own architect has not started yet or a leave
+// suspended or retired it, unless a person set the child back to todo while it ran or was held:
+// that re-entry starts and stops nothing, so a child's own architect that held its role still
+// holds it (workflow's ReenterChild). Every site that starts, resumes or reports a phase's worker
 // skips the architect, so it skips both phases (workflow's start, admit's startMidPhaseMembers,
 // workflow's booted and Stranded).
 //

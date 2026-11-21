@@ -4,62 +4,73 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // Today's phases are the steps of one task, default: the five phases that run work are its steps
 // 1 to 5, and the retro and the merge are the two kinds no plan names, at place 0. A phase that
-// runs no step (admitted, held, done, awaiting a person) has none.
+// runs no step (admitted, held, done, awaiting a person) has none. A run with no plan rows reads
+// its step as every run does (placeOnWalk), on the walk of today's steps (todaysWalk).
 func TestStepOfIsTodaysSequence(t *testing.T) {
 	type step struct {
 		place record.StepPlace
-		step  int
-		role  string
-		typ   string
+		role  stepRole
+		typ   plan.Type
 	}
 	want := map[phase.Phase]step{
-		phase.Planning:     {record.StepPlace{Task: "default", Kind: "step", Place: 1}, 1, "planner", "planning"},
-		phase.Implementing: {record.StepPlace{Task: "default", Kind: "step", Place: 2}, 2, "implementer", "implementation"},
-		phase.Testing:      {record.StepPlace{Task: "default", Kind: "step", Place: 3}, 3, "tester", "testing"},
-		phase.Reviewing:    {record.StepPlace{Task: "default", Kind: "step", Place: 4}, 4, "reviewer", "review"},
-		phase.Accepting:    {record.StepPlace{Task: "default", Kind: "step", Place: 5}, 5, "acceptance", "review"},
-		phase.Retro:        {record.StepPlace{Task: "default", Kind: "retro", Place: 0}, 0, "implementer", ""},
-		phase.Merging:      {record.StepPlace{Task: "default", Kind: "merge", Place: 0}, 0, "merger", ""},
+		phase.Planning:     {record.StepPlace{Task: "default", Kind: "step", Place: 1}, "planner", "planning"},
+		phase.Implementing: {record.StepPlace{Task: "default", Kind: "step", Place: 2}, "implementer", "implementation"},
+		phase.Testing:      {record.StepPlace{Task: "default", Kind: "step", Place: 3}, "tester", "testing"},
+		phase.Reviewing:    {record.StepPlace{Task: "default", Kind: "step", Place: 4}, "reviewer", "review"},
+		phase.Accepting:    {record.StepPlace{Task: "default", Kind: "step", Place: 5}, "acceptance", "review"},
+		phase.Retro:        {record.StepPlace{Task: "default", Kind: "retro", Place: 0}, "implementer", ""},
+		phase.Merging:      {record.StepPlace{Task: "default", Kind: "merge", Place: 0}, "merger", ""},
 	}
+	today := todaysWalk()
+	steps := 0
 	for _, p := range phase.Order {
-		place, n, role, typ, ok := stepOf(p)
+		place, role, typ, ok := placeOnWalk(today, standingIn(p))
 		w, stepPhase := want[p]
 		if ok != stepPhase {
-			t.Fatalf("stepOf(%s) ok = %v, want %v", p, ok, stepPhase)
+			t.Fatalf("the step of %s on today's walk: ok = %v, want %v", p, ok, stepPhase)
 		}
-		if got := (step{place, n, role, typ}); ok && got != w {
-			t.Errorf("stepOf(%s) = %+v, want %+v", p, got, w)
+		if !ok {
+			continue
+		}
+		steps++
+		if got := (step{place, role, typ}); got != w {
+			t.Errorf("the step of %s on today's walk = %+v, want %+v", p, got, w)
+		}
+		// The settle names the phase of a run the store holds open by its place on the run's walk
+		// (phaseAt): a run with no plan rows walks today's line.
+		if back, found := phaseAt(today, place); !found || back != p {
+			t.Errorf("phaseAt(%+v) = %s, %v, want %s, the phase whose step runs there", place, back, found, p)
 		}
 	}
 	for _, p := range []phase.Phase{phase.Admitted, phase.Held, phase.Done, phase.AwaitingPerson} {
-		if _, _, _, _, ok := stepOf(p); ok {
-			t.Errorf("stepOf(%s) is a step; that phase runs none", p)
+		if _, _, _, ok := placeOnWalk(today, standingIn(p)); ok {
+			t.Errorf("%s is a step of today's walk; that phase runs none", p)
 		}
 	}
-	if len(want) != 7 {
-		t.Fatalf("the want table holds %d steps; phase.Order's seven run them", len(want))
+	if steps != len(want) {
+		t.Fatalf("phase.Order holds %d phases that run a step, and the want table %d: a phase of the table is no phase of the line", steps, len(want))
 	}
 }
 
-// A move back that a role or a report asked for ends the step failed, a move back nobody asked for
-// (a head that conflicts with its base) ends it stopped, and both name the step the work returned
-// to; every other move ends it passed and returns nowhere.
+// A move back that a role or a report asked for ends the step failed and names the step the work
+// returned to; every other move ends it passed and returns nowhere.
 func TestEndOfReadsTheTrigger(t *testing.T) {
 	for _, tc := range []struct {
 		trigger TriggerKind
-		result  string
+		result  StepResult
 		returns bool
 	}{
 		{TriggerTesterFailed, "failed", true},
 		{TriggerReviewRejected, "failed", true},
 		{TriggerBackward, "failed", true},
-		{TriggerConflict, "stopped", true},
 		{TriggerGateOpened, "passed", false},
 		{TriggerPlannerCompleted, "passed", false},
 		{TriggerImplementationReady, "passed", false},
@@ -75,12 +86,27 @@ func TestEndOfReadsTheTrigger(t *testing.T) {
 	}
 }
 
+// The end of a move is the end of the step the issue stood in: a review a request for changes
+// sends back from reviewing ends failed, returns the work to implementing's place and names the
+// reviewer's report, on the walk of a run with no plan rows (todaysWalk), the one walk such a run
+// has. No held issue is a case here, since none reaches a move's end: no row of the table leaves
+// held, so transition returns before it names an end, and the moves out of a hold clear it first
+// (retryPhase, closeMerged).
+func TestTheEndOfAMoveReadsWhereTheIssueStands(t *testing.T) {
+	review := record.PhaseRow{Role: claim.RoleReviewer, HandoffRecord: "6f1d2c3b-review"}
+	end := endOfTransition(todaysWalk(), TriggerReviewRejected, phase.Reviewing, standingIn(phase.Implementing), review)
+	if end.Result != ResultFailed || end.ReturnedTo == nil || *end.ReturnedTo != 2 || end.Report != review.HandoffRecord {
+		t.Errorf("the end of the review = %+v (returned to %v), want failed, returned to place 2, naming report %s",
+			end, end.ReturnedTo, review.HandoffRecord)
+	}
+}
+
 // The id of a record is a version 5 uuid of everything that tells one run of one step from every
 // other: the issue, its run, the task, the kind, the place and the count of starts of that place.
 // The start and the end of one run compute it apart, so it depends on nothing else.
 func TestAStepIDIsStableAndDistinct(t *testing.T) {
-	first := StepID("LEG-1", 1, "default", "step", 2, 1)
-	if again := StepID("LEG-1", 1, "default", "step", 2, 1); again != first {
+	first := StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1)
+	if again := StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1); again != first {
 		t.Fatalf("StepID twice = %s then %s; one run of one step has one id", first, again)
 	}
 	parsed, err := uuid.Parse(first)
@@ -91,14 +117,20 @@ func TestAStepIDIsStableAndDistinct(t *testing.T) {
 	if want := uuid.NewSHA1(namespace, []byte("LEG-1/1/default/step/2/1")).String(); first != want {
 		t.Fatalf("StepID = %s, want %s: the name is <issue>/<generation>/<task>/<kind>/<step>/<starts>", first, want)
 	}
+	// The generation, the place and the count are three different numbers here, so no two of the
+	// name's numbers can trade places unseen.
+	if got, want := StepID("LEG-1", 7, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 4),
+		uuid.NewSHA1(namespace, []byte("LEG-1/7/default/step/3/4")).String(); got != want {
+		t.Fatalf("StepID of generation 7, place 3, count 4 = %s, want %s: the name is <issue>/<generation>/<task>/<kind>/<step>/<starts>", got, want)
+	}
 	seen := map[string]string{first: "the first"}
 	for name, id := range map[string]string{
-		"issue":      StepID("LEG-2", 1, "default", "step", 2, 1),
-		"generation": StepID("LEG-1", 2, "default", "step", 2, 1),
-		"task":       StepID("LEG-1", 1, "a", "step", 2, 1),
-		"kind":       StepID("LEG-1", 1, "default", "retro", 2, 1),
-		"step":       StepID("LEG-1", 1, "default", "step", 3, 1),
-		"starts":     StepID("LEG-1", 1, "default", "step", 2, 2),
+		"issue":      StepID("LEG-2", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1),
+		"generation": StepID("LEG-1", 2, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 1),
+		"task":       StepID("LEG-1", 1, record.StepPlace{Task: "a", Kind: "step", Place: 2}, 1),
+		"kind":       StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "retro", Place: 2}, 1),
+		"step":       StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "step", Place: 3}, 1),
+		"starts":     StepID("LEG-1", 1, record.StepPlace{Task: "default", Kind: "step", Place: 2}, 2),
 	} {
 		if other, ok := seen[id]; ok {
 			t.Errorf("another %s gives the id of %s: %s", name, other, id)

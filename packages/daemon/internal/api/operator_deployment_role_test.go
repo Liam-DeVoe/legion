@@ -124,7 +124,7 @@ func TestTheRoleListNamesARoleOfTheDeployment(t *testing.T) {
 
 			recorder := h.request(http.MethodPost, tc.route, ClaimRequest{GrantID: grant.GrantID, Issue: "LEGION-209", Role: "controller"}, nil)
 
-			wantFreshSessionRefusal(t, recorder, http.StatusBadRequest, "INVALID_ROLE", roles+tc.ending)
+			refusedSaying(t, recorder, http.StatusBadRequest, "INVALID_ROLE", roles+tc.ending)
 		})
 	}
 }

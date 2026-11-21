@@ -15,19 +15,20 @@ import (
 // issue with no plan rows, the tester's findings after the daemon moved the issue on without it.
 // The route judged its entry on a read before the fact's lock; the workflow judges it again on the
 // row its own transaction reads, with the route's one rule (intake.EntryFence). Here, on today's
-// line, the tester's turn took the task of entry `first`; the daemon's conflict move sent the work
-// back, the implementer's completion handed testing to the tester again on entry `second`, and a
-// second conflict sent the work back before that run reported. The tester's completion of entry
-// `first` is refused HANDOFF_NOT_CURRENT_PHASE, unspent, and the row keeps what it held: the route
-// answers the same for a role that does not work the issue's phase, behind its row's entry. The
-// controls, the completion of entry `second` and one of no entry, are recorded on the row.
+// line, the tester's turn took the task of entry `first`; a move back the tester did not make sent
+// the work back, the implementer's completion handed testing to the tester again on entry
+// `second`, and a second such move sent the work back before that run reported. The tester's
+// completion of entry `first` is refused HANDOFF_NOT_CURRENT_PHASE, unspent, and the row keeps what
+// it held: the route answers the same for a role that does not work the issue's phase, behind its
+// row's entry. The controls, the completion of entry `second` and one of no entry, are recorded on
+// the row.
 func TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		entry    func(first, second int64) int64
 		recorded bool
 	}{
-		{"the tester's completion of the entry the conflict left", func(first, _ int64) int64 { return first }, false},
+		{"the tester's completion of the entry the first move back left", func(first, _ int64) int64 { return first }, false},
 		{"the control: the tester's completion of the entry its row stands on", func(_, second int64) int64 { return second }, true},
 		{"the control: a completion of no entry", func(int64, int64) int64 { return 0 }, true},
 	} {
@@ -40,11 +41,11 @@ func TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused(t *testing.T) {
 			assertPhase(t, pool, phase.Testing)
 			first := roleRowOf(t, pool, engine, root.Key, claim.RoleTester).Entry
 
-			move(t, pool, engine, root.Key, TriggerConflict, record.TaskPlace{}, record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerBackward, stepPlace(2), record.PhaseRow{})
 			assertPhase(t, pool, phase.Implementing)
 			stepReports(t, pool, engine, root.Key, claim.RoleImplementer, "", "rebased", "impl-2", 0)
 			assertPhase(t, pool, phase.Testing)
-			move(t, pool, engine, root.Key, TriggerConflict, record.TaskPlace{}, record.PhaseRow{})
+			move(t, pool, engine, root.Key, TriggerBackward, stepPlace(2), record.PhaseRow{})
 			assertPhase(t, pool, phase.Implementing)
 			second := roleRowOf(t, pool, engine, root.Key, claim.RoleTester)
 			if second.Entry <= first || second.Completed() {
@@ -78,8 +79,8 @@ func TestACompletionOfALeftPhaseOfAnEntryRaisedSinceIsRefused(t *testing.T) {
 // lock (api's answerCompletion); the workflow judges it again on the role's phases row its own
 // transaction reads, with the route's one rule (intake.EntryFence), so a completion of an entry
 // raised in between moves nothing. Here the route read the role's row on entry `first` and passed
-// the completion; then the daemon's conflict move sent the work back to implementing while that
-// turn still ran, and the implementer's completion entered the role's step again on entry
+// the completion; then a move back the role did not make sent the work back to implementing while
+// that turn still ran, and the implementer's completion entered the role's step again on entry
 // `second`. The completion carries entry `first`, as the route builds it.
 //
 // The checker, a role of the deployment, runs as step, which ends with no handoff record: its
@@ -100,10 +101,10 @@ func TestACompletionOfAnEntryRaisedAfterTheRoutesReadMovesNothing(t *testing.T) 
 		// then is the phase the issue stands in after the completion.
 		then phase.Phase
 	}{
-		{"the checker's pass of the entry the conflict left", "checker", "", true, stepHead, "HANDOFF_STALE_ENTRY", phase.Step},
+		{"the checker's pass of the entry the move back left", "checker", "", true, stepHead, "HANDOFF_STALE_ENTRY", phase.Step},
 		{"the control: the checker's pass of the entry that stands", "checker", "", false, stepHead, "", phase.Retro},
-		{"the tester's pass of the entry the conflict left, at a commit the pull request left", claim.RoleTester, "test-2", true, stepHead, "HANDOFF_STALE_ENTRY", phase.Testing},
-		{"the tester's pass of the entry the conflict left, at the pull request's head", claim.RoleTester, "test-2", true, "head", "", phase.Retro},
+		{"the tester's pass of the entry the move back left, at a commit the pull request left", claim.RoleTester, "test-2", true, stepHead, "HANDOFF_STALE_ENTRY", phase.Testing},
+		{"the tester's pass of the entry the move back left, at the pull request's head", claim.RoleTester, "test-2", true, "head", "", phase.Retro},
 		{"the control: the tester's pass of the entry that stands", claim.RoleTester, "test-2", false, stepHead, "", phase.Retro},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -123,9 +124,9 @@ func TestACompletionOfAnEntryRaisedAfterTheRoutesReadMovesNothing(t *testing.T) 
 			assertWalksAt(t, pool, engine, root.Key, at, stepPlace(2))
 			first := roleRowOf(t, pool, engine, root.Key, tc.role).Entry
 
-			// The daemon's own move on a head that conflicts with its base, while the role's turn
-			// of entry `first` still runs; then the implementer's fix enters step 2 again.
-			move(t, pool, engine, root.Key, TriggerConflict, record.TaskPlace{}, record.PhaseRow{})
+			// A move back the role did not make, while its turn of entry `first` still runs; then
+			// the implementer's fix enters step 2 again.
+			move(t, pool, engine, root.Key, TriggerBackward, stepPlace(1), record.PhaseRow{})
 			assertWalksAt(t, pool, engine, root.Key, phase.Implementing, stepPlace(1))
 			stepReports(t, pool, engine, root.Key, claim.RoleImplementer, "", "rebased", "impl-2", 0)
 			assertWalksAt(t, pool, engine, root.Key, at, stepPlace(2))

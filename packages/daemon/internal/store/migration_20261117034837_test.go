@@ -79,12 +79,12 @@ func TestMigrationIssuePlansRefusesABadRoleAndAPlace(t *testing.T) {
 	}
 }
 
-// 20261117034837 also adds the step a phases row runs (record.PhaseRow.StepTask and StepPlace) and
-// the task of a pull request (record.PullRequest.Task). A release before it ran no plan, so every
-// row the upgrade finds is the row of an issue with no plan rows, which reads no task and place 0,
-// and every other column of the row stays as that release left it. Both columns are unknown before
-// the migration, which is what shows the fixture is the old shape.
-func TestTheIssuePlansMigrationLeavesEveryRowItFindsWithNoStepAndNoTask(t *testing.T) {
+// 20261117034837 also adds the step a phases row runs (record.PhaseRow.StepTask and StepPlace). A
+// release before it ran no plan, so every row the upgrade finds is the row of an issue with no plan
+// rows, which reads no task and place 0, and every other column of the row stays as that release
+// left it. Both columns are unknown before the migration, which is what shows the fixture is the
+// old shape.
+func TestTheIssuePlansMigrationLeavesEveryRowItFindsWithNoStep(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, issuePlansVersion-1)
@@ -93,17 +93,12 @@ func TestTheIssuePlansMigrationLeavesEveryRowItFindsWithNoStepAndNoTask(t *testi
 			values ('LEGION-208', 'LEGION-208', 'LEGION', 'root', 'reviewing', 1, 'needs_review', 'A', 1)`,
 		`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, entry, entry_task)
 			values ('LEGION-208', 'implementer', 'legion-LEGION-208-implementer', 'abc123', 2, '', 3, 'Continue root. Issue: LEGION-208. Phase: implementing.')`,
-		`insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at,
-			failing, cancelled, fix_attempts, blocked_attempts, check_runs, generation, snapshot, head_counted, planned_red,
-			review_seen, state, checked_head, required_workflows, required_workflows_head, mergeability, merge_state, base, base_moved)
-			values ('LEGION-208', 'sjawhar/legion', 1208, 'legion/LEGION-208', 'h4', now(), '[]', '[]', 0, 0, '[]',
-			1, '', '', false, 0, 'open', '', '[]', '', 'MERGEABLE', 'clean', 'main', '')`,
 	} {
 		if _, err := store.Pool().Exec(ctx, seed); err != nil {
 			t.Fatalf("record before the migration: %v", err)
 		}
 	}
-	for _, column := range []string{"phases set step_task = 'a'", "phases set step_place = 1", "pull_requests set task = 'a'"} {
+	for _, column := range []string{"phases set step_task = 'a'", "phases set step_place = 1"} {
 		_, err := store.Pool().Exec(ctx, "update "+column)
 		if err == nil || !strings.Contains(err.Error(), "does not exist") {
 			t.Fatalf("update %s before the migration = %v, want the column unknown: the fixture is not the old shape", column, err)
@@ -114,15 +109,13 @@ func TestTheIssuePlansMigrationLeavesEveryRowItFindsWithNoStepAndNoTask(t *testi
 		t.Fatalf("migrate through the issue plans: %v", err)
 	}
 	var implementer record.PhaseRow
-	var pr *record.PullRequest
 	if err := pgx.BeginFunc(ctx, store.Pool(), func(tx pgx.Tx) error {
 		rows, err := record.NewStore().Phases(ctx, tx, "LEGION-208")
 		if err != nil {
 			return err
 		}
 		implementer = record.PhaseRowOf(rows, claim.RoleImplementer)
-		pr, err = record.NewStore().PullRequest(ctx, tx, "LEGION-208")
-		return err
+		return nil
 	}); err != nil {
 		t.Fatalf("read LEGION-208 after the migration: %v", err)
 	}
@@ -131,8 +124,5 @@ func TestTheIssuePlansMigrationLeavesEveryRowItFindsWithNoStepAndNoTask(t *testi
 	}
 	if implementer.StepTask != "" || implementer.StepPlace != 0 {
 		t.Fatalf("the implementer's row after the migration runs step %d of task %q, want no step: no plan ran before it", implementer.StepPlace, implementer.StepTask)
-	}
-	if pr == nil || pr.Number != 1208 || pr.Task != "" {
-		t.Fatalf("the pull request after the migration = %+v, want #1208 with no task: no plan ran before it", pr)
 	}
 }

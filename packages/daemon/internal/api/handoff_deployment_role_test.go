@@ -37,8 +37,8 @@ func seedCheckerStep(t *testing.T, h *harness, key string) {
 			GivenBy: "legion-legion-" + claim.Token(key) + "-architect"}
 		task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", State: record.TaskWaiting}
 		steps := []record.PlanStep{
-			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: string(plan.TypeImplementation)},
-			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "checker", Type: string(plan.TypeTesting)},
+			{Issue: key, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: plan.TypeImplementation},
+			{Issue: key, Generation: 1, Task: "a", Position: 2, Role: "checker", Type: plan.TypeTesting},
 		}
 		if err := records.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err

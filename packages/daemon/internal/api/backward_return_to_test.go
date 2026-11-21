@@ -64,7 +64,10 @@ func TestTheBackwardRouteTakesADeploymentRoleAndReturnTo(t *testing.T) {
 		if answer.Code != http.StatusOK {
 			t.Fatalf("the owner's move = %d %s, want 200", answer.Code, answer.Body)
 		}
-		want := []intake.Fact{intake.BackwardMove{Issue: key, Requester: claim.RoleArchitect, To: phase.Step, Reason: "the check missed a case", ReturnTo: 2}}
+		// The architect's move carries its request (its claim, the issue's generation and the run
+		// of the step its read found, none here), which the workflow judges again under the lock.
+		want := []intake.Fact{intake.BackwardMove{Issue: key, Requester: claim.RoleArchitect, To: phase.Step, Reason: "the check missed a case", ReturnTo: 2,
+			By: architect.token, Generation: 1}}
 		if got := facts.recorded(); !reflect.DeepEqual(got, want) {
 			t.Fatalf("facts = %#v, want %#v", got, want)
 		}

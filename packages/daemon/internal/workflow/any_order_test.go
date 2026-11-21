@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 
@@ -24,10 +23,11 @@ func reportsHandoff(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 	seedPhase(t, pool, row)
 }
 
-// signsOff is the owner's sign_off of key.
+// signsOff is the owner's sign_off of key, by its tree root's architect, as the route builds it
+// (rootsSignOff).
 func signsOff(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) intake.Result {
 	t.Helper()
-	result, err := intake.ApplyFact(t.Context(), pool, "api", "sign-off-"+key, intake.SignOff{Issue: key}, engine, admissionStub{})
+	result, err := intake.ApplyFact(t.Context(), pool, "api", "sign-off-"+key, rootsSignOff(t, pool, engine, key), engine, admissionStub{})
 	if err != nil {
 		t.Fatalf("the sign-off of %s: %v", key, err)
 	}
@@ -37,7 +37,7 @@ func signsOff(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) inta
 // lastStartOf is the newest start of role in key's outbox, failing where there is none.
 func lastStartOf(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) record.SuperviseRequest {
 	t.Helper()
-	starts := startsOf(t, pool, key, role)
+	starts := roleStartsOf(t, pool, key, role)
 	if len(starts) == 0 {
 		t.Fatalf("%s's outbox holds no start of the %s", key, role)
 	}
@@ -159,13 +159,15 @@ func TestTheStepsOfAnyOrderMoveOn(t *testing.T) {
 		firstStep(t, pool, engine, "LEGION-209")
 		firstStep(t, pool, engine, "LEGION-210")
 
-		for child, reason := range map[string]string{
-			"LEGION-209": "LEGION-209 starts implementing under LEGION-208: it reached the front of the waiting line and took an admission slot",
-			"LEGION-210": "LEGION-210 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot",
+		// The notice goes on to say what the child's own architect owns (ChildStartedNotice); its
+		// first sentence is the one that names the phase.
+		for child, first := range map[string]string{
+			"LEGION-209": "LEGION-209 starts implementing under LEGION-208: it reached the front of the waiting line and took an admission slot. ",
+			"LEGION-210": "LEGION-210 starts planning under LEGION-208: it reached the front of the waiting line and took an admission slot. ",
 		} {
-			want := []record.Notice{{Kind: "child-status", Role: claim.RoleArchitect, Reason: reason}}
-			if got := noticesOf(t, pool, child, "child-status"); !reflect.DeepEqual(got, want) {
-				t.Fatalf("the child-status notices of %s = %+v, want %+v", child, got, want)
+			got := noticesOf(t, pool, child, "child-status")
+			if len(got) != 1 || got[0].Kind != "child-status" || got[0].Role != claim.RoleArchitect || !strings.HasPrefix(got[0].Reason, first) {
+				t.Fatalf("the child-status notices of %s = %+v, want one to the architect whose reason starts %q", child, got, first)
 			}
 		}
 	})

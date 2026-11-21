@@ -1,42 +1,37 @@
 package workflow
 
 import (
-	"context"
+	"fmt"
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// lateReportOf is lateReport's answer to a completion of role while key stands as the store holds
-// it, the role having left the phase reported.
-func lateReportOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, role claim.Role, reported phase.Phase) *intake.Refusal {
+// assertStandsAtStep fails unless the step key's task runs where it stands as the store holds it
+// (stepAt of where it stands) is step n of role and typ, and the task's standing says so
+// (standingText).
+func assertStandsAtStep(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, at phase.Phase, n int, role stepRole, typ string) {
 	t.Helper()
-	var refusal *intake.Refusal
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-		issue, err := engine.store.Issue(ctx, tx, key)
-		if err != nil {
-			return err
-		}
-		refusal, err = engine.lateReport(ctx, tx, *issue, intake.HandoffComplete{Issue: key, Role: role, Generation: issue.Generation}, reported, true)
-		return err
-	})
-	return refusal
+	issue, w := issueAndWalkOf(t, pool, engine, key)
+	if step, ok := stepAt(w, issue, standingIn(at)); !ok || step.place.Place != n || step.role != role || string(step.typ) != typ {
+		t.Fatalf("stepAt where the task stands = %+v, %t; want step %d, %s, %s", step, ok, n, role, typ)
+	}
+	text, err := standingText(issue, nil, w, nil)
+	if want := fmt.Sprintf(" Step %d of %d: %s.", n, len(w.Steps), role); err != nil || !strings.Contains(text.String(), want) {
+		t.Fatalf("the standing of %s = %q, %v; want it to say%s", role, text, err, want)
+	}
 }
 
 // Each reader of where a task stands reads its place, not the first place of its phase: in
 // `implementer checker linter` both checker and linter run as step, and with the task moved on to
-// step 3 the step it runs is the linter's (stepAt of where it stands), the linter's task says so
-// (standingText), and a late completion of the checker is told that its step 2 ended and Legion
-// runs step 3. Moved back from step 3 to step 1, a late completion of the linter names step 3, its
-// own, and step 1, where the task stands. The known pass: in `implementer reviewer tester`, whose
-// phases each stand once, the step of testing is step 3, the tester's.
+// step 3 the step it runs is the linter's (stepAt of where it stands), and the linter's task says
+// so (standingText). Moved back from step 3 to step 1, the step it runs is the implementer's, and
+// its task says so. The known pass: in `implementer reviewer tester`, whose phases each stand
+// once, the step of testing is step 3, the tester's.
 func TestTheReadersOfWhereATaskStandsReadItsPlace(t *testing.T) {
 	types := map[string]string{"checker": "testing", "linter": "testing"}
 
@@ -47,18 +42,7 @@ func TestTheReadersOfWhereATaskStandsReadItsPlace(t *testing.T) {
 		seedStepsAt(t, pool, root.Key, root.Generation, 2, types, "implementer", "checker", "linter")
 		move(t, pool, engine, root.Key, TriggerStepPassed, record.TaskPlace{}, record.PhaseRow{})
 
-		issue, w := issueAndWalkOf(t, pool, engine, root.Key)
-		if _, step, role, typ, ok := stepAt(w, standingIn(phase.Step)); !ok || step != 3 || role != "linter" || typ != "testing" {
-			t.Fatalf("stepAt where the task stands = step %d, %s, %s, %t; want step 3, linter, testing", step, role, typ, ok)
-		}
-		text, err := standingText(issue, nil, w, nil)
-		if err != nil || !strings.Contains(string(text), " Step 3 of 3: linter.") {
-			t.Fatalf("the linter's standing = %q, %v; want it to say Step 3 of 3: linter.", text, err)
-		}
-		const ended = "step 2 (checker) of task a of LEGION-208 has ended, and Legion runs step 3 (linter) now."
-		if late := lateReportOf(t, pool, engine, root.Key, "checker", phase.Step); late == nil || late.Code != "STEP_ENDED" || !strings.HasPrefix(late.Message, ended) {
-			t.Fatalf("the checker's late completion = %+v, want STEP_ENDED beginning %q", late, ended)
-		}
+		assertStandsAtStep(t, pool, engine, root.Key, phase.Step, 3, "linter", "testing")
 	})
 
 	t.Run("moved back from step 3 to step 1", func(t *testing.T) {
@@ -68,10 +52,7 @@ func TestTheReadersOfWhereATaskStandsReadItsPlace(t *testing.T) {
 		seedStepsAt(t, pool, root.Key, root.Generation, 3, types, "implementer", "checker", "linter")
 		move(t, pool, engine, root.Key, TriggerBackward, stepPlace(1), record.PhaseRow{})
 
-		const ended = "step 3 (linter) of task a of LEGION-208 has ended, and Legion runs step 1 (implementer) now."
-		if late := lateReportOf(t, pool, engine, root.Key, "linter", phase.Step); late == nil || late.Code != "STEP_ENDED" || !strings.HasPrefix(late.Message, ended) {
-			t.Fatalf("the linter's late completion = %+v, want STEP_ENDED beginning %q", late, ended)
-		}
+		assertStandsAtStep(t, pool, engine, root.Key, phase.Implementing, 1, "implementer", "implementation")
 	})
 
 	t.Run("the known pass: phases that each stand once", func(t *testing.T) {
@@ -80,9 +61,9 @@ func TestTheReadersOfWhereATaskStandsReadItsPlace(t *testing.T) {
 		root := stepRoot(t, pool, phase.Testing)
 		seedStepsAt(t, pool, root.Key, root.Generation, 3, nil, "implementer", "reviewer", "tester")
 
-		_, w := issueAndWalkOf(t, pool, engine, root.Key)
-		if _, step, role, _, ok := stepAt(w, standingIn(phase.Testing)); !ok || step != 3 || role != "tester" {
-			t.Fatalf("stepAt of testing = step %d, %s, %t; want step 3, tester", step, role, ok)
+		issue, w := issueAndWalkOf(t, pool, engine, root.Key)
+		if step, ok := stepAt(w, issue, standingIn(phase.Testing)); !ok || step.place.Place != 3 || step.role != "tester" {
+			t.Fatalf("stepAt of testing = %+v, %t; want step 3, tester", step, ok)
 		}
 	})
 }

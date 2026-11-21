@@ -27,12 +27,6 @@ const (
 	TriggerPullRequestMerged TriggerKind = "pull_request_merged"
 	TriggerSignOff           TriggerKind = "sign_off"
 	TriggerBackward          TriggerKind = "backward"
-	// TriggerConflict is a head GitHub will not merge into its base: the daemon's own reading of
-	// its own read, raised by no agent (mergeability). GitHub computes no merge ref for such a
-	// head and runs no checks on it, so nothing else would ever arrive for it, and the issue goes
-	// back to implementing from whatever later phase it stands in, for the implementer to merge
-	// the base forward.
-	TriggerConflict TriggerKind = "conflict"
 )
 
 // EffectKind identifies the durable outbox consequences selected by a row. EffectSuspend is the
@@ -81,7 +75,7 @@ func hasOpenOrMergedPR(s Snapshot) bool { return s.HasOpenOrMergedPR }
 
 // Table is the table of today's line, phase.Order: every row an issue with no plan rows walks
 // (Walk), built once. TableOf(phase.Order) is the table the workflow had before a plan picked an
-// issue's line, row for row (TestTableOfTodaysOrderIsTodaysTable).
+// issue's line, row for row (TestAWalkWithNoPlanRowsMovesByTodaysTable).
 var Table = TableOf(phase.Order)
 
 // stepRows are the rows each phase of a line carries on its own role's trigger, in the table's
@@ -112,16 +106,16 @@ var stepRows = []struct {
 // steps in the task's order, which holds implementing, then retro and merging (plan.Line of a plan
 // plan.Validate took). Rows, not switch-case scheduling, define every phase change. Its rows, in
 // this order: the gate's opening, out of admitted into the first phase of the line; each phase's
-// rows on its role's trigger (stepRows), at each position of the line that phase stands at; a
-// head that conflicts with its base, from each position after implementing in the line, retro and
-// merging included, back to implementing; the merge, out of merging into done; and a backward row
-// from each position of the line to each position before it (backwardRows). A return goes back to
-// implementing where implementing stands before the step that fails, and a step with no
-// implementing before it has none. Each row carries the places of its two positions (placeAt), so
-// a line that holds a phase at two places, two steps of roles the deployment defines, has a row
-// for each. A row into accepting starts nobody, because accepting's role is the tree's architect;
-// every other row into a phase of the line starts its role. No row carries a status of its own:
-// every status a row writes is its target phase's, which PhaseStatus holds.
+// rows on its role's trigger (stepRows), at each position of the line that phase stands at; the
+// merge, out of merging into done; and a backward row from each position of the line to each
+// position before it (backwardRows). A head that conflicts with its base moves no phase
+// (merge_forward.go). A return goes back to implementing where implementing stands before the step
+// that fails, and a step with no implementing before it has none. Each row carries the places of
+// its two positions (placeAt), so a line that holds a phase at two places, two steps of roles the
+// deployment defines, has a row for each. A row into accepting starts nobody, because accepting's
+// role is the tree's architect; every other row into a phase of the line starts its role. No row
+// carries a status of its own: every status a row writes is its target phase's, which PhaseStatus
+// holds.
 func TableOf(line []phase.Phase) []Row {
 	rows := []Row{{From: phase.Admitted, Trigger: TriggerGateOpened, Guard: allow, To: line[0], ToPlace: placeAt(line, 0),
 		Effects: effectsInto(line[0])}}
@@ -139,16 +133,6 @@ func TableOf(line []phase.Phase) []Row {
 			to := line[next]
 			rows = append(rows, Row{From: from, Trigger: step.trigger, Guard: step.guard, To: to, FromPlace: placeAt(line, at),
 				ToPlace: placeAt(line, next), Effects: effectsInto(to)})
-		}
-	}
-	// A head that conflicts with its base goes back to implementing from every phase after the
-	// implementer's own (transition). It is one trigger for all of them so that the role's
-	// phase-ended message (phaseEnded) and the architect's notice (noticeFor) have a single name to
-	// key on, and so that the architect's own backward move stays the separate thing it is.
-	if implementing := slices.Index(line, phase.Implementing); implementing >= 0 {
-		for at := implementing + 1; at < len(line); at++ {
-			rows = append(rows, Row{From: line[at], Trigger: TriggerConflict, Guard: allow, To: phase.Implementing,
-				FromPlace: placeAt(line, at), ToPlace: placeAt(line, implementing), Effects: effectsInto(phase.Implementing)})
 		}
 	}
 	// The merger merges, and the merge is what ends merging: the daemon submits none and reads

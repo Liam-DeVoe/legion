@@ -15,7 +15,7 @@ import { isStepRole } from "./legion-roles";
 const nonEmptyString = z.string().min(1);
 
 /** The role of a claim of an issue: one of Legion's six or a role of the deployment (contract
- * 161), a name of the step grammar but the controller's (`isStepRole`). `legion-api.ts` reads its
+ * 217), a name of the step grammar but the controller's (`isStepRole`). `legion-api.ts` reads its
  * claims' roles through this one schema too. */
 export const legionStepRole = z.string().refine(isStepRole, {
   message: "a role of the step grammar, ^[a-z][a-z0-9-]{0,31}$, and not the controller",
@@ -102,6 +102,6 @@ export const LegionFreshSessionResponse = z.object({
  * rather than a failure, because the claim came back and whatever task it owed has gone to it
  * again. */
 export const LegionCompactResponse = z.object({
-  compacted: z.boolean(),
+  compacted: z.boolean().optional(),
   reason: z.string().optional(),
 });

@@ -312,7 +312,7 @@ func newDeploymentRolesRig(t *testing.T, proof liveProof, dispatch *scratchDispa
 		t.Fatal(err)
 	}
 	r := &deploymentRolesRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: dispatch, github: newStepRecordsGitHub(t),
-		claims: map[claim.Token]*stepClaimant{}}, specs: map[string]string{}}
+		claims: map[claim.Token]*stepClaimant{}, waits: make(chan claim.Token, 16)}, specs: map[string]string{}}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
@@ -624,7 +624,7 @@ func newSliceFourRig(t *testing.T) *sliceFourRig {
 		t.Fatal(err)
 	}
 	r := &sliceFourRig{stepRecordsRig: &stepRecordsRig{liveProof: proof, dispatch: startScratchDispatchOn(t, scratchDispatchOptions{}),
-		github: newStepRecordsGitHub(t), claims: map[claim.Token]*stepClaimant{}}, migrationVersion: version}
+		github: newStepRecordsGitHub(t), claims: map[claim.Token]*stepClaimant{}, waits: make(chan claim.Token, 16)}, migrationVersion: version}
 	if err := os.WriteFile(r.cfg.DispatchTokenFile, []byte(r.dispatch.token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the Dispatch token file: %v", err)
 	}
@@ -723,8 +723,8 @@ func (r *sliceFourRig) seedSliceFourIssue(title, status, rank string, seq int64)
 		values ($1, $2, 1, 1, true, 'spec')`, key, "spec-"+key)
 	exec("the slot of "+key, `insert into slots (issue, index, admitted_at) values ($1, 1, now() - interval '1 day')`, key)
 	exec("the pull request of "+key, `insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at,
-		failing, fix_attempts, blocked_attempts, check_runs, generation, snapshot, head_counted, state, mergeability, merge_sha, task)
-		values ($1, $2, $3, $4, $5, now() - interval '3 hours', '[]', 0, 0, '[]', 1, '', '', 'open', 'MERGEABLE', '', 'a')`,
+		failing, fix_attempts, blocked_attempts, check_runs, generation, snapshot, head_counted, state, mergeability, merge_sha)
+		values ($1, $2, $3, $4, $5, now() - interval '3 hours', '[]', 0, 0, '[]', 1, '', '', 'open', 'MERGEABLE', '')`,
 		key, liveRepo, r.number, claim.IssueBranch(key), stepRecordsHead)
 	exec("the plan of "+key, `insert into issue_plans (issue, generation, version, source, artifact_id, given_by, given_at)
 		values ($1, 1, 1, 'owner', $2, $3, now() - interval '5 hours')`, key, "plan-"+key, string(r.token(claim.RoleArchitect)))
@@ -732,16 +732,17 @@ func (r *sliceFourRig) seedSliceFourIssue(title, status, rank string, seq int64)
 		values ($1, 1, 'a', 1, $2, 'running', 'step', 2)`, key, deploymentTaskText)
 	exec("the steps of task a of "+key, `insert into plan_steps (issue, generation, task, position, role, type)
 		values ($1, 1, 'a', 1, 'implementer', 'implementation'), ($1, 1, 'a', 2, 'tester', 'testing'), ($1, 1, 'a', 3, 'reviewer', 'review')`, key)
-	exec("the starts of task a of "+key, `insert into step_starts (issue, task, kind, place, starts, agent, started_at, ended)
-		values ($1, 'a', 'step', 1, 1, $2, now() - interval '4 hours', true), ($1, 'a', 'step', 2, 1, $3, now() - interval '1 hour', false)`,
-		key, implementer, tester)
 	exec("the implementer's row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, pass, verdict, summary,
 		last_handoff, completed_at, step_task, step_place) values ($1, 'implementer', $2, $3, 0, 0, '', 'implemented', $4,
 		now() - interval '2 hours', 'a', 1)`, key, implementer, stepRecordsHead, "implement-record-"+key)
+	// The tester's entry carries the resume task the earlier daemon stored for it, in the shape the
+	// workflow composes a resume of testing (workflow's Engine.ResumeTask): the engine reads this
+	// release's columns, which the store slice 4 left does not hold yet, so the text is written here.
+	testerTask := fmt.Sprintf("Continue %s. Issue: %s. Phase: %s. Working copy: branch %s. Resume the existing phase work.",
+		title, key, phase.Testing, claim.IssueBranch(key))
 	exec("the tester's row of "+key, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, summary,
 		last_handoff, entry, entry_task, entry_raised_at, step_task, step_place) values ($1, 'tester', $2, '', 0, '', '', '', 1, $3,
-		now() - interval '1 hour', 'a', 2)`, key, tester, workflow.ResumePhaseTask(record.Issue{
-		Key: key, Title: title, Phase: phase.Testing, Generation: 1}, workflow.WorkingCopy(record.Issue{Key: key}, nil), ""))
+		now() - interval '1 hour', 'a', 2)`, key, tester, testerTask)
 	sessions := map[claim.Role]sliceFourSession{}
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleTester} {
 		token := r.token(role)
@@ -773,7 +774,7 @@ func (r *sliceFourRig) resume(role claim.Role, kept sliceFourSession) {
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
-	c := &stepClaimant{r: r.stepRecordsRig, token: token, issue: r.key, role: role, session: kept.id, model: stepRecordsModel,
+	c := &stepClaimant{r: r.stepRecordsRig, token: token, issue: r.key, tree: r.key, role: role, session: kept.id, model: stepRecordsModel,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: kept.id, OmpSessionFile: kept.file, AgentID: kept.id, PluginContract: api.DaemonAPIVersion,
@@ -786,7 +787,8 @@ func (r *sliceFourRig) resume(role claim.Role, kept sliceFourSession) {
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
-	go c.serve(c.sh)
+	sh, d := c.sh, r.d
+	sh.serve(func() { c.serve(sh, d) })
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: kept.id, Secret: c.secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {

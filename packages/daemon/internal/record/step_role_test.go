@@ -12,7 +12,7 @@ import (
 
 // checkerPlan is the plan `implementer checker` of issue at generation, its one task a in state at
 // place: the implementer at step 1, then checker, a role of the deployment, at step 2.
-func checkerPlan(issue string, generation uint64, state string, place TaskPlace) (PlanVersion, []PlanTask, []PlanStep) {
+func checkerPlan(issue string, generation uint64, state TaskState, place TaskPlace) (PlanVersion, []PlanTask, []PlanStep) {
 	v := PlanVersion{Issue: issue, Generation: generation, Version: 1, ArtifactID: planAuthor, Source: PlanSourceOwner, GivenBy: planOwner, GivenAt: planGivenAt}
 	tasks := []PlanTask{{Issue: issue, Generation: generation, Task: "a", PlanVersion: 1, BlockText: "Build the widget.", State: state, Place: place}}
 	steps := []PlanStep{

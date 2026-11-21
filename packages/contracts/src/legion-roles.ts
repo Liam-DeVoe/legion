@@ -19,7 +19,7 @@ export const LEGION_ROLES = [
 export type LegionRole = (typeof LEGION_ROLES)[number];
 
 /** The role of a phase worker's claim: one of Legion's six, or a role the deployment defines in its
- * settings' `roles` (contract 161), a name of the step grammar (`isStepRole`). */
+ * settings' `roles` (contract 217), a name of the step grammar (`isStepRole`). */
 export type LegionStepRole = LegionRole | string;
 
 /** The design-gate steps a Legion deployment can gate, each naming one document of a root issue
@@ -31,6 +31,21 @@ export type LegionStepRole = LegionRole | string;
  * (`dispatch-api.ts`) — so a step added here reaches both schemas and every message built from
  * them rather than two lists kept in step by hand. */
 export const GATED_STEPS = ["decisions", "criteria", "spec"] as const;
+
+/** The scale of a plan's rating, `planRating`: the whole numbers from 1 (the plan cost the work)
+ * to 5 (the plan fit the work). This is its one definition. The plugin's `plan_rating`, the
+ * `dispatch_plans` description and `dispatch plans`' printer read these, and `scripts/gen-go.ts`
+ * generates them into Go for Dispatch's record of the retro (`envoy/internal/contracts`) and for the
+ * daemon's completion route (`github.com/sjawhar/envoy/steprecord`). They are written in this
+ * module, which the dispatch command's bundle and the dashboard already load, so both read them
+ * without the daemon's API module; `legion-api.ts` re-exports them. */
+export const LEGION_PLAN_RATING_LEAST = 1;
+export const LEGION_PLAN_RATING_MOST = 5;
+
+/** The most characters the reason of a plan's rating holds, counted as Unicode code points as the
+ * daemon and Dispatch count them, generated into Go with the scale: Dispatch's record of the retro
+ * takes one to 2,000. */
+export const LEGION_PLAN_REASON_MAX = 2000;
 
 export interface ParsedRoleToken {
   project: string;
@@ -65,7 +80,7 @@ export function isStepRole(role: string): role is LegionStepRole {
  * The role that works a phase, the TypeScript mirror of the daemon's own table
  * (`packages/daemon/internal/phase/phase.go`, `RoleFor`). A phase no role works —
  * `awaiting_person`, `done`, `held`, `unrecorded` — has none, and so has any value that is not
- * a phase; `admitted` and `accepting` are the tree architect's, and `retro` is the implementer's
+ * a phase; `admitted` and `accepting` are the architect's, and `retro` is the implementer's
  * second turn on the issue it developed. The one reader here, the phase reminder, runs for a
  * phase worker alone, so the architect's two phases never remind anyone.
  */

@@ -79,9 +79,8 @@ type rolesLive struct {
 // once the daemon has restarted with checker taken out of the settings.
 func TestRolesLive(t *testing.T) {
 	fixtureenv.Live(t)
-	root := liveCheckout(t)
 	proof := newLiveProof(t, "scripts/e2e/roles.sh")
-	requireBun(t)
+	root := liveCLICheckout(t)
 	l := &rolesLive{settings: t.TempDir()}
 	var roles []config.Role
 	proof.step("checker-defined", func() { roles = l.checkerDefined(t) })

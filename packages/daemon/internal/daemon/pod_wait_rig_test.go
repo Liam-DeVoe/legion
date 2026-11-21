@@ -199,8 +199,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 	}
 
 	t.Run("AStoppedRolesWorkStaysWhileTheStartWaits", func(t *testing.T) {
-		rig := newIdleWakeRig(t, "a")
-		rig.launchAll()
+		rig := newIdleWakeRig(t, nil, "a")
 		issue := rig.issue("a")
 		rig.stopRole(issue)
 		uid := rig.kube.podUID(issue.pod)
@@ -215,8 +214,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 	})
 
 	t.Run("AfterTheIdlePeriodThePodIsReleasedAndTheRoleStartsInANewPod", func(t *testing.T) {
-		rig := newIdleWakeRig(t, "a")
-		rig.launchAll()
+		rig := newIdleWakeRig(t, nil, "a")
 		issue := rig.issue("a")
 		rig.stopRole(issue)
 		uid := rig.kube.podUID(issue.pod)
@@ -231,8 +229,7 @@ func TestAPodBuiltBeforeARoleIsKeptUntilMainsRuleOrItsRoundEndsIt(t *testing.T) 
 	})
 
 	t.Run("AnOperatorsSuspensionKeepsThePodAndIsToldOnce", func(t *testing.T) {
-		rig := newIdleWakeRig(t, "a")
-		rig.launchAll()
+		rig := newIdleWakeRig(t, nil, "a")
 		issue := rig.issue("a")
 		token := rig.token(issue)
 		if status, body := rig.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil, true); status != http.StatusOK && status != http.StatusAccepted {

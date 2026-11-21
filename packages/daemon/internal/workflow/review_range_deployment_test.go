@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/reviewround"
 )
 
 const (
@@ -42,14 +43,14 @@ func reportsAtEntry(t *testing.T, pool *pgxpool.Pool, engine *Engine, id, key st
 	}
 }
 
-// stepReviewedHead is the commit the step at position of task a of key's plan at its generation
-// holds (plan_steps.reviewed_head).
-func stepReviewedHead(t *testing.T, pool *pgxpool.Pool, key string, position int) string {
+// stepReviewedHead is the commit the newest run of role's review step of key read, as role's
+// phases row holds it (phases.reviewed_head, which recordStepReview writes): a role runs at most one
+// step of an issue.
+func stepReviewedHead(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) string {
 	t.Helper()
 	var head string
-	if err := pool.QueryRow(t.Context(), `select reviewed_head from plan_steps
-		where issue = $1 and task = 'a' and position = $2 and generation = (select generation from issues where key = $1)`, key, position).Scan(&head); err != nil {
-		t.Fatalf("read the reviewed commit of step %d of %s: %v", position, key, err)
+	if err := pool.QueryRow(t.Context(), `select reviewed_head from phases where issue = $1 and role = $2`, key, string(role)).Scan(&head); err != nil {
+		t.Fatalf("read the reviewed commit of the %s's step of %s: %v", role, key, err)
 	}
 	return head
 }
@@ -58,8 +59,9 @@ func stepReviewedHead(t *testing.T, pool *pgxpool.Pool, key string, position int
 // as the reviewer does (v-review-range for this role): the critic fails at X, its completion
 // carrying the entry its row stands on, the implementer pushes Y, and the critic's second task
 // names X; its first names none. The checker, of the type testing, in the same plan form, is told
-// no commit. The control, which stays in the suite: with the step's commit cleared between the
-// rounds, the critic's second task names none, so the commit comes from the step's record alone.
+// no commit. The control, which stays in the suite: with the commit the critic's phases row holds
+// cleared between the rounds, the critic's second task names none, so the commit comes from that
+// row alone.
 func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -85,7 +87,7 @@ func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T)
 			first := roleRowOf(t, pool, engine, root.Key, tc.role)
 			reportsAtEntry(t, pool, engine, "fail-1", root.Key, root.Generation, tc.role, "fail", stepCommitX, first.Entry)
 			if tc.cleared {
-				if _, err := pool.Exec(t.Context(), "update plan_steps set reviewed_head = '' where issue = $1", root.Key); err != nil {
+				if _, err := pool.Exec(t.Context(), "update phases set reviewed_head = '' where issue = $1 and role = $2", root.Key, string(tc.role)); err != nil {
 					t.Fatalf("clear the step's commit: %v", err)
 				}
 			}
@@ -97,25 +99,25 @@ func TestAReviewStepOfADeploymentRoleGetsTheCommitItsRunBeforeRead(t *testing.T)
 			if second.Entry <= first.Entry {
 				t.Fatalf("the %s stands on entry %d after the implementer's second completion, want one above %d", tc.role, second.Entry, first.Entry)
 			}
-			if strings.Contains(first.EntryTask, ReviewedCommitLabel) {
-				t.Fatalf("the %s's first task = %q, want no %s", tc.role, first.EntryTask, ReviewedCommitLabel)
+			if strings.Contains(first.EntryTask, reviewround.CommitLabel) {
+				t.Fatalf("the %s's first task = %q, want no %s", tc.role, first.EntryTask, reviewround.CommitLabel)
 			}
-			says := reviewedCommit(stepCommitX).part()
+			says := reviewedPartOf(stepCommitX)
 			if got := strings.Contains(second.EntryTask, says); got != tc.names {
 				t.Fatalf("the %s's second task = %q; saying %q is %t, want %t", tc.role, second.EntryTask, says, got, tc.names)
 			}
-			if !tc.names && strings.Contains(second.EntryTask, ReviewedCommitLabel) {
-				t.Fatalf("the %s's second task = %q, want no %s", tc.role, second.EntryTask, ReviewedCommitLabel)
+			if !tc.names && strings.Contains(second.EntryTask, reviewround.CommitLabel) {
+				t.Fatalf("the %s's second task = %q, want no %s", tc.role, second.EntryTask, reviewround.CommitLabel)
 			}
 		})
 	}
 }
 
 // resetCritic seeds the root LEGION-207, whose tree runs, and its child LEGION-208 at step 2 of
-// `implementer critic`, the critic (review) running on entry resetEntry with its task, the step's
-// reviewed commit W (a round of the generation before read it) and the pull request at head X;
-// then clears the root's tree's generation (record.Store.ClearTreeGeneration), and fails unless
-// the step's commit is "" right after the clear.
+// `implementer critic`, the critic (review) running on entry resetEntry with its task and the
+// reviewed commit W on its phases row (a round of the generation before read it), and the pull
+// request at head X; then clears the root's tree's generation (record.Store.ClearTreeGeneration),
+// and fails unless the critic's row holds no commit right after the clear.
 func resetCritic(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 	t.Helper()
 	pool := migratedPool(t)
@@ -127,15 +129,12 @@ func resetCritic(t *testing.T) (*pgxpool.Pool, *Engine, record.Issue) {
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 43,
 		Branch: "legion/LEGION-208", HeadSHA: stepCommitX})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: "critic", Claim: "critic-claim", Entry: resetEntry,
-		EntryTask: "Continue child. Issue: LEGION-208. Phase: step."})
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-		return record.SetStepReviewedHead(ctx, tx, "LEGION-208", 1, "a", 2, stepCommitW)
+		EntryTask: "Continue child. Issue: LEGION-208. Phase: step.", ReviewedHead: stepCommitW})
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		return record.NewStore().ClearTreeGeneration(t.Context(), tx, "LEGION-207", time.Now().UTC())
 	})
-	applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-		return record.NewStore().ClearTreeGeneration(ctx, tx, "LEGION-207", time.Now().UTC())
-	})
-	if head := stepReviewedHead(t, pool, "LEGION-208", 2); head != "" {
-		t.Fatalf("the critic's step holds the commit %q right after the clear of its tree's generation, want none", head)
+	if head := stepReviewedHead(t, pool, "LEGION-208", "critic"); head != "" {
+		t.Fatalf("the critic's row holds the commit %q right after the clear of its tree's generation, want none", head)
 	}
 	return pool, deploymentEngine(), *issueRecord(t, pool, "LEGION-208")
 }
@@ -167,12 +166,12 @@ func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool, engine, child := resetCritic(t)
 			if tc.promoted {
-				applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
+				applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 					return engine.StartPromotedWorker(ctx, tx, child, "critic")
 				})
 				row := roleRowOf(t, pool, engine, child.Key, "critic")
-				if row.Entry != resetEntry+1 || strings.Contains(row.EntryTask, ReviewedCommitLabel) {
-					t.Fatalf("the promoted critic is on entry %d with the task %q, want entry %d naming no %s", row.Entry, row.EntryTask, resetEntry+1, ReviewedCommitLabel)
+				if row.Entry != resetEntry+1 || strings.Contains(row.EntryTask, reviewround.CommitLabel) {
+					t.Fatalf("the promoted critic is on entry %d with the task %q, want entry %d naming no %s", row.Entry, row.EntryTask, resetEntry+1, reviewround.CommitLabel)
 				}
 			}
 
@@ -184,43 +183,41 @@ func TestACompletionOfTheEntryBeforeAResetMovesNoStepCommit(t *testing.T) {
 					t.Fatalf("the critic's fail of entry %d with entry %d standing: refusal %+v, %s stands in %s at the %q step; want HANDOFF_STALE_ENTRY and the critic's step",
 						tc.entry, resetEntry+1, result.Refusal, child.Key, got.Phase, got.StepRole)
 				}
-				if head := stepReviewedHead(t, pool, child.Key, 2); head != "" {
+				if head := stepReviewedHead(t, pool, child.Key, "critic"); head != "" {
 					t.Fatalf("the critic's step holds the commit %q after the refused completion of entry %d, want none", head, tc.entry)
 				}
 				return
 			}
 			reportsAtEntry(t, pool, engine, "critic-fail", child.Key, child.Generation, "critic", "fail", stepCommitX, tc.entry)
 
-			if head := stepReviewedHead(t, pool, child.Key, 2); head != tc.want {
+			if head := stepReviewedHead(t, pool, child.Key, "critic"); head != tc.want {
 				t.Fatalf("the critic's step holds the commit %q after its completion of entry %d, want %q", head, tc.entry, tc.want)
 			}
 			reportsAtEntry(t, pool, engine, "impl-after", child.Key, child.Generation, claim.RoleImplementer, "", stepCommitY, 0)
 			next := roleRowOf(t, pool, engine, child.Key, "critic").EntryTask
-			if named := strings.Contains(next, ReviewedCommitLabel); named != (tc.want != "") {
-				t.Fatalf("the critic's next task = %q; naming a %s is %t, want %t", next, ReviewedCommitLabel, named, tc.want != "")
+			if named := strings.Contains(next, reviewround.CommitLabel); named != (tc.want != "") {
+				t.Fatalf("the critic's next task = %q; naming a %s is %t, want %t", next, reviewround.CommitLabel, named, tc.want != "")
 			}
 		})
 	}
 }
 
 // A review step of a deployment role that is resumed, not started by a move, is told the commit its
-// step read too, as a resumed reviewer is (each resume reads reviewedPartOf): the ready of the
-// critic's claim at step 2 of `implementer critic`, whose step holds X, sends a resume task naming
-// X; the same ready with the step holding none names no commit.
+// step read too, as a resumed reviewer is (namingTheReviewRound reads the role's phases row): the
+// ready of the critic's claim at step 2 of `implementer critic`, whose row holds X, sends a resume
+// task naming X; the same ready with the row holding none names no commit.
 func TestAResumedReviewStepIsToldTheCommitItsStepRead(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		head string
-	}{{"the step holds X", stepCommitX}, {"the step holds none", ""}} {
+	}{{"the row holds X", stepCommitX}, {"the row holds none", ""}} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			const key = "LEGION-209"
 			seedIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: key,
 				Project: "LEGION", Title: "a root", Phase: phase.Step, Generation: 1, Status: "in_progress", Rank: "U", HandedOver: true})
 			seedStepsAt(t, pool, key, 1, 2, map[string]string{"critic": "review"}, "implementer", "critic")
-			applyInTx(t, pool, func(ctx context.Context, tx pgx.Tx) error {
-				return record.SetStepReviewedHead(ctx, tx, key, 1, "a", 2, tc.head)
-			})
+			seedPhase(t, pool, record.PhaseRow{Issue: key, Role: "critic", ReviewedHead: tc.head})
 			seedSlot(t, pool, record.Slot{Issue: key, Index: 0})
 			seedPhaseWorker(t, pool, key, "critic", "")
 
@@ -232,7 +229,7 @@ func TestAResumedReviewStepIsToldTheCommitItsStepRead(t *testing.T) {
 			if len(starts) != 1 {
 				t.Fatalf("the ready queued starts %+v, want the critic's one", starts)
 			}
-			says := reviewedCommit(stepCommitX).part()
+			says := reviewedPartOf(stepCommitX)
 			if named := strings.Contains(starts[0].Task, says); named != (tc.head != "") {
 				t.Fatalf("the critic's resume task = %q; saying %q is %t, want %t", starts[0].Task, says, named, tc.head != "")
 			}

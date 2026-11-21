@@ -183,8 +183,8 @@ func resolveRoles(file fileConfig, configDir string, cfg *Config) error {
 }
 
 // CheckRolePrompts refuses a role whose prompt file the daemon cannot read. Load runs it, the
-// daemon's own load, and so does `legion start --check-config` over what LoadForValidation
-// answered, which reads no such file itself and keeps each path as resolved.
+// daemon's own load, and so does `legion config check` over what LoadForValidation answered,
+// which reads no such file itself and keeps each path as resolved.
 func CheckRolePrompts(roles []Role) error {
 	for _, role := range roles {
 		if _, err := os.ReadFile(role.PromptFile); err != nil {
@@ -258,7 +258,7 @@ func checkDefaultSteps(cfg Config) error {
 		if steps == nil {
 			continue
 		}
-		task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, HasSteps: true, Steps: steps}}}
+		task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
 		refusals := append(plan.Supported(task, deployment), plan.Validate(task, deployment)...)
 		if len(refusals) == 0 {
 			continue
