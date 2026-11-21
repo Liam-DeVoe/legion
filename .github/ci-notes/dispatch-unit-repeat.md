@@ -21,57 +21,75 @@ measurement beside the budgets:
 - `deadline_seconds`: twice `slowest_seconds`, up to the next whole minute, the time at which the
   step's `timeout` stops the tool (the next section);
 - `step_minutes`: the deadline, the 60 s `timeout --kill-after` leaves the tool to report, and
-  60 s of slack for the step's own start around `timeout`;
+  60 s of slack for the step's own start around `timeout`, up to the next whole minute. The slack
+  rests on no reading: it sits behind the deadline and the kill-after, so it decides nothing;
 - `job_minutes`: `step_minutes`, and twice `other_steps_seconds` up to the next whole minute.
 
-`packages/dispatch/e2e/__tests__/unit-repeat.test.ts`, which the dashboard job of `ci.yaml` runs
-on every change to the workflow, holds each lane's three budgets to those rules, and holds the job
-and the step to the matrix's values. Its controls plant each fault in a parsed copy of the
-workflow, one past the boundary of its rule as worked out from that lane's own measurements, and
-name the lane and the rule that fail. They repeat no measured number. So a new reading changes the
-matrix and these notes and no line of the test.
+The job's rule is this file's own. `.github/ci-notes/dispatch-browser.md`'s rule for
+`dispatch-browser.yaml` adds the measured maximum of the steps without a budget once; this one
+adds it twice, the same margin of 2 as the deadline, because the other steps vary from runner to
+runner as the test step does. Over the 22 runs below, a leg's other steps took 15 to 37 s in the
+web lane, 13 to 44 s in the web-cold lane and 28 to 229 s in the harness lane: 2.5, 3.4 and 8.2
+times the fastest. Taken once, those maxima would give 69, 9 and 59 minutes in place of 70, 10
+and 63. The job budget stays a backstop behind the step's, and decides no verdict.
+
+`packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts`, which the dashboard job of
+`ci.yaml` runs on every change to the workflow, holds each lane's three budgets to exactly those
+rules, and holds the job and the step to the matrix's values. So a budget raised or cut with no
+new measurement fails it, and so does a measurement written with no budget set again from it.
+Its controls plant each fault in a parsed copy of the workflow, a step above and a step below
+each budget's rule as worked out from that lane's own measurements, and name the lane and the
+rules that fail. They repeat no measured number. So a new reading changes the matrix and these
+notes and no line of the test.
 
 ### What was measured, on 2026-11-20
 
-The step times of every leg of 19 runs of the workflow, read from
-`gh api repos/cybermonklabs/legion/actions/runs/<id>/jobs` and from the legs' artifacts, 57 legs a
+The step times of every leg of 22 runs of the workflow, read from
+`gh api repos/cybermonklabs/legion/actions/runs/<id>/jobs` and from the legs' artifacts, 66 legs a
 lane:
 
 - the ten runs before 11:00Z that day (runs 44681726917 to 44712651976, pull requests and
   hand-started runs on five branches, each a merge of its head with main or that head);
 - run 44726566359, started by hand at main `1c7c825367`;
-- eight runs at the heads of the pull request that set these budgets, all on main `5570d0acd2`:
-  44751162563 (started by hand) and 44751677485 (the pull request's own) at its first head,
-  44759854373 and 44759866208 at its second, 44770373346 at its third, 44796999569 (started by
-  hand) at its fourth, 44808555733 at its fifth, and 44814644776 at its sixth.
+- eleven runs at the heads of the pull request that set these budgets: 44751162563 (started by
+  hand) and 44751677485 (the pull request's own) at its first head, 44759854373 and 44759866208
+  at its second, 44770373346 at its third, 44796999569 (started by hand) and 44796938761 (the
+  pull request's own) at its fourth, 44808555733 at its fifth, 44814644776 at its sixth and
+  44821135577 at its seventh, all on main `5570d0acd2`; and 44836898568 at its eighth, a merge of
+  main `f1d27d3a82`, read on 2026-11-20 and 2026-11-21.
 
 A leg stopped before Bun ended has no time of its own, and no report. Its time is estimated from
 its `bun.log`, which holds a result line for each row that ended: the step's time, times the
 results a whole leg of the same lane of that run wrote, over the results the stopped leg's log
-holds.
+holds. The two web-cold legs stopped at 132 s, rounds 2 and 3 of run 44696645178, hold 6,166 and
+6,208 results against round 1's 6,225, so they are estimated at 133.3 s and 132.4 s.
 
 | Lane | Legs whose Bun ended by itself | Legs stopped before Bun ended | Slowest | Old step budget |
 | --- | --- | --- | --- | --- |
-| web | 41, 726 to 1,954 s | 16, by the budget at 972 or 973 s, estimated at most 1,133 s | 1,954 s, run 44759854373, round 1 | 16 minutes |
-| web-cold | 55, 94 to 158 s; 9 of them past the budget, so their steps failed with no row failed | 2, both by the budget at 132 s | 158 s, run 44751677485, round 1 | 2 minutes |
-| harness | 56, 1,071 to 2,301 s | 1, by a cancel of its run at 2,274 s, estimated 2,283 s | 1,565 s, run 44796999569, round 2 | 30 minutes |
+| web | 50, 726 to 1,954 s | 16, by the budget at 972 or 973 s, estimated at most 1,133 s | 1,954 s, run 44759854373, round 1 | 16 minutes |
+| web-cold | 64, 94 to 169 s; 9 of them past the budget, so their steps failed with no row failed | 2, both by the budget at 132 s, estimated 133.3 s and 132.4 s | 169 s, run 44796938761, round 1 | 2 minutes |
+| harness | 65, 1,071 to 2,301 s | 1, by a cancel of its run at 2,274 s, estimated 2,283 s | 1,565 s, run 44796999569, round 2 | 30 minutes |
 
 The web lane grew within the day: main's `a8067fcd51` (11:41Z) added
 `web/src/features/issue/useIssueDrafts.test.ts`, whose rows took 1,168 s together over a leg's 20
 runs, and its rows a run went from 6,296 (run 44726566359) to 6,462 (run 44751162563). So the
-eight runs on main `5570d0acd2` hold the slowest legs of every lane. The same suite's web legs
-took 1,202 to 1,954 s across those eight runs: one runner can take 1.6 times another's time,
+ten runs on main `5570d0acd2` hold the slowest legs of every lane. The same suite's web legs
+took 1,062 to 1,954 s across those ten runs: one runner can take 1.8 times another's time,
 which is the spread the margin of 2 is there for.
 
-The harness lane's slowest leg is read over the 48 legs of the branches that change no harness
-row. Pull request #4236 adds harness rows whose real-time waits take minutes, and its 9 legs took
-1,651 to 2,301 s; it sets its own harness budget, and 2,301 s is inside the deadline set here.
+The harness lane's slowest leg is read over the 57 legs of the branches that change no harness
+row. Pull request #4236 adds harness rows whose real-time waits take minutes: its 9 legs in the
+window took 1,651 to 2,301 s, and round 3 of its later run 44740717331 took 2,375 s. It sets its
+own harness budget, and 2,375 s is inside the deadline set here. Pull request #4615 adds harness
+rows too: round 1 of its run 44839359908 took 1,642 s, inside the deadline, and twice that is
+3,284 s, over it. Whichever of them merges after this budget reads its own harness legs into the
+window and sets the harness budgets again by the rule.
 
 The other steps took at most 37 s in a web leg (run 44751162563, round 3), 44 s in a web-cold leg
 (run 44814644776, round 1) and 229 s in a harness leg (run 44709413418, round 1, most of it zsh's
-install).
+install), and at least 15, 13 and 28 s.
 
-The window grew four times after a head had set budgets from it:
+The window grew five times after a head had set budgets from it:
 
 - the runs at the pull request's first head read a web leg of 1,661 s, which its second head took
   in;
@@ -80,12 +98,15 @@ The window grew four times after a head had set budgets from it:
 - the runs at its third and fourth heads read a web-cold leg whose other steps took 32 s and a
   harness leg of 1,565 s, which its sixth head took in;
 - the run at its sixth head read a web-cold leg whose other steps took 44 s, which its seventh head
-  took in.
+  took in;
+- the pull request's own run at its fourth head, 44796938761, read a web-cold leg of 169 s, which
+  its ninth head took in, with the runs at its seventh and eighth heads.
 
 The first three times, a lane's budgets no longer kept the rule over every leg read, and the head
-that took the legs in set every lane's budgets again by the rule. The fourth time the rule still
-held, since 8 minutes and 2 × 44 s come to 568 s, under the web-cold job's 10 minutes: the seventh
-head changed the measurement beside the budget, and no budget.
+that took the legs in set every lane's budgets again by the rule. The last two times the rule
+still gave the same budgets: 8 minutes and 2 × 44 s come to 568 s, under the web-cold job's 10
+minutes, and 2 × 169 s is 338 s, which rounds up to the same 360 s deadline. Those heads changed
+the measurement beside the budget, and no budget.
 
 The largest job budget, 70 minutes for a web leg, is far inside GitHub's own limit for a job on a
 GitHub-hosted runner. GitHub's "Actions limits" page
@@ -107,7 +128,8 @@ budget failed the step. No row was running long; the lane was.
 
 ### What a run costs now
 
-A run that passes takes what its rows take: the runs read cost 115 to 164 billed minutes, and $0,
+A run that passes takes what its rows take: the 22 runs read cost 115 to 169 billed minutes each
+(each leg's job rounded up to a whole minute; run 44696645178 cost 169), and $0,
 since standard runners are free for a public repository. The budgets bound only a leg that hangs:
 at most 70 minutes for a web leg, 10 for a web-cold leg and 63 for a harness leg.
 
@@ -121,16 +143,26 @@ slowest, and the budgets follow it, so a budget never rests on a margin its own 
 
 ## A leg's deadline, and what a stopped leg names
 
-A step that GitHub ends at its `timeout-minutes` is ended from outside, and says only that the
-action "has timed out": the tool never learns of it, so no report names a row, and the 18 legs the
-old budgets stopped before Bun ended, in the reading above, wrote no report at all. So the step's
-own deadline comes first, inside its budget, and the tool is told of it:
+GitHub's runner ends a step that reaches its `timeout-minutes`, or that a cancel of the run
+reaches, with signals to the step's top process alone: SIGINT, SIGTERM 7.5 s later, and SIGKILL
+2.5 s after that (actions/runner, `src/Runner.Sdk/ProcessInvoker.cs`, `SendSignal`; a `run:` step
+takes that path, since `ScriptHandler.cs` starts it with `killProcessOnCancel: false`). The top
+process of a `run:` step is the bash that runs the step's script file, which passes no signal on
+to a child it waits for. So before this deadline the tool never learned of a budget's end: no
+report named a row, and the 18 legs the old budgets stopped before Bun ended, in the reading
+above, wrote no report at all. So the step's own deadline comes first, inside its budget, the
+tool is told of it, and the runner's own signals reach the tool too:
 
-- The step runs `timeout --foreground --signal=TERM --kill-after=60 <deadline_seconds> bun run
-  test:repeat ...`. At the deadline `timeout` sends SIGTERM to `bun run` alone, and not to its
+- The step runs `exec timeout --foreground --signal=TERM --kill-after=60 <deadline_seconds> bun
+  run test:repeat ...`. At the deadline `timeout` sends SIGTERM to `bun run` alone, and not to its
   process group (`--foreground`), so Bun's workers are left for the tool to stop. `bun run` passes
   the SIGTERM on to the tool, through the script's `&&` too (measured on Bun 1.4.4: a script
-  `true && bun <file>` under `timeout` got the signal in that file's process).
+  `true && bun <file>` under `timeout` got the signal in that file's process). `exec` makes
+  `timeout` the step's top process, so a signal of the runner's reaches `timeout`, which passes it
+  on to `bun run` in the same way. Measured on 2026-11-21 with the step's text in a script file
+  under `bash -e`, as the runner runs it, and SIGINT to that bash alone once a spinning row had
+  begun: with `exec` the tool named the row after 0.4 s and the step ended 0.9 s after it began;
+  without it nothing reached the tool until its 30 s deadline.
 - The tool adds `packages/dispatch/e2e/tools/unit-repeat-progress.ts` to the lane's preloads. That
   preload appends a line to `<out>/progress.jsonl` as each worker loads a test file, and as each
   run of the file and each row of the run begins and ends.
@@ -141,13 +173,49 @@ own deadline comes first, inside its budget, and the tool is told of it:
 - Once Bun has ended, for each file a live worker was in that had begun a row, the tool runs that
   file alone under the leg's seed with the preload failing every row before its body, which prints
   the file's rows by name in the order the seed runs them (measured against the order the bodies
-  ran in, under five seeds). That run still runs the file's own code and hooks, so it runs in a
-  process group of its own too, which the tool kills whole at the end of its bound, and again once
-  it has ended.
+  ran in, under five seeds). The tool ends that run once it has read the names of the rows the
+  workers had begun, so the rest of the file, a hook that hangs after the row included, decides
+  nothing. That run still runs the file's own code and hooks, so it runs in a process group of its
+  own too, which the tool kills whole once it has read those names, at the end of its bound where
+  the run never prints them, and again once it has ended.
 - The report, the step summary and one `::error` for each such file name the file, the run of it
   and the row of that run by its place and its name, and give the command that runs the file again
   in that order. The report also says how Bun and each names run ended against their bounds. The
   tool exits 1, and `<out>/progress.jsonl` stays in the leg's artifact.
+- The tool listens for SIGTERM and SIGINT until its report is written, not only while Bun runs.
+  A signal with no listener ends a process at once, so a deadline that came after Bun had ended,
+  while the tool read Bun's results and wrote its report, would end the tool with no report; a
+  review of the pull request that set these budgets found that window. Such a stop has nothing
+  left to stop: the tool keeps every result Bun wrote, and writes the report again with one more
+  failure, which says the leg was stopped after Bun had ended, while the report was written. The
+  listener of a signal that lands during that synchronous work runs on the next turn of the event
+  loop, which the tool takes once the report is written (on Bun 1.4.4, a SIGTERM another process
+  sent during synchronous work reached its listener before the first `setImmediate` after it, in
+  30 of 30 runs). A stop after that turn leaves the report as written, whole.
+- A cancel, or a step budget's end, reaches the tool as the runner's SIGINT: a stop like the
+  deadline's SIGTERM. The runner's SIGTERM 7.5 s later is a second signal, which the tool passes
+  over. In the readings below Bun ended at most 966 ms after a stop and a names run took at most
+  4,178 ms, so such a report comes about 5 s after the SIGINT, inside the 7.5 s. Where Bun or a
+  names run runs to its bound (10 s, 20 s), the runner kills `timeout` 10 s after its SIGINT, and
+  the step ends while the tool, its grandchild, goes on and writes its report: the step's log then
+  need not hold the tool's errors, and the "Upload the report" step, which runs after a cancel too,
+  holds the report only where the tool wrote it first. `unit-repeat.test.ts` sends the SIGINT to
+  the workflow's own step text under `bash -e`, as the runner does.
+
+### When Bun ends early, with no stop
+
+A worker, or Bun's test process itself, killed from outside Bun, as the out-of-memory killer
+kills the largest process, ends Bun early with no stop. Bun 1.4.4 then gives the worker's file a
+`(worker crashed)` testcase and goes on, or, when its test process is killed, writes no junit
+file at all; neither names the row that was running. Bun runs a lane of two files or more in
+workers (`bun test --test-worker`) and a lane of one file in its test process (measured on
+2026-11-21). So where Bun ended by a signal, wrote no junit file the tool can read, or wrote a
+`(worker crashed)` testcase, the tool reads the progress file once Bun has ended, and names each
+file whose worker's last load had a run of it not ended, by its run and its row, with a names run
+as after a stop: in the report, the step summary and one `::error` each, titled "Running when its
+worker died". The file's `(worker crashed)` testcase makes no failing row of its own. The progress
+file stays in the leg's artifact whenever the leg fails; only a leg that passed with no stop,
+whose junit file holds every row's result, removes it.
 
 A stopped leg's error then reads, for a planted row that spins for ever in a copy of the package:
 
@@ -177,24 +245,28 @@ What a stop cannot name, and what it names with care:
   beside it.
 - Where the run that reads a file's names fails or reaches its bound, the row is named by its
   place alone and the report says why its name was not read.
-- A file of a worker that was gone at the stop is not named as running. Bun's junit file gives a
+- A file of a worker that was gone at the stop is not named as running. Where the progress file
+  shows that worker in a run of the file it had not ended, the worker died before the stop, a
+  crash of its own or a kill from outside Bun, and the report names the file as one its worker died
+  in, by its run and its row, as Bun's early end does above. Bun's junit file gives a
   `(worker crashed)` testcase to each file whose results it had not taken in when the stop came:
   the file in hand, and also, measured on 2026-11-20, a file whose worker had ended its rows and
-  exited a moment before. That testcase cannot tell a worker that crashed before the stop from one
-  the stop ended, so after a stop the report lists each such file as one whose results Bun did not
-  report, in the stop's own failure, and makes no failing row of it.
+  exited a moment before. Except for a file its worker died in, the report lists each such file as
+  one whose results Bun did not report, in the stop's own failure, and makes no failing row of it.
 
 ### The two bounds of a stop
 
 A stop has two bounds of its own, each a hang guard that decides no verdict:
 
 - the grace, how long Bun gets to end after the stop, before the tool kills its group: 10 s;
-- the names bound, how long a run that reads a file's names gets, before the tool kills its group:
-  20 s.
+- the names bound, how long a run that reads a file's names gets to print the names the tool
+  needs, before the tool kills its group: 20 s. The tool ends the run as soon as it has read
+  them, so the bound ends only a run that never prints them.
 
 A caller sets them with `DISPATCH_UNIT_REPEAT_STOP_GRACE_MS` and
 `DISPATCH_UNIT_REPEAT_NAMES_BOUND_MS`, as `unit-repeat.test.ts`'s stop rows do, so that neither
-decides a row's verdict. Each default is at least three times the largest reading of its kind.
+decides a row's verdict; the one row that holds a names run which can never print to its bound
+sets that bound to 2 s. Each default is at least three times the largest reading of its kind.
 
 The readings were taken on 2026-11-20, from 19:42Z to 19:58Z, on the dev box, at its own load of
 383 to 671. They come from nine legs, three of each lane, each in this tree's
@@ -214,6 +286,6 @@ reading short.
   10 s.
 - **The names bound:** a names run took at most 4,178 ms, with 3 or 4 running at once. 3 × 4,178 ms
   is 12.5 s, and the bound is 20 s.
-- **Inside the kill-after:** the grace, the names bound and the 2 s the tool gives a pipe to close
-  come to 32 s, inside the 60 s that the step's `timeout --kill-after` gives the tool after the
-  stop.
+- **Inside the kill-after:** the grace, the 2 s the tool then gives a pipe to close, the names
+  bound and the 2 s it gives that run's pipe come to 34 s, inside the 60 s that the step's
+  `timeout --kill-after` gives the tool after the stop.

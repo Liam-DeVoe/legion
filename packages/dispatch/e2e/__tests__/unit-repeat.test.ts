@@ -4,11 +4,11 @@
  *  with `process.execPath`, an explicit `--seed`, `--rerun-each` and Bun's junit reporter. Then
  *  it hands what Bun left behind to the tool's pure functions. The directory is outside
  *  packages/dispatch, so the package's bunfig.toml does not reach that run. HOME is the same
- *  directory, so no global bunfig of the host reaches it either. Two rows run the tool itself
- *  there instead: on an `--out` the tool must refuse before it starts Bun, and on a copy of the
- *  package whose one row never ends, which the tool is stopped on. One row reads no Bun at all:
- *  it holds the budgets of .github/workflows/dispatch-unit-repeat.yaml to the measurements beside
- *  them.
+ *  directory, so no global bunfig of the host reaches it either. Other rows run the tool itself
+ *  there instead: on an `--out` the tool must refuse before it starts Bun, and on copies of the
+ *  package whose rows never end, which the tool is stopped on, or whose worker or Bun's test
+ *  process is killed, or whose step GitHub's runner cancels. unit-repeat-budgets.test.ts holds
+ *  the budgets of .github/workflows/dispatch-unit-repeat.yaml to the measurements beside them.
  *
  *  On each rerun Bun 1.4.4 runs the test file's own top-level code again, so a counter declared
  *  there starts again at 0. A module the file imports keeps its state between reruns (measured
@@ -28,6 +28,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 
 import {
   annotations,
+  diedFiles,
   junitAt,
   type LaneRun,
   markdown,
@@ -125,6 +126,7 @@ async function laneRun(
     // Bun runs here without runLane, which is what reads /proc/meminfo, so there is no reading.
     memory: [],
     stop: null,
+    early: null,
   };
 }
 
@@ -540,8 +542,8 @@ test(
       progressLine({ event: "done", load: "d", at: 1_004 }),
       // Worker 4 is in e.test.ts's own code: no run of it has begun.
       progressLine({ event: "load", load: "e", at: 9_000, file: "e.test.ts", pid: 4 }),
-      // Worker 5 died in f.test.ts's first row before the stop, a crash of its own: Bun reports
-      // that file, and the stop names no file of a worker that was not alive at it.
+      // Worker 5 died in f.test.ts's first row before the stop, a crash of its own or a kill from
+      // outside Bun: the stop names it as a file its worker died in, and not as running.
       progressLine({ event: "load", load: "f", at: 1_000, file: "f.test.ts", pid: 5 }),
       progressLine({ event: "run", load: "f", at: 1_001 }),
       progressLine({ event: "start", load: "f", at: 1_002 }),
@@ -573,12 +575,14 @@ test(
       signal: "SIGTERM",
       at: 10_000,
       afterMs: 9_500,
+      afterBun: false,
       progress: { text: lines.join("\n") },
       alive: [1, 2, 3, 4, 6, 7],
       names: {
         "a.test.ts": { names: ["a one", "outer > a two", "a three"] },
         "c.test.ts": { unreadable: "the run that reads its rows' names exited 1" },
         "g.test.ts": { names: ["g one", "g two"] },
+        "f.test.ts": { names: ["f one", "f two"] },
       },
       bunEnd: null,
       namesRuns: {},
@@ -641,6 +645,19 @@ test(
         reproduce: `bun run test:harness e.test.ts --seed=${SEED}`,
       },
     ]);
+    expect(diedFiles({ stop, early: null }, lane)).toEqual([
+      {
+        file: "f.test.ts",
+        run: 1,
+        place: "row",
+        rowsBegun: 1,
+        rowsRunning: 0,
+        rowName: "f one",
+        nameUnread: null,
+        quietSeconds: 9,
+        reproduce: `bun run test:harness f.test.ts --seed=${SEED}`,
+      },
+    ]);
 
     // The report of that stop: Bun wrote no junit file and exited 143, which the stop explains,
     // so the one failure outside any test is the stop, and each running file has an error of its
@@ -658,12 +675,14 @@ test(
       environment: {},
       memory: [],
       stop,
+      early: null,
     });
-    expect(kinds(report)).toEqual(["stopped"]);
+    expect(kinds(report)).toEqual(["stopped", "worker-died"]);
     expect(report.exitCode).toBe(1);
     const errors = annotations(report).filter((line) => line.startsWith("::error "));
     expect(errors).toEqual([
       expect.stringContaining("The leg was stopped by SIGTERM after 9.5 s, before Bun ended"),
+      expect.stringContaining("1 test file was cut short before the stop"),
       "::error file=packages/dispatch/a.test.ts,title=Running when the leg was stopped::a.test.ts: " +
         'in row 2, "outer > a two", or a hook after it, of run 2 of 2, 6.0 s since it began, when ' +
         `SIGTERM stopped the leg after 9.5 s (seed ${SEED}). Run it again from packages/dispatch: ` +
@@ -677,11 +696,19 @@ test(
         "h.test.ts: in run 1 of 2, in 1 row of the 2 begun, which the file runs at once"
       ),
       expect.stringContaining("e.test.ts: in run 1 of 2, before it began"),
+      "::error file=packages/dispatch/f.test.ts,title=Running when its worker died::f.test.ts: in " +
+        'row 1, "f one", or a hook after it, of run 1 of 2, 9.0 s since it began, when its worker ' +
+        `or Bun's test process died (seed ${SEED}). Run it again from packages/dispatch: ` +
+        `bun run test:harness f.test.ts --seed=${SEED}`,
     ]);
     expect(markdown(report)).toContain("### The leg was stopped while 5 test files were running");
+    expect(markdown(report)).toContain(
+      "### 1 test file was cut short when a worker or Bun's test process died"
+    );
 
     // Bun's junit file after a stop: a `(worker crashed)` testcase says Bun had not taken in that
-    // file's results when the stop came. It is named as such, and no failing row is made of it.
+    // file's results when the stop came. It is named as such, and no failing row is made of it,
+    // unless its worker died before the stop: then the file is the one it died in.
     const crashed = (file: string) =>
       `  <testsuite name="${file}" file="${file}" tests="1" assertions="0" failures="1" skipped="0" time="1" hostname="runner">\n` +
       `    <testcase name="(worker crashed)" classname="" time="0" file="${file}" assertions="0">\n` +
@@ -705,12 +732,14 @@ test(
       environment: {},
       memory: [],
       stop,
+      early: null,
     });
     expect(withJunit.failingRows).toEqual([]);
-    expect(withJunit.stop?.unreported).toEqual(["a.test.ts", "f.test.ts"]);
-    expect(kinds(withJunit)).toEqual(["stopped"]);
+    expect(withJunit.stop?.unreported).toEqual(["a.test.ts"]);
+    expect(withJunit.died.map((file) => file.file)).toEqual(["f.test.ts"]);
+    expect(kinds(withJunit)).toEqual(["stopped", "worker-died"]);
     expect(withJunit.rowlessFailures[0].text).toEndWith(
-      " Bun had not reported the results of 2 files when the stop came: a.test.ts, f.test.ts."
+      " Bun had not reported the results of 1 file when the stop came: a.test.ts."
     );
 
     // A bound that ends a run is named: Bun's grace after the stop, and the bound of a run that
@@ -731,10 +760,11 @@ test(
         ...stop,
         bunEnd: { ms: 3_004, boundMs: 3_000, killed: true },
         namesRuns: {
-          "a.test.ts": { ms: 812, boundMs: 2_000, killed: false },
-          "g.test.ts": { ms: 2_003, boundMs: 2_000, killed: true },
+          "a.test.ts": { ms: 812, boundMs: 2_000, killed: false, read: false },
+          "g.test.ts": { ms: 2_003, boundMs: 2_000, killed: true, read: false },
         },
       },
+      early: null,
     });
     expect(bounded.rowlessFailures[0].text).toEndWith(
       " Bun did not end within its 3 s grace after the stop, so the tool killed its process " +
@@ -768,13 +798,22 @@ interface StoppedLeg {
  *  Then counts the processes whose directory is the package, for up to 2 s while any killed one
  *  is still dying, in the driver itself: the bounded child's own kill of what it left would hide
  *  them. `bounds` are the tool's two stop bounds, which the caller sets so that its verdict
- *  rests on its marks and not on how long Bun or a names run takes. */
+ *  rests on its marks and not on how long Bun or a names run takes. `how.hold`, where given, is a
+ *  preload of the tool's own process, and a file the driver writes once it has sent the SIGTERM,
+ *  which that preload can wait for. `how.killFrom`, where given, is a file that holds a pid: the
+ *  driver sends that process a SIGKILL in place of the SIGTERM to the tool, as the out-of-memory
+ *  killer would, and the tool hears of no stop. */
 async function stoppedLeg(
   directory: string,
   files: Readonly<Record<string, string>>,
   marks: readonly string[],
-  bounds: { readonly graceMs: number; readonly namesMs: number }
+  bounds: { readonly graceMs: number; readonly namesMs: number },
+  how: {
+    readonly hold?: { readonly preload: string; readonly release: string };
+    readonly killFrom?: string;
+  } = {}
 ): Promise<StoppedLeg> {
+  const { hold, killFrom } = how;
   const tools = join(directory, "e2e", "tools");
   const rows = join(directory, "e2e", "__tests__");
   mkdirSync(tools, { recursive: true });
@@ -791,7 +830,8 @@ async function stoppedLeg(
   const driver =
     '"$@" & tool=$!; ready() { for m in $MARKS; do [ -e "$m" ] || return 1; done; }; ' +
     'until ready || ! kill -0 "$tool" 2>/dev/null; do sleep 0.05; done; ' +
-    'kill -TERM "$tool" 2>/dev/null; wait "$tool"; code=$?; ' +
+    'if [ -n "$KILL_FROM" ]; then kill -KILL "$(cat "$KILL_FROM")" 2>/dev/null; else kill -TERM "$tool" 2>/dev/null; fi; ' +
+    'if [ -n "$RELEASE" ]; then : >"$RELEASE"; fi; wait "$tool"; code=$?; ' +
     // One `find`, run from `/` so that its own directory is not the package's, lists every
     // process whose directory is; the driver itself is left out. A process the kill took can take
     // a moment to die, so the count is read again for up to 2 s while it is not 0.
@@ -804,6 +844,7 @@ async function stoppedLeg(
       driver,
       "driver",
       process.execPath,
+      ...(hold === undefined ? [] : ["--preload", hold.preload]),
       join(tools, "unit-repeat.ts"),
       "--lane",
       "harness",
@@ -822,6 +863,8 @@ async function stoppedLeg(
       TMPDIR: tmpdir(),
       GITHUB_ACTIONS: "true",
       MARKS: marks.join(" "),
+      RELEASE: hold?.release ?? "",
+      KILL_FROM: killFrom ?? "",
       DISPATCH_UNIT_REPEAT_STOP_GRACE_MS: String(bounds.graceMs),
       DISPATCH_UNIT_REPEAT_NAMES_BOUND_MS: String(bounds.namesMs),
     },
@@ -913,14 +956,15 @@ test(
 );
 
 test(
-  "a names run that hangs in an afterAll is killed with its whole process group, and leaves no process behind",
+  "a names run that hangs in an afterAll is ended once it has printed the row's name, with its whole process group, and leaves no process behind",
   async () => {
     // The lie: the tool kills only the `bun run` it started, so Bun's test process and its worker
-    // live on after the tool exits, spinning at full CPU with init as their parent. Here the
-    // leg's one file ends its row and then spins in its afterAll, so the run that reads its
-    // rows' names, which still runs the file's hooks, prints the row's name and then spins there
-    // too, until the row's 2 s names bound ends it. The grace is past the row's own bound, so
-    // Bun's end is never cut short.
+    // live on after the tool exits, spinning at full CPU with init as their parent; or it waits
+    // for a names run that hangs in a hook after printing the name it needs, so a clock decides
+    // whether the name is read. Here the leg's one file ends its row and then spins in its
+    // afterAll, so the run that reads its rows' names, which still runs the file's hooks, prints
+    // the row's name and then spins there too. The tool must end that run once it has read the
+    // name, whatever the machine's load. Both bounds are past the row's own, so neither decides.
     const directory = scratch();
     const mark = join(directory, "hook-began");
     const { code, report, leftBehind } = await stoppedLeg(
@@ -929,7 +973,7 @@ test(
         "hook.test.ts": `${spinningHead}test("ends before its hook", () => {});\nafterAll(() => {\n  writeFileSync(${JSON.stringify(mark)}, "");\n  for (;;) {}\n});\n`,
       },
       [mark],
-      { graceMs: 120_000, namesMs: 2_000 }
+      { graceMs: 120_000, namesMs: 120_000 }
     );
     expect(code).toBe(1);
     expect(report.stop?.running).toEqual([
@@ -943,7 +987,7 @@ test(
       }),
     ]);
     expect(report.stop?.namesRuns["e2e/__tests__/hook.test.ts"]).toEqual(
-      expect.objectContaining({ boundMs: 2_000, killed: true })
+      expect.objectContaining({ boundMs: 120_000, killed: false, read: true })
     );
     expect(report.stop?.bunEnd?.killed).toBe(false);
     expect(leftBehind).toBe(0);
@@ -951,176 +995,251 @@ test(
   rowLimit("short")
 );
 
-/** What the budget check reads of one leg of the matrix. */
-interface MeasuredLeg {
-  readonly lane: string;
-  readonly slowest: number;
-  readonly otherSteps: number;
-  readonly deadline: number;
-  readonly stepMinutes: number;
-  readonly jobMinutes: number;
-}
+test(
+  "a names run that never prints the row's name is killed at its bound with its whole process group",
+  async () => {
+    // The lie: a names run that hangs before it prints a name runs on past the tool, or keeps
+    // the report waiting. Here the leg's one file spins in its own code in the names run alone
+    // (the tool marks that run with DISPATCH_UNIT_REPEAT_NAMES_ONLY), so that run can never
+    // print the row's name, and only its 2 s bound ends it, whatever the machine's load.
+    const directory = scratch();
+    const mark = join(directory, "row-began");
+    const { code, report, leftBehind } = await stoppedLeg(
+      directory,
+      {
+        "never.test.ts": `${spinningHead}if (process.env.DISPATCH_UNIT_REPEAT_NAMES_ONLY === "1") {\n  for (;;) {}\n}\n${spinningRow("spins in the leg", mark)}`,
+      },
+      [mark],
+      { graceMs: 120_000, namesMs: 2_000 }
+    );
+    expect(code).toBe(1);
+    expect(report.stop?.running).toEqual([
+      expect.objectContaining({
+        file: "e2e/__tests__/never.test.ts",
+        run: 1,
+        place: "row",
+        rowsBegun: 1,
+        rowName: null,
+        nameUnread:
+          "the run that reads its rows' names was killed at its 2 s bound and printed no row of it",
+      }),
+    ]);
+    expect(report.stop?.namesRuns["e2e/__tests__/never.test.ts"]).toEqual(
+      expect.objectContaining({ boundMs: 2_000, killed: true, read: false })
+    );
+    expect(leftBehind).toBe(0);
+  },
+  rowLimit("short")
+);
 
-/** The margin of every budget over what it was measured at: twice the slowest run. */
-const MARGIN = 2;
-/** The seconds the step's `timeout --kill-after` gives the tool to report after the deadline. */
-const KILL_AFTER = 60;
-/** The seconds the step's budget keeps past the kill-after, for the step's own start. */
-const STEP_SLACK = 60;
-
-/** The rule a budget problem breaks: the workflow's shape, a lane's matrix row that does not
- *  read as numbers, or one of the three budget rules of a lane. */
-type BudgetRule =
-  | "no-repeat-job"
-  | "job-timeout"
-  | "step-timeout"
-  | "step-run"
-  | "unread"
-  | "deadline"
-  | "step"
-  | "job";
-
-/** One way the budgets fall short: the lane whose row it is in, or null for the job's and the
- *  step's own shape, the rule it breaks, and the words a reader gets. */
-interface BudgetProblem {
-  readonly lane: string | null;
-  readonly rule: BudgetRule;
-  readonly text: string;
-}
-
-/** One matrix row or one step of the workflow, as YAML parses it. */
-type WorkflowEntry = Record<string, unknown>;
-
-/** The parts of dispatch-unit-repeat.yaml the budget check reads, as YAML parses them. A part the
- *  file lacks reads as undefined, and the check names it as a problem. The objects are the
- *  parsed ones, not copies, so a control's change to one reaches the workflow it checks. */
-interface RepeatWorkflow {
-  jobs?: {
-    repeat?: {
-      "timeout-minutes"?: unknown;
-      strategy?: { matrix?: { include?: unknown } };
-      steps?: unknown;
-    };
-  };
-}
-
-/** The repeat job's matrix rows. */
-function matrixRows(workflow: RepeatWorkflow | null): WorkflowEntry[] {
-  const include = workflow?.jobs?.repeat?.strategy?.matrix?.include;
-  return Array.isArray(include) ? include : [];
-}
-
-/** The repeat job's test step. */
-function testStep(workflow: RepeatWorkflow | null): WorkflowEntry | undefined {
-  const steps = workflow?.jobs?.repeat?.steps;
-  return Array.isArray(steps)
-    ? steps.find(
-        (each: WorkflowEntry) =>
-          typeof each?.name === "string" && each.name.startsWith("Run the lane")
-      )
-    : undefined;
-}
-
-/** What the test step's `run:` holds: test:repeat under `timeout` at the matrix's deadline. */
-const DEADLINE_RUN = `timeout --foreground --signal=TERM --kill-after=${KILL_AFTER} \${{ matrix.deadline_seconds }} bun run test:repeat `;
-
-/** Every way the budgets of a parsed workflow fall short of the measurements beside them, and
- *  the legs it read. A list of no problem over no leg is a check that read nothing, which the
- *  caller refuses. */
-function budgetProblems(workflow: RepeatWorkflow | null): {
-  problems: BudgetProblem[];
-  legs: MeasuredLeg[];
-} {
-  const problems: BudgetProblem[] = [];
-  const legs: MeasuredLeg[] = [];
-  const job = workflow?.jobs?.repeat;
-  if (job === undefined) {
-    problems.push({
-      lane: null,
-      rule: "no-repeat-job",
-      text: "the workflow has no job named repeat",
-    });
-    return { problems, legs };
-  }
-  if (job["timeout-minutes"] !== `\${{ matrix.job_minutes }}`) {
-    problems.push({
-      lane: null,
-      rule: "job-timeout",
-      text: "the job's timeout-minutes is not the matrix's job_minutes",
-    });
-  }
-  const step = testStep(workflow);
-  if (step?.["timeout-minutes"] !== `\${{ matrix.step_minutes }}`) {
-    problems.push({
-      lane: null,
-      rule: "step-timeout",
-      text: "the test step's timeout-minutes is not the matrix's step_minutes",
-    });
-  }
-  if (typeof step?.run !== "string" || !step.run.includes(DEADLINE_RUN)) {
-    problems.push({
-      lane: null,
-      rule: "step-run",
-      text: `the test step does not run test:repeat under timeout at the matrix's deadline_seconds with --kill-after=${KILL_AFTER}`,
-    });
-  }
-  for (const row of matrixRows(workflow)) {
-    const number = (key: string) => {
-      const value = row[key];
-      return typeof value === "number" ? value : Number.NaN;
-    };
-    const leg = {
-      lane: String(row.lane),
-      slowest: number("slowest_seconds"),
-      otherSteps: number("other_steps_seconds"),
-      deadline: number("deadline_seconds"),
-      stepMinutes: number("step_minutes"),
-      jobMinutes: number("job_minutes"),
-    };
-    legs.push(leg);
-    const { lane } = leg;
-    if (Object.values(leg).some((value) => Number.isNaN(value))) {
-      problems.push({
-        lane,
-        rule: "unread",
-        text: `${lane}: a measurement or a budget is missing or is not a number`,
-      });
-      continue;
-    }
-    if (leg.deadline < MARGIN * leg.slowest) {
-      problems.push({
-        lane,
-        rule: "deadline",
-        text: `${lane}: deadline_seconds ${leg.deadline} is under ${MARGIN} x the slowest ${leg.slowest} s`,
-      });
-    }
-    if (leg.stepMinutes * 60 < leg.deadline + KILL_AFTER + STEP_SLACK) {
-      problems.push({
-        lane,
-        rule: "step",
-        text: `${lane}: step_minutes ${leg.stepMinutes} is under the deadline, the ${KILL_AFTER} s kill-after and ${STEP_SLACK} s`,
-      });
-    }
-    if (leg.jobMinutes * 60 < leg.stepMinutes * 60 + MARGIN * leg.otherSteps) {
-      problems.push({
-        lane,
-        rule: "job",
-        text: `${lane}: job_minutes ${leg.jobMinutes} is under step_minutes and ${MARGIN} x the other steps' ${leg.otherSteps} s`,
-      });
-    }
-  }
-  return { problems, legs };
+/** A preload of the tool's own process that holds it between Bun's end and its report: at the
+ *  tool's first read of bun.log, which comes once Bun has ended, it writes `mark` and waits until
+ *  `release` exists, which the driver writes once it has sent its SIGTERM. Wrapping the module's
+ *  `readFileSync` reaches the tool's own import of it (measured on Bun 1.4.4). The wait is
+ *  bounded by the row's own bound, which ends the driver and the tool with it. */
+function holdsTheReport(mark: string, release: string): string {
+  return (
+    'const fs = require("node:fs");\n' +
+    "const read = fs.readFileSync;\n" +
+    "let held = false;\n" +
+    "fs.readFileSync = function (path, ...rest) {\n" +
+    '  if (!held && String(path).endsWith("/bun.log")) {\n' +
+    "    held = true;\n" +
+    `    fs.writeFileSync(${JSON.stringify(mark)}, "");\n` +
+    `    while (!fs.existsSync(${JSON.stringify(release)})) Bun.sleepSync(20);\n` +
+    "  }\n" +
+    "  return read.call(this, path, ...rest);\n" +
+    "};\n"
+  );
 }
 
 test(
-  "each budget of the repeat workflow is at least its measured slowest time times the margin",
-  () => {
-    // The lie: a budget set below what the leg takes on main's suite ends a leg that was passing,
-    // as the 16-minute web and the two-minute web-cold budgets did. The workflow writes each
-    // lane's measurement beside its budgets, and .github/ci-notes/dispatch-unit-repeat.md says
-    // where each was read.
-    // The repository's own file, read as the parts the check reads: a part it lacks reads as
-    // undefined, which the check names.
+  "a stop that comes after Bun has ended, while the tool writes its report, is named in the report",
+  async () => {
+    // The lie: the tool stops listening for the deadline's SIGTERM once Bun has ended, so a
+    // SIGTERM that lands while it writes its report ends it at once, with no report, and the
+    // step fails as a nameless timeout. A review of bf15b119a9 found that window. Here a preload
+    // in the tool's own process holds the tool at its read of bun.log, after Bun has ended and
+    // before the report is written, until the driver has sent the SIGTERM. The leg's one row
+    // ends by itself, so Bun's results are whole, and the report must keep them and name the
+    // stop beside them.
+    const directory = scratch();
+    const mark = join(directory, "report-held");
+    const release = join(directory, "report-released");
+    const preload = join(directory, "holds-the-report.js");
+    await Bun.write(preload, holdsTheReport(mark, release));
+    const { code, stdout, report, leftBehind } = await stoppedLeg(
+      directory,
+      { "ends.test.ts": 'import { test } from "bun:test";\n\ntest("ends by itself", () => {});\n' },
+      [mark],
+      { graceMs: 120_000, namesMs: 120_000 },
+      { hold: { preload, release } }
+    );
+    expect(code).toBe(1);
+    expect(report.stop).toEqual(
+      expect.objectContaining({
+        signal: "SIGTERM",
+        afterBun: true,
+        running: [],
+        unreported: [],
+        bunEnd: null,
+      })
+    );
+    expect(report.testcases).toEqual({ passed: 2, failed: 0, skipped: 0 });
+    expect(report.failingRows).toEqual([]);
+    expect(kinds(report)).toEqual(["stopped"]);
+    expect(stdout).toMatch(
+      /^unit-repeat: SIGTERM after [0-9.]+ s, after Bun had ended by itself: the report names the stop$/m
+    );
+    expect(stdout).toMatch(
+      new RegExp(
+        "^::error title=Failure outside any test::The leg was stopped by SIGTERM after [0-9.]+ s, " +
+          "after Bun had ended by itself, while the tool wrote this report: no test file was " +
+          `running, and every result Bun wrote stands\\. \\(seed ${SEED}\\)$`,
+        "m"
+      )
+    );
+    expect(readFileSync(join(directory, "out", "report.md"), "utf8")).toContain(
+      "### The leg was stopped after Bun had ended, and no test file was running"
+    );
+    expect(leftBehind).toBe(0);
+  },
+  rowLimit("short")
+);
+
+/** A test file of one row that writes the pid `of` gives into `pidFile`, whole, and then spins
+ *  without yielding: `process.pid` for its worker, `process.ppid` for Bun's test process. Bun
+ *  1.4.4 under `--parallel=2` runs a lane of one file in its test process itself, and starts
+ *  workers (`bun test --test-worker`) only for two files or more (measured on 2026-11-21), so a
+ *  row that kills one puts `besideIt` beside it. */
+function killedRow(pidFile: string, of: "process.pid" | "process.ppid"): string {
+  const written = `${pidFile}.writing`;
+  return (
+    'import { test } from "bun:test";\n' +
+    'import { renameSync, writeFileSync } from "node:fs";\n\n' +
+    'test("is killed", () => {\n' +
+    `  writeFileSync(${JSON.stringify(written)}, String(${of}));\n` +
+    `  renameSync(${JSON.stringify(written)}, ${JSON.stringify(pidFile)});\n` +
+    "  for (;;) {}\n" +
+    "});\n"
+  );
+}
+
+/** The second file of a lane whose row kills a worker or Bun's test process. */
+const besideIt = 'import { test } from "bun:test";\n\ntest("beside it", () => {});\n';
+
+test(
+  "a worker killed in a row names its file and row, and the progress file stays",
+  async () => {
+    // The lie: a worker killed from outside Bun, as the out-of-memory killer kills one, leaves
+    // only Bun's "(worker crashed)" testcase: the row it was in is named nowhere, and the tool
+    // deletes the progress file that records it. Here the row writes its worker's pid and spins;
+    // the driver sends that worker a SIGKILL, and the tool no signal at all.
+    const directory = scratch();
+    const pid = join(directory, "worker-pid");
+    const { code, stdout, report, leftBehind } = await stoppedLeg(
+      directory,
+      { "killed.test.ts": killedRow(pid, "process.pid"), "beside.test.ts": besideIt },
+      [pid],
+      { graceMs: 120_000, namesMs: 120_000 },
+      { killFrom: pid }
+    );
+    expect(code).toBe(1);
+    expect(report.stop).toBeNull();
+    expect(report.died).toEqual([
+      expect.objectContaining({
+        file: "e2e/__tests__/killed.test.ts",
+        run: 1,
+        place: "row",
+        rowsBegun: 1,
+        rowName: "is killed",
+      }),
+    ]);
+    expect(kinds(report)).toContain("worker-died");
+    // Bun's own testcase of the file is folded into the place the worker died in.
+    expect(report.failingRows).toEqual([]);
+    expect(stdout).toMatch(
+      /^::error file=packages\/dispatch\/e2e\/__tests__\/killed\.test\.ts,title=Running when its worker died::e2e\/__tests__\/killed\.test\.ts: in row 1, "is killed", or a hook after it, of run 1 of 2, /m
+    );
+    expect(readFileSync(join(directory, "out", "progress.jsonl"), "utf8")).toContain(
+      '"event":"start"'
+    );
+    expect(leftBehind).toBe(0);
+  },
+  rowLimit("short")
+);
+
+test(
+  "Bun's test process killed in a row names the file and row its worker was in",
+  async () => {
+    // The lie: when Bun's test process itself is killed from outside, Bun writes no junit file,
+    // and the report says only that: no file and no row is named, and the progress file that
+    // records the row is deleted. Here the row writes its parent's pid, Bun's test process, and
+    // spins; the driver sends that process a SIGKILL, and the tool no signal at all.
+    const directory = scratch();
+    const pid = join(directory, "test-process-pid");
+    const { code, report, leftBehind } = await stoppedLeg(
+      directory,
+      { "killed.test.ts": killedRow(pid, "process.ppid"), "beside.test.ts": besideIt },
+      [pid],
+      { graceMs: 120_000, namesMs: 120_000 },
+      { killFrom: pid }
+    );
+    expect(code).toBe(1);
+    expect(report.stop).toBeNull();
+    expect(report.died).toEqual([
+      expect.objectContaining({
+        file: "e2e/__tests__/killed.test.ts",
+        run: 1,
+        place: "row",
+        rowsBegun: 1,
+        rowName: "is killed",
+      }),
+    ]);
+    expect(kinds(report)).toContain("worker-died");
+    expect(kinds(report)).toContain("junit-unreadable");
+    expect(readFileSync(join(directory, "out", "progress.jsonl"), "utf8")).toContain(
+      '"event":"start"'
+    );
+    expect(leftBehind).toBe(0);
+  },
+  rowLimit("short")
+);
+
+/** The deadline the cancelled step runs under. It only ends a leg whose SIGINT never reached the
+ *  tool: the row sends that SIGINT once its row has begun, which took under 1 s on the dev box at
+ *  a load of about 1,500 (2026-11-21), so 40 s is far past it, and the deadline plus the stop's
+ *  own work stays inside the short bound of 60 s that the step's driver runs under. */
+const CANCELLED_DEADLINE_SECONDS = 40;
+
+test(
+  "a step the run cancels names its running row, as GitHub's runner signals it",
+  async () => {
+    // The lie: a leg that GitHub cancels, or ends at its step budget, is ended from outside and
+    // names nothing. GitHub's runner (actions/runner, ProcessInvoker.cs, SendSignal) sends SIGINT
+    // to the step's top process alone, then SIGTERM 7.5 s later, then kills it 2.5 s after that.
+    // That top process is the bash that runs the step's script file, which passes no signal on
+    // to a child it waits for, so the tool heard nothing until its deadline. Here the workflow's
+    // own step text runs from a script file under `bash -e`, as the runner runs it, over a copy
+    // of the package whose one row spins, and the driver sends SIGINT to that bash alone once the
+    // row has begun. The report must name the SIGINT and the row, well before the deadline.
+    const directory = scratch();
+    const mark = join(directory, "row-began");
+    const rows = join(directory, "e2e", "__tests__");
+    const tools = join(directory, "e2e", "tools");
+    mkdirSync(tools, { recursive: true });
+    mkdirSync(rows, { recursive: true });
+    for (const name of ["unit-repeat.ts", "unit-repeat-progress.ts"]) {
+      copyFileSync(fileURLToPath(new URL(`../tools/${name}`, import.meta.url)), join(tools, name));
+    }
+    const { scripts } = JSON.parse(
+      readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")
+    ) as { scripts: Record<string, string> };
+    await Bun.write(
+      join(directory, "package.json"),
+      `${JSON.stringify({ name: "cancelled-step", private: true, scripts: { "test:repeat": scripts["test:repeat"], "test:harness": scripts["test:harness"], "build:contracts": "true" } })}\n`
+    );
+    await Bun.write(join(rows, "spins.test.ts"), `${spinningHead}${spinningRow("spins", mark)}`);
     const workflow = Bun.YAML.parse(
       readFileSync(
         fileURLToPath(
@@ -1128,86 +1247,56 @@ test(
         ),
         "utf8"
       )
-    ) as RepeatWorkflow | null;
-    const { problems, legs } = budgetProblems(workflow);
-    expect(legs.map((leg) => leg.lane)).toEqual(["web", "web-cold", "harness"]);
-    expect(problems).toEqual([]);
-
-    // The controls. Each plants one fault in a parsed copy of the workflow, and reads its lane and
-    // rule by name. A fault on a number sits one past the boundary of the rule it breaks, worked
-    // out from that lane's own measurements, and the boundary itself passes. So this row repeats
-    // no measured number, and a new measurement of the workflow changes no line of it.
-    const broken = (change: (copy: RepeatWorkflow | null) => void) => {
-      const copy = structuredClone(workflow);
-      change(copy);
-      return budgetProblems(copy).problems.map(({ lane, rule }) => ({ lane, rule }));
-    };
-    const inRow = (lane: string, change: (row: WorkflowEntry, leg: MeasuredLeg) => void) =>
-      broken((copy) => {
-        const row = matrixRows(copy).find((each) => each.lane === lane);
-        const leg = legs.find((each) => each.lane === lane);
-        if (row === undefined || leg === undefined) throw new Error(`no matrix row for ${lane}`);
-        change(row, leg);
-      });
-    for (const { lane } of legs) {
-      const at = (key: string, value: (leg: MeasuredLeg) => number) =>
-        inRow(lane, (row, leg) => {
-          row[key] = value(leg);
-        });
-      const fails = (rule: BudgetRule) => [{ lane, rule }];
-      // A deadline under twice the slowest, and a slowest leg that a new reading puts past half
-      // the deadline: the deadline rule.
-      const deadlineFloor = (leg: MeasuredLeg) => MARGIN * leg.slowest;
-      expect(at("deadline_seconds", (leg) => deadlineFloor(leg) - 1)).toEqual(fails("deadline"));
-      expect(at("deadline_seconds", deadlineFloor)).toEqual([]);
-      const slowestCeiling = (leg: MeasuredLeg) => Math.floor(leg.deadline / MARGIN);
-      expect(at("slowest_seconds", (leg) => slowestCeiling(leg) + 1)).toEqual(fails("deadline"));
-      expect(at("slowest_seconds", slowestCeiling)).toEqual([]);
-      // A step budget with no room for the kill-after and the slack past the deadline.
-      const stepFloor = (leg: MeasuredLeg) =>
-        Math.ceil((leg.deadline + KILL_AFTER + STEP_SLACK) / 60);
-      expect(at("step_minutes", (leg) => stepFloor(leg) - 1)).toEqual(fails("step"));
-      expect(at("step_minutes", stepFloor)).toEqual([]);
-      // A job budget with no room for twice the other steps past the step's budget, and other
-      // steps that a new reading makes too long for it.
-      const jobFloor = (leg: MeasuredLeg) =>
-        Math.ceil((leg.stepMinutes * 60 + MARGIN * leg.otherSteps) / 60);
-      expect(at("job_minutes", (leg) => jobFloor(leg) - 1)).toEqual(fails("job"));
-      expect(at("job_minutes", jobFloor)).toEqual([]);
-      const otherCeiling = (leg: MeasuredLeg) =>
-        Math.floor((leg.jobMinutes * 60 - leg.stepMinutes * 60) / MARGIN);
-      expect(at("other_steps_seconds", (leg) => otherCeiling(leg) + 1)).toEqual(fails("job"));
-      expect(at("other_steps_seconds", otherCeiling)).toEqual([]);
-      // A row whose measurement is gone reads as no number, not as a pass.
-      expect(
-        inRow(lane, (row) => {
-          delete row.slowest_seconds;
-        })
-      ).toEqual(fails("unread"));
-    }
-
-    // The job's and the step's own shape: each takes its limit from the matrix, and the step
-    // runs the tool under the deadline.
-    expect(
-      broken((copy) => {
-        const job = copy?.jobs?.repeat;
-        if (job !== undefined) job["timeout-minutes"] = 60;
-      })
-    ).toEqual([{ lane: null, rule: "job-timeout" }]);
-    expect(
-      broken((copy) => {
-        const step = testStep(copy);
-        if (step !== undefined) step["timeout-minutes"] = 60;
-      })
-    ).toEqual([{ lane: null, rule: "step-timeout" }]);
-    expect(
-      broken((copy) => {
-        const step = testStep(copy);
-        if (step !== undefined) {
-          step.run = String(step.run).replace(`\${{ matrix.deadline_seconds }}`, "600");
-        }
-      })
-    ).toEqual([{ lane: null, rule: "step-run" }]);
+    ) as { jobs: { repeat: { steps: { name?: string; run?: string }[] } } };
+    const step = workflow.jobs.repeat.steps.find((each) => each.name?.startsWith("Run the lane"));
+    const text = (step?.run ?? "")
+      .replaceAll(`\${{ matrix.lane }}`, "harness")
+      .replaceAll(`\${{ matrix.reruns }}`, "2")
+      .replaceAll(`\${{ matrix.deadline_seconds }}`, String(CANCELLED_DEADLINE_SECONDS));
+    expect(text).toContain("bun run test:repeat");
+    expect(text).not.toContain("${{");
+    await Bun.write(join(directory, "step.sh"), `${text}\n`);
+    const runner = join(directory, "runner");
+    mkdirSync(runner);
+    // `set -m`, so that the step's bash runs as the runner starts it, with SIGINT not ignored as
+    // a shell ignores it for a job it puts in the background with no job control.
+    const driver =
+      'set -m; bash -e step.sh & step=$!; until [ -e "$MARK" ] || ! kill -0 "$step" 2>/dev/null; ' +
+      'do sleep 0.05; done; kill -INT "$step" 2>/dev/null; wait "$step"; code=$?; ' +
+      'dir=$PWD; for i in $(seq 40); do left=$(cd / && find /proc -mindepth 2 -maxdepth 2 -name cwd -lname "$dir" 2>/dev/null | grep -cvx "/proc/$$/cwd"); ' +
+      '[ "$left" = 0 ] && break; sleep 0.05; done; echo "left behind: $left"; exit "$code"';
+    const { code, stdout } = await runBounded({
+      argv: ["bash", "-c", driver],
+      bound: "short",
+      cwd: directory,
+      env: {
+        HOME: directory,
+        PATH: process.env.PATH ?? "",
+        TMPDIR: tmpdir(),
+        GITHUB_ACTIONS: "true",
+        CI: "true",
+        RUNNER_TEMP: runner,
+        MARK: mark,
+      },
+      from: import.meta.url,
+    });
+    const report = JSON.parse(
+      readFileSync(join(runner, "unit-repeat", "report.json"), "utf8")
+    ) as Report;
+    expect(report.stop?.signal).toBe("SIGINT");
+    expect(report.stop?.running).toEqual([
+      expect.objectContaining({
+        file: "e2e/__tests__/spins.test.ts",
+        place: "row",
+        rowName: "spins",
+      }),
+    ]);
+    expect(stdout).toMatch(
+      /^::error file=packages\/dispatch\/e2e\/__tests__\/spins\.test\.ts,title=Running when the leg was stopped::e2e\/__tests__\/spins\.test\.ts: in row 1, "spins", or a hook after it, of run 1 of 2, [0-9.]+ s since it began, when SIGINT stopped the leg/m
+    );
+    // The step ends on the tool's own exit, not on the deadline's 124.
+    expect(code).toBe(1);
+    expect(/^left behind: 0$/m.test(stdout)).toBe(true);
   },
-  rowLimit()
+  rowLimit("short")
 );

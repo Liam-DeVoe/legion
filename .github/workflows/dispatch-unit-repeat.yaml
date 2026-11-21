@@ -21,7 +21,12 @@ name: Dispatch unit suite repeated
 # A leg's deadline. The step runs the tool under `timeout` with a deadline inside the step's
 # budget, so a leg that hangs or runs long is stopped by a signal the tool reads: its report and
 # its errors name each test file that was running, with the run and the row it was in, and the
-# command that runs it again. A leg is never stopped from outside with no name.
+# command that runs it again. A stop that comes after Bun has ended, while the tool writes its
+# report, is named there beside every result Bun wrote. A cancel of the run, or a step that
+# reaches its budget, reaches the tool as a SIGINT and is named the same way when the tool's
+# report comes before the runner's kill 10 s after it; the notes say when it does not. A worker or
+# Bun's test process killed from outside, as the out-of-memory killer kills one, is named by the
+# file and the row it was in.
 # why: .github/ci-notes/dispatch-unit-repeat.md#a-legs-deadline-and-what-a-stopped-leg-names
 #
 # Why a workflow of its own. GitHub starts a `schedule` from the default branch alone. It offers
@@ -80,10 +85,9 @@ name: Dispatch unit suite repeated
 # (https://docs.github.com/en/actions/concepts/billing-and-usage, which the runner pricing
 # reference, https://docs.github.com/en/billing/reference/actions-runner-pricing, links) says:
 # "GitHub Actions usage is free for standard GitHub-hosted runners in public repositories". In
-# runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the runs that
-# the notes' measurement reads took 115 to 164 minutes (runs 44712651976, 44709413418,
-# 44726566359, 44751162563, 44751677485, 44759854373, 44759866208, 44770373346, 44796999569,
-# 44808555733 and 44814644776), and $0, since those minutes are free here.
+# runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the 19 runs that
+# the notes' measurement reads took 115 to 169 minutes each, and $0, since those minutes are free
+# here.
 
 on:
   schedule:
@@ -131,12 +135,16 @@ jobs:
         # Three legs a lane, each under a seed of its own. The head says why three.
         round: [1, 2, 3]
         # Each lane's reruns; its slowest test step and its slowest other steps, each the largest
-        # reading over the 19 runs the notes list, with the run and round that gave it; and the
+        # reading over the 22 runs the notes list, with the run and round that gave it; and the
         # deadline, the test step's budget and the job's budget set from them, with a margin of
-        # twice the slowest, each line's arithmetic beside it. A budget is a hang guard only, and
-        # decides no verdict. The head says why a web or harness leg runs 20 times and a web-cold
-        # leg once. packages/dispatch/e2e/__tests__/unit-repeat.test.ts holds each budget to its
-        # measurement times the margin.
+        # twice the slowest, each line's arithmetic beside it. The job takes the other steps twice
+        # too, where dispatch-browser.yaml's rule takes them once: a margin of this file's own,
+        # which the notes measure. The step's 60 s of slack, for the step's own start around
+        # `timeout`, rests on no reading: it sits behind the deadline and the kill-after, so it
+        # decides nothing. A budget is a hang guard only, and decides no verdict. The head says
+        # why a web or harness leg runs 20 times and a web-cold leg once.
+        # packages/dispatch/e2e/__tests__/unit-repeat-budgets.test.ts holds each budget to
+        # exactly its rule over the measurement beside it.
         # why: .github/ci-notes/dispatch-unit-repeat.md#the-budgets-measured-from-cis-own-runs
         include:
           - lane: web
@@ -148,9 +156,9 @@ jobs:
             job_minutes: 70 # 68 + 2 x 37 s = 74 s, up to the next whole minute, 2
           - lane: web-cold
             reruns: 1
-            slowest_seconds: 158 # run 44751677485, round 1
+            slowest_seconds: 169 # run 44796938761, round 1
             other_steps_seconds: 44 # run 44814644776, round 1
-            deadline_seconds: 360 # 2 x 158 = 316 s, up to the next whole minute
+            deadline_seconds: 360 # 2 x 169 = 338 s, up to the next whole minute
             step_minutes: 8 # 360 + 60 s kill-after + 60 s of slack = 480 s
             job_minutes: 10 # 8 + 2 x 44 s = 88 s, up to the next whole minute, 2
           - lane: harness
@@ -215,7 +223,10 @@ jobs:
       # a SIGTERM, which `bun run` passes on to the tool (measured on Bun 1.4.4, through a
       # script's `&&` too), on which the tool stops Bun and reports each test file still running,
       # with its run and its row. `--kill-after=60` ends `bun run` 60 s later if it has not ended
-      # by then, the 60 s the step's budget keeps for the report.
+      # by then, the 60 s the step's budget keeps for the report. `exec` makes `timeout` the
+      # step's top process: GitHub's runner signals only that process when it cancels the step or
+      # the step reaches its budget, and the bash that runs the step's script passes no signal on
+      # to a child it waits for. `timeout` passes it on to `bun run`, and so to the tool.
       # why: .github/ci-notes/dispatch-unit-repeat.md#a-legs-deadline-and-what-a-stopped-leg-names
       #
       # GitHub's runners set CI already. The step writes it too, so the environment the rows run
@@ -224,7 +235,7 @@ jobs:
       - name: Run the lane under one seed with --reruns ${{ matrix.reruns }}
         timeout-minutes: ${{ matrix.step_minutes }}
         run: >-
-          timeout --foreground --signal=TERM --kill-after=60 ${{ matrix.deadline_seconds }}
+          exec timeout --foreground --signal=TERM --kill-after=60 ${{ matrix.deadline_seconds }}
           bun run test:repeat --lane ${{ matrix.lane }} --reruns ${{ matrix.reruns }}
           --out "$RUNNER_TEMP/unit-repeat"
         working-directory: packages/dispatch
