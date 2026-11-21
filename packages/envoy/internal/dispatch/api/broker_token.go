@@ -443,9 +443,13 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		}
 	}
 	// Both scopes go to a token the broker scoped to its person: that token is the person's own
-	// agent acting for them, so it may do what they may, approvals included. A token scoped to a
-	// project gets none, because the deployment mapped that token to a project and not to the
-	// person: it proves a session, not that any person stands behind the request. A token that
+	// agent acting for them, so it may do what they may, approvals included. A token held to one
+	// project (named) gets none, whichever made it. An operator's entry maps one to a project and not
+	// to a person, so it proves a session, not that any person stands behind the request. A
+	// restricted member's machine login trades for one too: a person's own credential made that
+	// one, and it is held to that person's account (brokerPersonAdmitted, personCredential), but it
+	// is the outside person's agent held to the one project they work on, which acts in that
+	// project and settles nothing of the person's own, so it holds no scope either. A token that
 	// names a service and no person gets none either, whatever scope the broker answered: there
 	// is no person for it to act as, and a scope that said otherwise would let it act as the
 	// session's own id on the routes that read what belongs to a person. A read-only token is

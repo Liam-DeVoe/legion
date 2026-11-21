@@ -3,6 +3,7 @@ package oauth_test
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/json"
 	"net/http"
 	"slices"
 	"strings"
@@ -131,6 +132,102 @@ func TestARestrictedMembersMachineTradeIsNamedToItsOneProject(t *testing.T) {
 			status, body = f.machineTrade(t, machine, "SECRET", key)
 			refusedSaying(t, status, body, http.StatusBadRequest, "invalid_request", "The token names a project its person cannot see: SECRET.")
 		})
+	}
+}
+
+// TestARestrictedTokensLifetimeCountsFromItsProjectCheck: a restricted member's token lives at most
+// exchange.RestrictedLifetime from the moment the trade's check of its project against Dispatch
+// returned, not from its mint, so the bound on a removal (TestARestrictedTokenEndsWithinTheBound)
+// holds however long the trade's transaction takes after that check. Here the trade waits on its
+// launcher credential's row lock, which another transaction holds; the row reads the moment the
+// trade is seen waiting there, after its check, and holds the lock five seconds more. The token
+// minted once the lock is let go expires no later than the lifetime counted from that moment, and
+// its answer's expires_in is the lifetime less the wait.
+//
+// Control: exchangeGrant without its StartAccessLifetime, and the token expires the lifetime after
+// its mint, five seconds past the bound, named.
+func TestARestrictedTokensLifetimeCountsFromItsProjectCheck(t *testing.T) {
+	const hold = 5 * time.Second
+	access := newFakeAccess()
+	access.kinds[person] = projectaccess.MemberRestricted
+	f := newExchangeFixture(t, func(cfg *oauth.Config) {
+		cfg.Exchange.Projects = access
+		cfg.AccessLifetime = time.Hour
+	})
+	key := newKey(t)
+	credential := f.newCredential(t)
+	machine := f.devBoxTokenOf(t, key, person, credential)
+	ctx := context.Background()
+
+	holder, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if _, err := holder.Exec(ctx, `select 1 from launcher_credentials where id = $1 for no key update`, credential); err != nil {
+		t.Fatalf("hold the launcher credential's row lock: %v", err)
+	}
+	request, err := http.NewRequest(http.MethodPost, f.url+"/token",
+		strings.NewReader(withProjects(exchangeForm(machine, oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), project).Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("DPoP", dpopProof(t, key, f.url+"/token"))
+	type answer struct {
+		status int
+		body   map[string]any
+		err    error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		defer response.Body.Close()
+		var body map[string]any
+		err = json.NewDecoder(response.Body).Decode(&body)
+		answered <- answer{status: response.StatusCode, body: body, err: err}
+	}()
+
+	// The trade waits on the lock only after its project check returned: the check runs before its
+	// transaction opens (exchangeGrant).
+	waiting := func() bool {
+		var n int
+		if err := f.pool.QueryRow(ctx, `select count(*) from pg_stat_activity
+			where datname = current_database() and pid <> pg_backend_pid() and wait_event_type = 'Lock'
+			and query like '%from launcher_credentials%'`).Scan(&n); err != nil {
+			t.Fatalf("read whether the trade waits on the lock: %v", err)
+		}
+		return n > 0
+	}
+	for giveUp := time.Now().Add(30 * time.Second); !waiting(); time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(giveUp) {
+			t.Fatalf("the trade did not wait on its launcher credential's row lock within 30 s")
+		}
+	}
+	checked := time.Now()
+	time.Sleep(hold)
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatal(err)
+	}
+	result := <-answered
+	if result.err != nil {
+		t.Fatalf("the trade: %v", result.err)
+	}
+	token := accessTokenOf(t, result.status, result.body)
+	introspected, err := f.provider.Introspect(ctx, token)
+	if err != nil || !introspected.Active {
+		t.Fatalf("Introspect = %+v, %v; want a live token", introspected, err)
+	}
+	if latest := checked.Add(exchange.RestrictedLifetime).Unix(); introspected.ExpiresAt > latest {
+		t.Fatalf("the token expires %s after its trade was seen waiting past its project check, want at most %s",
+			time.Unix(introspected.ExpiresAt, 0).Sub(checked).Round(time.Second), exchange.RestrictedLifetime)
+	}
+	if got, want := expiresIn(t, result.body), exchange.RestrictedLifetime-hold+time.Second; got > want {
+		t.Fatalf("the trade's expires_in is %s, want at most %s, the lifetime less the %s it waited", got, want, hold)
 	}
 }
 

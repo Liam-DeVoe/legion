@@ -127,6 +127,22 @@ func (m *MachineLoginRevocations) NextDue(ctx context.Context, retry time.Durati
 	return time.Duration(*micros) * time.Microsecond, true, nil
 }
 
+// Owed is how many machine-login revocations the broker has not confirmed, and how long the oldest
+// of them has been owed since the removal that owes it (recorded_at), both on the database's clock;
+// oldest is zero when none is owed. It is what an operator watches for a revocation the broker
+// never confirms, whose member's machine logins still refresh until it settles; their trades are
+// refused once the broker's cache of Dispatch's answer runs out either way.
+func (m *MachineLoginRevocations) Owed(ctx context.Context) (count int64, oldest time.Duration, err error) {
+	var micros int64
+	if err := m.pool.QueryRow(ctx, `
+		select count(*), coalesce(ceil(extract(epoch from now() - min(recorded_at)) * 1000000), 0)::bigint
+		from machine_login_revocations where done_at is null
+	`).Scan(&count, &micros); err != nil {
+		return 0, 0, fmt.Errorf("read the owed machine-login revocations: %w", err)
+	}
+	return count, time.Duration(micros) * time.Microsecond, nil
+}
+
 // Owing reports whether a revocation of email's machine logins is owed, and its generation: what a
 // test or an operator reads to tell a debt from a paid one.
 func (m *MachineLoginRevocations) Owing(ctx context.Context, email string) (owed bool, generation int64, err error) {
