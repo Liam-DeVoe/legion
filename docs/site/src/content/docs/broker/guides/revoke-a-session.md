@@ -379,8 +379,10 @@ seconds: it asks the broker whether a token is live and reuses that answer for f
 (`AffirmativeCacheTTL`, `packages/envoy/internal/ciphertoken/brokertoken.go`) rather than asking
 once per request. The five seconds start when the answer arrives, which can be five seconds after
 Dispatch asked (`introspectTimeout`). A live socket (`/ws/live`) the token already opened closes
-at Dispatch's next check of its caller, every 15 seconds (`StreamHeartbeat`), so up to about 25
-seconds after you revoke. Your sign-ins on other machines, and the fleet's own
+at the first check of its caller that finds the token ended. Dispatch checks every 15 seconds
+(`StreamHeartbeat`), and a check can still take the answer it reuses, so the check that finds it
+ended can come up to 15 seconds after that answer runs out and wait up to five seconds for the
+broker: up to about 30 seconds after a revoke. Your sign-ins on other machines, and the fleet's own
 machine login, are untouched — the machine goes on reading what its service owns. Nobody sees or
 revokes anyone else's sign-ins: Dispatch names the person from its own session, so another
 person's id is an id the broker does not have.
