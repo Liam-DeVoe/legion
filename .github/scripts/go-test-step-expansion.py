@@ -218,7 +218,7 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow"),
+            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test the NATS auth service and count its skips"),
         }),
         package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
@@ -393,8 +393,9 @@ AUDITED_SCRIPTS = {
     # those packages, `--race` adds -race, `--skip P` adds -skip P, `--timeout D` sets the -timeout,
     # and `--var NAME` decides only whether it runs at all. With `--report FILE` it reads a report
     # and runs no test. envoy-go's count step passes the first argument list below, whose command
-    # is that run in the listing form this script reads, and envoy-go-race-api's race step the
-    # second. The first's --skip leaves out the backend count's test of ./internal/cipher/api/.
+    # is that run in the listing form this script reads, envoy-go-race-api's race step the second,
+    # and envoy-go-race's counted step the third. The first's --skip leaves out the backend count's
+    # test of ./internal/cipher/api/.
     "packages/envoy/scripts/database-skips.sh": AuditedScript(
         module="packages/envoy",
         commands={
@@ -404,8 +405,10 @@ AUDITED_SCRIPTS = {
                 "-timeout 20m",
             "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
                 "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
+            "--var BROKER_TEST_DATABASE_URL --race --timeout 10m ./internal/cipher/natscallout/":
+                "go test -json -count=1 -race -timeout 10m ./internal/cipher/natscallout/",
         },
-        sha256="668c7223b926bbad0066b0866b8f308f7c08db55ae4db167ea33bf8769401e6d",
+        sha256="7b8df16ba99cc0890dcde2d6816b16bcd80dea8c1e95c74b285df9ce70fcb49e",
     ),
     # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
     # -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|…)$'` over the packages before its
