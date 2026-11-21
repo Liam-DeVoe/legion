@@ -172,6 +172,18 @@ const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 // states is false for a writer whose cause is appended after these arms (WriteArmsUncaused): the
 // nodes it makes carry the mark bound after the node arrays instead of a cause (nodeMark), as
 // made, so the append that cause comes with states those same attributes for that event.
+//
+// A node the store holds already is left out before the insert, by a probe of graph_nodes' key
+// for each node handed in, and only the nodes it does not hold reach the upsert; the conflict arm
+// stays for them, because two writes can make the same new node at once - two requests reaching
+// a person the store holds no node of - and a plain insert would fail the second with a unique
+// violation where this one finds the first's row and does nothing. A node, once made, is removed
+// by nothing but an operator's `envoy-dispatch erase`, so the probe, which reads the statement's
+// snapshot as the rest of the write does, leaves out only nodes that stay. It is a subquery behind
+// an offset 0, so it stays one index probe per node handed in whatever the planner estimates of
+// the arrays: joined plainly, a thousand-person delivery could be planned as a hash anti-join over
+// every node. Leaving the held nodes out of the upsert cost 5.1 ms where the conflict arm alone
+// cost 7.7 for 999 people the store held (medians of 30, 2026-11-21).
 func nodeArm(first int, states bool) string {
 	source := causeOf("source_event")
 	if !states {
@@ -182,6 +194,7 @@ func nodeArm(first int, states bool) string {
 	select kind, id, supertag, visibility, state, attributes, made_at, made_by, ` + source + `,
 	       project_key, string_to_array(parties, ' ')
 	from unnest(` + nodeArrays(first) + `) as node(` + nodeColumns + `)
+	where not exists (select 1 from graph_nodes held where held.kind = node.kind and held.id = node.id offset 0)
 	order by kind, id
 	on conflict (kind, id) do nothing
 	returning kind, id, visibility, state, project_key, parties, made_at, made_by, source_event

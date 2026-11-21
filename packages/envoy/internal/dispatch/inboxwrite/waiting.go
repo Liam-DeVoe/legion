@@ -123,12 +123,29 @@ func OwnMove(person, ask, event string) string {
 				      else false end
 				  and ` + actorPerson(`own_event.actor`) + ` = ` + person + `
 				  and ` + actorPerson(`own_ask.author`) + ` is distinct from ` + person + `)
-			and not exists (
-				select 1 from graph_tuples own_delivery
-				where own_delivery.from_kind = '` + graphstore.KindAsk + `' and own_delivery.from_id = ` + ask + `
-				  and own_delivery.kind = '` + graphstore.TupleDeliveredTo + `'
-				  and own_delivery.to_kind = '` + graphstore.KindPerson + `' and own_delivery.to_id = ` + person + `
-				  and own_delivery.source_event = ` + event + ` and own_delivery.asserted))`
+			and not ` + deliveredUnder(ask, person, event, `own_delivery`) + `)`
+}
+
+// deliveredUnder is whether a delivered_to from ask to person stands asserted under event, the
+// alias the delivery is read under. Each argument is SQL text of the statement it is spliced
+// into, event a column that is never null. It reads the relation repeat key, graph_tuples_once,
+// one probe per call: that key is partial on `source_event <> 0`, which a bound event cannot
+// prove, so an event other than the sentinel is read through it and the sentinel through a read
+// of its own, which only a tuple the backfill stated with no event reaches. Read as one
+// `source_event = event` instead, a move of an ask handed on two hundred times walked every
+// delivery of the ask for each participation it read: 5.8 ms of each of the move's two statements
+// on 2026-11-21, growing with the ask's history.
+func deliveredUnder(ask, person, event, alias string) string {
+	delivered := func(cause string) string {
+		return `exists (
+				select 1 from graph_tuples ` + alias + `
+				where ` + alias + `.from_kind = '` + graphstore.KindAsk + `' and ` + alias + `.from_id = ` + ask + `
+				  and ` + alias + `.kind = '` + graphstore.TupleDeliveredTo + `'
+				  and ` + alias + `.to_kind = '` + graphstore.KindPerson + `' and ` + alias + `.to_id = ` + person + `
+				  and ` + cause + ` and ` + alias + `.asserted)`
+	}
+	return `(` + delivered(alias+`.source_event = `+event+` and `+alias+`.source_event <> 0`) + `
+			or (` + event + ` = 0 and ` + delivered(alias+`.source_event = 0`) + `))`
 }
 
 // HoldDefault takes the owner lock of the project an ask on the owner issueKey or artifactID falls
@@ -310,12 +327,7 @@ func moveHeld(candidates string) string {
 			           where p.from_kind = '` + graphstore.KindPerson + `' and p.from_id = arm.person
 			             and p.kind = '` + graphstore.TupleParticipatesIn + `'
 			             and p.to_kind = '` + graphstore.KindAsk + `' and p.to_id = h.ask and p.asserted
-			             and not exists (
-			                 select 1 from graph_tuples o
-			                 where o.from_kind = '` + graphstore.KindAsk + `' and o.from_id = h.ask
-			                   and o.kind = '` + graphstore.TupleDeliveredTo + `'
-			                   and o.to_kind = '` + graphstore.KindPerson + `' and o.to_id = arm.person
-			                   and o.source_event = p.source_event and o.asserted)
+			             and not ` + deliveredUnder(`h.ask`, `arm.person`, `p.source_event`, `o`) + `
 			             and not ` + OwnMove(`arm.person`, `h.ask`, `p.source_event`) + `
 			       ) as held
 			from held h

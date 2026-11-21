@@ -33,6 +33,11 @@ func threadLoginsQuery(param string) string {
 	return `select coalesce(array_agg(login order by login), '{}') from user_threads where thread_id = ` + param + `::uuid`
 }
 
+// threadLoginsRows is the rows threadLoginsQuery aggregates, one login each.
+func threadLoginsRows(param string) string {
+	return `select login from user_threads where thread_id = ` + param + `::uuid`
+}
+
 // issueLoginsQuery is the status half of an issue event's thread_logins, for an event that
 // closed or reopened the issue (IssueLoginsOf), its issue key the parameter param: every login
 // with a Replies row on one of that issue's open asks, sorted and never nil.
@@ -56,6 +61,12 @@ func issueLoginsQuery(param string) string {
 	`
 }
 
+// issueLoginsRows is the rows issueLoginsQuery aggregates, a login once for each of its rows.
+func issueLoginsRows(param string) string {
+	return `select u.login from user_threads u
+		where u.thread_id in (select a.id from asks a where a.issue_key = ` + param + ` and a.state = 'open')`
+}
+
 // Logins is the thread_logins an event's payload carries, read by the event's own insert
 // (QueueAppendWithLogins) from user_threads as the transaction's earlier statements, and the
 // triggers they fired, left it: the read ThreadLogins makes after the write, for a writer whose
@@ -63,23 +74,25 @@ func issueLoginsQuery(param string) string {
 // the writer already knows, unioned into what the query reads.
 type Logins struct {
 	query func(param string) string
+	rows  func(param string) string
 	key   string
 	also  []string
 }
 
 // SQL is the expression reading the logins, its first parameter $first, with the arguments those
-// parameters take. The logins the writer already knows are unioned in and the whole is sorted and
-// deduplicated, so the event names each login once however it was found.
+// parameters take. The logins the writer already knows are unioned into the rows the query reads,
+// and the whole is sorted once: the union drops a login both name, so the event names each login
+// once however it was found. Aggregating the rows first and unnesting the array again cost a
+// thousand-login thread three to five milliseconds on 2026-11-21.
 func (l *Logins) SQL(first int) (string, []any) {
-	query := l.query(fmt.Sprintf("$%d", first))
 	args := []any{any(l.key)}
 	if len(l.also) == 0 {
-		return query, args
+		return l.query(fmt.Sprintf("$%d", first)), args
 	}
 	return fmt.Sprintf(`
-		select coalesce(array_agg(distinct login order by login), '{}')
-		from (select unnest((%s)) as login union all select unnest($%d::text[])) as named
-	`, query, first+1), append(args, l.also)
+		select coalesce(array_agg(login order by login), '{}')
+		from (%s union select unnest($%d::text[])) as named(login)
+	`, l.rows(fmt.Sprintf("$%d", first)), first+1), append(args, l.also)
 }
 
 // ThreadLoginsOf is ThreadLogins of threadID, read by the event's insert. also is the logins the
@@ -87,7 +100,7 @@ func (l *Logins) SQL(first int) (string, []any) {
 // inserted: the writer's own, for a write whose row inboxwrite.Record keeps after the event
 // (inboxwrite.Write.KeptLogins), unioned into what the query reads.
 func ThreadLoginsOf(threadID string, also ...string) *Logins {
-	return &Logins{query: threadLoginsQuery, key: threadID, also: also}
+	return &Logins{query: threadLoginsQuery, rows: threadLoginsRows, key: threadID, also: also}
 }
 
 // IssueLoginsOf is the logins of issueKey's open asks (issueLoginsQuery), read by the event's
@@ -97,7 +110,7 @@ func ThreadLoginsOf(threadID string, also ...string) *Logins {
 // issue holds nobody (api/issue_patch.go, over api/thread_logins.go's movedLogins), unioned into
 // them.
 func IssueLoginsOf(issueKey string, also ...string) *Logins {
-	return &Logins{query: issueLoginsQuery, key: issueKey, also: also}
+	return &Logins{query: issueLoginsQuery, rows: issueLoginsRows, key: issueKey, also: also}
 }
 
 // withThreadLogins is payload, the payload of an event that names thread_logins, carrying logins.

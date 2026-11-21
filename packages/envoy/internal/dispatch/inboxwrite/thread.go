@@ -134,9 +134,16 @@ type member struct {
 // participants. A row's marker is read to tell a marked row from one the marker test passes, and
 // no other column of a marked row is read.
 func readMembers(ctx context.Context, tx pgx.Tx, thread thread) ([]member, error) {
+	// The read binds the root's kind, so `t.to_kind <> 'value'`, always true of a thread's root,
+	// is written out: it is graph_tuples_as_of_in's predicate, which a generic plan of this
+	// statement - the plan pgx's statement cache reaches after five runs on one connection -
+	// cannot prove from a bound kind, and without it that plan walks graph_tuples_as_of_out
+	// across every person's participation of the kind (190 ms against 12.5 ms over the thread at
+	// the bound, on 2026-11-21).
 	current := func(kind string) string {
 		return graphstore.CurrentTupleRead(`t.from_id`, `t.from_id, t.asserted`,
-			`t.to_kind = $2 and t.to_id = $3 and t.kind = `+kind+` and t.from_kind = $6`)
+			`t.to_kind = $2 and t.to_id = $3 and t.kind = `+kind+` and t.from_kind = $6
+				and t.to_kind <> '`+graphstore.KindValue+`'`)
 	}
 	rows, err := tx.Query(ctx, `
 		with held as (

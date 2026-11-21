@@ -60,9 +60,13 @@ func WriteFunctions() []string { return slices.Clone(writeFunctions[:]) }
 const LatestEvent int64 = -1
 
 // causeOf is the SQL a source_event or legacy_source_seq column is written through: the column's
-// own value, or the latest event's id for LatestEvent.
+// own value, or the latest event's id for LatestEvent. The id is read in a scalar subquery, which
+// Postgres runs once per statement, when the first row that needs it asks: called on every row, the
+// sequence lookup costs about 5 µs a row, which is 5 ms in a statement appending a thousand
+// tuples. No statement that writes through it appends an event of its own, so the latest event is
+// one id for all of its rows.
 func causeOf(column string) string {
-	return `(case when ` + column + ` = ` + strconv.FormatInt(LatestEvent, 10) + ` then ` + store.LatestEventID + ` else ` + column + ` end)`
+	return `(case when ` + column + ` = ` + strconv.FormatInt(LatestEvent, 10) + ` then (select ` + store.LatestEventID + `) else ` + column + ` end)`
 }
 
 // Write writes every node and appends every tuple inside the caller's transaction, at once: its

@@ -167,7 +167,10 @@ func QueueMarksEnded(b *store.WriteBatch, kind, toKind, toID string, people Mark
 		select '`+KindPerson+`', standing.from_id, $1, $2, $3, $5::timestamptz, $6::jsonb, `+causeOf("$7::bigint")+`, null, false
 		from (
 			`+CurrentTupleRead(`t.from_id`, `t.from_id, t.asserted`,
-		`t.to_kind = $2 and t.to_id = $3 and t.kind = $1 and t.from_kind = '`+KindPerson+`' and t.from_id = `+persons)+`
+		// toKind is bound, and never KindValue (refused above), so its `<> 'value'` is written out:
+		// graph_tuples_as_of_in's predicate, which a generic plan cannot prove from the bound kind.
+		`t.to_kind = $2 and t.to_id = $3 and t.kind = $1 and t.from_kind = '`+KindPerson+`' and t.from_id = `+persons+`
+			and t.to_kind <> '`+KindValue+`'`)+`
 		) standing
 		where standing.asserted
 		order by standing.from_id`+relationRepeatKey,

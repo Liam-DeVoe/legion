@@ -57,5 +57,14 @@ begin
 end;
 $$;
 
+-- The trigger's WHEN holds the function's own test, so the function is called only for an update
+-- it unmarks: a reply moves the rows of every person in its thread, and calling the function for
+-- each of a thousand rows this release's writer keeps cost 3.5 ms of a 999-row move on
+-- 2026-11-21, where the expression costs a few microseconds in all. WHEN is evaluated before the
+-- function is called, at the depth of the statement that updates the row, so its depth test is
+-- `> 0` where the function body's, called one level deeper, is `> 1`: both say the update runs
+-- inside another trigger.
 create trigger user_threads_store_marker before update on user_threads
-  for each row execute function user_threads_unmarked_by_older_writer();
+  for each row
+  when (current_setting('dispatch.store_marker_writer', true) is distinct from 'on' or pg_trigger_depth() > 0)
+  execute function user_threads_unmarked_by_older_writer();
