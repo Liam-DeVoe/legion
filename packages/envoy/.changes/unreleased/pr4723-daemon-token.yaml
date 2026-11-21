@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The listener recognises a Legion daemon's own broker token: a token whose session is
+  `legion-daemon:<P>`, under the named project scope, with the one project `P`. Such a token may
+  make the daemon's clean stop of another session's registration (`DELETE /v1/sessions/<session>`
+  naming `if_not_registered_after`), as the shared bearer may. The sender limit does not count its
+  messages. The same token's unconditional delete of another session, and a delete that names
+  only `client_instance_id`, are still refused 403. Every other broker token is held to its own
+  session as before.
+time: 2026-11-21T02:44:40Z
+custom:
+    Issue: pr4723
