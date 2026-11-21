@@ -487,8 +487,12 @@ cmd_profile() {
     local agent=$P/home/.omp/profiles/$profile/agent
     mkdir -p "$agent"
     [ -f "$agent/envoy.json" ] || echo '{}' >"$agent/envoy.json"
-    jq -s '.[0] * .[1]' "$agent/envoy.json" "$envoy_json" >"$agent/envoy.json.new"
-    mv "$agent/envoy.json.new" "$agent/envoy.json"
+    # The merge goes to a file of its own beside envoy.json, so two runs of one label do not share
+    # a temporary name.
+    local merged
+    merged=$(mktemp "$agent/envoy.json.XXXXXX") || fail "mktemp beside $agent/envoy.json failed"
+    jq -s '.[0] * .[1]' "$agent/envoy.json" "$envoy_json" >"$merged" || { rm -f -- "$merged"; fail "merging $envoy_json into $agent/envoy.json failed"; }
+    mv -- "$merged" "$agent/envoy.json"
   fi
   install_model_route "$co" "$profile" "$P" "${LEGION_E2E_MODEL_PROVIDER_MODEL:-}" >>"$P/install.log" 2>&1 ||
     fail "the model route (${LEGION_E2E_MODEL_ROUTE:-gateway}) could not be installed; see $P/install.log"
