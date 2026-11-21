@@ -261,19 +261,6 @@ func accepts(e Event, point Point, match []Match) bool {
 // installed is set while a test's hook is the process's.
 var installed atomic.Bool
 
-// onReached is the test seam SetOnReached sets: it runs in the hook right after the hook has
-// closed a hold's reached channel, with the Hooks' lock held.
-var onReached atomic.Pointer[func(*Hold)]
-
-// SetOnReached makes f run in the hook right after it closes a hold's reached channel, with the
-// Hooks' lock held, until t ends: the harness's own tests use it to act at that instant, as a
-// test released from Reached does, without a sleep. f must not call into the Hooks.
-func SetOnReached(t testing.TB, f func(*Hold)) {
-	t.Helper()
-	onReached.Store(&f)
-	t.Cleanup(func() { onReached.Store(nil) })
-}
-
 // Hooks is the hook a test installed: every event the hooked servers of this process report
 // while it is installed, and the holds the test armed.
 type Hooks struct {
@@ -356,8 +343,8 @@ func (h *Hooks) report(me *natsserver.MeasureEvent) {
 			hold.fired, hold.event = true, e
 			wasReleased := hold.Released()
 			close(hold.reached)
-			if f := onReached.Load(); f != nil {
-				(*f)(hold)
+			if f := hold.onReached.Load(); f != nil {
+				(*f)()
 			}
 			if wasReleased {
 				continue
@@ -459,7 +446,15 @@ type Hold struct {
 	// after reached is closed.
 	fired bool
 	event Event
+	// onReached is the test seam SetOnReached sets on this hold.
+	onReached atomic.Pointer[func()]
 }
+
+// SetOnReached makes f run in the hook right after it closes hold's reached channel, before the
+// hook decides whether the event parks on hold, with the Hooks' lock held: the harness's own tests
+// use it to act at that instant, as a test released from Reached does, without a sleep. Set it
+// before the event can come. f must not call into the Hooks.
+func SetOnReached(hold *Hold, f func()) { hold.onReached.Store(&f) }
 
 func (hold *Hold) String() string { return describe(hold.point, hold.match) }
 

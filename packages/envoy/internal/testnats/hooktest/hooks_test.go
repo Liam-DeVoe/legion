@@ -538,7 +538,7 @@ func TestForcedOrderAReleasedHoldTakesNoEventFromTheNextHold(t *testing.T) {
 // releases A as soon as A's Reached returns lets that event go on, not over to B, which stays for
 // the next event. The release has to land after the hook closes A's reached channel and before
 // it decides whether A was released, which no sleep can promise, so the test makes the hook wait
-// at that instant (testnats.SetOnReached) until A's Reached has returned and A is released.
+// at that instant (testnats.SetOnReached on A) until A's Reached has returned and A is released.
 // While the hook read A's release after it had published A as reached, it took A for one
 // released before it was reached and parked the same event on B.
 func TestForcedOrderAHoldReleasedAsItIsReachedKeepsItsEvent(t *testing.T) {
@@ -548,10 +548,7 @@ func TestForcedOrderAHoldReleasedAsItIsReachedKeepsItsEvent(t *testing.T) {
 	a := hooks.Hold(testnats.ClientPublish, testnats.Subject(subject))
 	b := hooks.Hold(testnats.ClientPublish, testnats.Subject(subject))
 	releasedA := make(chan struct{})
-	testnats.SetOnReached(t, func(hold *testnats.Hold) {
-		if hold != a {
-			return
-		}
+	testnats.SetOnReached(a, func() {
 		select {
 		case <-releasedA:
 		case <-time.After(reachWithin):
