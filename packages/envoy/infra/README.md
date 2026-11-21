@@ -3311,7 +3311,8 @@ other client can connect, and every declared server has restarted since the hold
 row and its journal live in the secrets broker's Postgres, signed by the operator's key, behind
 the broker's `/v1/nats-hold` routes (`internal/holdrecord`); the auth service reads the row at
 every decision and, while it holds `held`, refuses every client but the operator with the label
-`held`.
+`held`. [`writerhold/README.md`](writerhold/README.md) describes the hold, its workflows, its report
+and its refusals, and how to read a hold with `envoy-infra hold status`.
 
 ```text
 envoy-infra hold status   [--hold ID]
