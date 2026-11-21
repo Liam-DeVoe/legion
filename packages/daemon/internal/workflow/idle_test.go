@@ -34,7 +34,7 @@ func idleChild() pods.IdleView {
 	return pods.IdleView{
 		Issue: "LEGION-209", Tree: "LEGION-208", Found: true,
 		Phase: phase.Implementing, Status: "in_progress", Generation: 3,
-		Root: pods.IdleRoot{Phase: phase.Admitted, Status: "in_progress", Generation: 2},
+		TreeGeneration: 2,
 		Claims: []pods.IdleClaim{
 			{
 				Role:  claim.RoleImplementer,
@@ -50,8 +50,8 @@ func idleChild() pods.IdleView {
 	}
 }
 
-// idleRoot is the same pod as its tree's root, which is the only shape a root's own wait on a
-// person holds.
+// idleRoot is the same pod as an issue's that holds its own gate, whose architect is the role
+// that waits on a person in its own phase.
 func idleRoot() pods.IdleView {
 	view := idleChild()
 	view.Issue, view.Tree, view.Phase = "LEGION-208", "LEGION-208", phase.Admitted
@@ -132,29 +132,32 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			image: true, want: IdleHoldBundleUnrestored,
 		},
 		{
-			name: "the root waits on a person who has not answered",
+			name: "the issue waits on a person who has not answered",
 			view: func() pods.IdleView {
 				v := idleRoot()
-				v.Phase, v.Root.Phase, v.Root.AwaitingPerson = phase.AwaitingPerson, phase.AwaitingPerson, true
+				v.Phase, v.AwaitingPerson = phase.AwaitingPerson, true
 				return v
 			}(),
 			image: true, want: IdleHoldAwaitingPerson,
 		},
 		{
-			name: "the root's person has answered and it waits only for the pass that resumes it",
+			name: "the issue's person has answered and it waits only for the pass that resumes it",
 			view: func() pods.IdleView {
 				v := idleRoot()
-				v.Phase, v.Root.Phase = phase.AwaitingPerson, phase.AwaitingPerson
-				v.Root.AwaitingPerson, v.Root.Answered = true, true
+				v.Phase = phase.AwaitingPerson
+				v.AwaitingPerson, v.Answered = true, true
 				return v
 			}(),
 			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleArchitect},
 		},
 		{
-			name: "a child of a root that waits on a person",
+			// No standing above the issue is read (R20 of dispatch://INFRA-3320): its stored
+			// tree naming a root that waits on a person, or one that left the workflow, holds
+			// nothing, since the view carries only the issue's own standing.
+			name: "an issue whose stored tree names another root",
 			view: func() pods.IdleView {
 				v := idleChild()
-				v.Root.Phase, v.Root.AwaitingPerson = phase.AwaitingPerson, true
+				v.Tree = "LEGION-1"
 				return v
 			}(),
 			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleImplementer},
@@ -308,7 +311,7 @@ func unownedIssue() pods.IdleView {
 	return pods.IdleView{
 		Issue: "LEGION-310", Tree: "LEGION-310", Found: true,
 		Phase: phase.Implementing, Status: "in_progress", Generation: 4,
-		Root: pods.IdleRoot{Phase: phase.Implementing, Status: "in_progress", Generation: 4},
+		TreeGeneration: 4,
 		Claims: []pods.IdleClaim{
 			{
 				Role: claim.RoleArchitect, State: supervise.StateFailed,

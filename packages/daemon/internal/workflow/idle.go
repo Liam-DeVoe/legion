@@ -17,11 +17,12 @@ type IdleHold int
 const (
 	// IdleHoldNone: nothing held the pod and it is released.
 	IdleHoldNone IdleHold = iota
-	// IdleHoldTreeNotLive: the issue or its tree root has left the workflow.
-	// Such a pod is a close's to stop, not a release's.
+	// IdleHoldTreeNotLive: the issue itself has left the workflow (R20 of
+	// dispatch://INFRA-3320: nothing above it is read). Such a pod is a close's to stop, not a
+	// release's.
 	IdleHoldTreeNotLive
-	// IdleHoldAwaitingPerson: the pod is a root's, and the root waits on an answer a person has
-	// not given. Its children's pods are not held by it.
+	// IdleHoldAwaitingPerson: the issue itself waits on an answer a person has not given. The
+	// pods of the issues under it are not held by it.
 	IdleHoldAwaitingPerson
 	// IdleHoldImage: the pod runs an image other than the one the configuration names, or its
 	// image could not be read at all.
@@ -75,8 +76,8 @@ const (
 	// it is one thing that happened (store.ReleaseCauseOvertaken).
 	IdleHoldOvertaken
 	// IdleHoldUnauthorized: the store no longer authorized the teardown when it asked — the run
-	// the release was taken against has moved on, the issue or its tree root has left the
-	// workflow, or its cleanup is reserved — so the teardown cancelled the release instead of
+	// the release was taken against has moved on, the issue has left the workflow, or its
+	// cleanup is reserved — so the teardown cancelled the release instead of
 	// deleting the pod (store.ReleaseCauseUnauthorized).
 	IdleHoldUnauthorized
 	// IdleHoldNoLiveClaim: the record holds the issue, and every claim of it has failed, been
@@ -114,8 +115,8 @@ const (
 	// IdleHoldUnownedDelivery: a task, notice, message or start waits for delivery to a role of
 	// the pod, and the delivery is what brings a role back into it.
 	IdleHoldUnownedDelivery
-	// IdleHoldUnownedTreeNotLive: the issue or its tree root has left the workflow. Such a pod is
-	// a close's to stop, as it is for the idle rule
+	// IdleHoldUnownedTreeNotLive: the issue itself has left the workflow. Such a pod is a close's
+	// to stop, as it is for the idle rule
 	// (IdleHoldTreeNotLive).
 	IdleHoldUnownedTreeNotLive
 	// IdleHoldUnownedReleasing: a release of this pod is already in progress, so this rule's own
@@ -210,8 +211,8 @@ type IdleDecision struct {
 // A pod is released only when all of these hold, and the first that does not is the hold the
 // decision reports:
 //
-//   - the issue is in the workflow and its tree is live: neither the issue nor its root has left
-//     the workflow (pods.InWorkflowWithRoot). A pod in that state is a
+//   - the issue is in the workflow by its own standing (pods.Standing.InWorkflow), whatever stands
+//     above it (R20 of dispatch://INFRA-3320). A pod in that state is a
 //     close's to stop;
 //
 //   - the daemon's project is not paused (IdleHoldPaused), and no pause holds the pod
@@ -224,9 +225,9 @@ type IdleDecision struct {
 //     restore is confirmed, a second release would take a bundle of a workspace that never had
 //     that work and store it over the one that does;
 //
-//   - the pod is not a root's that waits on an answer a person has not given. A root whose answer
-//     has come waits only for the pass that resumes it on its slot and qualifies, and the children of a root that waits on a
-//     person qualify whatever their root is waiting for;
+//   - the issue does not itself wait on an answer a person has not given. An issue whose answer
+//     has come waits only for the pass that resumes it on its slot and qualifies, and the issues
+//     under one that waits on a person qualify whatever it is waiting for;
 //
 //   - the pod runs the image the configuration names, and each live claim speaks this daemon's
 //     plugin contract: a released pod comes back as a fresh pod on the configured image, so a pod
@@ -269,7 +270,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if view.Releasing {
 		return IdleDecision{Hold: IdleHoldReleasing}
 	}
-	if !pods.InWorkflowWithRoot(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
+	if !view.Standing().InWorkflow(record.OutOfWorkflow) {
 		return IdleDecision{Hold: IdleHoldTreeNotLive}
 	}
 	if view.Paused {
@@ -281,7 +282,7 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 	if view.BundleUnrestored {
 		return IdleDecision{Hold: IdleHoldBundleUnrestored}
 	}
-	if view.IsRoot() && view.Root.AwaitingPerson && !view.Root.Answered {
+	if view.AwaitingPerson && !view.Answered {
 		return IdleDecision{Hold: IdleHoldAwaitingPerson}
 	}
 	var roles []claim.Role
@@ -356,8 +357,8 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 // have one. The idle rule's bundle hold is not a conjunct here either, because this release
 // takes no bundle: it asks the pod for nothing and stores nothing, so an issue whose last
 // release saved work no pod has restored is still this rule's to release, with that bundle left
-// as it is for the pod a later start makes. Nor is the idle rule's hold for a root waiting on a
-// person (IdleHoldAwaitingPerson): that hold keeps the pod of a root whose architect is live and
+// as it is for the pod a later start makes. Nor is the idle rule's hold for an issue waiting on a
+// person (IdleHoldAwaitingPerson): that hold keeps the pod of an issue whose architect is live and
 // idle, so the answer reaches the session it is waiting in, and a root this rule reads has no
 // live architect to answer in any pod. The answer promotes the root and the daemon queues the
 // architect's start, which builds the Sandbox, the pod and the workspace again.
@@ -375,8 +376,8 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //   - no release of this Sandbox is already under way, which is this rule's own release already
 //     running on the lane (IdleHoldUnownedReleasing);
 //
-//   - the issue and its tree are the workflow's: neither the issue nor its root has left the
-//     workflow (pods.InWorkflowWithRoot). A pod in that state is a
+//   - the issue is the workflow's by its own standing (pods.Standing.InWorkflow), whatever stands
+//     above it. A pod in that state is a
 //     close's to stop, exactly as it is for the idle rule (IdleHoldUnownedTreeNotLive);
 //
 //   - the runtime holds the issue's Sandbox. Where it does not, the pod this rule would release
@@ -432,7 +433,7 @@ func UnownedPodRelease(view pods.IdleView, now time.Time, idle time.Duration, sa
 	if view.Releasing {
 		return IdleDecision{Hold: IdleHoldUnownedReleasing}
 	}
-	if !pods.InWorkflowWithRoot(view.Standing(), view.RootStanding(), record.OutOfWorkflow) {
+	if !view.Standing().InWorkflow(record.OutOfWorkflow) {
 		return IdleDecision{Hold: IdleHoldUnownedTreeNotLive}
 	}
 	if !sandboxPresent {

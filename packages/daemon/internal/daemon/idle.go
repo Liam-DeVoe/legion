@@ -479,7 +479,7 @@ func idleReleaseRows(ctx context.Context, tx pgx.Tx, records record.Store, view 
 		return nil
 	}
 	if err := add(record.IssueBundle{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation, Role: mark.Role}, false); err != nil {
+		TreeGeneration: view.TreeGeneration, Role: mark.Role}, false); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
 	for i, role := range decision.Roles {
@@ -489,7 +489,7 @@ func idleReleaseRows(ctx context.Context, tx pgx.Tx, records record.Store, view 
 		}
 	}
 	if err := add(record.IssueRelease{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation}, false); err != nil {
+		TreeGeneration: view.TreeGeneration}, false); err != nil {
 		return store.IdleReleaseMark{}, err
 	}
 	mark.Rows = rows
@@ -518,7 +518,7 @@ func idleReleaseRows(ctx context.Context, tx pgx.Tx, records record.Store, view 
 // idle release's are.
 func unownedReleaseRows(ctx context.Context, tx pgx.Tx, records record.Store, view pods.IdleView, now time.Time) (store.IdleReleaseMark, error) {
 	payload := record.IssueRelease{Tree: view.Tree, Generation: view.Generation,
-		TreeGeneration: view.Root.Generation}
+		TreeGeneration: view.TreeGeneration}
 	row, err := record.NewFencedRow(ctx, tx, records, view.Issue, payload, now)
 	if err != nil {
 		return store.IdleReleaseMark{}, fmt.Errorf("encode the %s of %s's release: %w",

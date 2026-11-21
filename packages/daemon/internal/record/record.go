@@ -2852,7 +2852,7 @@ func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 }
 
 // Standing is where the issue stands for the gate every path that acts on an idle or released
-// pod reads (pods.InWorkflowWithRoot).
+// pod reads (pods.Standing.InWorkflow): the issue's own, whatever stands above it.
 func (i Issue) Standing() pods.Standing {
 	return pods.Standing{Phase: i.Phase, Status: i.Status}
 }

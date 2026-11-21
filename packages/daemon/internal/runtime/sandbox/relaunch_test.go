@@ -852,7 +852,7 @@ func TestTheNameAReplacementKeptForItsGapGoesOnceTheReplacementCarriesIt(t *test
 		t.Fatalf("the tester, whose pod in the replacement failed on its own: %s, Displaced %t (%s); want Gone and not Displaced, a death the supervisor charges",
 			obs.Kind, obs.Displaced, obs.Detail)
 	}
-	if err := g.r.SuspendIssue(g.ctx, testTree, testTree, func(context.Context) (bool, error) { return true, nil }); err != nil {
+	if err := g.r.SuspendIssue(g.ctx, testTree, "", func(context.Context) (bool, error) { return true, nil }); err != nil {
 		t.Fatal(err)
 	}
 	if g.sandbox(name) != nil {

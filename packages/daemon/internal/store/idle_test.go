@@ -62,8 +62,8 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 	if !view.Found || view.Tree != rootIssue || view.Phase != phase.Implementing || view.Generation != 1 || view.Status != "in_progress" {
 		t.Fatalf("view = %+v, want the running issue", view)
 	}
-	if !view.IsRoot() || view.Root.AwaitingPerson {
-		t.Fatalf("root = %+v, want the running root", view.Root)
+	if view.AwaitingPerson || view.TreeGeneration != 1 {
+		t.Fatalf("view = %+v, want an issue waiting on no person, its stored tree at generation 1", view)
 	}
 	if len(view.Claims) != 1 {
 		t.Fatalf("claims = %+v, want the one claim", view.Claims)

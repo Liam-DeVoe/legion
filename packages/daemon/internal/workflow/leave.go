@@ -244,7 +244,7 @@ func awaitsMerge(issue record.Issue) bool {
 // that runs again would resume the implementer and relaunch its Sandbox under the run, so none
 // starts.
 //
-// The rule itself is pods.Standing.InWorkflow, which the pod gate reads too (pods.InWorkflowWithRoot):
+// The rule itself is pods.Standing.InWorkflow, which the pod gate reads too:
 // one statement, so a terminal phase added to it moves admission, the production check and the
 // release gate together.
 func InWorkflow(issue record.Issue) bool {

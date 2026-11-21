@@ -1743,10 +1743,11 @@ func (w *workflowRuntime) awaitRecovery(repo, tree, child, parent string) bool {
 // tellReleaseWaits tells the architects of the children of waits the recovery of repos left
 // unrecorded what to release again, each child with whether its parent is recorded now: one
 // child-release-stalled notice for each issue a child's notice is queued on, which is its parent
-// when the record holds that parent in the child's tree, and else the tree root. The owner walk
-// takes a notice on the parent to the architect that owns the parent, which is the architect that
-// releases the parent's children; a parent the record does not hold, or holds in another tree, has
-// no architect of this tree, so the child is the tree's architect's to release.
+// when the record holds that parent, and else the issue the release_children that filed it was
+// asked on (releaseWait.tree). The owner walk over the Dispatch chain takes a notice on the parent
+// to the architect that owns the parent, which is the architect that releases the parent's
+// children (R18 of dispatch://INFRA-3320); a parent the record does not hold has no architect,
+// so the child is the asking architect's to release. No stored tree is read.
 func (w *workflowRuntime) tellReleaseWaits(ctx context.Context, repos []string, waits map[string]releaseWait) error {
 	return w.tellWaitingArchitects(ctx, []waitTelling{{waits: waits, why: fmt.Sprintf(
 		"GitHub answered for %s again (both role Apps' installation reads, and the read of its name and default branch), and the daemon recovered its issues from Dispatch's listing, but these children a release_children released while it was unread are still not recorded",
@@ -1840,9 +1841,9 @@ type waitTelling struct {
 // child-release-stalled notice for each issue a child's notice is queued on, naming every child of
 // its waits the workflow still does not record, as its why opens the notice and line names each
 // child, with whether the workflow records that child's parent, read here once for both callers.
-// A child's notice is queued on its parent when the record holds that parent in the child's tree,
-// and else on the tree root, so the owner walk takes it to the architect that releases the
-// parent's children, or to the tree's architect where no architect of the tree owns the parent
+// A child's notice is queued on its parent when the record holds that parent, and else on the
+// issue the release that filed it was asked on, so the owner walk takes it to the architect that
+// releases the parent's children, or to the asking architect where no record holds the parent
 // (tellReleaseWaits). A child recorded since is told nothing; its record's own notices carry it. Every notice is written in one transaction, so a
 // failure tells no architect anything and the caller's put-back leaves nothing half told, and
 // nothing is written where every child is recorded.
@@ -1866,7 +1867,7 @@ func (w *workflowRuntime) tellWaitingArchitects(ctx context.Context, tellings []
 				return err
 			}
 			on := wait.tree
-			if parent != nil && parent.Tree == wait.tree {
+			if parent != nil {
 				on = parent.Key
 			}
 			byIssue[on] = append(byIssue[on], line(child, wait, parent != nil))

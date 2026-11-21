@@ -131,9 +131,10 @@ func issueKeys(rows pgx.Rows, what string) ([]string, error) {
 //
 // outOfWorkflow is the workflow's list of statuses that take an issue out of it
 // (record.OutOfWorkflowStatuses), which the store does not restate: the gate every other path
-// reads is a Go predicate (pods.InWorkflowWithRoot) and a select cannot call one, so the rule
-// arrives as a list and the filter is this statement's conditions per row — the status outside
-// that list and the phase short of done.
+// reads is a Go predicate (pods.Standing.InWorkflow) and a select cannot call one, so the rule
+// arrives as a list and the filter is this statement's conditions per row — the issue's own
+// status outside that list and its own phase short of done, whatever stands above it (R20 of
+// dispatch://INFRA-3320).
 //
 // Those conditions are what the filter is for, since the claim states alone would answer
 // every issue of the deployment whose roles ever stopped. Every candidate costs one transaction
@@ -152,10 +153,9 @@ func issueKeys(rows pgx.Rows, what string) ([]string, error) {
 // its own answer.
 func (s *Store) UnownedPods(ctx context.Context, project, claimProject string, outOfWorkflow []string) ([]string, error) {
 	what := "list the pods of " + project + " no claim owns"
-	rows, err := s.pool.Query(ctx, `select i.key from issues i join issues root on root.key = i.tree
+	rows, err := s.pool.Query(ctx, `select i.key from issues i
 		where i.project = $1
 		and i.status <> all($2) and i.phase <> 'done'
-		and root.status <> all($2) and root.phase <> 'done'
 		and exists (select 1 from claims c where c.issue = i.key and c.project = $3)
 		and not exists (select 1 from claims c where c.issue = i.key and c.project = $3
 			and c.state not in ('failed', 'retired', 'suspended'))
@@ -355,10 +355,10 @@ type ReleaseResumeRow func(role claim.Role, generation uint64) (IdleReleaseRow, 
 // DueRows). It is read after the issue's lock (LockIssueForPause), which this transaction takes
 // after the serializer, the one order every writer of a pod hold keeps (decision 13).
 //
-// An issue the record no longer holds and one that has left the workflow, or whose tree root has,
-// are given no resume at all, and the mark goes all the same: those claims are a close's to end.
-// The gate is the one every path that acts on a released pod reads
-// (pods.InWorkflowWithRoot), read here inside the cancel's own transaction, because the
+// An issue the record no longer holds and one that has left the workflow by its own standing,
+// whatever stands above it, are given no resume at all, and the mark goes all the same: those
+// claims are a close's to end. The gate is the one every path that acts on a released pod reads
+// (pods.Standing.InWorkflow), read here inside the cancel's own transaction, because the
 // cancel of a release whose issue left the workflow runs beside that issue's close — the close's
 // rows are queued above the release's and the teardown answers Unauthorized for the same leave —
 // and a resume queued above them supersedes the close: the close's own suspension then finishes
@@ -523,32 +523,28 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 
 // issueStanding is what a cancel reads of its issue before it queues a resume (resumeStanding):
 // the generation the resume names, the phase whose worker a paused cancel arms a backstop for,
-// and whether the issue and its tree root are both still the workflow's to run
-// (pods.InWorkflowWithRoot).
+// and whether the issue is still the workflow's to run by its own standing
+// (pods.Standing.InWorkflow).
 type issueStanding struct {
 	generation uint64
 	phase      phase.Phase
 	live       bool
 }
 
-// resumeStanding is issue's standing as a cancel reads it. An issue or a root the record no
-// longer holds is not live.
+// resumeStanding is issue's standing as a cancel reads it. An issue the record no longer holds
+// is not live.
 func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool) (issueStanding, error) {
 	var generation int64
-	var issuePhase, status, rootPhase, rootStatus string
-	err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, root.phase, root.status
-		from issues i join issues root on root.key = i.tree where i.key = $1`, issue).Scan(
-		&generation, &issuePhase, &status, &rootPhase, &rootStatus)
+	var issuePhase, status string
+	err := tx.QueryRow(ctx, `select generation, phase, status from issues where key = $1`, issue).Scan(
+		&generation, &issuePhase, &status)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return issueStanding{}, nil
 	}
 	if err != nil {
 		return issueStanding{}, fmt.Errorf("read %s for the resumes of its cancelled release: %w", issue, err)
 	}
-	live := pods.InWorkflowWithRoot(
-		pods.Standing{Phase: phase.Phase(issuePhase), Status: status},
-		pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus},
-		outOfWorkflow)
+	live := pods.Standing{Phase: phase.Phase(issuePhase), Status: status}.InWorkflow(outOfWorkflow)
 	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), live: live}, nil
 }
 
@@ -619,20 +615,19 @@ func deleteIssueRelease(ctx context.Context, db execer, project, issue string) e
 // under this project's token, so its pod can find the record that project's daemon keeps of the
 // issue. A release decided on that record would queue rows keyed by the other project's issue,
 // which this project's outbox never runs (record's DueRows), under a mark that would never
-// clear. The root is read through the issue's own tree and needs no check of its own: a record
-// takes its root's project when the workflow writes it, so the root of a record of this project
-// is this project's too.
+// clear. Every standing the rules read is the issue's own (R20 of dispatch://INFRA-3320): the
+// stored tree and its root's generation are read only for the rows the release before requires
+// (pods.IdleView.TreeGeneration), the issue's own generation where that root is not recorded.
 func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.IdleView, error) {
 	view := pods.IdleView{Issue: issue}
-	var issueGeneration, rootGeneration int64
-	var issuePhase, rootPhase string
+	var issueGeneration, treeGeneration int64
+	var issuePhase string
 	err := tx.QueryRow(ctx, `select i.tree, i.phase, i.status, i.generation,
-		root.phase, root.status, root.generation,
-		root.phase = 'awaiting_person', root.awaiting_answered_at is not null
-		from issues i join issues root on root.key = i.tree where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
-		&view.Tree, &issuePhase, &view.Status, &issueGeneration,
-		&rootPhase, &view.Root.Status, &rootGeneration,
-		&view.Root.AwaitingPerson, &view.Root.Answered)
+		coalesce((select root.generation from issues root where root.key = i.tree), i.generation),
+		i.phase = 'awaiting_person', i.awaiting_answered_at is not null
+		from issues i where i.key = $1 and lower(i.project) = $2`, issue, project).Scan(
+		&view.Tree, &issuePhase, &view.Status, &issueGeneration, &treeGeneration,
+		&view.AwaitingPerson, &view.Answered)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return view, nil
@@ -640,8 +635,8 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 		return pods.IdleView{}, fmt.Errorf("read %s for its idle view: %w", issue, err)
 	}
 	view.Found = true
-	view.Phase, view.Root.Phase = phase.Phase(issuePhase), phase.Phase(rootPhase)
-	view.Generation, view.Root.Generation = uint64(issueGeneration), uint64(rootGeneration)
+	view.Phase = phase.Phase(issuePhase)
+	view.Generation, view.TreeGeneration = uint64(issueGeneration), uint64(treeGeneration)
 
 	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,

@@ -117,7 +117,9 @@ func (r *outbox) settleKept(ctx context.Context, row record.OutboxRow, payload r
 	if payload.Kept == nil {
 		return nil
 	}
-	root := payload.Tree
+	// The start row is queued on the issue whose architect it starts, the gate holder its kept
+	// decisions are owed to, so that issue names the claim, never the tree the row stores.
+	root := row.Issue
 	token, err := claim.NewToken(r.project, root, claim.RoleArchitect)
 	if err != nil {
 		return fmt.Errorf("derive the architect of %s: %w", root, err)

@@ -206,14 +206,16 @@ func (s *supervision) tellStallBackstopped(ctx context.Context, c supervise.Clai
 // side and not the other is never told again at the next sweep (tellUpdateStalled's own reason
 // for one call), and answers whether it wrote them (supervision.enqueue). A phase worker's stall
 // is read by the architect that owns its issue, and a child's own architect's stall by the
-// architect above that child, as each one's death is. A tree architect's own stall is told to the
-// controller as well, in a row of its own: every notice of the tree that no child's own architect
-// takes reaches that architect, and nobody inside the tree is left to act on it (workflow's
-// claimFailed, which tells a failed tree architect's death the same way).
+// architect above that child, as each one's death is. The stall of an architect whose issue holds
+// its own gate is told to the controller as well, in a row of its own: every notice of the tree
+// that no child's own architect takes reaches that architect, and nobody inside the tree is left
+// to act on it (workflow's claimFailed, which tells such an architect's death the same way). The
+// gate is the claim's own mark, set at its launch from the Dispatch chain
+// (supervise.Claim.HoldsGate, R15 of dispatch://INFRA-3320), never the tree the claim stores.
 func (s *supervision) enqueueStallNotice(ctx context.Context, c supervise.Claim, found string) (bool, error) {
 	notice := record.Notice{Kind: stallBackstopNotice, Role: c.Role, Reason: found}
 	rows := []record.OutboxPayload{notice}
-	if claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) {
+	if c.Role == claim.RoleArchitect && c.HoldsGate {
 		rows = append(rows, record.ControllerNotice(notice))
 	}
 	return s.enqueue(ctx, c.Issue, rows...)

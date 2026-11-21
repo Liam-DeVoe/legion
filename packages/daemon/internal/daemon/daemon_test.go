@@ -1975,6 +1975,58 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 	}
 }
 
+// Each boot fills the copy of Dispatch's issues from a listing of the project before its first
+// decision (R16 of dispatch://INFRA-3320): a listing that names a child the event stream has not
+// applied puts that child in the copy under its parent first, so the parent, at accepting, goes no
+// further: the boot's pass sets it waiting on that open child, it takes no sign_off while the
+// child is open and it starts nothing, though no event of the child has reached the daemon.
+func TestABootDecidesWithAChildTheStreamHasNotApplied(t *testing.T) {
+	const parent, child = "CAPTURE-1", "CAPTURE-2"
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	listedChild := boardSummary(child, "todo", 5, []string{}, "B")
+	listedChild["parent"] = parent
+	w := copyRuntime(t, pool, &copyBoard{listing: []map[string]any{
+		boardSummary(parent, "needs_review", 4, []string{"legion"}, "A"), listedChild,
+	}}, 1)
+	w.consumers = bootClaimConsumers(t, pool)
+	seedTickIssue(t, pool, record.Issue{
+		Key: parent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "CAPTURE",
+		Title: parent, Tree: parent, Phase: phase.Accepting, Generation: 1, Status: "needs_review", Rank: "A",
+		HandedOver: true, HoldsGate: true, LastDispatchSeq: 4,
+	})
+	var rows int
+	if err := pool.QueryRow(ctx, `select count(*) from dispatch_issues where key = $1`, child).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("the copy holds %d rows of %s before the boot (%v), want none: no event of it has been applied", rows, child, err)
+	}
+
+	if err := w.reconcile(ctx); err != nil {
+		t.Fatalf("the boot's reconcile of the listing: %v", err)
+	}
+	if got := copied(t, pool, child); got.parent != parent || got.status != "todo" {
+		t.Fatalf("the copy holds %s under %q at %q after the boot, want it todo under %s from the listing", child, got.parent, got.status, parent)
+	}
+
+	result, err := intake.ApplyFact(ctx, w.pool, "api", "sign-off-"+parent, intake.SignOff{Issue: parent}, w.handlers...)
+	if err != nil {
+		t.Fatalf("apply the sign-off of %s: %v", parent, err)
+	}
+	if result.Refusal == nil || !strings.Contains(result.Refusal.Message, child) {
+		t.Fatalf("the sign-off of %s answered %+v, want it refused naming the open child %s the listing put in the copy", parent, result.Refusal, child)
+	}
+	var issue *record.Issue
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		issue, err = record.NewStore().Issue(ctx, tx, parent)
+		return err
+	}); err != nil || issue == nil || (issue.Phase != phase.Accepting && issue.Phase != phase.AwaitingChildren) {
+		t.Fatalf("%s after the refused sign-off = %+v (%v), want it accepting or waiting on its open child", parent, issue, err)
+	}
+	if err := pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'`, parent).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("the boot queued %d starts for %s (%v), want none while its child is open", rows, parent, err)
+	}
+}
+
 // With no notification stream the daemon would boot with no intake, and nothing Dispatch or GitHub
 // says would ever reach it. Boot refuses instead, naming the stream, before the API answers.
 func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {

@@ -114,37 +114,36 @@ func (c IdleClaim) OperatorSuspended() bool {
 	return c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator
 }
 
-// IdleRoot is the tree root of the issue the idle rule is deciding, read with it.
-type IdleRoot struct {
-	Phase      phase.Phase
-	Status     string
-	Generation uint64
-	// AwaitingPerson is whether the root waits on a person (phase awaiting_person) and Answered
-	// whether that person has answered, which leaves the root waiting only for the admission pass
-	// that resumes it on the slot it holds.
-	AwaitingPerson bool
-	Answered       bool
-}
-
 // IdleView is one issue's pod as the idle rule reads it, in one read per issue: every claim of
-// the pod, whether any queued outbox row is addressed to one of its roles, the issue's own place
-// in the workflow and its tree root's. Found is false for an issue the record does not hold under
-// the daemon's own project, which is no pod of the workflow's to release: a record another
-// project's daemon keeps of the issue on a shared database is not this daemon's
-// (store.readIdleView).
+// the pod, whether any queued outbox row is addressed to one of its roles, and the issue's own
+// place in the workflow, which is all the rule reads of where the issue stands (R20 of
+// dispatch://INFRA-3320: the daemon acts on each issue's own status, whatever stands above it).
+// Found is false for an issue the record does not hold under the daemon's own project, which is
+// no pod of the workflow's to release: a record another project's daemon keeps of the issue on a
+// shared database is not this daemon's (store.readIdleView).
+//
+// Tree and TreeGeneration are the tree the issue's record stores and that tree root's generation
+// (the issue's own where the root is not recorded), which the release's rows carry because the
+// release before requires them of each row (record.IssueBundle, record.IssueRelease); no
+// decision of this release reads them.
 //
 // It is a record type rather than a store type because the rule that reads it is the workflow's
 // (workflow.IdleRelease) and the store is what fills it, so neither of the two imports the other
 // for it.
 type IdleView struct {
-	Issue      string
-	Tree       string
-	Found      bool
-	Phase      phase.Phase
-	Status     string
-	Generation uint64
-	Root       IdleRoot
-	Claims     []IdleClaim
+	Issue          string
+	Tree           string
+	TreeGeneration uint64
+	Found          bool
+	Phase          phase.Phase
+	Status         string
+	Generation     uint64
+	// AwaitingPerson is whether the issue itself waits on a person (phase awaiting_person) and
+	// Answered whether that person has answered, which leaves the issue waiting only for the
+	// admission pass that resumes it on the slot it holds.
+	AwaitingPerson bool
+	Answered       bool
+	Claims         []IdleClaim
 	// Waiting is whether a task, notice, message or start of the issue waits for delivery to a
 	// role of its pod. The rule reads only whether there is one, so the store reads only that.
 	Waiting bool
@@ -171,10 +170,6 @@ type IdleView struct {
 	Holding bool
 }
 
-// IsRoot is whether the issue is its tree's root, the one issue a root's own wait on a person
-// holds: the children of a root that waits on a person are released like any other issue.
-func (v IdleView) IsRoot() bool { return v.Issue == v.Tree }
-
 // Standing is where one issue stands in the two plain fields the pod gate reads: its phase and
 // its Dispatch status.
 type Standing struct {
@@ -182,13 +177,9 @@ type Standing struct {
 	Status string
 }
 
-// Standing is the issue's own standing, and RootStanding its tree root's.
+// Standing is the issue's own standing.
 func (v IdleView) Standing() Standing {
 	return Standing{Phase: v.Phase, Status: v.Status}
-}
-
-func (v IdleView) RootStanding() Standing {
-	return Standing{Phase: v.Root.Phase, Status: v.Root.Status}
 }
 
 // InWorkflow is whether one issue's status and phase alone are still the workflow's: it carries
@@ -197,24 +188,16 @@ func (v IdleView) RootStanding() Standing {
 // restated) and its phase is short of done.
 //
 // It is the one statement of that rule in the daemon: workflow.InWorkflow is this call, which
-// is what admission, the production check and awaiting-person read, and InWorkflowWithRoot is this
-// call of an issue and of its root, which is what every path that acts on an idle or released pod
-// reads. A new terminal phase added here moves all of them together, where two copies of the rule
-// would have let the release gate and admission disagree about one issue.
+// is what admission, the production check and awaiting-person read, and it is the one gate every
+// path that acts on an idle or released pod reads — the idle rule, a wake applied inside a fact,
+// a wake the outbox takes for a delivery it holds, and the store's own authorization of a
+// release's teardown — because a pod whose work has stopped being the workflow's is a stop's to
+// end, never a release's to take or a wake's to bring back. Each reads the issue's own standing
+// and nothing above it (R20 of dispatch://INFRA-3320). A new terminal phase added here moves all
+// of them together, where two copies of the rule would have let the release gate and admission
+// disagree about one issue.
 func (s Standing) InWorkflow(outOfWorkflow func(status string) bool) bool {
 	return !outOfWorkflow(s.Status) && s.Phase != phase.Done
-}
-
-// InWorkflowWithRoot is whether an issue and its tree root are both still the workflow's to run:
-// neither is out of the workflow by status or phase (InWorkflow).
-//
-// It is the one gate every path that acts on an idle or released pod reads — the idle rule, a
-// wake applied inside a fact, a wake the outbox takes for a delivery it holds, and the store's
-// own authorization of a release's teardown — because a pod whose work has stopped being the
-// workflow's is a stop's to end, never a release's to take or a wake's to bring back. The store
-// is one of the four and sits below workflow, so the rule lives here, where both reach it.
-func InWorkflowWithRoot(issue, root Standing, outOfWorkflow func(status string) bool) bool {
-	return issue.InWorkflow(outOfWorkflow) && root.InWorkflow(outOfWorkflow)
 }
 
 // QuietSince is when anything of the pod was last recorded — the newest claim write of any of its

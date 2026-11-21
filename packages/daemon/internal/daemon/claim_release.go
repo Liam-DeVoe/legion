@@ -50,7 +50,7 @@ const (
 // re-admission, a second park, or a holder that let the claim go on its own each end the row on
 // their own, with no generation or holder to fence it.
 //
-// Only a claim held by a session the daemon records in that issue's own tree is released. A
+// Only a claim held by a session the daemon records in that issue's own tree, read on the Dispatch chain, is released. A
 // person's claim is theirs; the daemon's own session is a legitimate holder, as
 // workflow.Unresumable treats it; a session that claims in another tree owns the issue instead;
 // and a holder no claims row accounts for is one the daemon cannot attribute, which it leaves

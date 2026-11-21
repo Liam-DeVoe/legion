@@ -195,7 +195,15 @@ func (s specs) launchBackend(role claim.Role) (runtime.Backend, string, error) {
 // that may stamp an issue key into its commits too (issueTrailer), since it is the one that
 // works a repository.
 func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.SpawnSpec, error) {
-	promptPaths, err := s.rolePromptPaths(c)
+	architect, err := s.ownerOf(ctx, c)
+	if err != nil {
+		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
+	}
+	// An architect is a root's where the owner walk above its issue names no other architect
+	// (owningArchitect, R18 of dispatch://INFRA-3320): its prompt and its addressing say so, read
+	// on the Dispatch chain at this launch and never from the tree the claim stores.
+	root := c.Role == claim.RoleArchitect && architect == c.Token
+	promptPaths, err := s.rolePromptPaths(c, root)
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
@@ -218,11 +226,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 			return runtime.SpawnSpec{}, fmt.Errorf("the workspace of %s: %w", c.Token, err)
 		}
 	}
-	architect, err := s.ownerOf(ctx, c)
-	if err != nil {
-		return runtime.SpawnSpec{}, fmt.Errorf("the addressing of %s: %w", c.Token, err)
-	}
-	addressing := addressingFragment(s.project, c, architect, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
+	addressing := addressingFragment(s.project, c, architect, root, spec.Repository, spec.DefaultBranch, s.ownersOf(c.Role))
 	if c.Role == claim.RoleArchitect && c.HoldsGate {
 		addressing += " " + DesignGateFragment(s.designSteps)
 	}
@@ -455,8 +459,9 @@ func (s specs) controllerSpawnSpec() (runtime.SpawnSpec, error) {
 }
 
 // rolePromptPaths keeps an explicit operator prompt as a narrow test override. Every ordinary
-// claim uses the role prompts daemon boot snapshotted below its state directory (prompts.New).
-func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
+// claim uses the role prompts daemon boot snapshotted below its state directory (prompts.New);
+// root is whether the claim is a root's architect, as workerSpawnSpec read it on the owner walk.
+func (s specs) rolePromptPaths(c supervise.Claim, root bool) ([]string, error) {
 	override := rolePromptPath(s.stateDir, c.Token)
 	if _, err := os.Stat(override); err == nil {
 		return []string{override}, nil
@@ -466,7 +471,7 @@ func (s specs) rolePromptPaths(c supervise.Claim) ([]string, error) {
 	if s.prompts == nil {
 		return nil, errors.New("the daemon prompt bundle was not constructed at boot")
 	}
-	parts, err := s.prompts.Compose(c.Role, claim.IsTreeRoot(c.Issue, c.Tree))
+	parts, err := s.prompts.Compose(c.Role, root)
 	if err != nil {
 		return nil, err
 	}
@@ -484,7 +489,7 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 	if err != nil {
 		return "", fmt.Errorf("the addressing of %s: %w", c.Token, err)
 	}
-	return addressingFragment(project, c, architect, repo, defaultBranch, owners), nil
+	return addressingFragment(project, c, architect, c.Role == claim.RoleArchitect && architect == c.Token, repo, defaultBranch, owners), nil
 }
 
 // addressingFragment is the sentence that tells an agent where it and its peers are reached: its
@@ -493,10 +498,10 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // repository and default branch and the reach its role's own App gives it (RepositoriesClause) —
 // left off entirely for a daemon that runs no workflow, whose claims name no repository.
 //
-// architect is the architect that owns c (specs.ownerOf): its tree's architect for a claim on the
-// tree root, and for a claim on any other issue the end of the owner walk read at the launch. The
-// architect of such an issue, a sub-architect, owns that issue itself, so its architect is the one
-// above it, and the sentence names it that way.
+// architect is the architect that owns c (specs.ownerOf): for a claim on any issue the end of the
+// owner walk read at the launch over the Dispatch chain. The architect of an issue, its own
+// architect claim, is owned by the one above it, and the sentence names it that way unless root
+// says no architect stands above it.
 //
 // The copy of the claim a launch is built from (supervise's spawnSpec) can carry two marks, and
 // each adds a sentence. A launch that follows a forget (c.SessionLost) starts a fresh session on a
@@ -510,9 +515,9 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 // (packages/pi-shared/src/workspace-recreated.ts). Each sentence that names a session quotes its id
 // as a Go string (%q), as the workflow's message of a forgotten session does: the id is what an
 // agent's registration chose, and the quotes bound it in a text the agent reads.
-func addressingFragment(project string, c supervise.Claim, architect claim.Token, repo ghrepo.Repository, defaultBranch string, owners []string) string {
+func addressingFragment(project string, c supervise.Claim, architect claim.Token, root bool, repo ghrepo.Repository, defaultBranch string, owners []string) string {
 	owner := "the architect that owns your issue is"
-	if c.Role == claim.RoleArchitect && !claim.IsTreeRoot(c.Issue, c.Tree) {
+	if c.Role == claim.RoleArchitect && !root {
 		owner = "the architect above you is"
 	}
 	fragment := fmt.Sprintf("Legion addressing: your role topic is `%s%s`; %s `%s%s`; "+

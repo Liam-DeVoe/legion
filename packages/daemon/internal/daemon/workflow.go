@@ -1197,19 +1197,21 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // at the moment it is about to be sent. Such a task names the decisions a person made while nobody
 // in the root's tree could hear them, and holds those rows on its own delivery until the turn that
 // takes it confirms (the claim store's putDelivery, 20261101163106_parked_decisions). An issue it names can
-// have left this tree while the task waited — a child a linger handed to Legion, a parked child a
-// person's todo orphaned, a grandchild handed over beside its parent — and the tree it stands in
-// now is the one that owes the person an answer, not this one.
+// have moved while the task waited — a child a person took out of the claim's issue, a parked
+// child a person's todo orphaned, a grandchild handed over beside its parent — and the gate root
+// it stands under on the Dispatch chain now (record.Chains.StateTree, R18 of
+// dispatch://INFRA-3320) is the one that owes the person an answer, not the claim's issue.
 //
 // So this is where such a decision is dropped from the task, in one write: the rows whose issue
-// has left the claim's tree lose this delivery's hold (record.Store.ReleaseHeldDecisions), which
-// leaves each KEPT for its own tree to name, and the architect of each tree they are now owed to
-// is written a fresh catch-up naming them at once, exactly as a hand-over writes one
-// (workflow.CatchUpTheTreesOwed). The decisions whose issue the record still shows in this tree
+// the chain no longer shows under the claim's issue lose this delivery's hold
+// (record.Store.ReleaseHeldDecisions), which leaves each KEPT for its own gate root to name, and
+// the architect of each gate root they are now owed to is written a fresh catch-up naming them
+// at once, exactly as a hand-over writes one (workflow.CatchUpTheTreesOwed). The decisions whose
+// issue the chain still shows under the claim's issue
 // stay, in the order the task named them, and the text is written again from them
 // (workflow.KeptDecisionsTask), which is the wording the start that queued the task used. An issue
 // the record does not hold is kept rather than dropped: a person's decision is never lost, and
-// this answer drops one only where the record says another tree is owed it. The start task names
+// this answer drops one only where the chain says another gate root is owed it. The start task names
 // the roots that rest on the root's approval apart from its decisions
 // (workflow.ArchitectStart.Resting, dispatch://INFRA-3320 R8), so a task written again names them
 // again, as the record shows them now (workflow.ArchitectStartOf, workflow.NarrowRootTask), and a
@@ -1230,8 +1232,8 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
-	// The record every rewrite of a recorded root reads (workflow.NarrowRootTask): the tree's root
-	// as the record holds it at the narrowing, and what its first task is derived from, read by the
+	// The record every rewrite of a recorded root reads (workflow.NarrowRootTask): the claim's own
+	// issue, which holds its gate, as the record holds it at the narrowing, and what its first task is derived from, read by the
 	// reader every start of a root architect reads it through (workflow.ArchitectStartOf). Every
 	// such rewrite names the roots that rest on the root's approval from it (its Resting), and one
 	// whose task is of an entry, and so carries the first-task instruction, takes the first task's
@@ -1250,6 +1252,16 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			return err
 		}
 		stays.Decisions, left, root = nil, nil, nil
+		var keys []string
+		for _, mark := range named.Decisions {
+			if slices.Contains(holds, mark.Ref) {
+				keys = append(keys, mark.Issue)
+			}
+		}
+		chains, err := record.ReadChainsOf(scoped, tx, w.records, w.dispatchProject, keys)
+		if err != nil {
+			return err
+		}
 		for _, mark := range named.Decisions {
 			if !slices.Contains(holds, mark.Ref) {
 				// The row this mark named is not this delivery's any more, and only these take a
@@ -1268,14 +1280,14 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			if err != nil {
 				return err
 			}
-			if issue != nil && issue.Tree != c.Tree {
+			if issue != nil && chains.StateTree(issue.Key) != c.Issue {
 				left = append(left, mark)
 				continue
 			}
 			stays.Decisions = append(stays.Decisions, mark)
 		}
 		if len(stays.Decisions) != len(named.Decisions) {
-			if root, err = w.records.Issue(scoped, tx, c.Tree); err != nil {
+			if root, err = w.records.Issue(scoped, tx, c.Issue); err != nil {
 				return err
 			}
 			if root != nil {
@@ -1293,7 +1305,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		}
 		return workflow.CatchUpTheTreesOwed(scoped, tx, w.records, w.gatedSteps, trees, time.Now().UTC())
 	}); err != nil {
-		return "", nil, fmt.Errorf("read what the task held for %s still names of %s's tree: %w", c.Token, c.Tree, err)
+		return "", nil, fmt.Errorf("read what the task held for %s still names of the issues under %s: %w", c.Token, c.Issue, err)
 	}
 	committed()
 	if len(stays.Decisions) == len(named.Decisions) {
@@ -1311,7 +1323,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	if root != nil {
 		task = workflow.NarrowRootTask(start, d.Entry, stays)
 	} else {
-		task = workflow.KeptDecisionsTask(c.Tree, stays)
+		task = workflow.KeptDecisionsTask(c.Issue, stays)
 	}
 	if task == "" {
 		return "", nil, nil
@@ -1329,18 +1341,19 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	return task, kept, nil
 }
 
-// treeClosable answers supervise's Deps.TreeClosable: a tree a workflow issue backs closes when
-// its linger expires, never on an operator's close of its root claim. The machine asks it where
-// the close is decided rather than a round trip before it, for the operator's own close and for a
-// refused stop of the tree's root, whose refusal then names that close. The workflow's linger
-// close is never asked: it holds that same issue record, so asking would refuse exactly the
-// closes the workflow is entitled to make. It is not a lock on what it reads: admission and the
-// engine commit issue records in their own transactions and take no machine lock, so one can
-// still land between this answer and the retire.
+// treeClosable answers supervise's Deps.TreeClosable: a claim whose issue a workflow record backs
+// closes when that issue leaves Legion's work, never on an operator's close of its root claim. It
+// reads the claim's own issue, never the tree the claim stores (R17 of dispatch://INFRA-3320).
+// The machine asks it where the close is decided rather than a round trip before it, for the
+// operator's own close and for a refused stop of the tree's root, whose refusal then names that
+// close. The workflow's own close is never asked: it holds that same issue record, so asking
+// would refuse exactly the closes the workflow is entitled to make. It is not a lock on what it
+// reads: admission and the engine commit issue records in their own transactions and take no
+// machine lock, so one can still land between this answer and the retire.
 func (w *workflowRuntime) treeClosable(ctx context.Context, c supervise.Claim) (bool, error) {
-	issue, err := w.recordedIssue(ctx, c.Tree)
+	issue, err := w.recordedIssue(ctx, c.Issue)
 	if err != nil {
-		return false, fmt.Errorf("read whether a workflow issue backs tree %s: %w", c.Tree, err)
+		return false, fmt.Errorf("read whether a workflow issue backs %s: %w", c.Issue, err)
 	}
 	return issue == nil, nil
 }
