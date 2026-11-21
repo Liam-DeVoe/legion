@@ -180,7 +180,8 @@ func TestTheSessionProjectsFillCoversEveryEvent(t *testing.T) {
 // no act, and session U named by a personal token, whose act carries its token id - it records
 // (S, PUB) alone. A pair recorded under an earlier rule is never taken away by a fill: (T, PUB),
 // written by hand, stays after a plain fill, and --reset, which first empties session_projects and
-// its marker, leaves only what the rule records.
+// its marker, leaves only what the rule records. --reset leaves session_reached_projects as it was:
+// what a session's transcript holds stays in it.
 func TestTheSessionProjectsFillRecordsOnlyProvenSessions(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -222,7 +223,9 @@ func TestTheSessionProjectsFillRecordsOnlyProvenSessions(t *testing.T) {
 	if got := sessionPairs(t, database); !slices.Equal(got, withEarlier) {
 		t.Fatalf("after a fill without --reset session_projects holds %q, want %q: a fill takes no pair away", got, withEarlier)
 	}
-
+	if _, err := database.Pool.Exec(ctx, `insert into session_reached_projects (session_id, project_key) values ('ses_t', 'PUB')`); err != nil {
+		t.Fatalf("record (ses_t, PUB) as a project ses_t reached: %v", err)
+	}
 	code, out := runFill(t, database, "--reset")
 	if code != 0 || !strings.Contains(out, "pairs=1") {
 		t.Fatalf("backfill-session-projects --reset: exit %d, want 0 and the one proven pair written again:\n%s", code, out)
@@ -232,6 +235,10 @@ func TestTheSessionProjectsFillRecordsOnlyProvenSessions(t *testing.T) {
 	}
 	if filled := filledRows(t, database); filled != 1 {
 		t.Fatalf("after --reset session_projects_filled holds %d rows, want 1", filled)
+	}
+	var reached int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from session_reached_projects where session_id = 'ses_t' and project_key = 'PUB'`).Scan(&reached); err != nil || reached != 1 {
+		t.Fatalf("after --reset session_reached_projects holds (ses_t, PUB) %d times (err %v), want once: nothing removes a reached pair", reached, err)
 	}
 
 	if code, out := runFill(t, database, "--reset", "extra"); code != 2 {
