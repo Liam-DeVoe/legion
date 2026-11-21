@@ -68,10 +68,10 @@ func TestEdgeFrameVerdict(t *testing.T) {
 		{"a relay header of the token's project whose envelope names another project is withheld", ownIssue, otherIssue, "", true, withheldProjectNotHeld},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			withhold, reason := edgeFrameVerdict(nil, session, projects, tc.subject, frame(tc.topic, tc.role))
-			if withhold != tc.wantWithhold || reason != tc.wantReason {
+			verdict := edgeFrameVerdict(nil, session, projects, tc.subject, frame(tc.topic, tc.role))
+			if withhold := verdict.action != framePass; withhold != tc.wantWithhold || verdict.reason != tc.wantReason {
 				t.Fatalf("edgeFrameVerdict(subject=%q, topic=%q, role=%q) = (%t, %q), want (%t, %q)",
-					tc.subject, tc.topic, tc.role, withhold, reason, tc.wantWithhold, tc.wantReason)
+					tc.subject, tc.topic, tc.role, withhold, verdict.reason, tc.wantWithhold, tc.wantReason)
 			}
 		})
 	}

@@ -682,8 +682,8 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 	// Whoever published it, a frame reaches the client only for a project of the token the
 	// socket was opened with, which edgeFrameVerdict holds to the broker's live answer.
 	subject := msg.Header.Get(relayHeaderSubject)
-	if withhold, reason := edgeFrameVerdict(socket.repositories, socket.session, socket.admitted.Projects, subject, msg.Data); withhold {
-		socket.withhold(msg, subject, reason)
+	if verdict := edgeFrameVerdict(socket.repositories, socket.session, socket.admitted.Projects, subject, msg.Data); verdict.action != framePass {
+		socket.withhold(msg, subject, verdict)
 		return
 	}
 	socket.enqueue(sid, msg)
@@ -697,18 +697,18 @@ func (socket *relaySocket) forward(sid int64, msg *nats.Msg) {
 // a gap mark on a frame that never reached the client. Every other is answered done, so the relay
 // acknowledges its message undelivered, and counted under reason. A frame no relay sent has a receipt
 // no relay awaits, and that answer reaches nobody.
-func (socket *relaySocket) withhold(msg *nats.Msg, subject, reason string) {
+func (socket *relaySocket) withhold(msg *nats.Msg, subject string, verdict frameVerdict) {
 	answer := relayReplyDone
 	switch {
-	case reason == withheldAnswerUnknown, msg.Header.Get(relayHeaderGap) == "true":
+	case verdict.action == frameAnswerUnknown, msg.Header.Get(relayHeaderGap) == "true":
 		answer = relayReplyNak
 	default:
 		if socket.repositories != nil {
-			socket.repositories.withheld.Inc([2]string{"reason", reason})
+			socket.repositories.withheld.Inc([2]string{"reason", verdict.reason})
 		}
 	}
 	socket.sockets.logger.Info("listener: the relay socket withheld a frame from its session",
-		slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", reason), slog.String("answer", answer))
+		slog.String("session_id", socket.session), slog.String("subject", subject), slog.String("reason", verdict.reason), slog.String("answer", answer))
 	if err := socket.sockets.client.Connection().Publish(msg.Reply, []byte(answer)); err != nil {
 		socket.sockets.logger.Warn("listener: the relay socket could not answer a frame it withheld; the relay sends it again",
 			slog.String("session_id", socket.session), slog.String("error", err.Error()))

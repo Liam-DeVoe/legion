@@ -260,19 +260,19 @@ func (e *edgeRepositories) standing(projects []string) (repositories []string, c
 // subject's tokens: a subject writes a dot in a name as an underscore
 // (contracts.SanitizeSubjectSegment), so acme/a.b and acme/a_b publish on one subject, and an
 // answer naming one must not admit the other's events.
-func (e *edgeRepositories) relayVerdict(projects []string, subject string, data []byte) (withhold bool, reason string) {
+func (e *edgeRepositories) relayVerdict(projects []string, subject string, data []byte) frameVerdict {
 	owner, name, named := eventRepository(data)
 	if !named {
-		return true, withheldNotInProject
+		return frameDrops(withheldNotInProject)
 	}
 	repositories, complete := e.standing(projects)
 	if repositoryNamed(repositories, owner, name) {
-		return false, ""
+		return framePasses()
 	}
 	if complete {
-		return true, withheldNotInProject
+		return frameDrops(withheldNotInProject)
 	}
-	return true, withheldAnswerUnknown
+	return frameAnswerUnknownVerdict()
 }
 
 // eventRepository is the owner and name of the repository a GitHub event names, data being its

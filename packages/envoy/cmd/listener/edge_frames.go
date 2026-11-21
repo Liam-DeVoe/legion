@@ -32,6 +32,39 @@ const withheldProjectNotHeld = "project_not_held"
 // session this listener admitted no registration of (sessionRelays.edgeWithholds).
 const withheldNotAdmitted = "not_admitted"
 
+// frameAction is what the edge does with a frame (edgeFrameVerdict): the control flow its callers
+// switch on, so a new mode is a value they must handle rather than a reason string that falls
+// through to acknowledge-and-count. The metric label a counted drop or a withhold carries is
+// frameVerdict.reason, a field apart from the action.
+type frameAction uint8
+
+const (
+	// framePass delivers the frame.
+	framePass frameAction = iota
+	// frameDrop acknowledges the frame undelivered and counts it under its reason.
+	frameDrop
+	// frameHold withholds the frame unacknowledged, for the consumer to deliver again
+	// (withheldNotAdmitted); the relay alone reaches it, and it is never counted.
+	frameHold
+	// frameAnswerUnknown withholds a GitHub frame for want of a fresh repository answer: the relay
+	// marks the session's gap and acknowledges it, the socket answers it nak, and it is sent again.
+	frameAnswerUnknown
+)
+
+// frameVerdict is the edge's decision on one frame: its action, and the metric label (reason) a
+// counted drop or a withhold logs under.
+type frameVerdict struct {
+	action frameAction
+	reason string
+}
+
+func framePasses() frameVerdict             { return frameVerdict{action: framePass} }
+func frameDrops(reason string) frameVerdict { return frameVerdict{action: frameDrop, reason: reason} }
+func frameHolds() frameVerdict              { return frameVerdict{action: frameHold, reason: withheldNotAdmitted} }
+func frameAnswerUnknownVerdict() frameVerdict {
+	return frameVerdict{action: frameAnswerUnknown, reason: withheldAnswerUnknown}
+}
+
 // edgeFrameVerdict is whether the edge withholds from sessionID, whose token lists projects, a
 // frame of the message stored on subject with data, and why:
 //
@@ -51,20 +84,20 @@ const withheldNotAdmitted = "not_admitted"
 //     relay header names and the envelope it carries are both what a publisher on the relay
 //     subject writes, so a frame whose envelope names another project's event under a header of
 //     the token's project is withheld.
-func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects []string, subject string, data []byte) (withhold bool, reason string) {
+func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects []string, subject string, data []byte) frameVerdict {
 	topic, named := envelopeTopic(data)
 	if strings.HasPrefix(subject, contracts.GithubTopicPrefix) {
 		if named && !strings.HasPrefix(topic, contracts.GithubTopicPrefix) {
-			return true, withheldProjectNotHeld
+			return frameDrops(withheldProjectNotHeld)
 		}
 		if repositories == nil {
-			return true, withheldAnswerUnknown
+			return frameAnswerUnknownVerdict()
 		}
 		return repositories.relayVerdict(projects, subject, data)
 	}
 	if strings.HasPrefix(subject, contracts.AgentTopicPrefix) {
 		if !ownFrameAgentSubject(sessionID, projects, subject) || !named {
-			return true, withheldProjectNotHeld
+			return frameDrops(withheldProjectNotHeld)
 		}
 		// A role message - a role-lane forward, whose topic names the lane, or a role-marked
 		// send, whose role mark names the role (roleOfMessage.role) - is judged by the project
@@ -77,28 +110,28 @@ func edgeFrameVerdict(repositories *edgeRepositories, sessionID string, projects
 		// lane to the project edgeTopicRule does (contracts.RoleClaimOf).
 		if role, _, isRole := decodeRoleMark(data); isRole {
 			if project, _ := contracts.ParseRoleClaimKey(role); slices.Contains(projects, project) {
-				return false, ""
+				return framePasses()
 			}
-			return true, withheldProjectNotHeld
+			return frameDrops(withheldProjectNotHeld)
 		}
 		if ownFrameAgentSubject(sessionID, projects, topic) {
-			return false, ""
+			return framePasses()
 		}
 		if strings.HasPrefix(topic, contracts.GithubTopicPrefix) || strings.HasPrefix(topic, contracts.AgentTopicPrefix) {
-			return true, withheldProjectNotHeld
+			return frameDrops(withheldProjectNotHeld)
 		}
 		subject = topic
 	}
 	project, _, ok := contracts.SubjectProject(subject)
 	if !ok || !slices.Contains(projects, project) {
-		return true, withheldProjectNotHeld
+		return frameDrops(withheldProjectNotHeld)
 	}
 	if named {
 		if topicProject, _, ok := contracts.SubjectProject(topic); !ok || topicProject != project {
-			return true, withheldProjectNotHeld
+			return frameDrops(withheldProjectNotHeld)
 		}
 	}
-	return false, ""
+	return framePasses()
 }
 
 // envelopeTopic is the topic of the envelope that data holds, and false when data decodes as no

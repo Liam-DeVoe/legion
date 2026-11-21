@@ -1185,25 +1185,26 @@ func (m *sessionRelays) relayNATS(ctx context.Context, run *relayRun) relayOutco
 		// entry that could not be marked has the event given back to the server, as takeOverFrame
 		// gives back a frame whose copy did not store, so a redelivery marks the entry and a move
 		// or a restart before the session's next frame still sends the mark.
-		if withhold, reason := m.edgeWithholds(sessionID, msg); withhold {
-			if reason == withheldNotAdmitted {
-				// A frame of a session this replica admitted no registration of is left
-				// unacknowledged, for the consumer to deliver it again once the session registers
-				// here; never acknowledged away.
+		switch verdict := m.edgeWithholds(sessionID, msg); verdict.action {
+		case frameHold:
+			// A frame of a session this replica admitted no registration of is left
+			// unacknowledged, for the consumer to deliver it again once the session registers
+			// here; never acknowledged away.
+			continue
+		case frameAnswerUnknown:
+			mark, err := m.noteRepositoryGap(ctx, sessionID)
+			if err != nil {
+				m.giveBackWithheld(sessionID, msg, err)
 				continue
 			}
-			if reason == withheldAnswerUnknown {
-				mark, err := m.noteRepositoryGap(ctx, sessionID)
-				if err != nil {
-					m.giveBackWithheld(sessionID, msg, err)
-					continue
-				}
-				if !gap {
-					gapReason = relayGapRepositoryWithheld
-				}
-				gap, owed = true, mark
+			if !gap {
+				gapReason = relayGapRepositoryWithheld
 			}
-			m.acknowledgeWithheld(sessionID, msg, reason)
+			gap, owed = true, mark
+			m.acknowledgeWithheld(sessionID, msg, verdict.reason)
+			continue
+		case frameDrop:
+			m.acknowledgeWithheld(sessionID, msg, verdict.reason)
 			continue
 		}
 		// A role message whose role another session holds, or none does, is copied to the role's
@@ -1307,13 +1308,13 @@ func (m *sessionRelays) forgetRepositoryGap(sessionID string) {
 // unacknowledged (withheldNotAdmitted). Every other listener withholds nothing. A withheld message
 // is acknowledged (acknowledgeWithheld) or given back (giveBackWithheld) by the relay loop, which
 // decides which.
-func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) (bool, string) {
+func (m *sessionRelays) edgeWithholds(sessionID string, msg bus.SessionMessage) frameVerdict {
 	if m.repositories == nil {
-		return false, ""
+		return framePasses()
 	}
 	projects, admitted := m.delivery.admissions.of(sessionID)
 	if !admitted {
-		return true, withheldNotAdmitted
+		return frameHolds()
 	}
 	return edgeFrameVerdict(m.repositories, sessionID, projects, msg.Subject, msg.Data)
 }
