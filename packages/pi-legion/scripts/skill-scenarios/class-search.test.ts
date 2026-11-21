@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
@@ -9,6 +9,8 @@ import {
   type Check,
   DATA,
   defaultBounds,
+  diskReadings,
+  emit,
   judged,
   pinnedRoutes,
   pinSection,
@@ -22,6 +24,7 @@ import {
   servedReads,
   Tree,
   Worlds,
+  WRITE_FAILED,
   worldOfDir,
 } from "./class-search";
 import { pinnedReads } from "./production-shapes";
@@ -60,6 +63,8 @@ function existing(file: string): string {
 /** Where each instance of `hits` is. */
 const instances = (hits: readonly { at: string; verdict: string }[]) =>
   hits.filter((hit) => hit.verdict === "instance").map((hit) => hit.at);
+/** The disk readings a row's report is printed with, where the row reads no disk. */
+const DISK = { start: "s", end: "e" };
 
 // Catches: a search that fails at the head it is run at, which is the zero the push waits for, or
 // that prints no line for one of its checks or loses a residual it declares.
@@ -286,7 +291,7 @@ test("every stand-in's declaration of a behaviour not modelled is a residual or 
     expect(found.findings.map(({ hit }) => [hit.at, hit.text])).toEqual([
       [at, "A planted behaviour of GitHub's is not modelled here."],
     ]);
-    expect(report(found, data, "head")).toContain(
+    expect(report(found, data, "head", DISK)).toContain(
       `== findings outside the residuals: 1\n  ${NOT_MODELLED}: ${at}  A planted behaviour of GitHub's is not modelled here.\n`
     );
     const stale = {
@@ -300,7 +305,7 @@ test("every stand-in's declaration of a behaviour not modelled is a residual or 
       stale,
     ]);
     expect(gone.staleUnreachable).toEqual([stale]);
-    expect(report(gone, data, "head")).toContain(
+    expect(report(gone, data, "head", DISK)).toContain(
       `== stale unreachable entries (declared, and no declaration found): 1\n  a planted entry (${NOT_MODELLED})\n`
     );
   } finally {
@@ -317,7 +322,7 @@ test("a residual no instance is of is stale, and an instance no residual covers 
   const check = checkNamed(first.check);
   const none = judged([{ check, hits: [] }], data.residuals);
   expect(none.stale.map(({ name }) => name)).toEqual(data.residuals.map(({ name }) => name));
-  expect(report(none, data, "head")).toContain(
+  expect(report(none, data, "head", DISK)).toContain(
     `== stale residuals (declared, and no instance found): ${data.residuals.length}\n`
   );
   const other = judged(
@@ -331,6 +336,85 @@ test("a residual no instance is of is stale, and an instance no residual covers 
   );
   expect(other.findings.map(({ hit }) => hit.at)).toEqual(["planted.ts:1"]);
 });
+
+// A run of `rig.sh class-search` at 7812df81 exited 2 after 549 s with both streams empty. Catches:
+// a report without the readings of the disks at the search's start and at its end, which say
+// whether the disk the search writes to was full; and a reading that throws where the directory
+// cannot be read, which would lose the report it opens.
+test("the report opens with the free space of the checkout's disk and of $TMPDIR's, at the search's start and end", () => {
+  const data = readData(readFileSync(DATA, "utf8"));
+  const disks = [
+    ["the checkout", CHECKOUT],
+    ["$TMPDIR", process.env.TMPDIR ?? "/tmp"],
+  ] as const;
+  const reading = diskReadings(disks);
+  const measured = (dir: string) => `${dir}: [0-9]+ MiB free of [1-9][0-9]* MiB`;
+  expect(reading).toMatch(
+    new RegExp(`^the checkout ${measured(CHECKOUT)}; \\$TMPDIR ${measured(disks[1][1])}$`)
+  );
+  const printed = report(judged([], []), data, "head", { start: reading, end: "the end's" });
+  expect(printed).toStartWith(
+    `class search of head\ndisk at the start: ${reading}\ndisk at the end: the end's\n\n`
+  );
+  const gone = path.join(CHECKOUT, "no-such-directory");
+  expect(diskReadings([["gone", gone]])).toStartWith(`gone ${gone}: unread (ENOENT`);
+});
+
+// The search wrote its report once at its end with `process.stdout.write` and its error with
+// `console.error`, neither checked, and a run at 7812df81 exited 2 with both streams empty.
+// /dev/full fails every write with ENOSPC, as a full disk does. Catches: a write that fails left
+// unsaid, on either stream; a failed write that keeps the search's own status, which reads as
+// that verdict with no report behind it; and writes that go through answered otherwise than the
+// search's own status, or cut.
+test("a report or an error line that cannot be written exits 3, naming the write on the other stream", () => {
+  const dir = temporaryDirectories("class-search-writes")("writes");
+  const full = openSync("/dev/full", "w");
+  const opened: number[] = [full];
+  const file = (name: string) => {
+    const fd = openSync(path.join(dir, name), "w");
+    opened.push(fd);
+    return fd;
+  };
+  const text = (name: string) => readFileSync(path.join(dir, name), "utf8");
+  try {
+    expect(WRITE_FAILED).toBe(3);
+    const err = file("report-err");
+    expect(emit({ report: "the report\n" }, 0, { out: full, err })).toBe(WRITE_FAILED);
+    expect(text("report-err")).toBe(
+      `class-search: the report's write to stdout (fd ${full}) failed: ENOSPC: no space left on device, write, after 0 of 11 bytes; the search's own status was 0\n`
+    );
+    const out = file("error-out");
+    expect(emit({ error: "class-search: boom\n" }, 2, { out, err: full })).toBe(WRITE_FAILED);
+    expect(text("error-out")).toBe(
+      `class-search: the error's write to stderr (fd ${full}) failed: ENOSPC: no space left on device, write, after 0 of 19 bytes; the search's own status was 2\n`
+    );
+    const whole = "x".repeat(200_000);
+    expect(emit({ report: whole }, 1, { out: file("ok-out"), err: file("ok-err") })).toBe(1);
+    expect([text("ok-out") === whole, text("ok-err")]).toEqual([true, ""]);
+  } finally {
+    for (const fd of opened) closeSync(fd);
+  }
+});
+
+// Catches: the search's own process writing its usage line unchecked, so a stderr that takes
+// nothing leaves exit 2 and no word; the line naming the failed write goes to stdout instead.
+test("the search's own process names a failed write of its usage line on stdout, exit 3", () => {
+  const full = openSync("/dev/full", "w");
+  try {
+    const done = Bun.spawnSync(
+      [process.execPath, path.join(import.meta.dir, "class-search.ts"), "x"],
+      {
+        stdio: ["ignore", "pipe", full],
+      }
+    );
+    expect([done.exitCode, done.stdout.toString()]).toEqual([
+      3,
+      "class-search: the error's write to stderr (fd 2) failed: ENOSPC: no space left on device, write, after 0 of 40 bytes; the search's own status was 2\n",
+    ]);
+  } finally {
+    closeSync(full);
+  }
+}, 60_000);
 
 describe("the writes and the reads of the world", () => {
   let worlds: Worlds;

@@ -210,6 +210,13 @@
  * 404, serves the state as this served it before, and has its completion's `ready` taken as this
  * took every label's (`CompleteRequest`).
  *
+ * Where the label's daemon source is main's since #4493 (a86c31c9fd: daemon-pane.ts's
+ * `repositoriesLive`, held to that source by `labelShapes`), the state's `repositories` block is
+ * the repositories the project's live records name, the run's own world's one repository with both
+ * role Apps installed on it, as a daemon that admitted the issue holds it (`REPOSITORIES_LIVE`); a
+ * daemon before it serves the project's mapping, that one repository mapped as the default under
+ * its owner, as this served every label before.
+ *
  * The session holding each live role of the issue is published to the run's own Dispatch as the
  * daemon publishes it (`PUT /api/v1/issues/{key}/role-holders`: packages/daemon/internal/daemon/
  * outbox.go's `publishRoleHolders`, `queueHolders` here): at the stand-in's boot, at the agent's
@@ -534,6 +541,12 @@ const DAEMON_CONTRACT = SHAPES.statesContract;
 /** Whether the label's daemon refuses a completion's `ready: true` (main's since #3659:
  * daemon-pane.ts's `READY_RETIRED`, held to the label's source by `labelShapes`). */
 const RETIRES_READY = SHAPES.retiresReady;
+/** Whether the state the label's daemon serves at its own contract carries the repositories its
+ * live records name, `{live, withoutWebhookApp, caches}` (main's since #4493: daemon-pane.ts's
+ * `repositoriesLive`, held to the label's source by `labelShapes`), or the project's mapping,
+ * `{owners, mapped, refused, withoutWebhookApp, caches}`, as every daemon before it serves it
+ * (standin-record.ts's `stateBody`). */
+const REPOSITORIES_LIVE = SHAPES.repositoriesLive;
 /** The engine's refusals of a backward move whose posted sentence Dispatch would refuse
  * (effects.go's `backwardReasonRefusal`): a decision block, and a message past Dispatch's bounds,
  * each filled with Dispatch's own sentence for it. */
@@ -1917,8 +1930,10 @@ async function gateNow(): Promise<GateFacts | undefined> {
  * `stateBody`), read through this checkout's own contract so a body it does not describe is never
  * served. Where the label's daemon shapes its bodies (`DAEMON_CONTRACT`) it is the body that daemon
  * serves a caller at its own contract, marked with that contract and the claims' lowest and each
- * claim with its update state (`RecordFacts`' `daemonContract`). Throws where the world cannot be
- * read — the run's Dispatch not answering for the spec. */
+ * claim with its update state (`RecordFacts`' `daemonContract`); its repositories block is the one
+ * of the label's daemon, the repositories the live records name or the project's mapping
+ * (`REPOSITORIES_LIVE`). Throws where the world cannot be read — the run's Dispatch not answering
+ * for the spec. */
 const servedState = async (): Promise<z.infer<typeof LegionStateResponse>> => {
   const pullRequest = settled();
   await runOutbox();
@@ -1939,6 +1954,7 @@ const servedState = async (): Promise<z.infer<typeof LegionStateResponse>> => {
       defaultBranch: base,
       pluginContract,
       daemonContract: DAEMON_CONTRACT,
+      repositoriesLive: REPOSITORIES_LIVE,
       architect: CLAIMS.get("architect"),
       workers,
       pass,
@@ -1956,10 +1972,13 @@ const servedState = async (): Promise<z.infer<typeof LegionStateResponse>> => {
   );
   const served = LegionStateResponse.parse(body);
   // This checkout's contract keeps no member it does not declare, and the count of fix attempts
-  // a label of main `ff2a10ef`'s shape serves is that label's own, which its contract requires.
+  // a label of main `ff2a10ef`'s shape serves is that label's own, which its contract requires;
+  // so is the mapping a label before #4493 serves as its repositories block, whose `owners`,
+  // `mapped` and `refused` this checkout's contract, main's since #4493, does not declare.
   const pull = served.issues[issue]?.pullRequest;
   if (pull !== undefined && FIX_ATTEMPTS !== undefined)
     Object.assign(pull, { fixAttempts: FIX_ATTEMPTS });
+  if (!REPOSITORIES_LIVE) Object.assign(served, { repositories: body.repositories });
   return served;
 };
 

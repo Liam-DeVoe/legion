@@ -2064,14 +2064,20 @@ three minutes on a pod of two CPUs. The children it starts, each world's build a
 carry the caller's `PUBLIC_LEAK_CHECK` as a pane does (`leak-check-env.ts`), so on a pod, whose
 `git` is Legion's leak-check wrapper, a world's pushes find the shared check through it.
 
-For each check it prints the class, the reading it makes, its rule, the count of its hits, and each
-hit: `<file>:<line>` (or the world, route or read it names), its text cut, and its verdict,
-`INSTANCE` or `true` with the reason. Then it prints the findings outside the residuals, the
-residuals found with each one's ruling, the residuals no hit matches any more (stale), the
-declared-unreachable entries found with each one's reason, those no declaration matches any more
+It opens with the free space of the checkout's file system and of `$TMPDIR`'s, as statfs reads
+each at the search's start and at its end. For each check it prints the class, the reading it
+makes, its rule, the count of its hits, and each hit: `<file>:<line>` (or the world, route or read
+it names), its text cut, and its verdict, `INSTANCE` or `true` with the reason. Then it prints the
+findings outside the residuals, the residuals found with each one's ruling, the residuals no hit
+matches any more (stale), the declared-unreachable entries found with each one's reason, those no
+declaration matches any more
 (stale), and the 46 entries of the hand search of `f853f11b`. It exits 0 when no check has an
 instance that neither a residual nor an unreachable entry covers and no entry of either is stale,
-1 when one has or one is, and 2 when a check cannot run.
+1 when one has or one is, 2 when a check cannot run (stderr names it, with the two disk readings),
+and 3 when its report or its error line cannot be written whole: each is written with
+synchronous writes, each checked, and a line naming the write that failed, with the search's own
+status, goes to the other stream. Where bun exits nonzero, `rig.sh` adds `class-search: bun
+exited <n>` on stderr and exits with bun's status.
 
 The checks:
 

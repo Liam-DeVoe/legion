@@ -22,6 +22,7 @@ import {
   labelShapes,
   postRefusal,
   RIG_GH_TOKEN,
+  repositoriesLive,
   reviewRoundSentences,
   runDaemonPane,
   serves,
@@ -1743,6 +1744,7 @@ describe("the shapes of a label's daemon source", () => {
     servesFixAttempts: false,
     statesContract: DAEMON_API_VERSION,
     retiresReady: true,
+    repositoriesLive: true,
   };
   const OLDER = {
     postsBackward: false,
@@ -1757,6 +1759,7 @@ describe("the shapes of a label's daemon source", () => {
     servesFixAttempts: true,
     statesContract: undefined,
     retiresReady: false,
+    repositoriesLive: false,
   };
   const olderHost = process.env.SKILL_SCENARIOS_OLDER_CHECKOUT;
 
@@ -1959,6 +1962,19 @@ describe("the shapes of a label's daemon source", () => {
     'if req.Ready != nil && *req.Ready {\n\t\ts.writeFailure(w, r, http.StatusBadRequest, "READY_RETIRED", readyRetired)\n\t\treturn\n\t}';
   const READY_WORDS =
     'const readyRetired = "this completion sends ready: true, which at contract 85 and below armed the daemon\'s merge of the pull request. " +\n\t"No daemon at contract 86 or later acts on READY: the merger merges the pull request itself, and the daemon closes " +\n\t"the issue when it reads that merge. Nothing was recorded. Merge the pull request, then complete again without ready"';
+  // The state's repositories block as main's daemon writes it since #4493 (daemon-pane.ts's
+  // `REPOSITORIES_LIVE`): its `live` list, an entry's `apps` and the band serving a caller below
+  // contract 202 the older block; and the lists of the project's mapping every daemon before it
+  // writes (`REPOSITORIES_MAPPED`), which a copy holds in comments beside a `live` field that
+  // writes no such key.
+  const STATE_SOURCE = "daemon/internal/api/state.go";
+  const LIVE_FIELD = 'Live              []LiveRepositoryView `json:"live"`';
+  const LIVE_APPS = 'Apps      *AppInstallationsView `json:"apps,omitempty"`';
+  const LIVE_BAND = "{contract: repositoriesLiveContract, state: withoutRepositoriesLive,";
+  const MAPPED_LIST = 'Mapped            []MappedRepositoryView  `json:"mapped"`';
+  const REFUSED_LIST = 'Refused           []RefusedRepositoryView `json:"refused"`';
+  const UNLISTED = LIVE_FIELD.replace('json:"live"', 'json:"-"');
+  const MAPPED_FIELDS = `${UNLISTED}\n\t// ${MAPPED_LIST}\n\t// ${REFUSED_LIST}`;
 
   // Catches: a marker renamed in the label's source, read as a daemon that lacks what it names,
   // which answers the label as an older daemon and names no shape; and a refusal that names
@@ -2077,6 +2093,13 @@ describe("the shapes of a label's daemon source", () => {
       READY_REFUSED.replace("req.Ready != nil && *req.Ready", "req.Ready != nil"),
     ],
     ["daemon/internal/api/handoff.go", READY_WORDS, READY_WORDS.replace("acts on", "reads")],
+    [STATE_SOURCE, LIVE_FIELD, LIVE_FIELD.replace('json:"live"', 'json:"repositories"')],
+    [STATE_SOURCE, LIVE_APPS, LIVE_APPS.replace("*AppInstallationsView", "AppInstallationsView ")],
+    [
+      "daemon/internal/api/shaping.go",
+      LIVE_BAND,
+      LIVE_BAND.replace("withoutRepositoriesLive", "withRepositoriesAt152"),
+    ],
   ] as const)
     test(`this checkout's source with ${marker} renamed is refused, naming it and its file`, () => {
       expect(() => labelShapes(copyOf(CHECKOUT, file, marker, renamed))).toThrow(
@@ -2104,11 +2127,36 @@ describe("the shapes of a label's daemon source", () => {
     );
   });
 
+  // Catches: a source of main's before #4493, every label's before a86c31c9fd, whose state's
+  // repositories block is the project's mapping, read as main's since #4493 or as no shape, so its
+  // stand-in served that label the live records' block its daemon never wrote, or refused its
+  // batch; a block's shape read off this build rather than the label's own source; and a source
+  // holding both blocks' markers, or neither, read as one of them.
+  test("a daemon source before #4493 serves the project's mapping as its repositories block, and one of both blocks or neither is refused", () => {
+    expect(repositoriesLive(CHECKOUT)).toBe(true);
+    const mapping = copyOf(CHECKOUT, STATE_SOURCE, LIVE_FIELD, MAPPED_FIELDS);
+    expect(repositoriesLive(mapping)).toBe(false);
+    expect(labelShapes(mapping)).toEqual({ ...MAIN, repositoriesLive: false });
+    const both = copyOf(
+      CHECKOUT,
+      STATE_SOURCE,
+      LIVE_FIELD,
+      `${LIVE_FIELD}\n\t// ${MAPPED_LIST}\n\t// ${REFUSED_LIST}`
+    );
+    expect(() => labelShapes(both)).toThrow(
+      "the state's repositories block this rig reads: it holds the markers of two shapes at once, main's daemon since #4493, and every daemon the rig runs before #4493, whose block is the project's mapping"
+    );
+    const neither = copyOf(CHECKOUT, STATE_SOURCE, LIVE_FIELD, UNLISTED);
+    expect(() => labelShapes(neither)).toThrow(
+      `the state's repositories block this rig reads: main's daemon since #4493 holds ${JSON.stringify(LIVE_FIELD)} in packages/${STATE_SOURCE}, and this source does not; every daemon the rig runs before #4493, whose block is the project's mapping holds ${JSON.stringify(MAPPED_LIST)} in packages/${STATE_SOURCE} and ${JSON.stringify(REFUSED_LIST)} in packages/${STATE_SOURCE}, and this source does not`
+    );
+  });
+
   /** A source of main's shape from #4488 until #3659, the base label's at main 5570d0ac: this
    * checkout's with what #3659 changed of the answers the stand-in models put back as it stood —
    * the health route answering its status alone, the completion request ending at the rating,
    * each refusal written as a body of its own, and the pull request ending at the round's
-   * decision. */
+   * decision — and its state's repositories block the project's mapping, as #4493 found it. */
   function beforeAnswers(): string {
     const handoff = "daemon/internal/api/handoff.go";
     const state = "daemon/internal/api/state.go";
@@ -2129,6 +2177,7 @@ describe("the shapes of a label's daemon source", () => {
       [handoff, OTHER_VERDICT, OTHER_VERDICT_BEFORE],
       ["daemon/internal/api/claims.go", BAD_BODY, BAD_BODY_BEFORE],
       [state, shownTail, UNCOUNTED],
+      [state, LIVE_FIELD, MAPPED_FIELDS],
     ]);
   }
 
@@ -2139,11 +2188,13 @@ describe("the shapes of a label's daemon source", () => {
   // those four put back read otherwise than as main's since #3659.
   test("a daemon source before #3659 states no contract and refuses no ready, and its refusals are read in the writer it has", () => {
     const before = beforeAnswers();
-    expect(labelShapes(before)).toEqual({
+    const older = {
       ...MAIN,
       statesContract: undefined,
       retiresReady: false,
-    });
+      repositoriesLive: false,
+    };
+    expect(labelShapes(before)).toEqual(older);
     expect(
       labelShapes(
         copyWith(before, [
@@ -2152,7 +2203,7 @@ describe("the shapes of a label's daemon source", () => {
           ["daemon/internal/api/claims.go", BAD_BODY_BEFORE, BAD_BODY],
         ])
       )
-    ).toEqual({ ...MAIN, statesContract: undefined, retiresReady: false });
+    ).toEqual(older);
     expect(() =>
       labelShapes(copyOf(before, "daemon/internal/api/handoff.go", TESTER_VERDICT_BEFORE, ""))
     ).toThrow(
@@ -2195,8 +2246,9 @@ describe("the shapes of a label's daemon source", () => {
   // Catches: an older shape's marker renamed, read as that older daemon all the same, or as
   // this checkout's: the code main `ff2a10ef` has in the place of each sentence, of the
   // publication, of the round's sentences, of the reviewer's recorded session, of the footer's
-  // head, of the refusal of a rating and of a body holding U+0000, and its pull request's count of
-  // fix attempts, whose loss leaves a source of neither shape.
+  // head, of the refusal of a rating and of a body holding U+0000, its pull request's count of
+  // fix attempts and its state's mapping of repositories, whose loss leaves a source of neither
+  // shape.
   const STATUS =
     "func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {";
   const OUTBOX_END = '\tOutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"\n)';
@@ -2288,6 +2340,11 @@ describe("the shapes of a label's daemon source", () => {
       "daemon/internal/api/architect.go",
       FACT_FAILED,
       FACT_FAILED.replace("could not apply fact", "could not apply the fact"),
+    ],
+    [
+      STATE_SOURCE,
+      MAPPED_LIST,
+      MAPPED_LIST.replace("MappedRepositoryView", "ServedRepositoryView"),
     ],
   ] as const)
     test.skipIf(olderHost === undefined)(

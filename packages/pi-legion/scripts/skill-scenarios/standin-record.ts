@@ -33,7 +33,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { type LegionRole, roleForPhase, roleToken } from "@legion/contracts";
-import { servesFixAttempts, statesContract } from "./daemon-pane";
+import { repositoriesLive, servesFixAttempts, statesContract } from "./daemon-pane";
 
 /** The issue's generation: one run of the workflow, which no world of the rig re-admits. */
 export const GENERATION = 1;
@@ -139,6 +139,13 @@ export interface RecordFacts {
    * update round (`updateState`). Undefined for a daemon before #3659, whose body carries none of
    * the three as the stand-in serves it. */
   readonly daemonContract?: number | undefined;
+  /** Whether the label's daemon serves the repositories its live records name as the state's
+   * `repositories` block (daemon-pane.ts's `repositoriesLive`, main's since #4493): where it does,
+   * `live` holds the world's one repository, as the records keep it, with both role Apps
+   * installed on it, since the daemon serves a repository only once GitHub answered that, and it
+   * holds the issue; and where it does not, the block is the project's mapping, that repository
+   * mapped as its default under its owner. */
+  readonly repositoriesLive: boolean;
   readonly architect?: ClaimFacts | undefined;
   /** Each role that holds a claim, by role. */
   readonly workers: Readonly<Record<string, RowFacts>>;
@@ -394,7 +401,8 @@ export function issueRecord(facts: RecordFacts): Record<string, unknown> {
 /** `GET /legion/v1/state`: the one issue the worker holds, on the run's own world. `capabilities`
  * is the deployment's capability report, `strandedClaims` the claims nothing will wake,
  * `heldOutboxRows` the lifecycle rows held behind their issues' running ones, `consumers` the lag
- * of the daemon's durable consumers and `repositories` the project's mapping, each of which the
+ * of the daemon's durable consumers and `repositories` the repositories the live records name, or
+ * the project's mapping before #4493 (`RecordFacts`' `repositoriesLive`), each of which the
  * reader requires; the rig has no deployment to report on, its one claim runs, it holds no row
  * behind another and has no NATS, so the first four are the empty lists the daemon's MarshalJSON
  * emits when there is none. `pendingStatusWrites` is the status writes the record's moves owe
@@ -408,6 +416,11 @@ export function issueRecord(facts: RecordFacts): Record<string, unknown> {
  * in. */
 export function stateBody(facts: RecordFacts, startedAt: string): Record<string, unknown> {
   const [owner = ""] = facts.repo.split("/");
+  // `withoutWebhookApp` and `caches` are empty on either block, as this has served them on every
+  // label: no world reports a check of Dispatch's webhook App or a repository cache.
+  const repositories = facts.repositoriesLive
+    ? { live: [{ repo: facts.repo, apps: { implement: true, review: true } }] }
+    : { owners: [owner], mapped: [{ repo: facts.repo, default: true }], refused: [] };
   // The lowest contract among the claims whose locator names a pod and that record one
   // (shaping.go's `lowestPluginContract`, `recordsContract`): every claim records the label
   // plugin's, and a claim with no generation has no locator.
@@ -450,13 +463,7 @@ export function stateBody(facts: RecordFacts, startedAt: string): Record<string,
     strandedClaims: [],
     wakesWaiting: [],
     capabilities: [],
-    repositories: {
-      owners: [owner],
-      mapped: [{ repo: facts.repo, default: true }],
-      refused: [],
-      withoutWebhookApp: [],
-      caches: [],
-    },
+    repositories: { ...repositories, withoutWebhookApp: [], caches: [] },
     // Every key any label's contract requires, not this checkout's alone: a label's agents load
     // the plugin of their own checkout, and `legionSettings` is a loose object in each, so a body
     // carrying both keys is described by both contracts while one carrying either alone is
@@ -492,13 +499,15 @@ function sampleClaim(state: string, generation: number | undefined, more: Partia
  * phase — the claim of each state a stand-in gives one, a handoff commit and record, a pull
  * request in each merge state a world reports and under each decision, a gate approved, waiting
  * and with changes requested, and an issue with no history at all — and the count of fix attempts
- * `fixAttempts` on each pull request, for a label whose daemon serves one, and the contract
- * `daemonContract` the bodies are marked with, for a label whose daemon states one
- * (`RecordFacts`). `contractRefusal` hands each to a label's own contract, so a member a label's
- * schema refuses is found before any run of the label starts rather than in its agents' turns. */
+ * `fixAttempts` on each pull request, for a label whose daemon serves one, the contract
+ * `daemonContract` the bodies are marked with, for a label whose daemon states one, and the
+ * repositories block in the label daemon's shape, `repositoriesLive` (`RecordFacts`).
+ * `contractRefusal` hands each to a label's own contract, so a member a label's schema refuses is
+ * found before any run of the label starts rather than in its agents' turns. */
 export function sampleFacts(
-  fixAttempts?: number,
-  daemonContract?: number
+  fixAttempts: number | undefined,
+  daemonContract: number | undefined,
+  repositoriesLive: boolean
 ): { name: string; facts: RecordFacts }[] {
   const at = "2026-11-17T12:00:00.000Z";
   const head = "804a7ad10da2154015508a1bbc4a5b2ac9e98b81";
@@ -512,6 +521,7 @@ export function sampleFacts(
     pluginContract: 146,
     fixAttempts,
     daemonContract,
+    repositoriesLive,
     admittedAt: at,
     movedAt: at,
     now: "2026-11-17T12:30:00.000Z",
@@ -649,14 +659,16 @@ export const WORLD_FIX_ATTEMPTS = 0;
  * (packages/contracts/src/legion-api.ts), the schema the plugin its label's agents load reads
  * every state answer with. The bodies are the ones the stand-in serves that label: their pull
  * request carries `fixAttempts` where the checkout's daemon serves it (daemon-pane.ts's
- * `servesFixAttempts`, read out of its source), and none where it does not; and they carry the
+ * `servesFixAttempts`, read out of its source), and none where it does not; they carry the
  * contract mark, the claims' lowest contract and each claim's update state where the checkout's
  * daemon states its contract (daemon-pane.ts's `statesContract`), and none of them where it does
- * not. The module is another checkout's, at a path this process is handed at run time, so no
- * static import reaches it; a checkout that has none, or one that exports no such schema, is a
- * refusal too, naming the file, since a label whose contract cannot be read is never answered as
- * some other contract would describe it; and so is a daemon source of no shape, naming each
- * marker and its file. */
+ * not; and their repositories block is the repositories the live records name where the
+ * checkout's daemon serves that (daemon-pane.ts's `repositoriesLive`), and the project's mapping
+ * where it does not. The module is another checkout's, at a path this process is handed at run
+ * time, so no static import reaches it; a checkout that has none, or one that exports no such
+ * schema, is a refusal too, naming the file, since a label whose contract cannot be read is never
+ * answered as some other contract would describe it; and so is a daemon source of no shape,
+ * naming each marker and its file. */
 export async function contractRefusal(checkout: string): Promise<string | undefined> {
   const contract = path.join(checkout, "packages", "contracts", "src", "legion-api.ts");
   let loaded: unknown;
@@ -673,13 +685,16 @@ export async function contractRefusal(checkout: string): Promise<string | undefi
     return `${contract} exports no LegionStateResponse to read a state body with`;
   let counted: boolean;
   let stated: number | undefined;
+  let live: boolean;
   try {
     counted = servesFixAttempts(checkout);
     stated = statesContract(checkout);
+    live = repositoriesLive(checkout);
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
   }
-  for (const { name, facts } of sampleFacts(counted ? WORLD_FIX_ATTEMPTS : undefined, stated)) {
+  const fixAttempts = counted ? WORLD_FIX_ATTEMPTS : undefined;
+  for (const { name, facts } of sampleFacts(fixAttempts, stated, live)) {
     const read = schema.safeParse(stateBody(facts, facts.admittedAt));
     if (!read.success)
       return `${contract} does not describe the state body the stand-in serves (${name}): ${read.error?.message ?? "refused"}`;

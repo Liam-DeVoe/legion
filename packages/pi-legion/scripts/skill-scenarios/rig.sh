@@ -4733,13 +4733,17 @@ cmd_world() {
 
 # cmd_class_search [CHECKOUT] runs the class search (class-search.ts) over this script's own
 # checkout, or over CHECKOUT with the class-search.ts that checkout holds, so the search of a
-# commit is that commit's own command over that commit's tree.
+# commit is that commit's own command over that commit's tree. Where bun exits nonzero it says
+# so on stderr and exits with bun's status: a run at 7812df81 exited 2 after 549 s with both
+# streams empty, and nothing said that bun was what had failed.
 cmd_class_search() {
   [ $# -le 1 ] || fail "usage: rig.sh class-search [<checkout>]"
-  local search=$here/class-search.ts
+  local search=$here/class-search.ts status=0
   [ $# = 0 ] || search=$1/packages/pi-legion/scripts/skill-scenarios/class-search.ts
   [ -f "$search" ] || fail "class-search: $search is not there, so ${1:-this checkout} has no class search"
-  bun "$search"
+  bun "$search" || status=$?
+  [ "$status" = 0 ] || printf 'class-search: bun exited %s\n' "$status" >&2
+  return "$status"
 }
 
 # Bash reads a script as it runs it, so the dispatch and its exit are one command line: a batch

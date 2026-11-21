@@ -1154,6 +1154,23 @@ test("rig.sh score and rig.sh health are given the work directory whose facts ca
   expect(readFileSync(seen, "utf8")).toBe(`${tmp}/work score.ts\n${tmp}/work health.ts\n`);
 });
 
+// A run of `rig.sh class-search` at 7812df81 exited 2 after 549 s with both streams empty, and
+// nothing said that bun was what had failed. Catches: a wrapper that lets bun's nonzero exit
+// through with no word of its own, or that says so and exits 0 or with a status of its own. The
+// `bun` on PATH exits 2 and prints nothing.
+test("rig.sh class-search names bun's exit status on stderr when bun exits nonzero, and keeps it", () => {
+  const bin = freshDir("bun-silent");
+  writeFileSync(path.join(bin, "bun"), "#!/bin/sh\nexit 2\n", { mode: 0o755 });
+  const result = spawnChecked(["bash", path.join(import.meta.dir, "rig.sh"), "class-search"], {
+    env: { ...childEnv, PATH: `${bin}:${childEnv.PATH}`, TMPDIR: freshDir("bun-silent-tmp") },
+  });
+  expect([result.exitCode, result.stdout.toString(), result.stderr.toString()]).toEqual([
+    2,
+    "",
+    "class-search: bun exited 2\n",
+  ]);
+});
+
 // Every batch numbers each label's runs from one above the label's highest run, live or archived,
 // so a later batch never takes an earlier run's name (cmd_run refuses one, archive_run keeps one).
 describe("next_run", () => {

@@ -855,6 +855,12 @@ export interface LabelShapes {
    * (handoff.go's `readyRetired`, main's since #3659). False for main's daemon before it, whose
    * completion request has no `ready` (`REQUEST_WITHOUT_READY`), and for main `ff2a10ef`'s. */
   readonly retiresReady: boolean;
+  /** The state's `repositories` block is the repositories the project's live records name,
+   * `{live, withoutWebhookApp, caches}`, each `live` entry with its role Apps' installations
+   * (state.go's `LiveRepositoryView`, main's since #4493, contract 202, `repositoriesLive`). False
+   * for main's daemon before it and main `ff2a10ef`'s, whose block is the project's mapping,
+   * `{owners, mapped, refused, withoutWebhookApp, caches}`. */
+  readonly repositoriesLive: boolean;
 }
 
 const EFFECTS = "daemon/internal/workflow/effects.go";
@@ -1503,6 +1509,46 @@ export function statesContract(checkout: string): number | undefined {
   return Number(declared);
 }
 
+/** What a daemon whose state's `repositories` block is the repositories the project's live records
+ * name holds (main's since #4493, a86c31c9fd, contract 202): the block's `live` list, one entry
+ * for each such repository (state.go's `RepositoriesView`); an entry's `apps`, each role App's
+ * installation on it once GitHub answered both reads (`LiveRepositoryView`); and the band that
+ * serves a caller below that contract the block in contract 152's shape instead (shaping.go's
+ * `withoutRepositoriesLive`), so the daemon's own body is this block. */
+const REPOSITORIES_LIVE: readonly Marker[] = [
+  { file: STATE_GO, text: 'Live              []LiveRepositoryView `json:"live"`' },
+  { file: STATE_GO, text: 'Apps      *AppInstallationsView `json:"apps,omitempty"`' },
+  {
+    file: SHAPING_GO,
+    text: "{contract: repositoriesLiveContract, state: withoutRepositoriesLive,",
+  },
+];
+/** What every daemon the rig runs before #4493 has in their place: the project's Dispatch mapping,
+ * its block's `mapped` and `refused` lists, each written in a view of its own (state.go's
+ * `MappedRepositoryView` and `RefusedRepositoryView`). */
+const REPOSITORIES_MAPPED: readonly Marker[] = [
+  { file: STATE_GO, text: 'Mapped            []MappedRepositoryView  `json:"mapped"`' },
+  { file: STATE_GO, text: 'Refused           []RefusedRepositoryView `json:"refused"`' },
+];
+
+/** Whether the state the daemon of `checkout` serves at its own contract carries the repositories
+ * its live records name (`LabelShapes`' `repositoriesLive`): main's since #4493, by
+ * `REPOSITORIES_LIVE`, `{live, withoutWebhookApp, caches}`; and false for one before it, by
+ * `REPOSITORIES_MAPPED`, whose block is the project's mapping, `{owners, mapped, refused,
+ * withoutWebhookApp, caches}`. standin-record.ts's `stateBody` writes the block in the label's
+ * shape, and its `contractRefusal` reads this to build the bodies a label's contract is handed.
+ * Throws, naming each marker and its file, for a source of neither shape or both. */
+export function repositoriesLive(checkout: string): boolean {
+  return sourceShape(checkout, "the state's repositories block", [
+    { name: "main's daemon since #4493", markers: REPOSITORIES_LIVE, value: true },
+    {
+      name: "every daemon the rig runs before #4493, whose block is the project's mapping",
+      markers: REPOSITORIES_MAPPED,
+      value: false,
+    },
+  ]);
+}
+
 /** What the daemon source of `checkout` posts, refuses, publishes, ends a reviewer's task with,
  * takes a review of the review App for, records of each run of a step, serves on its pull
  * request, states on its answers and refuses of a completion's `ready`, each read as one of two
@@ -1514,6 +1560,8 @@ export function statesContract(checkout: string): number | undefined {
  * (`REQUEST_WITHOUT_READY`). The refusal of a body holding U+0000 has four: main's words since
  * #4463 written through the answer writer since #3659 and as a body of their own before it,
  * #4488's words before them, and main `ff2a10ef`'s store in their place (`STORES_NUL`). The
+ * state's repositories block is main's since #4493 or the mapping every daemon before it serves
+ * (`REPOSITORIES_MAPPED`). The
  * completion refusals have one shape, every daemon the rig runs holding them, and the route's
  * verdict rule one in each writer of a refusal (`FAILURE_WRITERS`). Throws, naming each marker and
  * its file, for a source of no shape or of more than one (`sourceShape`), which refuses the batch
@@ -1652,6 +1700,7 @@ export function labelShapes(checkout: string): LabelShapes {
         value: false,
       },
     ]),
+    repositoriesLive: repositoriesLive(checkout),
   };
 }
 

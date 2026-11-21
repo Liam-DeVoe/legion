@@ -15,6 +15,7 @@ import {
   postRefusal,
   READY_RETIRED,
   refusalIn,
+  repositoriesLive,
   statesContract,
 } from "./daemon-pane";
 import { pinnedRead, RECORD_READ, rolesListed, shapeDiff, shapeOf } from "./production-shapes";
@@ -2269,7 +2270,10 @@ test.skipIf(skip)(
 // their work goes above, so a second name is a second world, which cost recorded runs their
 // review (rig.sh's worker world comment holds that story). Both are the world's own, read
 // out of the run's world.json: the branch here is not `main`, so a stand-in that wrote the
-// rig's usual default rather than reading the world fails this row.
+// rig's usual default rather than reading the world fails this row. The state's repositories
+// block names the same repository, as this checkout's daemon writes it since #4493: the one
+// repository the live records name, with both role Apps installed on it, through this
+// checkout's own contract, which keeps no member of the mapping before it.
 test.skipIf(skip)(
   "the record names the repository and the default branch of the run's own world",
   async () => {
@@ -2278,8 +2282,11 @@ test.skipIf(skip)(
       const { issue, repositories } = await daemon.record();
       expect(issue?.repo).toBe("widgets-org/widgets");
       expect(issue?.defaultBranch).toBe("trunk");
-      expect(repositories?.mapped).toEqual([{ repo: "widgets-org/widgets", default: true }]);
-      expect(repositories?.owners).toEqual(["widgets-org"]);
+      expect(repositories).toEqual({
+        live: [{ repo: "widgets-org/widgets", apps: { implement: true, review: true } }],
+        withoutWebhookApp: [],
+        caches: [],
+      });
     } finally {
       daemon.stop();
     }
@@ -2297,6 +2304,61 @@ test.skipIf(skip)(
       const { issue } = await daemon.record();
       expect(issue?.repo).toBe(WORLD_REPO);
       expect(issue?.defaultBranch).toBe(WORLD_BASE);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+/** The `live` list of the state's repositories block as main's daemon writes it since #4493
+ * (daemon-pane.ts's `REPOSITORIES_LIVE`), and in its place the lists of the project's mapping that
+ * every daemon before it writes (`REPOSITORIES_MAPPED`), kept in comments beside a field that
+ * compiles, since the copy's module is compiled, and that writes no `live` key. */
+const LIVE_FIELD = '\tLive              []LiveRepositoryView `json:"live"`\n';
+const MAPPED_FIELDS =
+  '\tLive              []LiveRepositoryView `json:"-"`\n\t// Mapped            []MappedRepositoryView  `json:"mapped"`\n\t// Refused           []RefusedRepositoryView `json:"refused"`\n';
+/** A copy of this checkout's daemon module whose state's repositories block is the project's
+ * mapping, as main's daemon before #4493 writes it (`MAPPED_FIELDS`), and is this checkout's in all
+ * else. Made once for the file. */
+let mapping: string | undefined;
+function mappingCheckout(): string {
+  if (mapping !== undefined) return mapping;
+  const checkout = path.join(work, "mapping-checkout");
+  const daemon = path.join(checkout, "packages", "daemon");
+  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
+  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
+  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const state = path.join(daemon, "internal", "api", "state.go");
+  const live = readFileSync(state, "utf8");
+  const mapped = live.replace(LIVE_FIELD, MAPPED_FIELDS);
+  expect(mapped).not.toBe(live);
+  writeFileSync(state, mapped);
+  expect(repositoriesLive(checkout)).toBe(false);
+  mapping = checkout;
+  return checkout;
+}
+
+// Catches: a stand-in that serves a label of main's daemon before #4493 the live records' block,
+// which that daemon never wrote, or the block this checkout's contract leaves of the mapping once
+// it drops the keys it does not declare, `owners`, `mapped` and `refused`; a mapping naming
+// another repository or owner than the run's world's; and a block whose shape is read off this
+// build rather than off the label's own source, which this row's label shares in all but that.
+test.skipIf(skip)(
+  "on a label whose daemon serves the project's mapping, the repositories block is that mapping of the run's own world",
+  async () => {
+    expect(repositoriesLive(CHECKOUT)).toBe(true);
+    const world = { repo: "widgets-org/widgets", base: "trunk" };
+    const daemon = await standin("reviewer", "", world, { checkout: mappingCheckout() });
+    try {
+      const state = z.looseObject({ repositories: z.unknown() }).parse(await daemon.body());
+      expect(state.repositories).toEqual({
+        owners: ["widgets-org"],
+        mapped: [{ repo: "widgets-org/widgets", default: true }],
+        refused: [],
+        withoutWebhookApp: [],
+        caches: [],
+      });
     } finally {
       daemon.stop();
     }
@@ -2701,8 +2763,8 @@ async function served(body: () => Promise<unknown>) {
  * a label (standin-record.ts's `sampleFacts`, marked as this checkout's daemon marks them:
  * `statesContract`), and what of `issue` is in neither: a member or a word the stand-in serves
  * that no label's contract was held to before its runs began. */
-const SAMPLED = sampleFacts(undefined, statesContract(CHECKOUT)).map(({ facts }) =>
-  rolesListed(issueRecord(facts))
+const SAMPLED = sampleFacts(undefined, statesContract(CHECKOUT), repositoriesLive(CHECKOUT)).map(
+  ({ facts }) => rolesListed(issueRecord(facts))
 );
 const ENUMS = ["state", "status", "phase", "mergeState", "reviewDecision", "runtime", "step"];
 function words(value: unknown, key = ""): string[] {
@@ -4257,9 +4319,10 @@ test.skipIf(skip)(
 
 /** A checkout holding a contract, `packages/contracts/src/legion-api.ts` with `source`, and the
  * daemon source the bodies a label is handed are built by: `packages/daemon/internal/api/state.go`
- * with `state` (this checkout's where none is given: daemon-pane.ts's `servesFixAttempts`), and
- * this checkout's api sources the contract its answers state is read from beside it
- * (`statesContract`), under this file's work directory. */
+ * with `state` (this checkout's where none is given: daemon-pane.ts's `servesFixAttempts` and
+ * `repositoriesLive`), and this checkout's api sources the contract its answers state is read
+ * from beside it (`statesContract`, and shaping.go for `repositoriesLive`), under this file's
+ * work directory. */
 function contractCheckout(name: string, source: string, state?: string): string {
   const checkout = path.join(work, name);
   const dir = path.join(checkout, "packages", "contracts", "src");
@@ -4405,4 +4468,58 @@ test("a label's own contract is handed the count of fix attempts where its daemo
     `the daemon source of ${unread} is no shape of the state's pull request this rig reads: `
   );
   if (olderHost !== undefined) expect(await contractRefusal(olderHost)).toBeUndefined();
+}, 120_000);
+
+/** A contract that requires the repositories block of main's daemon since #4493, its `live`
+ * list, and one that requires the project's mapping before it, its `mapped` list: a reading of
+ * which block the bodies a label is handed carry. */
+const LIVE_CONTRACT = `
+export const LegionStateResponse = {
+  safeParse(body) {
+    return Array.isArray(body.repositories.live)
+      ? { success: true }
+      : { success: false, error: { message: "repositories.live: Invalid input: expected array, received undefined" } };
+  },
+};
+`;
+const MAPPING_CONTRACT = `
+export const LegionStateResponse = {
+  safeParse(body) {
+    return Array.isArray(body.repositories.mapped)
+      ? { success: true }
+      : { success: false, error: { message: "repositories.mapped: Invalid input: expected array, received undefined" } };
+  },
+};
+`;
+
+// Catches: a label handed bodies whose repositories block is another daemon's than its own: the
+// mapping for a label of main's daemon since #4493, this checkout, or the live records' block for
+// one before it, read off this build rather than off the label's source (daemon-pane.ts's
+// `repositoriesLive`); and a daemon source of neither shape read as either, rather than refused
+// naming its markers.
+test("a label's own contract is handed the repositories block its daemon serves, the live records' since #4493 and the mapping before it", async () => {
+  const state = readFileSync(
+    path.join(CHECKOUT, "packages", "daemon", "internal", "api", "state.go"),
+    "utf8"
+  );
+  const mapped = state.replace(LIVE_FIELD, MAPPED_FIELDS);
+  expect(mapped).not.toBe(state);
+  const refused = (checkout: string, list: string) =>
+    `${path.join(checkout, "packages", "contracts", "src", "legion-api.ts")} does not describe the state body the stand-in serves (planning, pull request 0): repositories.${list}: Invalid input: expected array, received undefined`;
+  expect(await contractRefusal(contractCheckout("live-contract", LIVE_CONTRACT))).toBeUndefined();
+  const liveOnMapping = contractCheckout("live-contract-mapped", LIVE_CONTRACT, mapped);
+  expect(await contractRefusal(liveOnMapping)).toBe(refused(liveOnMapping, "live"));
+  expect(
+    await contractRefusal(contractCheckout("mapping-contract-mapped", MAPPING_CONTRACT, mapped))
+  ).toBeUndefined();
+  const mappingOnLive = contractCheckout("mapping-contract", MAPPING_CONTRACT);
+  expect(await contractRefusal(mappingOnLive)).toBe(refused(mappingOnLive, "mapped"));
+  const unread = contractCheckout(
+    "live-contract-unread",
+    LIVE_CONTRACT,
+    state.replace(LIVE_FIELD, LIVE_FIELD.replace('json:"live"', 'json:"-"'))
+  );
+  expect(await contractRefusal(unread)).toStartWith(
+    `the daemon source of ${unread} is no shape of the state's repositories block this rig reads: `
+  );
 }, 120_000);

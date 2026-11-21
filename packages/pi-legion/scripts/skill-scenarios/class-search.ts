@@ -13,9 +13,12 @@
 // Then the declared residuals (class-search.json's `residuals`, each with its ruling), apart from
 // the findings, and each residual no hit is an instance of any more (stale); then the hand search
 // of f853f11b (class-search.json's `searches`), each of its 46 entries mapped to the check that
-// runs it, or to the row that holds it, or named as no mechanical search with the reason. It
-// exits 0 when no check has an instance outside the residuals and no residual is stale, 1 when
-// one has or one is, and 2 when a check could not run.
+// runs it, or to the row that holds it, or named as no mechanical search with the reason. Its
+// report opens with the free space of the checkout's file system and of $TMPDIR's, read at the
+// search's start and at its end (`diskReadings`). It exits 0 when no check has an instance
+// outside the residuals and no residual is stale, 1 when one has or one is, 2 when a check could
+// not run, and 3 when its report or its error line could not be written whole, naming which on
+// the other stream (`emit`).
 //
 // What it does not check is in packages/pi-envoy/scripts/README.md ("The class search").
 import {
@@ -26,7 +29,9 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statfsSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -2051,9 +2056,41 @@ export function judged(
   };
 }
 
-/** The search's printout. */
-export function report(result: Result, data: Data, head: string): string {
-  const out: string[] = [`class search of ${head}`, ""];
+/** Bytes in a mebibyte. */
+const MIB = 2 ** 20;
+/** The free space of the file system under each directory of `dirs`, each `[name, dir]`, as
+ * statfs reads it at the moment of the call: what an unprivileged writer may still take of it and
+ * its size, in MiB, or why it could not be read. A run of 549 s at 7812df81 exited 2 with both
+ * streams empty (2026-11-21), which fits a write that failed, as a full disk fails one; these
+ * readings say whether the disk was full. */
+export function diskReadings(dirs: readonly (readonly [string, string])[]): string {
+  return dirs
+    .map(([name, dir]) => {
+      try {
+        const { bavail, blocks, bsize } = statfsSync(dir);
+        const free = Math.floor((bavail * bsize) / MIB);
+        return `${name} ${dir}: ${free} MiB free of ${Math.floor((blocks * bsize) / MIB)} MiB`;
+      } catch (error) {
+        return `${name} ${dir}: unread (${error instanceof Error ? error.message : String(error)})`;
+      }
+    })
+    .join("; ");
+}
+
+/** The search's printout, opening with the readings of the disks at the search's start and at its
+ * end (`diskReadings`). */
+export function report(
+  result: Result,
+  data: Data,
+  head: string,
+  disk: { readonly start: string; readonly end: string }
+): string {
+  const out: string[] = [
+    `class search of ${head}`,
+    `disk at the start: ${disk.start}`,
+    `disk at the end: ${disk.end}`,
+    "",
+  ];
   for (const { check, hits } of result.checks) {
     out.push(
       `== ${check.name}`,
@@ -2125,30 +2162,94 @@ export async function search(tree: Tree, worlds: Worlds, checks = CHECKS) {
   return done;
 }
 
-if (import.meta.main) {
-  if (process.argv.length > 2) {
-    console.error("usage: rig.sh class-search [<checkout>]");
-    process.exit(2);
+/** The exit status of a search whose report or error line could not be written whole, apart from
+ * 1 (findings) and 2 (a check could not run): the output a caller holds is then not the search's. */
+export const WRITE_FAILED = 3;
+
+/** Writes all of `text` to file descriptor `fd` with synchronous writes, each checked, or answers
+ * why it could not: the error of the write that failed and how much of `text` went before it. A
+ * descriptor that answers EAGAIN, a pipe whose reader has not drained it, is written again. */
+export function writeWhole(fd: number, text: string): string | undefined {
+  const bytes = Buffer.from(text);
+  let written = 0;
+  while (written < bytes.length) {
+    try {
+      written += writeSync(fd, bytes, written, bytes.length - written);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EAGAIN") {
+        Bun.sleepSync(1);
+        continue;
+      }
+      return `${error instanceof Error ? error.message : String(error)}, after ${written} of ${bytes.length} bytes`;
+    }
   }
+  return undefined;
+}
+
+/** Writes the search's `report` to the descriptor `out` and its `error` line to `err`, each whole
+ * (`writeWhole`), and answers the exit status: `status` where every write went through, else
+ * WRITE_FAILED, with a line naming each write that failed and the search's own status written to
+ * `err`, or to `out` where `err` takes nothing. The search wrote its report once at its end with
+ * `process.stdout.write` and its error with `console.error`, neither checked, so a run whose
+ * writes failed exited 2 with nothing on either stream and nothing said why. */
+export function emit(
+  output: { readonly report?: string; readonly error?: string },
+  status: number,
+  fds: { readonly out: number; readonly err: number }
+): number {
+  const failed: string[] = [];
+  const write = (what: string, stream: string, fd: number, text: string | undefined) => {
+    const why = text === undefined ? undefined : writeWhole(fd, text);
+    if (why !== undefined)
+      failed.push(`the ${what}'s write to ${stream} (fd ${fd}) failed: ${why}`);
+  };
+  write("report", "stdout", fds.out, output.report);
+  write("error", "stderr", fds.err, output.error);
+  if (failed.length === 0) return status;
+  const line = `class-search: ${failed.join("; ")}; the search's own status was ${status}\n`;
+  if (writeWhole(fds.err, line) !== undefined) writeWhole(fds.out, line);
+  return WRITE_FAILED;
+}
+
+if (import.meta.main) {
+  const fds = { out: 1, err: 2 };
+  if (process.argv.length > 2)
+    process.exit(emit({ error: "usage: rig.sh class-search [<checkout>]\n" }, 2, fds));
+  const disks = [
+    ["the checkout", CHECKOUT],
+    ["$TMPDIR", os.tmpdir()],
+  ] as const;
+  const start = diskReadings(disks);
   const tree = new Tree(CHECKOUT);
   const worlds = new Worlds(tree);
+  let output: { report?: string; error?: string };
+  let status: number;
   try {
     const data = readData(readFileSync(DATA, "utf8"));
     const head = Bun.spawnSync(["git", "-C", CHECKOUT, "rev-parse", "HEAD"])
       .stdout.toString()
       .trim();
     const result = judged(await search(tree, worlds), data.residuals, data.unreachable);
-    process.stdout.write(report(result, data, head === "" ? CHECKOUT : `${CHECKOUT} at ${head}`));
-    process.exitCode =
+    const named = head === "" ? CHECKOUT : `${CHECKOUT} at ${head}`;
+    output = { report: report(result, data, named, { start, end: diskReadings(disks) }) };
+    status =
       result.findings.length === 0 &&
       result.stale.length === 0 &&
       result.staleUnreachable.length === 0
         ? 0
         : 1;
   } catch (error) {
-    console.error(`class-search: ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 2;
+    output = {
+      error: [
+        `class-search: ${error instanceof Error ? error.message : String(error)}`,
+        `class-search: disk at the start: ${start}`,
+        `class-search: disk at the end: ${diskReadings(disks)}`,
+        "",
+      ].join("\n"),
+    };
+    status = 2;
   } finally {
     worlds.done();
   }
+  process.exitCode = emit(output, status, fds);
 }
