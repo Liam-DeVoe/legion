@@ -766,15 +766,12 @@ func TestExecFormPendingExitsSeventyFiveWithNoChild(t *testing.T) {
 				}()
 				want := "agent-secrets: request " + requestID + " to " + fakeSourceText(broker) + " is waiting for approval; waiting up to 200ms\n" +
 					"agent-secrets: " + sentence + "\n"
-				select {
-				case got := <-lines:
-					if got != want {
-						t.Errorf("stderr began %q, want %q", got, want)
-					}
-				case <-time.After(10 * time.Second):
+				if got, ok := received(t, lines); !ok {
 					release()
-					t.Errorf("stderr said nothing within 10s while the status poll was held, and %q once it returned; want %q before the wait",
-						<-lines, want)
+					t.Errorf("stderr said nothing while the status poll was held, until %s before the test binary's deadline, and %q once it returned; want %q before the wait",
+						waitMargin, <-lines, want)
+				} else if got != want {
+					t.Errorf("stderr began %q, want %q", got, want)
 				}
 				release()
 				rest, _ := io.ReadAll(stderr)
@@ -1283,12 +1280,15 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	keyDir := t.TempDir()
 	writePendingMarker(t, keyDir, 0)
 
+	meter := startStallMeter(t)
+	start := time.Now()
 	exit, stderr, elapsed := runExecForm(t, binary, broker.URL, keyDir, "AGENT_SECRETS_ENROLL_WAIT=1s")
+	requireOnTime(t, meter, "the call held by a marker nothing follows", start, time.Second)
 	if exit != 1 || !strings.Contains(stderr, "AGENT_SECRETS_KEY_DIR holds enrollment.pending and no key.pem yet") || !strings.Contains(stderr, "(waited 1s while ") ||
 		strings.Contains(stderr, keyDir) || strings.Contains(stderr, "no broker identity for this process") {
 		t.Fatalf("exit = %d, stderr = %q, want exit 1 naming the launcher's marker and the wait, and no later source", exit, stderr)
 	}
-	if elapsed < 900*time.Millisecond || elapsed > 5*time.Second {
+	if elapsed < 900*time.Millisecond {
 		t.Fatalf("gave up after %s, want about the 1s bound", elapsed)
 	}
 }
@@ -1319,12 +1319,12 @@ func TestEnrollWaitNeedsAFreshMarker(t *testing.T) {
 		{"reported failure", failed, "postgres unreachable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			exit, stderr, elapsed := runExecForm(t, binary, broker.URL, tc.keyDir)
+			meter := startStallMeter(t)
+			start := time.Now()
+			exit, stderr, _ := runExecForm(t, binary, broker.URL, tc.keyDir)
+			requireOnTime(t, meter, "the call with no fresh marker, which must not wait", start, 0)
 			if exit == 0 || !strings.Contains(stderr, tc.want) {
 				t.Fatalf("exit = %d, stderr = %q, want a failure naming %q", exit, stderr, tc.want)
-			}
-			if elapsed > 10*time.Second {
-				t.Fatalf("took %s; with no fresh marker the call must not wait", elapsed)
 			}
 		})
 	}

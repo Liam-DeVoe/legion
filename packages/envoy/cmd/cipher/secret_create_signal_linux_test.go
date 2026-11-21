@@ -218,12 +218,12 @@ func helperCommand() *exec.Cmd {
 	return exec.Command("env", "--default-signal=HUP,INT,QUIT,TERM", os.Args[0], "-test.run=^TestCreateSignalHelper$")
 }
 
-// waitFor returns once the process has printed want, failing the test once the wait the test
-// binary's own deadline leaves has passed (testwait).
+// waitFor returns once the process has printed want, failing the test once the moment the waits of
+// these tests give up has passed (waitsGaveUp).
 func (p *createProcess) waitFor(want string) {
 	p.t.Helper()
-	if !testwait.Holds(testwait.Bounded(p.t, time.Minute, time.Second), testwait.Poll, func() bool { return strings.Contains(p.out.String(), want) }) {
-		p.t.Fatalf("the create never printed %q: %q", want, p.out.String())
+	if !testwait.Holds(untilGiveUp(p.t), testwait.Poll, func() bool { return strings.Contains(p.out.String(), want) }) {
+		p.t.Fatalf("the create never printed %q, %s before the test binary's deadline: %q", want, waitMargin, p.out.String())
 	}
 }
 
@@ -236,26 +236,20 @@ func (p *createProcess) signal(sig syscall.Signal) {
 }
 
 // endedBy waits for the process and fails the test unless sig ended it, the create never having
-// returned, within the wait the test binary's own deadline leaves (testwait).
+// returned. The wait's one bound is the moment the waits of these tests give up (waitsGaveUp): a
+// process sig did not end, still waiting on a store call held for an hour, fails the test then,
+// and is killed.
 func (p *createProcess) endedBy(sig syscall.Signal) string {
-	p.t.Helper()
-	return p.endedByWithin(sig, testwait.Bounded(p.t, time.Minute, time.Second))
-}
-
-// endedByWithin is endedBy, failing the test, and killing the process, unless it ended within limit.
-func (p *createProcess) endedByWithin(sig syscall.Signal, limit time.Duration) string {
 	p.t.Helper()
 	waited := make(chan struct{})
 	go func() {
 		_ = p.cmd.Wait()
 		close(waited)
 	}()
-	select {
-	case <-waited:
-	case <-time.After(limit):
+	if _, ok := received(p.t, waited); !ok {
 		_ = p.cmd.Process.Kill()
 		<-waited
-		p.t.Fatalf("the create had not ended %s on, output %q; want it ended by %s by then", limit, p.out.String(), sig)
+		p.t.Fatalf("the create had not ended %s before the test binary's deadline, output %q; want it ended by %s by then", waitMargin, p.out.String(), sig)
 	}
 	out := p.out.String()
 	if ws := p.cmd.ProcessState.Sys().(syscall.WaitStatus); !ws.Signaled() || ws.Signal() != sig || strings.Contains(out, "RETURNED") {
@@ -286,7 +280,7 @@ func TestCreateSecondSignalBeforeTheCreateAnswerNamesWhatMayStay(t *testing.T) {
 	p.signal(syscall.SIGINT)
 	p.waitFor("SIGNALLED interrupt")
 	p.signal(syscall.SIGTERM)
-	out := p.endedByWithin(syscall.SIGTERM, 5*time.Second)
+	out := p.endedBy(syscall.SIGTERM)
 	if !strings.Contains(out, "a second signal") || !strings.Contains(out, clearEmptySecret) {
 		t.Fatalf("output %q; want the interrupted create's empty secret and its cleanup command", out)
 	}
@@ -475,7 +469,7 @@ func TestCreateSecondSignalEndsAtOnceNamingWhatMayStay(t *testing.T) {
 				p.waitFor(row.hung)
 			}
 			p.signal(row.second)
-			out := p.endedByWithin(row.second, 5*time.Second)
+			out := p.endedBy(row.second)
 			for _, want := range row.want {
 				if !strings.Contains(out, want) {
 					t.Fatalf("output %q; want %q", out, want)

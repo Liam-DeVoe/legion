@@ -125,7 +125,7 @@ func TestPromptJobSignalInTheBackgroundEndsItWithoutFg(t *testing.T) {
 					break
 				}
 				if waitsGaveUp(t) {
-					t.Fatalf("the prompt was still there after SIG%s in the background, %s before the test binary's deadline: %q; terminal: %q", tc.signal, promptJobMargin, stat, s.out.String())
+					t.Fatalf("the prompt was still there after SIG%s in the background, %s before the test binary's deadline: %q; terminal: %q", tc.signal, waitMargin, stat, s.out.String())
 				}
 			}
 			s.pid = 0

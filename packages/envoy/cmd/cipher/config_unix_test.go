@@ -14,7 +14,6 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 )
 
 func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
@@ -43,11 +42,9 @@ func TestAConfigPathThatIsNotARegularFileIsRefused(t *testing.T) {
 
 			done := make(chan error, 1)
 			go func() { done <- loadClientConfig() }()
-			var err error
-			select {
-			case err = <-done:
-			case <-time.After(5 * time.Second):
-				t.Fatalf("loadClientConfig did not return within 5s for %s at %s", name, path)
+			err, ok := received(t, done)
+			if !ok {
+				t.Fatalf("loadClientConfig had not returned for %s at %s, %s before the test binary's deadline", name, path, waitMargin)
 			}
 			if err == nil || !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "is not a regular file") {
 				t.Fatalf("loadClientConfig = %v; want an error naming %s as not a regular file", err, path)
