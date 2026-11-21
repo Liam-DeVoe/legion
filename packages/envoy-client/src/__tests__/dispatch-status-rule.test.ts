@@ -401,6 +401,69 @@ describe("dispatch issue-update with an option of the status change", () => {
     expect(requests).toEqual([]);
   });
 
+  // The same holds when the call names no owner: with no --issue and no LEGION_ISSUE, a document
+  // named rows.jsonl breaks the owner part of dispatch artifact's rule and its Markdown-name part.
+  // Supplying the owner alone still leaves the name, so the first refusal names both.
+  test("dispatch artifact with no owner and a name that is not Markdown names both problems before anything is sent", async () => {
+    const { code, stdout } = await run(["artifact", "--name", "rows.jsonl", "--content", "c"]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
+    expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
+    expect(stdout).not.toContain("Exactly one of issue and project is required");
+    expect(requests).toEqual([]);
+  });
+
+  // A call that names no owner keeps every other problem of its rule in the refusal, for every
+  // command (the architect's ruling of 2026-11-21 on this change's CLI). dispatch issue-update's
+  // issue is a field its schema requires, so with neither --issue nor LEGION_ISSUE the reason's and
+  // the options' parts must still be named beside the missing issue: supplying the issue alone
+  // leaves both, and the next call is refused again for them.
+  test("issue-update with no owner, --status done and --include-children and no --reason names every problem before anything is sent", async () => {
+    const { code, stdout } = await run(["issue-update", "--status", "done", "--include-children"]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
+    expect(stdout).toContain("status done requires reason");
+    expect(stdout).toContain("include_children does not go with status done");
+    expect(requests).toEqual([]);
+  });
+
+  // The same holds for a second command whose schema requires issue: a request for changes with
+  // no reason and no owner names the missing reason (`REVIEW_REASON_RULE` in
+  // packages/contracts/src/dispatch-tools.ts) beside the missing issue.
+  test("review with no owner, --verdict changes_requested and no --reason names both problems before anything is sent", async () => {
+    const { code, stdout } = await run([
+      "review",
+      "--artifact",
+      "spec.md",
+      "--verdict",
+      "changes_requested",
+      "--version",
+      "1",
+    ]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
+    expect(stdout).toContain(
+      "verdict changes_requested requires reason, a non-empty note saying what must change before the document can be approved."
+    );
+    expect(requests).toEqual([]);
+  });
+
+  // dispatch suggest's rule refuses the owner and the document in one sentence
+  // (`NAMED_DOCUMENT_OWNER_RULE` in packages/contracts/src/dispatch-tools.ts). With no owner and
+  // neither --artifact nor --ref, the refusal names the unnamed document beside the missing issue:
+  // supplying the issue alone leaves the document unnamed, and the next call is refused again.
+  test("suggest with no owner and no --artifact or --ref names both problems before anything is sent", async () => {
+    const { code, stdout } = await run(["suggest", "--quote", "a", "--replace-with", "b"]);
+
+    expect(code).toBe(2);
+    expect(stdout).toContain("issue is required; supply issue or set LEGION_ISSUE");
+    expect(stdout).toContain("artifact or ref must name the document");
+    expect(requests).toEqual([]);
+  });
+
   test("issue-update --unlink-children sends the status change and no PATCH", async () => {
     // The fixture's call passed include_parent too: this one is answered its unlink alone.
     statusChange = entriesOf(changed, ["ACME-3", "ACME-2"]);
