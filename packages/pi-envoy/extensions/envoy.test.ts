@@ -21341,16 +21341,14 @@ console.log(JSON.stringify(args));
         const { default: envoyExtension } = await import("./envoy.ts?pass-budget");
         const fixture = createPi();
         envoyExtension(fixture.pi);
-        // The pass's deadline is read from the clock as the pass is queued, and the dial's bound is
-        // what is left of it as the dial starts: both moments fall inside the start, so the bound
-        // is the whole 7.5 s less at most the time the start took, whatever the machine's load.
-        const before = performance.now();
+        // On the fake clock, which the file's `afterEach` gives back: the pass's deadline is read
+        // from it as the pass is queued, and the dial's bound is what is left of it as the dial
+        // starts. Nothing moves the clock between the two, so the bound is the whole 7.5 s to the
+        // millisecond, however long the start takes in real time.
+        jest.useFakeTimers();
         await fixture.handlers.get("session_start")?.({}, context);
-        const took = performance.now() - before;
         // The rest of the pass needs 20.25 s, more than the 7.5 s it has, so no redial fits.
-        expect(bounds).toHaveLength(1);
-        expect(bounds[0]).toBeLessThanOrEqual(7_500);
-        expect(bounds[0]).toBeGreaterThanOrEqual(7_500 - took - 1);
+        expect(bounds).toEqual([7_500]);
       } finally {
         setNatsConnectForTests(natsStandIn);
       }

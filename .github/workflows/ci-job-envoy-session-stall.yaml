@@ -40,7 +40,11 @@ jobs:
     # ci-job-pi-legion.yaml counts a hook's guard beside its command's: the step's --timeout, 60 s,
     # and its file's beforeAll's own, BUILD_GUARD_MS, 300 s: 2125 s; and the comment-mention step
     # main's #4426 added, 16 s at its longest over its 7 green merge-group runs up to 2026-11-20
-    # (44709419415 to 44735067614), plus its guard, 120 s: 2261 s, or 38 minutes.
+    # (44709419415 to 44735067614), plus its guard, 120 s, at least twice its file's slowest hook
+    # beside 8 busy loops with a warm Go build, its beforeAll's 50,287.16 ms (builds Job
+    # r4b-mention-8): the two steps before it build the same server in this job, so that build is
+    # warm whether or not the Go cache was restored, and the 466,790.72 ms of a cold build is what
+    # a step that builds nothing first would need: 2261 s, or 38 minutes.
     timeout-minutes: 38
     services:
       postgres:
@@ -150,10 +154,16 @@ jobs:
         working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry
-      # to Dispatch. Guard 120000 ms, the other two live suites' own: its beforeAll builds and
-      # starts the same server (startDispatchStack), and the whole step took at most 16 s over its
-      # 7 green merge-group runs up to 2026-11-20 (44709419415 to 44735067614); no reading of it
-      # under load yet.
+      # to Dispatch. Guard 120000 ms: its beforeAll builds and starts the same server
+      # (startDispatchStack), and beside 8 busy loops on 2 CPUs at 1c711353dc (builds Job
+      # r4b-mention-8, three runs with LEGION_E2E_DISPATCH_STACK=1, each hook timed by a print the
+      # Job's patch added, since Bun prints no hook times) it took 50,287.16 ms and 47,893.23 ms
+      # with the Go build cache an earlier build left (twice: 100,574.32 ms), its afterAll at most
+      # 10,703.09 ms and its row at most 1,905.42 ms. The two steps above build the same server in
+      # this job, so this step's build is warm whether or not the Go cache was restored; the Job's
+      # first run, on an empty Go cache, built the server cold in a beforeAll of 466,790.72 ms,
+      # which is what a step that builds nothing first would need. The whole step took at most 16 s
+      # over its 7 green merge-group runs up to 2026-11-20 (44709419415 to 44735067614).
       - name: Comment mention of the real CLI against a real Dispatch
         run: bun test --preload @legion/test-fixtures/row-deadline --timeout 120000 src/__tests__/comment-mention.live.test.ts
         working-directory: packages/envoy-client

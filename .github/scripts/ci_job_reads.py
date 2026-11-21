@@ -2648,7 +2648,7 @@ GATES = [
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:195 sources it"),
         ("scripts/e2e/lib/proof-wait.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/proof-wait.sh\"` line)"),
         ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/loopback-dsn.sh\"` line)"),
-        ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh:165,225 runs it, for "
+        ("scripts/e2e/lib/loopback-dsn.py", "scripts/e2e/lib/loopback-dsn.sh:166,257 runs it, for "
                                             "scripts/e2e/stage1-skeleton.sh:269,271's check of the DSN, "
                                             ":284's psql, :307's start of the daemon, :323's read of the "
                                             "server's address and :508's start of the daemon behind the proxy"),
@@ -2738,6 +2738,7 @@ GATES = [
         ("scripts/priorities-seed.ts", "scripts/priorities-seed.test.ts:4 imports it"),
         ("scripts/bun-cache-census.test.ts", at("test", "Test the Bun transpiler-cache census")),
         ("scripts/bun-cache-census.ts", "scripts/bun-cache-census.test.ts:8 runs it"),
+        ("packages/envoy-client/src/process-exit.ts", "scripts/bun-cache-census.ts:33 imports it, so the census the test runs exits through it"),
         ("scripts/e2e/**", f"{at('test', 'bun test --preload @legion/test-fixtures/row-deadline --timeout 200000 scripts/e2e/lib')} (lib/script-functions.test.ts:105-108 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:3-9 (tsc -p scripts/dispatch); "
@@ -3693,7 +3694,7 @@ GATES = [
         (f"{ENVOY}/scripts/fixtures/github/**", "packages/envoy/scripts/e2e-local.sh:1257-1288 posts each fixture"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, "packages/envoy-client/src/delivery.ts imports @legion/contracts"),
-        ("scripts/e2e/lib/proof-wait.sh", "packages/envoy/scripts/e2e-local.sh:319 and e2e-local.test.sh:32 source it: "
+        ("scripts/e2e/lib/proof-wait.sh", "packages/envoy/scripts/e2e-local.sh:320 and e2e-local.test.sh:32 source it: "
                                           "the run's guard and its one wait, and the test's"),
         (TEST_FIXTURES_SRC, "packages/envoy/scripts/e2e-local.sh:771's Bun driver imports @legion/test-fixtures/wait, "
                             "which reads ./deadline beside it"),

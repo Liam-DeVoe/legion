@@ -333,6 +333,16 @@ stop_agent() {
   stop_pid "$1"
 }
 
+# server_psql ARGS… runs psql on CLEAN_SESSION_STOP_PG_DSN's server, connected to its `postgres`
+# database, to make and drop the run's own database. lib/loopback-dsn.sh's exec_run_database hands
+# psql the connection in libpq's own variables (--libpq-env), PGPASSWORD among them, so no argument
+# list holds the password, as stage1-skeleton.sh's server_psql does. It runs in a subshell of its
+# own, which the exec replaces.
+server_psql() {
+  (exec_run_database CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" postgres \
+    "the run creates and drops a database there" --libpq-env -- psql -X "$@")
+}
+
 cleanup() {
   local status=$1 p name
   trap - EXIT INT TERM
@@ -348,7 +358,7 @@ cleanup() {
   # of this user's else does.
   stop_marked_processes "$work"
   if [ -n "$database" ]; then
-    psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
+    server_psql -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand" >&2
   fi
   rm -rf "$work"
@@ -809,7 +819,9 @@ await_start listener "$listener_pid" 60 "the Envoy listener to serve" serving "$
 note "the listener on 127.0.0.1:$listener_port judges records with a ${live_window} live window and a ${gone_horizon} gone horizon, against sessions that heartbeat every ${heartbeat_ms}ms"
 
 database=clean_session_stop_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
-psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
+require_run_database refusal CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" postgres \
+  "the run creates and drops a database there" --libpq-env || fail "$refusal"
+server_psql -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
   fail "could not create database $database in CLEAN_SESSION_STOP_PG_DSN"
 require_run_database refusal CLEAN_SESSION_STOP_PG_DSN "$pg_dsn" "$database" \
   "the run creates and drops a database there" || fail "$refusal"

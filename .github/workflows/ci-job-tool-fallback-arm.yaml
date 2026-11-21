@@ -89,8 +89,11 @@ jobs:
     # install of the job started 72 s into that measured run, so its bound ends near 12.7 minutes
     # in, and the limit of 41 is reached first only when the steps before an install take more
     # than about 28 minutes, which is a run already near the worst case above. The reading either
-    # way is a job with a log, which is what the twenty-four installs of tool-fallback cannot give
-    # and why their clock exists.
+    # way is a job with a log, which is what the twenty-four installs of tool-fallback cannot give:
+    # there, `report` in .github/scripts/ci-tools-proof.sh reads the end record each install of
+    # the sixteen corrupted cases writes (.github/scripts/ci-tools.sh:265-270), and only the
+    # negative control's eight installs with nowhere to go, which run the merge base's actions and
+    # so write none, read the clock.
     timeout-minutes: 41
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

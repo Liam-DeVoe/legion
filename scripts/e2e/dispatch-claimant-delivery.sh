@@ -73,6 +73,16 @@ nats_pid=''
 fake_envoy_pid=''
 dispatch_pid=''
 
+# server_psql ARGS… runs psql on DATABASE_URL's server, connected to its `postgres` database, to
+# make and drop the run's own database. lib/loopback-dsn.sh's exec_run_database hands psql the
+# connection in libpq's own variables (--libpq-env), PGPASSWORD among them, so no argument list
+# holds the password, as stage1-skeleton.sh's server_psql does. It runs in a subshell of its own,
+# which the exec replaces.
+server_psql() {
+  (exec_run_database DATABASE_URL "$database_url" postgres \
+    "this run creates and drops a database there" --libpq-env -- psql -X "$@")
+}
+
 # cleanup stops what the run started and exits with rc: the script's own status for EXIT, 128 plus
 # the signal's number for INT and TERM, so an interrupted run never reports success.
 cleanup() {
@@ -83,7 +93,7 @@ cleanup() {
   stop_pid "$fake_envoy_pid"
   stop_pid "$nats_pid"
   if [ -n "$database" ] && [ "$rc" -eq 0 ]; then
-    psql "$database_url" -X -q -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+    server_psql -q -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       echo "could not drop the run's database $database; drop it by hand" >&2
   elif [ -n "$database" ]; then
     echo "the run's database $database is kept on DATABASE_URL's server for inspection" >&2
@@ -151,7 +161,9 @@ run_db=dispatch_claimant_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n
 refusal='' # require_run_database assigns it with printf -v: the refusal line, or nothing
 require_run_database refusal DATABASE_URL "$database_url" "$run_db" \
   "this run creates a database there" --uri || fail "$refusal"
-psql "$database_url" -X -q -v ON_ERROR_STOP=1 -c "create database \"$run_db\"" >/dev/null ||
+require_run_database refusal DATABASE_URL "$database_url" postgres \
+  "this run creates and drops a database there" --libpq-env || fail "$refusal"
+server_psql -q -v ON_ERROR_STOP=1 -c "create database \"$run_db\"" >/dev/null ||
   fail "could not create database $run_db on DATABASE_URL's server"
 database=$run_db
 note "the run's database is $database"

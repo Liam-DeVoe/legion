@@ -238,6 +238,16 @@ databases=()
 attempt_dir=''
 kept_dir=''
 
+# server_psql ARGS… runs psql on LEGION_TEST_PG_DSN's server, connected to its `postgres` database,
+# to make and drop each attempt's own database. lib/loopback-dsn.sh's exec_run_database hands psql
+# the connection in libpq's own variables (--libpq-env), PGPASSWORD among them, so no argument list
+# holds the password, as stage1-skeleton.sh's server_psql does. It runs in a subshell of its own,
+# which the exec replaces.
+server_psql() {
+  (exec_run_database LEGION_TEST_PG_DSN "$pg_dsn" postgres \
+    "this run creates and force-drops databases there" --libpq-env -- psql -X "$@")
+}
+
 # cleanup stops what the run started, drops every database it made, and exits with rc: the
 # script's own status for EXIT, 128 plus the signal's number for INT and TERM, so an interrupted
 # run never reports success.
@@ -249,7 +259,7 @@ cleanup() {
   stop_tree "$watcher_pid"
   stop_pid "$dispatch_pid"
   for database in ${databases[@]+"${databases[@]}"}; do
-    psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 \
+    server_psql -q -v ON_ERROR_STOP=1 \
       -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1
   done
   if [ -z "$work" ]; then
@@ -405,7 +415,9 @@ run_attempt() {
   mkdir -p "$run_dir/logs" "$run_dir/cwd" "$run_dir/tmp" "$run_dir/gh"
 
   begin "$run database"
-  psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" \
+  require_run_database refusal LEGION_TEST_PG_DSN "$pg_dsn" postgres \
+    "this run creates and force-drops databases there" --libpq-env || fail "$refusal"
+  server_psql -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" \
     >>"$run_dir/logs/postgres.log" 2>&1 ||
     fail "could not create the database $database on LEGION_TEST_PG_DSN; see $run_dir/logs/postgres.log"
   databases+=("$database")
@@ -514,7 +526,7 @@ run_attempt() {
   begin "$run teardown"
   stop_pid "$dispatch_pid"
   dispatch_pid=''
-  psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 \
+  server_psql -q -v ON_ERROR_STOP=1 \
     -c "drop database if exists \"$database\" with (force)" >>"$run_dir/logs/postgres.log" 2>&1 ||
     fail "could not drop the database $database; see $run_dir/logs/postgres.log"
   pass

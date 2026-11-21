@@ -53,7 +53,7 @@
   "main": "dist/index.js",
   "types": "src/index.ts",
   "//": [
-    "test: --timeout 15000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): gen-api > the committed client types are what the generator emits, 5,478.95 ms. The second command, 60000, runs src/build-entries.test.ts alone (main's #4538), whose two build rows carried 60,000 ms of their own, which went: that number is the guard here, no reading of them under load yet."
+    "test: --timeout 15000 is at least twice the slowest row or hook under 8 busy loops on 2 CPUs at 61b66deb (two runs in a builds Job): gen-api > the committed client types are what the generator emits, 5,478.95 ms. The second command, 2000, runs src/build-entries.test.ts alone (main's #4538, whose two build rows carried 60,000 ms of their own, which went), and is at least twice its slowest row under 8 busy loops on 2 CPUs at 1c711353dc (three runs in builds Job r4b-contracts-8): package.json's entry points > build writes each default condition and main where package.json names it, and nothing else, 291.52 ms (twice: 583.04 ms); the whole file took at most 0.9 s."
   ],
   "scripts": {
     "gen:go": "bun run scripts/gen-go.ts",
@@ -63,7 +63,7 @@
     "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/go-blank.ts src/legion-api.ts src/trailing-slash.ts src/log-text.ts src/held-secrets.ts --root src --outdir dist --target bun --format esm",
     "build:dispatch": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts --root src --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout 15000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns='src/build-entries.test.ts' && bun test --timeout 60000 --preload @legion/test-fixtures/row-deadline ./src/build-entries.test.ts",
+    "test": "bun test --timeout 15000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns='src/build-entries.test.ts' && bun test --timeout 2000 --preload @legion/test-fixtures/row-deadline ./src/build-entries.test.ts",
     "lint": "bunx biome check src/ schemas/"
   },
   "dependencies": {

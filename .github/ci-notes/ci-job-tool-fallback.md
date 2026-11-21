@@ -74,11 +74,17 @@ itself is a sampler beside the job rather than a step of it, so those two steps 
 whole cost to this budget (dispatch://INFRA-2605).
 
 EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
-and the twenty-four installs whose control accepts a failure are timed as well, against
-the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
-runner ends at its own bound leaves `outcome=failure` behind it, which those controls
-accept, so the wall time is the only reading that tells a hang from the refusal the case
-expects.
+and each of the twenty-four installs whose control accepts a failure is also read for
+whether it ended on its own: a step the runner ends at its own bound leaves
+`outcome=failure` behind it, which those controls accept.
+The sixteen corrupted cases run this tree's actions, and `report` in
+.github/scripts/ci-tools-proof.sh reads the end record each of their installs writes as its
+last act (.github/scripts/ci-tools.sh:265-270): a status is an install that ended on its
+own, and no record is one the runner ended.
+Only the negative control's eight installs with nowhere to go read the clock, against the
+seconds ci-tools-proof.sh holds every timed install to
+(.github/scripts/tool-fallback-nowhere-controls.sh): they run the merge base's actions,
+whose ci-tools.sh writes no end record.
 The eleven minutes is derived from the installs as they ran before the ladders stopped
 sleeping: over the green runs of these two jobs between 2026-11-09T19:38Z and
 2026-11-10T10:51Z, 2422 install steps — the sixteen-install shape this job carried for
