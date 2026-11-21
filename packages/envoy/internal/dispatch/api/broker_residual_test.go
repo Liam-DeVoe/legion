@@ -331,14 +331,13 @@ func TestARemovalWhileTheBrokerIsDownIsPaidOnceItIsBack(t *testing.T) {
 		t.Fatalf("after a pass with the broker down the revocation is owed %t (%v) and the broker was sent %v, want it owed and no revoke", owed, err, rig.revokes())
 	}
 
-	// The broker answers again; the claim's retry window is moved past, as its 30 s would.
+	// The broker answers again a minute on: past the claim's retry window and the broker's bound
+	// on an approve it took before the removal (machineLoginSettleAfter), as that minute would.
 	delete(rig.statusByRoute, list)
 	rig.bodyByRoute[list] = `{"credentials":[
 		{"credential_id":"cred-erin","host":"erin-laptop","service":null,"subject":null,"approved_by":"erin@other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false},
 		{"credential_id":"cred-daemon","host":"cluster.example","service":"legion-daemon","subject":null,"approved_by":"erin@other.example","issued_at":"2026-11-20T00:00:00Z","expires_at":"2026-12-20T00:00:00Z","expired":false}]}`
-	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set tried_at = now() - interval '1 minute'`); err != nil {
-		t.Fatal(err)
-	}
+	removalAged(t, database, machineLoginSettleAfter)
 	rig.routes = nil
 	registered.revokeBrokerDebts(ctx)
 	if !slices.Equal(rig.revokes(), []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) {

@@ -588,7 +588,8 @@ for it within 325 seconds, since the broker checks every trade against Dispatch.
 them from a project's list also has Dispatch revoke all their machine logins at the broker, whatever
 other list still names them, after the removal commits and again until the broker confirms; the
 log line `the secrets broker revoked the machine logins of a restricted member taken off an access
-list` records each. Until it is done, a few seconds, their approve of a new machine login is
+list` records each. Until it is done, about a minute after the removal (the broker may still commit
+an approve it took before it), their approve of a new machine login is
 `409 MACHINE_LOGIN_REVOCATION_OWED`; a person another list still names then approves a new login
 for the projects that list them.
 

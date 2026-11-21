@@ -13,15 +13,18 @@ import (
 // the secrets broker (migration 20261120150130): a removal from an access list records one in its
 // own transaction (RecordMachineLoginRevocation), and the server's revocation loop claims it, pays it
 // by revoking every machine login the member approved for their own machines, and settles it once
-// the broker confirms every revoke.
+// the broker confirms every revoke, to a claim that came long enough after the removal (Settle).
 //
 // Dispatch's database orders the approvals of a restricted member's machine logins against these
-// records, so the pass compares no clock: an approval Dispatch relays holds the person's approval
-// lock shared from its check that nothing is owed until the broker answers it
+// records, so the pass compares no clock of the broker's: an approval Dispatch relays holds the
+// person's approval lock shared from its check that nothing is owed until the broker answers it
 // (HoldMachineLoginApprovals), and a record takes the same lock exclusive first, so it waits for
 // every approval in flight and is ordered after it. While one is owed, Dispatch relays no approval
-// of the person's, so every machine login of theirs the broker lists when the pass runs was approved
-// before the record, and the pass revokes them all.
+// of the person's, so every machine login of theirs the broker lists was approved before the
+// record, and the pass revokes them all. An approval Dispatch gave up on before the broker
+// answered may still commit after the record, while the broker's handler of it runs; so a row
+// settles only to a claim that came the broker's bound on that handler after the record (Settle's
+// after), whose list holds every such login. Both times are this database's.
 type MachineLoginRevocations struct {
 	pool *Pool
 }
@@ -32,12 +35,14 @@ func NewMachineLoginRevocations(pool *Pool) *MachineLoginRevocations {
 }
 
 // OwedMachineLoginRevocation is one revocation owed: the address, as people.email holds it, the
-// generation of it a claim read, which a settlement names, and when the removal that owes it was
-// recorded, on the database's clock.
+// generation of it a claim read, which a settlement names, when the removal that owes it was
+// recorded, and when that claim took it (tried_at), both on the database's clock. A pass's calls
+// for the row all start after ClaimedAt, so it is what Settle holds the claim's list to.
 type OwedMachineLoginRevocation struct {
 	Email      string
 	Generation int64
 	RecordedAt time.Time
+	ClaimedAt  time.Time
 }
 
 // machineLoginApprovalsLockSQL is the person's approval lock: $1 the address, as people.email holds
@@ -99,7 +104,7 @@ func (m *MachineLoginRevocations) Claim(ctx context.Context, retry time.Duration
 		update machine_login_revocations r set tried_at = now()
 		from picked
 		where r.email = picked.email
-		returning r.email, r.generation, r.recorded_at
+		returning r.email, r.generation, r.recorded_at, r.tried_at
 	`, retry.Seconds(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim the owed machine-login revocations: %w", err)
@@ -112,12 +117,16 @@ func (m *MachineLoginRevocations) Claim(ctx context.Context, retry time.Duration
 }
 
 // Settle records that the broker confirmed owed, and reports whether it did. It does only for the
-// generation the claim read: a removal recorded since the claim is left owed, for a later pass.
-func (m *MachineLoginRevocations) Settle(ctx context.Context, owed OwedMachineLoginRevocation) (bool, error) {
+// generation the claim read, so a removal recorded since the claim is left owed for a later pass,
+// and only for a claim that came after or more after the removal was recorded (ClaimedAt against
+// recorded_at, both the database's clock), so a pass whose list may have run before the broker
+// committed what the removal owes is left owed too: a later claim lists again.
+func (m *MachineLoginRevocations) Settle(ctx context.Context, owed OwedMachineLoginRevocation, after time.Duration) (bool, error) {
 	tag, err := m.pool.Exec(ctx, `
 		update machine_login_revocations set done_at = now()
 		where email = $1 and generation = $2 and done_at is null
-	`, owed.Email, owed.Generation)
+			and recorded_at <= $3::timestamptz - make_interval(secs => $4)
+	`, owed.Email, owed.Generation, owed.ClaimedAt, after.Seconds())
 	if err != nil {
 		return false, fmt.Errorf("settle the revocation of %s's machine logins: %w", owed.Email, err)
 	}

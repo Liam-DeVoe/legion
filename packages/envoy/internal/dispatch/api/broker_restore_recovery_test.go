@@ -713,7 +713,7 @@ func TestABrokerRestoredAloneOwesAgainTheMachineLoginRevocationsSettledSince(t *
 	}
 	generations := map[string]int64{}
 	for _, owed := range claimed {
-		if settled, err := revocations.Settle(ctx, owed); err != nil || !settled {
+		if settled, err := revocations.Settle(ctx, owed, 0); err != nil || !settled {
 			t.Fatalf("Settle(%s) = %t, %v; want it settled", owed.Email, settled, err)
 		}
 		generations[owed.Email] = owed.Generation
