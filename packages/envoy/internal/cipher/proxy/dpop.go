@@ -31,7 +31,8 @@ type resultTransport struct {
 	key *ecdsa.PrivateKey
 	// origin is https:// and the bound host, the origin every proof names.
 	origin string
-	// base sends the signed request: the proxy's upstream transport.
+	// base sends the signed request: the proxy's upstream transport, or the private destination's
+	// for its bound host (serveBound).
 	base http.RoundTripper
 }
 

@@ -521,11 +521,21 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	// refusedByCut is whether the watcher ended the call before its service answered, which
 	// ErrorHandler answers as a refusal; ErrorHandler runs inside ServeHTTP, on this goroutine.
 	refusedByCut := false
+	// Where the request goes: the CONNECT target over TLS on the proxy's own transport, which
+	// checks and dials the target's addresses (dialChecked); or, for the private destination's
+	// bound host, the destination URL's scheme and host on the destination's own transport, which
+	// checks and dials the destination's addresses (dialUpstream). Every other host keeps the
+	// proxy's own transport, so the destination takes the requests of its one host and no other.
 	var transport http.RoundTripper = s.upstream
+	scheme, upstreamHost := "https", info.target
+	if s.toDestination(info.host) {
+		transport, scheme, upstreamHost = s.private, s.privateUpstream.URL.Scheme, s.privateUpstream.URL.Host
+	}
 	if kind == proxyrules.KindDPoP {
 		// The swap put the run's token in; resultTransport signs its proof with the pod's key,
-		// for the bound host's origin.
-		transport = &resultTransport{key: s.dpopKey, origin: "https://" + info.host, base: s.upstream}
+		// for the bound host's origin whatever address the request is sent to, and hands it to
+		// the transport above.
+		transport = &resultTransport{key: s.dpopKey, origin: "https://" + info.host, base: transport}
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
@@ -539,12 +549,14 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.Out.URL = &url.URL{
-				Scheme:   "https",
-				Host:     info.target,
+				Scheme:   scheme,
+				Host:     upstreamHost,
 				Path:     r.URL.Path,
 				RawPath:  r.URL.RawPath,
 				RawQuery: rawQuery,
 			}
+			// The bound host, wherever the request is sent: the service reads the request as one
+			// to its public name, which a dpop entry's proof names too.
 			pr.Out.Host = hostHeaderOf(info.target)
 			if kind == proxyrules.KindDPoP {
 				// A results write goes on without any forwarding header the command sent, so

@@ -36,6 +36,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -174,6 +175,13 @@ type Options struct {
 	// one it names. Nil refuses nothing beyond the fixed rules, which is a broker outside a
 	// cluster.
 	ClusterRanges []netip.Prefix
+	// PrivateUpstream is BROKER_AIRLOCK_PRIVATE_UPSTREAM: the one bound host whose requests go to
+	// an address inside the broker's own cluster, in place of the host's own address. A CONNECT to
+	// that host is checked against the destination's addresses (upstreamAddresses) when the
+	// grant's names bind it, and each request on it goes out on a transport of its own to the URL's
+	// scheme and host, keeping the host as its Host header. The zero value, or one with no URL, is
+	// no destination: every bound host's request goes to that host's own address.
+	PrivateUpstream PrivateUpstream
 	// KeepValues keeps a grant's values across the reread of one of its names and past the
 	// five-minute margin of a minted token's expiry, so a run can show what the airlock does
 	// when neither happens. BROKER_AIRLOCK_TEST_KEEP_VALUES is it, the negative control of
@@ -200,6 +208,19 @@ type Options struct {
 	DPoPKey *ecdsa.PrivateKey
 }
 
+// PrivateUpstream is one bound host and the URL its requests are sent to in place of the host's own
+// address: in production Dispatch's public host and its address inside the cluster
+// (BROKER_AIRLOCK_PRIVATE_UPSTREAM). The broker's start holds it to one host that exactly one
+// rules entry binds, of kind dpop with an allow list (config.PrivateUpstreamRules), and the URL to
+// a scheme and a host with no user, path or query.
+type PrivateUpstream struct {
+	// Host is the bound host, in lower case with no port, as a CONNECT's host is compared.
+	Host string
+	// URL is where that host's requests go: its scheme, which says whether they go in TLS, and its
+	// host and port, which upstreamAddresses resolves and checks.
+	URL *url.URL
+}
+
 // Server is the broker's proxy port: one HTTP CONNECT proxy whose password is a placeholder of a
 // live grant.
 type Server struct {
@@ -223,6 +244,10 @@ type Server struct {
 	// clusterRanges is Options.ClusterRanges, the broker cluster's own ranges, which localRule
 	// refuses after its fixed rules.
 	clusterRanges []netip.Prefix
+	// privateUpstream is Options.PrivateUpstream, and private the transport every request to its
+	// host goes out on: nil, and the zero destination, for a proxy given none (toDestination).
+	privateUpstream PrivateUpstream
+	private         *http.Transport
 	// hashBudget is the bytes of AWS body the proxy may hold at once to hash
 	// (hashedBodyBudget, aws.go). One semaphore for the whole Server, because what it bounds
 	// is the pod's memory, which every connection shares.
@@ -397,6 +422,22 @@ func New(o Options) *Server {
 		DisableKeepAlives: true,
 		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
 		Protocols:         &forwardProtocols,
+	}
+	// The private destination's own transport, for a proxy given one: every request to its bound
+	// host goes out on this and on nothing else (serveBound), and nothing else goes out on it. Its
+	// dial resolves and checks the destination's host itself (dialUpstream, upstreamAddresses) and
+	// dials those addresses. Each request it carries is sent to the URL's scheme and host, so it
+	// speaks TLS exactly when the URL is https, then verified against the roots upstream trusts
+	// and the URL's host name; it keeps idle connections as upstream does.
+	if o.PrivateUpstream.Host != "" && o.PrivateUpstream.URL != nil {
+		s.privateUpstream = o.PrivateUpstream
+		s.private = &http.Transport{
+			DialContext:         s.dialUpstream,
+			TLSClientConfig:     s.upstream.TLSClientConfig.Clone(),
+			ForceAttemptHTTP2:   true,
+			MaxIdleConnsPerHost: upstreamIdleConns,
+			IdleConnTimeout:     upstreamIdleTimeout,
+		}
 	}
 	// net/http writes a line of its own through ErrorLog: for example for a connection that fails
 	// before a handler sees it, for a handler's panic it recovers, or for an accept that failed;
@@ -669,7 +710,8 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 
 // serveConnect answers one CONNECT: a host one of the grant's names is bound to is decrypted
 // and read, any other host is a tunnel. Both are refused before any dial when the host resolves
-// somewhere this proxy never goes.
+// somewhere this proxy never goes; the private destination's bound host, when the grant's names
+// bind it, is refused when the destination resolves anywhere but where upstreamAddresses allows.
 func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholder string, grant requests.AirlockConnection) {
 	target := r.Host
 	if _, _, err := net.SplitHostPort(target); err != nil {
@@ -701,19 +743,6 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	if s.resultHostOnly(w, r, grant, host, connectPort) {
 		return
 	}
-	// The addresses this name has, read and checked once: the tunnel below dials these and
-	// resolves nothing of its own, and a bound host's requests are checked and dialled the
-	// same way by the transport they go out on (dialChecked).
-	addrs, err := s.checkedAddresses(r.Context(), host, port)
-	if err != nil {
-		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeAddressRefused, err.Error())
-		return
-	}
-	hijacker, ok := w.(http.Hijacker)
-	if !ok {
-		fail(w, http.StatusInternalServerError, codeNotHijackable, "this connection cannot be taken over")
-		return
-	}
 	// Whether this CONNECT may be decrypted and read: the (name, slot) pairs of the grant
 	// whose entry binds this host on the port the CONNECT named. One answer from the one
 	// function that says what is bound (candidates), so a change to what is bound is made in
@@ -727,7 +756,30 @@ func (s *Server) serveConnect(w http.ResponseWriter, r *http.Request, placeholde
 	// port is in it because every name the decision compares - the CONNECT host, the TLS name
 	// and the Host header - carries no port, so 443 is the only port an entry's hosts speak
 	// about and another port of one name is another service.
-	if len(s.candidates(grant, host, connectPort)) > 0 {
+	bound := len(s.candidates(grant, host, connectPort)) > 0
+	// The addresses this name has, read and checked once: the tunnel below dials these and
+	// resolves nothing of its own, and a bound host's requests are checked and dialled the
+	// same way by the transport they go out on (dialChecked). The private destination's bound
+	// host, bound for this grant, is checked where its requests go instead, the destination's
+	// own addresses (upstreamAddresses), which its transport checks and dials again for each
+	// request (dialUpstream); its public name is not read, since nothing is sent there. Not
+	// bound for this grant, it is a host like any other.
+	var addrs []netip.Addr
+	if bound && s.toDestination(host) {
+		_, err = s.upstreamAddresses(r.Context())
+	} else {
+		addrs, err = s.checkedAddresses(r.Context(), host, port)
+	}
+	if err != nil {
+		s.refuse(w, r, call{grant: grant, host: host}, http.StatusForbidden, codeAddressRefused, err.Error())
+		return
+	}
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		fail(w, http.StatusInternalServerError, codeNotHijackable, "this connection cannot be taken over")
+		return
+	}
+	if bound {
 		s.connectBound(w, hijacker, placeholder, grant, target, host, connectPort)
 		return
 	}

@@ -1,0 +1,351 @@
+// packages/envoy/internal/cipher/proxy/private_upstream_test.go
+//
+// The rows of the private destination (Options.PrivateUpstream, BROKER_AIRLOCK_PRIVATE_UPSTREAM):
+// the one bound host whose allowed requests go to an address inside the broker's own cluster, in
+// place of the host's public address. The rig is rig_test.go's with no DialAllow: the destination's
+// name resolves to an address the proxy refuses to every other request, and the rig sends a dial of
+// that address to a stand-in of Dispatch on loopback, a plain-HTTP server that checks each write's
+// token and proof with the verifier Dispatch itself runs (ciphertoken.Verifier), for Dispatch's
+// public origin.
+package proxy
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/netip"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
+)
+
+// The private destination of every row here: Dispatch's public host, which the rules bind, and
+// the address it has inside the cluster, the URL's host and port.
+const (
+	privateHost = "dispatch.test"
+	privateName = "dispatch.internal.test"
+	privatePort = "8766"
+)
+
+// privateAddress is where privateName resolves in the rows that send a write: a private address,
+// which the proxy refuses to every request but one to the destination's bound host.
+var privateAddress = netip.MustParseAddr("10.0.0.5")
+
+// publicAddress is where privateHost itself resolves: its tailnet address, which the proxy never
+// dials (100.64.0.0/10), as Dispatch's public name resolves inside the tailnet.
+var publicAddress = netip.MustParseAddr("100.100.1.1")
+
+// privateDestination is BROKER_AIRLOCK_PRIVATE_UPSTREAM=dispatch.test=http://dispatch.internal.test:8766.
+func privateDestination() PrivateUpstream {
+	return PrivateUpstream{Host: privateHost, URL: &url.URL{Scheme: "http", Host: net.JoinHostPort(privateName, privatePort)}}
+}
+
+// privateRules is the rig's rules file with DISPATCH_RESULTS_TOKEN beside its WORKER_TOKEN: kind
+// dpop, bound to the destination's host, carried in Authorization alone, allowing POST under the
+// projects route.
+func privateRules() proxyrules.Rules {
+	rules := testRules()
+	rules.Secrets = append(rules.Secrets, proxyrules.SecretRule{
+		Name: resultsName, Hosts: []string{privateHost}, Headers: []string{"Authorization"},
+		Allow: []proxyrules.Allow{{Method: http.MethodPost, PathPrefix: "/api/v1/projects/"}},
+		Kind:  proxyrules.KindDPoP,
+	})
+	return rules
+}
+
+// dispatchWrite is one request the stand-in of Dispatch received: the Host it was sent with, its
+// Authorization headers, how many DPoP headers it carried, and what Dispatch's verifier answered.
+type dispatchWrite struct {
+	host          string
+	authorization []string
+	proofs        int
+	resultsOnly   bool
+	verified      error
+}
+
+// String is the write as a failure message reads it, with the verifier's own words for a token or
+// proof it refused.
+func (w dispatchWrite) String() string {
+	verdict := "accepted"
+	if w.verified != nil {
+		verdict = w.verified.Error()
+	}
+	return fmt.Sprintf("{Host %s, Authorization %q, %d DPoP header(s), results-only %v, the verifier: %s}", w.host, w.authorization, w.proofs, w.resultsOnly, verdict)
+}
+
+// dispatchStandIn is Dispatch behind its in-cluster address: plain HTTP, the verifier Dispatch runs
+// with Dispatch's public origin, and the broker's introspection answering the run's token as a
+// results token bound to the pod's key. It answers 201 to a write the verifier accepts and 401 to
+// any other, and keeps what it received.
+type dispatchStandIn struct {
+	addr string
+	mu   sync.Mutex
+	seen []dispatchWrite
+}
+
+func (d *dispatchStandIn) writes() []dispatchWrite {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]dispatchWrite(nil), d.seen...)
+}
+
+// spentProofs is the verifier's replay store, in memory: each proof is taken once.
+type spentProofs struct {
+	mu    sync.Mutex
+	spent map[string]bool
+}
+
+func (s *spentProofs) CheckAndSetDPoPProofUsed(_ context.Context, jti, jkt, _, htm, htu string, _ time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.Join([]string{jti, jkt, htm, htu}, " ")
+	if s.spent[key] {
+		return true, nil
+	}
+	s.spent[key] = true
+	return false, nil
+}
+
+// newDispatchStandIn serves the stand-in until the test ends. key is the pod's: the broker binds
+// the run's token to its thumbprint.
+func newDispatchStandIn(t *testing.T, key *ecdsa.PrivateKey) *dispatchStandIn {
+	t.Helper()
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := ciphertokentest.NewStubBroker(t)
+	broker.Says(runsToken, ciphertoken.Introspection{
+		Active: true, Session: resultsSession, Person: "ada@example.com",
+		ProjectScope: ciphertoken.ProjectScopeResults, Projects: []string{"ACME"}, Scope: ciphertoken.ScopeResults,
+		CI: &ciphertoken.CIRun{
+			Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/topic",
+			Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
+			RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: resultsCheckRunID,
+		},
+		ExpiresAt: time.Now().Add(time.Hour).Unix(), ClientID: ciphertoken.ExchangeClientID, Thumbprint: jkt,
+	})
+	accountFile := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(accountFile, []byte("dispatchs-own-account-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := ciphertoken.New(ciphertoken.Options{
+		BrokerURL: broker.Server.URL,
+		Account:   ciphertoken.NewAccountToken(accountFile),
+		Origin:    "https://" + privateHost,
+		Replay:    &spentProofs{spent: map[string]bool{}},
+		Address:   func(r *http.Request) string { return r.RemoteAddr },
+		// Dispatch serves a results token on its results routes.
+		ServesResults: true,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch's verifier: %v", err)
+	}
+	d := &dispatchStandIn{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		caller, err := verifier.Verify(r.Context(), r)
+		d.mu.Lock()
+		d.seen = append(d.seen, dispatchWrite{
+			host: r.Host, authorization: r.Header.Values("Authorization"), proofs: len(r.Header.Values("DPoP")),
+			resultsOnly: caller.ResultsOnly, verified: err,
+		})
+		d.mu.Unlock()
+		if err != nil {
+			http.Error(w, "the write's token or proof did not verify", http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, "stored")
+	}))
+	t.Cleanup(server.Close)
+	d.addr = server.Listener.Addr().String()
+	return d
+}
+
+// newPrivateRig is the rig with the private destination set and the pod's key, holding the one
+// result grant and the token minted for it beside the rig's own grant, with ranges as its cluster
+// ranges. The destination's name resolves to at, whose dial on the destination's port reaches the
+// stand-in of Dispatch; the destination's bound host resolves to its tailnet address alone.
+func newPrivateRig(t *testing.T, at netip.Addr, ranges []netip.Prefix) (*rig, *dispatchStandIn) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t, Options{Rules: privateRules(), DPoPKey: key, ClusterRanges: ranges, PrivateUpstream: privateDestination()})
+	r.grants.setConnection(resultsPlaceholder, resultsConnection())
+	r.grants.setValues(resultsGrantID, storedValues(resultsName, runsToken))
+	r.addresses[privateHost] = []netip.Addr{publicAddress}
+	r.addresses[privateName] = []netip.Addr{at}
+	standIn := newDispatchStandIn(t, key)
+	r.dialTo[net.JoinHostPort(at.String(), privatePort)] = standIn.addr
+	return r, standIn
+}
+
+// writeResult is the allowed results write through the proxy: POST under the projects route of
+// the destination's bound host, with the grant's placeholder as its one Authorization header. It
+// answers the error of a write whose CONNECT the proxy refused, which net/http's client reports
+// with no answer.
+func (r *rig) writeResult() (*http.Response, string, error) {
+	r.t.Helper()
+	request, err := http.NewRequest(http.MethodPost, "https://"+privateHost+resultsPath, strings.NewReader(`{"verdict":"pass"}`))
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "DPoP "+resultsPlaceholder)
+	answer, err := r.client(resultsPlaceholder).Do(request)
+	if err != nil {
+		return nil, "", err
+	}
+	return answer, bodyOf(r.t, answer), nil
+}
+
+// writeRefusedAtConnect fails t unless the allowed write is refused at its CONNECT: the command's
+// client gets the proxy's 403, the proxy's refusal line names the destination's bound host, the
+// code ADDRESS_REFUSED and a reason holding want, and nothing is dialled or reaches Dispatch.
+func writeRefusedAtConnect(t *testing.T, r *rig, standIn *dispatchStandIn, want string) {
+	t.Helper()
+	answer, body, err := r.writeResult()
+	if err == nil {
+		t.Fatalf("the write answered %d %q after the dials %v; want its CONNECT refused 403 naming %q", answer.StatusCode, body, r.dialedAddresses(), want)
+	}
+	if !strings.Contains(err.Error(), http.StatusText(http.StatusForbidden)) {
+		t.Fatalf("the write failed with %v; want the proxy's 403 to its CONNECT", err)
+	}
+	refusals := r.logs.refusals()
+	if len(refusals) == 0 {
+		t.Fatal("the proxy logged no refusal")
+	}
+	line := refusals[len(refusals)-1].fields
+	reason, _ := line["reason"].(string)
+	if line["status"] != int64(http.StatusForbidden) || line["code"] != codeAddressRefused || line["method"] != http.MethodConnect || line["host"] != privateHost || !strings.Contains(reason, want) {
+		t.Fatalf("the refusal line reads %v; want 403 %s of the CONNECT to %s with a reason naming %q", line, codeAddressRefused, privateHost, want)
+	}
+	if dialed := r.dialedAddresses(); len(dialed) != 0 {
+		t.Fatalf("the proxy dialled %v; want nothing", dialed)
+	}
+	if seen := standIn.writes(); len(seen) != 0 {
+		t.Fatalf("Dispatch received %d writes; want none", len(seen))
+	}
+}
+
+// connectRefused fails t unless a CONNECT to target with the result grant's password is refused
+// 403 with nothing dialled, and answers the refusal's body.
+func connectRefused(t *testing.T, r *rig, target string) string {
+	t.Helper()
+	before := r.dials.Load()
+	answer, _, _ := r.connectRaw(target, basic(resultsPlaceholder))
+	// The status first: a CONNECT answered 200 is an open tunnel, whose body never ends.
+	if answer.StatusCode != http.StatusForbidden {
+		t.Fatalf("CONNECT %s = %d after %d dial(s) to %v; want 403 and none", target, answer.StatusCode, r.dials.Load()-before, r.dialedAddresses())
+	}
+	body := bodyOf(t, answer)
+	if after := r.dials.Load(); after != before {
+		t.Fatalf("CONNECT %s dialled %d time(s); want none", target, after-before)
+	}
+	return body
+}
+
+// TestThePrivateUpstreamTakesTheBoundRouteAlone: the allowed write to the destination's bound host
+// reaches Dispatch at its private address with Host dispatch.test, the run's token in place of the
+// placeholder, and a proof that Dispatch's own verifier accepts for its public origin, although the
+// write was sent to http://dispatch.internal.test:8766. Nothing else reaches that address or any
+// other the proxy refuses: a request the rules do not allow, a CONNECT to the destination's name or
+// address, a plain-HTTP request to it, a CONNECT to each kind of private, loopback, link-local and
+// cluster address, and a grant whose names do not bind dispatch.test sending to it are each refused
+// 403 with nothing dialled.
+func TestThePrivateUpstreamTakesTheBoundRouteAlone(t *testing.T) {
+	r, standIn := newPrivateRig(t, privateAddress, []netip.Prefix{serviceRange})
+
+	answer, body, err := r.writeResult()
+	seen := standIn.writes()
+	if err != nil || answer.StatusCode != http.StatusCreated || len(seen) != 1 || seen[0].host != privateHost ||
+		len(seen[0].authorization) != 1 || seen[0].authorization[0] != "DPoP "+runsToken || seen[0].proofs != 1 ||
+		seen[0].verified != nil || !seen[0].resultsOnly {
+		var got any = err
+		if err == nil {
+			got = []any{answer.StatusCode, body}
+		}
+		t.Fatalf("the allowed write answered %v and Dispatch received %v; want 201 and one write with Host %s, the run's token and one proof Dispatch's verifier accepts",
+			got, seen, privateHost)
+	}
+	if dialed := r.dialedAddresses(); len(dialed) != 1 || dialed[0] != net.JoinHostPort(privateAddress.String(), privatePort) {
+		t.Fatalf("the proxy dialled %v; want the destination's address %s:%s alone", dialed, privateAddress, privatePort)
+	}
+
+	before := r.dials.Load()
+	answer, body = r.get(r.client(resultsPlaceholder), "https://"+privateHost+"/api/v1/issues", "Authorization", "DPoP "+resultsPlaceholder)
+	refusedAs(t, "GET /api/v1/issues", answer, body, codeNotAllowed)
+	if after := r.dials.Load(); after != before {
+		t.Fatalf("GET /api/v1/issues dialled %d time(s); want none", after-before)
+	}
+
+	connectRefused(t, r, net.JoinHostPort(privateName, privatePort))
+	connectRefused(t, r, net.JoinHostPort(privateAddress.String(), privatePort))
+
+	before = r.dials.Load()
+	answer, body = r.get(r.client(resultsPlaceholder), "http://"+net.JoinHostPort(privateName, privatePort)+"/healthz")
+	if answer.StatusCode != http.StatusForbidden || answer.Header.Get("Airlock-Code") != codeAddressRefused {
+		t.Fatalf("plain http to %s answered %d %q; want 403 %s", privateName, answer.StatusCode, body, codeAddressRefused)
+	}
+	if after := r.dials.Load(); after != before {
+		t.Fatalf("plain http to %s dialled %d time(s); want none", privateName, after-before)
+	}
+
+	for _, addr := range []string{"10.11.12.13", "172.16.0.1", "192.168.1.1", "100.64.0.1", "fd00::1", "127.0.0.1", "169.254.169.254", "34.118.224.10"} {
+		connectRefused(t, r, net.JoinHostPort(addr, "443"))
+	}
+
+	// The rig's own grant, whose one name binds example.com: dispatch.test is no host of it, so
+	// its CONNECT is read as any other host's, by dispatch.test's own address, which the proxy
+	// never dials.
+	before = r.dials.Load()
+	other, _, _ := r.connectRaw(net.JoinHostPort(privateHost, "443"), basic(workerPlaceholder))
+	if other.StatusCode != http.StatusForbidden {
+		t.Fatalf("CONNECT %s with a grant that does not bind it = %d after the dials %v; want 403", privateHost, other.StatusCode, r.dialedAddresses())
+	}
+	if text := bodyOf(t, other); !strings.Contains(text, publicAddress.String()) {
+		t.Errorf("the refusal of %s with a grant that does not bind it reads %q; want it to name %s, the host's own address", privateHost, text, publicAddress)
+	}
+	if after := r.dials.Load(); after != before {
+		t.Fatalf("CONNECT %s with a grant that does not bind it dialled %d time(s); want none", privateHost, after-before)
+	}
+	if seen := standIn.writes(); len(seen) != 1 {
+		t.Fatalf("Dispatch received %d writes; want the one allowed write", len(seen))
+	}
+}
+
+// TestAnUpstreamTheGeneralRuleWouldDialIsRefused: a destination whose name resolves to an address
+// the proxy would tunnel to - a ClusterIP with no cluster ranges set - is refused, naming
+// BROKER_AIRLOCK_CLUSTER_RANGES, and nothing is dialled: the exception holds only for an address
+// every other request is refused.
+func TestAnUpstreamTheGeneralRuleWouldDialIsRefused(t *testing.T) {
+	r, standIn := newPrivateRig(t, netip.MustParseAddr(clusterIPs[0]), nil)
+	writeRefusedAtConnect(t, r, standIn, "which this proxy would also tunnel to: list its range in BROKER_AIRLOCK_CLUSTER_RANGES")
+}
+
+// TestAnUpstreamOnLoopbackOrLinkLocalIsRefused: a destination whose name resolves to a loopback or
+// link-local address, IPv4 or IPv6, is refused and nothing is dialled, though the proxy refuses
+// such an address to every other request too: the broker's own pod and the node's metadata server
+// are no destination.
+func TestAnUpstreamOnLoopbackOrLinkLocalIsRefused(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1", "169.254.169.254", "fe80::1"} {
+		r, standIn := newPrivateRig(t, netip.MustParseAddr(addr), []netip.Prefix{serviceRange})
+		writeRefusedAtConnect(t, r, standIn, "a loopback or link-local address, which the airlock never dials")
+	}
+}
