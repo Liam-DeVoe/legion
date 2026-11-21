@@ -361,6 +361,18 @@
         "why": "rt_sigaction's struct, passed to the system call by address"
       },
       {
+        "file": "packages/envoy/cmd/cipher/secret_signal_darwin.go",
+        "function": "github.com/sjawhar/envoy/cmd/cipher.promptSignalIgnored",
+        "operands": ["*github.com/sjawhar/envoy/cmd/cipher.darwinOldSigaction", "unsafe.Pointer"],
+        "why": "Darwin sigaction's answered struct, passed to the system call by address"
+      },
+      {
+        "file": "packages/envoy/cmd/cipher/secret_signal_darwin.go",
+        "function": "github.com/sjawhar/envoy/cmd/cipher.setDefaultAction",
+        "operands": ["*github.com/sjawhar/envoy/cmd/cipher.darwinSigaction", "unsafe.Pointer"],
+        "why": "Darwin sigaction's action struct, passed to the system call by address"
+      },
+      {
         "file": "packages/envoy/internal/dispatch/pmdoc/update.go",
         "function": "github.com/sjawhar/envoy/internal/dispatch/pmdoc.yTextStartField",
         "operands": ["*github.com/reearth/ygo/crdt.YXmlText", "unsafe.Pointer"],
