@@ -389,10 +389,23 @@ func answered(t *testing.T, nc *nats.Conn, subject string, body any) apiAnswer {
 	return answer
 }
 
+// notFoundRetry bounds succeeds's retry of a 10059, "stream not found", for a stream the test made.
+// Twice in about ten runs, on this package's three members of nats-server v2.15.1,
+// STREAM.MSG.GET.KV_envoy_session_consumers was answered so just after the same stream's
+// STREAM.INFO was answered, with no meta leader change logged in the run; nats-server's
+// jsMsgGetRequest answers it only from a meta leader with no assignment for the stream, or from
+// the stream leader's failed lookup. The cause is not found, so each retry is logged.
+const notFoundRetry = 5 * time.Second
+
 // succeeds requires a request on subject to be answered with no error, and returns the answer.
 func succeeds(t *testing.T, nc *nats.Conn, subject string, body any) apiAnswer {
 	t.Helper()
 	answer := answered(t, nc, subject, body)
+	for first := time.Now(); answer.Error != nil && answer.Error.ErrCode == 10059 && time.Since(first) < notFoundRetry; {
+		t.Logf("%s answered %s; asking again", subject, answer.raw)
+		time.Sleep(250 * time.Millisecond)
+		answer = answered(t, nc, subject, body)
+	}
 	require.Nil(t, answer.Error, "%s was refused: %s", subject, answer.raw)
 	return answer
 }
@@ -446,7 +459,7 @@ const snapshotChunk = 4096
 // v0.5.0 requires antithesis-sdk-go v0.8.0, which would turn the Antithesis SDK nats-server links
 // from no-op to enabled in every module of the workspace.
 func backupStream(nc *nats.Conn, stream string) (streamBackup, error) {
-	info, err := nc.Request("$JS.API.STREAM.INFO."+stream, nil, 10*time.Second)
+	info, err := nc.Request("$JS.API.STREAM.INFO."+stream, nil, answerWait)
 	if err != nil {
 		return streamBackup{}, fmt.Errorf("load stream %s (STREAM.INFO): %w", stream, err)
 	}
@@ -479,7 +492,7 @@ func backupStream(nc *nats.Conn, stream string) (streamBackup, error) {
 	}
 	defer func() { _ = sub.Unsubscribe() }()
 	request, _ := json.Marshal(map[string]any{"deliver_subject": inbox, "no_consumers": true, "chunk_size": snapshotChunk, "window_size": snapshotChunk})
-	reply, err := nc.Request("$JS.API.STREAM.SNAPSHOT."+stream, request, 10*time.Second)
+	reply, err := nc.Request("$JS.API.STREAM.SNAPSHOT."+stream, request, answerWait)
 	if err != nil {
 		return streamBackup{}, fmt.Errorf("snapshot %s (STREAM.SNAPSHOT): %w", stream, err)
 	}
@@ -540,7 +553,7 @@ func restoreStream(ctx context.Context, nc *nats.Conn, b streamBackup, paced fun
 		DeliverSubject string `json:"deliver_subject"`
 	}
 	for first := time.Now(); ; time.Sleep(100 * time.Millisecond) {
-		reply, err := nc.Request("$JS.API.STREAM.RESTORE."+b.stream, request, 10*time.Second)
+		reply, err := nc.Request("$JS.API.STREAM.RESTORE."+b.stream, request, answerWait)
 		if err != nil {
 			return 0, fmt.Errorf("restore %s (STREAM.RESTORE): %w", b.stream, err)
 		}
