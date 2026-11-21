@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -1185,6 +1186,12 @@ func main() {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries, boot.PrivateProjects)
+	// The forgets owed the secrets broker (broker_forgets): the records a switch to private that did
+	// not commit left in the broker's store of private projects, and those of projects made public.
+	// Every process sends them, each row claimed `for update skip locked` (api.RunBrokerForgets).
+	if boot.AgentSecretsURL != "" {
+		go api.RunBrokerForgets(ctx, database.Pool, agentsecrets.New(boot.AgentSecretsURL, boot.AgentSecretsTokenFile))
+	}
 	// /healthz names each GitHub read this process runs, from the copy of the record kept above. A
 	// loop this process did not start, for want of NATS or of the App's private key, is a read it
 	// does not run.

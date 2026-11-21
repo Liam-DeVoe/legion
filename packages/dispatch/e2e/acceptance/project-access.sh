@@ -32,15 +32,17 @@
 #               backfill-session-projects and scrub-access-events) run against main's database,
 #               and PRIV is made private through PATCH /api/v1/projects/PRIV/access. walk, search,
 #               sockets, proxy and writes need it, and are reported as not run when the route
-#               refuses, as it always does in a build that runs no private-hub admission proof
-#               (409 PRIVATE_PROJECTS_UNAVAILABLE); listed and confined run either way. With
-#               --private-by-sql, that refusal is stood in for by the store writes the route makes
-#               (PRIV private with its full switch recorded, and every personal token that lists it
-#               revoked, its closing state's revocation), so every section below runs, and the run
-#               passes when they do. The route checks, in the transaction it refuses, that PRIV is
-#               provisioned and that the store is complete (PRIV's census and the markers of the two
-#               commands) before it reaches the proof, so that refusal says the switch's
-#               preconditions hold; any other answer of the route fails the run. The stand-in does
+#               refuses, as it always does here: this Dispatch names no secrets broker, so the
+#               route answers 409 PRIVATE_PROJECTS_NEED_BROKER, and a build that runs no
+#               private-hub admission proof answers 409 PRIVATE_PROJECTS_UNAVAILABLE; listed and
+#               confined run either way. With --private-by-sql, that refusal is stood in for by the
+#               store writes the route makes (PRIV private with its full switch recorded, and every
+#               personal token that lists it revoked, its closing state's revocation), so every
+#               section below runs, and the run passes when they do. The route checks, in the
+#               transaction it refuses, that PRIV is provisioned and that the store is complete
+#               (PRIV's census and the markers of the two commands) before it reaches either, so
+#               that refusal says the switch's preconditions hold; any other answer of the route
+#               fails the run. The stand-in does
 #               not append the route's project.access_changed events, events of PRIV, which no
 #               unseeing caller reads. Either way the twin's carol PRIV token, listing nothing, is
 #               revoked beside main's, so carol's list of her tokens compares alike. Then PRIV's
@@ -289,10 +291,10 @@ else
     if [ "$private_by_sql" = 0 ]; then
       unrun "PRIV is not private: $refusal; the walk, search, sockets, proxy and writes sections need it and did not run"
       note "PRIV is not private: HTTP $status"
-    elif [ "$status" != 409 ] || [ "$(jq -r '.code // empty' "$work/body" 2>/dev/null)" != PRIVATE_PROJECTS_UNAVAILABLE ]; then
-      # The route reaches the record only once PRIV is provisioned and the store complete: any
+    elif [ "$status" != 409 ] || ! jq -e '.code == "PRIVATE_PROJECTS_NEED_BROKER" or .code == "PRIVATE_PROJECTS_UNAVAILABLE"' "$work/body" >/dev/null 2>&1; then
+      # The route reaches either refusal only once PRIV is provisioned and the store complete: any
       # other refusal is a precondition the stand-in would skip.
-      fail "--private-by-sql stands in only for 409 PRIVATE_PROJECTS_UNAVAILABLE, the refusal of a switch whose preconditions hold: $refusal"
+      fail "--private-by-sql stands in only for 409 PRIVATE_PROJECTS_NEED_BROKER or PRIVATE_PROJECTS_UNAVAILABLE, the refusals of a switch whose preconditions hold: $refusal"
     else
       # The store writes the route makes: its closing state revokes every personal token that
       # lists PRIV, and its commit makes PRIV private and records its full switch.
@@ -301,7 +303,7 @@ else
         -c "update projects set visibility = 'private', full_switch_at = now() where key = 'PRIV'" >/dev/null ||
         fail "main: the stand-in could not make PRIV private"
       priv_private=1
-      note "PRIV is private by the store writes the route makes (--private-by-sql): the route answered 409 PRIVATE_PROJECTS_UNAVAILABLE, its preconditions held"
+      note "PRIV is private by the store writes the route makes (--private-by-sql): the route answered 409 $(jq -r '.code' "$work/body"), its preconditions held"
     fi
   fi
   if [ "$priv_private" = 1 ]; then

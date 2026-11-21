@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -50,17 +51,19 @@ func closedSQL(p, listed string) string {
 
 // Closing is a project's closing state as a switch to private reads it, under the project's owner
 // lock: when its closing state began, nil when it is in none, beside the database's own time at
-// the read, which the switch ages that start against.
+// the read, which the switch ages that start against, and the Slack channel ids the project holds.
 type Closing struct {
-	Since *time.Time
-	Now   time.Time
+	Since         *time.Time
+	Now           time.Time
+	SlackChannels []string
 }
 
 // ReadClosing answers project key's closing state, read in tx; ErrProjectNotFound for a key no
 // project holds.
 func ReadClosing(ctx context.Context, tx pgx.Tx, key string) (Closing, error) {
 	var state Closing
-	err := tx.QueryRow(ctx, `select closing_since, statement_timestamp() from projects where key = $1`, key).Scan(&state.Since, &state.Now)
+	err := tx.QueryRow(ctx, `select closing_since, statement_timestamp(), slack_channels from projects where key = $1`, key).
+		Scan(&state.Since, &state.Now, &state.SlackChannels)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Closing{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
@@ -68,6 +71,20 @@ func ReadClosing(ctx context.Context, tx pgx.Tx, key string) (Closing, error) {
 		return Closing{}, fmt.Errorf("read the closing state of project %s: %w", key, err)
 	}
 	return state, nil
+}
+
+// OweBrokerForget writes, in q, that the secrets broker is owed the forget of its record of
+// project key: the record numbered record, which a switch to private left in the broker's store
+// and did not commit, or with record nil the project's record whatever its number, once the
+// project is public. The forget is sent by the broker_forgets sender (internal/dispatch/api's
+// sendBrokerForgets), at once, until the broker takes it.
+func OweBrokerForget(ctx context.Context, q interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+}, key string, record *int64) error {
+	if _, err := q.Exec(ctx, `insert into broker_forgets (project, record) values ($1, $2)`, key, record); err != nil {
+		return fmt.Errorf("owe the secrets broker the forget of project %s: %w", key, err)
+	}
+	return nil
 }
 
 // StartClosing puts project key in its closing state, in tx and under the project's owner lock,

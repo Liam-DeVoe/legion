@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,60 +11,22 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/access"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// countingBroker stands in for the secrets broker's count route (GET /v1/admin/machine-tokens),
-// answering the count each project holds, to Dispatch's own account token alone, or failing every
-// call while down.
-type countingBroker struct {
-	mu   sync.Mutex
-	live map[string]int
-	down bool
-}
-
-const countingBrokerAccount = "dispatch-account-token"
-
-func (b *countingBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	switch {
-	case b.down:
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_, _ = w.Write([]byte(`{"code":"DATABASE_UNAVAILABLE","error":"down"}`))
-	case r.Method != http.MethodGet || r.URL.Path != "/v1/admin/machine-tokens":
-		w.WriteHeader(http.StatusNotFound)
-	case r.Header.Get("Authorization") != "Bearer "+countingBrokerAccount:
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = w.Write([]byte(`{"code":"ACCOUNT_LACKS_POWER","error":"not dispatch"}`))
-	default:
-		project := r.URL.Query().Get("project")
-		answer := map[string]any{"project": project, "live_tokens": b.live[project], "last_expires_at": nil}
-		if b.live[project] > 0 {
-			answer["last_expires_at"] = time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
-		}
-		_ = json.NewEncoder(w).Encode(answer)
-	}
-}
-
-func (b *countingBroker) set(project string, live int, down bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.live[project], b.down = live, down
-}
-
 // closingRig is a test server whose deployment provisions listed as private and whose hubs admit
 // Dispatch, holding PRIV and PUB, both alice's, with the store's backfills done, and, with a
-// broker, the counting stand-in as its secrets broker. Its membership answer is read as the
+// broker, the stand-in (brokerStandIn) as its secrets broker. Its membership answer is read as the
 // listed service account.
 type closingRig struct {
 	handler  http.Handler
 	database *store.Store
-	broker   *countingBroker
+	broker   *brokerStandIn
 	// answerBody is the membership answer of a project as its bytes.
 	answerBody func(t *testing.T, key string) string
 }
@@ -81,17 +44,15 @@ func (rig closingRig) answer(t *testing.T, key string) model.AccessAnswer {
 func newClosingRig(t *testing.T, listed []string, withBroker bool) closingRig {
 	t.Helper()
 	issuer := newServiceTokenIssuer(t)
-	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
+	options := testServerOptions{
 		store: storetest.Open(t), privateProjects: listed, hubAdmission: acceptingAdmission{},
-		oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount},
-	})
-	rig := closingRig{handler: handler, database: database}
-	if withBroker {
-		rig.broker = &countingBroker{live: map[string]int{}}
-		stand := httptest.NewServer(rig.broker)
-		t.Cleanup(stand.Close)
-		served.deps.AgentSecrets = agentsecrets.New(stand.URL, accountTokenFile(t, countingBrokerAccount))
+		oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}, noAgentSecrets: !withBroker,
 	}
+	if withBroker {
+		options.agentSecrets = newBrokerStandIn()
+	}
+	handler, database, _ := newTestServer(t, options)
+	rig := closingRig{handler: handler, database: database, broker: options.agentSecrets}
 	for _, key := range []string{"PRIV", "PUB"} {
 		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": key, "name": key}, "alice"); response.Code != http.StatusCreated {
 			t.Fatalf("create %s: %d %s", key, response.Code, response.Body.String())
@@ -195,8 +156,8 @@ func (rig closingRig) makeDayOnePrivate(t *testing.T, key string) {
 // closed. A broker that does not answer leaves the switch 503 DEVELOPER_BOX_TOKENS_UNAVAILABLE and
 // the closing state in place; the owner's switch to public ends it. A project private on its first
 // day, closed to developer boxes once its key is on DISPATCH_PRIVATE_PROJECTS, goes through the same
-// closing state at its owner's switch. A deployment with no secrets broker, which no developer-box
-// token reads, completes the switch at once.
+// closing state at its owner's switch. A deployment with no secrets broker refuses the switch 409
+// PRIVATE_PROJECTS_NEED_BROKER with nothing changed: no closing state, no token revoked.
 func TestAProjectBecomesPrivateOnlyWithNoDeveloperBoxTokenLive(t *testing.T) {
 	t.Run("with a broker", func(t *testing.T) {
 		rig := newClosingRig(t, []string{"PRIV", "PUB"}, true)
@@ -252,11 +213,219 @@ func TestAProjectBecomesPrivateOnlyWithNoDeveloperBoxTokenLive(t *testing.T) {
 
 	t.Run("with no broker", func(t *testing.T) {
 		rig := newClosingRig(t, []string{"PRIV"}, false)
-		lowerSettle(t, time.Hour)
-		if made := rig.switchPrivate(t, "PRIV"); made.Code != http.StatusOK || visibilityOf(t, rig.database, "PRIV") != model.ProjectPrivate || rig.closingSince(t, "PRIV") != nil {
-			t.Fatalf("the switch with no broker = %d %s; want 200 at once, private, its closing state ended", made.Code, made.Body.String())
+		token := decodeBody[agentTokenResponse](t, rig.mint(t, "of PRIV", []string{"PRIV"}))
+		before := allEvents(t, rig.database)
+		refusedWith(t, "the switch with no broker", rig.switchPrivate(t, "PRIV"), http.StatusConflict, "PRIVATE_PROJECTS_NEED_BROKER", "DISPATCH_AGENT_SECRETS_URL")
+		if visibilityOf(t, rig.database, "PRIV") != model.ProjectPublic || rig.closingSince(t, "PRIV") != nil || allEvents(t, rig.database) != before || rig.whoami(t, token.Token) != http.StatusOK {
+			t.Fatalf("the refused switch with no broker changed something: PRIV %s, closing %v, events %d → %d, PRIV's token reads whoami %d",
+				visibilityOf(t, rig.database, "PRIV"), rig.closingSince(t, "PRIV"), before, allEvents(t, rig.database), rig.whoami(t, token.Token))
 		}
 	})
+}
+
+// brokerForgetsOf is the forgets owed the broker for key, as (record or 0) in the order written.
+func brokerForgetsOf(t *testing.T, database *store.Store, key string) []int64 {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `select coalesce(record, 0) from broker_forgets where project = $1 order by id`, key)
+	if err != nil {
+		t.Fatalf("read the forgets owed for %s: %v", key, err)
+	}
+	records, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		t.Fatalf("read the forgets owed for %s: %v", key, err)
+	}
+	return records
+}
+
+// TestTheSwitchSendsItsChannelsAndDeadlineToTheBrokersCount: every count a switch to private asks
+// sends deadline_seconds 90 and the Slack channels the project will hold once the switch commits:
+// the stored ones, none as an empty list, and the body's, checked and sorted as their write keeps
+// them, when the PATCH names them. A body naming a channel that is no channel id is refused 400
+// INVALID_SLACK_CHANNEL before anything is written or counted.
+func TestTheSwitchSendsItsChannelsAndDeadlineToTheBrokersCount(t *testing.T) {
+	rig := newClosingRig(t, []string{"PRIV", "PUB"}, true)
+	lowerSettle(t, 0)
+	if _, err := rig.database.Pool.Exec(context.Background(), `update projects set slack_channels = '{C0STORED001}' where key = 'PRIV'`); err != nil {
+		t.Fatal(err)
+	}
+	refusedWith(t, "the first switch of PRIV", rig.switchPrivate(t, "PRIV"), http.StatusConflict, "DEVELOPER_BOX_TOKENS_LIVE")
+	refusedWith(t, "the first switch of PUB", rig.switchPrivate(t, "PUB"), http.StatusConflict, "DEVELOPER_BOX_TOKENS_LIVE")
+	refusedWith(t, "a switch of PRIV naming no channel id", dispatchRequest(t, rig.handler, http.MethodPatch, "/api/v1/projects/PRIV/access",
+		map[string]any{"visibility": "private", "slack_channels": []string{"general"}}, "alice"), http.StatusBadRequest, "INVALID_SLACK_CHANNEL")
+	if made := dispatchRequest(t, rig.handler, http.MethodPatch, "/api/v1/projects/PRIV/access",
+		map[string]any{"visibility": "private", "slack_channels": []string{" C0BODY00002", "C0BODY00001", "C0BODY00002"}}, "alice"); made.Code != http.StatusOK {
+		t.Fatalf("the switch of PRIV naming its channels = %d %s, want 200", made.Code, made.Body.String())
+	}
+	counts, _ := rig.broker.answered()
+	want := []standInCount{
+		{Project: "PRIV", Channels: []string{"C0STORED001"}, Deadline: "90", Record: 1},
+		{Project: "PUB", Channels: []string{}, Deadline: "90", Record: 2},
+		{Project: "PRIV", Channels: []string{"C0BODY00001", "C0BODY00002"}, Deadline: "90", Record: 3},
+	}
+	if len(counts) != len(want) {
+		t.Fatalf("the broker answered %d counts %+v, want %+v: the refused body asks none", len(counts), counts, want)
+	}
+	for i := range want {
+		if counts[i].Project != want[i].Project || counts[i].Deadline != want[i].Deadline || counts[i].Record != want[i].Record ||
+			strings.Join(counts[i].Channels, ",") != strings.Join(want[i].Channels, ",") || counts[i].Channels == nil {
+			t.Errorf("count %d = %+v, want %+v", i, counts[i], want[i])
+		}
+	}
+}
+
+// switchableAdmission is a private-hub admission proof (HubAdmission) a test turns: it answers err,
+// or, while block is set, waits for the switch's context to end and answers its error.
+type switchableAdmission struct {
+	mu    sync.Mutex
+	err   error
+	block bool
+}
+
+func (a *switchableAdmission) Prove(ctx context.Context) error {
+	a.mu.Lock()
+	err, block := a.err, a.block
+	a.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return err
+}
+
+func (a *switchableAdmission) setProveErr(err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.err = err
+}
+
+func (a *switchableAdmission) setBlock(block bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.block = block
+}
+
+// TestASwitchThatDoesNotCommitOwesTheBrokerItsForget: a switch the closing step refuses after the
+// broker's count answered record N owes the forget of N, written with the closing state it keeps;
+// one that fails later in its transaction, here at the hubs' admission proof, owes the forget of N
+// too, written once the transaction rolled back; one past its deadline answers 503
+// PRIVATE_SWITCH_TIMED_OUT, changes nothing and owes the forget of N. A switch that commits owes
+// nothing for its own record, and the owner's switch of the private project back to public owes
+// the forget of the project's record whatever its number. A switch whose count the broker did
+// not answer owes nothing: no record is known.
+func TestASwitchThatDoesNotCommitOwesTheBrokerItsForget(t *testing.T) {
+	admission := &switchableAdmission{}
+	broker := newBrokerStandIn()
+	issuer := newServiceTokenIssuer(t)
+	handler, database, _ := newTestServer(t, testServerOptions{
+		store: storetest.Open(t), privateProjects: []string{"PRIV"}, hubAdmission: admission, agentSecrets: broker,
+		oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount},
+	})
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "PRIV", "name": "PRIV"}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create PRIV: %d %s", response.Code, response.Body.String())
+	}
+	if _, err := database.Pool.Exec(context.Background(), `insert into session_projects_filled default values; insert into access_events_scrubbed default values`); err != nil {
+		t.Fatal(err)
+	}
+	lowerSettle(t, 0)
+	private := map[string]string{"visibility": "private"}
+	switchPRIV := func() *httptest.ResponseRecorder {
+		return dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice")
+	}
+	refusedWith(t, "the first switch, which starts the closing state", switchPRIV(), http.StatusConflict, "DEVELOPER_BOX_TOKENS_LIVE")
+	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("forgets owed after the refused first switch = %v, want [1]", got)
+	}
+	broker.set("PRIV", 0, true)
+	refusedWith(t, "a switch the broker does not count", switchPRIV(), http.StatusServiceUnavailable, "DEVELOPER_BOX_TOKENS_UNAVAILABLE")
+	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 1 {
+		t.Fatalf("forgets owed after a count the broker did not answer = %v, want [1] still: no record is known", got)
+	}
+	broker.set("PRIV", 0, false)
+	admission.setProveErr(errors.New("hub nats://hub-b.example:4222 refused the admission proof"))
+	refusedWith(t, "a switch whose hubs refuse the proof", switchPRIV(), http.StatusConflict, "PRIVATE_PROJECTS_UNAVAILABLE")
+	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 2 || got[1] != 2 {
+		t.Fatalf("forgets owed after the switch the hubs refused = %v, want [1 2]", got)
+	}
+	admission.setProveErr(nil)
+	previous := privateSwitchDeadline
+	privateSwitchDeadline = 2 * time.Second
+	t.Cleanup(func() { privateSwitchDeadline = previous })
+	admission.setBlock(true)
+	refusedWith(t, "a switch past its deadline", switchPRIV(), http.StatusServiceUnavailable, "PRIVATE_SWITCH_TIMED_OUT", "2s deadline", "nothing was changed")
+	admission.setBlock(false)
+	privateSwitchDeadline = previous
+	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 3 || got[2] != 3 || visibilityOf(t, database, "PRIV") != model.ProjectPublic {
+		t.Fatalf("after the switch past its deadline: forgets %v, PRIV %s; want [1 2 3] and PRIV public", got, visibilityOf(t, database, "PRIV"))
+	}
+	if made := switchPRIV(); made.Code != http.StatusOK || visibilityOf(t, database, "PRIV") != model.ProjectPrivate {
+		t.Fatalf("the switch that commits = %d %s", made.Code, made.Body.String())
+	}
+	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 3 {
+		t.Fatalf("forgets owed after the switch that committed = %v, want [1 2 3]: it owes none for its own record 4", got)
+	}
+	if back := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", map[string]string{"visibility": "public"}, "alice"); back.Code != http.StatusOK {
+		t.Fatalf("the switch back to public = %d %s", back.Code, back.Body.String())
+	}
+	if got := brokerForgetsOf(t, database, "PRIV"); len(got) != 4 || got[3] != 0 {
+		t.Fatalf("forgets owed after the switch back to public = %v, want [1 2 3 0], the last for the record whatever its number", got)
+	}
+}
+
+// TestTheForgetSenderDeliversEachOwedForget: the sender sends each forget that has come due, with
+// its record or none, and deletes each the broker takes; it deletes unsent the forget of a project
+// that is private when it reads it; a forget the broker answers 409 RECORD_IN_FLIGHT waits the
+// retry_after_seconds it names, and one it answers 404, a broker without the route, waits 5 s
+// and is counted, each kept with the broker's answer as its error.
+func TestTheForgetSenderDeliversEachOwedForget(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	broker := newBrokerStandIn()
+	client := broker.serve(t)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee, owner, visibility) values ('PUBA', 'PUBA', 'alice', 'alice', 'public'), ('PRIVB', 'PRIVB', 'alice', 'alice', 'private');
+		insert into broker_forgets (project, record) values ('PUBA', 7), ('PRIVB', 8), ('PUBA', null);
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := sendBrokerForgets(ctx, database.Pool, client); err != nil {
+		t.Fatalf("send the forgets: %v", err)
+	}
+	_, forgets := broker.answered()
+	if len(forgets) != 2 || forgets[0].Project != "PUBA" || forgets[0].Record == nil || *forgets[0].Record != 7 || forgets[1].Project != "PUBA" || forgets[1].Record != nil {
+		t.Fatalf("the broker answered forgets %+v, want PUBA's 7 then PUBA's with no record, and none of private PRIVB", forgets)
+	}
+	var left int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from broker_forgets`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("forgets left after the broker took them = %d (%v), want 0", left, err)
+	}
+
+	for _, row := range []struct {
+		status, retryAfter int
+		wait               time.Duration
+		lastError          string
+	}{
+		{http.StatusConflict, 42, 42 * time.Second, "in flight"},
+		{http.StatusNotFound, 0, brokerForgetFirstRetry, "404"},
+	} {
+		broker.mu.Lock()
+		broker.forgetStatus, broker.retryAfter = row.status, row.retryAfter
+		broker.mu.Unlock()
+		if _, err := database.Pool.Exec(ctx, `delete from broker_forgets; insert into broker_forgets (project, record) values ('PUBA', 9)`); err != nil {
+			t.Fatal(err)
+		}
+		if err := sendBrokerForgets(ctx, database.Pool, client); err != nil {
+			t.Fatalf("send the forgets: %v", err)
+		}
+		var attempts int
+		var wait time.Duration
+		var lastError string
+		if err := database.Pool.QueryRow(ctx, `select attempts, next_attempt_at - now(), last_error from broker_forgets where project = 'PUBA'`).Scan(&attempts, &wait, &lastError); err != nil {
+			t.Fatalf("read the forget the broker answered %d: %v", row.status, err)
+		}
+		if attempts != 1 || wait < row.wait-2*time.Second || wait > row.wait || !strings.Contains(lastError, row.lastError) {
+			t.Errorf("the forget the broker answered %d: attempts %d, next in %s, last error %q; want 1, about %s, naming %q", row.status, attempts, wait, lastError, row.wait, row.lastError)
+		}
+	}
 }
 
 // TestTheMembershipAnswerClosesAProjectToDeveloperBoxes: closed_to_developer_boxes is absent for a

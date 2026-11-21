@@ -241,9 +241,22 @@ func OwnerNotAllowed(login string) error {
 // to public clears the project's full switch (full_switch_at), so a later private stretch is judged
 // afresh (RecordFullSwitch). Either way it ends the project's closing state (StartClosing): a switch
 // to private completes it, and a switch to public, the owner's or the repair command's, abandons it.
+// A switch to public of a project that was private or closing also owes the secrets broker the
+// forget of its record of the project, whatever its number (OweBrokerForget), in tx.
 func SetVisibility(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, visibility string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	if visibility != model.ProjectPublic && visibility != model.ProjectPrivate {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w, not %q", ErrVisibilityInput, visibility)
+	}
+	if err := lockProject(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	var held bool
+	err := tx.QueryRow(ctx, `select visibility = 'private' or closing_since is not null from projects where key = $1`, key).Scan(&held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
+	}
+	if err != nil {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("read the visibility of project %s: %w", key, err)
 	}
 	if err := updateProject(ctx, tx, key, `
 		update projects set visibility = $2, closing_since = null,
@@ -251,6 +264,11 @@ func SetVisibility(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, visib
 		where key = $1
 	`, visibility); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
+	}
+	if held && visibility == model.ProjectPublic {
+		if err := OweBrokerForget(ctx, tx, key, nil); err != nil {
+			return model.ProjectAccess{}, model.Event{}, err
+		}
 	}
 	return appendProjectChange(ctx, tx, ev, key, model.AccessVisibilityChanged, "", by)
 }
@@ -315,18 +333,9 @@ var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,20}$`)
 // the request's own caller sees, as the API resolved it for the request (readerOf), whom the
 // refusal is written for. It appends project.access_changed in tx.
 func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, model.Event, error) {
-	named := make([]string, 0, len(channels))
-	for _, channel := range channels {
-		id := strings.TrimSpace(channel)
-		if !slackChannel.MatchString(id) {
-			return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %q", ErrSlackChannelInput, id)
-		}
-		named = append(named, id)
-	}
-	slices.Sort(named)
-	named = slices.Compact(named)
-	if len(named) > MaxSlackChannels {
-		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %d given", ErrSlackChannelsFull, len(named))
+	named, err := NormalizeSlackChannels(channels)
+	if err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
 	}
 	// The project's owner lock and then the channel lock, in the order every access write takes its
 	// locks: a caller that took the first already (LockForAccessWrite) takes it again at once.
@@ -337,7 +346,7 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	var visibility string
-	err := tx.QueryRow(ctx, `select visibility from projects where key = $1`, key).Scan(&visibility)
+	err = tx.QueryRow(ctx, `select visibility from projects where key = $1`, key).Scan(&visibility)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
@@ -361,6 +370,26 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	return appendProjectChange(ctx, tx, ev, key, model.AccessSlackChannelsChanged, "", by)
+}
+
+// NormalizeSlackChannels is a list of Slack channel ids as a project stores it: each id trimmed,
+// sorted, each named once. An id that is no channel id is ErrSlackChannelInput naming it, and more
+// than MaxSlackChannels ids is ErrSlackChannelsFull.
+func NormalizeSlackChannels(channels []string) ([]string, error) {
+	named := make([]string, 0, len(channels))
+	for _, channel := range channels {
+		id := strings.TrimSpace(channel)
+		if !slackChannel.MatchString(id) {
+			return nil, fmt.Errorf("%w: %q", ErrSlackChannelInput, id)
+		}
+		named = append(named, id)
+	}
+	slices.Sort(named)
+	named = slices.Compact(named)
+	if len(named) > MaxSlackChannels {
+		return nil, fmt.Errorf("%w: %d given", ErrSlackChannelsFull, len(named))
+	}
+	return named, nil
 }
 
 // RefuseSharedSlackChannels is a switch of project key to private's check of its own Slack channels,
