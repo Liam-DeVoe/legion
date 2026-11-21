@@ -425,7 +425,8 @@ const testerVerdictLabel = "Tester's verdict"
 //
 // Every phase start of a child, the move into accepting among them, first starts the child's own
 // architect again when its claim has failed (reviveArchitect). The phase starts are the one place
-// in the workflow that does this, since the transitions are the only phase starts. Outside the
+// in the workflow that does this, since the transitions and the return out of awaiting_children
+// (ReturnFromChildren) are the only phase starts. Outside the
 // workflow, a re-admission brings a mid-phase child's failed architect back with the member's
 // other roles (admit's startMidPhaseMembers), and so does an operator's retry. A restart of a held
 // phase (restart), a promoted start (StartPromotedWorker), an owed entry (SendOwedEntry) and a
@@ -446,6 +447,34 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 		return err
 	}
 	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
+}
+
+// startEntered starts what a move of issue into the phase it now stands in starts, from being the
+// phase the move left: that phase's worker, role, on task (start), and for accepting, where start
+// starts no worker and only a child's failed architect again (reviveArchitect), the accepting
+// step, which no worker's start begins (startStandingStep). Its two callers are the transition and
+// the return out of awaiting_children (ReturnFromChildren), so a move into accepting starts the
+// same things whichever makes it: a held accepting whose pull request merged during the wait goes
+// back on today's path into accepting (dispatch://INFRA-3320 R12).
+func (e *Engine) startEntered(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, from phase.Phase) error {
+	if err := e.start(ctx, tx, issue, role, task, from); err != nil {
+		return err
+	}
+	if issue.Phase != phase.Accepting {
+		return nil
+	}
+	return e.startStandingStep(ctx, tx, issue)
+}
+
+// startStandingStep starts the step issue stands in (standingStep) under the agent that step names
+// (startNamedStep), and nothing where it stands in no step: the start of a step no phase worker's
+// start begins, accepting's (startEntered) and a merge GitHub has already made (transition).
+func (e *Engine) startStandingStep(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	step, ok := standingStep(issue)
+	if !ok {
+		return nil
+	}
+	return e.startNamedStep(ctx, tx, issue, step)
 }
 
 // reviveArchitect queues the start of the architect of issue, a child, when the store records its
@@ -1136,22 +1165,28 @@ func (e *Engine) resumePhaseTask(ctx context.Context, tx pgx.Tx, issue record.Is
 // the parent on.
 const baseMergeRun = "Test the head merged with the tip of the pull request's base branch, read at the round's start once that tip carries each needed child's merge, in a checkout of your own outside the issue's workspace that you never push; record each result at the head with an `--observed` line naming that base commit, a carried pass too; size the round over the whole tested tree's difference."
 
-// withBaseMergeRun is text, the task of a worker in at, as it stands where at is not testing, and
-// otherwise ending with the base-merge sentence (baseMergeRun) once where parent says its issue is
-// a parent, and with none where it is not: any copy text already carries is taken out first, so a
-// held testing task that carried it before the wait carries it once after the return
-// (ReturnFromChildren). Every writer of a task ends it here: task, which builds a transition's, a
-// retry's, a held start's and the return's testing task over the implementer's row;
-// ResumePhaseTask; and returnTask, for the held task the return gives back.
+// withBaseMergeRun is text, the task of a worker in at, as it stands where at is not testing or
+// its issue is no parent, and otherwise with the base-merge sentence (baseMergeRun) added at its
+// end. text carries no copy of it: every writer of a task ends it here once — task, which builds
+// a transition's, a retry's and the return's testing task over the implementer's row;
+// ResumePhaseTask; and returnTask, for the held task the return gives back, which every held start
+// keeps without the sentence (heldTask, withoutBaseMergeRun).
 func withBaseMergeRun(text string, at phase.Phase, parent bool) string {
-	if at != phase.Testing {
-		return text
-	}
-	text = strings.ReplaceAll(text, " "+baseMergeRun, "")
-	if !parent {
+	if at != phase.Testing || !parent {
 		return text
 	}
 	return text + " " + baseMergeRun
+}
+
+// withoutBaseMergeRun is text, a task already built for a worker, with the base-merge sentence
+// withBaseMergeRun ended it with taken off, and text as it stands where it ends with none: the
+// task a held start keeps (record.ChildrenWait.Task), to which the return adds the sentence once
+// (returnTask). The admission pass's stop of a phase takes such a task as the hold — the task of
+// a start written and not yet delivered, the task its worker was given, or the work of its entry
+// (StopForChildren) — and every other held start is built with no sentence (heldTask). So a
+// release that changes the sentence finds no copy of an earlier one in a held task.
+func withoutBaseMergeRun(text string) string {
+	return strings.TrimSuffix(text, " "+baseMergeRun)
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

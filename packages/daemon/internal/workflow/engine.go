@@ -2084,6 +2084,50 @@ type acceptanceHold struct {
 	names string
 }
 
+// acceptanceAct is an act an acceptance hold refuses (acceptanceHold.refusal), named as the
+// architect's request names it: the sign-off (signOff) and the close of a root (closeRoot).
+type acceptanceAct string
+
+const (
+	actSignOff   acceptanceAct = "sign_off"
+	actCloseRoot acceptanceAct = "close_root"
+)
+
+// acceptanceRefusals is the refusal text of each hold acceptanceHeld answers, by its code and by
+// the act it refuses. Each text is a format of the issue's key (%[1]s) and the names the hold
+// carries (%[2]s). It is the one place a hold's refusal is written for both acts, so a hold added
+// to acceptanceHeld is read here for each of them, and one the table misses for an act still
+// refuses that act (acceptanceHold.refusal).
+var acceptanceRefusals = map[string]map[acceptanceAct]string{
+	signOffChildInWorkflow: {
+		actSignOff:   "%[1]s is not accepted while these issues beneath it are still in the workflow: %[2]s. A parent is accepted after them, on a head that need not carry its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit that carries every needed child's merge. Run each one to done: unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. Park one with park_child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
+		actCloseRoot: "%[1]s is not closed while these issues beneath it are still in the workflow: %[2]s. Closing it would linger the tree and stop them mid-turn; run each one to done, and close the tree again. Park one with park_child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the close until they answer",
+	},
+	signOffRestingRoot: {
+		actSignOff:   "%[1]s is not accepted while these roots that rest on its approval are still in the workflow: %[2]s. The design-gate step of each rests on an approval of %[1]s, so %[1]s is accepted after them. Each is a tree of its own: its own architect, or a person, moves it. Sign off again once each one is done or out of the workflow",
+		actCloseRoot: "%[1]s is not closed while these roots that rest on its approval are still in the workflow: %[2]s. The design-gate step of each rests on an approval of %[1]s, so %[1]s closes after them. Each is a tree of its own: its own architect, or a person, moves it. Close the tree again once each one is done or out of the workflow",
+	},
+	signOffChildOpen: {
+		actSignOff:   "%[1]s is not accepted while these Dispatch children of it are open: %[2]s. A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. Unless the pull request of %[1]s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. A child that runs as a tree of its own is moved by its own architect or a person. Close or icebox a child " + parkRule + ", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the acceptance until they answer",
+		actCloseRoot: "%[1]s is not closed while these Dispatch children of it are open: %[2]s. A parent closes after its children. Close or icebox each child that was never released " + parkRule + ", say in a comment which of those it is, and close the tree again. A child that runs as a tree of its own is moved by its own architect or a person. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the close until they answer",
+	},
+}
+
+// refusal is the refusal of act on the issue key that h makes, and false where h holds nothing:
+// the hold's own code with that act's text (acceptanceRefusals). A hold the table names no text of
+// for act refuses it all the same, with its code and the issues it names, so no hold lets a
+// sign-off or a close through for want of its words.
+func (h acceptanceHold) refusal(act acceptanceAct, key string) (intake.Result, bool) {
+	if h.code == "" {
+		return intake.Result{}, false
+	}
+	text, ok := acceptanceRefusals[h.code][act]
+	if !ok {
+		return refused(h.code, fmt.Sprintf("%s is held by %s, which names %s, so this %s changed nothing", key, h.code, h.names, act)), true
+	}
+	return refused(h.code, fmt.Sprintf(text, key, h.names)), true
+}
+
 // acceptanceHeld reads the three holds on issue's acceptance and on its close, in R8's order, and
 // answers the first that holds; each later one is read only when the one before it holds nothing.
 // First, an issue beneath it in its own tree that is still in the workflow (record.OpenBeneath,
@@ -2206,16 +2250,8 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	switch held.code {
-	case signOffChildInWorkflow:
-		return refused(held.code, fmt.Sprintf("%s is not accepted while these issues beneath it are still in the workflow: %s. A parent is accepted after them, on a head that need not carry its children's merges, once each check a role runs has a pass at that head whose observed line names a base commit that carries every needed child's merge. Run each one to done: unless the pull request of %s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. Park one with park_child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer",
-			issue.Key, held.names, issue.Key)), nil
-	case signOffRestingRoot:
-		return refused(held.code, fmt.Sprintf("%s is not accepted while these roots that rest on its approval are still in the workflow: %s. The design-gate step of each rests on an approval of %s, so %s is accepted after them. Each is a tree of its own: its own architect, or a person, moves it. Sign off again once each one is done or out of the workflow",
-			issue.Key, held.names, issue.Key, issue.Key)), nil
-	case signOffChildOpen:
-		return refused(held.code, fmt.Sprintf("%s is not accepted while these Dispatch children of it are open: %s. A parent is accepted after its children, a child that runs as a tree of its own included: run each one to done, releasing one that was never released. Unless the pull request of %s has merged, the next admission pass moves it to awaiting_children, and once no child under it is open it goes back by itself to the start it held, a held acceptance as testing; otherwise sign off again. A child that runs as a tree of its own is moved by its own architect or a person. Close or icebox a child "+parkRule+", and say in a comment which of those it is. Ask the person about a child that can reach neither done nor icebox under that rule, and hold the acceptance until they answer",
-			issue.Key, held.names, issue.Key)), nil
+	if refusal, refuses := held.refusal(actSignOff, issue.Key); refuses {
+		return refusal, nil
 	}
 	review, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleReviewer)
 	if err != nil {
@@ -2372,22 +2408,17 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// issue that arrives there and waits must be told why: the notice its architect got at the
 	// merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
-	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, work, from); err != nil {
+	// A merge GitHub has already made is one of two moves that start a step no phase worker's
+	// start begins: no merger runs it, so it starts here under the agent its step names
+	// (startStandingStep), and its close ends it. Every other move starts what a move into its
+	// phase starts (startEntered): the phase's worker, and for accepting, whose role is the
+	// architect, a child's failed architect started again and the accepting step.
+	if mergedAlready {
+		if err := e.startStandingStep(ctx, tx, issue); err != nil {
 			return err
 		}
-	}
-	// Two moves start a step no phase worker's start begins, so it starts here, under the agent it
-	// names (startNamedStep): a merge GitHub has already made, which no merger runs and whose close
-	// ends it, and accepting, whose role is the architect, for which start above starts no worker
-	// and only starts a child's failed architect again (reviveArchitect), as every phase start of a
-	// child does.
-	if mergedAlready || row.To == phase.Accepting {
-		if step, ok := standingStep(issue); ok {
-			if err := e.startNamedStep(ctx, tx, issue, step); err != nil {
-				return err
-			}
-		}
+	} else if err := e.startEntered(ctx, tx, issue, starting, work, from); err != nil {
+		return err
 	}
 	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
 		return err

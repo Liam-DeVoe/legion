@@ -1268,6 +1268,61 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 	})
 
+	// A child parent that held accepting and whose pull request merged during the wait goes back to
+	// accepting on today's path into it (dispatch://INFRA-3320 R12): its own architect, whose claim
+	// failed during the wait, is started again, as every phase start of a child starts it
+	// (workflow's reviveArchitect), and the accepting step's run opens under that architect
+	// (workflow's startNamedStep), so the architect's sign_off ends that run, passed, before the
+	// retro's run starts.
+	t.Run("a child parent back in accepting after its pull request merged during the wait starts its failed architect again and opens the accepting run the sign_off ends", func(t *testing.T) {
+		const (
+			root   = "LEGION-380"
+			parent = "LEGION-381"
+			child  = "LEGION-382"
+		)
+		pool := migratedPool(t)
+		admission := pnAdmission(t, pool, 3)
+		spSeedParent(t, pool, root, phase.Implementing, true, nil)
+		waited := fixedNow.Add(-2 * time.Hour)
+		putIssue(t, pool, record.Issue{Key: parent, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Project: testProject, Title: parent, Tree: root, Parent: record.ParentOf(root), Phase: phase.AwaitingChildren,
+			Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: parent, LastDispatchSeq: 1,
+			ChildrenWait: &record.ChildrenWait{Start: phase.Accepting, Task: "Continue " + parent + ". Issue: " + parent + ". Phase: accepting. Pull request: #44.",
+				Reason: "a review approved the head, while these Dispatch children of " + parent + " were open: " + child + " (todo)",
+				Since:  waited, Children: []string{child}},
+			ChildrenWaitedAt: &waited})
+		seedPullRequest(t, pool, parent, 44, record.PullRequestMerged)
+		seedMirrorChild(t, pool, parent, "in_progress", root)
+		seedMirrorChild(t, pool, child, "done", parent)
+		architect := putWorkerClaim(t, pool, root, parent, claim.RoleArchitect, 1, supervise.StateFailed, "")
+
+		spPass(t, pool, admission)
+
+		if got := issue(t, pool, parent); got.Phase != phase.Accepting || got.ChildrenWait != nil {
+			t.Fatalf("%s once its child is done = phase %s, held start %+v; want accepting, the start it held", parent, got.Phase, got.ChildrenWait)
+		}
+		var revived []record.SuperviseRequest
+		for _, request := range pwPayloads[record.SuperviseRequest](t, pool, parent) {
+			if request.Op == "start" && request.Role == claim.RoleArchitect {
+				revived = append(revived, request)
+			}
+		}
+		if want := []record.SuperviseRequest{{Op: "start", Tree: root, Role: claim.RoleArchitect, Generation: 1}}; !reflect.DeepEqual(revived, want) {
+			t.Fatalf("starts of %s's architect = %+v, want the one plain start of its failed claim %+v", parent, revived, want)
+		}
+		assertStepWrites(t, pool, parent, start("step", 5, 1, 1))
+		if opened := stepWrites(t, pool, parent)[0]; opened.Agent != string(architect) || opened.Role != "acceptance" {
+			t.Fatalf("the start of %s's accepting run = %+v, want it the acceptance of its own architect %s", parent, opened, architect)
+		}
+
+		pwApplied(t, pool, admission, "api", "sign-off", intake.SignOff{Issue: parent})
+
+		if got := issue(t, pool, parent); got.Phase != phase.Retro {
+			t.Fatalf("%s after the sign_off = %s, want retro", parent, got.Phase)
+		}
+		assertStepWrites(t, pool, parent, start("step", 5, 1, 1), end("passed", "step", 5, 1, 1), start("retro", 0, 1, 1))
+	})
+
 	// The linger's hand-over of a closed tree's child in awaiting_children carries its run and the
 	// start it holds; the handed-over root is promoted as any is, and comes back as above.
 	t.Run("a linger's hand-over carries a waiting child whole, which is promoted holding no slot and comes back as above", func(t *testing.T) {

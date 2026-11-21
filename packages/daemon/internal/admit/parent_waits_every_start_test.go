@@ -113,6 +113,31 @@ func pwMidPhase(t *testing.T, pool *pgxpool.Pool, key string, at phase.Phase, st
 	return token
 }
 
+// pwDeliver records start, a phase worker's start row of the parent, as delivered to token's
+// claim, as the outbox leaves a claim it ran that row on (supervise's queue): the claim holds the
+// row's task for its phase, run and entry, confirmed by a turn, it was given that entry, and the
+// row is finished.
+func pwDeliver(t *testing.T, pool *pgxpool.Pool, token claim.Token, start record.SuperviseRequest) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, entry, confirmed_at)
+		values ($1, 'outbox:delivered', $2, $3, $4, $5, $6, $3)`,
+		string(token), start.Task, fixedNow, int64(start.Generation), string(start.Phase), start.Entry); err != nil {
+		t.Fatalf("record the task the claim %s was given: %v", token, err)
+	}
+	markGivenEntry(t, pool, token, start.Entry)
+	inTx(t, pool, func(tx pgx.Tx) {
+		var id int64
+		if err := tx.QueryRow(ctx, `select id from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'start'
+			and payload->>'role' = $2 order by id desc limit 1`, spParent, string(start.Role)).Scan(&id); err != nil {
+			t.Fatalf("read the %s's start of %s: %v", start.Role, spParent, err)
+		}
+		if err := record.NewStore().FinishOutbox(ctx, tx, id, ""); err != nil {
+			t.Fatalf("finish the %s's start %d of %s: %v", start.Role, id, spParent, err)
+		}
+	})
+}
+
 // pwLate is the completion role reports of the phase it was in, under its claim token, naming the
 // handoff record rec: for a phase the wait stopped, the late completion R10 refuses.
 func pwLate(key string, role claim.Role, token claim.Token, rec string) intake.HandoffComplete {
@@ -1191,6 +1216,87 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		}
 		pnAsksNoForwardMerge(t, "the tester's task", starts[0].task)
 		pnBaseMergeTimes(t, "the tester's task", starts[0].task, 1)
+	})
+
+	// The architect's retry of a parent held from implementing, delivered to its implementer before
+	// a child opens (dispatch://INFRA-3320 R9, "with the task its worker was given"): the retry's
+	// start hands the implementer a task of its own, with the architect's reason, on the entry the
+	// phases row already names, and leaves the row's task as the transition wrote it (workflow's
+	// restart). The pass that then finds a child open holds implementing with the task the
+	// implementer's claim holds, the retry's, and the return starts implementing on that task.
+	t.Run("a retry delivered to the implementer, then a child opens: the held task and the return's task are the retry's", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := pwAdmission(t, 2)
+		spSeedParent(t, pool, spParent, phase.Implementing, true, nil)
+		pwPullRequest(t, pool, spParent, record.PullRequestOpen)
+		token := pwRoleToken(t, spParent, claim.RoleImplementer)
+		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleImplementer, Claim: token, Entry: 3,
+			EntryTask: pwTask(spParent, phase.Implementing), EntryRaisedAt: fixedNow.Add(-time.Hour)})
+		pwApplied(t, pool, admission, "supervisor", "failed", intake.ClaimFailed{Issue: spParent, Role: claim.RoleImplementer,
+			Reason: "the launch budget ran out"})
+		pwApplied(t, pool, admission, "api", "retry", intake.RetryOrEscalate{Issue: spParent, Decision: intake.RetryDecision,
+			Reason: "the runner is back"})
+		retry := pnWorkerStart(t, pool, spParent, claim.RoleImplementer)
+		if row := spPhaseRow(t, pool, spParent, claim.RoleImplementer); retry.Entry != 3 || !strings.Contains(retry.Task, "Reason: the runner is back.") ||
+			row.Entry != 3 || row.EntryTask != pwTask(spParent, phase.Implementing) {
+			t.Fatalf("the retry's start = %+v over the phases row %+v; want the retry's own task on entry 3, the row's task the transition's", retry, row)
+		}
+		putWorkerClaim(t, pool, spParent, spParent, claim.RoleImplementer, 1, supervise.StateWorking, "")
+		pwDeliver(t, pool, token, retry)
+		seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+		spPass(t, pool, admission)
+
+		wait := pwHeld(t, pool, spParent, phase.Implementing, "the admission pass stopped the implementer's implementing phase", spChild+" (todo)")
+		if wait.Task != retry.Task {
+			t.Fatalf("the held task = %q, want the retry's task the implementer was given, %q, not its entry's", wait.Task, retry.Task)
+		}
+		want := []record.SuperviseRequest{{Op: "retire_task", Tree: spParent, Role: claim.RoleImplementer, Generation: 1,
+			Phase: phase.Implementing, Entry: 3}}
+		if retired := spRetired(t, pool, spParent); !reflect.DeepEqual(retired, want) {
+			t.Fatalf("task retirements = %+v, want %+v: the retry's task is the one the move takes back", retired, want)
+		}
+
+		pnChildMerged(t, pool, spChild, spParent, 51)
+		spPass(t, pool, admission)
+
+		if back := issue(t, pool, spParent); back.Phase != phase.Implementing || back.ChildrenWait != nil {
+			t.Fatalf("the parent after its child is done = phase %s, held start %+v; want implementing, the start it held", back.Phase, back.ChildrenWait)
+		}
+		work := retry.Task + " " + pnMergedChildren(spParent, pnMerged(spChild, 51)) + "."
+		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleImplementer || starts[0].task != work {
+			t.Fatalf("starts of %s = %+v, want one implementer start on the retry's task %q", spParent, starts, work)
+		}
+	})
+
+	// A tester stopped in the middle of testing on a task that ends with the base-merge sentence,
+	// as every testing task of a parent does (workflow's withBaseMergeRun), is held with no copy of
+	// it, and the return of its held testing after its pull request merged during the wait ends the
+	// task with the sentence once: a held task keeps no sentence that a later build's return would
+	// add its own beside (workflow's withoutBaseMergeRun).
+	t.Run("a tester stopped on a task ending with the base-merge sentence is held without it, and the return adds it once", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := pwAdmission(t, 2)
+		token := pwMidPhase(t, pool, spParent, phase.Testing, supervise.StateIdle, "")
+		spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleTester, Claim: token, Entry: 3,
+			EntryTask: pwTask(spParent, phase.Testing) + " " + pnBaseMerge, EntryRaisedAt: fixedNow.Add(-time.Hour)})
+		seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+		spPass(t, pool, admission)
+
+		wait := pwHeld(t, pool, spParent, phase.Testing, "the admission pass stopped the tester's testing phase", spChild+" (todo)")
+		if wait.Task != pwTask(spParent, phase.Testing) {
+			t.Fatalf("the held task = %q, want the tester's task with no base-merge sentence, %q", wait.Task, pwTask(spParent, phase.Testing))
+		}
+
+		pwApplied(t, pool, admission, "github", "merged", intake.PullRequestMerged{Repo: "acme/widgets", Number: 42, MergeSHA: "merge-42"})
+		pnChildMerged(t, pool, spChild, spParent, 51)
+		spPass(t, pool, admission)
+
+		work := pwTask(spParent, phase.Testing) + " " + pnMergedChildren(spParent, pnMerged(spChild, 51)) + ". " + pnBaseMerge
+		if starts := pwWorkerStarts(t, pool, spParent); len(starts) != 1 || starts[0].role != claim.RoleTester || starts[0].task != work {
+			t.Fatalf("starts of %s = %+v, want one tester start on the held task, the merged child and the base-merge sentence once: %q", spParent, starts, work)
+		}
 	})
 
 	// The third and the sixth parent: held after the claim of their phase's worker failed, each

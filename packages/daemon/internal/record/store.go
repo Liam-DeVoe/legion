@@ -3710,6 +3710,24 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 	return held, nil
 }
 
+// ClaimPhaseTask reads the task token's claim holds pending (pending_task_deliveries) where that
+// delivery is of phase at, of run generation and of an entry no later than entry, or of any entry
+// where entry is 0: the test supervise.Machine.RetireStoppedTask applies to the task it retires.
+// The daemon's own delivery of a relaunch's record names no phase, so a phase at never reads it.
+// A claim that holds no such task answers "".
+func (s *Postgres) ClaimPhaseTask(ctx context.Context, tx pgx.Tx, token claim.Token, at phase.Phase, generation uint64, entry int64) (string, error) {
+	var task string
+	switch err := tx.QueryRow(ctx, `select task from pending_task_deliveries
+		where claim_token = $1 and phase = $2 and generation = $3 and ($4::bigint = 0 or entry <= $4::bigint)`,
+		string(token), string(at), int64(generation), entry).Scan(&task); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("read the %s task the claim %s holds: %w", at, token, err)
+	}
+	return task, nil
+}
+
 // readRoleClaims hands each claim of tokens to found, in no order: the one statement RoleRuns and
 // RoleClaims share, with the task pending on each claim read beside it (the two tables are
 // written apart and read together, as claimSelect reads them). The task's id is read with it,
