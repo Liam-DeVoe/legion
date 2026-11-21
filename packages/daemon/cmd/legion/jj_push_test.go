@@ -655,6 +655,9 @@ type rolePushWant struct {
 	cannotSetNames string
 	// noMetaedit is whether the recording jj must see no metaedit.
 	noMetaedit bool
+	// pushed, when not nil, checks the words of the real push, which a recording jj ahead of the
+	// real one saw (realPushWords).
+	pushed func(words []string)
 }
 
 // rolePushCannotRead is how many lines of a dry run the step cannot read a row expects.
@@ -864,6 +867,21 @@ func (f *rolePushFixture) check(want rolePushWant, code int, stderr string, dive
 			}
 		}
 	}
+	if want.pushed != nil {
+		want.pushed(f.realPushWords())
+	}
+}
+
+// realPushWords is the words of the real push that the recording jj ran; it fails the test where
+// that jj ran no real push, or more than one.
+func (f *rolePushFixture) realPushWords() []string {
+	f.t.Helper()
+	calls := f.calls()
+	pushes := slices.IndexFunc(calls, rolePushCall.realPush)
+	if pushes < 0 || slices.ContainsFunc(calls[pushes+1:], rolePushCall.realPush) {
+		f.t.Fatalf("the recording jj ran %v, want one real push", calls)
+	}
+	return calls[pushes].args
 }
 
 // checkRef checks what a remote holds of ref, and adds each commit it holds to landed, by change.
@@ -1322,13 +1340,30 @@ func rolePushTwoRemotes(t *testing.T, f *rolePushFixture, first []string) {
 	f.pushAndCheck(rolePushTwoRemoteSecond, second)
 }
 
-// rolePushRevsetRows are the pushes whose revision argument names a commit by its commit id inside
-// a revset, each of commits that the other role's jj new made and the implementer described, each
-// pushed by the implementer.
+// rolePushFullID is a full commit id.
+var rolePushFullID = regexp.MustCompile(`[0-9a-f]{40}`)
+
+// rolePushRevsetRows are the pushes whose revision argument names a commit by its commit id, inside
+// a revset or as the commit id of @, each of commits that the other role's jj new made and the
+// implementer described, each pushed by the implementer.
 func rolePushRevsetRows() []rolePushArgsRow {
 	impl, rev := rolePushImplementer, rolePushReviewer
 	work := func(f *rolePushFixture, parent, title string) rolePushChange {
 		return f.commitOn(rev, impl, parent, rolePushMessage(title, "implementer"))
+	}
+	// waiting makes @ a commit on main that the other role's jj new made and the implementer
+	// described, with a write on disk that no command has snapshotted, and answers @ as the step
+	// reads it and what a -c push of it leaves: the remote holds @'s change with the write and the
+	// implementer's author, and the step printed its rewrite of @.
+	waiting := func(f *rolePushFixture) (rolePushChange, rolePushWant) {
+		f.jj(rev, "new", "main")
+		f.jj(impl, "describe", "-m", rolePushMessage("work in @", "implementer"))
+		w := f.read("@")
+		f.writeFile(filepath.Join(f.repo, "waiting.txt"), rolePushWaitingContent)
+		want := rolePushSends("push-"+w.change[:12], w, "implementer", impl)
+		want.refs[0].commits[0].file, want.refs[0].commits[0].content = "waiting.txt", rolePushWaitingContent
+		want.waiting = true
+		return w, want
 	}
 	return []rolePushArgsRow{
 		{name: "-c <C1> | <C2>, two commits on main", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
@@ -1340,12 +1375,23 @@ func rolePushRevsetRows() []rolePushArgsRow {
 			return []string{"git", "push", "-c", c1.commit + " | " + c2.commit}, want
 		}},
 		// -r sends a bookmark that points at the commit, and jj refuses to make a remote bookmark
-		// for one that tracks nothing.
+		// for one that tracks nothing. jj reads the argument among the commits a metaedit can
+		// rewrite, C alone, so the real push's argument holds the ids of C's change and of no other
+		// commit, the seed's and the root's among them, however long C's history is.
 		{name: "-r ::<C>, a tracked bookmark on C", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			f.track("legion/K-1")
 			c := work(f, "main", "work")
 			f.bookmark("legion/K-1", c.commit)
-			return []string{"git", "push", "-r", "::" + c.commit}, rolePushSends("legion/K-1", c, "implementer", impl)
+			want := rolePushSends("legion/K-1", c, "implementer", impl)
+			want.pushed = func(words []string) {
+				revision := words[len(words)-1]
+				for _, id := range rolePushFullID.FindAllString(revision, -1) {
+					if change := f.changeOf(id); change != c.change {
+						f.t.Errorf("the real push's revision %q holds %s, a commit of change %q that the step left alone; want ids of C's change %s alone", revision, id, change, c.change)
+					}
+				}
+			}
+			return []string{"git", "push", "-r", "::" + c.commit}, want
 		}},
 		{name: "-c present(<the first 12 hex digits of C>)", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			c := work(f, "main", "work")
@@ -1359,9 +1405,10 @@ func rolePushRevsetRows() []rolePushArgsRow {
 			return []string{"git", "push", "--named", "nm=" + d.commit + "-"}, rolePushSends("nm", c, "implementer", impl)
 		}},
 		// D is a number that starts the id of one commit of the repository, hidden ones included:
-		// a commit of C's change that a describe hid, which the step reads as C, the change's one
-		// visible commit. jj refuses `ancestors(C, C)`, so the dry run gets D as the role wrote it,
-		// and the real push gets D so too, beside the commit the step made of C.
+		// a commit of C's change that a describe hid. jj reads the argument with D a number, which
+		// names C alone among the commits a metaedit can rewrite, so the step follows C, and the
+		// real push gets the argument as the role wrote it, D a number still, less C and with the
+		// commit the step made of C.
 		{name: "-r ancestors(<C>, <D>), D a number that starts the id of a hidden commit of C's change", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
 			f.track("legion/K-1")
 			c := work(f, "main", "work")
@@ -1369,53 +1416,85 @@ func rolePushRevsetRows() []rolePushArgsRow {
 			c, depth := f.decimalPrefixed(c, impl, rolePushMessage("work", "implementer"), true)
 			return []string{"git", "push", "-r", "ancestors(" + c.commit + ", " + depth + ")"}, rolePushSends("legion/K-1", c, "implementer", impl)
 		}},
+		// @ beside C1, a commit on main, with a write in @ that no command has snapshotted: the
+		// push's own snapshot takes the write after the step's rewrite of @, and the remote gets
+		// both changes with the implementer's author, @'s with the write.
+		{name: "-c @ | <C1>, @ with a waiting write", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			c1 := work(f, "main", "work 1")
+			_, want := waiting(f)
+			sent := rolePushSends("push-"+c1.change[:12], c1, "implementer", impl)
+			want.refs = append(want.refs, sent.refs...)
+			want.rewrites = append(want.rewrites, sent.rewrites...)
+			return []string{"git", "push", "-c", "@ | " + c1.commit}, want
+		}},
+		// The commit id of @, with a write in @ that no command has snapshotted: the step's rewrite
+		// of @ makes another working-copy commit, which the push's own snapshot rewrites once more
+		// with the write, so the real push names it as @, and the remote gets @'s change with the
+		// write and the implementer's author.
+		{name: "-c <the commit id of @>, @ with a waiting write", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			w, want := waiting(f)
+			return []string{"git", "push", "-c", w.commit}, want
+		}},
 	}
 }
 
 // A commit id inside a revision argument's revset, each of `C1 | C2`, `::C`, a prefix of C in
-// present(), the D of `D-` and the C of `ancestors(C, D)`, is the rewritten commit in the real
-// push, and the rest of the argument goes to it as the role wrote it: the remote's commits have
-// their trailers' authors, the step prints each rewrite, and no change is divergent. The D of
+// present(), the D of `D-`, the C of `ancestors(C, D)`, C1 beside @, and the commit id of @ on its
+// own, is the rewritten commit in the real push, and the argument goes to it as the role wrote it,
+// less the commits the step rewrote and with the commits it made of them: the remote's commits
+// have their trailers' authors, the step prints each rewrite, and no change is divergent. The D of
 // `ancestors(C, D)` is a number that starts the id of a hidden commit whose change has one visible
-// commit, and goes to the dry run as the role wrote it too.
+// commit, and stays a number. A write in @ that no command has snapshotted reaches the remote. The
+// real push's `::C` names no commit the step left alone, so its length grows with the commits the
+// step rewrote, not with C's history (a recording jj ahead of the real one sees it).
 func TestACommitIDInsideARevsetSendsTheRewrittenCommit(t *testing.T) {
 	t.Parallel()
-	rolePushRunArgs(t, "", rolePushRevsetRows())
+	rolePushRunArgs(t, rolePushRecords, rolePushRevsetRows())
 }
 
-// A revision argument that jj refuses once the step's commit ids stand in it goes to the real push
-// as the role wrote it. In `ancestors(C, D)`, D is a number that C's id alone starts with, of every
-// commit of the repository, so the step follows D as C, and once its metaedit has rewritten C, jj
-// refuses the argument with the new C in the places of both. A recording jj ahead of the real one
-// sees the real push carry the role's words unchanged, and the push exits as jj alone does with
-// those words.
-func TestARevisionJJRefusesWithTheRewrittenIDsGoesToThePushAsWritten(t *testing.T) {
-	t.Parallel()
+// rolePushFollowedRows are the pushes whose revision argument names a commit the step rewrites by
+// what jj itself moves to the commit the rewrite makes: a bookmark, a change id, and @ with a write
+// no command has snapshotted (rolePushWaitingRow), each of a commit that the other role's jj new
+// made and the implementer described, each pushed by the implementer.
+func rolePushFollowedRows() []rolePushArgsRow {
 	impl, rev := rolePushImplementer, rolePushReviewer
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
-		f := newRolePushFixture(t, form, rolePushRecords)
-		f.track("legion/K-1")
-		message := rolePushMessage("work", "implementer")
-		c := f.commitOn(rev, impl, "main", message)
-		f.bookmark("legion/K-1", c.commit)
-		c, depth := f.decimalPrefixed(c, impl, message, false)
-		args := []string{"git", "push", "-r", "ancestors(" + c.commit + ", " + depth + ")"}
-		divergent := f.divergence()
-		code, _, stderr := f.push(impl, args...)
-		calls := f.calls()
-		pushes := slices.IndexFunc(calls, rolePushCall.realPush)
-		if pushes < 0 || slices.ContainsFunc(calls[pushes+1:], rolePushCall.realPush) {
-			t.Fatalf("the recording jj ran %v, want one real push", calls)
+	work := func(f *rolePushFixture) rolePushChange {
+		return f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
+	}
+	// asWritten is args and want, and what the real push's words must be: args, every byte.
+	asWritten := func(f *rolePushFixture, args []string, want rolePushWant) ([]string, rolePushWant) {
+		want.pushed = func(words []string) {
+			if !slices.Equal(words, args) {
+				f.t.Errorf("the real push ran with %q, want the role's own words %q", words, args)
+			}
 		}
-		if got := calls[pushes].args; !slices.Equal(got, args) {
-			t.Errorf("the real push ran with %q, want the role's own words %q", got, args)
-		}
-		if lines := rolePushStepLines(stderr); len(lines.rewrites) != 1 || lines.rewrites[0].old != c.commit {
-			t.Errorf("the push printed the rewrites %v, want one, of %s; it printed:\n%s", lines.rewrites, c.commit, stderr)
-		}
-		aloneCode, _ := f.aloneSends(args)
-		f.check(rolePushWant{exit: aloneCode, others: true}, code, stderr, divergent, 0)
-	})
+		return args, want
+	}
+	waiting := rolePushWaitingRow(rolePushWaitingForm{name: "-c @", args: []string{"git", "push", "-c", "@"}}, true)
+	return []rolePushArgsRow{
+		{name: "-c <bookmark>, the bookmark on C", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			c := work(f)
+			f.bookmark("mybookmark", c.commit)
+			return asWritten(f, []string{"git", "push", "-c", "mybookmark"}, rolePushSends("push-"+c.change[:12], c, "implementer", impl))
+		}},
+		{name: "-c <the change id of C>", setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			c := work(f)
+			return asWritten(f, []string{"git", "push", "-c", c.change}, rolePushSends("push-"+c.change[:12], c, "implementer", impl))
+		}},
+		{name: waiting.name, setup: func(f *rolePushFixture) ([]string, rolePushWant) {
+			return asWritten(f, waiting.args, waiting.setup(f))
+		}},
+	}
+}
+
+// A revision argument that names a commit the step rewrites by what jj itself moves to the commit
+// the rewrite makes, a bookmark, a change id, or @ with a write no command has snapshotted, names
+// that commit after the step as it is: a recording jj ahead of the real one sees the real push run
+// with the role's own words, every byte, and the remote gets the rewritten commit with its
+// trailer's author, @'s with the write, and no change is divergent.
+func TestARevisionJJMovesToTheRewrittenCommitGoesToThePushAsWritten(t *testing.T) {
+	t.Parallel()
+	rolePushRunArgs(t, rolePushRecords, rolePushFollowedRows())
 }
 
 // `jj git push -c latest(<C>, <D>)`, where D is a number that the id of C, the commit the push
@@ -2489,7 +2568,7 @@ func rolePushHelpOptions(help string) []rolePushOption {
 
 // rolePushEveryArgument is every argument of every row of these tests' pushes that the row writes
 // out, ahead of its setup (rolePushCannotReadIDRows' setups answer theirs, each a --named, and
-// rolePushRevsetRows' theirs, each a -c, a -r or a --named).
+// rolePushRevsetRows' and rolePushFollowedRows' theirs, each a -c, a -r or a --named).
 func rolePushEveryArgument() []string {
 	var words []string
 	for _, rows := range [][]rolePushRow{rolePushAuthorRows(), rolePushFormRows(), rolePushRefusedRows(), rolePushUntouchedRows(), rolePushStartedRows(), rolePushShortIDRows()} {
