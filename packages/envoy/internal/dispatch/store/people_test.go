@@ -1027,7 +1027,7 @@ func TestAMemberMadeFullTakesNoSessionOwnerLock(t *testing.T) {
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	const email = "made.full@outside.example"
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('CORE', 'Core')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example')`); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
