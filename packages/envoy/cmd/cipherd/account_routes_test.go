@@ -47,40 +47,94 @@ func TestEveryAccountRouteHasARow(t *testing.T) {
 }
 
 // accountAuthRoutes is every "<method> <pattern>" of a row of path's routes() whose handler is an
-// accountAuth call, each row being {http.Method<X>, "<pattern>", accountAuth(…)}. A row of that
-// handler it cannot read fails t, so the set is never short of a row it skipped.
+// accountAuth call. A row is read in either form a Go composite literal takes: positional,
+// {http.Method<X>, "<pattern>", accountAuth(…)}, or with field names, {Method: http.Method<X>,
+// Pattern: "<pattern>", Handler: accountAuth(…)}. Every accountAuth call in routes() must then be
+// the handler of a row it read: a call in any other shape fails t, naming its line, so the set is
+// never short of a route it skipped.
 func accountAuthRoutes(t *testing.T, path string) map[string]bool {
 	t.Helper()
-	file, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	files := token.NewFileSet()
+	file, err := parser.ParseFile(files, path, nil, 0)
 	if err != nil {
 		t.Fatalf("parse %s: %v", path, err)
 	}
-	routes := map[string]bool{}
-	ast.Inspect(file, func(n ast.Node) bool {
-		row, ok := n.(*ast.CompositeLit)
-		if !ok || len(row.Elts) != 3 {
-			return true
+	var body *ast.BlockStmt
+	for _, decl := range file.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "routes" {
+			body = fn.Body
 		}
-		call, ok := row.Elts[2].(*ast.CallExpr)
+	}
+	if body == nil {
+		t.Fatalf("%s declares no func routes()", path)
+	}
+	routes := map[string]bool{}
+	read := map[*ast.CallExpr]bool{}
+	ast.Inspect(body, func(n ast.Node) bool {
+		row, ok := n.(*ast.CompositeLit)
 		if !ok {
 			return true
 		}
-		if name, ok := call.Fun.(*ast.Ident); !ok || name.Name != "accountAuth" {
+		method, pattern, handler := rowFields(row)
+		call, ok := handler.(*ast.CallExpr)
+		if !ok || !isAccountAuth(call) {
 			return true
 		}
-		method, methodOK := row.Elts[0].(*ast.SelectorExpr)
-		pattern, patternOK := row.Elts[1].(*ast.BasicLit)
-		if !methodOK || !patternOK || pattern.Kind != token.STRING || !strings.HasPrefix(method.Sel.Name, "Method") {
-			t.Fatalf("%s: an accountAuth row this test cannot read (want {http.Method<X>, \"<pattern>\", accountAuth(…)})", path)
+		selector, methodOK := method.(*ast.SelectorExpr)
+		literal, patternOK := pattern.(*ast.BasicLit)
+		if !methodOK || !patternOK || literal.Kind != token.STRING || !strings.HasPrefix(selector.Sel.Name, "Method") {
+			t.Fatalf("%s: an accountAuth row this test cannot read (want its method as http.Method<X> and its pattern as a string literal)", files.Position(row.Pos()))
 		}
-		text, err := strconv.Unquote(pattern.Value)
+		text, err := strconv.Unquote(literal.Value)
 		if err != nil {
-			t.Fatalf("%s: the pattern %s: %v", path, pattern.Value, err)
+			t.Fatalf("%s: the pattern %s: %v", files.Position(literal.Pos()), literal.Value, err)
 		}
-		routes[httpMethod(t, method.Sel.Name)+" "+text] = true
-		return false
+		routes[httpMethod(t, selector.Sel.Name)+" "+text] = true
+		read[call] = true
+		return true
+	})
+	ast.Inspect(body, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok && isAccountAuth(call) && !read[call] {
+			t.Fatalf("%s: an accountAuth call that is no row's handler, in a shape this test cannot read: write the row {http.Method<X>, \"<pattern>\", accountAuth(…)} or with the field names Method, Pattern and Handler", files.Position(call.Pos()))
+		}
+		return true
 	})
 	return routes
+}
+
+// rowFields is a route row's method, pattern and handler, from three positional elements or from
+// the field names Method, Pattern and Handler; nil for any it does not find.
+func rowFields(row *ast.CompositeLit) (method, pattern, handler ast.Expr) {
+	if len(row.Elts) == 3 {
+		if _, keyed := row.Elts[0].(*ast.KeyValueExpr); !keyed {
+			return row.Elts[0], row.Elts[1], row.Elts[2]
+		}
+	}
+	for _, element := range row.Elts {
+		field, ok := element.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := field.Key.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		switch key.Name {
+		case "Method":
+			method = field.Value
+		case "Pattern":
+			pattern = field.Value
+		case "Handler":
+			handler = field.Value
+		}
+	}
+	return method, pattern, handler
+}
+
+// isAccountAuth reports whether call is a call of accountAuth.
+func isAccountAuth(call *ast.CallExpr) bool {
+	name, ok := call.Fun.(*ast.Ident)
+	return ok && name.Name == "accountAuth"
 }
 
 // httpMethod is the method net/http's Method<X> constant named by name spells.
