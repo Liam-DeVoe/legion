@@ -686,6 +686,24 @@ func kernelFacts() string {
 	return strings.Join(facts, "; ")
 }
 
+// preemptLazy reports whether this kernel was built with the lazy preemption model
+// (CONFIG_PREEMPT_LAZY=y in its /boot/config), under which a woken thread can wait for the next
+// tick to take the CPU from a running one. GitHub's arm64 runners boot such a kernel (7.0); the
+// GKE nodes production runs on boot the 6.12 line, which predates the model.
+func preemptLazy() bool {
+	release, _ := os.ReadFile("/proc/sys/kernel/osrelease")
+	config, err := os.ReadFile("/boot/config-" + strings.TrimSpace(string(release)))
+	if err != nil {
+		return false
+	}
+	for line := range strings.Lines(string(config)) {
+		if strings.TrimSpace(line) == "CONFIG_PREEMPT_LAZY=y" {
+			return true
+		}
+	}
+	return false
+}
+
 // processesNamed is the id of each process whose command is name, as /proc/<pid>/comm writes it:
 // the database's processes where they run on this machine, none where they do not.
 func processesNamed(name string) []int {
@@ -932,7 +950,17 @@ const cpuAgentShare = 4
 // reads by their time within it, each beside the server's collector pauses and the /livez requests
 // it met, and what the server's, the test's, the database's and the agent's threads did in it
 // (cpuWindow.describe).
+//
+// It skips on a kernel built with lazy preemption (preemptLazy). On GitHub's arm64 runners, whose
+// 7.0 kernel is such a build, the read's p99 at the load was 2.0 to 2.6 times its idle p99 in five
+// runs, the server's threads waiting 136 to 250 ms to run beside the agent at SCHED_IDLE against
+// 9 to 10 ms beside it idle; on a GKE node of the 6.12 line production runs it was 1.00 and 1.06
+// times (INFRA-1588, 2026-11-21). So check c29 runs it as a builds Job on a build-nosandbox node
+// (cmd/dispatch/README.md, "c29").
 func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
+	if preemptLazy() {
+		t.Skipf("this kernel preempts lazily (%s), where a woken thread waits for the next tick for the CPU a running one holds, whatever its policy; c29 runs on the GKE kernel line production runs", kernelFacts())
+	}
 	fake, model := newSoakModel(t)
 	env := modelEnv(t, fake)
 	env["DISPATCH_TEST_AGENT_GOMEMLIMIT"] = strconv.Itoa(cpuAgentLimit)
