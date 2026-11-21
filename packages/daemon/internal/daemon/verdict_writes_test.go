@@ -249,11 +249,18 @@ type verdictRig struct {
 	asked []string
 }
 
-func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool)) *verdictRig {
+// newVerdictRig builds a verdictRig over the store seed fills. wrap, where given, builds the fake's
+// handler around the rig's verdictGitHub and its own handler, for a test that serves more of GitHub.
+func newVerdictRig(t *testing.T, tokens appauth.Tokens, entries []config.VerdictRepository, seed func(*testing.T, *store.Pool),
+	wrap ...func(*verdictGitHub, http.HandlerFunc) http.HandlerFunc) *verdictRig {
 	t.Helper()
 	rig := &verdictRig{pool: isolatedOutboxPool(t), github: newVerdictGitHub(), logs: &syncBuffer{}}
 	seed(t, rig.pool)
-	api := githubtest.Server(t, githubtest.Spec{Handle: rig.github.serve(t)})
+	handle := rig.github.serve(t)
+	for _, around := range wrap {
+		handle = around(rig.github, handle)
+	}
+	api := githubtest.Server(t, githubtest.Spec{Handle: handle})
 	log := slog.New(slog.NewJSONHandler(rig.logs, nil))
 	w := &workflowRuntime{
 		pool: rig.pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, repositories: servedAcme(),

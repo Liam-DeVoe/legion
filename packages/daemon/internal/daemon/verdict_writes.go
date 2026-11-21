@@ -56,10 +56,14 @@ type verdictWriter struct {
 	bound time.Duration
 
 	mu sync.Mutex
-	// queue is each head asked for and not yet taken, oldest first, and running how many writes
-	// are being made; pending is, by issue, how many of both are that issue's, which its
-	// merge-state reads wait on (await), and ended is closed and made again each time a write ends.
+	// queue is each head a fact asked for and not yet taken, oldest first, and swept each the
+	// writers' sweep asked for (overForeign), which the writer takes only while queue is empty, so
+	// a fact's write, which its issue's merge-state reads wait on, waits behind no sweep's; running
+	// is how many writes are being made; pending is, by issue, how many of all three are that
+	// issue's, which its merge-state reads wait on (await), and ended is closed and made again each
+	// time a write ends.
 	queue   []verdictTarget
+	swept   []verdictTarget
 	running int
 	pending map[string]int
 	ended   chan struct{}
@@ -70,9 +74,6 @@ type verdictWriter struct {
 	foreign map[string]string
 	// tokenMode logs once that the App is in token mode (appauth.ErrNoVerdictToken).
 	tokenMode sync.Once
-	// write holds one write's GitHub calls at a time: a write reads the runs it then creates or
-	// updates, and two writes of one head made together would each create one.
-	write sync.Mutex
 }
 
 // verdictTarget is one head a write of legion-verdict is asked for: the pull request's repository
@@ -122,17 +123,22 @@ func (v *verdictWriter) repositories() []ghrepo.Repository {
 	return repositories
 }
 
-// add queues target, unless the same head of the same pull request for the same issue is queued
-// already and not yet taken, which the one write answers; and wakes the writer.
+// add queues target, a fact's or, where it asks for overForeign, the writers' sweep's, unless the
+// same target is queued already and not yet taken, which the one write answers; and wakes the
+// writer.
 func (v *verdictWriter) add(target verdictTarget) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	for _, queued := range v.queue {
+	queue := &v.queue
+	if target.overForeign {
+		queue = &v.swept
+	}
+	for _, queued := range *queue {
 		if queued == target {
 			return
 		}
 	}
-	v.queue = append(v.queue, target)
+	*queue = append(*queue, target)
 	v.pending[target.issue]++
 	select {
 	case v.wake <- struct{}{}:
@@ -140,15 +146,20 @@ func (v *verdictWriter) add(target verdictTarget) {
 	}
 }
 
-// next takes the oldest queued target, and whether there was one.
+// next takes the oldest queued target a fact asked for, or, where none waits, the oldest the
+// writers' sweep asked for, and whether there was one.
 func (v *verdictWriter) next() (verdictTarget, bool) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if len(v.queue) == 0 {
+	queue := &v.queue
+	if len(*queue) == 0 {
+		queue = &v.swept
+	}
+	if len(*queue) == 0 {
 		return verdictTarget{}, false
 	}
-	target := v.queue[0]
-	v.queue = v.queue[1:]
+	target := (*queue)[0]
+	*queue = (*queue)[1:]
 	v.running++
 	return target, true
 }
@@ -169,7 +180,7 @@ func (v *verdictWriter) done(target verdictTarget) {
 func (v *verdictWriter) idle() bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return len(v.queue) == 0 && v.running == 0
+	return len(v.queue) == 0 && len(v.swept) == 0 && v.running == 0
 }
 
 // await returns true once issue has no write of legion-verdict queued or being made, false once
@@ -306,10 +317,12 @@ func (w *workflowRuntime) writeVerdict(ctx context.Context, repository ghrepo.Re
 // check run or updates the one its record holds, and writes its conclusion over each run and
 // status of the one App its record does not hold (spec R19, writeDecided).
 //
-// Once a Legion head's success stands, the issue's merge state is read once more, a ladder's wait
-// later (mergeStateWait): GitHub can answer the read the write held (verdictWriter.await) with
-// `blocked` while it has not yet counted the new run, an answer that ends the climb, and no other
-// fact asks again, since Envoy leaves the one App's runs out of the CI record.
+// Once a pass writes a Legion head's success, or turns its run or status to success, the issue's
+// merge state is read once more, a ladder's wait later (mergeStateWait): GitHub can answer the read
+// the write held (verdictWriter.await) with `blocked` while it has not yet counted the new run, an
+// answer that ends the climb, and no other fact asks again, since Envoy leaves the one App's runs
+// out of the CI record. A pass that finds the success already written asks for nothing more: the
+// pass that wrote it asked already.
 func (w *workflowRuntime) writeVerdictOver(ctx context.Context, repository ghrepo.Repository, number int, head string, overForeign bool) error {
 	entry, ok := w.verdictEntry(repository)
 	if !ok {
@@ -335,10 +348,11 @@ func (w *workflowRuntime) writeVerdictOver(ctx context.Context, repository ghrep
 			decided.conclusion = verdict.Failure
 		}
 	}
-	if err := w.writeDecided(ctx, target, decided, overForeign); err != nil {
+	changed, err := w.writeDecidedChanged(ctx, target, decided, overForeign)
+	if err != nil {
 		return err
 	}
-	if decided.conclusion == verdict.Success && decided.issue != "" {
+	if changed && decided.conclusion == verdict.Success && decided.issue != "" {
 		issue := decided.issue
 		time.AfterFunc(w.mergeStateWait(), func() {
 			if ctx.Err() == nil {
@@ -593,32 +607,39 @@ type listedStatus struct {
 // sweep's ask to put failure over another writer's run or status at a head no verdict stands at;
 // writeVerdict, which a fact asks for, writes nothing there and makes no GitHub call. In token mode
 // the daemon mints no verdict token (appauth.ErrNoVerdictToken): it writes nothing and logs that
-// once.
+// once. One goroutine makes every write (writeVerdicts), so no two writes of one head read its
+// runs together and each create one.
 func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) error {
+	_, err := w.writeDecidedChanged(ctx, target, decided, overForeign)
+	return err
+}
+
+// writeDecidedChanged is writeDecided, and answers too, where it answers no error, whether it
+// created or updated a check run or set a commit status: a pass that writes a success is followed
+// by one more merge-state read (writeVerdictOver), and a pass that finds it written is not.
+func (w *workflowRuntime) writeDecidedChanged(ctx context.Context, target verdictTarget, decided verdictDecision, overForeign bool) (bool, error) {
 	if decided.conclusion == verdict.None && !overForeign {
-		return nil
+		return false, nil
 	}
-	w.verdicts.write.Lock()
-	defer w.verdicts.write.Unlock()
 	serving := w.repositories.serving(target.repository)
 	lease, err := w.tokens.VerdictToken(ctx, serving.Owner())
 	if errors.Is(err, appauth.ErrNoVerdictToken) {
 		w.verdicts.tokenMode.Do(func() { w.log.Warn(verdictTokenMode, "repository", target.repository.String()) })
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return fmt.Errorf("mint the verdict token for %s: %w", serving, err)
+		return false, fmt.Errorf("mint the verdict token for %s: %w", serving, err)
 	}
 	client := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(w.githubAPI, serving)}
 	call, cancel := context.WithTimeout(ctx, issueRead)
 	defer cancel()
 	ownRuns, ownStatuses, err := w.recordedVerdictWrites(ctx, target)
 	if err != nil {
-		return err
+		return false, err
 	}
 	runs, err := githubrest.GetListPages[listedCheckRun](call, client, "/commits/"+target.head+"/check-runs?check_name="+verdict.CheckName+"&filter=all", "check_runs")
 	if err != nil {
-		return fmt.Errorf("list the legion-verdict runs of %s at %s: %w", serving, target.head, err)
+		return false, fmt.Errorf("list the legion-verdict runs of %s at %s: %w", serving, target.head, err)
 	}
 	over := decided.conclusion
 	if over == verdict.None {
@@ -626,7 +647,7 @@ func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget
 	}
 	slug := strings.TrimSuffix(w.appLogin, "[bot]")
 	var own *listedCheckRun
-	carried := false
+	carried, changed := false, false
 	for i := range runs {
 		run := &runs[i]
 		switch {
@@ -637,26 +658,29 @@ func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget
 			}
 		default:
 			if err := w.updateVerdictRun(call, client, target, decided.kind, run.ID, over, run.ID); err != nil {
-				return err
+				return false, err
 			}
 			carried = carried || over == decided.conclusion
+			changed = true
 		}
 	}
 	if decided.conclusion != verdict.None {
 		switch {
 		case own != nil && own.Conclusion != string(decided.conclusion):
 			if err := w.updateVerdictRun(call, client, target, decided.kind, own.ID, decided.conclusion, 0); err != nil {
-				return err
+				return false, err
 			}
+			changed = true
 		case own == nil && !carried:
 			if err := w.createVerdictRun(call, client, target, decided); err != nil {
-				return err
+				return false, err
 			}
+			changed = true
 		}
 	}
 	statuses, err := githubrest.GetPages[listedStatus](call, client, "/commits/"+target.head+"/statuses")
 	if err != nil {
-		return fmt.Errorf("list the commit statuses of %s at %s: %w", serving, target.head, err)
+		return false, fmt.Errorf("list the commit statuses of %s at %s: %w", serving, target.head, err)
 	}
 	for _, status := range statuses {
 		if status.Context != verdict.CheckName || status.Creator.Login != w.appLogin {
@@ -664,13 +688,13 @@ func (w *workflowRuntime) writeDecided(ctx context.Context, target verdictTarget
 		}
 		switch {
 		case !ownStatuses[status.ID]:
-			return w.createVerdictStatus(call, client, target, decided.kind, over, status.ID)
+			return true, w.createVerdictStatus(call, client, target, decided.kind, over, status.ID)
 		case decided.conclusion != verdict.None && status.State != string(decided.conclusion):
-			return w.createVerdictStatus(call, client, target, decided.kind, decided.conclusion, 0)
+			return true, w.createVerdictStatus(call, client, target, decided.kind, decided.conclusion, 0)
 		}
-		return nil
+		return changed, nil
 	}
-	return nil
+	return changed, nil
 }
 
 // recordedVerdictWrites is the GitHub id of each check run and of each commit status the store
