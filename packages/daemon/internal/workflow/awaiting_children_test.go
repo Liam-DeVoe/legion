@@ -634,20 +634,13 @@ func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 		fact   intake.Fact
 		act    string
 		ending string
-		absent []string
 	}{
 		{name: "the architect's move back", fact: intake.BackwardMove{Issue: cwParent, Requester: claim.RoleArchitect, To: phase.Implementing, Reason: "redo it"}, act: "request_backward_move", ending: architects},
-		{name: "a worker's move back", fact: intake.BackwardMove{Issue: cwParent, Requester: claim.RoleTester, To: phase.Implementing, Reason: "redo it"}, act: "request_backward_move", ending: workers,
-			absent: []string{record.EndChildRule, record.StatusNotTakenYet, "Act on the children"}},
+		{name: "a worker's move back", fact: intake.BackwardMove{Issue: cwParent, Requester: claim.RoleTester, To: phase.Implementing, Reason: "redo it"}, act: "request_backward_move", ending: workers},
 		{name: "the sign-off", fact: intake.SignOff{Issue: cwParent}, act: "sign_off", ending: architects},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			message := refusedWith(t, apply(tc.name, tc.fact), waitingOnChildren, cwChild+" (in_progress)")
-			for _, word := range tc.absent {
-				if strings.Contains(message, word) {
-					t.Errorf("the refusal = %q; it says %q, which is the architect's to act on", message, word)
-				}
-			}
 			if want := cwParent + " waits in awaiting_children on these open Dispatch children of it: " + cwChild + " (in_progress). " +
 				"It stands in no phase that " + tc.act + " acts on, so this " + tc.act + " changed nothing; once no child under it is open, " + cwParent + " " + back + ". " +
 				tc.ending; message != want {

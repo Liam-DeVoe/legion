@@ -431,7 +431,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 // has taken it (record.StatusNotTakenYet).
 func waitingForTree(issue string, number int, waiting []string) string {
 	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow. %s closes once the last of them leaves the workflow.",
-		number, issue, strings.Join(waiting, ", "), issue) + " " + record.StatusNotTakenYet + " " + record.EndChildRule
+		number, issue, strings.Join(waiting, ", "), issue) + " " + endChildWords
 }
 
 // closeMergedTelling closes issue on its merged pull request (closeMerged) and, when the close

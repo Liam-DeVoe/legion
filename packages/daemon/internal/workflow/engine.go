@@ -2113,9 +2113,14 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 // (record.EndChildRule), and ask the person about a child that no move fits. hold is what the
 // architect holds until the person answers.
 func endChildrenFirst(hold string) string {
-	return record.StatusNotTakenYet + " " + record.EndChildRule +
-		" When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
+	return endChildWords + " When a child can neither finish nor take one of these moves, ask the person. Hold the " + hold + " until they answer."
 }
+
+// endChildWords is how each refusal and notice over children still in the workflow ends: the
+// sentence on a status the daemon has not taken yet, then the rules for ending a child
+// (record.StatusNotTakenYet, record.EndChildRule). endChildrenFirst, waitingForTree and the
+// architect's WAITING_ON_CHILDREN refusal (waitingRefusal) each end with it.
+const endChildWords = record.StatusNotTakenYet + " " + record.EndChildRule
 
 // The three holds on an issue's acceptance (signOff) and on a root's close (closeRoot) after the
 // work under it, by their refusal codes, in the order the daemon answers them when more than one

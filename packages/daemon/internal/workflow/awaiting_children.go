@@ -615,13 +615,15 @@ func (e *Engine) waitingRefusal(ctx context.Context, tx pgx.Tx, issue record.Iss
 		return refused(waitingOnChildren, fmt.Sprintf("%s waits in awaiting_children, holding the start of %s, and no Dispatch child of it is open now: at the next admission pass it %s. It stands in no phase that %s acts on, so this %s changed nothing",
 			issue.Key, held, goesBack(held), act, act)), nil
 	}
-	levers := fmt.Sprintf("The architect of %s acts on its children; tell it what you found.", issue.Key)
+	var ending string
 	if requester == claim.RoleArchitect {
-		levers = fmt.Sprintf("Act on the children: release one that should run, or move one out from under %s to an issue outside its tree or to no parent. ", issue.Key) +
-			record.StatusNotTakenYet + " " + record.EndChildRule
+		ending = fmt.Sprintf("Act on the children: release one that should run, or move one out from under %s to an issue outside its tree or to no parent. %s",
+			issue.Key, endChildWords)
+	} else {
+		ending = fmt.Sprintf("The architect of %s acts on its children; tell it what you found.", issue.Key)
 	}
 	return refused(waitingOnChildren, fmt.Sprintf("%[1]s waits in awaiting_children on these open Dispatch children of it: %[2]s. It stands in no phase that %[3]s acts on, so this %[3]s changed nothing; once no child under it is open, %[1]s %[4]s. %[5]s",
-		issue.Key, openChildNames(open), act, goesBack(held), levers)), nil
+		issue.Key, openChildNames(open), act, goesBack(held), ending)), nil
 }
 
 // goesBack is where the return takes a parent holding the start of held, as the refusals of an
