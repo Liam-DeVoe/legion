@@ -310,13 +310,17 @@ describe("the model gateway key command", () => {
         .filter((fields) => fields[2] === realpathSync(join(run, pane)))
         .map((fields) => `${fields[4]}: ${fields[5]}`);
     const ranPast = /^timeout: the mint ran past the call's 9500 ms and was stopped \(exit \d+\)$/;
+    // The second gives up behind the first in one of three ways, each on its own clock: it waited
+    // for the lock past its deadline; it took the lock with less than a mint needs, which can be
+    // less than nothing when the lock came at the deadline itself (`-27 ms … left`, seen once in
+    // 20 runs); or its deadline had passed before it asked for the lock at all.
     const gaveUpBehind =
-      /^timeout: waited \d+ ms for another call's mint(, past the call's 9500 ms| and took the lock with \d+ ms of the call's 9500 ms left, under the 2000 ms a mint needs)$/;
+      /^timeout: (waited \d+ ms for another call's mint(, past the call's 9500 ms| and took the lock with -?\d+ ms of the call's 9500 ms left, under the 2000 ms a mint needs)|reached the lock after \d+ ms, past the call's 9500 ms)$/;
     const [firstEnd, ...moreFirst] = endOf("pane-1");
     const [secondEnd, ...moreSecond] = endOf("pane-2");
     expect({ moreFirst, moreSecond }).toEqual({ moreFirst: [], moreSecond: [] });
     expect(firstEnd).toMatch(ranPast);
-    const behind = secondEnd?.includes("for another call's mint") ?? false;
+    const behind = gaveUpBehind.test(secondEnd ?? "");
     expect(secondEnd).toMatch(behind ? gaveUpBehind : ranPast);
     // One mint a call that minted, never two at once: the lock held the second behind the first.
     expect(mintCount(mints)).toBe(behind ? 1 : 2);
