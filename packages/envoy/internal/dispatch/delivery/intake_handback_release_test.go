@@ -11,7 +11,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -205,14 +204,20 @@ const stopBudget = 3 * time.Second
 // before the hand-back landed, and the subtest then read the hold the finalizer keeps.
 const landingBudget = 30 * time.Second
 
-// holdLive reports whether the delivery durable's hold still names a holder, live.
-func holdLive(t *testing.T, pool *store.Pool) bool {
+// holderHolds reports whether the delivery durable's hold is live and names holder's own process.
+// The standby is woken by the release (duty.HoldReleasedChannel) and takes the hold at once, so a
+// read of whether any process holds it, made once the stop has released it, can find the
+// standby's: under six busy loops 1 of 400 runs of the landing row read it so and failed as a stop
+// that kept its hold.
+func holderHolds(t *testing.T, pool *store.Pool, holder *intakeProcess) bool {
 	t.Helper()
-	_, live, err := duty.HoldToken(t.Context(), pool, intakeHoldName(bus.DispatchDeliveryDurable))
-	if err != nil {
+	var named string
+	if err := pool.QueryRow(t.Context(),
+		"select coalesce((select holder::text from duty_holds where name = $1 and expires_at > now()), '')",
+		intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&named); err != nil {
 		t.Fatalf("read the delivery durable's hold: %v", err)
 	}
-	return live
+	return named == holder.intake.holder.String()
 }
 
 // holdRenewedBeforeItsExpiry reads the expiry the delivery durable's hold has now, then waits until
@@ -404,12 +409,12 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			case <-waiting:
 				return true
 			default:
-				return !holdLive(t, row.pool)
+				return !holderHolds(t, row.pool, row.holder)
 			}
 		}, func() string {
 			return "the stop did not start to wait for its hand-back and did not release its hold within 30 s of going on without the publish: " + consumerState(row.publisher)
 		})
-		if !holdLive(t, row.pool) {
+		if !holderHolds(t, row.pool, row.holder) {
 			t.Fatalf("the stop released its hold before its hand-back reached the server, so a standby could recreate the durable first; the holder logged %q", loggedMessages(logs()))
 		}
 		row.thaw()
@@ -424,7 +429,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if loggedMessage(logs(), intakeHoldFinalizing) {
 			t.Fatalf("control: the premise did not hold: the stop's deadline (landingBudget, %s) passed before its hand-back landed, so this run reads nothing of a hand-back that lands before it; the holder logged %q", landingBudget, loggedMessages(logs()))
 		}
-		if holdLive(t, row.pool) {
+		if holderHolds(t, row.pool, row.holder) {
 			t.Fatalf("the stop kept its hold although its hand-back reached the server before its deadline, which costs the standby the lapse; the holder logged %q", loggedMessages(logs()))
 		}
 		requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher, row.sequences)
@@ -441,7 +446,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		if !row.handBackPending() {
 			t.Fatal("control: the stop's hand-back reached NATS while the write was held")
 		}
-		if !holdLive(t, row.pool) {
+		if !holderHolds(t, row.pool, row.holder) {
 			t.Fatal("the stop released its hold with a hand-back still pending, so a standby may recreate the durable before the hand-back reaches the server")
 		}
 		if slices.Contains(row.recorded.since(row.from), durableCreated) {
@@ -497,7 +502,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 			t.Fatal("StartIntakes' stop returned while its finalizer was held before release")
 		default:
 		}
-		if !holdLive(t, row.pool) {
+		if !holderHolds(t, row.pool, row.holder) {
 			t.Fatal("the hold was released before the finalizer's release step")
 		}
 		close(releaseFinalizer)
@@ -506,7 +511,7 @@ func TestAHandBackLeftRunningLandsBeforeTheStandbyTakesOver(t *testing.T) {
 		case <-time.After(30 * time.Second):
 			t.Fatal("StartIntakes' stop did not return within 30 s of finalizer release")
 		}
-		if holdLive(t, row.pool) {
+		if holderHolds(t, row.pool, row.holder) {
 			t.Fatal("the pending hand-back's finalizer released but left its hold live: shutdown could close the pool before releasing it")
 		}
 		requireNoHandBackAfterCreation(t, row.recorded, row.from, row.publisher, row.sequences)
