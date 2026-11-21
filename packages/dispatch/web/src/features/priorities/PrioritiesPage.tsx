@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo } from "react";
+import { type ReactNode, useEffect, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { prioritiesQuery } from "../../api/queries";
 import { EmptyState } from "../../components/EmptyState";
@@ -7,6 +7,7 @@ import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { Tabs, tabButtonId } from "../../components/Tabs";
 import { useIsHuman } from "../../hooks/useIsHuman";
+import { useSearchParamsUpdate } from "../../lib/url-array-params";
 import { textPrimaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import type { IssueListing } from "../project/issues-table-data";
@@ -134,6 +135,9 @@ const TAB_LABELS: Record<PrioritiesTab, string> = {
   backlog: "Priority work in backlog or icebox",
 };
 
+/** Whether `value` names one of the page's tabs, as `?tab=` may. */
+const isTab = (value: string): value is PrioritiesTab => Object.hasOwn(TAB_LABELS, value);
+
 /**
  * `/priorities`: the priorities themselves, in their one order, and the two faults, each on a
  * tab of its own that reads its name and its one count, so whichever table is chosen is the one
@@ -144,9 +148,18 @@ const TAB_LABELS: Record<PrioritiesTab, string> = {
  */
 export function PrioritiesPage(): ReactNode {
   const priorities = useQuery(prioritiesQuery());
-  const [params, setParams] = useSearchParams();
+  const [params] = useSearchParams();
+  const update = useSearchParamsUpdate();
   const asked = params.get(TAB_PARAM);
-  const tab: PrioritiesTab = asked === "none" || asked === "backlog" ? asked : "order";
+  const tab: PrioritiesTab = asked !== null && isTab(asked) ? asked : "order";
+  // An address naming a tab the page does not have, such as an older name of one, opens on the
+  // priorities, and the name leaves the address by replacing its entry, so the history gains
+  // none and the address never names a tab the page does not draw. Every other parameter stays
+  // as it was.
+  const unknownTab = asked !== null && asked !== tab;
+  useEffect(() => {
+    if (unknownTab) update((changed) => changed.delete(TAB_PARAM));
+  }, [unknownTab, update]);
   // The keys every table of the application is walked with (`j`, `k`, `x`, `o`, Enter), which
   // each table registers in the `project` scope. The registry holds one table's per page
   // (`features/project/issues-table-keys.ts`), and each tab draws exactly one table, so the keys
@@ -205,16 +218,7 @@ export function PrioritiesPage(): ReactNode {
             ariaLabel="Priorities page"
             compact
             idPrefix={TABS_ID}
-            onSelect={(next) =>
-              setParams(
-                (current) => {
-                  const changed = new URLSearchParams(current);
-                  changed.set(TAB_PARAM, next);
-                  return changed;
-                },
-                { replace: true }
-              )
-            }
+            onSelect={(next) => update((changed) => changed.set(TAB_PARAM, next))}
             tabs={[
               { id: "order", label: TAB_LABELS.order, count: rows.length },
               { id: "none", label: TAB_LABELS.none, count: body.work_under_no_priority.count },

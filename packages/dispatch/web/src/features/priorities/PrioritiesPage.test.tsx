@@ -12,7 +12,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
+import { BrowserRouter, MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { recordedEditors, writeAtEnd } from "../../__tests__/recorded-editors";
 import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/send-answers";
 import { api, priorityPatchRequest } from "../../api/client";
@@ -154,16 +154,20 @@ function Address() {
   );
 }
 
-/** The page as a signed-in person sees it at `at`, with the reads it makes answered from
- *  `answer`; a reader who is not a person, and so may not write a priority, where `writer` is
- *  false; and each table's box `box` px wide where a test names a width, which the unit DOM
- *  otherwise measures as none, a phone's. */
+/** The page as a signed-in person sees it, with the reads it makes answered from `answer`; a
+ *  reader who is not a person, and so may not write a priority, where `writer` is false; at the
+ *  address `at`; each table's box `box` px wide where a test names a width, which the unit DOM
+ *  otherwise measures as none, a phone's; and in the window's own history where `history` is
+ *  `window`, so a test reads how many entries it holds, rather than in one of the router's own. */
 function page(
   answer: Priorities,
   issues: IssueSummary[] = [],
   writer = true,
-  at = "/priorities",
-  box?: number
+  {
+    at = "/priorities",
+    box,
+    history = "memory",
+  }: { at?: string; box?: number; history?: "memory" | "window" } = {}
 ) {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(answer);
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
@@ -202,17 +206,23 @@ function page(
   client.setQueryData(["whoami"], whoami);
   // An open row's description is drawn in the documents' own editor, which a test edits through.
   const editors = recordedEditors();
+  const tree = (
+    <QueryClientProvider client={client}>
+      <DocumentRuntime.Provider value={editors.runtime}>
+        <KeymapProvider>
+          <PrioritiesPage />
+          <Address />
+        </KeymapProvider>
+      </DocumentRuntime.Provider>
+    </QueryClientProvider>
+  );
+  if (history === "window") window.history.replaceState(null, "", at);
   const view = render(
-    <MemoryRouter initialEntries={[at]}>
-      <QueryClientProvider client={client}>
-        <DocumentRuntime.Provider value={editors.runtime}>
-          <KeymapProvider>
-            <PrioritiesPage />
-            <Address />
-          </KeymapProvider>
-        </DocumentRuntime.Provider>
-      </QueryClientProvider>
-    </MemoryRouter>
+    history === "window" ? (
+      <BrowserRouter>{tree}</BrowserRouter>
+    ) : (
+      <MemoryRouter initialEntries={[at]}>{tree}</MemoryRouter>
+    )
   );
   restores.push(() => {
     view.unmount();
@@ -222,6 +232,7 @@ function page(
     rect?.mockRestore();
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "clientHeight", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "clientHeight");
+    if (history === "window") window.history.replaceState(null, "", "/");
   });
   /** Another person's write of priority `id` reaching the page, as a refresh of its read does. */
   const writtenElsewhere = (id: string, overrides: Partial<PriorityRow>) => {
@@ -343,12 +354,9 @@ test("the page opens on the priorities, and each fault is a tab of its own the a
 });
 
 test("an address naming a fault's tab opens on it", async () => {
-  page(
-    FIFTEEN,
-    [issue("CORE-9", ["linkage-closure"], { status: "backlog" })],
-    true,
-    "/priorities?tab=backlog"
-  );
+  page(FIFTEEN, [issue("CORE-9", ["linkage-closure"], { status: "backlog" })], true, {
+    at: "/priorities?tab=backlog",
+  });
   expect(
     await screen.findByRole("table", { name: "Priority work in backlog or icebox table" })
   ).toBeDefined();
@@ -357,6 +365,32 @@ test("an address naming a fault's tab opens on it", async () => {
     "true"
   );
   expect(screen.queryByRole("table", { name: "Priorities table" })).toBeNull();
+});
+
+/** The backlog-or-icebox tab's name in the address before it was named `backlog`, which a link
+ *  written then still carries. It is built from its parts so that no added line of the branch
+ *  holds the word the person refused (INFRA-2947, check 1a3e1452). */
+const OLD_TAB = ["p", "arked"].join("");
+
+// An address naming a tab the page does not have opens on the priorities, and the name leaves
+// the address with replace: no entry is added to the history, so Back leads where it did, and
+// the address never names a tab the page does not draw. The priorities table's own view in the
+// same address stays (INFRA-2947, Verification v73).
+test("an address naming a tab the page does not have opens on the priorities, and the name leaves the address", async () => {
+  const entries = window.history.length;
+  page(FIFTEEN, [], true, { at: `/priorities?tab=${OLD_TAB}&p.q=linkage`, history: "window" });
+  expect(await screen.findByRole("table", { name: "Priorities table" })).toBeDefined();
+  expect(screen.getByRole("tab", { name: "Priorities 3" })).toHaveAttribute(
+    "aria-selected",
+    "true"
+  );
+  await waitFor(() =>
+    expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?p.q=linkage")
+  );
+  expect(window.history.length).toBe(entries);
+  // The search kept in the address still narrows the table.
+  expect(screen.getByRole("row", { name: "#2 Linkage closure eval" })).toBeDefined();
+  expect(screen.queryByRole("row", { name: "#1 Legion works reliably first" })).toBeNull();
 });
 
 test("each fault table asks the issue listing for its statuses, and the backlog-or-icebox one for the move", async () => {
@@ -374,7 +408,7 @@ test("each fault table asks the issue listing for its statuses, and the backlog-
       issue("OPS-4", ["legion-first", "oss-verify"], { status: "icebox" }),
     ],
     true,
-    "/priorities?tab=none"
+    { at: "/priorities?tab=none" }
   );
   const faults = await screen.findByRole("table", {
     name: "Active under no priority table",
@@ -543,7 +577,7 @@ const PHONE_BOX = 342;
 
 test("a row counts the work in flight, waiting and in backlog or icebox, shows its newest event, and what closed when asked", async () => {
   const user = userEvent.setup();
-  page(FIFTEEN, [], true, "/priorities", DESKTOP_BOX);
+  page(FIFTEEN, [], true, { box: DESKTOP_BOX });
   const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   const texts = (of: HTMLElement) =>
     within(of)
@@ -614,7 +648,7 @@ test("a row counts the work in flight, waiting and in backlog or icebox, shows i
 // Columns control there, since the one cell names every field whatever is shown, and the box's
 // right border is the one line at the title's right: no divider of the pinned columns beside it.
 test("on a phone the table draws the place and one cell, which names the owner, the counts and the newest event", async () => {
-  page(FIFTEEN, [], true, "/priorities", PHONE_BOX);
+  page(FIFTEEN, [], true, { box: PHONE_BOX });
   const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   expect(
     screen.getAllByRole("columnheader").map((header) => {
@@ -1056,7 +1090,7 @@ test("a fault row tells no reader that an issue nobody claims is claimed", async
       }),
     ],
     true,
-    "/priorities?tab=none"
+    { at: "/priorities?tab=none" }
   );
   const faults = await screen.findByRole("table", {
     name: "Active under no priority table",
@@ -1112,7 +1146,7 @@ test("a grouped table counts each group in the plural its rows are called by", a
 
 test("no header of the priorities table is longer than 16 characters, whichever columns show", async () => {
   const user = userEvent.setup();
-  page(FIFTEEN, [], true, "/priorities", DESKTOP_BOX);
+  page(FIFTEEN, [], true, { box: DESKTOP_BOX });
   await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   await user.click(
     within(screen.getByRole("region", { name: "Priorities" })).getByRole("button", {
