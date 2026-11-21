@@ -213,6 +213,10 @@ done
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 root=$(cd "$here/../../../.." && pwd -P)
+# Each `rig.sh run` and `rig.sh batch` shell is a child subreaper, so every process a run starts
+# stays below it (scripts/e2e/lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/subreaper.sh
+. "$root/scripts/e2e/lib/subreaper.sh"
 work=${SKILL_SCENARIOS_WORK:-${TMPDIR:-/tmp}/skill-scenarios}
 work=$(realpath -m -- "$work")
 

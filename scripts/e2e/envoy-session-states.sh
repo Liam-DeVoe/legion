@@ -102,6 +102,10 @@
 # inherits no DISPATCH_*, ENVOY_*, NATS_*, OMP*, PI_*, ANTHROPIC_*, CLAUDE_*, PGHOSTADDR,
 # PGSERVICE or PGSERVICEFILE variable of the caller's.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 # This script's own three ENVOY_SESSION_STATES_* inputs are read first: the sweep below drops every
 # ENVOY_* variable of the caller's, so that nothing the run starts inherits a Legion pane's real

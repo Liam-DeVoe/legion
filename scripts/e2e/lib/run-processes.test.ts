@@ -16,6 +16,7 @@ import { procRootOf } from "./proc-root";
 // row points proc_root at a proc root of its own processes (harness).
 const rig = join(import.meta.dir, "rig.sh");
 const force = join(import.meta.dir, "arg-max-force.sh");
+const subreaperPy = join(import.meta.dir, "subreaper.py");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
@@ -583,7 +584,10 @@ ln -s "/proc/$pid" "$proc_root/$pid"`,
       });
     }
     expect(state(marked)).toBe("S");
-  }
+  },
+  // A guard on a hang only: its three sweeps walk six times, which took past Bun's 5 s default on a
+  // devbox at load 350, and every wait of its harness has a bound of its own.
+  60_000
 );
 
 test.skipIf(skip || withoutPython)(
@@ -635,7 +639,77 @@ echo "after: before $(state "$before"), session $(state "$session"), zombie $(st
     });
     expect(pids(readFileSync(join(work, "rp.out"), "utf8"))).toEqual([String(marked)]);
     expect(await gone(marked)).toBe(true);
-  }
+  },
+  // A guard on a hang only, as for the row above.
+  60_000
+);
+
+test.skipIf(skip || withoutPython)(
+  "a walk from a shell that is a child subreaper judges an unreadable process by its line of parents: one another session leaves under pid 1 during the run does not fail it, and the run's own, which the shell adopted, still does",
+  async () => {
+    // Another session's not-dumpable process that double-forks away during the run goes to pid 1,
+    // or to a reaper above the walking shell, as the run's own does when the shell is no subreaper,
+    // so unread_may_carry cannot tell the two apart and a devbox's long run failed its teardown on
+    // such processes (13 of 60 walks of aec1fb77ff's tester exited 2). A shell that lib/subreaper.py
+    // started keeps every process of the run below it, its own orphans included, and run_descendant
+    // passes any process whose line of parents meets an older process before the shell. The harness
+    // here starts under subreaper.py and waits; this test process, which is no descendant of it,
+    // then starts a not-dumpable python3 that leaves its parent and is adopted above the harness;
+    // the harness walks, then starts its own such orphan and walks again.
+    const work = join(dir, "subreaper");
+    mkdirSync(work);
+    const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    await untilRunning(marked, "sleep");
+    const procRoot = rowRoot();
+    const body = `set -Eeuo pipefail
+trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
+root=${JSON.stringify(root)}
+work=$WORK
+. ${JSON.stringify(rig)}
+export LEGION_E2E_RUN=$work
+${unreadableSh}
+[ "\${LEGION_E2E_SUBREAPER:-}" = "$$" ] && echo "the shell is the subreaper" || echo "the shell is no subreaper"
+: >"$work/shell.ready"
+for i in $(seq 1 400); do [ ! -e "$work/go" ] || break; sleep 0.05; done
+linked "$work/foreign.ready"; foreign=$pid
+echo "foreign $(readable "$foreign"), parent $([ "$(proc_parent "$foreign")" = "$$" ] && echo shell || echo elsewhere)"
+st=0; run_processes >"$work/rp1.out" 2>"$work/rp1.err" || st=$?
+echo "walk beside the foreign orphan: $st, named [$(tr '\\n' ' ' <"$work/rp1.out")]"
+unreadable "$work/own.ready" orphan; own=$pid
+echo "own $(readable "$own"), parent $([ "$(proc_parent "$own")" = "$$" ] && echo shell || echo elsewhere)"
+st=0; run_processes >"$work/rp2.out" 2>"$work/rp2.err" || st=$?
+echo "walk beside the run's own orphan too: $st"
+echo "pids $foreign $own"`;
+    const shell = Bun.spawn(ownGroup(["python3", "-I", subreaperPy, "bash", "-c", body]), {
+      env: { PATH: process.env.PATH ?? "", WORK: work, proc_root: procRoot },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    started.push(shell.pid);
+    for (let i = 0; i < 200 && !existsSync(join(work, "shell.ready")); i++) await Bun.sleep(50);
+    spawn(["python3", "-I", unreadablePy, join(work, "foreign.ready"), "orphan"], { cwd: dir });
+    writeFileSync(join(work, "go"), "");
+    const [out, err] = await Promise.all([
+      new Response(shell.stdout).text(),
+      new Response(shell.stderr).text(),
+    ]);
+    await shell.exited;
+    const ids = /^pids (\d+) (\d+)$/m.exec(out)?.slice(1) ?? [];
+    for (const pid of ids) started.push(Number(pid));
+    expect({ err, out: out.replace(/^pids .*\n/m, "") }).toEqual({
+      err: "",
+      out: `the shell is the subreaper\nforeign unreadable, parent elsewhere\nwalk beside the foreign orphan: 0, named [${marked} ]\nown unreadable, parent shell\nwalk beside the run's own orphan too: 2\n`,
+    });
+    expect(readFileSync(join(work, "rp1.err"), "utf8")).toBe("");
+    expect(readFileSync(join(work, "rp2.err"), "utf8").trimEnd()).toMatch(
+      new RegExp(
+        `^procs_naming: process ${ids[1]} \\([^)\\n]+\\) is this user's, started after this shell, and its environment cannot be read, so it may carry the run's mark and the processes naming \\S+ were not checked$`
+      )
+    );
+  },
+  // A guard on a hang only: the row took 2.2 to 2.6 s on a loaded devbox, and its harness's waits
+  // for its files have bounds of their own.
+  60_000
 );
 
 test.skipIf(skip || withoutPython)(
@@ -699,44 +773,109 @@ cat "$WORK/h.err" >&2`;
     expect(readFileSync(join(work, "mp.err"), "utf8")).toMatch(
       /^procs_naming: this shell's line of parents could not be read to its end, at the parent \d+ of \d+, which ended or whose pid another process took, so /m
     );
-  }
+  },
+  // A guard on a hang only, as for the rows above.
+  60_000
 );
 
 test.skipIf(skip)(
-  "a marked process caught inside an exec is still named: an environment that reads empty is read again until the exec ends",
+  "a marked process caught inside an exec is still named: a read of its environment counts only when it falls within one exec",
   async () => {
-    // Inside an exec the kernel has given the process its new memory before the bounds of its
-    // arguments and environment, so a read of its /proc/<pid>/environ then comes back empty: grep
-    // finds no mark in it, names_dir reads it as gone, and the walk named nothing of a marked
-    // process, which a sweep then left running. The process here re-execs itself without end, each
-    // exec keeping its pid and its environment, the run's mark among it, so every exec opens that
-    // window again; the harness walks 60 times over a proc root of it and this test process, and
-    // every walk must name it. A walk that took an empty read for an answer missed it in about 1 of
-    // 10. The row's own timeout is a guard on a hang only: 60 walks took 3 to 5 s on a loaded devbox.
+    // A read of /proc/<pid>/environ reads the memory the process had when the file was opened, and
+    // inside an exec the kernel gives the process new memory before the bounds of its arguments and
+    // environment: a read across an exec comes back empty, or cut short between pages, where a mark
+    // further on is lost. grep found no mark in it, names_dir read it as gone or unmarked, and the
+    // walk named nothing of a marked process, which a sweep then left running. The harness's shell
+    // starts a process that re-execs itself without end, as a run starts its processes, each exec
+    // keeping its pid and its environment, a 100,000-byte variable first and the run's mark after it
+    // (env -i keeps that order), so every exec opens that window again and a read of the 25 pages
+    // before the mark is often cut; it adds the process to the row's proc root, walks 30 times over
+    // it and this test process, and every walk must name it. A walk that read only an empty read
+    // again (aec1fb77ff) missed such a process in 36 of 200 walks, and one that took every read for
+    // an answer in more; with a 9,000-byte variable it missed in 2 of 200, which 60 walks did not
+    // catch.
     const work = join(dir, "exec-window");
     mkdirSync(work);
-    const loop = 'exec "$0" -c "$1" "$0" "$1"';
-    const execing = Bun.spawn(ownGroup(["sh", "-c", loop, "sh", loop]), {
-      cwd: dir,
-      env: { PATH: process.env.PATH ?? "", LEGION_E2E_RUN: work },
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    started.push(execing.pid);
     const r = harness(
       work,
-      `named=0 failed=0
-for i in $(seq 1 60); do
+      `loop='exec "$0" -c "$1" "$0" "$1"'
+pad=$(head -c 100000 /dev/zero | tr '\\0' x)
+env -i PATH="$PATH" PAD="$pad" LEGION_E2E_RUN="$work" sh -c "$loop" sh "$loop" </dev/null >/dev/null 2>&1 &
+looping=$!
+echo "looping $looping"
+ln -s "/proc/$looping" "$proc_root/$looping"
+comm=
+for i in $(seq 1 200); do { read -r comm <"/proc/$looping/comm"; } 2>/dev/null; [ "$comm" != sh ] || break; sleep 0.05; done
+named=0 failed=0
+for i in $(seq 1 30); do
   st=0
   out=$(procs_naming "$work" "\${run_marks[@]}") || st=$?
   [ "$st" = 0 ] || failed=$((failed + 1))
-  case " $out " in *" ${execing.pid} "*) named=$((named + 1)) ;; esac
+  case " $out " in *" $looping "*) named=$((named + 1)) ;; esac
 done
-echo "named in $named of 60 walks, $failed failed"`
+kill -KILL "$looping"
+echo "named in $named of 30 walks, $failed failed"`
     );
+    const looping = /^looping (\d+)$/m.exec(r.out)?.[1];
+    if (looping !== undefined) started.push(Number(looping));
     expect(r.err).toBe("");
-    expect(r.out).toBe("named in 60 of 60 walks, 0 failed\n");
+    expect(r.out.replace(/^looping \d+\n/m, "")).toBe("named in 30 of 30 walks, 0 failed\n");
   },
+  // A guard on a hang only: 20 walks of a 100,000-byte environment took 18 s at load 620, each
+  // reading the looping process again every 10 ms until a read falls within one exec.
+  120_000
+);
+
+test.skipIf(skip)(
+  "a process that cannot carry the run's mark holds no walk while it re-execs: past the walk's bound, one whose read grep did not match is judged as an unreadable environment is, and passed, and the run's marked process is still named",
+  async () => {
+    // A process of this user whose read around grep may have fallen inside an exec is read again
+    // until a read falls within one exec, up to the walk's bound, and past it the walk failed with
+    // 2. On a devbox at load 960 one walk of 100 of the real /proc failed so on a process the run
+    // did not start, in an exec the load held: another session's, which cannot carry the run's mark.
+    // So past the bound one whose read grep did not match is judged (naming_may_carry), and one that
+    // cannot carry the mark is passed. Here an unmarked process that re-execs itself without end, a
+    // 100,000-byte variable in its environment so that a read seldom falls within one exec, starts
+    // before the harness's shell, and the walk's bound is 0 s (procs_naming_exec_seconds), so the
+    // first read that does not decide reaches it; 30 walks must each name the marked sleep alone and
+    // exit 0.
+    const work = join(dir, "cannot-carry-exec");
+    mkdirSync(work);
+    const loop = 'exec "$0" -c "$1" "$0" "$1"';
+    const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    const looping = spawn(["sh", "-c", loop, "sh", loop], {
+      cwd: dir,
+      env: { PAD: "x".repeat(100_000) },
+    });
+    await untilRunning(marked, "sleep");
+    await untilRunning(looping, "sh");
+    await pastStarts([marked, looping]);
+    const r = harness(
+      work,
+      `procs_naming_exec_seconds=0
+named=0 loop=0 failed=0
+for i in $(seq 1 30); do
+  st=0
+  out=$(procs_naming "$work" "\${run_marks[@]}" 2>"$work/pn.err") || st=$?
+  [ "$st" = 0 ] || { failed=$((failed + 1)); [ -e "$work/first.err" ] || cp "$work/pn.err" "$work/first.err"; }
+  case " $out " in *" ${marked} "*) named=$((named + 1)) ;; esac
+  case " $out " in *" ${looping} "*) loop=$((loop + 1)) ;; esac
+done
+echo "named the marked sleep in $named of 30 walks, the loop in $loop, $failed failed"`
+    );
+    expect({
+      err: r.err,
+      out: r.out,
+      first: existsSync(join(work, "first.err"))
+        ? readFileSync(join(work, "first.err"), "utf8")
+        : "",
+    }).toEqual({
+      err: "",
+      out: "named the marked sleep in 30 of 30 walks, the loop in 0, 0 failed\n",
+      first: "",
+    });
+  },
+  // A guard on a hang only: the walks read the loop not at all, and the marked sleep once each.
   60_000
 );
 
@@ -825,7 +964,9 @@ echo "shell's parent $(proc_parent $$), orphan's parent $(proc_parent "$orphan")
     expect(readFileSync(join(work, "mp.err"), "utf8")).toMatch(
       /^procs_naming: process \d+ \([^)]+\) is this user's, started after this shell, and its environment cannot be read, so it may carry the run's mark and the processes naming \S+ were not checked$/m
     );
-  }
+  },
+  // A guard on a hang only, as for the rows above.
+  60_000
 );
 
 test.skipIf(skip)(

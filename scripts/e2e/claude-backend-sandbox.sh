@@ -187,6 +187,10 @@
 # own pod, Service and auth Secret (bridge mode only) carry the same label and are torn down by
 # lib/bridge-tunnel.sh before that comparison runs. Nothing outside `legion` is touched.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2eccs.$$.XXXXXXXX")

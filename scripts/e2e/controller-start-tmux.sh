@@ -15,6 +15,10 @@
 # the tmux servers, and its Postgres and NATS containers. CONTROLLER_START_EVIDENCE_DIR (default a
 # fresh /tmp directory, kept and printed) keeps the transcript and the daemon and listener logs.
 set -euo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce ("nats: nkeys not supported by the server"), so no process here inherits an operator's
 # pane seed (NATS_NKEY_SEED, NATS_NKEY_SEED_FILE) or daemon seed (NATS_DAEMON_NKEY_SEED,

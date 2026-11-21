@@ -125,6 +125,10 @@
 # once leave the checkout with divergent working-copy commits for someone to abandon by hand.
 # Commit the tree before the runs and expect to check `jj log` after them.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 # This script's own inputs are read first: the sweep below drops every variable of those families
 # from the caller's environment, so that nothing the run starts inherits a Legion pane's real

@@ -19,6 +19,10 @@
 # `--help` prints the inputs and the checkpoints. scripts/e2e/README.md, "parked-decision-devbox.sh",
 # describes the run.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 checkpoints="prerequisites rig boot controller-up trees-wait-on-a-person trees-parked answer-readmits question-stays-parked foreign-park-stays approval-queues controller-down walk-on-start verdict cleanup-is-complete"
 

@@ -37,6 +37,10 @@
 # are instructed by a background watcher the moment each assignment arrives, and the script asserts
 # what the daemon did rather than the order it expected.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh, this script's own, whatever ACCEPT_ROOT names).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 root=${ACCEPT_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}
 # The key command's record is read with this script's own reader, and an agent's tool calls with this

@@ -46,6 +46,10 @@
 # (read_app_logins, lib/workflow.sh). No token and no key enters this shell, a pane, an argv, or
 # this transcript.
 set -Eeuo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 # The model route first, and under box-login the one-at-a-time lock (lib/box-login.sh), before the

@@ -46,6 +46,10 @@
 # logs, the page's screenshots, the session transcript, the arguments the rig's extension command
 # recorded and every `message_start` its extension saw.
 set -euo pipefail
+# The run's shell is a child subreaper, so every process the run starts stays below it
+# (lib/subreaper.sh).
+# shellcheck source-path=SCRIPTDIR source=lib/subreaper.sh
+. "$(dirname "$0")/lib/subreaper.sh"
 # This rig's NATS is a throwaway server with no users. nats.go refuses an nkey when the server sends
 # no nonce, so no process here inherits an operator's seed.
 unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE NATS_DAEMON_NKEY_SEED NATS_DAEMON_NKEY_SEED_FILE
