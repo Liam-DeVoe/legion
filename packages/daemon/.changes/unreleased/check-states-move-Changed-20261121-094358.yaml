@@ -7,7 +7,7 @@ body: |-
     waits until the daemon holds every state event of the issue through the record's
     `check_states_serial`, then, at the head the record names, sends the issue back to
     `implementing` with a task naming each check that does not pass, moves it to `reviewing` when
-    each check passes (yes from the tester, or from CI for a check CI proves), and holds it while a
+    every check of the head's set reads yes at that head, whatever roles its results came from, and holds it while a
     check has no state, Dispatch could not read a state, or a CI run still goes on with no result.
     A wait at the completion tells the architect once, in a `phase-finished` notice whose `reason`
     names what the move waits for; a move back names the failing checks in its notice's `reason`.

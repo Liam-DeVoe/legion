@@ -314,8 +314,8 @@ func (r *statesRig) movedBackNaming(named []string, unnamed ...string) {
 	}
 }
 
-// The rule of a passing check is judgeStates' alone: a check passes on yes whose roles hold the
-// tester, or yes from ci for a check CI proves. A check of the head's set with no state, a state
+// The rule of a passing check is judgeStates' alone: a check passes when it reads yes at the tested
+// head, whatever roles its results came from. A check of the head's set with no state, a state
 // Dispatch could not read and a CI run still going with no result wait; every other state fails
 // and is named with why. A state of a check outside the set is no part of the judgement, and no
 // set held is no judgement at all.
