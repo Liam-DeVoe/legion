@@ -195,8 +195,7 @@ func EdgeRelayReplyPrefix(machineID string) string {
 //     (contracts.RoleTopicPrefix + project): a role message;
 //   - the relay subjects (bus.DeliverSubjectPrefix): a frame to a session whose consumer it holds;
 //   - its own machine's relay receipts (EdgeRelayReplyPrefix), which the replica serving a
-//     session's relay socket publishes a frame's receipt on: the relay socket of #4658
-//     (cmd/listener's relay_socket.go). No program at this head publishes one;
+//     session's relay socket publishes a frame's receipt on (cmd/listener's relay_socket.go);
 //   - the resume lane (bus.SessionResumeSubjectPrefix): where a deleted session consumer stopped;
 //   - the exception lanes (bus.ExceptionTopicPrefix) of the agent subjects and of each project's
 //     role subjects: a failed delivery's report, and an unheld role's refusal.
@@ -216,10 +215,7 @@ func EdgeRelayReplyPrefix(machineID string) string {
 // the server delivers it no other client's replies; every session's relay subject
 // (bus.DeliverSubject), which the replica serving a session's relay socket subscribes for that
 // session; and its own machine's relay receipts (EdgeRelayReplyPrefix), which the session relay
-// takes its receipts under once #4658 names them there. Both subscriptions are #4658's: at this
-// head no program makes either, and the edge's session relay names its receipts under its inbox
-// prefix, which no session's grant publishes (Session publishes _INBOX.>), so at this head alone
-// no session answers an edge listener's relay frame over NATS. It subscribes no role lane, so it
+// takes its receipts under (cmd/listener's startSessionRelays). It subscribes no role lane, so it
 // takes no share of any project's role messages: a shared listener resolves a role's holder and
 // forwards the message to the holder's agent subject, which the holder's session consumer
 // delivers. Its lists name no agent stream subject. nats-server (2.15.1) admits a subscription to

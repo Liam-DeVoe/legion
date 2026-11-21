@@ -4000,8 +4000,8 @@ report, and an unheld role's refusal). So a direct publish of the edge's reaches
 GitHub, Slack, team or Legion event, no other project's role lane and no role lane in the form
 that names no project, nothing on the kept role lane `notifications.envoy.kept.>`, no other
 machine's receipts and no other exception lane. A message on a role lane of its own project that
-names a role of another project is the shared listeners' role lane to refuse, which it does once
-the edge mode of #4657 is in. It holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
+names a role of another project is the shared listeners' role lane to refuse, which it does. It
+holds no `$JS.API.STREAM.CREATE` or `UPDATE` of
 `ENVOY_NOTIFICATIONS`: an edge listener reads the stream and its start ends, naming the stream, on
 a server that has none. It subscribes its own machine's inbox prefix
 `_INBOX_envoy_edge_<machine id>.>` in place of `_INBOX.>`, so one edge machine is delivered no
@@ -4011,11 +4011,10 @@ connection of an edge listener names its inboxes under that prefix, and a shared
 a role message held at the edge to the holder's agent subject. Its lists name no `agentstream.`
 subject.
 
-The relay receipts, and the subscription to the relay subjects, are for the relay socket of #4658:
-no program at this head uses them. At this head the edge's session relay names a frame's receipt
-under its inbox prefix, which no session's grant publishes, so at this head alone no session
-answers an edge listener's relay frame over NATS. The replicas of one machine share its id, and so
-its inbox prefix and its receipts.
+The relay receipts, and the subscription to the relay subjects, are the relay socket's: the edge's
+session relay names a frame's receipt under its machine's family, and the replica serving the
+session's relay socket publishes the receipt there. The replicas of one machine share its id, and
+so its inbox prefix and its receipts.
 
 An edge listener holds itself to that list. It keeps no role message for a role's next holder and
 hands no kept lane over, so a publish to a role no session holds is answered 404 with its refusal's
