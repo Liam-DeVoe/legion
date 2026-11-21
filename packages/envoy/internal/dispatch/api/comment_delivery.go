@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -1317,32 +1318,36 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reply_to_block names the block a reply's body answers; an error report has none")
 		return
 	}
+	// The writer's reader, resolved before the transaction holds a connection
+	// (lockedCommentForDelivery), and read by the role read below.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// The mention the reply answers and the session its attempt names are read before the
 	// transaction, so a reply from a session the attempt does not name, to a mention of a role,
 	// asks the listener whether that session holds the role now with nothing held
 	// (lookUpRoleHolderReply). The mention is the one the request names, else the comment's
 	// first, which is its only one wherever the transaction below takes a reply naming none. A
-	// read that finds nothing asks nothing: the transaction below answers that comment, mention
-	// or attempt as it always has. A read that fails is the route's 500.
+	// comment the writer does not see is one no row holds (access.ItemOwnerClause), so the read
+	// finds nothing and asks nothing for it, as for a missing one. A read that finds nothing asks
+	// nothing: the transaction below answers that comment, mention or attempt as it always has. A
+	// read that fails is the route's 500.
 	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select m.target, d.session_id
 		from comment_mentions m
+		join comments c on c.id = m.comment_id
 		left join comment_deliveries d on d.comment_id = m.comment_id and d.target = m.target and d.attempt = $3
 		where m.comment_id = $1 and m.target = coalesce($2, m.target)
+		  and `+access.ItemOwnerClause("c.issue_key", "c.artifact_id", "$4")+`
 		order by m.target
 		limit 1
-	`, input.Target, input.Attempt)
+	`, input.Target, input.Attempt, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 
-	// The writer's reader, resolved before the transaction holds a connection
-	// (lockedCommentForDelivery).
-	who, ok := s.readerOf(w, r)
-	if !ok {
-		return
-	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)

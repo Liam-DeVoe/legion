@@ -997,27 +997,30 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The writer's reader is resolved before the transaction holds a connection: the answer a
+	// repeat reads back is loaded as the writer may read it (loadMessage), and the role read below
+	// reads the message as the writer does.
+	who, ok := s.readerOf(w, r)
+	if !ok {
+		return
+	}
 	// The message's target and the session its attempt names are read before the transaction,
 	// so a reply from a session the attempt does not name, to a message sent for a route to a
 	// role, asks the listener whether that session holds the role now with nothing held
-	// (lookUpRoleHolderReply). A read that finds nothing asks nothing: the transaction below
-	// answers that message or attempt as it always has. A read that fails is the route's 500.
+	// (lookUpRoleHolderReply). A message the writer does not see is one no row holds
+	// (access.MessageClause), so the read finds nothing and asks nothing for it, as for a missing
+	// one. A read that finds nothing asks nothing: the transaction below answers that message or
+	// attempt as it always has. A read that fails is the route's 500.
 	roleReply, err := s.roleHolderReplyOf(r.Context(), actor, r.PathValue("id"), `
 		select coalesce(m.target, ''), d.session_id
 		from messages m left join message_deliveries d on d.message_id = m.id and d.attempt = $2
-		where m.id = $1
-	`, input.Attempt)
+		where m.id = $1 and `+access.MessageClause("m", "$3")+`
+	`, input.Attempt, refs.VisibilityArg(who))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 
-	// The writer's reader is resolved before the transaction holds a connection: the answer a
-	// repeat reads back is loaded as the writer may read it (loadMessage).
-	who, ok := s.readerOf(w, r)
-	if !ok {
-		return
-	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
