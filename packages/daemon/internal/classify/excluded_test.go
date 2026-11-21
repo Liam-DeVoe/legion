@@ -191,6 +191,47 @@ func TestTheSettlementBeforeACorrectionDeliveredAfterItIsStale(t *testing.T) {
 	}
 }
 
+// Two runs of one uncounted suite can each have stood for ci-ok and been settled, a run and its
+// re-run, before the listener learned the suite's event: run 20 at generation 2 and its re-run 21
+// at generation 3. The correction names both excluded, and the pull_request run 10's failure in
+// their place. It applies whichever of the earlier settlements the daemon holds: the re-run's
+// delivered in order (the control), or only run 20's, the re-run's settlement still delayed; the
+// head turns red either way, and the delayed settlement delivered after the correction is stale. A
+// correction that names only the re-run, as the listener named before it kept the runs a re-run
+// replaced, is stale to a daemon that holds run 20, which keeps the head green: so the listener
+// must name every run of the suite that stood.
+func TestACorrectionAppliesWhicheverEarlierAttemptOfTheExcludedSuiteTheDaemonHolds(t *testing.T) {
+	first := exSettlement(2, []record.AttemptRun{exRun("ci-ok", 20)}, nil)
+	rerun := exSettlement(3, []record.AttemptRun{exRun("ci-ok", 21)}, nil)
+	correction := exSettlement(4, []record.AttemptRun{exRun("ci-ok", 10)}, []string{"ci-ok"}, exRun("ci-ok", 20), exRun("ci-ok", 21))
+	for _, tc := range []struct {
+		name string
+		held []SettlementCandidate
+	}{
+		{"the re-run's settlement delivered in order", []SettlementCandidate{first, rerun}},
+		{"the re-run's settlement delayed", []SettlementCandidate{first}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pr := exSettled(t, tc.held...)
+			corrected, changed := ApplyCheckSettlement(pr, correction)
+			if !changed || !reflect.DeepEqual(corrected.Failing, []string{"ci-ok"}) ||
+				!reflect.DeepEqual(corrected.CheckRuns, []record.AttemptRun{exFenced("ci-ok", 10, record.RunFailed)}) {
+				t.Fatalf("the correction: changed %t, failing %v, fence %+v; want ci-ok failing on run 10 alone", changed, corrected.Failing, corrected.CheckRuns)
+			}
+			if got, late := ApplyCheckSettlement(corrected, rerun); late || !reflect.DeepEqual(got, corrected) {
+				t.Fatalf("the re-run's settlement after the correction changed %t, record %+v; want %+v unchanged", late, got, corrected)
+			}
+		})
+	}
+	t.Run("a correction that names only the re-run", func(t *testing.T) {
+		pr := exSettled(t, first)
+		partial := exSettlement(4, []record.AttemptRun{exRun("ci-ok", 10)}, []string{"ci-ok"}, exRun("ci-ok", 21))
+		if got := ClassifySettlement(pr, partial); got != SettlementStale {
+			t.Fatalf("a correction naming only run 21 is classified %s to a daemon holding run 20, want %s", got, SettlementStale)
+		}
+	})
+}
+
 // A settlement from before the correction can still be newer for another check: here it carries
 // unit's re-run 16 beside the excluded ci-ok run 20. It applies for unit, and brings back neither
 // the excluded run nor what it concluded. Where a lower run of ci-ok stands in the fence, ci-ok

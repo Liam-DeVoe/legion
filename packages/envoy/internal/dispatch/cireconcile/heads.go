@@ -465,9 +465,10 @@ const (
 // this head's ETags.
 //
 // The events a query answered of a head it sends to REST (events) are written first, each alone
-// (Writer.RecordRunEvent), where a page of the head's listings answered anything new, so the store
-// judges the listings' check runs by them: no REST listing carries an event. A head whose pages
-// all answered 304 writes nothing, its events included, which the pass that read those pages wrote.
+// (Writer.RecordRunEvent), so the store judges the listings' check runs by them: no REST listing
+// carries an event. They are written whatever the listings answered, a 304 for every page
+// included: the ETags the pass holds may be of a read whose query gave no events (a page GitHub
+// refused the query for), and an event the record already holds changes nothing.
 //
 // A GitHub Actions suite the record holds no event for after the pass wrote it (the store's
 // answer, cistore.Recorded.EventUnknown) is counted by the CI store as every suite was before it
@@ -482,7 +483,7 @@ const (
 // of it, so an event the listener records between two writes of the pass counts.
 func (r *Reconciler) record(ctx context.Context, writer Writer, head pullHead, queried bool, events map[string]string, runs, suites, statuses []pageOf[object]) (wanted int, changedRecord, ok bool) {
 	ok = true
-	if len(events) > 0 && (!everyPageNotModified(runs) || !everyPageNotModified(suites)) {
+	if len(events) > 0 {
 		ids := make([]string, 0, len(events))
 		for id := range events {
 			ids = append(ids, id)

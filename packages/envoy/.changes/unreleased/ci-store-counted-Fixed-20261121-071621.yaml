@@ -1,14 +1,16 @@
 kind: Fixed
 body: |-
   The listener's CI store now counts a pull request head's check runs as GitHub's own rollup of
-  the pull request counts them. A check run of a GitHub Actions workflow run that a
-  `workflow_dispatch` or `pull_request_review_comment` event started, the two events the rollup was
-  measured not to count, is no longer one of the head's checks, no longer replaces the pull request
-  run's check of the same name when its id is higher, and no longer holds the head unsettled,
-  moves its snapshot or shows in its settlement. Every other event's runs count, a CodeQL
-  default setup's `dynamic` runs among them, which GitHub's documented list of six events leaves
-  out. Before, a dispatched run's passing `ci-ok` replaced the pull request run's failing `ci-ok`,
-  so a settlement could say CI passed where GitHub refused the merge. The store learns each run's
+  the pull request counts them. A check run of a GitHub Actions workflow run counts only when the
+  event that started the run is one GitHub documents as evaluated for a pull request (`push`,
+  `pull_request`, `pull_request_review`, `pull_request_target`, `deployment`, `deployment_status`),
+  `merge_group`, which the same documentation names for merge queues, or `dynamic`, the suite of a
+  CodeQL default setup, which the rollup was measured to count. A run of any other event, a
+  `workflow_dispatch` run of the pull request's branch among them, is no longer one of the head's
+  checks, no longer replaces the pull request run's check of the same name when its id is higher,
+  and no longer holds the head unsettled, moves its snapshot or shows in its settlement. Before, a
+  dispatched run's passing `ci-ok` replaced the pull request run's failing `ci-ok`, so a settlement
+  could say CI passed where GitHub refused the merge. The store learns each run's
   event from the `workflow_run` webhook and from Dispatch's CI reconcile, whose query now asks each
   check suite for `workflowRun { event }`, and the result does not depend on the order the check
   runs and the events arrive in. A run the store counted before it learned its event leaves the
@@ -21,7 +23,9 @@ body: |-
   answered `workflowRun` null, and at INFO (`ci reconcile counts check suites of a head read over
   REST whose workflow run event the CI record does not hold`) for a head read over REST. A record
   written before is corrected at the next pass that reads its head's events. A re-run of a counted
-  run still replaces its check. Deploy the listener, then each daemon, then Dispatch.
+  run still replaces its check. Deploy every daemon first, then the listener, then Dispatch: a
+  daemon of the earlier release ignores `excluded_check_runs`, and a correction it ignored is not
+  published again once its head has settled.
 time: 2026-11-21T07:16:21Z
 custom:
     Issue: ci-store-counted

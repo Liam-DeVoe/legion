@@ -10,8 +10,10 @@ body: |-
   keeps the excluded runs, so a settlement published before the exclusion and delivered after it
   brings no excluded run back, and a re-run of a counted check, at a higher id, still replaces its
   run. A daemon of the earlier release ignores the field, and so keeps the old verdict for such a
-  head. The kept runs are in the new column `pull_requests.excluded_runs`, which migration
-  `20261121083932_pull_request_excluded_runs` adds at the empty list.
+  head, and the listener does not publish that correction again; so every daemon is deployed before
+  the listener that names excluded runs. The kept runs are in the new column
+  `pull_requests.excluded_runs`, which migration `20261121083932_pull_request_excluded_runs` adds at
+  the empty list.
 time: 2026-11-21T09:21:50Z
 custom:
     Issue: ci-store-counted

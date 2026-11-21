@@ -177,9 +177,8 @@ type SettlementClaim struct {
 // Checks and Suites hold what GitHub counts for the pull request, as its own rollup of the pull
 // request does: a check run or check suite of a GitHub Actions workflow run whose event GitHub's
 // rollup does not count for a pull request (EventCounted: a workflow_dispatch run of the pull
-// request's branch, and a pull_request_review_comment run) is in neither, so it is not a check of
-// the head, replaces no check of the head, and takes no part in its settlement or its snapshot
-// (applyCheckRun, learnRunEvent).
+// request's branch among them) is in neither, so it is not a check of the head, replaces no check
+// of the head, and takes no part in its settlement or its snapshot (applyCheckRun, learnRunEvent).
 type State struct {
 	Owner  string           `json:"owner"`
 	Repo   string           `json:"repo"`
@@ -201,15 +200,23 @@ type State struct {
 	// left out of a record that holds none.
 	Waiting map[string]Check `json:"waiting_checks,omitempty"`
 	// Excluded holds, by check-run id, the name of each check run that stood for its name in
-	// Checks and left it once its suite turned out to be one GitHub does not count for the pull
-	// request (standInstead). A settlement may have named such a run, so every later settlement
-	// names each one (Summary.ExcludedCheckRuns): a consumer that orders a name's runs by id then
+	// Checks and whose suite turned out to be one GitHub does not count for the pull request:
+	// the run standing when its suite's event arrived (standInstead), and each earlier run that
+	// stood and that a newer run replaced while its suite's event was not known (Superseded). A
+	// settlement may have named any of them, so every later settlement names each one
+	// (Summary.ExcludedCheckRuns): a consumer whose newest view of a name is any of them then
 	// takes the lower id that stands in its place, or no run of that name at all, rather than
 	// keeping the excluded run as the newer one. An event never changes, so an entry is never
-	// taken out. Neither the snapshot (Hash) nor settlementReady reads it: a run joins it only
-	// when it leaves Checks, which moves the snapshot anyway. It is left out of a record that
-	// holds none.
+	// taken out. Neither the snapshot (Hash) nor settlementReady reads it. It is left out of a
+	// record that holds none.
 	Excluded map[string]string `json:"excluded_checks,omitempty"`
+	// Superseded holds, by check-run id, each check run that stood for its name and that a newer
+	// run replaced while the event of its own suite was not known (applyCheckRun). A settlement may
+	// have named it, and a consumer that missed the settlements after that one still holds it as
+	// its name's newest run, so it joins Excluded if its suite turns out uncounted, and is dropped
+	// once its suite turns out counted (learnRunEvent, resolveSuperseded). Nothing but the record's
+	// own writes reads it. It is left out of a record that holds none.
+	Superseded map[string]Check `json:"superseded_checks,omitempty"`
 	// Statuses holds the newest terminal commit status of each context, keyed by context
 	// (recordStatus), and is left out of a record that holds none.
 	Statuses       map[string]Status `json:"statuses,omitempty"`
@@ -232,10 +239,10 @@ type State struct {
 	// commit statuses drops Statuses the same way, at its next write of the record, and the
 	// reconcile writes them back only once GitHub's answer for the head changes, since a pass
 	// writes nothing while the head's fingerprint holds. A listener or Dispatch writer of a release
-	// before suite events drops SuiteEvents, Waiting, Excluded and each check's SuiteID and AppID
-	// the same way, and keeps the newest check run of each name whatever started its run, as every
-	// release before did; the first pass of a Dispatch of this release reads every head again and
-	// writes the events back (cireconcile).
+	// before suite events drops SuiteEvents, Waiting, Excluded, Superseded and each check's
+	// SuiteID and AppID the same way, and keeps the newest check run of each name whatever started
+	// its run, as every release before did; the first pass of a Dispatch of this release reads
+	// every head again and writes the events back (cireconcile).
 	Schema int `json:"schema,omitempty"`
 }
 

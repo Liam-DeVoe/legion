@@ -354,6 +354,87 @@ func TestARunningWorkflowDispatchRunDoesNotHoldThePullRequestsHead(t *testing.T)
 	}
 }
 
+// The store counts a GitHub Actions run only when an event GitHub documents as evaluated for a pull
+// request, merge_group or dynamic started it, and leaves every other event out. A ci-ok success of
+// higher id, from a suite of another run of the branch, replaces the pull_request run's failure
+// when that run's event is merge_group, which the documentation names for a merge queue's checks,
+// and does not when it is repository_dispatch, which the documentation leaves out like
+// workflow_dispatch.
+func TestARunOfAnEventTheDocumentationLeavesOutReplacesNoCheck(t *testing.T) {
+	const other, otherSuite = dispatchCheck + 100, dispatchSuite + 100
+	for _, tc := range []struct {
+		event       string
+		wantCheck   uint64
+		wantOutcome string
+	}{
+		{"repository_dispatch", pullRunCheck, "failure"},
+		{"merge_group", other, "success"},
+	} {
+		t.Run(tc.event, func(t *testing.T) {
+			conn, cleanup := connectNATS(t)
+			defer cleanup()
+			store := openStore(t, conn)
+			handler := webhook.GitHubHandler(countedSecret, "@legion", "", unpublished{t}, store)
+			countedPost(t, handler, "workflow_run", workflowRunBody(countedNumber, pullRunSuite, "pull_request"))
+			countedPost(t, handler, "check_run", checkRunBody(countedNumber, pullRunCheck, pullRunSuite, countedCheckRun, "completed", "failure", "2026-11-21T04:30:00Z"))
+			countedPost(t, handler, "workflow_run", workflowRunBody(countedNumber, otherSuite, tc.event))
+			countedPost(t, handler, "check_run", checkRunBody(countedNumber, other, otherSuite, countedCheckRun, "completed", "success", "2026-11-21T04:40:00Z"))
+			state := getState(t, store, countedOwner, countedRepo, strconv.Itoa(countedNumber), countedSHA)
+			if check := state.Checks[countedCheckRun]; uint64(check.CheckRunID) != tc.wantCheck || check.Conclusion != tc.wantOutcome {
+				t.Fatalf("with a %s run's success beside it the head's ci-ok is %+v, want check run %d's %s", tc.event, check, tc.wantCheck, tc.wantOutcome)
+			}
+		})
+	}
+}
+
+// A run that stood and that a re-run of its own suite replaced before its suite's event was known
+// may have been named by a settlement, and a consumer that missed the settlements after it still
+// holds it as its name's newest run. So when that suite turns out uncounted, the settlement names
+// both runs of it excluded, the replaced one and the one standing when the event arrived, and the
+// pull_request run's failure stands; the replaced run is no longer kept as superseded. When the
+// suite turns out counted instead, the replaced run is dropped, nothing is excluded, and the
+// re-run stands.
+func TestARerunOfAnUncountedSuiteExcludesTheRunItReplaced(t *testing.T) {
+	const rerun = dispatchCheck + 1
+	for _, tc := range []struct {
+		name         string
+		event        string
+		wantStanding uint64
+		wantExcluded []CheckRunRef
+	}{
+		{"the suite turns out uncounted", "workflow_dispatch", pullRunCheck,
+			[]CheckRunRef{{Name: countedCheckRun, ID: dispatchCheck}, {Name: countedCheckRun, ID: rerun}}},
+		{"the suite turns out counted", "pull_request", rerun, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, cleanup := connectNATS(t)
+			defer cleanup()
+			store := openStore(t, conn)
+			handler := webhook.GitHubHandler(countedSecret, "@legion", "", unpublished{t}, store)
+			number := strconv.Itoa(countedNumber)
+			countedPost(t, handler, "workflow_run", workflowRunBody(countedNumber, pullRunSuite, "pull_request"))
+			countedPost(t, handler, "check_run", checkRunBody(countedNumber, pullRunCheck, pullRunSuite, countedCheckRun, "completed", "failure", "2026-11-21T04:30:00Z"))
+			countedPost(t, handler, "check_run", checkRunBody(countedNumber, dispatchCheck, dispatchSuite, countedCheckRun, "completed", "success", "2026-11-21T04:40:00Z"))
+			countedPost(t, handler, "check_run", checkRunBody(countedNumber, rerun, dispatchSuite, countedCheckRun, "completed", "success", "2026-11-21T04:40:01Z"))
+			if held := getState(t, store, countedOwner, countedRepo, number, countedSHA).Superseded; len(held) != 1 {
+				t.Fatalf("before the dispatched suite's event the record keeps superseded runs %+v, want the replaced run %d alone", held, uint64(dispatchCheck))
+			}
+
+			countedPost(t, handler, "workflow_run", workflowRunBody(countedNumber, dispatchSuite, tc.event))
+
+			state := getState(t, store, countedOwner, countedRepo, number, countedSHA)
+			summary := renderSummary(state)
+			if !slices.Equal(summary.ExcludedCheckRuns, tc.wantExcluded) {
+				t.Errorf("the settlement names excluded check runs %+v, want %+v", summary.ExcludedCheckRuns, tc.wantExcluded)
+			}
+			assertCheckRuns(t, summary.CheckRuns, map[string]uint64{countedCheckRun: tc.wantStanding})
+			if len(state.Superseded) != 0 {
+				t.Errorf("once the suite's event is known the record still keeps superseded runs %+v", state.Superseded)
+			}
+		})
+	}
+}
+
 // permutations is every order of items.
 func permutations(items []string) [][]string {
 	if len(items) <= 1 {

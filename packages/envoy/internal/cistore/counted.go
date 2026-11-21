@@ -27,27 +27,31 @@ const (
 )
 
 // EventCounted reports whether GitHub's rollup of a pull request counts the check runs of a GitHub
-// Actions workflow run that event started, which every event but two does. The two were measured
-// on cybermonklabs/legion against GitHub's own statusCheckRollup of the pull request at that head:
-// workflow_dispatch (#3513 at a368687e, 2026-11-21: the dispatched run's ci-ok is not in the
-// rollup, the pull_request run's is) and pull_request_review_comment (#2167 at 57f64b53: of four
-// pr-title runs only the two of pull_request_review suites are in the rollup).
+// Actions workflow run that event started. It counts the events GitHub documents and the one event
+// measured counted beside them, and no other:
 //
-// GitHub documents six events whose runs it evaluates for a pull request, in "Troubleshooting
-// required status checks", section "Checks from some workflow jobs are not evaluated"
-// (https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks):
-// push, pull_request, pull_request_review, pull_request_target, deployment and
-// deployment_status. That list is not the whole: the rollup counts the runs of a `dynamic` suite,
-// which CodeQL's default setup makes (#2803 at aa4cd30f holds a required ci-ok in one, #2725 at
-// 48308c23 fails on one). So the rule names the events measured as not counted rather than the
-// events documented as counted: an event left out wrongly would make a red head read green, and
-// one counted wrongly keeps only what the store did before it read events.
+//   - push, pull_request, pull_request_review, pull_request_target, deployment and
+//     deployment_status, from GitHub's documentation: "Troubleshooting required status checks",
+//     section "Checks from some workflow jobs are not evaluated"
+//     (https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks).
+//   - merge_group, from the same page, which names it as the event a merge queue's required checks
+//     need ("Status checks with GitHub Actions and a Merge queue"). It is taken from the
+//     documentation and was not measured in a rollup.
+//   - dynamic, measured: CodeQL's default setup makes a suite of it, and GitHub's rollup counts its
+//     runs (cybermonklabs/legion#2803 at aa4cd30f holds its required ci-ok in one, rollup SUCCESS;
+//     #2725 at 48308c23 fails on one, rollup FAILURE).
+//
+// Every other event is left out, as the documentation says, and two are measured left out of a
+// rollup: workflow_dispatch (#3513 at a368687e, 2026-11-21: the dispatched run's ci-ok is not in
+// the rollup, the pull_request run's is) and pull_request_review_comment (#2167 at 57f64b53: of
+// four pr-title runs only the two of pull_request_review suites are in it).
 func EventCounted(event string) bool {
 	switch event {
-	case "workflow_dispatch", "pull_request_review_comment":
-		return false
+	case "push", "pull_request", "pull_request_review", "pull_request_target", "deployment", "deployment_status",
+		"merge_group", "dynamic":
+		return true
 	}
-	return true
+	return false
 }
 
 // standingOf is the standing of a check run or check suite of the App appID in the suite suiteID,
@@ -78,11 +82,14 @@ func (st *State) standingOf(appID, suiteID string) standing {
 // suite changes nothing: GitHub never changes the event of a run.
 //
 // A counted suite's check runs that stand for a name now stand for good, so nothing waiting for
-// those names can take their place and the record drops what waits for them. An uncounted suite
-// leaves the record: its suite entry, its check runs that wait, and each of its check runs that
-// stands for a name, in whose place the newest check run waiting for that name stands
-// (standInstead). That is how a record that counted the suite before it knew the event, a record
-// written before the store read events among them, is corrected.
+// those names can take their place and the record drops what waits for them, and what it keeps of
+// the suite's runs that newer runs replaced (Superseded). An uncounted suite leaves the record: its
+// suite entry, its check runs that wait, and each of its check runs that stands for a name, in
+// whose place the newest check run waiting for that name stands (standInstead). Each of its runs
+// that stood and that a newer run replaced joins the excluded runs too, since a consumer that
+// missed the settlements after it still holds it as its name's newest run. That is how a record
+// that counted the suite before it knew the event, a record written before the store read events
+// among them, is corrected.
 func (st *State) learnRunEvent(suiteID, event string) (changed, moved bool) {
 	if suiteID == "" || event == "" {
 		return false, false
@@ -95,12 +102,23 @@ func (st *State) learnRunEvent(suiteID, event string) (changed, moved bool) {
 	}
 	st.SuiteEvents[suiteID] = event
 	if EventCounted(event) {
+		for id, check := range st.Superseded {
+			if check.SuiteID == suiteID {
+				delete(st.Superseded, id)
+			}
+		}
 		for name, check := range st.Checks {
 			if check.SuiteID == suiteID {
 				st.dropWaiting(name)
 			}
 		}
 		return true, false
+	}
+	for id, check := range st.Superseded {
+		if check.SuiteID == suiteID {
+			st.exclude(check)
+			delete(st.Superseded, id)
+		}
 	}
 	for id, check := range st.Waiting {
 		if check.SuiteID == suiteID {
@@ -130,7 +148,9 @@ func (st *State) learnRunEvent(suiteID, event string) (changed, moved bool) {
 // Which of two runs of one name stands does not depend on the order they and their suites' events
 // arrive in: a run that loses to a run of a suite whose event the record does not know waits
 // (wait), and stands if that suite turns out uncounted. A run that loses to a counted one never
-// stands, since a counted run stays counted, and is dropped as before.
+// stands, since a counted run stays counted, and is dropped as before. A run that stood and that a
+// newer run replaces while its own suite's event is not known is kept as superseded (supersede):
+// a settlement may have named it, so it is excluded if its suite turns out uncounted.
 //
 // A run already recorded that the observation tells only its suite and App changes the record and
 // not the head's checks (sameView), so a head settled before the record kept them is not settled
@@ -150,6 +170,9 @@ func (st *State) applyCheckRun(observation contracts.CIObservation) (changed, mo
 		ObservedAt: observation.ObservedAt,
 		SuiteID:    observation.SuiteID,
 		AppID:      observation.AppID,
+	}
+	if st.resolveSuperseded(next) {
+		changed = true
 	}
 	current, held := st.Checks[key]
 	nextStanding := st.standingOf(next.AppID, next.SuiteID)
@@ -178,6 +201,9 @@ func (st *State) applyCheckRun(observation contracts.CIObservation) (changed, mo
 		return changed, moved
 	}
 	if next.CheckRunID != current.CheckRunID && st.mayStandInstead(next, current) && st.wait(current) {
+		changed = true
+	}
+	if next.CheckRunID != current.CheckRunID && st.supersede(current) {
 		changed = true
 	}
 	if nextStanding == counted && st.dropWaiting(key) {
@@ -238,15 +264,10 @@ func (st *State) wait(check Check) bool {
 // standInstead puts in place of the check that stands for name, which has turned out uncounted,
 // the newest run waiting for that name, or leaves the name with no check when none waits. A counted
 // run that comes to stand stands for good, so what still waits for the name is dropped. The run
-// that leaves is kept among the record's excluded runs (State.Excluded), which every later
-// settlement names, since a settlement may have named it; a check of no run id was named by none.
+// that leaves is kept among the record's excluded runs (exclude), which every later settlement
+// names, since a settlement may have named it.
 func (st *State) standInstead(name string) {
-	if leaving := st.Checks[name]; leaving.CheckRunID != 0 {
-		if st.Excluded == nil {
-			st.Excluded = map[string]string{}
-		}
-		st.Excluded[waitingKey(leaving.CheckRunID)] = name
-	}
+	st.exclude(st.Checks[name])
 	var next Check
 	nextID := ""
 	for id, check := range st.Waiting {
@@ -275,6 +296,89 @@ func (st *State) dropWaiting(name string) bool {
 		}
 	}
 	return dropped
+}
+
+// newestWaiting keeps, of the runs waiting to stand for their name (State.Waiting), only the newest
+// of each name, the one standInstead would put in place of the run that stands, and reports how
+// many it dropped. It is what a record past its bound gives way (Store.atBounds).
+func (st *State) newestWaiting() int {
+	newest := map[string]checkRunID{}
+	for _, check := range st.Waiting {
+		if check.CheckRunID > newest[check.Name] {
+			newest[check.Name] = check.CheckRunID
+		}
+	}
+	dropped := 0
+	for id, check := range st.Waiting {
+		if check.CheckRunID != newest[check.Name] {
+			delete(st.Waiting, id)
+			dropped++
+		}
+	}
+	return dropped
+}
+
+// exclude keeps check among the record's excluded runs (State.Excluded), which every later
+// settlement names. A check of no run id is kept by none, since no settlement names it.
+func (st *State) exclude(check Check) {
+	id := waitingKey(check.CheckRunID)
+	if id == "" {
+		return
+	}
+	if st.Excluded == nil {
+		st.Excluded = map[string]string{}
+	}
+	st.Excluded[id] = check.Name
+}
+
+// supersede keeps replaced, a run that stood for its name and that a newer run has just replaced,
+// among the record's superseded runs (State.Superseded) while its suite may still turn out
+// uncounted, and reports whether that changed st. A settlement may have named it, so it is
+// excluded if its suite turns out uncounted (learnRunEvent). A run of a counted suite, or of no
+// run id, is not kept: it never leaves, or no settlement named it.
+func (st *State) supersede(replaced Check) bool {
+	id := waitingKey(replaced.CheckRunID)
+	if id == "" || st.standingOf(replaced.AppID, replaced.SuiteID) != unknown {
+		return false
+	}
+	if held, ok := st.Superseded[id]; ok && held == replaced {
+		return false
+	}
+	if st.Superseded == nil {
+		st.Superseded = map[string]Check{}
+	}
+	st.Superseded[id] = replaced
+	return true
+}
+
+// resolveSuperseded applies what observation, a later observation of a check run, tells of a
+// superseded run of the same id (State.Superseded), and reports whether that changed st. A
+// superseded run of no suite, which a record written before the store kept suites holds, takes the
+// observation's suite and App; a run whose suite is then known to be counted is dropped, and one
+// known to be uncounted is excluded (exclude), as learnRunEvent does once that suite's event
+// arrives.
+func (st *State) resolveSuperseded(observation Check) bool {
+	id := waitingKey(observation.CheckRunID)
+	held, ok := st.Superseded[id]
+	if id == "" || !ok {
+		return false
+	}
+	changed := false
+	if held.SuiteID == "" && observation.SuiteID != "" {
+		held.SuiteID, held.AppID = observation.SuiteID, observation.AppID
+		st.Superseded[id] = held
+		changed = true
+	}
+	switch st.standingOf(held.AppID, held.SuiteID) {
+	case counted:
+		delete(st.Superseded, id)
+		return true
+	case uncounted:
+		st.exclude(held)
+		delete(st.Superseded, id)
+		return true
+	}
+	return changed
 }
 
 // waitingKey is the key of a run in State.Waiting, its check-run id, and "" for a check of none.

@@ -593,6 +593,69 @@ func TestAHeadReadOverRESTIsJudgedByTheEventsItsQueryAnswered(t *testing.T) {
 	}
 }
 
+// The events a query answers for a head it sends to REST are written whatever the REST pages
+// answer. Here the first pass reads #3513's head over REST with the query answering the dispatched
+// suite's workflowRun null, so the record counts that suite and its ci-ok success stands, and the
+// pass keeps the pages' ETags. The next query answers the suite's event, workflow_dispatch, while
+// every REST page answers 304 on those ETags: the event is written all the same, and the
+// pull_request run's failure stands for ci-ok.
+func TestAnEventTheQueryLearnsLaterIsWrittenThoughEveryRESTPageAnswers304(t *testing.T) {
+	const pullSuite, dispatchSuite = 121419707580, 121419789924
+	answer := func(withEvent bool) string {
+		return editedAnswer(t, "graphql-head-3513.json", func(suite map[string]any, event string) {
+			if suite["databaseId"] == float64(pullSuite) {
+				suite["checkRuns"].(map[string]any)["pageInfo"] = map[string]any{"hasNextPage": true}
+			}
+			if !withEvent && event == "workflow_dispatch" {
+				suite["workflowRun"] = nil
+			}
+		})
+	}
+	h := newHarness(t, reviewerAppID)
+	h.mapRepository(capturedRepository)
+	h.github.setRepository(capturedRepository, capturedRepository, 555)
+	h.github.setPullRequests(capturedRepository, fakePull{number: countedNumber, sha: countedSHA})
+	h.github.answerQueryWith(capturedRepository, answer(false))
+	listed := func(id int64, suite int64, conclusion, at string) object {
+		return object{
+			"id": id, "name": countedCheck, "status": "completed", "conclusion": conclusion, "head_sha": countedSHA,
+			"started_at": at, "completed_at": at, "html_url": fmt.Sprintf("https://github.com/%s/runs/%d", capturedRepository, id),
+			"app": object{"id": reviewerApp}, "check_suite": object{"id": suite},
+		}
+	}
+	h.github.setCheckRuns(capturedRepository, countedSHA,
+		listed(countedPullCheck, pullSuite, "failure", "2026-11-21T03:58:53Z"),
+		listed(countedDispatchCheck, dispatchSuite, "success", "2026-11-21T04:02:35Z"))
+	suiteOf := func(id int64, conclusion, at string) object {
+		return object{"id": id, "status": "completed", "conclusion": conclusion, "head_sha": countedSHA, "app": object{"id": reviewerApp}, "updated_at": at}
+	}
+	h.github.setCheckSuites(capturedRepository, countedSHA,
+		suiteOf(pullSuite, "failure", "2026-11-21T03:58:54Z"), suiteOf(dispatchSuite, "success", "2026-11-21T04:02:36Z"))
+
+	h.pass()
+	before := h.stateAt(capturedRepository, countedNumber, countedSHA)
+	if before == nil || uint64(before.Checks[countedCheck].CheckRunID) != countedDispatchCheck || before.SuiteEvents[countedDispatchSuite] != "" {
+		t.Fatalf("after the first pass the record is %+v, want the dispatched run's ci-ok counted with no event for its suite", before)
+	}
+
+	h.github.answerQueryWith(capturedRepository, answer(true))
+	h.pass()
+
+	if got := number(t, h.passLine(), "heads_not_modified"); got != 1 {
+		t.Fatalf("the second pass found %d heads whose REST pages all answered 304, want the one: %v", got, h.passLine())
+	}
+	after := h.stateAt(capturedRepository, countedNumber, countedSHA)
+	if after == nil {
+		t.Fatal("the head has no record after the second pass")
+	}
+	if event := after.SuiteEvents[countedDispatchSuite]; event != "workflow_dispatch" {
+		t.Errorf("after the second pass the record holds %q for the dispatched suite's event, want workflow_dispatch", event)
+	}
+	if check := after.Checks[countedCheck]; uint64(check.CheckRunID) != countedPullCheck || check.Conclusion != "failure" {
+		t.Errorf("after the second pass the head's ci-ok is %+v, want check run %d, the pull_request run's failure", check, uint64(countedPullCheck))
+	}
+}
+
 // A record a listener of an earlier release wrote, which keeps no check's suite, can hold a
 // workflow_dispatch run's check run that is still running, and the head then never settles: the
 // suite's event reaches no check of no suite. A pass whose answer carries that run, still running,

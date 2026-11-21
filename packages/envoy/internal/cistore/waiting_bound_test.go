@@ -11,23 +11,25 @@ import (
 )
 
 // The runs a record keeps waiting to stand for a name (State.Waiting) never cost a head its
-// settlements: a write that passes the record's bound only for them is written without them, and
-// the record is not marked overflowed. The record below holds checks of a GitHub Actions suite
-// whose event it does not know, each with a run of another suite waiting behind it, as large as the
-// bound allows; a check of another App then takes it past the bound with the waiting runs and not
-// without them. The write lands, the record holds the new check and no waiting run, and it is not
-// overflowed, so the head still settles.
-func TestWaitingRunsGiveWayAtTheRecordsBound(t *testing.T) {
+// settlements, and never cost a name the run that would stand for it. The record below holds checks
+// of a GitHub Actions suite whose event it does not know (900), each with two runs of other suites
+// waiting behind it: an older success (901) and a newer failure (902), as large as the bound
+// allows. A check of another App then takes it past the bound with every waiting run, and not with
+// only the newest of each name. The write lands with the new check, it is not marked overflowed,
+// and each name keeps its newest waiting run alone. When suite 900 then turns out to be a
+// workflow_dispatch run, that failure stands for each name, as it would have with nothing dropped:
+// no name is left with no check, so a red head does not read green.
+func TestWaitingRunsGiveWayAtTheRecordsBoundButTheNewestOfEachName(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	store := openStore(t, conn)
 	h := head{"example-org", "example-repo", "61", "3a171e00000000000000000000000000000000ff"}
 
-	entry := func(i int, id uint64, suite string) Check {
+	entry := func(i int, id uint64, suite, conclusion string) Check {
 		return Check{
 			Name: fmt.Sprintf("dispatch-browser / binaries %04d", i), CheckRunID: checkRunID(id),
 			URL:    fmt.Sprintf("https://github.com/example-org/example-repo/actions/runs/44860489318/job/%d", id),
-			Status: "completed", Conclusion: "success", ObservedAt: "2026-11-21T03:21:34Z",
+			Status: "completed", Conclusion: conclusion, ObservedAt: "2026-11-21T03:21:34Z",
 			SuiteID: suite, AppID: contracts.GithubActionsAppID,
 		}
 	}
@@ -41,15 +43,19 @@ func TestWaitingRunsGiveWayAtTheRecordsBound(t *testing.T) {
 		return len(buf)
 	}
 	for i := 0; ; i++ {
-		standing, waiting := entry(i, 136712000000+uint64(i), "900"), entry(i, 136711000000+uint64(i), "901")
+		standing := entry(i, 136713000000+uint64(i), "900", "success")
+		older, newer := entry(i, 136711000000+uint64(i), "901", "success"), entry(i, 136712000000+uint64(i), "902", "failure")
 		st.Checks[standing.Name] = standing
-		st.Waiting[waitingKey(waiting.CheckRunID)] = waiting
+		st.Waiting[waitingKey(older.CheckRunID)] = older
+		st.Waiting[waitingKey(newer.CheckRunID)] = newer
 		if size(st) > maxRecordBytes {
 			delete(st.Checks, standing.Name)
-			delete(st.Waiting, waitingKey(waiting.CheckRunID))
+			delete(st.Waiting, waitingKey(older.CheckRunID))
+			delete(st.Waiting, waitingKey(newer.CheckRunID))
 			break
 		}
 	}
+	names := len(st.Checks)
 	st.Schema = recordSchema
 	st.LastEventAt = time.Now().UnixMilli()
 	buf, err := encodeRecord(&st)
@@ -69,22 +75,46 @@ func TestWaitingRunsGiveWayAtTheRecordsBound(t *testing.T) {
 	with.Checks = cloneChecks(st.Checks)
 	with.Checks[added.CheckName] = Check{Name: added.CheckName, CheckRunID: checkRunID(added.CheckRunID), URL: added.URL,
 		Status: added.Status, Conclusion: added.Conclusion, ObservedAt: added.ObservedAt, AppID: added.AppID}
-	without := with
-	without.Waiting = nil
-	if size(with) <= maxRecordBytes || size(without) > maxRecordBytes {
-		t.Fatalf("the record with the added check is %d bytes with its %d waiting runs and %d without, want past the %d-byte bound only with them",
-			size(with), len(with.Waiting), size(without), maxRecordBytes)
+	trimmed := with
+	trimmed.Waiting = cloneChecks(st.Waiting)
+	if dropped := trimmed.newestWaiting(); dropped != names {
+		t.Fatalf("keeping the newest waiting run of each name drops %d, want one of each of the %d names", dropped, names)
+	}
+	if size(with) <= maxRecordBytes || size(trimmed) > maxRecordBytes {
+		t.Fatalf("the record with the added check is %d bytes with its %d waiting runs and %d with the newest of each name, want past the %d-byte bound only with all of them",
+			size(with), len(with.Waiting), size(trimmed), maxRecordBytes)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := store.Record(ctx, added); err != nil {
-		t.Fatalf("record a check past the bound its waiting runs alone take the record past: %v", err)
+		t.Fatalf("record a check past the bound its older waiting runs alone take the record past: %v", err)
 	}
 	got := getState(t, store, h.owner, h.repo, h.number, h.sha)
-	if got.Overflowed || len(got.Waiting) != 0 || got.Checks[added.CheckName].CheckRunID != checkRunID(added.CheckRunID) || len(got.Checks) != len(st.Checks)+1 {
-		t.Fatalf("after the write the record is overflowed %v with %d waiting runs and %d checks (%v held), want not overflowed, no waiting run and the %d checks with %s",
-			got.Overflowed, len(got.Waiting), len(got.Checks), got.Checks[added.CheckName], len(st.Checks)+1, added.CheckName)
+	if got.Overflowed || len(got.Waiting) != names || got.Checks[added.CheckName].CheckRunID != checkRunID(added.CheckRunID) || len(got.Checks) != names+1 {
+		t.Fatalf("after the write the record is overflowed %v with %d waiting runs and %d checks (%v held), want not overflowed, %d waiting runs and the %d checks with %s",
+			got.Overflowed, len(got.Waiting), len(got.Checks), got.Checks[added.CheckName], names, names+1, added.CheckName)
+	}
+	for _, check := range got.Waiting {
+		if check.SuiteID != "902" {
+			t.Fatalf("the record kept the waiting run %+v, want the newest of its name, suite 902's", check)
+		}
+	}
+
+	if err := store.RecordRunEvent(ctx, contracts.CIObservation{Owner: h.owner, Repo: h.repo, Number: h.number, SHA: h.sha,
+		SuiteID: "900", RunEvent: "workflow_dispatch"}); err != nil {
+		t.Fatalf("record suite 900's event: %v", err)
+	}
+	got = getState(t, store, h.owner, h.repo, h.number, h.sha)
+	failing := 0
+	for name, check := range got.Checks {
+		if name != added.CheckName && check.SuiteID == "902" && check.Conclusion == "failure" {
+			failing++
+		}
+	}
+	if failing != names || len(got.Checks) != names+1 {
+		t.Fatalf("once suite 900 is a workflow_dispatch run, %d of %d names stand on suite 902's failure and the record holds %d checks, want all %d and %d checks",
+			failing, names, len(got.Checks), names, names+1)
 	}
 }
 
