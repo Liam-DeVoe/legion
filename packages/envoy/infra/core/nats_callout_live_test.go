@@ -209,8 +209,10 @@ func TestAuthCalloutOnTheHubServer(t *testing.T) {
 		rig := newCalloutRig(t, false)
 		store := testnats.ImageStore(t)
 		ctr, uri := testnats.StartImageReady(t, testnats.HubImage, rig.render(t, false), hubArgs, store...)
-		conn, err := testnats.ConnectSeed(t, uri, rig.staticSeed)
-		require.NoError(t, err)
+		// The ready line can come before the container serves a client through its published
+		// port, so the first connect retries (connectWhenUp). The second container's connects
+		// below follow the auth service's own, which retries the same way (serve).
+		conn := connectWhenUp(t, uri, rig.staticSeed)
 		js, err := conn.JetStream()
 		require.NoError(t, err)
 		_, err = js.AddStream(&natsgo.StreamConfig{Name: exampleStream, Subjects: []string{"example.>"}})
