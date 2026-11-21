@@ -174,15 +174,16 @@ func sessionOfProjects(entry session.SessionEntry, state session.State, projects
 // projects it likes. So an entry that would grant the session is confirmed by the session's newest
 // message on the bucket's stream, read from the stream's leader with the headers stored with it
 // (session.SessionRegistry.StoredByWriter): a message the server wrote, or none, reads as absent,
-// and so does a read that fails, the edge granting nothing it could not confirm. An entry that
-// grants nothing costs no read. The relay grants nothing on a stored record (edgeAdmissions), so it
-// asks no such read.
-func edgeSessionShown(ctx context.Context, sessions *session.SessionRegistry, entry session.SessionEntry, state session.State, projects []string) bool {
+// and so does a key the leader refused or held no message for, which it answers (ErrKeyNotFound,
+// ErrRefused). A read that did not answer is returned as its error, not as an absence, so a caller
+// answers the bus-unavailable 503 it answers for any read that did not answer, never the 404 of a
+// session it does not show nor a silent drop from the list. An entry that grants nothing costs no
+// read. The relay grants nothing on a stored record (edgeAdmissions), so it asks no such read.
+func edgeSessionShown(ctx context.Context, sessions *session.SessionRegistry, entry session.SessionEntry, state session.State, projects []string) (bool, error) {
 	if !sessionOfProjects(entry, state, projects) {
-		return false
+		return false, nil
 	}
-	stored, err := sessions.StoredByWriter(ctx, entry.SessionID)
-	return err == nil && stored
+	return sessions.StoredByWriter(ctx, entry.SessionID)
 }
 
 // rolesOfProjects is the roles among roles, each named by its claim's key, that work for one of

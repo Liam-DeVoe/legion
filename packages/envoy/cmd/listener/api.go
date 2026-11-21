@@ -747,9 +747,24 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// (edgeSessionShown). Any other target, and one no entry stands for, whose record names
 		// no project, is answered as a session no listener has heard of, before a wake is
 		// reported or anything is stored: the sender learns nothing of another project's session.
-		if projects, held := heldProjects(r); held && (errors.Is(err, nats.ErrKeyNotFound) || (hasEntry && !edgeSessionShown(ctx, d.sessions, target, recipientState, projects))) {
-			record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, unknownSession(targetSession))
-			return
+		// A confirmation read that did not answer is this route's bus-unavailable 503, as every
+		// other read that did not answer is, never that 404.
+		if projects, held := heldProjects(r); held {
+			switch {
+			case errors.Is(err, nats.ErrKeyNotFound):
+				record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, unknownSession(targetSession))
+				return
+			case hasEntry:
+				shown, confirmErr := edgeSessionShown(ctx, d.sessions, target, recipientState, projects)
+				if confirmErr != nil {
+					record.refuseBusUnavailable(w, confirmErr)
+					return
+				}
+				if !shown {
+					record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, unknownSession(targetSession))
+					return
+				}
+			}
 		}
 		var known session.KnownSession
 		if errors.Is(err, nats.ErrKeyNotFound) {
@@ -1432,7 +1447,8 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 		// roles and the topics of those projects alone.
 		projects, edge := heldProjects(r)
 		// Each session the cache would show is confirmed by its stored record (edgeSessionShown),
-		// every read inside one bound, so a list a leader does not answer is answered in time.
+		// every read inside one bound, so a list the leader did not answer is this route's
+		// bus-unavailable 503 inside that bound, never a session silently dropped from the list.
 		ctx := r.Context()
 		if edge {
 			var cancel context.CancelFunc
@@ -1447,7 +1463,12 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 				result = append(result, listedSessionInfo(registry, entry, held[entry.SessionID]))
 				continue
 			}
-			if edgeSessionShown(ctx, sessions, entry.SessionEntry, entry.State, projects) {
+			shown, err := edgeSessionShown(ctx, sessions, entry.SessionEntry, entry.State, projects)
+			if err != nil {
+				writeBusUnavailable(w, err)
+				return
+			}
+			if shown {
 				info := listedSessionInfo(registry, entry, rolesOfProjects(held[entry.SessionID], projects))
 				info.Topics = edgeShownTopics(repositories, projects, entry.SessionID, info.Topics)
 				result = append(result, info)
@@ -1493,10 +1514,20 @@ const sessionRegistrationView = "registration"
 func writeSessionRegistration(ctx context.Context, w http.ResponseWriter, r *http.Request, d *listenerDeps, sessionID string) {
 	entry, err := bucketSessionEntry(ctx, d.sessions, sessionID, roleHolderReadTimeout)
 	projects, edge := heldProjects(r)
+	// The edge confirms a session it would show by its stored record (edgeSessionShown); a read
+	// that did not answer is the bus-unavailable 503 below, never the 404 of a session it does
+	// not show.
+	var shown bool
+	var shownErr error
+	if edge && err == nil {
+		shown, shownErr = edgeSessionShown(ctx, d.sessions, entry, d.sessions.EntryState(entry), projects)
+	}
 	switch {
 	case errors.Is(err, bus.ErrRefused):
 		writeBusUnavailable(w, err)
-	case edge && (errors.Is(err, nats.ErrKeyNotFound) || (err == nil && !edgeSessionShown(ctx, d.sessions, entry, d.sessions.EntryState(entry), projects))):
+	case edge && shownErr != nil:
+		writeBusUnavailable(w, shownErr)
+	case edge && (errors.Is(err, nats.ErrKeyNotFound) || (err == nil && !shown)):
 		// At the edge a session it does not show, and one with no record, which names no
 		// project, is answered as one no listener has heard of.
 		writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
@@ -1618,11 +1649,19 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 			writeBusUnavailable(w, err)
 		default:
 			// At the edge a session of none of the token's projects is answered as one no listener
-			// has heard of, and a shown session's roles and topics are those projects' alone.
+			// has heard of, and a shown session's roles and topics are those projects' alone. A
+			// confirmation read that did not answer is the bus-unavailable 503, never that 404.
 			projects, edge := heldProjects(r)
-			if edge && !edgeSessionShown(ctx, d.sessions, entry, state, projects) {
-				writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
-				return
+			if edge {
+				shown, err := edgeSessionShown(ctx, d.sessions, entry, state, projects)
+				if err != nil {
+					writeBusUnavailable(w, err)
+					return
+				}
+				if !shown {
+					writeJSON(w, http.StatusNotFound, unknownSession(sessionID))
+					return
+				}
 			}
 			info, err := sessionInfoFor(ctx, d.registry, session.ListEntry{SessionID: sessionID, SessionEntry: entry, State: state})
 			if edge {
