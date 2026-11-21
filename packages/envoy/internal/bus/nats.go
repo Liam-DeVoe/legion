@@ -1455,11 +1455,11 @@ var ErrSubscriptionHeld = errors.New("bus: client already holds a subscription o
 // connection, or re-subscribing.
 var errStopped = errors.New("bus: client is stopped")
 
-// stop stops the client: recovery ends, and nothing dials, installs a connection or re-subscribes.
 // Stopped is closed once the client stops (Close or Drain), so a caller keeping state for the
 // client can drop it then.
 func (c *Client) Stopped() <-chan struct{} { return c.stopCh }
 
+// stop stops the client: recovery ends, and nothing dials, installs a connection or re-subscribes.
 func (c *Client) stop() {
 	c.closeOnce.Do(func() { close(c.stopCh) })
 }
