@@ -103,17 +103,28 @@ func TestAConnectionNamingNoGenerationOfTheScopeAddsNothing(t *testing.T) {
 	}
 }
 
-// DaemonGenerationConnection and ParseDaemonGenerationConnection are each other's inverse on a
-// daemon's fresh names, and the parse refuses a fresh name of no daemon consumer.
+// DaemonGenerationConnection names each daemon fresh name's connection so that the grant reads that
+// very name back from it: a scope holding the project, with that connection, grants the fresh
+// name, for any project key and kind of the held scope's table. A name of no daemon consumer's
+// generation adds nothing.
 func TestDaemonGenerationConnectionRoundTrips(t *testing.T) {
-	for _, physical := range []string{"legion-go-PUB-dispatch~RFuDfoOI3HLgXUdIZvZnZx", "legion-go-ABCDEFGHIJ-ready~0000000000000000000000", "legion-go-A0-github~" + strings.Repeat("Z", 22)} {
-		name := natsgrant.DaemonGenerationConnection(physical)
-		got, ok := natsgrant.ParseDaemonGenerationConnection(name)
-		require.True(t, ok, "%s, named %s", physical, name)
-		require.Equal(t, physical, got)
+	for _, row := range []struct{ project, physical string }{
+		{"PUB", "legion-go-PUB-dispatch~RFuDfoOI3HLgXUdIZvZnZx"},
+		{"ABCDEFGHIJ", "legion-go-ABCDEFGHIJ-ready~0000000000000000000000"},
+		{"A0", "legion-go-A0-github~" + strings.Repeat("Z", 22)},
+	} {
+		name := natsgrant.DaemonGenerationConnection(row.physical)
+		got, err := natsgrant.WithinProjects(natsgrant.Daemon(), natsgrant.Scope{Projects: []string{row.project}, Identity: "legion-daemon-" + row.project, Connection: name})
+		require.NoError(t, err)
+		require.True(t, admits(got.Publish, "$JS.API.CONSUMER.INFO.ENVOY_NOTIFICATIONS."+row.physical), "%s, named %s", row.physical, name)
 	}
+	without, err := natsgrant.WithinProjects(natsgrant.Daemon(), pubScope)
+	require.NoError(t, err)
 	for _, name := range []string{"session/abc", "delivery-events/abc", "legion-go-PUB-dispatch"} {
-		_, ok := natsgrant.ParseDaemonGenerationConnection(name)
-		require.False(t, ok, name)
+		scope := pubScope
+		scope.Connection = name
+		got, err := natsgrant.WithinProjects(natsgrant.Daemon(), scope)
+		require.NoError(t, err)
+		require.Equal(t, without, got, name)
 	}
 }

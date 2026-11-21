@@ -204,15 +204,12 @@ func newHeldScope(scope Scope) (heldScope, error) {
 			named("github", githubLanes),
 		)
 	}
-	// The connection's generation, when it names one of a consumer the scope holds: that fresh
-	// name, on the fixed consumer's filter (DaemonGenerationConnection).
-	if physical, ok := ParseDaemonGenerationConnection(scope.Connection); ok {
-		fixed := physical[:strings.LastIndex(physical, "~")]
-		for _, consumer := range held.consumers {
-			if consumer.name == fixed {
-				held.consumers = append(held.consumers, daemonConsumer{name: physical, filter: consumer.filter})
-				break
-			}
+	// The connection's generation, when it names one of the daemon consumers the scope holds: that
+	// fresh name, on that consumer's filter (DaemonGenerationConnection, generationOf).
+	for _, consumer := range held.consumers {
+		if fresh, ok := generationOf(consumer, scope.Connection); ok {
+			held.consumers = append(held.consumers, fresh)
+			break
 		}
 	}
 	return held, nil
