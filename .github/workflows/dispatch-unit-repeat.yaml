@@ -9,6 +9,12 @@ name: Dispatch unit suite repeated
 # harness leg with `--rerun-each=20`, a web-cold leg with `--rerun-each=1`. Each leg draws its own
 # seed. Three legs a lane make nine legs a run.
 #
+# The web and web-cold lanes leave out web/src/features/issue/useIssueDrafts.exploration.test.ts,
+# as `test:web` does (its --path-ignore-patterns): that file's eight rows share one sweep of every
+# order of up to five events, which is exhaustive and the same on every seed and every rerun, and
+# which takes minutes. It runs once, in package.json's `test:web:drafts`, in ci.yaml's dispatch-ui
+# job. useIssueDrafts.test.ts's other rows stay in both lanes.
+#
 # What a leg publishes. Its report goes to the step summary. The leg prints one `::error`
 # annotation for each failure that belongs to no row, then one for each failing row. GitHub keeps
 # at most 10 error annotations a step: its REST "Check runs" page says "GitHub Actions are limited
