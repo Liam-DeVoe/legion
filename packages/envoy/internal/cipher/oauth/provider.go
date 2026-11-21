@@ -530,6 +530,24 @@ func (p *Provider) ReleasePodSessions(ctx context.Context, registrar string, ses
 	return p.store.ReleasePodSessions(ctx, registrar, sessions)
 }
 
+// MovePodSessionBinding binds the session name session to the registrar registrar, whatever
+// registrar it is bound to now, and answers the binding as stored and the registrar it replaced,
+// "" for none (oauthstore.Store.MovePodSessionBinding). From its commit only registrar registers
+// pods under the name and only its registrations trade under it. It is what PUT
+// /v1/pod-session-registrars/{session} does for the deployment's operator, once the route has
+// checked that BROKER_POD_REGISTRARS names registrar. The policy is not asked: a binding admits no
+// trade by itself, and a registration under the name is still the policy's to refuse.
+func (p *Provider) MovePodSessionBinding(ctx context.Context, session, registrar string) (oauthstore.PodSessionBinding, string, error) {
+	return p.store.MovePodSessionBinding(ctx, session, registrar)
+}
+
+// PodSessionBindings answers every session name's binding, ordered by name
+// (oauthstore.Store.PodSessionBindings). It is what GET /v1/pod-session-registrars answers the
+// deployment's operator.
+func (p *Provider) PodSessionBindings(ctx context.Context) ([]oauthstore.PodSessionBinding, error) {
+	return p.store.PodSessionBindings(ctx)
+}
+
 // writeError answers err as the library's OAuth error JSON, logging a server error's cause.
 func (p *Provider) writeError(ctx context.Context, w http.ResponseWriter, request oauth2.AccessRequester, err error) {
 	if oauth2.ErrorToRFC6749Error(err).CodeField >= http.StatusInternalServerError {

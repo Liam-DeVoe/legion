@@ -783,6 +783,106 @@ func (s *Store) ReleasePodSessions(ctx context.Context, registrar string, sessio
 	return released, nil
 }
 
+// PodSessionBinding is one row of pod_session_registrars: a session name, the registrar it is
+// bound to, and when it was bound to that registrar, by its first registration or by the
+// operator's last move of it.
+type PodSessionBinding struct {
+	Session      string
+	Registrar    string
+	RegisteredAt time.Time
+}
+
+// MovePodSessionBinding binds session to registrar, whatever registrar it is bound to now, and
+// answers the binding as stored and the registrar it was bound to before, "" for a name bound to
+// none. It is what PUT /v1/pod-session-registrars/{session} does for the deployment's operator,
+// the one change of a binding there is: a registration binds a name only when it is bound to none
+// (bindPodSessionName), and nothing removes one.
+//
+// The name is bound throughout. The move is one transaction that reads the name's binding locked
+// and changes it in one statement, insert ... on conflict (session_name) do update set registrar,
+// registered_at = now(), and never deletes it. A removal followed by the new registrar's own first
+// registration would leave the name to whichever registrar registered it first in between; here a
+// registration of the name by any registrar but the two reads one of them as the holder, before
+// the move commits or after, and is refused; and of a registration's and the move's inserts of a
+// first binding of a name bound to none, the name's primary key lets one alone in. From its
+// commit, the exchange admits a trade under the name only for a registration the new registrar
+// wrote (PodSessionRegistered): each live row of the name another registrar wrote, the previous
+// one's included, is refused as a row of another registrar's, and the new registrar's next write
+// of such a row takes it whole (writePodSession). registered_at becomes the move's moment.
+//
+// It reads the binding before it changes it so it can answer the registrar it replaced, which the
+// route logs. A name bound to none at that read is inserted with on conflict do nothing, since a
+// registration's first binding may have been inserted, uncommitted, after the read began: the
+// insert then waits for that write, finds its binding and inserts nothing, and the binding is read
+// again, locked, and moved, so the answer names that registrar rather than none. The transaction
+// names read committed for that second read, which sees what the write it waited on committed, as
+// RegisterPodSession's does; so a ctx already carrying a transaction is refused; no caller passes
+// one.
+func (s *Store) MovePodSessionBinding(ctx context.Context, session, registrar string) (PodSessionBinding, string, error) {
+	if _, joined := TxFrom(ctx); joined {
+		return PodSessionBinding{}, "", errors.New("move the session name's binding: the move opens a read-committed transaction of its own, and the context already carries one")
+	}
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return PodSessionBinding{}, "", fmt.Errorf("move the session name's binding: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	binding, previous, err := moveBinding(ctx, tx, session, registrar)
+	if err == nil {
+		err = tx.Commit(ctx)
+	}
+	if err != nil {
+		return PodSessionBinding{}, "", fmt.Errorf("move the session name's binding: %w", err)
+	}
+	return binding, previous, nil
+}
+
+// moveBinding is MovePodSessionBinding's write, in tx: the name's binding read locked and moved, or
+// inserted when there is none, and read again when a first registration inserted one meanwhile.
+// Nothing deletes a binding, so the second read finds the one the insert waited on.
+func moveBinding(ctx context.Context, tx pgx.Tx, session, registrar string) (PodSessionBinding, string, error) {
+	binding := PodSessionBinding{Session: session, Registrar: registrar}
+	for range 2 {
+		var previous string
+		err := tx.QueryRow(ctx, `select registrar from pod_session_registrars where session_name = $1 for update`, session).Scan(&previous)
+		switch {
+		case err == nil:
+			err = tx.QueryRow(ctx, `insert into pod_session_registrars (session_name, registrar) values ($1, $2)
+				on conflict (session_name) do update set registrar = $2, registered_at = now()
+				returning registered_at`, session, registrar).Scan(&binding.RegisteredAt)
+			return binding, previous, err
+		case !errors.Is(err, pgx.ErrNoRows):
+			return PodSessionBinding{}, "", fmt.Errorf("read the registrar the session name is bound to: %w", err)
+		}
+		err = tx.QueryRow(ctx, `insert into pod_session_registrars (session_name, registrar) values ($1, $2)
+			on conflict (session_name) do nothing
+			returning registered_at`, session, registrar).Scan(&binding.RegisteredAt)
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return binding, "", err
+		}
+	}
+	return PodSessionBinding{}, "", errors.New("the binding a registration inserted after the move's read was gone when the move read it again")
+}
+
+// PodSessionBindings answers every row of pod_session_registrars, ordered by session name: each
+// session name a registrar has registered or the operator has moved, the registrar it is bound to,
+// and since when. It is what GET /v1/pod-session-registrars answers the operator.
+func (s *Store) PodSessionBindings(ctx context.Context) ([]PodSessionBinding, error) {
+	rows, err := s.db(ctx).Query(ctx, `select session_name, registrar, registered_at from pod_session_registrars order by session_name`)
+	if err != nil {
+		return nil, fmt.Errorf("list the session names' bindings: %w", err)
+	}
+	bindings, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (PodSessionBinding, error) {
+		var binding PodSessionBinding
+		err := row.Scan(&binding.Session, &binding.Registrar, &binding.RegisteredAt)
+		return binding, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list the session names' bindings: %w", err)
+	}
+	return bindings, nil
+}
+
 // SetTokenExchangeCustomJWT remembers a subject token's jti until exp plus jtiRetentionMargin and
 // fails when it is already remembered, which is how the library is told a token is being
 // presented a second time: it reads any error from here as a replay. The insert, or the takeover
