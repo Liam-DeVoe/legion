@@ -239,10 +239,10 @@ counted() {
 }
 
 # held LABEL TEXT: the row LABEL kept the project from the member, as TEXT says, and whether it
-# can fail. It prints nothing for a runner's row its fills hold no line of (`in_fills` 0), which
-# `row` leaves UNKNOWN.
+# can fail. A runner's row its fills hold no line of (`in_fills` 0) proved nothing by it, so it
+# is UNKNOWN for the row's `why` in place of an ok line.
 held() {
-  [ "$in_fills" = 1 ] || return 0
+  [ "$in_fills" = 1 ] || { unproven "$1: $why"; return 0; }
   printf 'ok      %s: %s (%s)\n' "$1" "$2" "$can_text"
 }
 
@@ -256,11 +256,12 @@ held() {
 # object's (as_missing, proxy) cannot fail, leaves the run UNKNOWN (no file): the full member was
 # answered alike for both, so the member's answer then says nothing either way. Every other mode
 # then runs the member's half, `KIND_member LABEL ARGS...`. A runner's row its fills hold no line
-# of was never asked of the full member (the fills were made from another route index or API
-# document): its member's half runs all the same, so a row of the project in the answer FAILs,
-# but nothing else the answer says proves the row, which is UNKNOWN, never blind.
+# of was never asked of the full member (the fills were made from another API document; another
+# route index read_fills refuses): its member's half runs all the same, so a row of the project in
+# the answer FAILs, but nothing else the answer says proves the row, which `held` leaves UNKNOWN,
+# never blind.
 row() {
-  local kind=$1 label=$2 must_fail=0 recorded
+  local kind=$1 label=$2 must_fail=0
   shift 2
   case $kind in as_missing | proxy) must_fail=1 ;; esac
   can=0 ft=- why='' control_failed='' in_fills=1 can_text=''
@@ -270,10 +271,8 @@ row() {
     why="SWEEP_FILLS_FILE holds no full member's read of it that could fail"
     if [ -z "$ft" ]; then
       in_fills=0 can=0 ft=-
-      why="SWEEP_FILLS_FILE holds no full member's read of it: the fills were made from another route index or API document"
-      recorded=$(cat "$work/failed" "$work/unknown" | wc -l)
+      why="SWEEP_FILLS_FILE holds no full member's read of it: the fills were made from another API document"
       "${kind}_member" "$label" "$@"
-      [ "$(cat "$work/failed" "$work/unknown" | wc -l)" != "$recorded" ] || unproven "$label: $why"
       return
     fi
   else

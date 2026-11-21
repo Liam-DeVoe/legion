@@ -45,8 +45,7 @@ doc_socket() {
       ;;
   esac
   refusal_body "$work/doc-target" "$work/doc-body"
-  masked "$work/doc-body" "$doc" >"$work/doc-refusal" || unknown 'could not mask the document refusal'
-  marker=$(marker_in "$work/doc-refusal")
+  masked_marker "$work/doc-body" "$doc" || unknown 'could not mask the document refusal'
   if [ -n "$marker" ]; then
     fail "/ws/doc/{room}: the refusal holds $(shown "$marker"), a row of $project"
   elif [ "$own_exit" != 0 ] || [ "$answer_exit" != 0 ]; then

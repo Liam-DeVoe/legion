@@ -1007,7 +1007,8 @@ lookup, the question and each row's can-fail call, and writes them to `SWEEP_FIL
 the target issue's title among them, as the search rows' text). It names the route index it was
 made from by its SHA-256 (`routes`), and the deployment by the SHA-256 of the key and creation
 time of each of the member's own projects (`deployment`), which tell one deployment from another
-and read the same at its private origin and its public one. A row that can fail is a
+and read the same at its private origin and its public one; fills mode and a runner each refuse a
+list of projects that gives no creation time of each of them. A row that can fail is a
 `can_fail<TAB><row>` line, each proxy read, the agent view and the app-installation row among
 them, and every row it judged has a `full_status` line. Fills mode needs `SWEEP_FULL_COOKIE` too,
 since a proxy read it cannot make fail leaves no file, and writes none that lacks a fill. It takes
@@ -1016,7 +1017,9 @@ lists name it. A runner, any run with `SWEEP_FILLS_FILE` and no `SWEEP_MODE`, do
 half with the member's cookie alone, refuses a full member's credential, and refuses fills of
 another project, made from another route index than its own, older than 55 minutes, lacking a fill
 whole fills hold, or made at another deployment; it names the origin they were made at, and the
-member's login, by the first 12 digits of their SHA-256 alone. A row the fills hold no line of,
+member's login, by the first 12 digits of their SHA-256 alone. Those digits keep the value itself
+out of the log; they do not hide a login or a host name someone can guess, whose SHA-256 anyone
+can take and compare. A row the fills hold no line of,
 from fills made from another API document, was never asked of the full member: the member's
 answer still FAILs it where it holds a row of the project, and otherwise the row is `UNKNOWN`,
 never `blind`. A runner reads the member's live feed over a window it prints,

@@ -44,11 +44,17 @@ fills_status() { word_before "$work/full-status" "$1"; }
 # it, was read at: the SHA-256 of the key and creation time of each of the member's own projects
 # (`own`) it lists, sorted. A project is created once, on one deployment, so another deployment's
 # projects of the same keys were created at other times; and the full member and the member, at
-# the private origin and the public one of one deployment, are answered the same times.
+# the private origin and the public one of one deployment, are answered the same times. It fails,
+# printing nothing, where FILE is no list jq reads or gives one of those projects no creation time
+# (`created_at`, which the API requires): read as it is, that would read alike at every
+# deployment, so fills mode and a runner would compare nothing. (The run checked at its start
+# that sha256sum or shasum runs, so a failure here is the list's.)
 deployment_of() {
   jq -r --rawfile own "$work/own" '($own | split("\n") | map(select(length > 0))) as $keys
     | .[]? | select(type == "object" and (.key as $key | any($keys[]; . == $key)))
-    | "\(.key) \(.created_at)"' "$1" 2>/dev/null | sort | sha256_of
+    | if (.created_at | type) == "string" and .created_at != "" then "\(.key) \(.created_at)"
+      else error("no creation time") end' "$1" >"$work/creation-times" 2>/dev/null || return 1
+  sort "$work/creation-times" | sha256_of
 }
 
 # read_fills: the fills SWEEP_FILLS_FILE names, every one, read before the first request, so fills
@@ -118,8 +124,8 @@ write_fills() {
   local name fill_value own value fills_bytes partial deployment
   mv "$work/fills" "$work/fills-rows" 2>/dev/null || : >"$work/fills-rows"
   : >"$work/fills"
-  deployment=$(deployment_of "$work/full-projects.json")
-  [ -n "$deployment" ] || unknown 'could not take the SHA-256 of the deployment, so no fills were written'
+  deployment=$(deployment_of "$work/full-projects.json") ||
+    unknown "GET /api/v1/projects with SWEEP_FULL_TOKEN gives no creation time of each of the member's own projects, which tells the deployment, so no fills were written"
   put restricted-sweep-fills "$fills_version"
   put project "$project"
   put origin "$origin"

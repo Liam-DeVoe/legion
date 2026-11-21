@@ -138,7 +138,7 @@ export interface FeedShape {
  *  on, which both callers may see; `full` plants answers for the full member's requests;
  *  `createdAt` is when OWN was created, which GET /api/v1/projects answers either caller, so
  *  fills made at one fake and a runner at another whose OWN was created otherwise stand for two
- *  deployments. */
+ *  deployments; null lists OWN with no creation time. */
 export interface FakeShape {
   readonly omit?: ReadonlySet<string>;
   readonly issues?: number;
@@ -149,7 +149,7 @@ export interface FakeShape {
   readonly sharedRepo?: boolean;
   readonly full?: readonly Leak[];
   readonly feed?: FeedShape;
-  readonly createdAt?: string;
+  readonly createdAt?: string | null;
   /** The GET patterns of the route index a run reads, which the fake's own index (GET /api/v1)
    *  lists too, as a deployment's lists the routes its route table holds; the whole index when
    *  unset. */
@@ -164,6 +164,7 @@ function routeIndexOf(fake: FakeShape): unknown {
 
 /** OWN, the member's own project, as GET /api/v1/projects lists it to either caller. */
 function ownProject(fake: FakeShape): unknown {
+  if (fake.createdAt === null) return { key: "OWN" };
   return { key: "OWN", created_at: fake.createdAt ?? "2026-01-01T00:00:00.123456Z" };
 }
 
@@ -481,6 +482,11 @@ export function stopFakes(): void {
 
 const indexes = temporaryDirectories("restricted-sweep-index");
 
+/** The route index a run over the GET patterns `rows` reads, as `sweep` writes it. */
+export function routesFileOf(rows: readonly string[]): string {
+  return rows.map((pattern) => `GET ${pattern} any\n`).join("");
+}
+
 /** What a row changes of a run: the fake's answers (FakeShape), inputs (a variable set undefined
  *  is left out), and `rows`, the GET patterns of the route index the run reads in place of the
  *  whole of it. A sweep of the whole index makes about 400 calls; a row that holds one rule reads
@@ -508,7 +514,7 @@ export async function sweep(leaks: readonly Leak[], shape: RunShape = {}): Promi
   let routes: string | undefined;
   if (shape.rows !== undefined) {
     routes = join(indexes(), "routes.txt");
-    writeFileSync(routes, shape.rows.map((pattern) => `GET ${pattern} any\n`).join(""));
+    writeFileSync(routes, routesFileOf(shape.rows));
   }
   const inputs: Record<string, string | undefined> = {
     PATH: process.env.PATH ?? "",

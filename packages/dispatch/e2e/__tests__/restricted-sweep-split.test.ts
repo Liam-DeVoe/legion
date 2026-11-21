@@ -19,13 +19,14 @@ import {
   literally,
   memberCookie,
   passed,
+  routesFileOf,
   stopFakes,
   sweep,
   tgt,
   verdictOf,
   withoutTools,
 } from "./restricted-sweep-fake";
-import { proxyReads } from "./restricted-sweep-index";
+import { proxyReads, sha256Hex } from "./restricted-sweep-index";
 
 afterAll(stopFakes);
 
@@ -33,9 +34,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
   const fillsDirectories = temporaryDirectories("restricted-sweep-fills");
   const someRows = ["/api/v1/inbox", "/api/v1/issues/{key}/comments", appInstallation];
   /** The route index a run of `someRows` reads, as `sweep` writes it, and its SHA-256. */
-  const someRowsSha256 = new Bun.CryptoHasher("sha256")
-    .update(someRows.map((pattern) => `GET ${pattern} any\n`).join(""))
-    .digest("hex");
+  const someRowsSha256 = sha256Hex(routesFileOf(someRows));
   /** The shortest live window a runner reads, which leaves the writer's delivery bound (15 s) of
    *  it before its feed closes. */
   const runnerLiveSeconds = 30;
@@ -43,10 +42,14 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
   /** A run of fills mode, and the file it was to write. Its proxy reads as the real one does, a
    *  browser's person alone, so its reads can fail only with the full member's cookie, which the
    *  run is given unless `withoutCookie`. Its live socket is served, for the agent view's full
-   *  half. `omit` leaves kinds out of its lookup. */
+   *  half. `omit` leaves kinds out of its lookup; `createdAt` is when its fake's OWN was created. */
   async function fills(
     leaks: readonly Leak[] = [],
-    { withoutCookie = false, omit }: { withoutCookie?: boolean; omit?: ReadonlySet<string> } = {},
+    {
+      withoutCookie = false,
+      omit,
+      createdAt,
+    }: { withoutCookie?: boolean; omit?: ReadonlySet<string>; createdAt?: string | null } = {},
     file = join(fillsDirectories(), "fills.tsv")
   ) {
     const run = await sweep(leaks, {
@@ -61,6 +64,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       },
       feed: { live: true },
       ...(omit === undefined ? {} : { omit }),
+      ...(createdAt === undefined ? {} : { createdAt }),
       proxyReadsCookies: true,
       rows: someRows,
     });
@@ -78,7 +82,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       live = true,
       rows = someRows,
       createdAt,
-    }: { live?: boolean; rows?: readonly string[]; createdAt?: string } = {}
+    }: { live?: boolean; rows?: readonly string[]; createdAt?: string | null } = {}
   ) {
     return sweep(leaks, {
       env: {
@@ -172,8 +176,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       expect(fillsOrigin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
       const { code, fullRequests, stdout } = await runner(file);
       expect(fullRequests).toBe(0);
-      const digestOf = (text: string) =>
-        new Bun.CryptoHasher("sha256").update(text).digest("hex").slice(0, 12);
+      const digestOf = (text: string) => sha256Hex(text).slice(0, 12);
       const member = "bob@outside.example";
       expect(stdout).toContain(
         `\nmember  a restricted member TGT's access list does not name, whose login's SHA-256 starts ${digestOf(member)}\n`
@@ -339,7 +342,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       const { code, stdout } = await runner(file, [], { live: false });
       expect(failures(stdout)).toEqual([]);
       expect(stdout).toContain(
-        `\nUNKNOWN ${comments}: SWEEP_FILLS_FILE holds no full member's read of it: the fills were made from another route index or API document\n`
+        `\nUNKNOWN ${comments}: SWEEP_FILLS_FILE holds no full member's read of it: the fills were made from another API document\n`
       );
       expect(stdout).not.toMatch(new RegExp(`^ok {6}${literally(comments)}:`, "m"));
       expect(verdictOf(stdout)).toStartWith("UNKNOWN: ");
@@ -398,6 +401,45 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       });
       expect(verdictOf(stdout)).toMatch(
         /^UNKNOWN: SWEEP_FILLS_FILE was made at another deployment: the member's own projects were created at other times there \(fills [0-9a-f]{12}, here [0-9a-f]{12}\)$/
+      );
+      expect(stdout).not.toMatch(/^ok {6}GET /m);
+      expect(code).toBe(2);
+    },
+    rowLimit("short", "short")
+  );
+
+  // A list that gives no creation time of the member's own project tells no deployment: read as
+  // it is, it would read alike at every deployment, and the fills and a runner would compare
+  // nothing. Fills mode writes no file from it, and a runner stops before it calls a row.
+  test(
+    "fills mode at a deployment that gives no creation time of the member's own project writes no file, and is UNKNOWN",
+    async () => {
+      const { code, file, stdout } = await fills([], { createdAt: null });
+      expect(verdictOf(stdout)).toBe(
+        "UNKNOWN: GET /api/v1/projects with SWEEP_FULL_TOKEN gives no creation time of each of the member's own projects, which tells the deployment, so no fills were written"
+      );
+      expect(code).toBe(2);
+      expect(await Bun.file(file).exists()).toBe(false);
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a runner at a deployment that gives no creation time of the member's own project is UNKNOWN before it calls a row, though the fills name that deployment",
+    async () => {
+      const { file } = await fills();
+      // The deployment a list with no creation time read as before such a list was refused:
+      // `OWN null`, alike at every deployment.
+      const text = readFileSync(file, "utf8");
+      const timeless = text.replace(
+        /^deployment\t[0-9a-f]{64}$/m,
+        `deployment\t${sha256Hex("OWN null\n")}`
+      );
+      expect(timeless).not.toBe(text);
+      writeFileSync(file, timeless);
+      const { code, stdout } = await runner(file, [], { createdAt: null, live: false });
+      expect(verdictOf(stdout)).toBe(
+        "UNKNOWN: GET /api/v1/projects as the member gives no creation time of each of their own projects, so the run cannot tell the deployment SWEEP_FILLS_FILE was made at from this one"
       );
       expect(stdout).not.toMatch(/^ok {6}GET /m);
       expect(code).toBe(2);

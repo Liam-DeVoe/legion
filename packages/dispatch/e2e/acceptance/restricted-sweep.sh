@@ -122,7 +122,10 @@
 # that are absent, empty, of another version or project, made from another route index than its
 # own, older than 55 minutes (the question's run is kept an hour and read only by its asker),
 # that lack a fill whole fills hold, or that were made at another deployment, and names the origin
-# they were made at, and the member's login, by the first 12 digits of their SHA-256 alone.
+# they were made at, and the member's login, by the first 12 digits of their SHA-256 alone. Those
+# digits keep the value itself out of the log; they do not hide a login or a host name someone can
+# guess, whose SHA-256 anyone can take and compare. Fills mode and a runner each refuse a list of
+# projects that gives no creation time of each of the member's own, which tells no deployment.
 #
 # Inputs, each refused by name when missing or malformed (the mode each is read in, in brackets):
 #   SWEEP_ORIGIN             [all] the deployment's origin, https://<host>[:<port>]; http:// only

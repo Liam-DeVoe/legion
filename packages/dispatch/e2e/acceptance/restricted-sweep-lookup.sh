@@ -19,9 +19,15 @@ member_projects() {
     unknown "GET /api/v1/projects as the member answered no list: $(head_of "$work/member-projects.json")"
 }
 
-# login_digest LOGIN: the first 12 hex digits of the SHA-256 of LOGIN in lower case, by which a
-# runner's lines name a login: a login is a person's address, and a public runner's log is public.
-login_digest() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sha256_of | cut -c1-12; }
+# short_digest DIGEST: the first 12 hex digits of DIGEST, a SHA-256 in hex, by which a runner's
+# line names what it is the SHA-256 of: a login, the fills' origin, a deployment. They keep the
+# value itself out of the log; they do not hide a login or a host name someone can guess, whose
+# SHA-256 anyone can take and compare.
+short_digest() { printf '%s' "${1:0:12}"; }
+
+# login_digest LOGIN: the short digest of LOGIN in lower case, by which a runner's lines name a
+# login: a login is a person's address, and a public runner's log is public.
+login_digest() { short_digest "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sha256_of)"; }
 
 # identities: the member must be a restricted member the server signs in (fills mode, which holds
 # no member's cookie, takes SWEEP_MEMBER); the full member's token must see the project, whose
@@ -72,10 +78,11 @@ identities() {
 # routes. And the fills must be of this deployment: made at another, every row is filled with
 # objects that name nothing here, which a correct server answers as missing. The member's own
 # projects were created on one deployment alone (deployment_of), so where they were created at
-# other times the run stops, UNKNOWN, before it calls a row. A member listed no project of their
-# own tells no deployment, which leaves the run UNKNOWN. The line names the member's login and the
-# fills' origin, a private one where the fills were made apart, by the first 12 digits of their
-# SHA-256 alone.
+# other times the run stops, UNKNOWN, before it calls a row; so it does where the list gives no
+# creation time of each, which would read alike at every deployment. A member listed no project of
+# their own tells no deployment, which leaves the run UNKNOWN. The line names the member's login
+# and the fills' origin, a private one where the fills were made apart, by their short digests
+# alone.
 runner_projects() {
   local member_own here
   member_projects
@@ -85,13 +92,13 @@ runner_projects() {
   elif [ -z "$member_own" ]; then
     unproven "the member is listed no project of their own, so the run cannot tell the deployment SWEEP_FILLS_FILE was made at from this one"
   else
-    here=$(deployment_of "$work/member-projects.json")
-    [ -n "$here" ] || unknown 'could not take the SHA-256 of the deployment'
+    here=$(deployment_of "$work/member-projects.json") ||
+      unknown "GET /api/v1/projects as the member gives no creation time of each of their own projects, so the run cannot tell the deployment SWEEP_FILLS_FILE was made at from this one"
     [ "$here" = "$fills_deployment" ] ||
-      unknown "SWEEP_FILLS_FILE was made at another deployment: the member's own projects were created at other times there (fills $(printf '%s' "$fills_deployment" | cut -c1-12), here $(printf '%s' "$here" | cut -c1-12))"
+      unknown "SWEEP_FILLS_FILE was made at another deployment: the member's own projects were created at other times there (fills $(short_digest "$fills_deployment"), here $(short_digest "$here"))"
   fi
   printf 'fills   of %s for the login whose SHA-256 starts %s, made %s s ago at the origin whose SHA-256 starts %s: %s values, %s rows that can fail\n' \
-    "$project" "$(login_digest "$member")" "$fills_age" "$(printf '%s' "$fills_origin" | sha256_of | cut -c1-12)" \
+    "$project" "$(login_digest "$member")" "$fills_age" "$(short_digest "$(printf '%s' "$fills_origin" | sha256_of)")" \
     "$(wc -l <"$work/values" | tr -d ' ')" "$(wc -l <"$work/can-fail" | tr -d ' ')"
 }
 

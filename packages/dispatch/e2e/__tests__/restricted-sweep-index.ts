@@ -45,11 +45,14 @@ export const getRows: readonly string[] = readFileSync(routeIndex, "utf8")
   .filter(([method]) => method === "GET")
   .map(([, path]) => path || noPath());
 
+/** The SHA-256 of `bytes`, in hex. */
+export function sha256Hex(bytes: string | Uint8Array): string {
+  return new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+}
+
 /** The SHA-256 of the route index, in hex, which fills made from it name and a runner holds them
  *  to. */
-export const routeIndexSha256 = new Bun.CryptoHasher("sha256")
-  .update(readFileSync(routeIndex))
-  .digest("hex");
+export const routeIndexSha256 = sha256Hex(readFileSync(routeIndex));
 
 /** The fills whole fills hold, as the fills part lists them (`fill_names`), each of which a runner
  *  refuses fills without. */
