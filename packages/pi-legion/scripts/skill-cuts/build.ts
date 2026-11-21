@@ -289,6 +289,12 @@
  * mode; rebuilt before any reader call, and a session that gives none fails the build). The
  * summary's `profiles` records the context session, each task's profile and its evidence, and why
  * a task has none. A finished build gets none afterwards: profiles come with a fresh `--out`.
+ * A task whose context does not list the tested skill tests nothing (`listsSkill`: a subagent's
+ * recorded listing lacks its line, or another context's profile does not install it), so with
+ * `--profiles-out` such a session is dropped (`skill-not-listed`) and counted: in the reader's
+ * mode each offered message's session is rebuilt first and the next candidate taken in its
+ * place (`offeredMessages`, `candidateDrops`), in `--first-read` when the session is tried
+ * (`skillNotListed`); and a `--context-session` whose context does not list it is refused.
  *
  * Exit status: 0 written; 1 failed; 2 refused before any store read or model call; 3 stopped at
  * `--budget-usd`, with the cases built so far written; 4 stopped by the stop rule, the same.
@@ -321,6 +327,7 @@ import {
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
 import { modelId, type Placer, placer, readCount, readR4, sessionModel } from "./attribute";
+import { armPromptBlocks } from "./capture";
 import {
   Case,
   loadCases,
@@ -2694,11 +2701,33 @@ function sessionHeader(
 }
 
 /** A load test's profile of one session (load.ts's LoadProfile: cases.ts's Profile and the
- *  context), the evidence for each part, and the secrets taken out of it. */
+ *  context), the evidence for each part, the secrets taken out of it, and whether a load test of
+ *  the skill in it lists the skill (`listsSkill`). */
 export interface SessionProfile {
   readonly profile: Profile & { readonly context: string };
   readonly evidence: Evidence[];
   readonly secretsRemoved: number;
+  readonly listed: boolean;
+}
+
+/**
+ * Whether a load test of `skill` in the context `profile` gives lists the skill, so its first reply
+ * can load it. A recorded system prompt (a subagent's) is what the capture sends, with only the
+ * skill's line of its listing changed: it lists the skill when capture.ts's `armPromptBlocks`
+ * finds that line, and load refuses the task (`its capture does not list`) when it does not. Any
+ * other context lists the skill when the session's own profile installs it, as one of its skills
+ * (a plugin's or a package's skills among them). `skills` is the rebuilt profile's skills before
+ * the tested one is left out.
+ */
+function listsSkill(
+  profile: Pick<Profile, "systemPrompt">,
+  skills: readonly ProfileSkill[],
+  skill: string
+): boolean {
+  if (profile.systemPrompt !== undefined) {
+    return armPromptBlocks(profile.systemPrompt, skill, undefined).line !== "not listed";
+  }
+  return skills.some((each) => each.name === skill);
 }
 
 /**
@@ -2745,6 +2774,7 @@ async function sessionProfile(
     },
     evidence: [...evidence, ...profiled.evidence],
     secretsRemoved: secrets.removed,
+    listed: listsSkill(recorded, profiled.profile.skills, skill),
   };
 }
 
@@ -4208,7 +4238,8 @@ interface ContextProfile {
 }
 
 /** The context session's profile, rebuilt before any reader call, or undefined when the plan
- *  names no context session. Throws when the session gives none. */
+ *  names no context session. Throws when the session gives none, and refuses (exit 2) a session
+ *  whose profile does not list the skill, since a written task in it would test nothing. */
 async function contextProfile(
   plan: ProfilesPlan,
   spool: string,
@@ -4220,16 +4251,18 @@ async function contextProfile(
   const { paths } = await resolvePaths(plan.run.config.psqlCommand, store, [hash]);
   const filePath = paths.get(hash);
   if (filePath === undefined) throw new Error(`${named}: sessions.sql gives no file of this hash`);
+  let built: SessionProfile;
   try {
-    return {
-      store,
-      hash,
-      pathHash: pathHash(filePath),
-      built: await pulledProfile(plan.run, store, filePath, spool, skill),
-    };
+    built = await pulledProfile(plan.run, store, filePath, spool, skill);
   } catch (error) {
     throw new Error(`${named}: ${messageFor(error)}`);
   }
+  if (!built.listed) {
+    throw new Refused(
+      `${named}: its rebuilt context (${built.profile.context}) does not list ${skill}, so a written task in it would test nothing; give a session whose context lists it`
+    );
+  }
+  return { store, hash, pathHash: pathHash(filePath), built };
 }
 
 /** A task line as build-tasks writes it, with the profile `--profiles-out` gives it. */
@@ -4246,18 +4279,25 @@ interface TaskSession {
   readonly path?: string;
 }
 
+/** The reason a session task, or a candidate session of one, is dropped when its rebuilt context
+ *  does not list the tested skill (`listsSkill`). */
+const SKILL_NOT_LISTED = "skill-not-listed";
+
 /**
  * Writes the profile of each task of `tasks` to `<plan.dir>/<task id>.json` (load.ts's
  * LoadProfile) and gives each task its path as `profile`: a task from a session (`sessions`, by
- * task id) the profile of that session rebuilt (`pulledProfile`, pulled into `spool`), a written
- * task the context session's. A task whose profile cannot be rebuilt keeps no `profile`, and the
- * record of it says why. Returns the tasks, the record of each, and the sessions.sql queries it
+ * task id) the profile of that session, as `known` holds it (by task id) or rebuilt
+ * (`pulledProfile`, pulled into `spool`), a written task the context session's. A task whose
+ * profile cannot be rebuilt keeps no `profile`, and the record of it says why. A session task
+ * whose profile does not list the skill (`listsSkill`) is dropped (`skill-not-listed`): it would
+ * test nothing. Returns the tasks kept, the record of each task, and the sessions.sql queries it
  * made for the paths.
  */
 async function writeProfiles<T extends TaskLine>(
   plan: ProfilesPlan,
   tasks: readonly T[],
   sessions: ReadonlyMap<string, TaskSession>,
+  known: ReadonlyMap<string, SessionProfile>,
   context: ContextProfile | undefined,
   spool: string,
   skill: string,
@@ -4266,8 +4306,8 @@ async function writeProfiles<T extends TaskLine>(
   mkdirSync(plan.dir, { recursive: true });
   const paths = new Map<string, string>();
   const wanted = new Map<string, string[]>();
-  for (const each of sessions.values()) {
-    if (each.path !== undefined || each.hash === undefined) continue;
+  for (const [id, each] of sessions) {
+    if (known.has(id) || each.path !== undefined || each.hash === undefined) continue;
     wanted.set(each.store, [...(wanted.get(each.store) ?? []), each.hash]);
   }
   let queries = 0;
@@ -4283,15 +4323,17 @@ async function writeProfiles<T extends TaskLine>(
     let failed = "no --context-session gives a written task its profile";
     if (task.source === "written") built = context?.built;
     else {
+      // A profile rebuilt already, when the session was a candidate, else one rebuilt now.
+      built = known.get(task.id);
       const session = sessions.get(task.id);
       const filePath =
         session?.path ??
         (session?.hash === undefined ? undefined : paths.get(`${session.store}\0${session.hash}`));
-      if (session === undefined || session.hash === undefined) {
+      if (built === undefined && (session === undefined || session.hash === undefined)) {
         failed = "the message it came from records no file hash (an older build-tasks found it)";
-      } else if (filePath === undefined) {
+      } else if (built === undefined && filePath === undefined) {
         failed = "sessions.sql gives no file of its hash";
-      } else {
+      } else if (built === undefined && session !== undefined && filePath !== undefined) {
         try {
           built = await pulledProfile(plan.run, session.store, filePath, spool, skill);
         } catch (error) {
@@ -4303,6 +4345,19 @@ async function writeProfiles<T extends TaskLine>(
       notes.push({ task: task.id, from: task.source, profile: null, failed });
       io.err(`build-tasks: ${task.id}: no profile: ${failed}`);
       out.push(task);
+      continue;
+    }
+    if (task.source === "session" && !built.listed) {
+      notes.push({
+        task: task.id,
+        from: "session",
+        profile: null,
+        dropped: SKILL_NOT_LISTED,
+        context: built.profile.context,
+      });
+      io.err(
+        `build-tasks: ${task.id}: dropped (${SKILL_NOT_LISTED}): its context ${built.profile.context} does not list ${skill}`
+      );
       continue;
     }
     const file = path.resolve(plan.dir, `${task.id}.json`);
@@ -4345,6 +4400,114 @@ function profilesRecord(
     tasks: written.notes,
     sessionQueries: written.queries,
   };
+}
+
+/** A candidate session the tasks reader is not offered, and why: its context does not list the
+ *  skill (`skill-not-listed`), or its profile cannot be rebuilt. */
+interface CandidateDrop {
+  readonly store: string;
+  readonly pathHash: string;
+  readonly reason: string;
+  readonly detail: string;
+  readonly context?: string;
+}
+
+/**
+ * The first user messages the tasks reader is offered, as build-tasks has always chosen them: the
+ * first message of each distinct text, at most TASK_MESSAGES spread evenly over them (`spread`).
+ * With `--profiles-out` (`plan`), each offered message's session is rebuilt (`pulledProfile`), and
+ * a message is offered only when its context lists the skill (`listsSkill`): one whose context
+ * does not, or whose profile cannot be rebuilt, is dropped and counted, and the next session of
+ * the same text is tried, then the next text, until TASK_MESSAGES are offered or the candidates
+ * run out (the reader then writes tasks, in the `--context-session` context). Returns the
+ * messages, how many distinct texts there were, the profiles rebuilt (by `<store>\0<hash>`), the
+ * drops, and the sessions.sql queries made for the paths.
+ */
+async function offeredMessages(
+  found: readonly FoundRow[],
+  plan: ProfilesPlan | undefined,
+  spool: string,
+  skill: string,
+  io: BuildIo
+): Promise<{
+  offered: (FoundRow & { id: string })[];
+  distinct: number;
+  built: Map<string, SessionProfile>;
+  drops: CandidateDrop[];
+  queries: number;
+}> {
+  const groups = new Map<string, FoundRow[]>();
+  for (const row of found) {
+    const key = row.text.trim();
+    if (key !== "") groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  const firsts = [...groups.values()].flatMap((rows) => rows.slice(0, 1));
+  const chosen = spread(firsts, TASK_MESSAGES);
+  const numbered = (rows: readonly FoundRow[]) =>
+    rows.map((row, n) => ({ id: `m${n + 1}`, ...row }));
+  const built = new Map<string, SessionProfile>();
+  const drops: CandidateDrop[] = [];
+  if (plan === undefined) {
+    return { offered: numbered(chosen), distinct: groups.size, built, drops, queries: 0 };
+  }
+  const paths = new Map<string, string>();
+  let queries = 0;
+  for (const store of new Set(found.map((row) => row.store))) {
+    const hashes = [
+      ...new Set(found.flatMap((row) => (row.store === store && row.hash ? [row.hash] : []))),
+    ];
+    if (hashes.length === 0) continue;
+    const resolved = await resolvePaths(plan.run.config.psqlCommand, store, hashes);
+    queries += resolved.queries;
+    for (const [hash, filePath] of resolved.paths) paths.set(`${store}\0${hash}`, filePath);
+  }
+  const accepted: FoundRow[] = [];
+  const order = [...chosen, ...firsts.filter((row) => !chosen.includes(row))];
+  for (const first of order) {
+    if (accepted.length === TASK_MESSAGES) break;
+    for (const row of groups.get(first.text.trim()) ?? []) {
+      const drop = (reason: string, detail: string, context?: string) => {
+        drops.push({
+          store: row.store,
+          pathHash: row.pathHash,
+          reason,
+          detail,
+          ...(context === undefined ? {} : { context }),
+        });
+        io.out(
+          `build-tasks: candidate ${row.store} ${row.pathHash.slice(0, 12)}: dropped (${reason}) ${detail}\n`
+        );
+      };
+      if (row.hash === undefined) {
+        drop("no-file-hash", "the message records no file hash (an older build-tasks found it)");
+        continue;
+      }
+      const key = `${row.store}\0${row.hash}`;
+      let profile = built.get(key);
+      if (profile === undefined) {
+        const filePath = paths.get(key);
+        if (filePath === undefined) {
+          drop("not-in-store", "sessions.sql gives no file of its hash");
+          continue;
+        }
+        try {
+          profile = await pulledProfile(plan.run, row.store, filePath, spool, skill);
+        } catch (error) {
+          drop("profile-failed", messageFor(error));
+          continue;
+        }
+        built.set(key, profile);
+      }
+      if (!profile.listed) {
+        const { context } = profile.profile;
+        drop(SKILL_NOT_LISTED, `its context ${context} does not list ${skill}`, context);
+        continue;
+      }
+      accepted.push(row);
+      break;
+    }
+  }
+  return { offered: numbered(accepted), distinct: groups.size, built, drops, queries };
 }
 
 /** `skill-cuts build-tasks`. */
@@ -4506,15 +4669,8 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       io.out(`build-tasks: ${store} ${day}: ${query.rows ?? "no"} rows\n`);
     }
   }
-  const distinct = new Map<string, FoundRow>();
-  for (const row of found) {
-    const key = row.text.trim();
-    if (key !== "" && !distinct.has(key)) distinct.set(key, row);
-  }
-  const offered = spread([...distinct.values()], TASK_MESSAGES).map((row, n) => ({
-    id: `m${n + 1}`,
-    ...row,
-  }));
+  const candidates = await offeredMessages(found, plan, spool, skill.name, io);
+  const { offered } = candidates;
   const picked = await runReader(
     "tasks",
     { skill, messages: offered.map(({ id, text }) => ({ id, text })) } satisfies TasksInput,
@@ -4551,23 +4707,26 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       pathHash: message.pathHash,
     };
   });
-  // Each task's profile, when asked for: a session task's rebuilt from its session, a written
-  // task's the context session's.
+  // Each task's profile, when asked for: a session task's the one its session was offered under,
+  // a written task's the context session's.
   const sessions = new Map<string, TaskSession>();
+  const known = new Map<string, SessionProfile>();
   for (const [n, task] of kept.entries()) {
     const message = task.from === "session" ? byId.get(task.messageId) : undefined;
-    if (message !== undefined)
-      sessions.set(`t${n + 1}`, { store: message.store, hash: message.hash });
+    if (message === undefined) continue;
+    sessions.set(`t${n + 1}`, { store: message.store, hash: message.hash });
+    const built = candidates.built.get(`${message.store}\0${message.hash}`);
+    if (built !== undefined) known.set(`t${n + 1}`, built);
   }
   const profiled =
     plan === undefined
       ? undefined
-      : await writeProfiles(plan, tasks, sessions, context, spool, skill.name, io);
+      : await writeProfiles(plan, tasks, sessions, known, context, spool, skill.name, io);
   if (spools !== undefined) rmSync(spools, { recursive: true, force: true });
   const lines = profiled?.tasks ?? tasks;
   writeWhole(given.out, lines.map((task) => `${JSON.stringify(task)}\n`).join(""));
   const count = (label: string, source: string) =>
-    tasks.filter((task) => task.label === label && task.source === source).length;
+    lines.filter((task) => task.label === label && task.source === source).length;
   writeWhole(
     summaryFile,
     `${JSON.stringify(
@@ -4581,7 +4740,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
         terms: searched,
         queries,
         messagesFound: found.length,
-        messagesDistinct: distinct.size,
+        messagesDistinct: candidates.distinct,
         messagesOffered: offered.length,
         tasks: kept.map((task, n) => ({
           id: `t${n + 1}`,
@@ -4592,6 +4751,20 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
         })),
         droppedNeed: dropped.length,
         dropped,
+        ...(plan === undefined
+          ? {}
+          : {
+              candidateDrops: {
+                counts: Object.fromEntries(
+                  [...new Set(candidates.drops.map((each) => each.reason))].map((reason) => [
+                    reason,
+                    candidates.drops.filter((each) => each.reason === reason).length,
+                  ])
+                ),
+                sessions: candidates.drops,
+                sessionQueries: candidates.queries,
+              },
+            }),
         counts: {
           need: { session: count("need", "session"), written: count("need", "written") },
           "near-miss": {
@@ -4610,8 +4783,9 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
   );
   // The messages found are in the tasks file where a task names one; the rest are not kept.
   rmSync(foundFile, { force: true });
+  const notListed = candidates.drops.filter((each) => each.reason === SKILL_NOT_LISTED).length;
   io.out(
-    `build-tasks: ${tasks.length} tasks (${tasks.filter((task) => task.source === "session").length} from sessions) from ${offered.length} first user messages offered, ${dropped.length} need tasks left out whose first step the skill does not govern; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
+    `build-tasks: ${lines.length} tasks (${lines.filter((task) => task.source === "session").length} from sessions) from ${offered.length} first user messages offered, ${dropped.length} need tasks left out whose first step the skill does not govern${plan === undefined ? "" : `, ${candidates.drops.length} candidate sessions dropped (${notListed} ${SKILL_NOT_LISTED})`}; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
   );
   return EXIT.ok;
 }
@@ -4836,8 +5010,12 @@ async function buildControlTasks(
       )}\n`
     );
 
-  /** The record of a session not tried yet, and its first request when it is a task. */
+  /** The record of a session not tried yet, and its first request when it is a task. With
+   *  `--profiles-out`, its profile is rebuilt from the spool it was pulled into (`built`, by
+   *  `<store>\0<hash>`), and a session whose context does not list the skill is dropped
+   *  (`skill-not-listed`), since its task would test nothing. */
   const texts = new Set([...found.values()].map((row) => row.text.trim()));
+  const built = new Map<string, SessionProfile>();
   const tryOne = async (
     candidate: (typeof order)[number]
   ): Promise<{ record: ControlRecord; request?: ControlFound }> => {
@@ -4889,6 +5067,27 @@ async function buildControlTasks(
     const scrubbedText = removeSecrets(text);
     if (texts.has(scrubbedText.text.trim())) {
       return no("same request", "an earlier session's first request is the same text");
+    }
+    if (plan !== undefined) {
+      let profile: SessionProfile;
+      try {
+        profile = await sessionProfile(
+          plan.run,
+          storeNamed(config, candidate.store),
+          transcriptPath,
+          spool,
+          skill.name
+        );
+      } catch (error) {
+        return no("profile-failed", messageFor(error));
+      }
+      if (!profile.listed) {
+        return no(
+          SKILL_NOT_LISTED,
+          `its context ${profile.profile.context} does not list ${skill.name}`
+        );
+      }
+      built.set(keyOf(candidate), profile);
     }
     texts.add(scrubbedText.text.trim());
     record.outcome = FIRST_REQUEST;
@@ -4986,8 +5185,10 @@ async function buildControlTasks(
     store: row.store,
     pathHash: row.pathHash,
   }));
-  // Each task's profile, when asked for: rebuilt from the session its request came from.
+  // Each task's profile, when asked for: the one its session was rebuilt with when it was tried,
+  // else rebuilt now (a session an earlier run tried).
   const sessionsOf = new Map<string, TaskSession>();
+  const known = new Map<string, SessionProfile>();
   for (const [n, row] of kept.entries()) {
     const candidate = order.find((each) => keyOf(each) === keyOf(row));
     sessionsOf.set(`t${n + 1}`, {
@@ -4995,11 +5196,13 @@ async function buildControlTasks(
       hash: row.hash,
       path: candidate?.path ?? paths.get(keyOf(row)),
     });
+    const profile = built.get(keyOf(row));
+    if (profile !== undefined) known.set(`t${n + 1}`, profile);
   }
   const profiled =
     plan === undefined
       ? undefined
-      : await writeProfiles(plan, tasks, sessionsOf, undefined, spool, skill.name, io);
+      : await writeProfiles(plan, tasks, sessionsOf, known, undefined, spool, skill.name, io);
   const lines = profiled?.tasks ?? tasks;
   writeWhole(given.out, lines.map((task) => `${JSON.stringify(task)}\n`).join(""));
   write(true, {
@@ -5011,6 +5214,7 @@ async function buildControlTasks(
     })),
     droppedNeed: dropped.length,
     dropped,
+    skillNotListed: sessions.filter((each) => each.outcome === SKILL_NOT_LISTED).length,
     ...(plan === undefined || profiled === undefined
       ? {}
       : { profiles: profilesRecord(plan, undefined, profiled) }),
@@ -5018,7 +5222,7 @@ async function buildControlTasks(
   rmSync(foundFile, { force: true });
   rmSync(spools, { recursive: true, force: true });
   io.out(
-    `build-tasks: ${tasks.length} control tasks from ${sessions.length} sessions tried, ${dropped.length} left out whose first step the skill does not govern; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
+    `build-tasks: ${lines.length} control tasks from ${sessions.length} sessions tried, ${dropped.length} left out whose first step the skill does not govern, ${sessions.filter((each) => each.outcome === SKILL_NOT_LISTED).length} whose context does not list the skill; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
   );
   if (tasks.length < max) {
     io.err(`build-tasks: the sessions gave ${tasks.length} control tasks, fewer than --max ${max}`);

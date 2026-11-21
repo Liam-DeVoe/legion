@@ -485,6 +485,11 @@ const SUBAGENT_PROMPT = [
   "<project-context>\nA made-up project.\n</project-context>",
 ];
 const SUBAGENT_TOOLS = ["read", "bash", "task"];
+
+/** The subagent session's transcript with a recorded prompt whose skill listing has no line of
+ *  alpha, so a load test of alpha in its context tests nothing. */
+const unlistedSubagentText = () =>
+  sessionText("subagent").replace("- alpha: Use for the alpha steps.\\n", "");
 /** The messages the third-window session adds between the skill's read and its step. */
 const FILLERS = 90;
 
@@ -922,12 +927,15 @@ beforeAll(() => {
     const store = files.store_a ?? {};
     store[controlPath(name)] = controlText(name);
   }
-  // The sessions the tasks query's rows come from: each is F1 as the good session has it, so its
-  // rebuilt profile is the good case's.
+  // The sessions the tasks query's rows come from: task-1's is a subagent whose recorded listing
+  // lacks alpha; each other is F1 as the good session has it, so its rebuilt profile is the good
+  // case's. The control session c-unlisted is one like task-1's.
+  const storeA = files.store_a ?? {};
   for (const row of TASK_ROWS) {
-    const store = files.store_a ?? {};
-    store[row.path] = sessionText("good");
+    storeA[row.path] =
+      row.path === "/sessions/task-1.jsonl" ? unlistedSubagentText() : sessionText("good");
   }
+  storeA[controlPath("c-unlisted")] = unlistedSubagentText();
   writeFileSync(
     path.join(setupDir, "store.json"),
     JSON.stringify({
@@ -2810,6 +2818,14 @@ test("build-tasks --profiles-out gives each session task build-cases' profile of
   const tasks = tasksOf(out);
   expect(tasks.filter((task) => task.source === "session")).toHaveLength(2);
   expect(tasks.filter((task) => task.source === "written")).toHaveLength(8);
+  // task-1's session, a subagent whose listing lacks alpha, is dropped and counted, and task-4's,
+  // the next session with the same first message, is offered and taken in its place.
+  expect(tasks[0]).toMatchObject({
+    text: "Give me the alpha checklist for the fixture project.",
+    source: "session",
+    pathHash: pathHash("/sessions/task-4.jsonl"),
+  });
+  expect(lines.join("")).toContain("1 candidate sessions dropped (1 skill-not-listed)");
   for (const task of tasks) expect(task.profile).toBe(path.resolve(dir, `${task.id}.json`));
   const good = caseLoadProfile(cases, "good");
   const written = caseLoadProfile(cases, "legion");
@@ -2831,12 +2847,59 @@ test("build-tasks --profiles-out gives each session task build-cases' profile of
   ).toEqual(
     tasks.map((task) => [task.id, task.source === "session" ? "session" : "context-session"])
   );
+  expect(summary.candidateDrops.counts).toEqual({ "skill-not-listed": 1 });
+  expect(summary.candidateDrops.sessions).toEqual([
+    {
+      store: "store_a",
+      pathHash: pathHash("/sessions/task-1.jsonl"),
+      reason: "skill-not-listed",
+      detail: "its context subagent:task does not list alpha",
+      context: "subagent:task",
+    },
+  ]);
   expect(existsSync(`${out}.spool`)).toBe(false);
 }, 120_000);
 
+test("build-tasks refuses a --context-session whose rebuilt context does not list the skill, with exit 2, before any reader call", async () => {
+  const out = path.join(scratch, "profiles-unlisted-context", "tasks.jsonl");
+  const unlisted = fileHash("/sessions/task-1.jsonl");
+  const from = recorder.requests.length;
+  const lines: string[] = [];
+  const code = await main(
+    [
+      "build-tasks",
+      "--config",
+      config,
+      "--key-file",
+      keyFile,
+      "--skill",
+      old,
+      "--store",
+      "store_a",
+      "--out",
+      out,
+      "--profiles-out",
+      path.join(scratch, "profiles-unlisted-context"),
+      "--copies",
+      copiesDir,
+      "--count",
+      countDir,
+      "--context-session",
+      `store_a:${unlisted}`,
+    ],
+    io(lines)
+  );
+  expect(code).toBe(EXIT.refused);
+  expect(lines.join("\n")).toContain(
+    `--context-session store_a:${unlisted}: its rebuilt context (subagent:task) does not list alpha`
+  );
+  expect(recorder.requests.length).toBe(from);
+  expect(existsSync(out)).toBe(false);
+}, 60_000);
+
 test("build-tasks --first-read --profiles-out gives each control task build-cases' profile of its session, less the tested skill", async () => {
   const cases = await profileCases();
-  const names = Object.keys(CONTROL_SESSIONS);
+  const names = [...Object.keys(CONTROL_SESSIONS), "c-unlisted"];
   const sessions = controlSessionsFile("profiles-control.jsonl", names, ["c-two"]);
   const dir = path.join(scratch, "profiles-control");
   const out = path.join(scratch, "profiles-control-tasks", "tasks.jsonl");
@@ -2852,10 +2915,20 @@ test("build-tasks --first-read --profiles-out gives each control task build-case
   expect(await main(args, io([]))).toBe(EXIT.ok);
   const tasks = tasksOf(out);
   expect(tasks).toHaveLength(3);
+  // c-unlisted's first reply reads alpha, but its recorded listing lacks it: dropped and counted.
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect(summary.skillNotListed).toBe(1);
+  expect(
+    (summary.sessions as { hash: string; outcome: string; detail?: string }[]).find(
+      (each) => each.hash === fileHash(controlPath("c-unlisted"))
+    )
+  ).toMatchObject({
+    outcome: "skill-not-listed",
+    detail: "its context subagent:task does not list alpha",
+  });
   // Each control session is F1 with its first request replaced, so its profile is the good case's.
   const good = caseLoadProfile(cases, "good");
   expect(profilesOf(out)).toEqual(Object.fromEntries(tasks.map((task) => [String(task.id), good])));
-  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
   expect(summary.profiles.contextSession).toBeNull();
   expect(existsSync(`${out}.spool`)).toBe(false);
 }, 120_000);
