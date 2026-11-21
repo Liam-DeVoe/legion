@@ -49,6 +49,7 @@ export interface ClaimCapability {
  * A phase worker's operations on the daemon's role-local workflow surface, which every host's
  * `legion` tool serves: pi-legion's (`packages/pi-legion/src/tools.ts`, beside the architect's and
  * the controller's operations) and claude-envoy's MCP tool (`packages/claude-envoy/src/legion-tool.ts`).
+ * `review_verdict` is the reviewer's alone, which `executePhaseOp` holds for every host.
  */
 export const PHASE_OPS = [
   "read_record",
@@ -56,6 +57,7 @@ export const PHASE_OPS = [
   "handoff_complete",
   "request_backward_move",
   "ready_for_update",
+  "review_verdict",
 ] as const;
 export type PhaseOp = (typeof PHASE_OPS)[number];
 
@@ -234,6 +236,20 @@ export const PhaseOpArguments = z.discriminatedUnion(
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
     // resolves the branch head it reports.
     operation("ready_for_update", { round: requiredString("ready_for_update", "round") }),
+    // The reviewer's verdict on a head its pull request moved to past review
+    // (`LegionReviewVerdictRequest`): its two words, the head, the tester's pass the verdict
+    // carries there where it states one, and its summary. Who may send it is the executor's to
+    // hold, by the claim's role.
+    operation("review_verdict", {
+      verdict: z.enum(LEGION_REVIEWER_VERDICTS, {
+        error: `review_verdict requires verdict ${LEGION_REVIEWER_VERDICTS.join(" or ")}`,
+      }),
+      commit: requiredString("review_verdict", "commit").describe(
+        "review_verdict's head: the pull request's current head, the commit your verdict is on"
+      ),
+      testedCommit: requiredString("review_verdict", "testedCommit").optional(),
+      summary: requiredString("review_verdict", "summary"),
+    }),
   ],
   {
     error: (issue) =>
@@ -251,44 +267,74 @@ export type PhaseOpField = Exclude<KeysOf<z.input<typeof PhaseOpArguments>>, "op
  * The fields of `PhaseOpArguments` as a host declares them in its `legion` tool's one object
  * schema, where `op` chooses the operation: each field once, optional, built with the host's Zod
  * (`zod`: Oh My Pi's `pi.zod`, whose converter reads only schemas its own Zod built, or
- * claude-envoy's), keyed by name so a host lays them out in the order its schema lists them. A
- * field of a kind this does not map throws, so a new field is mapped on purpose.
+ * claude-envoy's), keyed by name so a host lays them out in the order its schema lists them, and
+ * described as its op describes it. A field more than one op takes is one field: a string stays a
+ * string, and an enum takes every value any of those ops takes (`verdict` is a completion's five
+ * words, two of which are review_verdict's). A field of a kind this does not map throws, and so do
+ * a field two ops declare as two kinds, a field of another kind two ops take, and a field two ops
+ * describe two ways, so a new field is mapped on purpose.
  */
 export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType> {
   const api = zodSchemaApi(zod);
-  const fields: Record<string, z.ZodType> = {};
+  // Each op's declaration of each field, unwrapped of its optional, with the description it gives
+  // on either side of that optional, in the order the ops take them.
+  const declarations = new Map<string, { field: z.ZodType; description: string | undefined }[]>();
   for (const option of PhaseOpArguments.options) {
     for (const [name, declared] of Object.entries(option.shape)) {
       if (name === "op") continue;
       const field = declared instanceof z.ZodOptional ? declared.unwrap() : declared;
-      if (field instanceof z.ZodString) fields[name] = api.string().optional();
-      else if (field instanceof z.ZodNumber) {
-        // zod's own readings of the field's checks: whole or not, and its bounds, a side no check
-        // bounds read as an infinity, which the host's number is given no bound for.
-        const { isInt, minValue, maxValue } = field;
-        fields[name] = api
-          .number({
-            int: isInt,
-            ...(minValue !== null && Number.isFinite(minValue) ? { min: minValue } : {}),
-            ...(maxValue !== null && Number.isFinite(maxValue) ? { max: maxValue } : {}),
-          })
-          .optional();
-      } else if (field instanceof z.ZodBoolean) fields[name] = api.boolean().optional();
-      else if (field instanceof z.ZodEnum) {
-        const [first, ...rest] = field.options.map(String);
-        if (first === undefined) throw new Error(`phase op field ${name} has no values`);
-        fields[name] = api.enum([first, ...rest]).optional();
-      } else throw new Error(`phase op field ${name} has a kind phaseOpParameters does not map`);
+      const declaration = { field, description: declared.description ?? field.description };
+      const seen = declarations.get(name);
+      if (seen === undefined) declarations.set(name, [declaration]);
+      else seen.push(declaration);
     }
+  }
+  const fields: Record<string, z.ZodType> = {};
+  for (const [name, declaredBy] of declarations) {
+    const declared = declaredBy.map((each) => each.field);
+    const [field] = declared;
+    if (declared.some((other) => other.constructor !== field?.constructor)) {
+      throw new Error(`phase op field ${name} is of two kinds in two ops`);
+    }
+    if (declared.length > 1 && !(field instanceof z.ZodString || field instanceof z.ZodEnum)) {
+      throw new Error(
+        `phase op field ${name} is taken by two ops, and only a string or an enum is`
+      );
+    }
+    let node: z.ZodType;
+    if (field instanceof z.ZodString) node = api.string();
+    else if (field instanceof z.ZodNumber) {
+      // zod's own readings of the field's checks: whole or not, and its bounds, a side no check
+      // bounds read as an infinity, which the host's number is given no bound for.
+      const { isInt, minValue, maxValue } = field;
+      node = api.number({
+        int: isInt,
+        ...(minValue !== null && Number.isFinite(minValue) ? { min: minValue } : {}),
+        ...(maxValue !== null && Number.isFinite(maxValue) ? { max: maxValue } : {}),
+      });
+    } else if (field instanceof z.ZodBoolean) node = api.boolean();
+    else if (field instanceof z.ZodEnum) {
+      const values = declared.flatMap((each) =>
+        each instanceof z.ZodEnum ? each.options.map(String) : []
+      );
+      const [first, ...rest] = [...new Set(values)];
+      if (first === undefined) throw new Error(`phase op field ${name} has no values`);
+      node = api.enum([first, ...rest]);
+    } else throw new Error(`phase op field ${name} has a kind phaseOpParameters does not map`);
+    const descriptions = new Set(declaredBy.flatMap((each) => each.description ?? []));
+    const [description, ...others] = [...descriptions];
+    if (others.length > 0)
+      throw new Error(`phase op field ${name} is described two ways in two ops`);
+    fields[name] = (description === undefined ? node : node.describe(description)).optional();
   }
   // Built from the options' shapes, whose keys are exactly `PhaseOpField`.
   const byField = fields as Record<PhaseOpField, z.ZodType>;
   return byField;
 }
 
-/** The `legion` tool's sentences on `read_record`, `read_release_records` and
- * `request_backward_move`, which a host whose tool states them passes as `before` and `after`
- * (`legionToolDescription`). */
+/** The `legion` tool's sentences on `read_record`, `read_release_records`,
+ * `request_backward_move` and `review_verdict`, which a host whose tool states them passes as
+ * `before` and `after` (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
   readRecord:
     "read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. " +
@@ -306,6 +352,12 @@ export const PHASE_OP_SENTENCES = {
   requestBackwardMove:
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. ",
+  reviewVerdict:
+    "review_verdict is the reviewer's alone: when the head of the pull request moves while its issue stands past its review " +
+    "(accepting, retro or merging), it sends the verdict on the new head, `verdict` approve or changes, `commit` that head, " +
+    "`testedCommit` where the verdict carries the tester's pass to it, and `summary`. It writes no handoff and ends no phase. The " +
+    "daemon takes it only from the reviewer whose completion ended the issue's review round (VERDICT_CALLER_FORBIDDEN), only past " +
+    "review (VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). ",
 } as const;
 
 /**
@@ -326,8 +378,8 @@ export const STALE_ENTRY_INSTRUCTION =
  * then `handoff_complete`'s contract, then `after`, then where a question for another role goes,
  * `envoyPublish` being the host's name for Envoy's publish tool. `before` and `after` are whole
  * sentences, each ending in a space: the host's sentences on its other operations, and on
- * `read_record`, `read_release_records` and `request_backward_move` when it states them
- * (`PHASE_OP_SENTENCES`).
+ * `read_record`, `read_release_records`, `request_backward_move` and `review_verdict` when it
+ * states them (`PHASE_OP_SENTENCES`).
  */
 export function legionToolDescription(host: {
   readonly envoyPublish: string;
@@ -438,14 +490,15 @@ const ROOT_COMPLETION_REFUSAL =
  * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, of the issue it
  * names or of the claim's own when it names none, the window's records and their counts for
  * `read_release_records`, the daemon's answer for `handoff_complete`, `{}` for
- * `request_backward_move`, and `{}` for `ready_for_update`, or `{ note }` when its branch-head
- * lookup failed. A refusal throws before any write, minting nothing and posting nothing: each
- * problem `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named
- * first, then a root architect's completion,
- * then each problem with the operation's own fields in the order it takes them, and a completion's
- * `plan_rating` or `plan_reason` without the other; then what the record decides (a check
- * report's verdict, its claim's role against the check's own, its `wake_at`, `pending` or
- * `wake_at` on a phase completion, the issue a completion or a move names), then a refused
+ * `request_backward_move`, `{}` for `review_verdict`, and `{}` for `ready_for_update`, or
+ * `{ note }` when its branch-head lookup failed. A refusal throws before any write, minting
+ * nothing and posting nothing: each problem `PhaseOpArguments` finds, joined by `; `, a field the
+ * operation does not take named first, then an operation this session's claim may not run (a root
+ * architect's completion, and a `review_verdict` from any claim but a reviewer's, whichever host
+ * runs it), then each problem with the operation's own fields in the order it takes them, and a
+ * completion's `plan_rating` or `plan_reason` without the other; then what the record decides
+ * (a check report's verdict, its claim's role against the check's own, its `wake_at`, `pending`
+ * or `wake_at` on a phase completion, the issue a completion or a move names), then a refused
  * handoff report (`findHandoffReport`). A daemon refusal throws its code and sentence.
  *
  * A completion is a phase's or a look's report on the closed issue's production check. The daemon
@@ -469,17 +522,17 @@ export async function executePhaseOp(
   const issues = parsed.success ? [] : parsed.error.issues;
   const unknownFields = issues.filter((issue) => issue.code === "unrecognized_keys");
   const fieldProblems = issues.filter((issue) => issue.code !== "unrecognized_keys");
-  const rootCompletion =
-    typeof input === "object" &&
-    input !== null &&
-    "op" in input &&
-    input.op === "handoff_complete" &&
-    claim.role === "architect" &&
-    claim.issue === claim.tree;
-  if (rootCompletion) {
-    throw new Error(
-      [...unknownFields.map((issue) => issue.message), ROOT_COMPLETION_REFUSAL].join("; ")
-    );
+  // The op the call names, as a phase op, so the names below are checked against `PhaseOp`.
+  const sent = typeof input === "object" && input !== null && "op" in input ? input.op : undefined;
+  const op = typeof sent === "string" && isPhaseOp(sent) ? sent : undefined;
+  const unavailable =
+    op === "handoff_complete" && claim.role === "architect" && claim.issue === claim.tree
+      ? ROOT_COMPLETION_REFUSAL
+      : op === "review_verdict" && claim.role !== "reviewer"
+        ? `review_verdict is the reviewer's alone, and this session is the ${claim.role}'s`
+        : undefined;
+  if (unavailable !== undefined) {
+    throw new Error([...unknownFields.map((issue) => issue.message), unavailable].join("; "));
   }
   if (!parsed.success) {
     throw new Error([...unknownFields, ...fieldProblems].map((issue) => issue.message).join("; "));
@@ -547,6 +600,20 @@ export async function executePhaseOp(
       });
       return {};
     }
+    case "review_verdict":
+      // The reviewer's verdict on a head its pull request moved to past review: no completion and
+      // no handoff, so no record is read and no report looked up, and it ends no phase. Whether
+      // this reviewer ended the round, the issue stands past review and the head is current is the
+      // daemon's to hold (VERDICT_CALLER_FORBIDDEN, VERDICT_NOT_PAST_REVIEW,
+      // VERDICT_HEAD_NOT_CURRENT). Not retried: each request is a verdict of its own.
+      await daemon.reviewVerdict({
+        grantId: await mintClaimGrant(daemon, claim),
+        verdict: args.verdict,
+        commit: args.commit,
+        summary: args.summary,
+        ...(args.testedCommit === undefined ? {} : { testedCommit: args.testedCommit }),
+      });
+      return {};
     case "ready_for_update": {
       // The claim authenticates the signal, as it does `claims/ready`: no grant is minted. The
       // round is the agent's own word, read from the update message it answers, and the daemon

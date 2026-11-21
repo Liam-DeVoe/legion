@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test"
 import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
-import type { LegionRole } from "@legion/contracts"
+import { LEGION_ROLES, type LegionRole } from "@legion/contracts"
 import type { LegionPhase } from "@legion/contracts/legion-api"
 import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client"
-import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops"
+import { type ClaimCapability, PHASE_OPS } from "@legion/pi-shared/legion-phase-ops"
 import { stateAtPhase } from "@legion/pi-shared/test/daemon-state"
 import { executeLegionTool, legionToolDefinition } from "../src/legion-tool"
 
@@ -87,6 +87,7 @@ async function daemon(state?: unknown): Promise<{
     "/legion/v1/state": state ?? (await daemonFixture("state.json")),
     "/legion/v1/grants": await daemonFixture("grant.json"),
     "/legion/v1/handoff/complete": await daemonFixture("handoff-complete.json"),
+    "/legion/v1/review-verdict": await daemonFixture("review-verdict.json"),
     "/legion/v1/phase/backward": {},
     "/legion/v1/claims/release-records": RELEASE_RECORDS,
   }
@@ -118,6 +119,11 @@ const noBranchHead = async (): Promise<never> => {
   throw new Error("no branch-head lookup expected")
 }
 
+/** The handoff report of a tool that must never complete a phase. */
+const noHandoffReport = async (): Promise<never> => {
+  throw new Error("no handoff report expected")
+}
+
 const grantRequest = {
   method: "POST",
   path: "/legion/v1/grants",
@@ -129,9 +135,13 @@ const grantRequest = {
   },
 }
 
-test("declares the five phase-worker operations under one op, and names the Envoy publish tool as Claude Code shows it", () => {
+// The phase ops are defined once, in `PHASE_OPS`, and every host's `legion` tool serves that list:
+// this MCP tool and pi-legion's (`packages/pi-legion/src/tools.test.ts` holds the same of it), so
+// the two list the same phase ops, review_verdict among them.
+test("declares the phase ops, PHASE_OPS, under one op, and names the Envoy publish tool as Claude Code shows it", () => {
   const definition = legionToolDefinition()
   expect(definition.name).toBe("legion")
+  expect(definition.inputSchema.properties?.["op"]).toMatchObject({ enum: [...PHASE_OPS] })
   expect(definition.inputSchema).toMatchObject({
     properties: {
       op: {
@@ -141,12 +151,19 @@ test("declares the five phase-worker operations under one op, and names the Envo
           "handoff_complete",
           "request_backward_move",
           "ready_for_update",
+          "review_verdict",
         ],
       },
       issue: { type: "string" },
       since: { type: "string" },
       summary: { type: "string" },
       verdict: { enum: ["pass", "pending", "fail", "approve", "changes"] },
+      testedCommit: { type: "string" },
+      commit: {
+        type: "string",
+        description:
+          "review_verdict's head: the pull request's current head, the commit your verdict is on",
+      },
       wake_at: { type: "string" },
       plan_rating: { type: "integer", minimum: 1, maximum: 5 },
       plan_reason: { type: "string" },
@@ -159,7 +176,7 @@ test("declares the five phase-worker operations under one op, and names the Envo
     "this tool cannot spawn workers. read_record returns the record of `issue` from the daemon's state, your own issue when you leave `issue` out. A held issue names in `heldFrom` the phase the hold took it out of. A failed claim carries `failure`: the `cause` word for what failed it, the `detail` sentence beside that word, `at`, when it failed, and `attempts`, the four counts it failed with. A todo written on a held root releases the hold and starts that phase again, as the architect's retry_or_escalate with retry does. read_release_records returns this deployment's idle-release records from `since` (an RFC 3339 time) on, read with this session's own claim: every release, resume and hold the daemon recorded, and over them the counts of releases, of the releases among them that suspended no role, of resumes by wake kind and of holds by reason, the pod-hours released, the share of releases woken again within ten minutes, and the median, 90th percentile and maximum seconds from a wake to the woken role's first turn. A wake that a project pause held is counted as `heldByPause` and left out of those seconds, since its wait measures the pause. A release that suspended no role is woken by nothing, so the pod-hours released and the woken share count the releases that suspended a role alone. handoff_complete",
   )
   expect(definition.description).toContain(
-    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. What a later phase needs",
+    "complete again. ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the daemon takes your answer for that round alone. Push every commit you want kept to the issue branch first. Then let each subagent and each background job that you started finish, or stop it. Commit and push what it made before you answer. The daemon replaces the pod and its disk when the round ends. The round ends at the moment the message names. It can end earlier, once every role has answered, no role is in a turn and each role's last report names no running subagent or background job. No answer delays that moment, and the end of a turn is no answer. If a subagent or a background job finishes after you answer, commit and push what it made. Then call ready_for_update again with the same round. The call ends no phase. The daemon holds your next task until your process comes back on the new pod, in this same session. request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. The architect that owns an issue in accepting moves it, named by `issue`, back to implementing or testing. That move counts a review round. review_verdict is the reviewer's alone: when the head of the pull request moves while its issue stands past its review (accepting, retro or merging), it sends the verdict on the new head, `verdict` approve or changes, `commit` that head, `testedCommit` where the verdict carries the tester's pass to it, and `summary`. It writes no handoff and ends no phase. The daemon takes it only from the reviewer whose completion ended the issue's review round (VERDICT_CALLER_FORBIDDEN), only past review (VERDICT_NOT_PAST_REVIEW) and only on the pull request's current head (VERDICT_HEAD_NOT_CURRENT). What a later phase needs",
   )
   expect(definition.description).toContain("with mcp__legion__envoy_publish.")
 })
@@ -294,9 +311,7 @@ test("read_record answers the issue's record, and request_backward_move posts wi
   const runtime = {
     daemon: client,
     claim: () => implementer,
-    handoffReport: async (): Promise<never> => {
-      throw new Error("no handoff report expected")
-    },
+    handoffReport: noHandoffReport,
     branchHead: noBranchHead,
   }
   const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
@@ -330,9 +345,7 @@ test("read_release_records posts the claim's own credential and counts the windo
   const runtime = {
     daemon: client,
     claim: () => implementer,
-    handoffReport: async (): Promise<never> => {
-      throw new Error("no handoff report expected")
-    },
+    handoffReport: noHandoffReport,
     branchHead: noBranchHead,
   }
 
@@ -405,7 +418,7 @@ test("refuses before the claim registered, an operation a phase worker has not, 
   await expect(
     executeLegionTool(runtime, { op: "set_status", issue: "LEGION-208" }),
   ).rejects.toThrow(
-    "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update",
+    "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, review_verdict",
   )
   await expect(
     executeLegionTool(runtime, { op: "read_record", issue: "LEGION-208", summary: "x" }),
@@ -414,4 +427,71 @@ test("refuses before the claim registered, an operation a phase worker has not, 
     "handoff_complete requires summary",
   )
   expect(requests).toEqual([])
+})
+
+// A reviewer on Claude Code sends its verdict on a head that moved past review through this
+// tool's review_verdict, the shared phase op: a fresh grant with the verdict, the head and the
+// tester's pass the verdict carries there, posted to `POST /legion/v1/review-verdict`. Every other
+// claim, an implementer's among them, is refused it by its role before any request.
+test("review_verdict posts a reviewer's verdict, commit and testedCommit, and is refused to every other session before any request", async () => {
+  const head = "e".repeat(40)
+  const tested = "7".repeat(40)
+  const call = {
+    op: "review_verdict",
+    verdict: "approve",
+    commit: head,
+    testedCommit: tested,
+    summary: "The retro commit changes no code that runs.",
+  }
+  const reviewer: ClaimCapability = {
+    ...implementer,
+    sessionID: "ses_reviewer",
+    role: "reviewer",
+    claimToken: "legion-legion-legion-208-reviewer",
+  }
+  const { client, requests } = await daemon()
+  await expect(
+    executeLegionTool(
+      {
+        daemon: client,
+        claim: () => reviewer,
+        handoffReport: noHandoffReport,
+        branchHead: noBranchHead,
+      },
+      call,
+    ),
+  ).resolves.toEqual({})
+  expect(requests).toEqual([
+    { ...grantRequest, body: { ...grantRequest.body, sessionId: "ses_reviewer" } },
+    {
+      method: "POST",
+      path: "/legion/v1/review-verdict",
+      body: {
+        grantId: "grant-for-one-command",
+        verdict: "approve",
+        commit: head,
+        testedCommit: tested,
+        summary: "The retro commit changes no code that runs.",
+      },
+    },
+  ])
+
+  // Every other claim is refused before any request: the stub records none of them.
+  const others = await daemon()
+  for (const role of LEGION_ROLES.filter((each) => each !== "reviewer")) {
+    await expect(
+      executeLegionTool(
+        {
+          daemon: others.client,
+          claim: () => ({ ...implementer, role }),
+          handoffReport: noHandoffReport,
+          branchHead: noBranchHead,
+        },
+        call,
+      ),
+    ).rejects.toThrow(
+      new Error(`review_verdict is the reviewer's alone, and this session is the ${role}'s`),
+    )
+  }
+  expect(others.requests).toEqual([])
 })

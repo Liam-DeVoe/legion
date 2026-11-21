@@ -52,7 +52,7 @@ func reviewerVerdictOf(sent string, contract int) (verdict, refusal string) {
 // or changes, on Commit, the head its issue's pull request moved to past review, with
 // TestedCommit, the commit of the tester's pass the verdict carries to that head where it states
 // that no commit since changes code that runs, and Summary, its two sentences. The `legion` tool's
-// review_verdict sends it (packages/pi-legion/src/tools.ts), and contracts'
+// review_verdict sends it (packages/pi-shared/src/legion-phase-ops.ts), and contracts'
 // LegionReviewVerdictRequest mirrors it.
 type ReviewVerdictRequest struct {
 	GrantID      string `json:"grantId"`
