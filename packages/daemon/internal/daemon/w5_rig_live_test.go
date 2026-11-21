@@ -5,7 +5,7 @@
 // the shared rig (rig_live_test.go and its two siblings):
 //
 //   - the daemon pointed at the rig's scratch Dispatch (rigOptions.dispatch), on a project key
-//     Dispatch accepts, with that project's repository mapping and the issues in place first, as
+//     Dispatch accepts, with the project's default repository and the issues in place first, as
 //     RIG.md says to point it;
 //   - one scripted model stand-in per claim (w5Standin, scriptedStandin's shape with a rule that
 //     holds a request and then answers it with a tool call), so each claim does what the check
@@ -195,8 +195,10 @@ func (w *w5Rig) switchProject() {
 
 // ---- the scratch Dispatch ------------------------------------------------------------------------
 
-// pointAtScratchDispatch makes the project, its repository mapping and every issue in the scratch
-// Dispatch, each labelled for Legion and in progress, and points the daemon at it.
+// pointAtScratchDispatch makes the project and every issue in the scratch Dispatch, each labelled
+// for Legion and in progress, sets liveRepo as the project's default repository, which Dispatch
+// resolves each issue to (the daemon reads no repository mapping, only that resolution), and
+// points the daemon at it.
 func (w *w5Rig) pointAtScratchDispatch(claims []w5Claim) {
 	t := w.t
 	base := w.scratch.base

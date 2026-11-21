@@ -122,4 +122,5 @@ The shim gets the real `agent-secrets` built from the checkout under test, the s
 `rigOptions{dispatch: true}` starts `r.scratch` (`startScratchDispatchOn`).
 It is a real Dispatch on a database of its own, and it publishes its events on the rig's NATS as Dispatch's user.
 The daemon still reads the stand-in until the proof sets `r.cfg.DispatchURL` and `r.cfg.DispatchTokenFile` to it, before `r.boot()`.
-Point the daemon at it only with the project and the repository mapping that the daemon's boot reads already in place.
+Point the daemon at it only once the project and its issues are in place, with the repository the issues resolve to set as the project's default (`PUT /api/v1/settings/repo-projects/<repo>` with `default: true`).
+The daemon reads no repository mapping: it takes each issue's repository from Dispatch's resolution of that issue (`ResolvedRepo`), its own, else its nearest ancestor's, else the project's default.

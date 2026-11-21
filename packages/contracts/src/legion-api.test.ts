@@ -2664,7 +2664,7 @@ test("a reader at contract 152 parses the repositories block served below 202", 
         ? Object.fromEntries(
             Object.entries(value)
               .filter(([key]) => key !== "unreachable")
-              .map(([key, entry]) => [key, withoutUnreachable(entry)]),
+              .map(([key, entry]) => [key, withoutUnreachable(entry)])
           )
         : value;
   expect(JSON.stringify(rest)).toContain('"unreachable"');
