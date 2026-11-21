@@ -26,7 +26,8 @@ import (
 // outside the airlock it could read that channel; it is granted as before while no private
 // project names one; a fence the broker cannot read decides nothing (503); a fence answer aged
 // past projectaccess.CacheTTL is not decided on but asked again; and a grant made before a private
-// project named a channel is not released after it.
+// project named a channel is neither released after it nor answered again to the session's next
+// request, which is denied naming why.
 func TestAProjectChannelsSecretLeavesTheAirlockToNoCredentialWhilePrivateChannelsAreNamed(t *testing.T) {
 	if (proxyrules.Rules{}).Digest(slackToken) != "" {
 		t.Fatalf("empty rules give %s an airlock entry; this test needs it to have none", slackToken)
@@ -78,7 +79,7 @@ func TestAProjectChannelsSecretLeavesTheAirlockToNoCredentialWhilePrivateChannel
 		}
 	})
 
-	t.Run("a grant made before a private project named a channel is not released after it", func(t *testing.T) {
+	t.Run("a grant made before a private project named a channel is neither released nor reused after it", func(t *testing.T) {
 		b := newOutsideBroker(t, noChannels())
 		request, err := b.create(t)
 		if err != nil || request.GrantID == nil {
@@ -88,6 +89,14 @@ func TestAProjectChannelsSecretLeavesTheAirlockToNoCredentialWhilePrivateChannel
 		if release, err := b.m.Values(t.Context(), *request.GrantID, b.enr, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) {
 			t.Fatalf("Values(%s) once PRIV names a channel = %+v, %v; want ErrGrantNotLive", slackToken, release, err)
 		}
+		// The session asks again, as its command does after a release it was refused: the grant
+		// its release refuses is no grant to answer it, and the new request is denied naming why.
+		again, err := b.create(t)
+		if err == nil && again.GrantID != nil && *again.GrantID == *request.GrantID {
+			t.Fatalf("the session's next request for %s once PRIV names a channel = state %q, the grant %s again; want denied naming %s, not the grant its release refuses",
+				slackToken, again.State, *again.GrantID, policy.ReasonProjectChannelsNeedAirlock)
+		}
+		deniedFor(t, "the session's next request for "+slackToken+" once PRIV names a channel", again, err, slackToken, policy.ReasonProjectChannelsNeedAirlock)
 	})
 }
 

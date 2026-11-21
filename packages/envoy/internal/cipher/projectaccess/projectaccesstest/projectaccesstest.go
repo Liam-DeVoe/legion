@@ -32,7 +32,7 @@ const (
 )
 
 // Row is one project as Dispatch holds it: whether it is public or private, its owner, the
-// people its access list names, and the repositories Dispatch maps to it.
+// people its access list names, and the Slack channels its owner named.
 type Row struct {
 	// Visibility is "public" or "private".
 	Visibility string
@@ -40,8 +40,6 @@ type Row struct {
 	Owner string
 	// Listed are the lowercase logins the project's access list names.
 	Listed []string
-	// Repositories are the "owner/name" repositories Dispatch maps to the project.
-	Repositories []string
 	// SlackChannels are the Slack channel ids the project's owner named. A real Dispatch always
 	// carries the key, empty when the project names none, so this stand-in does too — unless
 	// OmitSlackChannels, which is a Dispatch from before dispatch://INFRA-3862's #t-a-31 and
@@ -95,7 +93,7 @@ func NewServer(t testing.TB, rows map[string]Row, people map[string]string) *Ser
 	}
 	s := &Server{Token: "dispatch-access-" + hex.EncodeToString(bearer[:]), rows: map[string]Row{}, people: map[string]string{}}
 	for key, row := range rows {
-		row.Listed, row.Repositories = slices.Clone(row.Listed), slices.Clone(row.Repositories)
+		row.Listed = slices.Clone(row.Listed)
 		row.SlackChannels = slices.Clone(row.SlackChannels)
 		s.rows[key] = row
 	}
@@ -146,7 +144,7 @@ func (s *Server) PrivateProjectsCalls() int {
 // project's visibility or access list does, so a test can change Dispatch under a client whose
 // cache already holds the earlier answer.
 func (s *Server) SetRow(key string, row Row) {
-	row.Listed, row.Repositories = slices.Clone(row.Listed), slices.Clone(row.Repositories)
+	row.Listed = slices.Clone(row.Listed)
 	row.SlackChannels = slices.Clone(row.SlackChannels)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -197,18 +195,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"code": "PROJECT_NOT_FOUND", "error": "no such project"})
 			return
 		}
-		repositories := row.Repositories
-		if repositories == nil {
-			repositories = []string{}
-		}
 		answer := map[string]any{
-			"project":      key,
-			"visibility":   row.Visibility,
-			"owner":        row.Owner,
-			"person":       person,
-			"member_kind":  s.kind(person),
-			"visible":      s.visible(row, person),
-			"repositories": repositories,
+			"project":     key,
+			"visibility":  row.Visibility,
+			"owner":       row.Owner,
+			"person":      person,
+			"member_kind": s.kind(person),
+			"visible":     s.visible(row, person),
 		}
 		if !row.OmitSlackChannels {
 			answer["slack_channels"] = channelsOf(row)

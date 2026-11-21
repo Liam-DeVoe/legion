@@ -60,7 +60,7 @@ const CacheTTL = 30 * time.Second
 const requestTimeout = 10 * time.Second
 
 // maxAnswerBytes caps the answer read from Dispatch about one project or one person. Such an
-// answer is a handful of short fields and a list of repositories, so anything larger is not
+// answer is a handful of short fields and a list of Slack channel ids, so anything larger is not
 // Dispatch's and is refused rather than held.
 const maxAnswerBytes = 64 << 10
 
@@ -158,13 +158,10 @@ type Answer struct {
 	// Visible is whether the person may see the project, or, for a question naming no person,
 	// whether it is public.
 	Visible bool `json:"visible"`
-	// Repositories is every "owner/name" repository Dispatch maps to the project, renames
-	// included, nil when the answer carries none.
-	Repositories []string `json:"repositories"`
 	// SlackChannels is every Slack channel id the project's owner named, sorted, and empty for a
-	// project that names none (dispatch://INFRA-3862's #t-a-31). SlackChannelsPresent says
-	// whether the answer carried the key at all: a Dispatch from before that task carries none,
-	// and the broker fails closed on it rather than reading it as "no limit" (requests'
+	// project that names none. SlackChannelsPresent says whether the answer carried the key at
+	// all: a Dispatch from before the project's owner could name channels carries none, and the
+	// broker fails closed on it rather than reading it as "no limit" (requests'
 	// AirlockSecret.Limited), so the two deploy in either order safely. Decoded through a
 	// pointer, which is the one way a missing key and an empty list read differently.
 	SlackChannels []string `json:"-"`
@@ -236,6 +233,11 @@ type PrivateProject struct {
 type PrivateLister interface {
 	// PrivateProjects is every private project, from the cache while it is younger than CacheTTL.
 	PrivateProjects(ctx context.Context) ([]PrivateProject, error)
+	// PrivateProjectsAsOf is PrivateProjects with the time its list's question was asked, the
+	// kept list's own while it comes from the cache. A caller that decides on the list ages it
+	// by that time as it ages any other answer (Stale), so an implementation answers the time of
+	// the list it answers, and a wrapper of one forwards it: a zero time reads as never stale.
+	PrivateProjectsAsOf(ctx context.Context) ([]PrivateProject, time.Time, error)
 	// PrivateProjectsFresh is every private project as Dispatch answers now: it neither reads nor
 	// writes the cache, and keeps no last good answer to fall back on.
 	PrivateProjectsFresh(ctx context.Context) ([]PrivateProject, error)
@@ -335,9 +337,9 @@ func (c *Client) Access(ctx context.Context, project, person string) (Answer, er
 	}
 	asked := c.now()
 	// The answer's own fields, and slack_channels beside them through a pointer, in one decode: a
-	// Dispatch from before dispatch://INFRA-3862's #t-a-31 carries no such key, and "no key" must
-	// read differently from "an empty list", which a []string alone could not say. Answer's own
-	// SlackChannels is json:"-", so the key reaches this field and no other.
+	// Dispatch from before the project's owner could name channels carries no such key, and "no
+	// key" must read differently from "an empty list", which a []string alone could not say.
+	// Answer's own SlackChannels is json:"-", so the key reaches this field and no other.
 	var wire struct {
 		Answer
 		SlackChannels          *[]string `json:"slack_channels"`
@@ -463,8 +465,7 @@ func (c *Client) PrivateProjects(ctx context.Context) ([]PrivateProject, error) 
 // PrivateProjectsAsOf is PrivateProjects, answering beside the list when its question was asked:
 // the kept list's own time, or this call's, read before the question was sent. A caller that
 // decides on the list ages it as it ages any other answer (Stale), so a list kept 29 seconds is
-// not decided on 2 seconds later. It is a method of *Client alone, beside PrivateLister, so that
-// interface and every implementation of it are unchanged.
+// not decided on 2 seconds later.
 func (c *Client) PrivateProjectsAsOf(ctx context.Context) ([]PrivateProject, time.Time, error) {
 	c.mu.Lock()
 	held := c.private

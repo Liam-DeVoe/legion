@@ -291,10 +291,10 @@ func (m *Machine) credentialFacts(ctx context.Context, e enrollmentRow, names []
 }
 
 // ChannelsMissingMessage is the log line for a private project whose Dispatch answered no
-// slack_channels key at all, a Dispatch from before dispatch://INFRA-3862's #t-a-31: the broker
-// limits that project's credentials to no channel rather than read the missing key as no limit,
-// so Dispatch and the broker deploy in either order safely.
-const ChannelsMissingMessage = "a private project's access answer carries no slack_channels; its credentials post to no channel until Dispatch has dispatch://INFRA-3862's #t-a-31"
+// slack_channels key at all, a Dispatch from before its projects' owners could name channels: the
+// broker limits that project's credentials to no channel rather than read the missing key as no
+// limit, so Dispatch and the broker deploy in either order safely.
+const ChannelsMissingMessage = "a private project's access answer carries no slack_channels; its credentials post to no channel until Dispatch answers the project's Slack channels"
 
 // logThrottle is when each key's log line was last written, so a line a release or a listing
 // would repeat on every call is written once per key per projectaccess.CacheTTL, the age after
@@ -447,18 +447,11 @@ const PrivateChannelsUnreadMessage = "the broker could not read which Slack chan
 
 // privateFence is the public fence one AirlockValues call reads: every Slack channel id a private
 // project's owner named, sorted and each once, whether the broker could not read them, and when
-// the list it read was asked (zero when it read none, or its lister keeps no clock).
+// the list it read was asked (zero when it read none).
 type privateFence struct {
 	excluded []string
 	unread   bool
 	asked    time.Time
-}
-
-// privateListAsOf is a PrivateLister that also answers when the list it answers was asked:
-// *projectaccess.Client.PrivateProjectsAsOf. A lister without it is a source that keeps no clock,
-// whose answer is never stale (projectaccess.Stale).
-type privateListAsOf interface {
-	PrivateProjectsAsOf(ctx context.Context) ([]projectaccess.PrivateProject, time.Time, error)
 }
 
 // privateChannels is the public fence: the channels a credential that names no private project
@@ -469,8 +462,8 @@ type privateListAsOf interface {
 // deployment with no private project is served as before (R9). A list that fails, or that names a
 // project with no slack_channels key, is unread: the proxy refuses every request on the name until
 // a read answers, rather than take a list it could not read as one naming no channel. So is a
-// broker that declares a private project and holds no PrivateList, which its settings refuse at
-// boot.
+// machine that declares a private project and holds no PrivateList, which cipherd never builds:
+// config.Load refuses BROKER_PRIVATE_PROJECTS without BROKER_PROJECT_ACCESS_URL at boot.
 func (m *Machine) privateChannels(ctx context.Context) privateFence {
 	declared := m.PrivateDeclared != nil && len(m.PrivateDeclared()) > 0
 	if m.PrivateList == nil {
@@ -483,14 +476,7 @@ func (m *Machine) privateChannels(ctx context.Context) privateFence {
 	if !declared && !m.PrivateList.SawPrivate() {
 		return privateFence{}
 	}
-	var projects []projectaccess.PrivateProject
-	var asked time.Time
-	var err error
-	if timed, ok := m.PrivateList.(privateListAsOf); ok {
-		projects, asked, err = timed.PrivateProjectsAsOf(ctx)
-	} else {
-		projects, err = m.PrivateList.PrivateProjects(ctx)
-	}
+	projects, asked, err := m.PrivateList.PrivateProjectsAsOf(ctx)
 	if err != nil {
 		m.logPrivateUnread("", err)
 		return privateFence{unread: true}
