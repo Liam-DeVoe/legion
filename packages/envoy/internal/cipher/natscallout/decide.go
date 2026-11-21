@@ -44,7 +44,10 @@ type Deps struct {
 	// holds no service to its projects, and refuses every entry that is not an all-projects one.
 	Exchange func(account string) (person string, projects []string, ok bool)
 	// Access is Dispatch's answer about one project (projectaccess). A decision never calls it:
-	// the service asks it in the background and decides on the answers it holds (heldAccess).
+	// the service asks it in the background and decides on the answers it holds (heldAccess). Its
+	// Answer must carry AskedAt through as projectaccess.Client set it: a refusal of the broker's
+	// token clears only on an answer asked after it, and a zero AskedAt counts as asked now, so a
+	// wrapper that builds a new Answer without it would let a kept answer clear the refusal.
 	Access func(ctx context.Context, project, person string) (projectaccess.Answer, error)
 	// Now is time.Now unless a test replaces it.
 	Now func() time.Time
