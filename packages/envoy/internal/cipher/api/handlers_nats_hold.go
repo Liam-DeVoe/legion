@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,18 +187,36 @@ func holdSignedAt(text string) (time.Time, bool) {
 	return at.UTC(), true
 }
 
-// readNATSHold answers the hold row, 404 no_row while there is none.
+// readNATSHold answers the hold row, 404 no_row while there is none, and 409 below_floor for a row
+// below this broker's floor of it, or another row at the floor's gen (rowFloor), which the
+// operator's client reads as unknown. A read that meets the floor is made once more first, since a
+// move that committed while it read moves the floor past what it read.
 func (s *server) readNATSHold(w http.ResponseWriter, r *http.Request, _ string) {
-	row, found, err := s.holdStore().Row(r.Context())
-	switch {
-	case err != nil:
-		writeUnavailable(w, "DATABASE_UNAVAILABLE", "read the hold row", err)
-		return
-	case !found:
-		writeHoldRefusal(w, http.StatusNotFound, "no_row", "there is no hold row; the operator restores it through POST /v1/nats-hold/restore", nil)
-		return
+	for attempt := 1; ; attempt++ {
+		row, found, err := s.holdStore().Row(r.Context())
+		switch {
+		case err != nil:
+			writeUnavailable(w, "DATABASE_UNAVAILABLE", "read the hold row", err)
+			return
+		case !found:
+			writeHoldRefusal(w, http.StatusNotFound, "no_row", "there is no hold row; the operator restores it through POST /v1/nats-hold/restore", nil)
+			return
+		}
+		refusal := s.holdRowFloor.serve(row, s.verifiedRow(row))
+		if refusal == "" {
+			writeJSON(w, http.StatusOK, holdRowAnswer(row))
+			return
+		}
+		if attempt == 2 {
+			writeHoldRefusal(w, http.StatusConflict, "below_floor", refusal, nil)
+			return
+		}
 	}
-	writeJSON(w, http.StatusOK, holdRowAnswer(row))
+}
+
+// verifiedRow reports whether a key of BROKER_NATS_HOLD_SIGNING_KEYS signed row's lines.
+func (s *server) verifiedRow(row natshold.Row) bool {
+	return signedrecord.Verify(s.deps.NATSHold.Keys, row.Sig, signedrecord.HoldRow(row.Gen, row.Phase, row.HoldID, row.SignedAt)) == nil
 }
 
 // holdMoveBody is PUT /v1/nats-hold's body.
@@ -216,7 +235,10 @@ type holdMoveBody struct {
 	Sig string `json:"sig"`
 }
 
-// moveNATSHold moves the hold row, once its signature verifies over the gen it will store.
+// moveNATSHold moves the hold row, once its signature verifies over the gen it will store, and
+// only from a gen at or above this broker's floor of the row (rowFloor): a move from below it is
+// 409 gen_mismatch, carrying the row the table holds only when that row passes the floor, since
+// a move from below it is stale or names a row put back that the floor has moved past.
 func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator string) {
 	var body holdMoveBody
 	if !readHoldBody(w, r, &body) {
@@ -230,6 +252,14 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 	gen := uint64(body.ExpectedGen) + 1
 	if err := signedrecord.Verify(s.deps.NATSHold.Keys, body.Sig, signedrecord.HoldRow(gen, body.Phase, body.HoldID, signedAt)); err != nil {
 		writeHoldRefusal(w, http.StatusBadRequest, "bad_signature", "no key of BROKER_NATS_HOLD_SIGNING_KEYS signed the row at the gen it would store", nil)
+		return
+	}
+	if floor, below := s.holdRowFloor.below(uint64(body.ExpectedGen)); below {
+		conflict := &natshold.Conflict{Err: natshold.ErrGenMismatch}
+		if current, found, err := s.holdStore().Row(r.Context()); err == nil && found && s.holdRowFloor.serve(current, s.verifiedRow(current)) == "" {
+			conflict.Current = &current
+		}
+		writeHoldRefusal(w, http.StatusConflict, "gen_mismatch", fmt.Sprintf("this broker has served or written the hold row at gen %d, above the gen %d the move names", floor, body.ExpectedGen), conflict)
 		return
 	}
 	row, err := s.holdStore().Move(r.Context(), uint64(body.ExpectedGen), natshold.Row{
@@ -257,6 +287,7 @@ func (s *server) moveNATSHold(w http.ResponseWriter, r *http.Request, operator s
 		writeInternal(w, "move the hold row", err)
 		return
 	}
+	s.holdRowFloor.raise(row)
 	writeJSON(w, http.StatusOK, holdRowAnswer(row))
 }
 
@@ -314,6 +345,7 @@ func (s *server) restoreNATSHold(w http.ResponseWriter, r *http.Request, operato
 		writeInternal(w, "restore the hold row", err)
 		return
 	}
+	s.holdRowFloor.raise(row)
 	writeJSON(w, http.StatusOK, holdRowAnswer(row))
 }
 
@@ -585,6 +617,66 @@ func (f *recordFloors) serve(holdID, kind string, records []natshold.Record, del
 		}
 	}
 	return ""
+}
+
+// rowFloor is a broker process's floor of the hold row: the highest gen of a verified row the
+// routes have served or written, and the SHA-256 of that row's signed lines. A database writer
+// other than the operator cannot write a row that verifies, but can put back an older one the
+// operator signed, which does: a prepare row put back mid-hold would lead the operator to sign a
+// release from it. So GET serves no row below the floor, nor another row at the floor's gen (409
+// below_floor, which the operator's client reads as unknown), and a move whose expected_gen is
+// below the floor is 409 gen_mismatch. Only a row whose signature verifies raises the floor.
+//
+// The residual, the records' floor's (recordFloors) and the auth service's (natscallout's
+// holdView): each broker replica keeps its own floor, for as long as its process lives, so a
+// replica that starts again, or one that has not served or written the row since a newer gen,
+// serves a row put back as it would the genuine one. A row restored below a replica's floor, after
+// a database writer deleted log rows, reads as unknown on that replica until it restarts.
+//
+// Safe for concurrent use.
+type rowFloor struct {
+	mu     sync.Mutex
+	gen    uint64
+	digest [sha256.Size]byte
+}
+
+// rowDigest is the SHA-256 of row's signed lines (signedrecord.HoldRow), which two rows at one gen
+// share only when they are the same row.
+func rowDigest(row natshold.Row) [sha256.Size]byte {
+	return sha256.Sum256([]byte(strings.Join(signedrecord.HoldRow(row.Gen, row.Phase, row.HoldID, row.SignedAt), "\n")))
+}
+
+// serve checks one read of the row against the floor, and answers why it reads as unknown, or ""
+// and raises the floor to the row when verified is true.
+func (f *rowFloor) serve(row natshold.Row, verified bool) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch {
+	case row.Gen < f.gen:
+		return fmt.Sprintf("the hold row is at gen %d, below gen %d, which this broker has served or written: an older row put back, which reads as unknown", row.Gen, f.gen)
+	case row.Gen == f.gen && f.gen != 0 && rowDigest(row) != f.digest:
+		return fmt.Sprintf("the hold row at gen %d is not the row this broker served or wrote at that gen: another row put in its place, which reads as unknown", row.Gen)
+	}
+	if verified && row.Gen > f.gen {
+		f.gen, f.digest = row.Gen, rowDigest(row)
+	}
+	return ""
+}
+
+// raise moves the floor up to row, a row the routes stored over a signature they verified.
+func (f *rowFloor) raise(row natshold.Row) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if row.Gen > f.gen {
+		f.gen, f.digest = row.Gen, rowDigest(row)
+	}
+}
+
+// below answers the floor, and whether expectedGen, the gen a move names, is below it.
+func (f *rowFloor) below(expectedGen uint64) (uint64, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gen, expectedGen < f.gen
 }
 
 // deleteNATSHoldCohort deletes the cohort record the query names (?hold_id=, ?kind=cohort, ?key=,

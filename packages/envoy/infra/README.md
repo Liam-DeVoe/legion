@@ -4104,14 +4104,22 @@ done prove and then the reconcile over every store, trusting nothing the killed 
 The residual: on this path clients reach the restored and proven hub before its census, until a
 `streams-census` hold runs clean.
 
-**A hold record a broker replica has seen.** Each broker replica keeps a floor of each hold record
-it has written or served (`recordFloors` in `internal/cipher/api`): an older signed record put
-back, or a record gone that no route deleted, reads as unknown, and the command that reads it stops.
-The one record the routes delete, the cohort that `hold abort` from `prepare` deletes, goes with the
+**The hold row and records a broker replica has seen.** Each broker replica keeps a floor of the
+hold row (`rowFloor` in `internal/cipher/api`): the highest verified gen it has served or written,
+with the digest of that row's signed lines. A row put back below that gen, or another row at it,
+reads as unknown, and a move from a gen below it is refused, so the operator never signs a move
+from a row a hold has moved past (a prepare row put back mid-hold, say). It keeps a floor of each
+hold record it has written or served too (`recordFloors`): an older signed record put back, or a
+record gone that no route deleted, reads as unknown, and the command that reads it stops. The one
+record the routes delete, the cohort that `hold abort` from `prepare` deletes, goes with the
 operator's signed delete kept beside the records in the same statement
 (`nats_hold_record_deletes`), so every replica reads it as deleted and the abort's rerun passes on
 whichever replica serves it. A cohort gone with no delete that verifies, or with one signed over an
-earlier gen than a replica saw, reads as unknown on each replica that saw it.
+earlier gen than a replica saw, reads as unknown on each replica that saw it. The residual: every
+floor is per replica and lasts as long as its process, so a replica that starts again, or one that
+has not served the row or a record since its newer gen, serves an older signed one put back as it
+would the genuine one; production runs two replicas. A floor both replicas share, kept outside the
+database, is the fix if that acceptance changes.
 
 **Restoring a lost hold row.** The route stores a restored row only at one above the highest gen
 its log holds, which no command can read: a restore at any other gen is refused naming that gen
@@ -4123,8 +4131,9 @@ after a hold ended, or before the first, is restored `released`: take the gen th
 `RestoreGenError` names and run `RestoreRow` with it, `released` and no hold id (or the ended
 hold's), which sends it once at that gen. The route stores a `released` row only while the log's
 latest entry is `released`, and refuses it `bad_transition` after a `held` or `prepare` entry, so no
-restore frees every client while a command of a hold may run. Both checks read the log, which is
-the broker database's: a database writer who empties it lets `Bootstrap` write gen 1 again.
+restore frees every client while a command of a hold may run. The route's checks read the log,
+which is the broker database's: a database writer who empties it lets `Bootstrap` write gen 1
+again.
 
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the

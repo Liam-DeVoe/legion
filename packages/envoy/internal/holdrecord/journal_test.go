@@ -961,4 +961,5 @@ func TestTheHoldJournal(t *testing.T) {
 	wayOutRows(t)
 	answerRows(t)
 	replicaRows(t)
+	rowFloorRows(t)
 }

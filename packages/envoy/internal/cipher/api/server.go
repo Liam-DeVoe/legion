@@ -197,9 +197,11 @@ type server struct {
 	// route of the approval page share.
 	tokenLimiter   *ratelimit.Keyed
 	accountLimiter *ratelimit.Keyed
-	// holdFloors is this process's floor of each NATS writer hold record (recordFloors), kept
-	// for as long as the routes Register mounted serve.
-	holdFloors *recordFloors
+	// holdFloors is this process's floor of each NATS writer hold record (recordFloors), and
+	// holdRowFloor its floor of the hold row (rowFloor), each kept for as long as the routes
+	// Register mounted serve.
+	holdFloors   *recordFloors
+	holdRowFloor *rowFloor
 	// repositoryCalls counts each edge listener's calls of GET /v1/project-repositories still
 	// waiting on Dispatch, at most maxRepositoryCallsInFlight each.
 	repositoryCalls *callsInFlight
@@ -254,6 +256,7 @@ func Register(mux *http.ServeMux, deps Deps) {
 		tokenLimiter:    ratelimit.NewKeyed(token),
 		accountLimiter:  ratelimit.NewKeyed(account),
 		holdFloors:      newRecordFloors(),
+		holdRowFloor:    &rowFloor{},
 		repositoryCalls: newCallsInFlight(maxRepositoryCallsInFlight),
 	}
 	for _, route := range routes() {

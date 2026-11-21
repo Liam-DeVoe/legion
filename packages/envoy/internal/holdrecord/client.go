@@ -191,10 +191,15 @@ func Barrier(ctx context.Context, js jetstream.JetStream, bucket, holdID string)
 	return nil
 }
 
-// Row reads and verifies the row, through `GET /v1/nats-hold`.
+// Row reads and verifies the row, through `GET /v1/nats-hold`. A row the broker answers below its
+// floor (an older signed row put back, or another row at the gen it served) is ErrUnknown.
 func (c *Client) Row(ctx context.Context) (Row, error) {
 	var answer rowWire
 	if err := c.call(ctx, http.MethodGet, holdPath, nil, nil, &answer); err != nil {
+		var refusal *RouteError
+		if errors.As(err, &refusal) && refusal.Code == codeBelowFloor {
+			return Row{}, wrap(ErrUnknown, "the broker answers the hold row below its floor: an older row put back, or another row at the gen it served")
+		}
 		return Row{}, err
 	}
 	return c.verifyRow(answer)

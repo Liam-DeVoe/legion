@@ -591,17 +591,18 @@ func routes() []apiRoute {
 		{http.MethodGet, "/healthz", public((*server).healthz)},
 		// Read the NATS writer hold's row: its gen, phase, hold id, reason, who wrote it and when,
 		// and the time the operator signed it with its signature, which the operator's commands
-		// verify before they act on it; 404 no_row while there is none.
+		// verify before they act on it; 404 no_row while there is none, and 409 below_floor for a
+		// row below this replica's floor of it, or another row at the floor's gen (rowFloor).
 		{http.MethodGet, "/v1/nats-hold", operatorAuth((*server).readNATSHold)},
 		// Move the writer hold's row, in one statement with its log row, from the gen the body
 		// names to one above it: released to prepare with a new hold id, never empty and never one
 		// an earlier hold held; prepare to held with the same hold id; prepare or held to released
 		// with the same hold id, which the row keeps. The body is signed by a key of
 		// BROKER_NATS_HOLD_SIGNING_KEYS over the gen it will store (400 bad_signature otherwise).
-		// A gen the row no longer holds is 409 gen_mismatch, a hold id not the row's 409
-		// hold_mismatch, each with the row, and any other move 400 bad_transition. The move commits
-		// before it answers, so every decision of the auth service that starts after the answer
-		// reads the new phase.
+		// A gen below this replica's floor of the row is 409 gen_mismatch, a gen the row no longer
+		// holds 409 gen_mismatch and a hold id not the row's 409 hold_mismatch, each with the row,
+		// and any other move 400 bad_transition. The move commits before it answers, so every
+		// decision of the auth service that starts after the answer reads the new phase.
 		{http.MethodPut, "/v1/nats-hold", operatorAuth((*server).moveNATSHold)},
 		// Write the writer hold's row while there is none, the first row or one a database admin
 		// deleted: held with a hold id, or released, which only while the log is empty or its
