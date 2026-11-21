@@ -2,6 +2,7 @@ package distinct
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // references is the 10,943 distinct bare references (#10 to #10952) a 64 KiB pull request body of
@@ -54,21 +56,39 @@ func TestAddingEachValueThreeTimesKeepsItOnce(t *testing.T) {
 // the two blocks after its lookup for each value, and one more block for each call.
 const stepsAValue = 4
 
+// childMargin is how long before the test binary's deadline the counting child must have ended:
+// the time the row needs to read its profile and fail by name before Go's alarm panics the binary.
+const childMargin = 30 * time.Second
+
 // TestAddingCostsAConstantNumberOfStepsAValue counts the work of adding values rather than timing
 // it. It runs TestAddingEachValueThreeTimesKeepsItOnce alone in a child `go test` built with
 // coverage of this package and of slices (-coverpkg, -covermode=atomic), and reads the child's
-// profile: each statement block of distinct.go and of slices/*.go, with how many times it ran.
-// Adding 32,829 values may run at most stepsAValue blocks for each. A scan of the list for each
-// value runs a block of its own loop, or of slices.Index's, once for each value already held, about
-// 179 million more blocks for this workload, and fails here by name. The row needs the go command;
-// a child that cannot build or a profile without the blocks it reads is a failure, never a pass.
+// profile: each statement block of every file of this package and of slices/*.go, with how many
+// times it ran. Adding 32,829 values may run at most stepsAValue blocks for each. A scan of the
+// list for each value, in any file of this package or through slices, runs a block of its loop once
+// for each value already held, about 179 million more blocks for this workload, and fails here by
+// name. The row needs the go command, and the child must end childMargin before the test binary's
+// deadline (it gets the rest as its own -timeout); a child that cannot build, does not end in time,
+// or writes a profile without the blocks the row reads is a failure, never a pass.
 func TestAddingCostsAConstantNumberOfStepsAValue(t *testing.T) {
 	const added = 3 * 10943
 	self := reflect.TypeFor[Strings]().PkgPath()
 	profile := filepath.Join(t.TempDir(), "cover.out")
-	child := exec.Command("go", "test", "-count=1", "-run", "^TestAddingEachValueThreeTimesKeepsItOnce$",
+	ctx, timeout := context.Background(), "0"
+	if deadline, ok := t.Deadline(); ok {
+		end := deadline.Add(-childMargin)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, end)
+		defer cancel()
+		timeout = max(time.Until(end), time.Millisecond).String()
+	}
+	child := exec.CommandContext(ctx, "go", "test", "-count=1", "-timeout="+timeout, "-run", "^TestAddingEachValueThreeTimesKeepsItOnce$",
 		"-coverpkg=slices,"+self, "-covermode=atomic", "-coverprofile="+profile, ".")
-	if out, err := child.CombinedOutput(); err != nil {
+	out, err := child.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("UNKNOWN: the counting child go test did not end %s before the test binary's deadline, so nothing was counted: %v\n%s", childMargin, ctx.Err(), out)
+	}
+	if err != nil {
 		t.Fatalf("UNKNOWN: the counting child go test failed, so nothing was counted: %v\n%s", err, out)
 	}
 	file, err := os.Open(profile)
@@ -89,7 +109,7 @@ func TestAddingCostsAConstantNumberOfStepsAValue(t *testing.T) {
 			continue
 		}
 		switch {
-		case strings.HasPrefix(fields[0], self+"/distinct.go:"):
+		case strings.HasPrefix(fields[0], self+"/"):
 			ownBlocks++
 			own += count
 		case strings.HasPrefix(fields[0], "slices/"):
@@ -100,11 +120,11 @@ func TestAddingCostsAConstantNumberOfStepsAValue(t *testing.T) {
 	if err := lines.Err(); err != nil {
 		t.Fatalf("UNKNOWN: reading the child's profile: %v", err)
 	}
-	t.Logf("adding %d values ran %d blocks of distinct.go (%d blocks in the profile) and %d of slices (%d blocks in the profile)", added, own, ownBlocks, inSlices, slicesBlocks)
+	t.Logf("adding %d values ran %d blocks of this package (%d blocks in the profile) and %d of slices (%d blocks in the profile)", added, own, ownBlocks, inSlices, slicesBlocks)
 	if ownBlocks == 0 || slicesBlocks == 0 || own == 0 {
-		t.Fatalf("UNKNOWN: the child's profile holds %d blocks of distinct.go, which ran %d times, and %d blocks of slices: a count that saw no block measured nothing", ownBlocks, own, slicesBlocks)
+		t.Fatalf("UNKNOWN: the child's profile holds %d blocks of this package, which ran %d times, and %d blocks of slices: a count that saw no block measured nothing", ownBlocks, own, slicesBlocks)
 	}
 	if most := stepsAValue * added; own+inSlices > most {
-		t.Errorf("adding %d values ran %d blocks of distinct.go and %d of slices, want at most %d (%d a value): adding a value scans the values already held", added, own, inSlices, most, stepsAValue)
+		t.Errorf("adding %d values ran %d blocks of this package and %d of slices, want at most %d (%d a value): adding a value scans the values already held", added, own, inSlices, most, stepsAValue)
 	}
 }
