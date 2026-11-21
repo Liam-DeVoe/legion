@@ -294,10 +294,17 @@ type Config struct {
 	// BROKER_AIRLOCK_TEST_RESOLVE: whitespace-separated <host>=<address> entries, each an IP
 	// address the airlock proxy reads that host as having and dials it at, in place of what
 	// the resolver answers. It is how a client that resolves a real name of its own - az, the
-	// AWS client - reaches a stand-in service through the proxy. A host named twice is
-	// refused. For the broker's local stack alone: a production start, which is one with
-	// BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
+	// AWS client - reaches a stand-in service through the proxy. An entry may name a port
+	// beside the address, <host>=<address>:<port> ([<address>]:<port> for IPv6), which the
+	// proxy dials in place of the port the CONNECT named (AirlockTestDialPorts), so a stand-in
+	// on loopback needs no privileged port 443. A host named twice is refused, and so is an
+	// address given two ports. For the broker's local stack alone: a production start, which is
+	// one with BROKER_FAKE_SECRETS_FILE unset, is refused naming it.
 	AirlockTestResolve map[string]netip.Addr
+	// AirlockTestDialPorts is the port each address of BROKER_AIRLOCK_TEST_RESOLVE whose entry
+	// named one is dialled at, whatever port the CONNECT named; an address whose entry named no
+	// port is not in it.
+	AirlockTestDialPorts map[netip.Addr]uint16
 	// BROKER_AIRLOCK_TEST_KEEP_VALUES: with it true, the airlock proxy keeps a grant's values
 	// across the reread of one of its names and past the five-minute margin before a minted
 	// token's expiry, rather than reading and minting again. It is the negative control of the
@@ -1732,30 +1739,52 @@ func parseAirlockTestDialAllow(value string) ([]string, error) {
 }
 
 // parseAirlockTestResolve reads BROKER_AIRLOCK_TEST_RESOLVE's whitespace-separated
-// <host>=<address> entries. It refuses, naming the entry: one not of that form, one whose
-// address is no IP address, and a host named twice, since a host has one address here and the
-// second would silently replace the first.
-func parseAirlockTestResolve(value string) (map[string]netip.Addr, error) {
+// <host>=<address> and <host>=<address>:<port> entries, and answers each host's address and each
+// address's port where its entry named one. It refuses, naming the entry: one not of that form,
+// one whose address is no IP address, one whose port is 0, and a host named twice, since a host
+// has one address here and the second would silently replace the first; and, naming the address,
+// an address given two ports, since the dial to it could not tell which one it means.
+func parseAirlockTestResolve(value string) (map[string]netip.Addr, map[netip.Addr]uint16, error) {
 	const setting = "BROKER_AIRLOCK_TEST_RESOLVE"
 	var hosts map[string]netip.Addr
+	var ports map[netip.Addr]uint16
 	for _, text := range strings.Fields(value) {
 		host, address, ok := strings.Cut(text, "=")
 		if !ok || host == "" {
-			return nil, fmt.Errorf("%s must be <host>=<address> entries, got %q", setting, text)
+			return nil, nil, fmt.Errorf("%s must be <host>=<address> entries, got %q", setting, text)
 		}
+		var port uint16
 		addr, err := netip.ParseAddr(address)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %q names no IP address", setting, text)
+			withPort, portErr := netip.ParseAddrPort(address)
+			if portErr != nil {
+				return nil, nil, fmt.Errorf("%s: %q names no IP address", setting, text)
+			}
+			if withPort.Port() == 0 {
+				return nil, nil, fmt.Errorf("%s: %q names the port 0, which nothing listens on", setting, text)
+			}
+			addr, port = withPort.Addr(), withPort.Port()
 		}
 		if _, twice := hosts[host]; twice {
-			return nil, fmt.Errorf("%s names the host %s twice; a host resolves to one address here, so name it once", setting, host)
+			return nil, nil, fmt.Errorf("%s names the host %s twice; a host resolves to one address here, so name it once", setting, host)
 		}
 		if hosts == nil {
 			hosts = map[string]netip.Addr{}
 		}
-		hosts[host] = netaddr.Canonical(addr)
+		addr = netaddr.Canonical(addr)
+		hosts[host] = addr
+		if port == 0 {
+			continue
+		}
+		if other, named := ports[addr]; named && other != port {
+			return nil, nil, fmt.Errorf("%s gives the address %s the ports %d and %d; a dial to it could not tell which one it means", setting, addr, other, port)
+		}
+		if ports == nil {
+			ports = map[netip.Addr]uint16{}
+		}
+		ports[addr] = port
 	}
-	return hosts, nil
+	return hosts, ports, nil
 }
 
 // parseAirlockClusterRanges reads BROKER_AIRLOCK_CLUSTER_RANGES' comma-separated CIDR prefixes, in
@@ -2109,7 +2138,7 @@ func Load(getenv func(string) string) (Config, error) {
 	if cfg.AirlockTestDialAllow, testSwitchErr = parseAirlockTestDialAllow(getenv("BROKER_AIRLOCK_TEST_DIAL_ALLOW")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
-	if cfg.AirlockTestResolve, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
+	if cfg.AirlockTestResolve, cfg.AirlockTestDialPorts, testSwitchErr = parseAirlockTestResolve(getenv("BROKER_AIRLOCK_TEST_RESOLVE")); testSwitchErr != nil {
 		return Config{}, testSwitchErr
 	}
 	if cfg.AirlockTestKeepValues, testSwitchErr = testOnlySwitch("BROKER_AIRLOCK_TEST_KEEP_VALUES", getenv("BROKER_AIRLOCK_TEST_KEEP_VALUES")); testSwitchErr != nil {

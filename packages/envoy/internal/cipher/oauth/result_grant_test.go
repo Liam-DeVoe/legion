@@ -260,3 +260,36 @@ func TestTheGrantLifetimeIsTheShorterOfFifteenMinutesAndTheAccessLifetime(t *tes
 		}
 	}
 }
+
+// TestAMintedResultsTokenIsNoSubjectTokenForAnotherExchange: the results token a broker pod mints
+// for a result grant (MintResultToken) is live, bound to the pod's key and to the grant's run, and
+// ends with the grant; presented as the subject token of another exchange it mints nothing, since
+// the library refuses a client's own token, so the capability the airlock holds never turns into
+// a token of another session.
+func TestAMintedResultsTokenIsNoSubjectTokenForAnotherExchange(t *testing.T) {
+	f := newResultsFixture(t, func(*oauth.Config) {})
+	run := newKey(t)
+	grant := f.grantOf(t, f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "7")), run))
+	pod := newKey(t)
+	minted, err := f.provider.MintResultToken(context.Background(), grant, thumbprint(t, pod))
+	if err != nil {
+		t.Fatalf("MintResultToken: %v", err)
+	}
+	answer := f.introspected(t, minted)
+	if !answer.Active || answer.Scope != oauthwire.ScopeResults || answer.Thumbprint != thumbprint(t, pod) || answer.Session != grant.Session ||
+		answer.CI == nil || answer.CI.CheckRunID != "97" || answer.ExpiresAt != grant.ExpiresAt.Unix() {
+		t.Fatalf("the minted token introspects as %+v (run %+v); want it live, scope %s, bound to the pod's key, the grant's session and run, ending at %v", answer, answer.CI, oauthwire.ScopeResults, grant.ExpiresAt)
+	}
+	before := f.count(t, "oauth_access_tokens")
+	status, body := f.exchange(t, exchangeForm(minted, oauthwire.SubjectTokenTypeAccessToken, "a-session-of-its-own"), pod)
+	if status != http.StatusBadRequest || body["access_token"] != nil {
+		t.Fatalf("an exchange of a minted results token = %d %v, want 400 and no access token", status, body)
+	}
+	const ownToken = "Clients are not allowed to perform a token exchange on their own tokens."
+	if hint, _ := body["error_description"].(string); body["error"] != "invalid_grant" || !strings.Contains(hint, ownToken) {
+		t.Errorf("the refusal reads %v %q, which is not the library's refusal of a client's own token %q", body["error"], hint, ownToken)
+	}
+	if after := f.count(t, "oauth_access_tokens"); after != before {
+		t.Fatalf("access tokens after the refused exchange = %d, want the %d there were", after, before)
+	}
+}

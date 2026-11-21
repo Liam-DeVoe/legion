@@ -730,12 +730,23 @@ func main() {
 	// its AirlockConnection and AirlockValues - and the authority built at the top of main.
 	var proxyServer *proxy.Server
 	if started.AirlockListener != nil {
+		// The pod's own DPoP key: made here, held in this process alone, and the key every
+		// results token this pod mints for a CI run's result grant is bound to, so a token is
+		// of no use without this pod. Its thumbprint is logged once, never the key, so every
+		// results token's binding can be read back to a pod of the broker.
+		podKey, err := proof.NewKey()
+		fatal(err)
+		podThumbprint, err := proof.Thumbprint(&podKey.PublicKey)
+		fatal(err)
+		slog.Info("broker: the airlock's DPoP key", "thumbprint", podThumbprint)
+		reqMachine.ResultGrants, reqMachine.ResultTokens, reqMachine.ResultKey = oauthStore, provider, podThumbprint
 		proxyServer = proxy.New(proxy.Options{
-			Rules:  rules,
-			Grants: reqMachine,
-			CA:     airlockCA,
-			Idle:   time.Duration(cfg.AirlockIdleSeconds) * time.Second,
-			Log:    slog.Default(),
+			Rules:   rules,
+			Grants:  reqMachine,
+			DPoPKey: podKey,
+			CA:      airlockCA,
+			Idle:    time.Duration(cfg.AirlockIdleSeconds) * time.Second,
+			Log:     slog.Default(),
 			// broker_answers_total, which counts the proxy's answers under caller class
 			// airlock beside the API port's.
 			Answers: answers,
@@ -748,6 +759,7 @@ func main() {
 			// addresses it may dial anyway, the roots it trusts upstream, the two negative
 			// controls, and the stand-in token authority the azure exchange is held to.
 			Resolve:        airlockTestResolver(cfg.AirlockTestResolve),
+			Dial:           airlockTestDial(cfg.AirlockTestDialPorts),
 			UpstreamRoots:  airlockTestUpstreamRoots,
 			DialAllow:      cfg.AirlockTestDialAllow,
 			KeepValues:     cfg.AirlockTestKeepValues,
@@ -1069,6 +1081,27 @@ func airlockTestResolver(hosts map[string]netip.Addr) func(context.Context, stri
 			return []netip.Addr{addr}, nil
 		}
 		return proxy.ResolveHost(ctx, host)
+	}
+}
+
+// airlockTestDial is the port half of BROKER_AIRLOCK_TEST_RESOLVE as the proxy's Dial: a dial to
+// an address whose entry named a port goes to that port, whatever port the CONNECT named, so a
+// stand-in service on loopback needs no privileged port 443; every other dial is a net.Dialer's,
+// as with the setting unset. The proxy hands its Dial an address it resolved and checked, never a
+// name, so the port follows the address the check read. It answers nil for a setting that names
+// no port, which leaves the proxy its own dialer.
+func airlockTestDial(ports map[netip.Addr]uint16) func(context.Context, string, string) (net.Conn, error) {
+	if len(ports) == 0 {
+		return nil
+	}
+	var dialer net.Dialer
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if at, err := netip.ParseAddrPort(addr); err == nil {
+			if port, named := ports[at.Addr()]; named {
+				addr = netip.AddrPortFrom(at.Addr(), port).String()
+			}
+		}
+		return dialer.DialContext(ctx, network, addr)
 	}
 }
 
