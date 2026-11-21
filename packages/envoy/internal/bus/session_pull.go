@@ -53,14 +53,11 @@ const (
 	// to deliver. A pull that hears nothing from the server for twice as long ends with
 	// ErrSessionPullStalled.
 	sessionPullHeartbeat = 15 * time.Second
-	// sessionPullDrainWait and sessionPullDrainPoll bound how long Detach waits for the pull's
-	// inbox subscription to go invalid, which is nats.go having handed over every message it held
-	// unread. A subscription on a local server drains in well under a millisecond, so the wait is
-	// reached only by a connection that is gone, and a run that ends costs it once. The poll is
-	// the 10 ms the connection's own drain waits at (Client.drainDeliveries): nats.go runs a
+	// sessionPullDrainPoll is how often Detach reads whether the pull's inbox subscription has
+	// gone invalid, which is nats.go having handed over every message it held unread. It is the
+	// 10 ms the connection's own drain waits at (Client.drainDeliveries): nats.go runs a
 	// subscription's drain on a goroutine that flushes once and then re-checks on a 100 ms sleep,
 	// so a finer poll observes nothing sooner and only takes the subscription's mutex oftener.
-	sessionPullDrainWait = time.Second
 	sessionPullDrainPoll = 10 * time.Millisecond
 	// sessionPullDroppedLogEvery is how often a pull writes its line for a message on its inbox
 	// that its consumer did not deliver (SessionPull.receive): the first, then at most one a
@@ -342,7 +339,9 @@ func (p *SessionPull) Stop() { _ = p.sub.Unsubscribe() }
 // again, as a further delivery and out of stream order. Release detaches by itself, so a caller
 // that only returns what the pull holds needs this not at all.
 //
-// It is idempotent: the drain runs once and every call answers its result.
+// It is idempotent: the drain runs once and every call answers its result. It returns once
+// nats.go has ended the drain, which sets the span: the flush the drain opens with carries
+// nats.go's own bound (10 s in nats.go v1.55.0), and a link that drops releases it at once.
 func (p *SessionPull) Detach() error {
 	p.detachOnce.Do(func() {
 		// The inbox is drained, not unsubscribed: an unsubscribe drops what nats.go holds
@@ -361,14 +360,15 @@ func (p *SessionPull) Detach() error {
 			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q could not be drained, so the messages nats.go held unread are lost: %w", p.name, err)
 			return
 		}
-		for deadline := time.Now().Add(sessionPullDrainWait); p.sub.IsValid() && time.Now().Before(deadline); {
+		// The wait sets no span of its own. nats.go ends every drain (checkDrained): after the
+		// flush it opens with, at the first pass in which receive has taken what nats.go held,
+		// or once the subscription or the connection is closed. A span of Detach's own (1 s,
+		// until this wait replaced it) also ended the wait on a link that was live but slow,
+		// and Release then read the queue while nats.go still held messages: the drain queued
+		// them after that read, nobody returned them, and the next owner had them only once
+		// SessionConsumerAckWait had passed.
+		for p.sub.IsValid() {
 			time.Sleep(sessionPullDrainPoll)
-		}
-		if p.sub.IsValid() {
-			// The caller is about to nak messages of this consumer in the belief that no
-			// interest of this pull's is left to take them, so a drain that never finished is
-			// reported.
-			p.detachErr = fmt.Errorf("bus: the inbox subscription of the pull of consumer %q did not drain within %s", p.name, sessionPullDrainWait)
 		}
 	})
 	return p.detachErr

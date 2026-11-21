@@ -1138,6 +1138,54 @@ func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *test
 	t.Logf("Release reported: %v", err)
 }
 
+// A Release on a link that has stopped answering still ends, and returns what the pull held: the
+// drain Detach waits for ends at nats.go's own bound on the flush it opens with (10 s in nats.go
+// v1.55.0), and Detach sets no span of its own beside it. The naks go into the connection's
+// buffer, which the server reads once the link answers again. The row runs on a server of its
+// own, whose relay it freezes, so the drain's flush gets no answer while the connection stays
+// CONNECTED; it waits for Release with testwait.Receive, so a Release that never ended would fail
+// the row by name before the test binary's deadline.
+func TestAReleaseOnALinkThatStopsAnsweringEndsAtTheDrainsOwnBound(t *testing.T) {
+	srv, uri := testnats.Start(t)
+	owner, err := ConnectOwningStream([]string{uri})
+	if err != nil {
+		t.Fatalf("connect the stream's owner: %v", err)
+	}
+	t.Cleanup(owner.Close)
+	consumers, err := ConnectSessionConsumers([]string{uri}, 0, nil)
+	if err != nil {
+		t.Fatalf("connect session consumers: %v", err)
+	}
+	t.Cleanup(consumers.Close)
+	const session = "ses_stuck"
+	agent := contracts.LegacyAgentSubject(session)
+	if _, err := consumers.Ensure(context.Background(), session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	for i := range 2 {
+		publishStored(t, owner, agent, strconv.Itoa(i))
+	}
+	pull := pullSession(t, consumers, session)
+	waitForQueued(t, pull, 2)
+	t.Cleanup(srv.Freeze(t))
+
+	type answer struct {
+		returned int
+		err      error
+	}
+	answered := make(chan answer, 1)
+	started := time.Now()
+	go func() {
+		returned, err := pull.Release()
+		answered <- answer{returned, err}
+	}()
+	got := testwait.Receive(t, "Release on a link that stopped answering to end", answered)
+	t.Logf("Release on the frozen link ended after %s", time.Since(started).Round(time.Millisecond))
+	if got.returned != 2 || got.err != nil {
+		t.Fatalf("Release on a link that stopped answering returned %d messages, %v; want the two the pull held and no error", got.returned, got.err)
+	}
+}
+
 // A session the stream holds no consumer for: its info, a restart of it and a pull of it all
 // report it missing; a session id that names no consumer is refused before anything is sent.
 func TestSessionsWithoutAConsumer(t *testing.T) {
