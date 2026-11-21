@@ -128,8 +128,8 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   A request from any other address is keyed on its connection, as on every other listener, and its `X-Forwarded-For` chooses nothing (`edgeCallerAddress`, `cmd/listener/edge_forwarded.go`).
   The `400` body is the listener's plain error (`listenerwire.APIError`), since no project rule refused the request.
 
-- **Health**: `GET /readyz` takes no credential and answers `503 {"status":"starting"}` until `/v1` serves, and `200 {"status":"serving"}` once it does; it reads nothing else (`readyzHandler`).
-  The load balancer's health check reads it.
+- **Health**: `GET /readyz` reflects only whether /v1 serves: 503 until the /v1 gate opens, 200 after; a load balancer's health check reads it.
+  It takes no credential, answers `503 {"status":"starting"}` and `200 {"status":"serving"}`, and reads nothing else (`readyzHandler`).
   `/healthz` is unchanged for its other callers: it answers `200 {"status":"starting"}` from the listener's first answer, before `/v1` serves, so a balancer that read it would send requests to a pod that answers them `503`.
 
 - **A `503` and the balancer's retry**: Google's balancer sends a request that carries no body once more after a `502`, `503` or `504`, with the same headers, its DPoP proof among them, and a proof is good for one request.
@@ -138,6 +138,9 @@ The header of `cmd/listener/project_scope.go` lists the rules and the function t
   The balancer's retry is then served, and a proof presented again after a request it served is still refused as a replay.
   A request with a body keeps its proof spent whatever its status, because a proof signs the method, the URL and the token but not the body; the balancer does not retry it, and the client sends it again with a fresh proof.
   Two cases still answer the balancer's retry `401`: a spent-proof store that did not answer while its write of the proof landed, and a release whose delete did not reach the bucket in its second (`proofReleaseBudget`), which a bus that did not answer the route makes likely; the second logs `listener: a 503 could not give its request's DPoP proof back`.
+  The status stays `503` in both, the one every route documents for a fault the client can ask again about.
+  The relay socket's client reads an upgrade refused `401` as a refused token and opens the socket again after a second with a fresh token and a fresh proof.
+  A plain `/v1` call gets the generic `401` body every refused credential gets, which names nothing, and the client sends no request again on a `401`; the listener logs it as `listener: broker token rejected` with the reason `proof_invalid`, the class a replay is logged under.
 
 - **Topics**: a registration follows only the session's own agent subject, the topics of the token's projects, and the GitHub topics of one repository each that the repository answer of those projects names.
   The `403` of a refused registration lists each refused topic, with the reason `repository_not_in_project` when each is a GitHub topic and `topic_not_in_project` otherwise, and nothing of the registration is stored (`edgeTopicHold`).

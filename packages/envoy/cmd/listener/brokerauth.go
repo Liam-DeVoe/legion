@@ -368,8 +368,14 @@ func (s *proofSpend) release(ctx context.Context) error {
 //
 // What a release cannot give back is a proof whose 503 came from the spent-proof store itself
 // (refuseBrokerToken's check_failed), whose create did not answer and so recorded nothing this
-// request can prove it wrote, or a proof whose release did not reach the bucket. The retry of
-// either is the 401 of a replay, once, and the client's own next attempt carries a fresh proof.
+// request can prove it wrote, or a proof whose release did not reach the bucket. The balancer's
+// retry of either is the 401 of a replay. The status stays 503 all the same, the status every
+// route documents for a fault it can be asked again about, rather than one Google's balancer
+// would not retry. The relay socket's client reads an upgrade refused 401 as a refused token and
+// opens again after a second with a fresh token and a fresh proof (envoy-client's listener relay).
+// A plain /v1 call gets the generic 401 every refused credential gets, which names nothing to the
+// caller, and this listener logs it as `listener: broker token rejected` with the reason
+// proof_invalid, the class a replay is logged under; the client sends no request again on a 401.
 //
 // It passes Hijack through, which the relay socket's WebSocket upgrade takes the connection by,
 // and Unwrap, which http.ResponseController reads.

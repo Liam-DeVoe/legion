@@ -897,11 +897,12 @@ func v1API(auth listenerAPIAuth, gate *startingGate) http.Handler {
 	return gate.ahead(apiAuth(auth, gate))
 }
 
-// readyzHandler is the listener's /readyz: 503 {"status":"starting"} until gate opens and 200
-// {"status":"serving"} from then on. It takes no credential and reads nothing but the gate, so it
-// tells a listener whose /v1 serves from one whose /v1 still answers the closed gate's 503, which
-// /healthz does not: that answers 200 "starting" from the listener's first answer
-// (healthzHandler), since the probes that read it must not take a starting listener out of
+// readyzHandler is the listener's /readyz. `GET /readyz` reflects only whether /v1 serves: 503
+// until the /v1 gate opens, 200 after; a load balancer's health check reads it. Its bodies are
+// {"status":"starting"} and {"status":"serving"}. It takes no credential and reads nothing but
+// the gate, so it tells a listener whose /v1 serves from one whose /v1 still answers the closed
+// gate's 503, which /healthz does not: that answers 200 "starting" from the listener's first
+// answer (healthzHandler), since the probes that read it must not take a starting listener out of
 // service, and its bus checks answer for delivery rather than for /v1.
 func readyzHandler(gate *startingGate) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
