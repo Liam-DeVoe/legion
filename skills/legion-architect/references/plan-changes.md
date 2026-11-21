@@ -17,6 +17,7 @@ Your role prompt says what `stop_task` does, what holds a stopped task and what 
   Or another architect of your tree stopped it with `stop_task`, and the reason names that architect and the notice carries `stoppedBy`: no step failed.
   A stop you make yourself sends you no notice: the 200 answer of `stop_task` is the record.
   Then give a later version that changes the task, or end the work: `park_child` for a child, under the park rule; `dispatch ask` on the root for a root.
+  On an issue whose experiment's group runs the project's default steps, Legion takes no later version (`PLAN_NOT_TAKEN`): park a child and rerun it with `rerun_child`, which starts the default steps again at their first step, and for a root `dispatch ask` a person, whose `todo` on the root starts its task again.
 
 - **`retro-held`:** a parent's task passed its last step with no `acceptance:owner` step to wait in, while issues beneath it are still in the workflow.
   Legion holds it before its retro, so that it merges after them, and starts the retro when the last one leaves.

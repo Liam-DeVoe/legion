@@ -29,7 +29,8 @@ const (
 	// document.
 	PlanSourceOwner = "owner"
 	// PlanSourceDefault is the project's default steps as one task, written at the start of the
-	// work of a generation no owner's plan reached: version 0, no document and no giver.
+	// work of a generation no owner's plan reached, or whose experiment's group takes no plan from
+	// its owner: version 0, no document and no giver.
 	PlanSourceDefault = "default"
 )
 

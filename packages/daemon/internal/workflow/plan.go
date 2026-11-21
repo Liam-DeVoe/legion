@@ -188,9 +188,10 @@ func (e *Engine) passOverOwners(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return passed, stored, nil
 }
 
-// defaultRows is the plan of issue's run whose owner gave none: version 0 of the source
-// default, given now, with no document and no giver, and one task, default, whose block names no
-// steps and so runs the project's default steps (Config.DefaultSteps), waiting at no act.
+// defaultRows is the plan of issue's run whose owner gave none, or whose experiment's group takes
+// no plan from its owner (passOverOwners): version 0 of the source default, given now, with no
+// document and no giver, and one task, default, whose block names no steps and so runs the
+// project's default steps (Config.DefaultSteps), waiting at no act.
 func (e *Engine) defaultRows(issue record.Issue) (record.PlanVersion, []record.PlanTask, []record.PlanStep) {
 	version := record.PlanVersion{Issue: issue.Key, Generation: issue.Generation, Source: record.PlanSourceDefault, GivenAt: e.now()}
 	task := record.PlanTask{Issue: issue.Key, Generation: issue.Generation, Task: defaultTask, BlockText: "The project's default steps.",

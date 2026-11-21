@@ -1026,10 +1026,12 @@ answer. A pre-registration states seven things.
      launch logs one line naming the issue, the role, the experiment and the arm. Read those
      lines and count the unit out of the exposure for that period.
    - **An arm the project's file no longer names.** The record keeps the arm, but a launch names
-     only the files the file still holds, so from the moment the arm leaves the file its units run
-     as a unit in no experiment runs. Take an arm out of the file only when the experiment is
-     over, and record the date if you do it sooner, because every unit of that arm is unexposed
-     from then on.
+     only the files the file still holds, so from the moment the arm leaves the file its units load
+     none of its files. Its `plan` is the one part that stays: Legion reads each issue's group
+     from the draw it recorded, so an issue of an arm whose `plan` is `default` still runs the
+     project's default steps and takes no plan from its owner. Take an arm out of the file only
+     when the experiment is over, and record the date if you do it sooner, because every unit of
+     that arm is unexposed to its files from then on.
 
 A template to copy:
 

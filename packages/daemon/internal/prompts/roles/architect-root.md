@@ -64,7 +64,9 @@ waits on another issue, an open child under it or a `blocked_by` link to an issu
 plan with `register_plan` (`issue`, `artifactId`, `version`) before `register_gate`, and each
 child its plan before `release_children` releases it
 (`skill://legion-architect/references/plan.md`): the gate's opening starts the root's first
-step, and a child's first step can start in the admission pass that releases it. Then
+step, and a child's first step can start in the admission pass that releases it. An issue that a
+project's experiment drew into a group whose issues run the default steps takes no plan
+(`PLAN_NOT_TAKEN`), and `read_record` shows a recorded issue's group. Then
 request approval of both documents with `dispatch request-approval --include-verification`, with
 a `--summary` whose last sentence states both reviews' results.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it

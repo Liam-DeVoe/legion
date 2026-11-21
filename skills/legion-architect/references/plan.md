@@ -7,7 +7,7 @@ Stopping a task, a later version of a plan Legion runs, and the `task-stopped`, 
 
 ## The task block
 
-You choose which of Legion's steps each issue of your tree runs.
+You choose which of Legion's steps each issue of your tree runs, unless a project's experiment drew the issue into a group whose issues run the project's default steps: such an issue takes no plan from you ("What Legion refuses", below).
 The plan is the issue's `plan.md` document (`dispatch artifact` on the issue).
 In this release it holds one `plan_task` block, the issue's one task:
 
@@ -44,6 +44,11 @@ So on a task with no reviewer step and no `acceptance:owner`, such a check holds
 Fix each reason and give a new version.
 A reason that ends `This release of Legion does not carry it out yet.` names a plan a later release takes: write it again within the table above.
 
+An issue that a project's experiment drew into a group whose issues run the project's default steps takes no plan.
+Once the daemon records it, `register_plan` answers `409 PLAN_NOT_TAKEN`, naming the group, with no `reasons`, and records nothing; the same plan given again gets the same answer.
+That is no fault of the plan: give that issue no plan, and it runs the default steps.
+`read_record` shows a recorded issue's group: an assignment whose `plan` is `default`.
+
 The reasons a version gets for where its task stands are in `skill://legion-architect/references/plan-changes.md`.
 
 ## When to give it
@@ -53,6 +58,7 @@ The reasons a version gets for where its task stands are in `skill://legion-arch
 - **A child:** before `release_children` releases it.
   The daemon has not recorded the child yet, so Legion keeps the plan until the release;
   the answer, as for any plan it takes, is the plan's `version` and each task with its `steps`.
+  A project's experiment draws the child when the daemon records it: where it draws the child into a group whose issues run the default steps, the child's first step passes your plan over and runs the default steps, and a `plan-not-taken` notice names the group.
   A child the daemon has not recorded is refused once its Dispatch status is none of `triage`, `backlog`, `icebox` and `todo` (`ISSUE_ALREADY_RELEASED`).
   The child's first step can start in the same admission pass as its release, so a plan given after it comes too late.
 
