@@ -681,3 +681,46 @@ test("a row whose control has gone since the palette opened does nothing", async
     await context.close();
   }
 });
+
+// A key pressed the moment a page draws reaches the keymap: its one window listener is attached
+// in the commit that first draws the shell (`KeymapProvider.tsx`), so no page is drawn before it
+// listens. The row sends Control+k from inside the page as the Inbox heading enters the DOM,
+// before the browser has painted it, on five fresh loads, and each one opens the bar. The
+// listener attached in a passive effect came 6 to 30 ms after the heading, since `AuthGate` draws
+// the shell in a render its own passive effect starts, and every one of those presses was lost
+// (dispatch://INFRA-2160/artifact/keymap-listener-order-md).
+test("a Control+k sent as the Inbox heading enters the page opens the bar @firefox @webkit", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.addInitScript(() => {
+      new MutationObserver((_records, observer) => {
+        const drawn = Array.from(document.querySelectorAll("h1")).some(
+          (heading) => heading.textContent?.trim() === "Inbox"
+        );
+        if (!drawn) return;
+        observer.disconnect();
+        document.body.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            bubbles: true,
+            cancelable: true,
+            code: "KeyK",
+            ctrlKey: true,
+            key: "k",
+          })
+        );
+      }).observe(document, { childList: true, subtree: true });
+    });
+    for (let load = 1; load <= 5; load += 1) {
+      await page.goto("/");
+      await expect(
+        page.getByRole("dialog", { name: "Search" }),
+        `load ${load}: the Control+k sent as the Inbox heading entered the page opened no bar`
+      ).toBeVisible();
+    }
+  } finally {
+    await context.close();
+  }
+});
