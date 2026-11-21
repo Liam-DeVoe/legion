@@ -133,6 +133,7 @@ on:
       - 'packages/envoy/cipherclient/*'
       - 'packages/envoy/dispatchbody/*'
       - 'packages/envoy/internal/cipherclient/*'
+      - 'packages/envoy/internal/dpopproof/*'
       - 'packages/envoy/internal/contracts/*'
       - 'packages/envoy/internal/ctxlock/*'
       - 'packages/envoy/internal/dispatch/itemblocks/*'
