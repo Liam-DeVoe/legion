@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  A merger that the closed design gate holds is left alone and told the truth. One rule
+  (`workflow.HeldByDesignGate`) holds a merger in `merging` while a gated step that someone
+  registered stands closed. Such a merger gets no silence task or notice and is left off the tick
+  list. The outbox holds only its phase work, and its idle backstop waits for the gate's opening.
+  Each task the daemon sends a merger opens with the gate's state at that send, and each move of the
+  gate gives every merger of the tree one delivery: the role message to a live session, the gate's
+  own start to a merger that is away. The state, `read_record`, `legion state` and the owed
+  answer show the hold. A held merger's declaration of a wait is refused with
+  `WAIT_HELD_BY_DESIGN_GATE`. The prompts tell a worker to declare a wait with `declare_wait`; a
+  WAITING line at the end of a reply buys nothing.
+time: 2026-11-21T14:35:21Z
+custom:
+    Issue: pr4030
