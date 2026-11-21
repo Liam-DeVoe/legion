@@ -9,9 +9,6 @@
 // tells a read served by an index from one that reads the whole index and filters it, and it
 // holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a prepared
 // statement settles on (GenericPlan), which is the plan an index is lost in.
-// RequireListReadOnce holds a plan to reading once the list a statement is given,
-// RequireStatementReadsListOnce holds a statement's two plans to it, RequireJoinedOn holds a plan
-// to matching rows by a key, and Outline writes a plan's shape for a test's log.
 // dispatch/api, dispatch/refs and cipher/requests each pin an index's reach with these checks,
 // so they live here once rather than as a second (or third) hand copy of the same recursive
 // walk; it is an ordinary package rather than a _test.go file because Go cannot share test-only
@@ -19,7 +16,6 @@
 package explaintest
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"regexp"
@@ -28,7 +24,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // indexScanTypes is every plan node that reads a relation through an index, and so every node
@@ -41,10 +37,7 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 // (Filter) and the one a bitmap heap scan rechecks a row by, the name of the subplan it begins
 // and its place under its own parent, what an analyzed plan measured of it (its loops and the
 // rows each answered, and the rows an index-only scan fetched from the heap, all 0 in a plan
-// explained without ANALYZE), the CTE it scans, the function a function scan reads, the name the
-// statement gives what it reads, the kind of join a join node makes and the condition a hash or a
-// merge join matches its two sides' rows by, the set operation a SetOp node makes, and its
-// children.
+// explained without ANALYZE), the CTE it scans, and its children.
 type planNode struct {
 	NodeType           string            `json:"Node Type"`
 	RelationName       string            `json:"Relation Name"`
@@ -58,12 +51,6 @@ type planNode struct {
 	ActualRows         float64           `json:"Actual Rows"`
 	HeapFetches        float64           `json:"Heap Fetches"`
 	CTEName            string            `json:"CTE Name"`
-	FunctionName       string            `json:"Function Name"`
-	Alias              string            `json:"Alias"`
-	JoinType           string            `json:"Join Type"`
-	Command            string            `json:"Command"`
-	HashCond           string            `json:"Hash Cond"`
-	MergeCond          string            `json:"Merge Cond"`
 	Plans              []json.RawMessage `json:"Plans"`
 
 	// subplan is the subplan this node runs under, which the walk carries down from the node
@@ -286,156 +273,6 @@ func Nodes(t testing.TB, planJSON json.RawMessage) []Node {
 	return nodes
 }
 
-// RequireListReadOnce holds plan, one "Plan" node of `EXPLAIN (FORMAT JSON)`'s top-level array,
-// to reading the list its statement is given once, and fails t naming subject, the statement and
-// the plan under test, and printing the plan's Outline where it does not. A list is an array the
-// statement takes as a parameter and reads as rows: a "Function Scan" of unnest (one of
-// `unnest($1)` names the function, and one of `unnest($1, $2)`, of several arrays, names none),
-// or a scan of one of ctes, the CTEs a form of the statement holds the list in. The plan reads it
-// once where
-//   - no scan of it, nor any read of a table, runs under a SubPlan, which runs once for each row
-//     that tests it, as `not in (select … from <the list>)` does;
-//   - no scan of it is on the inner side of a nested loop, which runs that side again for each
-//     row of its outer one;
-//   - the statement filters by it as a SetOp Except over it, which reads each side once, or as a
-//     hash or merge anti-join over it.
-//
-// A statement that tests each row against the array itself, as `<> all($1)` or `not (… =
-// any($1))` do, reads no list at all, and so filters by it as neither.
-func RequireListReadOnce(t testing.TB, plan json.RawMessage, subject string, ctes ...string) {
-	t.Helper()
-	nodes := planNodes(t, plan)
-	var lists []int
-	for i, node := range nodes {
-		if node.NodeType == "Function Scan" && (node.FunctionName == "" || node.FunctionName == "unnest") ||
-			node.NodeType == "CTE Scan" && slices.Contains(ctes, node.CTEName) {
-			lists = append(lists, i)
-		}
-	}
-	for i, node := range nodes {
-		if node.subplan != "" && (slices.Contains(lists, i) || node.RelationName != "") {
-			t.Errorf("%s: %s runs under %s, once for each row that tests it:\n%s", subject, outlineName(node), node.subplan, Outline(t, plan))
-		}
-	}
-	filtered := false
-	for top, node := range nodes {
-		except := node.NodeType == "SetOp" && node.Command == "Except"
-		anti := (node.NodeType == "Hash Join" || node.NodeType == "Merge Join") && (node.JoinType == "Anti" || node.JoinType == "Right Anti")
-		for _, list := range lists {
-			side := childOn(nodes, list, top)
-			if side < 0 {
-				continue
-			}
-			if node.NodeType == "Nested Loop" && nodes[side].ParentRelationship == "Inner" {
-				t.Errorf("%s: %s is on the inner side of a nested loop, which runs it again for each row of the outer one:\n%s",
-					subject, outlineName(nodes[list]), Outline(t, plan))
-			}
-			filtered = filtered || except || anti
-		}
-	}
-	if !filtered {
-		t.Errorf("%s: the statement filters by its list as neither a SetOp Except over it nor a hash or merge anti-join (it reads %d scans of a list):\n%s",
-			subject, len(lists), Outline(t, plan))
-	}
-}
-
-// childOn is the child of nodes[top] that nodes[i] is under, i itself where it is that child, or
-// -1 where it is not under top.
-func childOn(nodes []planNode, i, top int) int {
-	for ; i >= 0; i = nodes[i].parent {
-		if nodes[i].parent == top {
-			return i
-		}
-	}
-	return -1
-}
-
-// RequireStatementReadsListOnce explains statement in tx, which its caller set up as the write
-// that runs it does, twice: with arguments, and under the generic plan a statement pgx caches can
-// settle on after its fifth run (GenericPlan, prepared with parameters and explained with
-// literals). It holds each plan to reading its list once (RequireListReadOnce, ctes the CTEs a
-// form of the statement holds the list in), naming name, logs both plans' Outline, and answers
-// both plans for any check of its caller's own.
-func RequireStatementReadsListOnce(t testing.TB, ctx context.Context, tx pgx.Tx, name, statement string, arguments []any,
-	parameters, literals []string, ctes ...string) (valued, generic json.RawMessage) {
-	t.Helper()
-	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+statement, arguments...).Scan(&raw); err != nil {
-		t.Fatalf("explain %s: %v", name, err)
-	}
-	valued = OnePlan(t, raw)
-	generic = GenericPlan(t, ctx, tx, pgx.Identifier{name}.Sanitize(), statement, parameters, literals)
-	RequireListReadOnce(t, valued, name+" with the values", ctes...)
-	RequireListReadOnce(t, generic, name+" under the generic plan", ctes...)
-	t.Logf("%s, with the values:\n%s\nunder the generic plan:\n%s", name, Outline(t, valued), Outline(t, generic))
-	return valued, generic
-}
-
-// RequireJoinedOn holds plan, one "Plan" node of `EXPLAIN (FORMAT JSON)`'s top-level array, to
-// matching rows by key, a column as the plan writes it (`k.day`), as a key: a hash join's Hash
-// Cond or a merge join's Merge Cond names it, or an index scan's Index Cond does. A join that
-// tests key in its Join Filter instead tests it on every pair of rows its other conditions match,
-// each row of one side against all of the other's where it has none. It fails t naming subject,
-// and printing the plan's Outline, where no node matches rows by key.
-func RequireJoinedOn(t testing.TB, plan json.RawMessage, subject, key string) {
-	t.Helper()
-	names := regexp.MustCompile(`(^|[^\w.])` + regexp.QuoteMeta(key) + `(\W|$)`)
-	for _, node := range planNodes(t, plan) {
-		conditions := []string{node.HashCond, node.MergeCond}
-		if node.IndexCond != nil {
-			conditions = append(conditions, *node.IndexCond)
-		}
-		if slices.ContainsFunc(conditions, names.MatchString) {
-			return
-		}
-	}
-	t.Errorf("%s: no hash or merge join, nor any index scan, matches rows by %s:\n%s", subject, key, Outline(t, plan))
-}
-
-// Outline is plan's nodes, one a line, each indented under the node it is directly under: its
-// side of that node, its type, its kind of join or set operation, what it reads under which name,
-// and the subplan it runs under. It is what a test logs of a plan it judges by its shape, and
-// prints where the shape fails, rather than the whole JSON, which writes out every array a plan
-// with the values was given.
-func Outline(t testing.TB, plan json.RawMessage) string {
-	t.Helper()
-	nodes := planNodes(t, plan)
-	depths, lines := make([]int, len(nodes)), make([]string, len(nodes))
-	for i, node := range nodes {
-		side := ""
-		if node.parent >= 0 {
-			depths[i] = depths[node.parent] + 1
-			side = node.ParentRelationship + ": "
-		}
-		lines[i] = strings.Repeat("  ", depths[i]) + side + outlineName(node)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// outlineName names node as Outline and RequireListReadOnce cite it: its type, its kind of join
-// or set operation, the relation, function or CTE it reads and the name the statement gives that,
-// and the subplan it runs under.
-func outlineName(node planNode) string {
-	name := node.NodeType
-	if node.JoinType != "" {
-		name += " (" + node.JoinType + ")"
-	}
-	if node.Command != "" {
-		name += " " + node.Command
-	}
-	read := cmp.Or(node.RelationName, node.FunctionName, node.CTEName)
-	if read != "" {
-		name += " on " + read
-	}
-	if node.Alias != "" && node.Alias != read {
-		name += " " + node.Alias
-	}
-	if node.subplan != "" {
-		name += " [" + node.subplan + "]"
-	}
-	return name
-}
-
 // BitmapHeapScan is one "Bitmap Heap Scan" of a plan with the bitmap it reads its rows through:
 // the scan itself; Bitmap, the node directly under it that builds the bitmap, a "Bitmap Index
 // Scan" of one index or a "BitmapOr" or "BitmapAnd" that combines the bitmaps under it; and
@@ -626,13 +463,6 @@ func (k *IndexKeys) RequireIndexKeyed(t testing.TB, plan json.RawMessage, index,
 	}
 }
 
-// Session is what GenericPlan needs of its connection: a way to open a transaction, and to run a
-// statement outside the one it opens. Both a *pgxpool.Conn and a pgx.Tx are one.
-type Session interface {
-	Begin(ctx context.Context) (pgx.Tx, error)
-	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
-}
-
 // GenericPlan is the plan Postgres builds for statement without knowing the values it will be
 // executed with, the plan a prepared statement settles on. It is the plan at risk: an index
 // whose eligibility depends on the bound value is lost there, and a fixture small enough for a
@@ -644,14 +474,10 @@ type Session interface {
 // the planner can hash or merge a whole relation into needs those two off as well. The prepared
 // statement outlives the transaction that explains it and is deallocated by name on connection,
 // the one connection that holds it.
-//
-// connection is a pooled connection, or a transaction its caller holds open: Begin on a
-// transaction is a savepoint of it, so the plan is read under the settings that transaction set
-// as well as settings, and the forced mode then lasts to that transaction's end.
 func GenericPlan(
 	t testing.TB,
 	ctx context.Context,
-	connection Session,
+	connection *pgxpool.Conn,
 	name, statement string,
 	parameters, literals []string,
 	settings ...string,
@@ -681,34 +507,4 @@ func GenericPlan(
 		t.Fatalf("deallocate %s: %v", name, err)
 	}
 	return OnePlan(t, raw)
-}
-
-// Beginner is the one call AnalyzedPlan needs of a pool: a transaction of its own.
-type Beginner interface {
-	Begin(context.Context) (pgx.Tx, error)
-}
-
-// AnalyzedPlan runs statement under `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` with sequential
-// scans off, in a transaction of its own that is rolled back, and answers its one plan node for
-// the checks above and the plan's text, which a failure prints. A test's fixtures hold a handful
-// of rows, which is read fastest whole however a statement is written, so without that setting
-// the planner answers a sequential scan whatever indexes exist and the plan says nothing about the
-// statement; with it, a read that no index serves still shows up, as a sequential scan or a scan
-// carrying no index condition. ANALYZE runs the statement, so the plan is the one that read the
-// rows, with the buffers it touched; the rollback keeps a write it makes out of the database.
-func AnalyzedPlan(t testing.TB, ctx context.Context, pool Beginner, statement string, arguments ...any) (json.RawMessage, string) {
-	t.Helper()
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the plan's transaction: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, "set local enable_seqscan = off"); err != nil {
-		t.Fatalf("disable sequential scans: %v", err)
-	}
-	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
-		t.Fatalf("explain the statement: %v", err)
-	}
-	return OnePlan(t, raw), string(raw)
 }

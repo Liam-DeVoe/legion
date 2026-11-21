@@ -92,18 +92,11 @@ func (p *memoryServer) liveHeapAboveIdle(t *testing.T, during func()) int64 {
 	t.Helper()
 	release := p.holdBlockIndexLease(t)
 	defer release()
-	// The trace is read from the moment the idle collection is asked for, not from its report: the
-	// runtime wakes runtime.GC's caller before it writes that collection's line, so a collection
-	// another goroutine's allocations start at once can end, and write its own line, before the
-	// report of the one asked for is written (a server's Legion facts and eval-days passes allocate
-	// as it starts). Collections up to the idle one are passed over below, so the earlier start
-	// reads nothing of before the window.
-	asked := p.output.Len()
 	idle, opened := p.collect(t)
 	during()
 	last, _ := p.collect(t)
-	requireNoBlockIndexPass(t, p.outputFrom(opened))
-	window := p.outputFrom(asked)
+	window := p.outputFrom(opened)
+	requireNoBlockIndexPass(t, window)
 	held := max(idle.live, last.live)
 	next := idle.number + 1
 	for _, cycle := range collections(t, window) {

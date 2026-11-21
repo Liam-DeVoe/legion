@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"net/url"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -18,17 +17,11 @@ const (
 
 // parseMyAnswersPage reads the complete offset page that GET /api/v1/me/answers always returns.
 func parseMyAnswersPage(r *http.Request) (limit, offset int, err error) {
-	return parseOffsetPage(r.URL.Query(), myAnswersDefaultLimit, myAnswersMaxLimit)
-}
-
-// parseOffsetPage reads an offset page: limit, 1 to maxLimit (defaultLimit where absent), and
-// offset, from 0. A malformed one is 400 INVALID_QUERY naming it. The answers and the eval reads
-// page this way.
-func parseOffsetPage(query url.Values, defaultLimit, maxLimit int) (limit, offset int, err error) {
-	limit = defaultLimit
-	if value, present, valid := parseQueryInt(query, "limit", 1, maxLimit); present {
+	query := r.URL.Query()
+	limit = myAnswersDefaultLimit
+	if value, present, valid := parseQueryInt(query, "limit", 1, myAnswersMaxLimit); present {
 		if !valid {
-			return 0, 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", maxLimit)
+			return 0, 0, errorf(http.StatusBadRequest, "INVALID_QUERY", "limit must be one integer from 1 to %d", myAnswersMaxLimit)
 		}
 		limit = value
 	}

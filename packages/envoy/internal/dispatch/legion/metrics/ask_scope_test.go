@@ -28,10 +28,10 @@ func TestAnAskCountsOnlyForTheIssueItWasOpenedOn(t *testing.T) {
 		worked("implementer", hour(0)).
 		closedAt(hour(6))
 
-	phase := windowOf(fixture(hour(-24), hour(24), root, asked, sibling), ScopeAll).phaseTime(t)
+	report := Compute(fixture(hour(-24), hour(24), root, asked, sibling), ScopeAll, hour(24))
 
 	var person float64
-	for _, bar := range phase.Bars {
+	for _, bar := range report.PhaseTime.Bars {
 		person += bar.Segments.WaitingOnPerson
 	}
 	if person != 2 {
@@ -60,15 +60,15 @@ func TestAReAdmissionDoesNotReopenTheDesignPhase(t *testing.T) {
 		statusAt(hour(5), "in_progress").
 		statusAt(hour(7), "done")
 
-	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
 
 	// Work time is the five hours outside the park: design 0-1, planning 1-2, implementing 2-3
 	// and 5-7.
-	if got := barOf(t, w, "architect").Hours; got != 1 {
+	if got := barOf(t, report, "architect").Hours; got != 1 {
 		t.Errorf("the architect bar = %g h, want 1: design runs from the architect's first event to the first planner event, and the re-admission at hour 5 reopens nothing",
 			got)
 	}
-	if got := barOf(t, w, "implementer").Hours; got != 3 {
+	if got := barOf(t, report, "implementer").Hours; got != 3 {
 		t.Errorf("the implementer bar = %g h, want 3: hours 2-3 and the two after the park", got)
 	}
 }

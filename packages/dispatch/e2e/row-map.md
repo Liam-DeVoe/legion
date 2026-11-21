@@ -233,7 +233,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/delivery-groups.e2e.ts` | grouping and the window's counts are the server's aggregation |
 | `e2e/delivery-live.e2e.ts` | `sql` writes delivered as live frames |
 | `e2e/delivery-queued.e2e.ts` | a queued attempt is what Dispatch stores from the fake Envoy's answer to a send for a stopped session, read back on a message, a mention and a broadcast; a message to a session no store holds is queued by the server's own publish |
-| `e2e/delivery.e2e.ts` | facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows; a KPI's target and verdict are the server's reading of the eval a person registers |
+| `e2e/delivery.e2e.ts` | facet counts come from the server; a reconcile error must arrive from the server mid-gesture; the title says it: the server narrows |
 | `e2e/doc-reload-line.e2e.ts` | the read-only admission is decided at socket open |
 | `e2e/doc.e2e.ts` | every row lives in the live document room, its connections and versions |
 | `e2e/document-and-comment-read-alike.e2e.ts` | each row asserts inside the live spec editor |
@@ -273,6 +273,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/issue-page-d.e2e.ts` | each row signs in for real and turns the new page on through that login's stored preference, and the view row's counts are the server's coverage, results and block reads of the seeded issue |
 | `e2e/issue-page-g-view.e2e.ts` | its rows seed long planner replies through the server, three of them taller than the view, and read where the drawn page lays them out as it jumps, on the new page the reader's stored preference turns on |
 | `e2e/issue-page-g.e2e.ts` | the rows draw what the server stored and indexed - a document's blocks, the decisions read, a result, the one batched read of names - on the new page the reader's stored preference turns on |
+| `e2e/issue-page-i.e2e.ts` | the server's reads fold the outline; read marks and typed words persist |
 | `e2e/issue-page-look.e2e.ts` | its rows read the Dispatch server's content type for the font file, its /THIRD_PARTY_NOTICES.txt, and the issue.page preference under a real sign-in |
 | `e2e/issue-page-p.e2e.ts` | each row writes the header's issue, its questions and its approval requests through the server and reads back what the header's controls write: the title, the status, the priority, the pin and an approval |
 | `e2e/issue-page-switch.e2e.ts` | the setting is kept under the login the server's sign-in names, and one row signs a second login in on the same context to read that it holds none; one row reads the server's 404 for a key it does not hold |
@@ -318,7 +319,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/picture-link-click.e2e.ts` | the link is clicked inside the live document editor |
 | `e2e/pictures.e2e.ts` | pastes and uploads, with the live editor and stored markdown read back |
 | `e2e/pinned-review-events.e2e.ts` | the server writes each review's event with the document and version it reviewed, and the Pinned tab reads the pins back from the reader's stored issue state |
-| `e2e/pipeline.e2e.ts` | `sql`-seeded pipeline state the server aggregates, and the slowest jobs it ranks by the min_n a person registers on pr-ci |
+| `e2e/pipeline.e2e.ts` | `sql`-seeded pipeline state the server aggregates |
 | `e2e/plain-http-origin.e2e.ts` | types into the live document over the plain-HTTP origin |
 | `e2e/plain-http-proxy.e2e.ts` | counts the live socket upstream of a real proxy |
 | `e2e/polish.e2e.ts` | opens the margin ask composer on the live document |
@@ -334,7 +335,6 @@ such a row loses is feedback on the pull request itself.
 | `e2e/references.e2e.ts` | the backlink index the server rebuilds after each write |
 | `e2e/refetch-budget.e2e.ts` | writes after load, counted reads and the server's event feed |
 | `e2e/refresh-freshness.e2e.ts` | writes after load must reach the open page within 2 s |
-| `e2e/reset-unnamed-table.e2e.ts` | its two rows read what the reset between two rows of this suite does to a table nothing names, in the stack's own database, which no recording holds |
 | `e2e/result-commit.e2e.ts` | the result line is read in the document margin's Pinned tab |
 | `e2e/search-tiers.e2e.ts` | its claim is the number of embeddings the server asks the fake embedder for, counted on the server's own calls |
 | `e2e/search.e2e.ts` | the server's search hits; the server's answer for the query |

@@ -327,7 +327,6 @@ func init() {
 		(*server).writeAuthenticationError,
 		(*server).writeClaimError,
 		(*server).writeEnvoyError,
-		(*server).writeEvalError,
 		(*server).writeIDPrefixError,
 		(*server).writeSessionGroupError,
 		(*server).writeUploadDocumentError,

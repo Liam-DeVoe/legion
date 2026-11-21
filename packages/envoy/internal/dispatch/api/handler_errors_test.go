@@ -76,7 +76,7 @@ func TestAPersonTheStoreCannotRecordIsAnsweredAndLoggedWithoutTheirAddress(t *te
 // the route it answered, and no log record of the request holds the address. The route is a row
 // of the table, served through the chain register mounts it behind (routeHandler) with its
 // handler replaced: once as a read, and once as a keyed write, whose layer answers on a writer of
-// its own (keyedAnswer). The handler hands its error on through writeEvalError, one of the
+// its own (keyedAnswer). The handler hands its error on through writeIDPrefixError, one of the
 // helpers the line's site reads past to the handler.
 func TestAFaultHoldingADocumentsTextIsLoggedByItsTypesSiteAndRoute(t *testing.T) {
 	const address = "person-7@example.com"
@@ -111,11 +111,11 @@ func TestAFaultHoldingADocumentsTextIsLoggedByItsTypesSiteAndRoute(t *testing.T)
 				t.Fatalf("the table has no row %s", name)
 			}
 			route := table[index]
-			// site is this handler's call of writeEvalError, the line after the one that reads it.
+			// site is this handler's call of writeIDPrefixError, the line after the one that reads it.
 			var site string
 			route.Handler = func(w http.ResponseWriter, _ *http.Request) {
 				pc, _, line, _ := runtime.Caller(0)
-				served.writeEvalError(w, failure)
+				served.writeIDPrefixError(w, failure)
 				site = path.Base(runtime.FuncForPC(pc).Name()) + ":" + strconv.Itoa(line+1)
 			}
 			// On a mux of its own, as register mounts it, so the path's values reach every layer.

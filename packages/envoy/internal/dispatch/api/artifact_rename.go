@@ -7,7 +7,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -83,9 +82,9 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, renameRoleNameRefusal(name, slug, *role))
 		return
 	}
-	renamed, err := docs.ScanArtifact(tx.QueryRow(r.Context(), `
+	renamed, err := scanArtifact(tx.QueryRow(r.Context(), `
 		update artifacts set name = $2 where id = $1
-		returning `+docs.ArtifactColumns, artifact.ID, name))
+		returning `+artifactColumns, artifact.ID, name))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

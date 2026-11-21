@@ -21,18 +21,17 @@ func TestReviewRoundsAndSendBacksComeFromThePhaseTimeline(t *testing.T) {
 		observeString(legion.FieldPhase, hour(4), "testing").
 		observeString(legion.FieldPhase, hour(5), "reviewing").
 		observeString(legion.FieldPhase, hour(6), "done")
-	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
-	row := w.fact(t, "INFRA-1")
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	row := report.Rework.Issues[0]
 	if row.ReviewRounds != 2 || !row.SentBack {
 		t.Fatalf("the issue has %d review rounds and sent_back=%t, want two rounds and a send-back", row.ReviewRounds, row.SentBack)
 	}
-	if row.ImplementingHoursAfterFirstReview != 1 || row.TestingHoursAfterFirstReview != 1 {
+	if row.ImplementingHoursAfterFirst != 1 || row.TestingHoursAfterFirst != 1 {
 		t.Fatalf("after the first review: %g implementing and %g testing hours, want one of each",
-			row.ImplementingHoursAfterFirstReview, row.TestingHoursAfterFirstReview)
+			row.ImplementingHoursAfterFirst, row.TestingHoursAfterFirst)
 	}
-	rework := w.rework(t)
-	if rounds, share := medianOf(rework.ReviewRounds), valueOf(rework.SentBack.Share); rounds != 2 || share != 1 {
-		t.Fatalf("median rounds %g and sent-back share %g, want 2 and 1", rounds, share)
+	if report.Rework.MedianReviewRounds != 2 || report.Rework.SentBackShare != 1 {
+		t.Fatalf("median rounds %g and sent-back share %g, want 2 and 1", report.Rework.MedianReviewRounds, report.Rework.SentBackShare)
 	}
 }
 
@@ -48,8 +47,8 @@ func TestAReviewStillRunningAtTheFirstObservationIsOneRound(t *testing.T) {
 		statusAt(hour(2), "needs_review").
 		observeString(legion.FieldPhase, hour(3), "reviewing").
 		observeString(legion.FieldPhase, hour(4), "accepting")
-	row := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll).fact(t, "INFRA-1")
-	if rounds := row.ReviewRounds; rounds != 1 {
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	if rounds := report.Rework.Issues[0].ReviewRounds; rounds != 1 {
 		t.Fatalf("the issue has %d review rounds, want the one its needs_review opened at hour 2, which the sampler saw go on from hour 3", rounds)
 	}
 }
@@ -76,17 +75,17 @@ func TestASendBackOutOfRetroIsCountedOnTheObservedTimeline(t *testing.T) {
 		observeString(legion.FieldPhase, hour(3), "retro").
 		observeString(legion.FieldPhase, hour(6), "done")
 
-	w := windowOf(fixture(hour(-24), hour(24), fromRetro, straight), ScopeAll)
+	report := Compute(fixture(hour(-24), hour(24), fromRetro, straight), ScopeAll, hour(24))
 
-	for _, key := range w.finished {
-		want := key == "INFRA-1"
-		if sent := w.fact(t, key).SentBack; sent != want {
+	for _, row := range report.Rework.Issues {
+		want := row.Key == "INFRA-1"
+		if row.SentBack != want {
 			t.Errorf("%s sent_back = %t, want %t: only the issue sent back out of retro was sent back",
-				key, sent, want)
+				row.Key, row.SentBack, want)
 		}
 	}
-	if share := valueOf(w.rework(t).SentBack.Share); share != 0.5 {
-		t.Errorf("sent-back share = %g, want 0.5", share)
+	if report.Rework.SentBackShare != 0.5 {
+		t.Errorf("sent-back share = %g, want 0.5", report.Rework.SentBackShare)
 	}
 }
 
@@ -101,7 +100,8 @@ func TestAMoveFromTestingBackToImplementingIsASendBackOnTheObservedTimeline(t *t
 		// The tester failed the change.
 		observeString(legion.FieldPhase, hour(2), "implementing").
 		observeString(legion.FieldPhase, hour(3), "testing")
-	if row := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll).fact(t, "INFRA-1"); !row.SentBack {
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	if row := report.Rework.Issues[0]; !row.SentBack {
 		t.Fatalf("sent_back = %t, want the move from testing back to implementing at hour 2 counted", row.SentBack)
 	}
 }
@@ -120,7 +120,8 @@ func TestAMoveOutOfEachSendBackPhaseToImplementingIsASendBack(t *testing.T) {
 				observeString(legion.FieldPhase, hour(0), "implementing").
 				observeString(legion.FieldPhase, hour(1), phase).
 				observeString(legion.FieldPhase, hour(2), "implementing")
-			if row := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll).fact(t, "INFRA-1"); !row.SentBack {
+			report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+			if row := report.Rework.Issues[0]; !row.SentBack {
 				t.Fatalf("sent_back = %t, want the move from %s back to implementing at hour 2 counted", row.SentBack, phase)
 			}
 		})
@@ -143,7 +144,7 @@ func TestASendBackWhereTheEventLogMeetsTheObservationsIsCounted(t *testing.T) {
 		t.Fatalf("the timeline is %v, want %v: the event log's phases up to the first observation at hour 2 and the daemon's from it on",
 			got, want)
 	}
-	if row := windowOf(population, ScopeAll).fact(t, "INFRA-1"); !row.SentBack {
+	if row := Compute(population, ScopeAll, hour(24)).Rework.Issues[0]; !row.SentBack {
 		t.Fatalf("sent_back = %t, want the move from the event log's testing into the implementing first observed at hour 2 counted",
 			row.SentBack)
 	}
@@ -160,7 +161,8 @@ func TestBeforeObservationsReviewRoundsAreEntriesIntoNeedsReview(t *testing.T) {
 		statusAt(hour(3), "in_progress").
 		statusAt(hour(5), "needs_review").
 		statusAt(hour(8), "done")
-	row := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll).fact(t, "INFRA-1")
+	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	row := report.Rework.Issues[0]
 	if row.ReviewRounds != 2 || !row.SentBack {
 		t.Fatalf("the issue has %d review rounds and sent_back=%t, want two rounds and the one send-back its statuses record", row.ReviewRounds, row.SentBack)
 	}
