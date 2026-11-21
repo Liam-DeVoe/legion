@@ -442,6 +442,33 @@ func TestTheHoldJournal(t *testing.T) {
 		complete("replay's done entry, not final", false)
 	})
 
+	t.Run("selection-recovery's replay --final is admitted again after its done entry, and in a second cycle", func(t *testing.T) {
+		// SelRecFinalRepeatable: replay --final is Repeatable, so after the done entry that completed
+		// the record it is admitted again, and so is another replay and replay --final after it, each
+		// replay --final completing the record. Fails without the rule, where the rerun is refused
+		// ErrAlreadyDone: the record is complete and no final command can follow it again.
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-selrec", holdrecord.WorkflowSelectionRecovery, nil)
+		run(t, c, "h-selrec", cmd("create-bucket --after-loss"), nil, nil)
+		completes := func(step string, want bool) {
+			t.Helper()
+			if d, _ := journal(t, c, "h-selrec"); d.Complete != want {
+				t.Fatalf("after %s complete is %v, want %v", step, d.Complete, want)
+			}
+		}
+		for i, step := range []string{"replay", "replay --final", "replay --final", "replay", "replay --final"} {
+			if _, err := c.Admit(ctx, "h-selrec", cmd(step), nil); err != nil {
+				t.Fatalf("step %d, %s, after create-bucket --after-loss: %v", i+1, step, err)
+			}
+			if err := c.AppendDone(ctx, "h-selrec", step, nil); err != nil {
+				t.Fatalf("%s's done entry: %v", step, err)
+			}
+			completes(step+"'s done entry", step == "replay --final")
+		}
+		release(t, c, "h-selrec")
+	})
+
 	t.Run("a final command's done entry completes the record in the same write", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)
