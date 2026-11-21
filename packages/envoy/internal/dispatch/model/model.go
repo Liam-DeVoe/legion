@@ -3418,8 +3418,8 @@ type PlannedStep struct {
 
 // IssueSteps is GET /api/v1/issues/{key}/steps: the tasks of the issue's newest plan, in the
 // plan's order, each with its needs, its planned steps and every run of them; then every other
-// task with a run, in the order of each such task's first run. An issue Legion never ran answers
-// no task; a key no issue carries answers 404 NOT_FOUND, and no IssueSteps.
+// task with a run, in the order of each such task's first run. An issue with no plan and no run
+// answers no task; a key no issue carries answers 404 NOT_FOUND, and no IssueSteps.
 type IssueSteps struct {
 	Issue string     `json:"issue"`
 	Tasks []StepTask `json:"tasks"`

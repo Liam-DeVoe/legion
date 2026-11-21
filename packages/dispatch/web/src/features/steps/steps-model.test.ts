@@ -79,9 +79,9 @@ test("stepTasks keeps the server's order of tasks, not the order of their names"
   ]);
 });
 
-// The generated shape lets both lists be null, and an issue Legion never ran has no task at all. A
-// task whose needs are null - its plan node recorded none, or the plan does not hold it - keeps
-// them null, which is not [], a task that needs none.
+// The generated shape lets both lists be null, and an issue with no plan and no run has no task at
+// all. A task whose needs are null - its plan node recorded none, or the plan does not hold it -
+// keeps them null, which is not [], a task that needs none.
 test("stepTasks reads a null list as empty, and null needs as not recorded", () => {
   expect(stepTasks({ issue: "CORE-1", tasks: null })).toEqual([]);
   expect(stepTasks({ issue: "CORE-1", tasks: [] })).toEqual([]);

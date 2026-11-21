@@ -341,8 +341,9 @@ test("a Steps table wider than its box wears the trailing fade, and one that fit
   }
 });
 
-// An issue Legion never ran - or ran before the release that records steps - has no task.
-test("the Steps tab says so when no step of the issue has run in Legion", async () => {
+// An issue with no plan and no run - or one that ran before the release that records steps - has
+// no task.
+test("the Steps tab says so when the issue has no plan and no step of it has run in Legion", async () => {
   const tab = renderTab(async () => ({ issue: "CORE-1", tasks: [] }));
   try {
     const empty = await screen.findByRole("region", { name: "Steps empty state" });

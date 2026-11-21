@@ -15,11 +15,13 @@ import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool } from "../dispatch-execute";
 import { DispatchNoRouteError, forgetKeyedLayerMemory } from "../dispatch-http";
 
-// `dispatch steps --issue <KEY>`: the steps that ran on an issue, as Dispatch's
-// `GET /api/v1/issues/{key}/steps` answers them, one header line and one line per run. The
-// format cases drive `executeDispatchTool` over the shared fake Dispatch (`test/fake-dispatch.ts`)
-// as a fetch, so each reads the text and the details a host is handed; the command-line cases
-// drive the real CLI against that fake on a loopback port, and read its exit code and output.
+// `dispatch steps --issue <KEY>`: the tasks of an issue and the steps that ran on it, as Dispatch's
+// `GET /api/v1/issues/{key}/steps` answers them: one header line, then each task in turn. A task of
+// the plan prints one line of its needs and its planned steps before its runs, and each run prints
+// one line. The format cases drive `executeDispatchTool` over the shared fake Dispatch
+// (`test/fake-dispatch.ts`) as a fetch, so each reads the text and the details a host is handed;
+// the command-line cases drive the real CLI against that fake on a loopback port, and read its exit
+// code and output.
 
 /** The implementer's run of LEG-1's step 2: ended, with its model and its report. */
 const implementer: StepRecord = {
@@ -229,7 +231,7 @@ async function readSteps(answer: IssueSteps) {
 }
 
 describe("dispatch steps", () => {
-  test("prints a header, then one line per run, a running step running", async () => {
+  test("an issue with no plan prints a header, then one line per run, a running step running", async () => {
     const answer: IssueSteps = {
       issue: "LEG-1",
       tasks: [{ task: "default", needs: null, steps: [implementer, tester] }],
@@ -486,7 +488,7 @@ describe("dispatch steps", () => {
   // Dispatch answers an issue that has no plan and that no step ran on with no task (a key no
   // issue carries is its 404 NOT_FOUND, as the issue read answers it); the generated type also lets
   // the list be null, which reads as the empty list.
-  test("an issue with no step prints 0 steps in 0 tasks", async () => {
+  test("an issue with no plan and no step prints 0 steps in 0 tasks", async () => {
     for (const answer of [
       { issue: "LEG-1", tasks: [] },
       { issue: "LEG-1", tasks: null },
@@ -629,7 +631,7 @@ describe("dispatch steps on the command line", () => {
   });
 
   // Only Dispatch's 200 reads as an issue with no step.
-  test("an issue with no step exits 0 and prints 0 steps in 0 tasks", async () => {
+  test("an issue with no plan and no step exits 0 and prints 0 steps in 0 tasks", async () => {
     const server = dispatchServing({ routes: { [STEPS_PATH]: { issue: "LEG-1", tasks: [] } } });
 
     const { code, stdout } = await run(server, ["steps", "--issue", "LEG-1"]);
