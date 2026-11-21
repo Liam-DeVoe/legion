@@ -134,10 +134,9 @@ func busSubject(key, project string) string {
 	if project == "" {
 		project = contracts.NoProject
 	}
-	if rest, found := strings.CutPrefix(key, recordkey.IssuePrefix); found {
-		// An issue key holds no dot; the type after it may (message.created).
-		issue, typ, ok := strings.Cut(rest, ".")
-		if _, isKey := contracts.IssueProject(issue); !ok || !isKey {
+	if strings.HasPrefix(key, recordkey.IssuePrefix) {
+		issue, typ, ok := recordkey.ParseIssue(key)
+		if !ok {
 			return key
 		}
 		return contracts.DispatchIssueSubject(project, issue, typ)

@@ -62,6 +62,9 @@ func misread(row storedRow, key string) string {
 		if err == nil {
 			return fmt.Sprintf("%q parses as %+v, want no session or role", key, parsed)
 		}
+		if issue, typ, ok := ParseIssue(key); !ok || issue != row.Name || typ != row.Type {
+			return fmt.Sprintf("%q parses as issue %q type %q (%v), want %q type %q", key, issue, typ, ok, row.Name, row.Type)
+		}
 		return ""
 	}
 	if err != nil || parsed != (Destination{Kind: kind, Name: row.Name}) {
@@ -92,6 +95,11 @@ func TestAStoredKeyKeepsItsBytes(t *testing.T) {
 			subject = contracts.AgentSubject("PRIV", row.Name)
 		case "role":
 			subject = contracts.RoleSubject("PRIV", row.Name)
+		case "issue":
+			subject = contracts.DispatchIssueSubject("PRIV", row.Name, row.Type)
+			if issue, _, ok := ParseIssue(subject); ok {
+				t.Errorf("control: ParseIssue reads the bus subject %q as issue %q, want it refused", subject, issue)
+			}
 		default:
 			continue
 		}
@@ -101,6 +109,6 @@ func TestAStoredKeyKeepsItsBytes(t *testing.T) {
 		}
 	}
 	if controls == 0 {
-		t.Fatal("UNKNOWN: the control read no session or role row")
+		t.Fatal("UNKNOWN: the control read no row")
 	}
 }

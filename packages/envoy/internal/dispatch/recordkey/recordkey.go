@@ -77,3 +77,21 @@ func Parse(key string) (Destination, error) {
 	}
 	return Destination{}, fmt.Errorf("recordkey: %q is no stored session or role key", key)
 }
+
+// ParseIssue reads an issue's topic family's key back to the issue key and the event type, and
+// answers false for any other key. The issue key is the token after the prefix, which holds a
+// hyphen and no dot (the issues table's key, <PROJECT>-<n>); the type is the rest, which may hold
+// dots (message.created). A bus subject that names a project
+// (notifications.dispatch.issue.<PROJECT>.<KEY>.<type>) has a project key, which holds no hyphen,
+// in that token, so it is refused rather than read as an issue called <PROJECT>.
+func ParseIssue(key string) (issue, typ string, ok bool) {
+	rest, found := strings.CutPrefix(key, IssuePrefix)
+	if !found {
+		return "", "", false
+	}
+	issue, typ, found = strings.Cut(rest, ".")
+	if !found || typ == "" || !strings.Contains(issue, "-") {
+		return "", "", false
+	}
+	return issue, typ, true
+}
