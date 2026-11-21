@@ -435,8 +435,8 @@ func serve(ctx *AppContext) (http.Handler, *http.ServeMux, api.Background) {
 
 // markOutsideOrigin marks each request that came to the outside origin (atOutside) as
 // auth.WithOutsideOrigin does, before any reader of the session cookie sees it, so the cookie is
-// issued and read there by its one name; a request to the canonical origin passes unchanged. A
-// server with no outside origin marks nothing.
+// read there by its one name; a request to the canonical origin passes unchanged. A server with no
+// outside origin marks nothing.
 func (r *router) markOutsideOrigin(next http.Handler) http.Handler {
 	if r.ctx.OutsideOrigin == "" {
 		return next
@@ -620,10 +620,9 @@ func (r *router) authCallback(w http.ResponseWriter, req *http.Request) {
 }
 
 // issueSession ensures the person's session generation and sets the session cookie a sign-in
-// issues, named for the origin the request came to (markOutsideOrigin) and clearing the cookie's
-// other name (auth.SetSessionCookie), answering 500 when the generation cannot be recorded.
-// authCallback, authDevSignIn and the passkey finishes all mint through it, so every sign-in at one
-// origin carries exactly the same cookie, and nothing else writes one.
+// issues, clearing the cookie's other name (auth.SetSessionCookie), answering 500 when the
+// generation cannot be recorded. authCallback, authDevSignIn and the passkey finishes all mint
+// through it, so every sign-in carries exactly the same cookie, and nothing else writes one.
 //
 // subject is the account a sign-in under SignInRule just recorded, empty for a rule that records
 // none. After the generation is read, SignInRule.ConfirmCookie confirms the address's row still
@@ -655,7 +654,7 @@ func (r *router) issueSession(w http.ResponseWriter, req *http.Request, email, s
 			return false
 		}
 	}
-	auth.SetSessionCookie(req.Context(), w.Header(), email, generation, r.ctx.SigningKey, !r.ctx.InsecureCookie)
+	auth.SetSessionCookie(w.Header(), email, generation, r.ctx.SigningKey, !r.ctx.InsecureCookie)
 	return true
 }
 

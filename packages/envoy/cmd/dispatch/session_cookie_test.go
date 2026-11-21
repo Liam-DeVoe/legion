@@ -27,14 +27,12 @@ const (
 	plainSessionCookie = "dsession"
 )
 
-// issuedSessionCookie is the name a sign-in issues the session cookie under, at the outside origin
-// when outside is true and at the canonical origin otherwise. At the outside origin, which no
-// released build served, it is the name for the setting: `__Host-dsession` when Secure, `dsession`
-// under DISPATCH_INSECURE_COOKIE (plain http, over which a browser refuses a `__Host-` cookie). At
-// the canonical origin it is `dsession` under every setting, as every earlier build issues it, so
-// the build before this one reads it in a roll and after a rollback.
-func issuedSessionCookie(outside, insecure bool) string {
-	if outside && !insecure {
+// issuedSessionCookie is the name a sign-in issues the session cookie under, at either origin: the
+// name for the setting, `__Host-dsession` when Secure, `dsession` under DISPATCH_INSECURE_COOKIE
+// (plain http, over which a browser refuses a `__Host-` cookie). The release before this one reads
+// both names at the canonical origin, so it reads every session this one issues there.
+func issuedSessionCookie(insecure bool) string {
+	if !insecure {
 		return hostSessionCookie
 	}
 	return plainSessionCookie
@@ -67,8 +65,6 @@ type cookieWalk struct {
 // as a browser holding prior, another person's session under the name the route does not issue.
 type sessionCookieWriter struct {
 	route string
-	// outside is whether the route is the outside origin's (else the canonical origin's).
-	outside bool
 	// person is whom a sign-in signs in, "" for the sign-out.
 	person string
 	write  func(t *testing.T, w *cookieWalk, prior *http.Cookie) *httptest.ResponseRecorder
@@ -92,10 +88,10 @@ var sessionCookieWriters = map[string]sessionCookieWriter{
 			}
 		})
 	}},
-	"passkeyRegisterFinish": {route: "POST /auth/passkey/register/finish", outside: true, person: outsiderEmail, write: func(t *testing.T, w *cookieWalk, prior *http.Cookie) *httptest.ResponseRecorder {
+	"passkeyRegisterFinish": {route: "POST /auth/passkey/register/finish", person: outsiderEmail, write: func(t *testing.T, w *cookieWalk, prior *http.Cookie) *httptest.ResponseRecorder {
 		return w.enroll(t, newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin), prior)
 	}, whoami: outsideWhoami},
-	"passkeyLoginFinish": {route: "POST /auth/passkey/login/finish", outside: true, person: outsiderEmail, write: func(t *testing.T, w *cookieWalk, prior *http.Cookie) *httptest.ResponseRecorder {
+	"passkeyLoginFinish": {route: "POST /auth/passkey/login/finish", person: outsiderEmail, write: func(t *testing.T, w *cookieWalk, prior *http.Cookie) *httptest.ResponseRecorder {
 		device := newVirtualAuthenticator(t, passkeyRPID, passkeyOrigin)
 		if enrolled := w.enroll(t, device); enrolled.Code != http.StatusOK {
 			t.Fatalf("the enrollment answered %d %s, want 200", enrolled.Code, enrolled.Body.String())
@@ -162,12 +158,11 @@ func (w *cookieWalk) ceremonyCookie(response *httptest.ResponseRecorder) *http.C
 // it without, and a clear of it so refused leaves it standing). The walk drives each route that
 // writes it, under each setting, from a browser holding another person's session under the name
 // the route does not issue:
-//   - a sign-in sets one session, under the name its origin issues (issuedSessionCookie):
-//     `dsession` at the canonical origin (an issuer's callback, the dev sign-in), Secure as the
-//     setting says; at the outside origin (a passkey enrollment or sign-in) `__Host-dsession`,
-//     Secure, or `dsession` under DISPATCH_INSECURE_COOKIE. It clears the other name, and the
-//     browser, keeping what those lines leave, is signed in as the person who signed in, not as
-//     the one whose cookie it held;
+//   - a sign-in at either origin (an issuer's callback and the dev sign-in at the canonical origin,
+//     a passkey enrollment or sign-in at the outside origin) sets one session, under the name for
+//     the setting (issuedSessionCookie): `__Host-dsession`, Secure, or `dsession` under
+//     DISPATCH_INSECURE_COOKIE. It clears the other name, and the browser, keeping what those
+//     lines leave, is signed in as the person who signed in, not as the one whose cookie it held;
 //   - the sign-out clears both names.
 //
 // The census reads the writers from the code: the functions of the module (its non-test files)
@@ -179,10 +174,10 @@ func (w *cookieWalk) ceremonyCookie(response *httptest.ResponseRecorder) *http.C
 // that reaches the cookie's names fails the census instead, since a call of a method through a
 // value names no package it could follow. The census's own control plants one of each.
 //
-// Controls: issue `__Host-dsession` without Secure, and every outside Secure sign-in row fails;
-// issue `__Host-dsession` at the canonical origin, and its Secure sign-in rows fail; issue
-// `dsession` at the outside origin, and its Secure sign-in rows fail; leave out the clear of the
-// other name, and every sign-in row fails; clear one name alone at the sign-out, and its row fails.
+// Controls: issue `__Host-dsession` without Secure, and every Secure sign-in row fails; issue
+// `dsession` where the cookie is Secure, and every Secure sign-in row fails; leave out the clear of
+// the other name, and every sign-in row fails; clear one name alone at the sign-out, and its row
+// fails.
 func TestEverySessionCookieTheServerWritesIsHostOnlyAtTheRoot(t *testing.T) {
 	root := filepath.Join("..", "..")
 	want := []string{}
@@ -243,7 +238,7 @@ func TestEverySessionCookieTheServerWritesIsHostOnlyAtTheRoot(t *testing.T) {
 			for _, handler := range slices.Sorted(maps.Keys(sessionCookieWriters)) {
 				writer := sessionCookieWriters[handler]
 				t.Run(writer.route, func(t *testing.T) {
-					issued := issuedSessionCookie(writer.outside, insecure)
+					issued := issuedSessionCookie(insecure)
 					other := otherSessionCookie(issued)
 					prior := &http.Cookie{Name: other, Value: w.rig.alice.Value}
 					response := writer.write(t, w, prior)
