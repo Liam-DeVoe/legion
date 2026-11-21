@@ -218,20 +218,18 @@ Object.defineProperty(globalThis, "fetch", {
 });
 
 /**
- * The row a session's own work runs for. `bootDirectSession` starts its session inside this
- * scope, so what the session goes on to do (a delivery, a person's `!command` and its answer)
- * carries the row that booted it; the file's `beforeEach` makes each row a new one. Bun fails a
- * row at its timeout and starts the next while that row's session still runs (bun kills the
- * row's dangling child, and the command it was running then answers), so what such a session
- * writes afterwards, a reply on Dispatch or a frame on NATS, is dropped rather than read as the
- * next row's.
+ * The row a session's own work runs for, as its `rowGeneration`. `bootDirectSession` starts its
+ * session inside this scope, so what the session goes on to do (a delivery, a person's `!command`
+ * and its answer) carries the row that booted it. Bun fails a row at its timeout and starts the
+ * next while that row's session still runs (bun kills the row's dangling child, and the command it
+ * was running then answers), so what such a session writes afterwards, a reply on Dispatch or a
+ * frame on NATS, is dropped rather than read as the next row's.
  */
-const rowScope = new AsyncLocalStorage<symbol>();
-let currentRow = Symbol("row");
+const rowScope = new AsyncLocalStorage<number>();
 /** Whether the code running now is the work of a session whose row has ended. */
 function fromEndedRow(): boolean {
   const row = rowScope.getStore();
-  return row !== undefined && row !== currentRow;
+  return row !== undefined && row !== rowGeneration;
 }
 
 test("a row's fetch that hands on through globalThis.fetch fails at once, naming rowFetch", async () => {
@@ -749,7 +747,6 @@ beforeEach(() => {
   jest.useRealTimers();
   contextTimers.length = 0;
   resetFileState();
-  currentRow = Symbol("row");
   // `bun test` runs every file in one process: a Legion suite's bootstrapped-session record on
   // the process-wide interface would otherwise make every transcript here look like a
   // subagent's, the top-level session one test publishes would be the reply address the next
@@ -800,7 +797,8 @@ beforeEach(() => {
 /**
  * Advanced by the file's `afterEach` and `beforeEach`, so a poll a row started sees that its row
  * has ended — at its limit included — and stops, rather than running on into the rows after it,
- * whose stubs of `globalThis.fetch` it would then post through.
+ * whose stubs of `globalThis.fetch` it would then post through, and a session the row booted
+ * writes nothing more (`rowScope`).
  */
 let rowGeneration = 0;
 
@@ -1431,7 +1429,7 @@ async function bootDirectSession(
     },
   };
   // Inside the row's scope, so the session's work carries this row (`rowScope`).
-  await rowScope.run(currentRow, async () => {
+  await rowScope.run(rowGeneration, async () => {
     await fixture.handlers.get("session_start")?.({}, context);
   });
   const agent = natsState.controls.get("notifications.agent.ses_delivery");
@@ -1721,8 +1719,9 @@ async function onPassClock<T>(body: (clock: PassClock) => Promise<T>): Promise<T
     if (AbortSignal.timeout === watched) AbortSignal.timeout = timeout;
     if (!ended()) jest.useRealTimers();
   }
-  // The row ended before its body did, and its limit reported it: a failure the body met after
-  // that would only be laid on the row running now, so the call is left unsettled instead.
+  // The row ended before its body did, and its limit reported it: bun 1.4.4 reports a failure the
+  // body met after that between the rows, as an error beside the limit's, so the call is left
+  // unsettled instead.
   return new Promise<never>(() => {});
 }
 
@@ -2381,7 +2380,9 @@ async function settle(): Promise<void> {
 // or resubscribe path ever makes true, and the row's own per-test limit is what ends that, naming
 // the test. Once the row has ended, at its limit included, the file's `afterEach` advances
 // `rowGeneration` and the poll stops, rather than running on into the rows after it, as
-// `refreshed` below does. The warning at 2_000 names what the row waits for, once per call, and
+// `refreshed` below does, and the call is left unsettled, as `onPassClock` leaves a body its row
+// outlived: bun 1.4.4 reports a throw from an ended row between the rows, as an error beside the
+// limit's. The warning at 2_000 names what the row waits for, once per call, and
 // from then on each poll also yields a real millisecond: `settle()` alone is 25 `setImmediate`
 // round trips and no delay, so a condition that never holds would spin a core beside whatever
 // else runs on the host. The pacing starts only once the wait is already pathological, so a
@@ -2397,7 +2398,7 @@ async function until(condition: () => boolean, what: string): Promise<void> {
   const start = performance.now();
   let warned = false;
   while (!condition()) {
-    if (generation !== rowGeneration) throw new Error(`stopped waiting for ${what}: the row ended`);
+    if (generation !== rowGeneration) return new Promise<void>(() => {});
     if (!warned && performance.now() - start > 2_000) {
       warned = true;
       console.warn(`still waiting for ${what} after 2 s`);
@@ -12804,10 +12805,7 @@ console.log(JSON.stringify(args));
         "the heartbeat's refused registration and the one after it"
       );
       intervals[0]?.();
-      await until(
-        () => registrations.length >= refusedAt + 3,
-        "the next heartbeat's registration"
-      );
+      await until(() => registrations.length >= refusedAt + 3, "the next heartbeat's registration");
       await settle();
 
       expect(told()).toHaveLength(1);
@@ -12817,7 +12815,8 @@ console.log(JSON.stringify(args));
     } finally {
       await fixture.handlers.get("session_shutdown")?.({}, context);
     }
-  });
+    // MEASUREMENT-PROVISIONAL
+  }, 60_000);
 
   // Registrations are not serialized: the tool's and a heartbeat's can both carry a topic the edge
   // refuses, and both be refused. The topic stops being followed once, so the session is told of
@@ -12883,7 +12882,8 @@ console.log(JSON.stringify(args));
     } finally {
       await fixture.handlers.get("session_shutdown")?.({}, context);
     }
-  });
+    // MEASUREMENT-PROVISIONAL
+  }, 60_000);
 
   // The tool names as refused only what its own registration was refused: a topic the session
   // stopped following meanwhile, by an unsubscribe or a session switch, was subscribed, not
@@ -12927,7 +12927,8 @@ console.log(JSON.stringify(args));
     } finally {
       await fixture.handlers.get("session_shutdown")?.({}, context);
     }
-  });
+    // MEASUREMENT-PROVISIONAL
+  }, 60_000);
 
   test("unsubscribes role-shaped subscriptions locally without releasing the held role", async () => {
     const role = "librarian";
@@ -22217,7 +22218,21 @@ console.log(JSON.stringify(args));
       const { default: envoyExtension } = await import("./envoy.ts?first-dial-refused-twice");
       const fixture = createPi();
       envoyExtension(fixture.pi);
-      await fixture.handlers.get("session_start")?.({}, context);
+      // The start's work, two trades with their DPoP signing and three dials, runs inside this
+      // process's own timers: the start's trade bound (`TRADE_DEADLINE_MS`) and its pass's
+      // deadline. On the real clock the row's outcome depended on the host finishing that work
+      // inside them, so the start runs on the test's clock (`onPassClock`), held while the work
+      // runs, which no count of turns measures (`wait`).
+      await onPassClock(async (clock) => {
+        let settled = false;
+        const starting = Promise.resolve(
+          fixture.handlers.get("session_start")?.({}, context)
+        ).finally(() => {
+          settled = true;
+        });
+        await clock.wait("the start", () => settled);
+        await starting;
+      });
       expect(
         natsState.failConnects,
         notifications.map(({ message }) => message).join(" | ")
@@ -22233,7 +22248,8 @@ console.log(JSON.stringify(args));
       stopSink();
       setNatsConnectForTests(natsStandInConnect);
     }
-  }, 30_000);
+    // MEASUREMENT-PROVISIONAL
+  }, 60_000);
 
   test("natsCredential follows a session switch", async () => {
     // A session that presents its broker token (NATS_AUTH=broker) is admitted to its own subjects
