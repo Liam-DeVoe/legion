@@ -587,22 +587,48 @@ func TestOneTokenCostsOneIntrospectionInsideTheCachesLife(t *testing.T) {
 	}
 }
 
+// heldAnswer is a transport that holds each introspection back until every request counted in
+// arrived is on its way to the verifier, and then for pause more, ample time for each to reach
+// it, before it sends the introspection on: how a test has all its requests arrive while the
+// first introspection is still in flight.
+type heldAnswer struct {
+	arrived *sync.WaitGroup
+	pause   time.Duration
+}
+
+func (h heldAnswer) RoundTrip(r *http.Request) (*http.Response, error) {
+	h.arrived.Wait()
+	time.Sleep(h.pause)
+	return http.DefaultTransport.RoundTrip(r)
+}
+
 // TestRequestsArrivingAtOnceWithOneTokenCostOneIntrospection: the single flight is what makes a
 // burst on a cold cache cost one introspection rather than one a request, and the address bucket
-// is spent inside that flight, so the burst costs one request of it rather than one each. The
-// bucket here holds exactly one, so charging per request would refuse every request but the
-// first — which is what an honest caller making a burst of calls on a token it has just been
+// is taken from inside that flight, so the burst takes one request of it rather than one each,
+// and the live answer gives that one back (R11). The bucket here holds exactly one, so charging
+// per request would refuse every request that arrives while the first one's introspection is in
+// flight — which is what an honest caller making a burst of calls on a token it has just been
 // given would meet.
+//
+// The broker's answer is held back (heldAnswer) until all eight requests are on their way to the
+// verifier and 200 ms more have passed, so every request arrives while the first introspection is
+// in flight, before its live answer gives the bucket's one request back. Without the hold the
+// answer could come back, and return the request, before the others arrive, and a charge per
+// request could then refuse none of them; with it, such a charge refuses all seven others
+// ErrRateLimited.
 func TestRequestsArrivingAtOnceWithOneTokenCostOneIntrospection(t *testing.T) {
+	const requests = 8
+	var arrived sync.WaitGroup
+	arrived.Add(requests)
 	rig := newRig(t, func(o *ciphertoken.Options) {
 		o.AddressLimit = ratelimit.Limit{Every: time.Hour, Burst: 1}
+		o.HTTP = &http.Client{Transport: heldAnswer{arrived: &arrived, pause: 200 * time.Millisecond}}
 	})
 	caller := newSigner(t)
 	const token = "a-token-many-requests-arrive-with-at-once"
 	rig.broker.Says(token, liveToken(caller.jkt, time.Hour))
 
 	// Each request needs its own proof: a replayed one is refused, which is a different check.
-	const requests = 8
 	signed := make([]*http.Request, requests)
 	for i := range signed {
 		signed[i] = caller.at(fmt.Sprintf("%s/%d", resourcePath, i), token)
@@ -613,6 +639,7 @@ func TestRequestsArrivingAtOnceWithOneTokenCostOneIntrospection(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
+			arrived.Done()
 			_, failures[i] = rig.verifier.Verify(t.Context(), signed[i])
 		}()
 	}
@@ -790,15 +817,17 @@ func TestAFloodOfDistinctUnknownTokensFromOneAddressIsBoundedBeforeTheBroker(t *
 }
 
 // TestARefusedAddressIsNeverTheBrokersVerdict: the refusal a spent bucket gives is its own
-// outcome, so a caller is told to come back rather than told its token is bad.
+// outcome, so a caller is told to come back rather than told its token is bad. The bucket is
+// spent by a token the broker calls not live, whose request stays taken: a live token gives its
+// request back (R11), so it would leave the bucket as it found it.
 func TestARefusedAddressIsNeverTheBrokersVerdict(t *testing.T) {
 	rig := newRig(t, func(o *ciphertoken.Options) {
 		o.AddressLimit = ratelimit.Limit{Every: time.Minute, Burst: 1}
 	})
 	caller := newSigner(t)
-	rig.broker.Says("the-first-token", liveToken(caller.jkt, time.Hour))
-	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-first-token")); err != nil {
-		t.Fatalf("the request that spends the bucket: %v", err)
+	rig.broker.Says("the-first-token", ciphertoken.Introspection{Active: false})
+	if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "the-first-token")); !errors.Is(err, ciphertoken.ErrNotActive) {
+		t.Fatalf("the request that spends the bucket answered %v, want ErrNotActive", err)
 	}
 
 	_, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, "a-second-token"))
@@ -810,6 +839,137 @@ func TestARefusedAddressIsNeverTheBrokersVerdict(t *testing.T) {
 	}
 	if rig.verifier.RetryAfter() != time.Minute {
 		t.Fatalf("RetryAfter = %v, want the bucket's minute", rig.verifier.RetryAfter())
+	}
+}
+
+// The five tests below hold R11 of INFRA-4425: every introspection takes one request from its
+// source address's bucket before it is sent, as INFRA-228 requires, and gives it back when the
+// broker answers that the token is live, so the bucket bounds only the introspections of tokens
+// the broker does not answer live. Each runs on newRig's default bucket (DefaultAddressLimit) and
+// its held clock, which none of them advances, so the bucket refills nothing and every answer
+// falls inside one AffirmativeCacheTTL. Every request comes from one source address, presents a
+// token no request before it presented, and is sent only once the one before it has its answer.
+
+// TestLiveTokensFromOneAddressGiveTheirRequestBack (R11): twice the bucket's burst of distinct
+// tokens the broker answers live, from one address as every caller behind one gateway arrives, are
+// all admitted and none is refused ErrRateLimited, and each reaches the broker: a live token's
+// introspection leaves the bucket as it found it.
+func TestLiveTokensFromOneAddressGiveTheirRequestBack(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	tokens := 2 * ciphertoken.DefaultAddressLimit.Burst
+	for i := range tokens {
+		token := fmt.Sprintf("a-live-token-behind-one-gateway-%d", i)
+		rig.broker.Says(token, liveToken(caller.jkt, time.Hour))
+		if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); err != nil {
+			t.Fatalf("live token %d of %d answered %v, want it admitted", i+1, tokens, err)
+		}
+	}
+	if rig.broker.Count() != int64(tokens) {
+		t.Fatalf("%d live tokens cost %d introspections, want %d", tokens, rig.broker.Count(), tokens)
+	}
+}
+
+// TestTokensTheBrokerCallsNotLiveKeepTheirRequest (R11): a refusal gives nothing back, so of twice
+// the bucket's burst of distinct tokens the broker answers not live, the first burst are refused
+// ErrNotActive by the broker and every one after is refused ErrRateLimited without reaching it.
+func TestTokensTheBrokerCallsNotLiveKeepTheirRequest(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	burst := ciphertoken.DefaultAddressLimit.Burst
+	for i := range 2 * burst {
+		token := fmt.Sprintf("a-token-the-broker-calls-not-live-%d", i)
+		rig.broker.Says(token, ciphertoken.Introspection{Active: false})
+		want := ciphertoken.ErrNotActive
+		if i >= burst {
+			want = ciphertoken.ErrRateLimited
+		}
+		if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, want) {
+			t.Fatalf("not-live token %d of %d answered %v, want %v", i+1, 2*burst, err, want)
+		}
+	}
+	if rig.broker.Count() != int64(burst) {
+		t.Fatalf("%d not-live tokens cost %d introspections, want the bucket's burst of %d", 2*burst, rig.broker.Count(), burst)
+	}
+}
+
+// TestIntrospectionsThatGetNoAnswerKeepTheirRequest (R11): an introspection that gets no answer
+// gives nothing back, so of twice the bucket's burst of distinct tokens whose introspection
+// answers a body that does not decode — an answer cut off mid-body, even one that began live — the
+// first burst are answered ErrBrokerUnreachable and every one after is refused ErrRateLimited
+// without reaching the broker.
+func TestIntrospectionsThatGetNoAnswerKeepTheirRequest(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	burst := ciphertoken.DefaultAddressLimit.Burst
+	for i := range 2 * burst {
+		token := fmt.Sprintf("a-token-whose-introspection-gets-no-answer-%d", i)
+		rig.broker.SaysRaw(token, `{"active":true,"session":"ses_a1b2c3"`)
+		want := ciphertoken.ErrBrokerUnreachable
+		if i >= burst {
+			want = ciphertoken.ErrRateLimited
+		}
+		if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, want) {
+			t.Fatalf("unanswered token %d of %d answered %v, want %v", i+1, 2*burst, err, want)
+		}
+	}
+	if rig.broker.Count() != int64(burst) {
+		t.Fatalf("%d unanswered tokens cost %d introspections, want the bucket's burst of %d", 2*burst, rig.broker.Count(), burst)
+	}
+}
+
+// TestOnlyTokensTheBrokerCallsNotLiveSpendTheBucket (R11): a burst of live tokens leaves the
+// bucket whole for what follows, so after the bucket's burst of distinct live tokens, all
+// admitted, the next burst of distinct not-live tokens are each refused ErrNotActive by the
+// broker, and only the request after them, the first the bucket cannot take, is refused
+// ErrRateLimited.
+func TestOnlyTokensTheBrokerCallsNotLiveSpendTheBucket(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	burst := ciphertoken.DefaultAddressLimit.Burst
+	request := 0
+	for i := range burst {
+		request++
+		token := fmt.Sprintf("a-live-token-before-the-refusals-%d", i)
+		rig.broker.Says(token, liveToken(caller.jkt, time.Hour))
+		if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); err != nil {
+			t.Fatalf("request %d, live token %d of %d, answered %v, want it admitted", request, i+1, burst, err)
+		}
+	}
+	for i := range burst + 1 {
+		request++
+		token := fmt.Sprintf("a-not-live-token-after-the-live-ones-%d", i)
+		rig.broker.Says(token, ciphertoken.Introspection{Active: false})
+		want := ciphertoken.ErrNotActive
+		if i == burst {
+			want = ciphertoken.ErrRateLimited
+		}
+		if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, want) {
+			t.Fatalf("request %d, not-live token %d of %d, answered %v, want %v", request, i+1, burst+1, err, want)
+		}
+	}
+	if rig.broker.Count() != int64(2*burst) {
+		t.Fatalf("%d requests cost %d introspections, want %d: every one but the refused last", request, rig.broker.Count(), 2*burst)
+	}
+}
+
+// TestALiveTokenThatIsNoSessionsCredentialGivesItsRequestBack (R11): the give-back follows the
+// broker's answer that the token is live alone, whatever Verify decides about the token after it,
+// so twice the bucket's burst of distinct machine-login tokens, each live and each refused
+// ErrNotASession, are none of them refused ErrRateLimited, and each reaches the broker.
+func TestALiveTokenThatIsNoSessionsCredentialGivesItsRequestBack(t *testing.T) {
+	rig := newRig(t)
+	caller := newSigner(t)
+	tokens := 2 * ciphertoken.DefaultAddressLimit.Burst
+	for i := range tokens {
+		token := fmt.Sprintf("a-machine-logins-own-token-%d", i)
+		rig.broker.Says(token, machineLoginToken(caller.jkt, time.Hour))
+		if _, err := rig.verifier.Verify(t.Context(), caller.at(resourcePath, token)); !errors.Is(err, ciphertoken.ErrNotASession) {
+			t.Fatalf("machine-login token %d of %d answered %v, want ErrNotASession", i+1, tokens, err)
+		}
+	}
+	if rig.broker.Count() != int64(tokens) {
+		t.Fatalf("%d machine-login tokens cost %d introspections, want %d", tokens, rig.broker.Count(), tokens)
 	}
 }
 

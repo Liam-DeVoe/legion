@@ -4,7 +4,9 @@ custom:
 body: |-
   `legion probe-image` prints two more marks on its OK line: `omp-version`, the first non-blank
   line of the image's `omp --version`, and `omp-session-id`, which says whether `omp --help` lists
-  the `--session-id` flag (`taken`, `absent`, or `unread` when the probe could not read the help).
+  the `--session-id` flag (`taken`, `absent`, or `unread` when the read failed before the probe's
+  deadline). A read of either that the deadline cut gives no verdict, so the probe prints no OK
+  line and exits 75, and the daemon's probe tries again.
   With `runtime.kubernetes.agent_secrets.exchange_audience` set, each new Oh My Pi role starts with
   `--session-id <id>`, so the daemon's boot and `legion probe-boot` refuse a worker image whose
   mark is not `taken`. The refusal names the flag and the setting, and the Oh My Pi version where
