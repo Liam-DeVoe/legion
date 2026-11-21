@@ -13,10 +13,10 @@ body: |-
   `code: BROKER_TOKEN_NOT_ACTIVE`, as Dispatch does, so the Go token transport drops it and trades
   again. Every other refused credential gets the same plain 401 as before.
 
-  The secrets broker refuses a session that opens `legion-daemon:` where the request names its own
-  session, and in a pod-session registration (`invalid_request`, the refusal of an unusable
-  session name). Only the fixed session of an exchange entry may be such a name, so only a daemon's
-  own entry mints a token the listener takes for a daemon's.
+  The secrets broker refuses a session that opens `legion-daemon:` in an exchange whose request
+  names its own session, and refuses a pod-session registration of one (400 `SESSION_INVALID`).
+  Only the fixed session of an exchange entry may be such a name, so only a daemon's own entry
+  mints a token the listener takes for a daemon's.
 time: 2026-11-21T02:44:40Z
 custom:
     Issue: pr4723
