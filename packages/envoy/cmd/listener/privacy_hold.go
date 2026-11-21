@@ -182,6 +182,18 @@ type relayGap struct {
 	reason string
 }
 
+// laneHolds reports whether sessionID's lane of project holds frames.
+func (m *sessionRelays) laneHolds(sessionID, project string) bool {
+	m.holds.mu.Lock()
+	defer m.holds.mu.Unlock()
+	hold := m.holds.sessions[sessionID]
+	if hold == nil {
+		return false
+	}
+	lane := hold.lanes[project]
+	return lane != nil && len(lane.frames) > 0
+}
+
 // decideFrame is the privacy rule for msg, which sessionID's consumer delivered: the messages to
 // relay now, in stream order. A message the hold takes, and one a read withholds, is in none.
 func (m *sessionRelays) decideFrame(ctx context.Context, sessionID string, msg bus.SessionMessage) []bus.SessionMessage {
@@ -199,6 +211,14 @@ func (m *sessionRelays) decideFrame(ctx context.Context, sessionID string, msg b
 	}
 	if entry.IsRestricted() {
 		m.withhold(sessionID, msg, true)
+		return nil
+	}
+	// A frame of a project whose lane already holds frames for the session joins that lane with
+	// no read of its own: the lane is decided as a whole by the next read (redecideHeld, at most
+	// holdLimits.redecide away), which is sent after this frame arrived, and keeps its order. So an
+	// outage costs one read per session and lane per redecide interval, not one per frame.
+	if m.laneHolds(sessionID, project) {
+		m.hold(ctx, sessionID, project, msg)
 		return nil
 	}
 	counters := m.privacy.counted()
