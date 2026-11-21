@@ -45,6 +45,13 @@ body: |-
     that a link stored before it names and whose head Dispatch does not hold, as a link write owes
     it (migration `20261120171308_pull_request_reads_owed_link_backfill`), so a merged pull
     request linked before this release gets its head without an event.
+
+    The record of a result, `POST /api/v1/issues/{key}/results`, takes a link by the same rule
+    when it asks which repositories a result's commit may be of, and so does the list of
+    `unreadable_links`, which names a link in any letter case of its repository's name. A link
+    whose repository's name GitHub cannot have, an owner that starts with `-` or `_`, or a name
+    that is empty, `.` or `..` once a trailing `.git` is trimmed, such as `acme/.git`, names no
+    pull request: it owes no read, and the record reads no pull request of it.
 time: 2026-11-19T20:36:28.000000000Z
 custom:
     Issue: pr4209
