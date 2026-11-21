@@ -116,10 +116,12 @@ const (
 // goingRowRecord is what became of a row's write (going_plan_rows.result): the step and call
 // whose key ran it, which a second try of that key is held to, how its upload is sent where it is
 // one (goingRowUpload), the status its route answered, or the code and words of its refusal, and,
-// for a row that sends a message, what became of it (goingRowDelivery). Resumes is the key of an
-// earlier try of the row whose call landed partly before the row waited for its person again: the
-// row's next try takes over what that key landed, matched by each request's digest, and sends
-// only the rest (AgentListener.adoptLandings). An approval of the row keeps it.
+// for a row that sends a message, what became of it (goingRowDelivery). Resumes is the key of
+// each earlier try of the row whose call landed partly before the row waited for its person
+// again, oldest first: the row's next try takes over what the newest landed, matched by each
+// request's digest, and sends only the rest (AgentListener.adoptLandings), and Undo reads each
+// key's landings as the row's (goingLandedWrites), so what landed stays the row's whatever the
+// person answers it with. An answer of the row keeps it, and so does every record after.
 type goingRowRecord struct {
 	Step     int             `json:"step"`
 	Call     int             `json:"call"`
@@ -128,7 +130,7 @@ type goingRowRecord struct {
 	Code     string          `json:"code,omitempty"`
 	Message  string          `json:"message,omitempty"`
 	Delivery string          `json:"delivery,omitempty"`
-	Resumes  *goingRowKey    `json:"resumes,omitempty"`
+	Resumes  []goingRowKey   `json:"resumes,omitempty"`
 }
 
 // goingRowKey is the call key of a try of a row, within its run: the step and the call.

@@ -173,13 +173,19 @@ type goingLandedWrite struct {
 // goingLandedWrites is every call of run that landed a request (going_landings, phase do), newest
 // first, each with the row of the run's plan whose key it is (going_plan_rows.result): the row
 // records the key that runs it before its first request is sent, so a call whose process ended
-// after it landed is among them, whatever its row says of how it went.
+// after it landed is among them, whatever its row says of how it went; and it keeps the key of an
+// earlier try whose call landed partly before the row waited again (goingRowRecord.Resumes), so
+// that try's landings stay the row's whatever the person answered the row with - unticked, or
+// approved again with other values, which the next try sends anew - until a try of the row takes
+// them over (adoptLandings).
 func (s *server) goingLandedWrites(ctx context.Context, run string) ([]goingLandedWrite, error) {
 	rows, err := s.deps.Store.Pool.Query(ctx, `
 		select l.step, l.call, l.method, l.path, l.body_digest, coalesce((l.answer->>'status')::int, 0), l.answer->'body',
 		  l.recovery, p.plan, p.row, coalesce(p.change->>'tool', ''), p.change->'arguments', p.approval
 		from going_landings l
-		left join going_plan_rows p on p.run_id = l.run_id and (p.result->>'step')::int = l.step and (p.result->>'call')::int = l.call
+		left join going_plan_rows p on p.run_id = l.run_id
+		  and ((p.result->>'step')::int = l.step and (p.result->>'call')::int = l.call
+		       or p.result->'resumes' @> jsonb_build_array(jsonb_build_object('step', l.step, 'call', l.call)))
 		where l.run_id = $1::uuid and l.phase = 'do'
 		order by l.step desc, l.call desc, l.request
 	`, run)
@@ -248,7 +254,9 @@ type goingUndoSend struct {
 // earlier press of Undo, or one made beside this one - is answered from that landing, and nothing
 // is sent. A call that names no row of the run's plan, or whose tool the table no longer holds, is
 // refused, 409 GOING_UNDO_UNKNOWN, and a kind this server has no way to run for the tool, 501
-// GOING_UNDO_UNSERVED. A call whose route recorded nothing that says what it found and left is
+// GOING_UNDO_UNSERVED. A call of which only the requests it sends before its own landed - a close's
+// reason, a message - is named sent, not undone: no undo takes a message back, and nothing else of
+// the change stands. A call whose route recorded nothing that says what it found and left is
 // refused, 409 GOING_UNDO_AFTER_UNREAD, and one whose route found a value the row's read did not
 // see, 409 GOING_UNDO_BEFORE_UNREAD: nothing is put back.
 func (u goingUndoer) undo(ctx context.Context, write goingLandedWrite) goingUndoLine {
@@ -269,6 +277,17 @@ func (u goingUndoer) undo(ctx context.Context, write goingLandedWrite) goingUndo
 	}
 	if tool.Undo == goingUndoNotUndone {
 		line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingSentNotUndone}
+		return goingLineOf(line, nil)
+	}
+	if last := write.requests[len(write.requests)-1]; !goingOwnLanded(u.s.going, write.tool, last) {
+		line.Undo = goingUndoNotUndone
+		line.Outcome = goingWriteOutcome{OK: true, Status: http.StatusOK, Message: goingSentNotUndone}
+		// The line names the row's item, not the message that landed.
+		if write.seen != nil && write.seen.Item != "" {
+			line.Item = write.seen.Item
+		} else if issue := goingIssueOfPath(last.path); issue != "" {
+			line.Item = issue
+		}
 		return goingLineOf(line, nil)
 	}
 	var send *goingUndoSend

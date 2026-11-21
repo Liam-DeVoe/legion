@@ -469,7 +469,7 @@ func (a *AgentListener) routeCall(ctx context.Context, request agentwire.CallReq
 		return agentwire.CallAnswer{}, resumeRefusal
 	}
 	if refusal != nil {
-		if last := goingLastLanded(landed); last != nil && refusal.Code == agentwire.CodeCallRefused && a.ownLanded(request.Tool, last) {
+		if last := goingLastLanded(landed); last != nil && refusal.Code == agentwire.CodeCallRefused && goingOwnLanded(a.s.going, request.Tool, *last) {
 			// The call's own request landed, and what it left is what the tool now refuses on:
 			// the call is answered as it landed.
 			return last.answer(), nil
@@ -548,11 +548,11 @@ func goingLastLanded(landed []*goingLandedRequest) *goingLandedRequest {
 	return nil
 }
 
-// ownLanded reports whether landed, a request a call of tool landed, is the call's own: one a row
-// of the tool sends (goingRecordedCall), and not one the call sends before its own, such as a
+// goingOwnLanded reports whether landed, a request a call of tool landed, is the call's own: one a
+// row of the tool sends (goingRecordedCall), and not one the call sends before its own, such as a
 // close's reason.
-func (a *AgentListener) ownLanded(tool string, landed *goingLandedRequest) bool {
-	_, own := goingRecordedCall(a.s.going, tool, goingWriteRequest{Method: landed.method, Path: landed.path})
+func goingOwnLanded(catalogue GoingCatalogue, tool string, landed goingLandedRequest) bool {
+	_, own := goingRecordedCall(catalogue, tool, goingWriteRequest{Method: landed.method, Path: landed.path})
 	return own
 }
 

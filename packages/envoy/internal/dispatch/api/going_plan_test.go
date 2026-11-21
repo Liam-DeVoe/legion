@@ -619,7 +619,7 @@ func TestARetryOfAPartlyLandedRowReadsItsItemAgainAndPostsItsReasonOnce(t *testi
 // another person closes its issue before it runs. Its run takes the reason over before the close
 // is refused, so the row fails saying the reason was written and the close was not sent, in words,
 // the issue holds the reason once, and the reason's landing is the row's own: Undo of the run
-// answers one line, the row's.
+// answers one line, the row's, which names the reason sent, not undone.
 func TestARowApprovedAgainAfterItsReasonLandedSaysSoWhenItsIssueClosedMeanwhile(t *testing.T) {
 	rig := newGoingPlanRig(t)
 	run, issue, reason := rig.partlyLandedWaiting(t, "Closed by another meanwhile")
@@ -642,7 +642,61 @@ func TestARowApprovedAgainAfterItsReasonLandedSaysSoWhenItsIssueClosedMeanwhile(
 	if reasons := rig.goingReasonsOn(t, issue, reason); reasons != 1 {
 		t.Errorf("%s holds %d reasons, want the one", issue, reasons)
 	}
-	rig.undone(t, run, "dispatch_issue_update")
+	goingReasonOnlyLine(t, rig.undone(t, run, "dispatch_issue_update")[0], issue)
+}
+
+// goingReasonOnlyLine fails t unless line is the undo of a reasoned close's row - row 0 of plan 1 -
+// on issue of which only the reason landed: named sent, not undone, as a message is.
+func goingReasonOnlyLine(t *testing.T, line goingUndoLine, issue string) {
+	t.Helper()
+	if line.Plan != 1 || line.Row != 0 || line.Undo != goingUndoNotUndone || !line.Outcome.OK || line.Item != issue {
+		t.Fatalf("the reason's undo line is %+v, want row 0 of plan 1 on %s, sent, not undone", line, issue)
+	}
+}
+
+// TestAnUntickedRowsLandedReasonStaysTheRowsToUndo: a reasoned close whose reason landed and that
+// waits for its person again (partlyLandedWaiting) is unticked: Undo of the run answers the row's
+// line for the reason that landed, sent, not undone, and no line of a call that names no row.
+func TestAnUntickedRowsLandedReasonStaysTheRowsToUndo(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	run, issue, _ := rig.partlyLandedWaiting(t, "Unticked after its reason landed")
+	rig.answer(t, run, "approve", map[string]any{"plan": 1, "rows": []map[string]any{{"row": 0, "tick": false}}})
+	goingReasonOnlyLine(t, rig.undone(t, run, "dispatch_issue_update")[0], issue)
+}
+
+// TestARowApprovedAgainWithAnotherReasonKeepsTheFirstReasonToUndo: a reasoned close whose reason
+// landed and that waits for its person again (partlyLandedWaiting) is approved again with another
+// reason, which its next try posts with the close. Undo of the run answers two lines of the row:
+// the close, written back, and the first reason, sent, not undone.
+func TestARowApprovedAgainWithAnotherReasonKeepsTheFirstReasonToUndo(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	run, issue, reason := rig.partlyLandedWaiting(t, "Approved again with another reason")
+	edited := "Shipped, and announced in the release notes."
+	rig.answer(t, run, "approve", map[string]any{"plan": 1, "rows": []map[string]any{{"row": 0, "tick": true, "values": map[string]any{"reason": edited}}}})
+	rig.loop.start(rig.goingAgentRig)
+	if record := rig.ended(t, run, time.Minute); record.state != "done" {
+		t.Fatalf("after its approval again the run ended %s with %q, want done; its calls were told %q", record.state, record.reason, rig.toolResults(t, run))
+	}
+	if first, second, status := rig.goingReasonsOn(t, issue, reason), rig.goingReasonsOn(t, issue, edited), rig.issueRead(t, issue).Status; first != 1 || second != 1 || status != "done" {
+		t.Fatalf("%s holds %d of the first reason, %d of the edited one and status %s, want one of each and the issue done", issue, first, second, status)
+	}
+	lines := rig.undone(t, run, "dispatch_issue_update", "dispatch_issue_update")
+	at := slices.IndexFunc(lines, func(line goingUndoLine) bool { return line.Undo == goingUndoWriteBack })
+	if at < 0 || lines[at].Plan != 1 || lines[at].Row != 0 || !lines[at].Outcome.OK || rig.issueRead(t, issue).Status != "in_progress" {
+		t.Fatalf("the undo lines are %+v and the issue's status %s, want the close of row 0 of plan 1 written back to Bob's in_progress",
+			lines, rig.issueRead(t, issue).Status)
+	}
+	goingReasonOnlyLine(t, lines[1-at], issue)
+}
+
+// TestARowApprovedAgainKeepsItsLandedReasonToUndoBeforeItRunsAgain: a reasoned close whose reason
+// landed and that waits for its person again (partlyLandedWaiting) is approved again, and Undo is
+// pressed before the row's next try: it answers the row's line for the reason, sent, not undone.
+func TestARowApprovedAgainKeepsItsLandedReasonToUndoBeforeItRunsAgain(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	run, issue, _ := rig.partlyLandedWaiting(t, "Undone before its next try")
+	rig.answer(t, run, "approve", map[string]any{"plan": 1})
+	goingReasonOnlyLine(t, rig.undone(t, run, "dispatch_issue_update")[0], issue)
 }
 
 // TestAFailedChangeSkipsWhatNeedsIt: a row whose write its route refuses fails, the row that needs
@@ -1121,5 +1175,58 @@ func TestAnApprovalOfAPlanAnotherPageReadSinceIsRefused(t *testing.T) {
 	rig.answer(t, run, "approve", map[string]any{"plan": 1, "version": newer.Version})
 	if record := rig.ended(t, run, time.Minute); record.state != "done" || rig.title(t, issue) != "Ours" {
 		t.Fatalf("after the second page's approval the run is %s and the title %q, want done with Ours", record.state, rig.title(t, issue))
+	}
+}
+
+// TestTheInboxNamesTheVersionOfEachWaitingPlan: the Inbox's row of a waiting plan (GET
+// /api/v1/me/going-plans) names the plan's version as the plan's own answer does, so an approval
+// from the Inbox holds the plan to what the Inbox showed: once another page read the plan again
+// and it moved, the Inbox names the new version, an approval naming the one it named before is
+// refused 409 GOING_PLAN_CHANGED with nothing written, and one naming the new version runs.
+func TestTheInboxNamesTheVersionOfEachWaitingPlan(t *testing.T) {
+	rig := newGoingPlanRig(t)
+	issue := rig.issue(t, "Approved from the Inbox")
+	const words = "rename Approved from the Inbox"
+	rig.loop.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return proposing(goingChange("dispatch_issue_update", retitle(issue, "Ours")))
+		}
+		return answered("Renamed.")
+	})
+	run := rig.begin(t, goingLoopRun{login: "alice", words: words})
+	first := rig.waiting(t, run)
+	inbox := func(t *testing.T) goingWaitingPlan {
+		t.Helper()
+		response := dispatchRequest(t, rig.mux, http.MethodGet, "/api/v1/me/going-plans", nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET /api/v1/me/going-plans answered %d %s", response.Code, response.Body.String())
+		}
+		for _, row := range decodeBody[goingWaitingPlansPage](t, response).Rows {
+			if row.Run == run {
+				return row
+			}
+		}
+		t.Fatalf("the Inbox lists no waiting plan of run %s", run)
+		return goingWaitingPlan{}
+	}
+	shown := inbox(t)
+	if shown.Version == "" || shown.Version != first.Version {
+		t.Fatalf("the Inbox names version %q of the plan, whose own answer names %q: want the same version", shown.Version, first.Version)
+	}
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"title": "Bob's"})
+	newer := rig.plan(t, run)
+	if moved := inbox(t); moved.Version != newer.Version || moved.Version == shown.Version {
+		t.Fatalf("after another page read the plan again the Inbox names version %q, the plan %q and the Inbox before %q: want the plan's new version",
+			moved.Version, newer.Version, shown.Version)
+	}
+	refused := dispatchRequest(t, rig.mux, http.MethodPost, "/api/v1/going/runs/"+run+"/plan/approve",
+		map[string]any{"plan": shown.Plan, "version": shown.Version}, "alice")
+	if refused.Code != http.StatusConflict || responseCode(t, refused) != codeGoingPlanChanged || rig.title(t, issue) != "Bob's" {
+		t.Fatalf("the approval naming the Inbox's earlier version answered %d %s and left the title %q, want 409 %s and nothing written",
+			refused.Code, refused.Body.String(), rig.title(t, issue), codeGoingPlanChanged)
+	}
+	rig.answer(t, run, "approve", map[string]any{"plan": shown.Plan, "version": inbox(t).Version})
+	if record := rig.ended(t, run, time.Minute); record.state != "done" || rig.title(t, issue) != "Ours" {
+		t.Fatalf("after the approval naming the Inbox's version the run is %s and the title %q, want done with Ours", record.state, rig.title(t, issue))
 	}
 }
