@@ -39,11 +39,26 @@ async function openPlanConversation(
  *  conversation in the bar to tick, edit or revise it there. */
 function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNode {
   const queryClient = useQueryClient();
-  const [refusal, setRefusal] = useState<string>();
+  // The row stays mounted as its run proposes another plan, so a refusal names the plan it was
+  // about and shows only while the row shows that plan.
+  const [refused, setRefused] = useState<{
+    readonly message: string;
+    readonly plan: number;
+    readonly run: string;
+  }>();
+  const refusal =
+    refused !== undefined && refused.run === plan.run && refused.plan === plan.plan
+      ? refused.message
+      : undefined;
   const approve = useKeyedWrite<GoingPlanAnswer, GoingWaitingPlan>({
     inline: true,
     label: () => "Approve the command bar's plan",
-    onError: (error) => setRefusal(apiErrorMessage(error, "The approval did not reach Dispatch.")),
+    onError: (error, waiting) =>
+      setRefused({
+        message: apiErrorMessage(error, "The approval did not reach Dispatch."),
+        plan: waiting.plan,
+        run: waiting.run,
+      }),
     onSuccess: (answered) => {
       if (answered !== null) {
         queryClient.setQueryData(goingPlanQuery(plan.run).queryKey, answered);
@@ -69,7 +84,7 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
           data-testid="inbox-going-plan-approve"
           disabled={approve.isPending}
           onClick={() => {
-            setRefusal(undefined);
+            setRefused(undefined);
             approve.mutate(plan);
           }}
           type="button"
@@ -80,12 +95,16 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
           className={secondaryButtonCompact}
           data-testid="inbox-going-plan-open"
           onClick={() => {
-            setRefusal(undefined);
+            setRefused(undefined);
             queryClient
               .fetchQuery(goingConversationsQuery())
               .then((page) => openPlanConversation(plan, page.rows ?? []))
               .catch((error: unknown) =>
-                setRefusal(apiErrorMessage(error, "The conversation could not be read."))
+                setRefused({
+                  message: apiErrorMessage(error, "The conversation could not be read."),
+                  plan: plan.plan,
+                  run: plan.run,
+                })
               );
           }}
           type="button"
