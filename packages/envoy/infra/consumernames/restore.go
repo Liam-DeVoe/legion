@@ -330,21 +330,34 @@ func (rr *restoreRun) entries(ctx context.Context, family string) ([]restoreEntr
 		if err != nil {
 			return nil, false, err
 		}
+		// Every value is read by its key's kind (readSelectionValue), the sentinel's and the
+		// barriers' too: a malformed one anywhere is UNKNOWN, naming each such key, before the
+		// listing answers anything.
+		var malformed []string
 		for _, key := range keys {
-			if key.Key == selection.SentinelKey || strings.HasPrefix(key.Key, "hold.barrier.") {
+			var record selection.Record
+			switch {
+			case key.Deleted && (key.Key == selection.SentinelKey || strings.HasPrefix(key.Key, strictBarrierPrefix)):
 				continue
+			case !key.Deleted:
+				value, err := readSelectionValue(key)
+				if err != nil {
+					malformed = append(malformed, fmt.Sprintf("%s (%v)", key.Key, err))
+					continue
+				}
+				if value.record == nil {
+					continue
+				}
+				record = *value.record
 			}
 			m, err := restoreMember(family, key.Key)
 			if err != nil {
 				return nil, false, unknownf(err, "the key %q of %s", key.Key, selection.SessionBucket)
 			}
-			entry := restoreEntry{member: m, revision: key.Seq, deleted: key.Deleted}
-			if !key.Deleted {
-				if err := json.Unmarshal(key.Value, &entry.record); err != nil {
-					return nil, false, unknownf(err, "the record of %q in %s", key.Key, selection.SessionBucket)
-				}
-			}
-			out = append(out, entry)
+			out = append(out, restoreEntry{member: m, record: record, revision: key.Seq, deleted: key.Deleted})
+		}
+		if len(malformed) > 0 {
+			return nil, false, unknownf(nil, "the values of %s in %s are malformed, so restore reads no record there", strings.Join(malformed, ", "), selection.SessionBucket)
 		}
 		return out, true, nil
 	}

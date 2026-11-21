@@ -46,8 +46,8 @@ import (
 // Every other key holding a '.' is a system key (selection.SentinelKey, hold.barrier.<hold id>)
 // and names nothing. A key whose last write is a delete marker is lost state, which this reader
 // cannot tell from a session that never had a record, so it answers an error, and the census is
-// UNKNOWN and removes nothing; so is a record that does not decode, a durable key of no listener,
-// and a walk of the bucket that is not whole.
+// UNKNOWN and removes nothing; so is a malformed value (readSelectionValue), a durable key of no
+// listener, and a walk of the bucket that is not whole.
 func RecordedSessionConsumers(ctx context.Context, conn *nats.Conn) ([]streams.ConsumerShape, error) {
 	sessions, listeners, err := censusSelectionRecords(ctx, conn)
 	if err != nil {
@@ -79,38 +79,40 @@ func RecordedSessionConsumers(ctx context.Context, conn *nats.Conn) ([]streams.C
 // session's by its id (a key selection.CheckKey accepts), and each listener durable's by its
 // durable name (a key selection.DurableKey made of a listener-<machine id>). Every other key
 // holding a '.' is a system key (selection.SentinelKey, hold.barrier.<hold id>) and names nothing.
-// A record whose last write is a delete marker is lost state, which cannot be told from a session
-// that never had a record, and a durable's record of no listener is one no census shape takes:
-// each is an error, all of them named in one; so is a record that does not decode, and a walk of
-// the bucket that is not whole.
+// Every value is read by its key's kind (readSelectionValue), the system keys' too. A record whose
+// last write is a delete marker is lost state, which cannot be told from a session that never had
+// a record; a durable's record of no listener is one no census shape takes; and a malformed value,
+// a document a reply subject stored there, cannot be told from a record or a sentinel: each is an
+// error, all of them named in one, which names the session family's store; so is a walk of the
+// bucket that is not whole.
 func censusSelectionRecords(ctx context.Context, conn *nats.Conn) (map[string]selection.Record, map[string]selection.Record, error) {
 	keys, err := statusSelectionKeys(ctx, conn)
 	if err != nil {
 		return nil, nil, err
 	}
 	sessions, listeners := map[string]selection.Record{}, map[string]selection.Record{}
-	var deleted, foreign []string
+	var deleted, foreign, malformed []string
 	for _, key := range keys {
 		session := selection.CheckKey(key.Key) == nil
 		durable, isDurable := censusDurableOf(key.Key)
 		switch {
-		case !session && !isDurable:
+		case key.Deleted && (session || isDurable):
+			deleted = append(deleted, key.Key)
 			continue
 		case key.Deleted:
-			deleted = append(deleted, key.Key)
 			continue
 		case isDurable && !strings.HasPrefix(durable, listenerFixedPrefix):
 			foreign = append(foreign, key.Key)
 			continue
 		}
-		var record selection.Record
-		if err := json.Unmarshal(key.Value, &record); err != nil {
-			return nil, nil, fmt.Errorf("the record %s of %s: %w", key.Key, selection.SessionBucket, err)
-		}
-		if session {
-			sessions[key.Key] = record
-		} else {
-			listeners[durable] = record
+		value, err := readSelectionValue(key)
+		switch {
+		case err != nil:
+			malformed = append(malformed, fmt.Sprintf("%s (%v)", key.Key, err))
+		case session:
+			sessions[key.Key] = *value.record
+		case isDurable:
+			listeners[durable] = *value.record
 		}
 	}
 	var problems []string
@@ -120,8 +122,11 @@ func censusSelectionRecords(ctx context.Context, conn *nats.Conn) (map[string]se
 	if len(foreign) > 0 {
 		problems = append(problems, fmt.Sprintf("the records %s are durables' and no listener's: the census knows no shape for them", strings.Join(foreign, ", ")))
 	}
+	if len(malformed) > 0 {
+		problems = append(problems, fmt.Sprintf("the values of %s are malformed: a document stored there cannot be told from a record", strings.Join(malformed, ", ")))
+	}
 	if len(problems) > 0 {
-		return nil, nil, fmt.Errorf("%s: %s", selection.SessionBucket, strings.Join(problems, "; "))
+		return nil, nil, fmt.Errorf("%s's store %s: %s", familySession, selection.SessionBucket, strings.Join(problems, "; "))
 	}
 	return sessions, listeners, nil
 }

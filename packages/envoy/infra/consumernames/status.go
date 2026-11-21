@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -118,6 +119,9 @@ type statusFamily struct {
 	records map[string]selection.Record
 	// deleted are keys whose last write is a delete or a purge marker.
 	deleted []string
+	// malformed are keys whose value is not exactly a value of their kind (readSelectionValue),
+	// each with why: status reads none of them, and reports each UNKNOWN.
+	malformed map[string]string
 }
 
 // status reads, with the row released, every family's store and the notification stream's
@@ -184,6 +188,9 @@ func (r *run) status(ctx context.Context) error {
 	}
 	for _, f := range families {
 		blockers = append(blockers, statusPrintFamily(out, f, held)...)
+		for _, key := range slices.Sorted(maps.Keys(f.malformed)) {
+			unknown = append(unknown, fmt.Sprintf("%s %s: its value in %s is malformed, so status does not read it: %s", f.family, key, f.where, f.malformed[key]))
+		}
 	}
 	for _, name := range names {
 		if m, ok := classify(name); ok {
@@ -202,10 +209,11 @@ func (r *run) status(ctx context.Context) error {
 
 // statusSessionFamily is the session family's store read whole: the selection bucket's sentinel
 // and every record of a session key (selection.CheckKey) or a durable key
-// (selection.CheckDurableKey). A missing bucket is a store status reports as missing, not an
-// error; a walk that is not whole is.
+// (selection.CheckDurableKey), each value read by its key's kind (readSelectionValue), the barrier
+// keys' too. A malformed value is kept by its key and why, never decoded leniently. A missing
+// bucket is a store status reports as missing, not an error; a walk that is not whole is.
 func statusSessionFamily(ctx context.Context, nc *nats.Conn) (statusFamily, error) {
-	f := statusFamily{family: familySession, where: "KV_" + selection.SessionBucket, records: map[string]selection.Record{}}
+	f := statusFamily{family: familySession, where: "KV_" + selection.SessionBucket, records: map[string]selection.Record{}, malformed: map[string]string{}}
 	keys, err := statusSelectionKeys(ctx, nc)
 	if errors.Is(err, selection.ErrNoStore) {
 		return f, nil
@@ -214,26 +222,22 @@ func statusSessionFamily(ctx context.Context, nc *nats.Conn) (statusFamily, erro
 		return f, err
 	}
 	for _, key := range keys {
+		recordKey := selection.CheckKey(key.Key) == nil || selection.CheckDurableKey(key.Key) == nil
 		switch {
-		case key.Key == selection.SentinelKey:
-			if key.Deleted {
-				continue
-			}
-			var state selection.StoreState
-			if err := json.Unmarshal(key.Value, &state); err != nil {
-				return f, unknownf(err, "%s's %s", f.where, selection.SentinelKey)
-			}
-			f.state = &state
-		case selection.CheckKey(key.Key) != nil && selection.CheckDurableKey(key.Key) != nil:
-			// Another system key (hold.barrier.<hold id>), which no record is.
-		case key.Deleted:
+		case key.Deleted && recordKey:
 			f.deleted = append(f.deleted, key.Key)
-		default:
-			var record selection.Record
-			if err := json.Unmarshal(key.Value, &record); err != nil {
-				return f, unknownf(err, "%s's record %s", f.where, key.Key)
-			}
-			f.records[key.Key] = record
+			continue
+		case key.Deleted:
+			continue
+		}
+		value, err := readSelectionValue(key)
+		switch {
+		case err != nil:
+			f.malformed[key.Key] = err.Error()
+		case value.state != nil:
+			f.state = value.state
+		case value.record != nil:
+			f.records[key.Key] = *value.record
 		}
 	}
 	f.present = true
@@ -305,13 +309,17 @@ func (r *run) statusPGFamily(ctx context.Context, family string) (statusFamily, 
 	return f, nil
 }
 
-// statusPrintFamily prints f's store and records, and answers its blockers.
+// statusPrintFamily prints f's store and records, each malformed key as UNKNOWN, and answers its
+// blockers.
 func statusPrintFamily(out io.Writer, f statusFamily, held map[string]bool) []string {
 	var blockers []string
+	_, sentinelMalformed := f.malformed[selection.SentinelKey]
 	switch {
 	case !f.present:
 		fmt.Fprintf(out, "store %s: missing\n", f.family)
 		return append(blockers, fmt.Sprintf("%s: its store is missing", f.family))
+	case sentinelMalformed:
+		fmt.Fprintf(out, "store %s (%s): sentinel UNKNOWN, its value is malformed\n", f.family, f.where)
 	case f.state == nil:
 		fmt.Fprintf(out, "store %s (%s): no sentinel\n", f.family, f.where)
 		blockers = append(blockers, fmt.Sprintf("%s: its store has no sentinel", f.family))
@@ -319,6 +327,11 @@ func statusPrintFamily(out io.Writer, f statusFamily, held map[string]bool) []st
 		s := f.state
 		fmt.Fprintf(out, "store %s (%s): cutover=%s boundary=%d replay_from=%d orphans=%v hold=%s\n", f.family,
 			f.where, statusOrNone(s.Cutover), s.Boundary, s.ReplayFrom, s.Orphans, statusOrNone(s.Hold))
+	}
+	for _, key := range slices.Sorted(maps.Keys(f.malformed)) {
+		if key != selection.SentinelKey {
+			fmt.Fprintf(out, "record %s %s: UNKNOWN, its value is malformed\n", f.family, key)
+		}
 	}
 	for _, key := range f.deleted {
 		fmt.Fprintf(out, "record %s %s: deleted\n", f.family, key)

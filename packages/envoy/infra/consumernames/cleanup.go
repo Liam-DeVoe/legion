@@ -2,7 +2,6 @@ package consumernames
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -135,8 +134,9 @@ func cleanupNamed(o options, family string) bool {
 }
 
 // cleanupSessionTargets are the selection bucket's records that hold a retired name, a session's
-// or a listener durable's, read after the hold's barrier on the bucket. A missing bucket holds
-// none.
+// or a listener durable's, read after the hold's barrier on the bucket, each value by its key's
+// kind (readSelectionValue). A missing bucket holds none. A malformed value anywhere in the bucket
+// is UNKNOWN, naming each such key, so cleanup deletes nothing.
 func (r *run) cleanupSessionTargets(ctx context.Context, nc *nats.Conn, js jetstream.JetStream) ([]cleanupTarget, error) {
 	stream := "KV_" + selection.SessionBucket
 	if _, err := streamInfo(ctx, nc, stream); err != nil {
@@ -158,17 +158,21 @@ func (r *run) cleanupSessionTargets(ctx context.Context, nc *nats.Conn, js jetst
 		return nil, err
 	}
 	var targets []cleanupTarget
+	var malformed []string
 	for _, key := range keys {
-		if key.Deleted || (selection.CheckKey(key.Key) != nil && selection.CheckDurableKey(key.Key) != nil) {
+		if key.Deleted {
 			continue
 		}
-		var record selection.Record
-		if err := json.Unmarshal(key.Value, &record); err != nil {
-			return nil, unknownf(err, "the record %s of %s", key.Key, selection.SessionBucket)
-		}
-		if len(record.Retired) > 0 {
+		value, err := readSelectionValue(key)
+		switch {
+		case err != nil:
+			malformed = append(malformed, fmt.Sprintf("%s (%v)", key.Key, err))
+		case value.record != nil && len(value.record.Retired) > 0:
 			targets = append(targets, cleanupTarget{family: familySession, logical: key.Key, store: store})
 		}
+	}
+	if len(malformed) > 0 {
+		return nil, unknownf(nil, "the values of %s in %s are malformed, so cleanup reads no record there", strings.Join(malformed, ", "), selection.SessionBucket)
 	}
 	return targets, nil
 }
