@@ -1717,18 +1717,22 @@ func (e *Engine) sessionLost(ctx context.Context, tx pgx.Tx, fact intake.Session
 	}
 	kind := record.NoticeKind("session-lost")
 	const fresh = "It is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives."
-	told := fmt.Sprintf("The %s of %s lost the session it recorded: %s. %s", fact.Role, issue.Key, strconv.Quote(fact.Detail), fresh)
+	// subject names who lost the session and runner who runs the fresh agent: the step's role, or,
+	// for a keyed agent's claim, whose name is another role's, that agent on its step, whose later
+	// steps run in the fresh session too (later).
+	subject, runner, later := fmt.Sprintf("The %s of %s", fact.Role, issue.Key), "The "+string(fact.Role), ""
 	if _, agent, ok := fact.Claim.Cut(); ok && agent != claim.Agent(fact.Role) {
-		told = fmt.Sprintf("The agent %s of %s, on its %s step, lost the session it recorded: %s. %s Each later step of that agent runs in the fresh session.",
-			agent, issue.Key, fact.Role, strconv.Quote(fact.Detail), fresh)
+		subject = fmt.Sprintf("The agent %s of %s, on its %s step,", agent, issue.Key, fact.Role)
+		runner, later = "The agent "+string(agent), " Each later step of that agent runs in the fresh session."
 	}
+	told := fmt.Sprintf("%s lost the session it recorded: %s. %s%s", subject, strconv.Quote(fact.Detail), fresh, later)
 	line := "workflow: a worker's recorded session was in no session store"
 	fields := []any{"issue", issue.Key, "role", fact.Role, "claim", fact.Claim, "detail", fact.Detail}
 	if fact.Cause == supervise.SessionLossNotResumedByID {
 		kind = "session-forgotten"
-		told = fmt.Sprintf("The %s of %s forgot the session it recorded, %s: its pod's launcher is older than this release and could not look the session up by its id, and Oh My Pi did not resume it by that id. "+
-			"The daemon deleted nothing of that session. The %s is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.",
-			fact.Role, issue.Key, strconv.Quote(fact.Session), fact.Role)
+		told = fmt.Sprintf("%s forgot the session it recorded, %s: its pod's launcher is older than this release and could not look the session up by its id, and Oh My Pi did not resume it by that id. "+
+			"The daemon deleted nothing of that session. %s is running a fresh agent, which has read none of its own earlier turns; only what it pushed and committed survives.%s",
+			subject, strconv.Quote(fact.Session), runner, later)
 		line = "workflow: a worker forgot its recorded session, which its pod's launcher could not look up and Oh My Pi did not resume by its id"
 		fields = []any{"issue", issue.Key, "role", fact.Role, "claim", fact.Claim, "session", fact.Session, "cause", fact.Cause, "detail", fact.Detail}
 	}
