@@ -3073,7 +3073,7 @@ package api
 // and `shapedAnswersContract` and `repositoriesLiveContract` stay 193 and 202. Read the base's own
 // number and every open pull request again at the next merge rather than from this line.)
 //
-// 215: each task of an owner's plan works in a working copy of its own, and the daemon's
+// 219: each task of an owner's plan works in a working copy of its own, and the daemon's
 // adoption names it. The worker frame `adopt-working-copy` (`shimwire.AdoptWorkingCopy`) gains
 // `branch`, the branch of the task whose working copy the shim adopts: absent for the issue's own
 // working copy, `legion/<KEY>.<task>` for another task's, and refused when it is the branch of no
@@ -3084,11 +3084,11 @@ package api
 // working copy by its branch, which the launcher of the pod that replaces a released one puts
 // back beside the issue's own; a bundle without it restores the issue's working copy alone. No
 // answer a plugin parses changes, so no record of an earlier contract and no serving-down changes.
-// (This entry takes 215, the lowest number above its base's 211 that no open pull request declares
-// and no other change built on that base holds: 214 is held by such a change, which has no pull
-// request yet. A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 416 open
-// pull requests, made between 2026-11-21T16:33:35Z and 16:34:01Z, read all 416 and found 212
-// declared by #4065, #4592, #4596 and #4771, 213 by #4030 and #4553, and nothing at 214 or 215.
-// Read the base's own number and every open pull request again at the next merge rather than from
-// this line.)
-const DaemonAPIVersion = 215
+// (This entry takes 219, the lowest number above its base's 211 that no open pull request declares
+// and no other change built on that base holds: 216, 217 and 218 are held by such changes, which
+// have no pull request yet. A reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each of
+// the 411 open pull requests, made between 2026-11-21T20:06:12Z and 20:06:49Z, read all 411 and
+// found 212 declared by #4771, 213 by #4030 and #4553, 214 by #4592 and #4596, 215 by #4065, and
+// nothing at 216 or above. Read the base's own number and every open pull request again at the next
+// merge rather than from this line.)
+const DaemonAPIVersion = 219

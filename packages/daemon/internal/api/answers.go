@@ -50,9 +50,9 @@ const ServingFloor = 46
 // the declared table records values at it: a renumber of that change moves the constant and this
 // list with it, and moving one of the two alone would describe a shape at a contract no entry
 // declares. shapedAnswersContract and repositoriesLiveContract are constants for the same reason
-// and stay where their entries put them. 215, the entry of each task's working copy, moves no
+// and stay where their entries put them. 219, the entry of each task's working copy, moves no
 // answer a plugin parses, so it is its number.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, OwnerPlanContract, 215}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, 111, 123, 132, 133, 137, 141, 144, 146, 151, 152, 160, 168, 178, 188, 189, shapedAnswersContract, 199, repositoriesLiveContract, OwnerPlanContract, 219}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
