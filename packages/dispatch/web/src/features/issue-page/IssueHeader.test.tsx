@@ -977,6 +977,7 @@ test("a repeat of a held a on the approval chip approves nothing, and a press of
     const chip = stateActions.querySelector<HTMLElement>("[data-approval-artifact]");
     if (chip === null) throw new Error("the header draws no approval chip");
     act(() => chip.focus());
+    // user-event has no form for this: it sends a repeat only after the key's first keydown.
     fireEvent.keyDown(chip, { key: "a", repeat: true });
     await act(settle);
     expect(createArtifactVersionReview).not.toHaveBeenCalled();

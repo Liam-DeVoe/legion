@@ -4,6 +4,7 @@ import { createElement } from "react";
 
 import { KeymapProvider } from "./KeymapProvider";
 import {
+  actionBinding,
   appKeymap,
   ariaKeyshortcuts,
   createKeymap,
@@ -14,6 +15,7 @@ import {
   useKeymap,
   useKeymapScope,
 } from "./keymap";
+import { NO_PERSON_KEYS } from "./keymap-catalogue";
 import { setActionKeys } from "./keymap-keys";
 import { userPreferenceStorageKey } from "./userPreference";
 
@@ -164,15 +166,15 @@ test("a chord fires within the timeout, shows its pending prefix, and expires af
   keymap.register("global", [inbox.definition]);
 
   expect(press("g")).toBe(true);
-  expect(keymap.pending().keys).toBe("g");
+  expect(keymap.pending()).toBe("g");
   advance(999);
   press("i");
   expect(inbox.fired()).toBe(1);
-  expect(keymap.pending().keys).toBe("");
+  expect(keymap.pending()).toBe("");
 
   press("g");
   advance(1000);
-  expect(keymap.pending().keys).toBe("");
+  expect(keymap.pending()).toBe("");
   expect(press("i")).toBe(false);
   expect(inbox.fired()).toBe(1);
 });
@@ -186,7 +188,7 @@ test("a key that does not continue the chord is read afresh on its own", () => {
   press("g");
   press("j");
   expect(next.fired()).toBe(1);
-  expect(keymap.pending().keys).toBe("");
+  expect(keymap.pending()).toBe("");
 });
 
 test("registering a strict prefix of an existing sequence throws in strict mode", () => {
@@ -639,6 +641,34 @@ test("a row does nothing once its binding's component has unregistered it", () =
   expect(close.fired()).toBe(0);
 });
 
+// An action that writes runs once per press (`CatalogueEntry.writes`): a held key's repeats would
+// write again, or, once the write hands the reader on (R8), write on an item nobody chose. Every
+// other action runs on each repeat, as a held `j` walks a list. A repeat of either is the
+// registry's, so it reaches no page.
+test("a held key runs an action that writes once and any other action on each repeat, and a row runs the one that writes", () => {
+  const { keymap, press } = harness();
+  let dismissed = 0;
+  let moved = 0;
+  keymap.register("inbox", [
+    actionBinding({ action: "inbox.dismiss", run: () => (dismissed += 1) }, NO_PERSON_KEYS),
+    actionBinding({ action: "inbox.next", run: () => (moved += 1) }, NO_PERSON_KEYS),
+  ]);
+  keymap.pushScope("inbox");
+
+  for (const key of ["e", "j"]) {
+    expect(press(key)).toBe(true);
+    expect(press(key, { repeat: true })).toBe(true);
+    expect(press(key, { repeat: true })).toBe(true);
+  }
+  expect(dismissed).toBe(1);
+  expect(moved).toBe(3);
+
+  const row = keymap.actions().find((action) => action.id === "dismiss");
+  expect(row).toBeDefined();
+  row?.run();
+  expect(dismissed).toBe(2);
+});
+
 test("rows within a scope read alphabetically, a lowercase word among capitalised ones included", () => {
   const { keymap } = harness();
   keymap.register("global", [
@@ -709,9 +739,9 @@ test("a pending chord lists each key that can follow with its label, innermost s
     binding("inbox-settings", "g s", { label: "Inbox settings" }).definition,
   ]);
 
-  expect(keymap.pending()).toEqual({ keys: "", next: [] });
+  expect(keymap.chord()).toEqual({ keys: "", next: [] });
   press("g");
-  expect(keymap.pending()).toEqual({
+  expect(keymap.chord()).toEqual({
     keys: "g",
     next: [
       { key: "g", label: "Scroll to the top" },
@@ -720,15 +750,15 @@ test("a pending chord lists each key that can follow with its label, innermost s
     ],
   });
   // One snapshot per chord, as `useSyncExternalStore` needs.
-  expect(keymap.pending()).toBe(keymap.pending());
+  expect(keymap.chord()).toBe(keymap.chord());
   advance(1000);
-  expect(keymap.pending()).toEqual({ keys: "", next: [] });
+  expect(keymap.chord()).toEqual({ keys: "", next: [] });
 
   // While a dialog is open its scope is the only one a key is read through, and the hint's too.
   keymap.register(DIALOG_SCOPE, [binding("dialog-go", "g x", { label: "Dialog step" }).definition]);
   keymap.pushScope(DIALOG_SCOPE);
   press("g");
-  expect(keymap.pending()).toEqual({ keys: "g", next: [{ key: "x", label: "Dialog step" }] });
+  expect(keymap.chord()).toEqual({ keys: "g", next: [{ key: "x", label: "Dialog step" }] });
 });
 
 test("actions() offers one row for an action several lists register, and it runs the one that applies", () => {

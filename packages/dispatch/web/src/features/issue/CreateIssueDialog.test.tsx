@@ -318,6 +318,34 @@ test("the Create issue dialog's Project list holds a text box that narrows the p
   }
 });
 
+// While the create is out the Project list is held: a pick in it would be dropped with no word
+// (`onPick`), so neither a press on its trigger nor the trigger's ArrowDown opens it, and the
+// focus stays on the trigger, as on `AssigneeControl`'s.
+test("while the create is out, a press and the trigger's ArrowDown open no Project list", async () => {
+  // The create never answers, so it is out for the whole row.
+  const view = renderDialog(userEvent.setup(), () => new Promise<Issue>(() => {}));
+  try {
+    await projectPicked();
+    const trigger = screen.getByRole("button", { name: pickNamed("Project") });
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("Held create");
+    await view.user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(trigger).toHaveAttribute("aria-disabled", "true"));
+
+    await view.user.click(trigger);
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("listbox", { name: "Project options" })).toBeNull();
+
+    await view.user.keyboard("{ArrowDown}");
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("listbox", { name: "Project options" })).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
 // INFRA-3135, round 12: a list whose read is out or failed says so. While the projects are being
 // read the Project list says they are loading, and after the read failed that they could not be
 // loaded, and it never calls an unread list empty.

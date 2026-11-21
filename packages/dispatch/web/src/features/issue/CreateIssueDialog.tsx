@@ -46,12 +46,14 @@ const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issu
  * duplicate is seen before it is filed.
  *
  * The project is the shared list's single pick (`MultiSelect`), whose text box narrows the
- * projects as the reader types (`KEY · name`), held while the create is out. Its panel is
- * portalled out of the dialog and stands in the layer over it (`AnchoredPanel`), so its options
- * take the press rather than the backdrop, and Escape and Tab in the list are the list's: they
- * close it and leave the reader on its trigger, inside the dialog, whose own Escape and Tab
- * cycle then take over. It says the projects are loading while their read is out, and that they
- * could not be loaded where it failed, as the dialog does beside it.
+ * projects as the reader types (`KEY · name`), held while the create is out: its trigger keeps
+ * the focus and opens no list, as `AssigneeControl`'s does, and a pick in a list opened before
+ * the hold began is dropped. Its panel is portalled out of the dialog and stands in the layer
+ * over it (`AnchoredPanel`), so its options take the press rather than the backdrop, and Escape
+ * and Tab in the list are the list's: they close it and leave the reader on its trigger, inside
+ * the dialog, whose own Escape and Tab cycle then take over. It says the projects are loading
+ * while their read is out, and that they could not be loaded where it failed, as the dialog does
+ * beside it.
  */
 export function CreateIssueDialog({
   onClose,
@@ -163,7 +165,7 @@ export function CreateIssueDialog({
               error={projects.isError ? "Could not load projects." : null}
               label="Project"
               mode="single"
-              onOpenChange={setProjectListOpen}
+              onOpenChange={(next) => setProjectListOpen(next && !held)}
               onPick={(key) => {
                 if (!held) setProject(key);
               }}

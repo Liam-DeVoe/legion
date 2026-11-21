@@ -87,6 +87,11 @@ export interface CatalogueEntry {
   readonly palette: boolean;
   /** Fires while a control that takes typed text has the focus (`KeyBinding.inEditable`). */
   readonly inEditable?: boolean;
+  /** The action writes a record, so the registry runs it once per press: a held key's repeats
+   *  (`KeyboardEvent.repeat`) do nothing (`actionBinding`, `keymap.ts`). A repeat would write
+   *  again: the same review twice, or, once the write hands the reader on to the next item (R8),
+   *  a write on that item, which nobody chose. A palette row runs it as a press does. */
+  readonly writes?: true;
   readonly surface: KeySurface;
 }
 

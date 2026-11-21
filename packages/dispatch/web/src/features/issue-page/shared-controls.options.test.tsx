@@ -4472,14 +4472,14 @@ function expectRefusedHoldingFocus(control: HTMLElement): void {
   expect(control.hasAttribute("disabled")).toBe(false);
 }
 
-// Approve is held while its write is out, and inside `NoTooltips` until the read after it is
-// drawn as well: there the write returns its reads, and it stops pending only once they land.
-// Approve is `aria-disabled` in place of `disabled`, which drops the focus to the body in a
-// browser, on both sides of `NoTooltips` - this tree keeps no control disabled while its own write
-// is out (`heldPress`) - so it keeps the focus, and a press sends no second approval, while the
-// write is out, and inside while its read is. Once that read draws the approval approved, Approve
-// leaves the page, and inside the focus that fell with it goes to the chip that replaces it;
-// outside it falls to the body, and nothing in the chip moves it.
+// Approve is held while its write is out and until the read after it is drawn, on both sides of
+// `NoTooltips`: the write returns its reads, and it stops pending only once they land. Approve is
+// `aria-disabled` in place of `disabled`, which drops the focus to the body in a browser - this
+// tree keeps no control disabled while its own write is out (`heldPress`) - so it keeps the
+// focus, and a press sends no second approval, while the write is out and while its read is.
+// Once that read draws the approval approved, Approve leaves the page, and inside the focus that
+// fell with it goes to the chip that replaces it; outside it falls to the body, and nothing in the
+// chip moves it.
 test("inside NoTooltips Approve pressed by Enter keeps the focus until the approval is read, then hands it to the chip", async () => {
   const user = userEvent.setup();
   const approved = doc(SPEC_ID, "spec.md", { latest_version: 2, state: "approved", version: 2 });
@@ -4512,17 +4512,11 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
         written.resolve(specReview("approved"))
       );
       expect(approve.isConnected).toBe(true);
-      if (surface === "inside") {
-        // A press while the read is out sends no second approval, and Approve is still refused.
-        await user.keyboard("{Enter}");
-        await settleReads();
-        expect(createArtifactReview).toHaveBeenCalledTimes(1);
-        expectRefusedHoldingFocus(approve);
-      } else {
-        // The write stopped pending as it landed, before its read.
-        expect(approve.hasAttribute("aria-disabled")).toBe(false);
-        expect(document.activeElement).toBe(approve);
-      }
+      // A press while the read is out sends no second approval, and Approve is still refused.
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
+      expectRefusedHoldingFocus(approve);
 
       answerReread(approved);
       const chip = await scope.findByRole("button", { name: "Approved v2" });

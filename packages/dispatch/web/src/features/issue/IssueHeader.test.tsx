@@ -593,7 +593,8 @@ test("a held a, or a second a before the issue is read again, records one approv
   );
   try {
     const approve = await screen.findByRole("button", { name: "Approve" });
-    // A repeat presses nothing, though Approve takes a press.
+    // A repeat presses nothing, though Approve takes a press. user-event has no form for this: it
+    // sends a repeat only after the key's first keydown.
     fireEvent.keyDown(document.body, { key: "a", repeat: true });
     await act(settle);
     expect(review).not.toHaveBeenCalled();

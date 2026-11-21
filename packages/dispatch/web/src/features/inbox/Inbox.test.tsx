@@ -1,6 +1,6 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter, Space and `r` presses whose survival only fireEvent reports.
+// biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, the Enter, Space and `r` presses whose survival only fireEvent reports, and a held `e`'s repeats after its first press handed the reader on, which user-event sends only in one burst with that press.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
@@ -15,7 +15,7 @@ import {
   recordCommits,
 } from "../../__tests__/commits";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
-import { realClock, tick } from "../../__tests__/fake-clock";
+import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pickNamed } from "../../__tests__/list-picks";
@@ -6979,6 +6979,64 @@ test("a dismiss of the last row beside the column leaves the address naming no r
     expect(dismissed).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId("inbox-pane")).not.toBeInTheDocument();
     await waitFor(() => expect(address()).toBe("/"));
+  } finally {
+    unmount();
+    narrow();
+    dismissed.mockRestore();
+    listComments.mockRestore();
+    listMyReplies.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// `e` dismisses once per press (`CatalogueEntry.writes`). A dismiss hands the reader on to the
+// next row at once (R8), so each repeat of a held `e` would dismiss a row nobody chose.
+test("a held e dismisses the row in hand alone, and its repeats dismiss none of the rows it hands the reader on to", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  // Newest first, A to C: each thread's reply an hour older than the one before.
+  let threads = ["a", "b", "c"].map((name, index) => {
+    const row = replyRow(`thread-${name}`, { subject: `Thread ${name.toUpperCase()}` });
+    return { ...row, reply: { ...row.reply, created_at: `2026-10-12T0${3 - index}:00:00Z` } };
+  });
+  const listMyReplies = spyOn(api, "listMyReplies").mockImplementation(async () => ({
+    as_of: "2026-10-12T05:00:00Z",
+    limit: 200,
+    offset: 0,
+    rows: threads,
+    total: threads.length,
+  }));
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const getIssue = mockIssueReads();
+  const dismissed = answerInboxDismisses().mockImplementation(async (body) => {
+    const named = body.threads ?? [];
+    threads = threads.filter((thread) => !named.includes(`reply:${thread.thread_id}`));
+    return { dismissed: named.length };
+  });
+  const { unmount } = renderInbox();
+
+  try {
+    await screen.findByTestId("inbox-pane");
+    await waitFor(() =>
+      expect(rowIds()).toEqual(["reply:thread-a", "reply:thread-b", "reply:thread-c"])
+    );
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:thread-a"]));
+
+    await user.keyboard("e");
+    await waitFor(() => expect(rowIds()).toEqual(["reply:thread-b", "reply:thread-c"]));
+    await waitFor(() => expect(selectedIds()).toEqual(["reply:thread-b"]));
+    // The key is still down: its repeats come with the reader on the next row. user-event sends a
+    // held key's repeats only in one burst with its first keydown, never after a wait.
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "e", repeat: true });
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "e", repeat: true });
+    await act(settle);
+
+    expect(dismissed).toHaveBeenCalledTimes(1);
+    expect(dismissed.mock.calls[0]?.[0].threads).toEqual(["reply:thread-a"]);
+    expect(rowIds()).toEqual(["reply:thread-b", "reply:thread-c"]);
+    expect(selectedIds()).toEqual(["reply:thread-b"]);
   } finally {
     unmount();
     narrow();

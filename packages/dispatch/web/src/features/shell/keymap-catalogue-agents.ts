@@ -39,6 +39,7 @@ export const AGENTS_ACTIONS = {
     label: "Pin or unpin the focused agent",
     keys: ["Shift+P"],
     palette: true,
+    writes: true,
     surface: "agents",
   },
   select: {

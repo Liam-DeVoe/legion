@@ -84,6 +84,7 @@ export const INBOX_ACTIONS = {
     label: "Approve",
     keys: ["a"],
     palette: true,
+    writes: true,
     surface: "inbox",
   },
   "request-changes": {
@@ -114,6 +115,7 @@ export const INBOX_ACTIONS = {
     label: "Dismiss, or Move to Inbox",
     keys: ["e"],
     palette: true,
+    writes: true,
     surface: "inbox",
   },
   // Marking walks the list with the row in hand, as `j`/`k` do, so it is no palette row.
@@ -183,18 +185,21 @@ export const INBOX_ACTIONS = {
     label: "Assign to me",
     keys: [],
     palette: true,
+    writes: true,
     surface: "inbox",
   },
   unsnooze: {
     label: "Un-snooze",
     keys: [],
     palette: true,
+    writes: true,
     surface: "inbox",
   },
   "mark-read": {
     label: "Mark read",
     keys: [],
     palette: true,
+    writes: true,
     surface: "inbox",
   },
   "earlier-replies": {
@@ -249,18 +254,21 @@ export const INBOX_ACTIONS = {
     label: "Ask back",
     keys: [],
     palette: true,
+    writes: true,
     surface: "inbox",
   },
   "ask-back-instead": {
     label: "Ask back instead",
     keys: [],
     palette: true,
+    writes: true,
     surface: "inbox",
   },
   "answer-anyway": {
     label: "Answer with it anyway",
     keys: [],
     palette: true,
+    writes: true,
     surface: "inbox",
   },
   cancel: {
@@ -333,6 +341,7 @@ export const INBOX_ACTIONS = {
     label: "Dismiss, or Move to Inbox, the selected items",
     keys: [],
     palette: true,
+    writes: true,
     surface: "inbox",
   },
 } as const satisfies ScopeTable;

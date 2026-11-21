@@ -408,6 +408,43 @@ test("a click the host leaves alone: a modifier, a middle button, one taken alre
   }
 });
 
+// The sanitizer draws a link whose scheme it refuses (`javascript:`, `data:`) with an empty `href`
+// (`linkAddress`), which the browser reads as the page the reader is on: an address the link never
+// named. No click opens it, plain or Ctrl, nor a middle click, which a browser sends as `auxclick`.
+test("a link with a blank href opens nothing, on a plain click, a Ctrl click or a middle click", () => {
+  const clicks = recordPrevented();
+  // Drawn as the sanitizer draws them: Biome's anchor rule refuses an empty `href` written in JSX.
+  function SanitizedBody(): ReactNode {
+    const body = useRef<HTMLDivElement>(null);
+    useLayoutEffect(() => {
+      if (body.current !== null) body.current.innerHTML = '<a href="">x</a><a href="  ">y</a>';
+    }, []);
+    return <div className="dispatch-markdown" ref={body} />;
+  }
+  const { route, view } = renderBodies(<SanitizedBody />);
+  try {
+    // By its words: a link whose `href` is empty has no `link` role to find it by.
+    const middles = ["x", "y"].map((name) => {
+      const link = within(view.container).getByText(name);
+      click(link);
+      click(link, { ctrlKey: true });
+      const middle = new MouseEvent("auxclick", { bubbles: true, button: 1, cancelable: true });
+      act(() => {
+        link.dispatchEvent(middle);
+      });
+      return middle.defaultPrevented;
+    });
+    expect(clicks.prevented).toEqual([true, true, true, true]);
+    expect(middles).toEqual([true, true]);
+    expect(route()).toBe("/issues/CORE-9");
+    expect(windowOpen).not.toHaveBeenCalled();
+    expect(locationAssign).not.toHaveBeenCalled();
+  } finally {
+    clicks.stop();
+    view.unmount();
+  }
+});
+
 test("a link in a Markdown body opens through the host", async () => {
   await warmMarkdownRenderer();
   const clicks = recordPrevented();

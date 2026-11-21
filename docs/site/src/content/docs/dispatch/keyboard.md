@@ -17,6 +17,13 @@ While you type in a text field, or while the focus is in an open menu, list or p
 `Ctrl+K`, `Escape`, and in a document `Ctrl+Alt+M` and `Alt+Enter`, work as shortcuts, or the keys
 you gave those actions in their place. So single letters never interrupt your typing.
 
+A key that saves a change runs once for each press. If you hold the key down, it does nothing
+more. This is true of approve, dismiss, pin or unpin, set a priority, and keep a decision. It is
+also true of the palette's actions that save a change, when you give them a key: **Close issue**,
+**Reopen issue**, **Set priority P0** to **P3**, **Assign to me**, **Un-snooze**, **Mark read**,
+**Ask back**, **Ask back instead**, **Answer with it anyway**, and
+**Dismiss, or Move to Inbox, the selected items**.
+
 You can change each key, give an action a second key, or take its keys away. See
 [Change the keys](#change-the-keys).
 

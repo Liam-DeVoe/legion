@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 
+import { stepIndex } from "../features/shell/roving";
 import {
   borderDefault,
   borderStrong,
@@ -64,9 +65,10 @@ const MOVE_KEYS: Readonly<Record<string, true>> = {
 const TYPED_KEY = /^[\p{L}\p{N}]$/u;
 
 /** Where `key` moves the highlight in `rows` from `from`, or undefined for a key that moves
- *  nothing or rows that hold nothing. The arrows wrap at the ends; Home and End go to them, and
- *  Page Down and Page Up go `PAGE_ROWS` rows on and stop there. From no row, or one the rows do
- *  not hold, ArrowDown and Page Down count from before the first and ArrowUp from the first. */
+ *  nothing or rows that hold nothing. The arrows wrap at the ends and Home and End go to them, as
+ *  a menu's choices step (`stepIndex`); Page Down and Page Up go `PAGE_ROWS` rows on and stop
+ *  there. From no row, or one the rows do not hold, ArrowDown and Page Down count from before the
+ *  first and ArrowUp from the first. */
 function stepTo(
   key: string,
   rows: readonly string[],
@@ -74,13 +76,11 @@ function stepTo(
 ): string | undefined {
   if (rows.length === 0) return undefined;
   const index = from === undefined ? -1 : rows.indexOf(from);
-  if (key === "ArrowDown") return rows[(index + 1) % rows.length];
-  if (key === "ArrowUp") return rows[(Math.max(index, 0) - 1 + rows.length) % rows.length];
-  if (key === "Home") return rows[0];
-  if (key === "End") return rows[rows.length - 1];
   if (key === "PageDown") return rows[Math.min(index + PAGE_ROWS, rows.length - 1)];
   if (key === "PageUp") return rows[Math.max(index - PAGE_ROWS, 0)];
-  return undefined;
+  const at = key === "ArrowUp" ? Math.max(index, 0) : index;
+  const step = stepIndex(key, at, rows.length, "ArrowUp", "ArrowDown");
+  return step === undefined ? undefined : rows[step];
 }
 
 /** What closed the list, which `onOpenChange` hands its host with the close: a single pick's

@@ -110,10 +110,7 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
       // While the menu is open the focus is in it, whose keys are its own, so a digit there is
       // the menu's pick and never this second write.
       action: "issue.set-priority",
-      // One write per press: a held digit's repeated keydown writes nothing.
-      run: (event) => {
-        if (!event.repeat) priorityWrite.submit(Number(event.key) as IssuePriority);
-      },
+      run: (event) => priorityWrite.submit(Number(event.key) as IssuePriority),
       when: () => usableControl(PRIORITY_MENU) !== null && outsideInputsAndAskCards(),
     },
     {
@@ -142,10 +139,7 @@ export function useHeaderKeys(priorityWrite: IssuePriorityWrite): void {
     // (`SearchPalette.tsx`), and neither key walks a list or repeats an action with a row.
     {
       action: "issue.approve",
-      // One approval per press: a held `a`'s repeated keydown presses nothing.
-      run: (event) => {
-        if (!event.repeat) focusedApprovalAction("approve")?.click();
-      },
+      run: () => focusedApprovalAction("approve")?.click(),
       when: () => focusedApprovalAction("approve") !== null,
     },
     {

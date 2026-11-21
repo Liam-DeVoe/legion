@@ -145,7 +145,10 @@ export function useLinkOpener(): OpenLink {
  * above. A click a handler already took (a picture opening its lightbox, a router link, the
  * document editor's own link) is left alone, and so are a modifier click and a middle click,
  * which the browser opens in a new tab from the link's `href` - a reference link's is its page
- * (`collectReferenceAnchors`) - and a link to an address the server answers itself.
+ * (`collectReferenceAnchors`) - and a link to an address the server answers itself. A link with a
+ * blank `href` and neither data attribute opens nothing, whatever the click: the sanitizer draws
+ * a link whose scheme it refuses (`javascript:`, `data:`) with an empty `href` (`linkAddress`),
+ * which the browser reads as the page the reader is on, an address the link never named.
  *
  * Its listener is attached in the commit that first draws the host, as `KeymapProvider`'s keydown
  * listener is, so no body drawn in that commit is in the page before the host listens. `AuthGate`
@@ -158,14 +161,7 @@ export function LinkClickHost(): ReactNode {
   const openDestination = useDestinationOpener();
   useLayoutEffect(() => {
     const onClick = (event: MouseEvent) => {
-      if (
-        event.defaultPrevented ||
-        event.button !== 0 ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.shiftKey ||
-        event.altKey
-      ) {
+      if (event.defaultPrevented) {
         return;
       }
       // The link and the body from the path the click was dispatched along, not from the
@@ -186,7 +182,14 @@ export function LinkClickHost(): ReactNode {
       const target =
         anchor.getAttribute("data-dispatch-ref") ??
         anchor.getAttribute("data-dispatch-href") ??
-        anchor.href;
+        ((anchor.getAttribute("href") ?? "").trim() === "" ? null : anchor.href);
+      if (target === null) {
+        event.preventDefault();
+        return;
+      }
+      if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
+        return;
+      }
       const destination = linkDestination(target);
       if (destination?.kind === "server") {
         return;
@@ -195,7 +198,12 @@ export function LinkClickHost(): ReactNode {
       openDestination(destination, false);
     };
     document.addEventListener("click", onClick);
-    return () => document.removeEventListener("click", onClick);
+    // A browser that sends a middle click as an `auxclick` alone opens a new tab from it.
+    document.addEventListener("auxclick", onClick);
+    return () => {
+      document.removeEventListener("click", onClick);
+      document.removeEventListener("auxclick", onClick);
+    };
   }, [openDestination]);
   return null;
 }

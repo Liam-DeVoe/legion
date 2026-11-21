@@ -445,13 +445,15 @@ export interface Keymap {
    * `/priorities`) is one row, which runs the registration that applies when it is chosen.
    */
   actions(): KeymapAction[];
+  /** The unfinished chord, or one with no keys; the same object until the chord changes. */
+  chord(): PendingChord;
   /** Every registered binding with its `when()` evaluated now — the source for `?`. One component
    *  mounted twice registers its bindings twice (an issue's hidden Spec beside another of its
    *  documents), and they are one row, enabled when either instance's `when()` holds. */
   describe(): KeyBindingDescription[];
   handleKeyDown(event: KeyboardEvent): void;
-  /** The unfinished chord, or one with no keys; the same object until the chord changes. */
-  pending(): PendingChord;
+  /** The keys typed so far of an unfinished chord (`"g"`), or `""`. */
+  pending(): string;
   pushScope(scope: KeymapScope): () => void;
   register(scope: KeymapScope, bindings: readonly KeyBinding[]): () => void;
   subscribe(listener: () => void): () => void;
@@ -688,6 +690,9 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       }
       return offered;
     },
+    chord() {
+      return chord;
+    },
     describe() {
       const described = new Map<string, KeyBindingDescription>();
       for (const { binding, scope } of registrations) {
@@ -756,7 +761,7 @@ export function createKeymap(options: KeymapOptions = {}): Keymap {
       clearPending();
     },
     pending() {
-      return chord;
+      return chord.keys;
     },
     pushScope(scope) {
       scopes.push(scope);
@@ -807,16 +812,25 @@ export const KeymapPersonContext = createContext<KeymapPerson>({
   personKeys: NO_PERSON_KEYS,
 });
 
-/** The whole binding an action stands for, under `personKeys`' keys for it. */
+/** The whole binding an action stands for, under `personKeys`' keys for it. An action that writes
+ *  (`CatalogueEntry.writes`) runs once per press: a held key's repeats run nothing, and the
+ *  registry's `preventDefault` keeps them from the page too. A palette row's keydown is no
+ *  repeat, so the row runs it. */
 export function actionBinding(binding: ActionBinding, personKeys: PersonKeys): KeyBinding {
   const entry = catalogueEntry(binding.action);
+  const { run } = binding;
   return {
     id: entry.id,
     inEditable: entry.inEditable === true,
     keys: keysOfAction(binding.action, personKeys),
     label: entry.label,
     palette: entry.palette,
-    run: binding.run,
+    run:
+      entry.writes === true
+        ? (event) => {
+            if (!event.repeat) run(event);
+          }
+        : run,
     when: binding.when,
   };
 }
@@ -861,7 +875,7 @@ export function useKeymapScope(scope: KeymapScope | null): void {
 
 /** The unfinished chord, and the keys that can follow it. */
 export function usePendingChord(): PendingChord {
-  return useSyncExternalStore(appKeymap.subscribe, appKeymap.pending);
+  return useSyncExternalStore(appKeymap.subscribe, appKeymap.chord);
 }
 
 /**
