@@ -71,7 +71,8 @@
 #        cluster, the approval's patch with the client signer (rv13), its update with the kubelet
 #        signer (rv12), the signer kubernetes.io/legacy-unknown, a signer of any name, and on a
 #        fleet member that is no GKE cluster create of certificatesigningrequests/nodeclient or
-#        selfnodeclient alone, each exit 1 naming the chain or the right; create alone exits 0;
+#        selfnodeclient alone, each exit 1 naming the chain or the right; create alone, and create
+#        and patch of the request my-csr by name with no signer (pn6), exit 0;
 #   (bo) legion/worker that may impersonate, by name, a user whose power is IAM's (owner@example.com,
 #        who holds roles/owner on the organization, or admin@example.com, a member of a group holding
 #        roles/container.admin) exits 1 naming that user;
@@ -734,6 +735,14 @@ csr_row() {
       subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "$1" "" ""
       want="create certificatesigningrequests/$1.certificates.k8s.io cluster-wide, which kube-controller-manager approves by itself"
       ;;
+    create-patch-named)
+      # pn6: a create limited by name, beside a patch of that name, is no chain without a signer.
+      subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "" "" my-csr
+      subject_grant "$cluster" "$subject" patch certificates.k8s.io certificatesigningrequests "" "" my-csr
+      run
+      want_status 0 "create and patch of the certificate signing request my-csr by name, alone"
+      return
+      ;;
     create-only)
       subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
       run
@@ -746,8 +755,8 @@ csr_row() {
   want_line "FINDING $who: $want$suffix" "a certificate signing chain ($1)"
 }
 if row bj; then
-  each csr_row rv9 wildcard other-cluster rv13 rv12 legacy any-signer nodeclient selfnodeclient create-only
-  passed "(bj) who may write a certificate signing request's approval (update or patch) and approve a client, kubelet, legacy or any signer, on the operator's cluster or another, and who may create a node client request on a non-GKE member, exits 1 naming the chain; create alone exits 0"
+  each csr_row rv9 wildcard other-cluster rv13 rv12 legacy any-signer nodeclient selfnodeclient create-only create-patch-named
+  passed "(bj) who may write a certificate signing request's approval (update or patch) and approve a client, kubelet, legacy or any signer, on the operator's cluster or another, and who may create a node client request on a non-GKE member, exits 1 naming the chain; create alone, or create and patch of one request by name (pn6), exits 0"
 fi
 
 # --- (bo) Impersonating, by name, a user whose power comes from IAM: GKE's IAM authorizer judges an
