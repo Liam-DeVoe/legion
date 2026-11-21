@@ -191,8 +191,11 @@ jobs:
       # test, so a renamed or deleted test would otherwise leave this step green while it ran fewer
       # tests than it names. Its --timeout 15m bounds the one package's test binary, and so the step.
       # Measured: 260 s on a dev box with GOMAXPROCS=4, build included, where cmd/dispatch's unit
-      # run without them took 786 s.
+      # run without them took 786 s. It runs unless the job was cancelled, whatever the unit step
+      # answered: it is a test step of its own, and a failure in the unit step must not hide its
+      # result.
       - name: Test the leaver hold's real-time bounds
+        if: ${{ !cancelled() }}
         run: packages/envoy/scripts/named-tests.sh --timeout 15m ./cmd/dispatch/ -- TestIAPLeaverHoldThroughTheRealBroker TestLeaverHoldBound TestLeaverHoldBoundByThePass TestLeaverHoldRelease
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
