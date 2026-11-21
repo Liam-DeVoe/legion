@@ -66,7 +66,7 @@ func TestEachGrantMatchesTheSetItReplaces(t *testing.T) {
 		}{
 			"Listener":     {base.Listener[id], natsgrant.Listener(id)},
 			"ListenerHost": {base.ListenerHost[id], natsgrant.ListenerHost(id)},
-			"Dispatch":     {base.Dispatch[id], natsgrant.Dispatch(id)},
+			"Dispatch":     {base.Dispatch[id], natsgrant.Dispatch(id, natsgrant.DispatchIntake{})},
 			"Host":         {base.Host[id], natsgrant.Host(id)},
 		} {
 			requireSet(t, pair.want, pair.got, name+"("+strconv.Quote(id)+")")
@@ -164,7 +164,9 @@ func TestNamesSystemSubject(t *testing.T) {
 	for _, id := range []string{"example-host-a", "example-dispatch", "example-hub"} {
 		grants["Listener("+id+")"] = natsgrant.Listener(id)
 		grants["ListenerHost("+id+")"] = natsgrant.ListenerHost(id)
-		grants["Dispatch("+id+")"] = natsgrant.Dispatch(id)
+		grants["Dispatch("+id+")"] = natsgrant.Dispatch(id, natsgrant.DispatchIntake{})
+		grants["Dispatch("+id+", intake)"] = natsgrant.Dispatch(id, natsgrant.ParseDispatchConnection("dispatch-intake/delivery-events/new/old"))
+		grants["Dispatch("+id+", cleanup)"] = natsgrant.Dispatch(id, natsgrant.ParseDispatchConnection("dispatch-cleanup/delivery-jobs/old"))
 		grants["Host("+id+")"] = natsgrant.Host(id)
 	}
 	for name, grant := range grants {
