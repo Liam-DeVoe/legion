@@ -4,10 +4,10 @@ import (
 	"context"
 	"net/http"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -16,20 +16,20 @@ import (
 )
 
 // recordedIssueRuntime is a workflow runtime over one recorded issue, LEGION-301 on acme/widgets,
-// whose project maps acme/widgets and zeta/tools and whose GitHub is github. No default branch is
-// read for either repository, so what the runtime can resolve after a preparation
-// (ResolveRepository) is what says whether that preparation read one. Its Dispatch counts the
-// reads a preparation makes of the issue's detail, which for a recorded issue is none.
-func recordedIssueRuntime(t *testing.T, github string) (*workflowRuntime, *detailDispatch) {
+// whose repository state holds a read of acme/widgets and of zeta/tools at main, as earlier
+// preparations would have kept them (repositories.fill), and whose GitHub is github and whose
+// installations are installs. Its Dispatch counts the reads a preparation makes of the issue's
+// detail, which for a recorded issue is none.
+func recordedIssueRuntime(t *testing.T, github string, installs *installations) (*workflowRuntime, *detailDispatch) {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-301", Tree: "LEGION-301", Project: "LEGION", Title: "existing", Phase: phase.Done,
 		Generation: 1, Status: "done", Rank: "A", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"})
 	repos := newRepositories("LEGION", ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets")}, {Repo: ghrepo.MustParse("zeta/tools")}}, nil)
+	repos.fill(ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("zeta/tools"))
 	client := &detailDispatch{resolved: map[string]string{"LEGION-301": "zeta/tools"}}
-	return &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos,
+	return &workflowRuntime{pool: pool, records: records, dispatch: client, repositories: repos, installs: installs, log: quietLogger(),
 		defaultBranches: newDefaultBranches(roleTokens{}, repos, github, defaultBranchTTL, time.Now)}, client
 }
 
@@ -44,15 +44,15 @@ func refusingGitHub(t *testing.T) string {
 }
 
 // A recorded issue's event is prepared from its record while Dispatch resolves the issue where the
-// record already holds it, and reads nothing at all: an event naming that repository is applied as
-// it is, and a retained event, which names no repository (ResolvedRepoMissing), takes the record's.
-// A resolution Legion serves no installation of reads nothing either, whatever Dispatch has named:
-// the workflow keeps the record's repository and says the change waits
-// (workflow.Engine.ApplyRepositoryChange), which asks for no default branch. Dispatch is not read
-// for any of the three: a recorded issue's repository never comes from its issue detail.
+// record already holds it, and reads nothing at all: an event naming that repository, in any
+// spelling, is applied as it is, and a retained event, which names no repository
+// (ResolvedRepoMissing), takes the record's. Neither GitHub nor Dispatch is read for any of them:
+// a recorded issue's repository never comes from its issue detail, and a resolution that is the
+// record's own repository is no change for a correction to read GitHub for.
 func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
 	ctx := context.Background()
-	w, client := recordedIssueRuntime(t, refusingGitHub(t))
+	installs := &installations{}
+	w, client := recordedIssueRuntime(t, refusingGitHub(t), installs)
 	for _, tc := range []struct {
 		name  string
 		event intake.DispatchIssue
@@ -69,9 +69,9 @@ func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
 			want:  intake.DispatchIssue{Key: "LEGION-301", Seq: 3, Status: "todo", HandedOver: true, ResolvedRepo: "acme/widgets"},
 		},
 		{
-			name:  "an event on a repository Legion serves no installation of",
-			event: intake.DispatchIssue{Key: "LEGION-301", Seq: 4, Status: "todo", HandedOver: true, ResolvedRepo: "other/thing"},
-			want:  intake.DispatchIssue{Key: "LEGION-301", Seq: 4, Status: "todo", HandedOver: true, ResolvedRepo: "other/thing"},
+			name:  "an event on the record's repository in another spelling",
+			event: intake.DispatchIssue{Key: "LEGION-301", Seq: 4, Status: "todo", HandedOver: true, ResolvedRepo: "Acme/Widgets"},
+			want:  intake.DispatchIssue{Key: "LEGION-301", Seq: 4, Status: "todo", HandedOver: true, ResolvedRepo: "Acme/Widgets"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,48 +84,75 @@ func TestARecordedIssuesEventIsPreparedFromItsRecord(t *testing.T) {
 	if reads := client.readCount(); reads != 0 {
 		t.Fatalf("Dispatch was read %d times for a recorded issue, want none", reads)
 	}
+	if asked := installs.asks(); len(asked) != 0 {
+		t.Fatalf("GitHub's installations were read %v, want none: nothing changed", asked)
+	}
 }
 
-// An event that resolves a recorded issue to another repository the project serves is applied as
-// it is, and that repository's default branch is read here: the record follows the repository
-// Dispatch resolves the issue to (workflow.Engine.ApplyRepositoryChange), and the engine resolves
-// it inside the fact's own transaction, which performs no I/O, so a served repository whose
-// default branch nobody read is an error there that would fail the fact for ever. What the
-// preparation leaves behind is therefore a runtime that resolves the new repository, which is what
-// the engine asks it for, and Dispatch is still not read.
-func TestARecordedIssuesEventOnAnotherServedRepositoryReadsItsDefaultBranch(t *testing.T) {
+// An event that resolves a recorded issue to another repository carries the read its correction
+// is written from (intake.DispatchIssue.RepositoryRead): both role Apps' installations on it and
+// GitHub's name and default branch of it, read at this preparation. The record follows the
+// repository Dispatch resolves the issue to (workflow.Engine.ApplyRepositoryChange), and the
+// engine resolves it inside the fact's own transaction, which performs no I/O, so the read is
+// made here. The repository state kept a read of zeta/tools at main, and GitHub answers trunk
+// now: the event carries trunk, never the kept read (dispatch://INFRA-3136's rule that a
+// correction never writes from a kept read). Dispatch is still not read.
+func TestARecordedIssuesEventOnAnotherRepositoryCarriesGitHubsReadOfIt(t *testing.T) {
 	ctx := context.Background()
-	w, client := recordedIssueRuntime(t, newNamedGitHub(t, map[string]string{"zeta/tools": "zeta/tools@trunk"}).url)
-	if _, err := w.ResolveRepository("zeta/tools"); err == nil {
-		t.Fatal("the runtime resolves zeta/tools before any preparation read its default branch; this test proves nothing")
+	installs := &installations{}
+	w, client := recordedIssueRuntime(t, newNamedGitHub(t, map[string]string{"zeta/tools": "Zeta/Tools@trunk"}).url, installs)
+	if kept, held := w.repositories.lookup("zeta/tools"); !held || kept.DefaultBranch != "main" {
+		t.Fatalf("the repository state keeps %+v for zeta/tools (%t), want its read at main; this test proves nothing", kept, held)
 	}
 
 	event := intake.DispatchIssue{Key: "LEGION-301", Seq: 2, Status: "todo", HandedOver: true, ResolvedRepo: "zeta/tools"}
 	got, err := w.prepareRepository(ctx, event)
-	if err != nil || !reflect.DeepEqual(got, event) {
-		t.Fatalf("prepareRepository of an event resolving elsewhere = %#v, %v; want the event as it is, applied", got, err)
+	if err != nil {
+		t.Fatalf("prepareRepository of an event resolving elsewhere = %v, want it prepared", err)
 	}
-	resolution, err := w.ResolveRepository("zeta/tools")
-	if err != nil || resolution.Repo != "zeta/tools" || resolution.DefaultBranch != "trunk" {
-		t.Fatalf("after the preparation the runtime resolves zeta/tools to %#v, %v; want zeta/tools at trunk, which is what the engine's own resolution answers from", resolution, err)
+	want := ghbranch.Repository{Name: ghrepo.MustParse("Zeta/Tools"), DefaultBranch: "trunk"}
+	if got.RepositoryRead == nil || *got.RepositoryRead != want || got.RepositoryRefusal != "" {
+		t.Fatalf("the prepared event carries the read %+v and the refusal %q, want GitHub's answer %+v and no refusal", got.RepositoryRead, got.RepositoryRefusal, want)
+	}
+	for _, role := range []string{"implement zeta/tools", "review zeta/tools"} {
+		if reads := installs.reads(role); reads != 1 {
+			t.Fatalf("the preparation made %d reads of %q, want one: a correction reads the installations at its preparation", reads, role)
+		}
 	}
 	if reads := client.readCount(); reads != 0 {
 		t.Fatalf("Dispatch was read %d times for a recorded issue, want none", reads)
 	}
 }
 
-// A reopen whose edited repository the project serves and GitHub cannot read is refused with that
-// read's own error, so the fact is delivered again rather than applied against a repository nobody
-// could read. It is the answer prepareUnrecorded gives an admission on such a repository, and for
-// the same reason: the engine writes no record on a repository whose default branch no read
-// answered.
-func TestARecordedIssuesEventIsRefusedWhenGitHubCannotReadItsNewRepository(t *testing.T) {
+// A recorded issue's event onto a repository a role App is not installed on carries GitHub's
+// refusal and its kind, which the change waits on the record with; one onto a repository GitHub
+// cannot read carries neither, so its correction writes nothing and says nothing, and the issue's
+// next event or the next boot reads it again. Neither fails the fact: the event is applied.
+func TestARecordedIssuesEventCarriesWhatGitHubAnsweredForItsNewRepository(t *testing.T) {
 	ctx := context.Background()
-	w, _ := recordedIssueRuntime(t, newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main"}).url)
-
-	reopen := intake.DispatchIssue{Key: "LEGION-301", Seq: 2, Status: "todo", HandedOver: true, ResolvedRepo: "zeta/tools"}
-	got, err := w.prepareRepository(ctx, reopen)
-	if err == nil || !strings.Contains(err.Error(), "zeta/tools") || !strings.Contains(err.Error(), "404") {
-		t.Fatalf("prepareRepository of a reopen onto a served repository GitHub answers 404 for = %#v, %v; want the default branch read's own error, for the fact to be delivered again", got, err)
+	for _, tc := range []struct {
+		name     string
+		missing  map[string]bool
+		refusal  string
+		kind     intake.RepositoryRefusalKind
+		branches map[string]string
+	}{
+		{name: "a role App not installed", missing: map[string]bool{"review zeta/tools": true},
+			refusal: "the review App is not installed on zeta/tools", kind: intake.RefusedByGitHub,
+			branches: map[string]string{"zeta/tools": "zeta/tools@trunk"}},
+		{name: "a name GitHub answers 404 for", branches: map[string]string{"acme/widgets": "acme/widgets@main"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, _ := recordedIssueRuntime(t, newNamedGitHub(t, tc.branches).url, &installations{missing: tc.missing})
+			event := intake.DispatchIssue{Key: "LEGION-301", Seq: 2, Status: "todo", HandedOver: true, ResolvedRepo: "zeta/tools"}
+			got, err := w.prepareRepository(ctx, event)
+			if err != nil {
+				t.Fatalf("prepareRepository = %v, want the event applied", err)
+			}
+			if got.RepositoryRead != nil || got.RepositoryRefusal != tc.refusal || got.RepositoryRefusalKind != tc.kind {
+				t.Fatalf("the prepared event carries the read %+v and the refusal %q (%v), want no read and %q (%v)",
+					got.RepositoryRead, got.RepositoryRefusal, got.RepositoryRefusalKind, tc.refusal, tc.kind)
+			}
+		})
 	}
 }

@@ -122,6 +122,24 @@ type outbox struct {
 	applyMergeability     func(ctx context.Context, github githubrest.Client, pr record.PullRequest, pull githubPullRequest, readAt time.Time, eventID string) error
 	mergeStateWait        func() time.Duration
 	queueMergeStateFollow func(issue, head string)
+	// podEnded is what the end of an issue's pod runs, for the issues whose pod ended: the drop of
+	// a repository kept for each (workflowRuntime.dropLaunchedRepository) and this release's
+	// one-time rename pass over them (workflowRuntime.podEndsOn, renamePass). It runs at three
+	// places only, each once the runtime's own call has answered that the pod is gone: an idle
+	// release's teardown, after ReleaseIssue returns and before the release's mark is cleared
+	// (releaseIssue); an issue close, after SuspendIssue returns nil on a close the store did not
+	// refuse (suspendIssue, the record.IssueSuspend case of execute); and a workflow tree close,
+	// after the tree's cleanup, for each issue of the tree (endTreePods). Never after a pod
+	// update's ReplacePod, which starts the next pod at once. Set by attach after newOutbox; a test
+	// that builds the outbox by hand leaves it nil, and the end of a pod then runs nothing.
+	podEnded func(context.Context, []string)
+	// prepareHandover readies the hand-over fact consumeHandover applies, as an event's
+	// preparation readies a recorded issue's (workflowRuntime.prepareHandover): where the
+	// resolution the status executor read names another repository than the record's, it carries
+	// what GitHub answered for that repository now, which the correction admission's hand-over
+	// makes is written from. Set by attach after newOutbox; a test that builds the outbox by hand
+	// leaves it nil, and the fact then carries no read, so its correction writes nothing.
+	prepareHandover func(context.Context, intake.Handover) (intake.Handover, error)
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
 	// timers — the sweep's, a lane's wait for its next due row, a running row's lease renewal.
 	// Both are the wall clock in production, and a test holds both still (heldClock). A test that
@@ -1255,14 +1273,14 @@ func (handOverRule) firstAttempt(ctx context.Context, r *outbox, row record.Outb
 		return false, err
 	}
 	if issue.Status == payload.Status && issue.HandedOver {
-		return false, r.consumeHandover(ctx, row, payload, issue.ResolvedRepo)
+		return false, r.consumeHandover(ctx, row, payload, issue)
 	}
 	// Every hand-over write is conditional on the sequence just read (dispatch HandOver), the
 	// label added when the child lacks it, so a person's move since that read stands.
 	if err := r.dispatch.HandOver(ctx, issue, payload.Status); err != nil {
 		return false, fmt.Errorf("hand Dispatch issue %s to Legion as %s: %w", row.Issue, payload.Status, err)
 	}
-	return false, r.consumeHandover(ctx, row, payload, issue.ResolvedRepo)
+	return false, r.consumeHandover(ctx, row, payload, issue)
 }
 
 // stillWanted is unreachable and says so: a hand-over's write is made by its own first attempt,
@@ -1551,16 +1569,27 @@ func recordRefused(err error) bool {
 // sequence fence. The fact is idempotent (admit's consumeHandover reads the fence it deletes), so
 // the event, or this row's retry after a failure here, changes nothing more.
 //
-// resolved is the repository Dispatch resolved the issue to at the read the status executor made
-// of it before any of this, which the fact carries so the re-admission lands on the repository
-// Dispatch resolves the issue to now (admit's consumeHandover): no event and no PATCH of this
-// door says the repository changed, so without it the new generation would run on the repository
-// the record holds until the issue's next event or the next boot listing. A read that answered no
-// repository carries none, and corrects nothing.
-func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, resolved string) error {
-	_, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("handover:%s:%d", row.Issue, row.ID),
-		intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger, ResolvedRepo: resolved},
-		r.handlers...)
+// read is the issue as the status executor read it from Dispatch before any of this. The fact
+// carries its resolution, so the re-admission lands on the repository Dispatch resolves the issue
+// to now (admit's consumeHandover): no event and no PATCH of this door says the repository
+// changed, so without it the new generation would run on the repository the record holds until
+// the issue's next event or the next boot. A read that answered no repository carries none, and
+// corrects nothing. The fact carries the read's sequence too, so a record that took a later event
+// meanwhile, a person's change of the repository among them, is not corrected back to this read.
+// The fact is prepared first (prepareHandover), outside the fact lock, so a resolution that moves
+// the issue carries GitHub's read of the repository it moves onto, which the correction writes
+// and nothing the daemon kept.
+func (r *outbox) consumeHandover(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, read dispatch.Issue) error {
+	fact := intake.Handover{Issue: row.Issue, Tree: payload.HandOverTree, Generation: payload.HandOverLinger,
+		ResolvedRepo: read.ResolvedRepo, Seq: read.LastSeq}
+	if r.prepareHandover != nil {
+		prepared, err := r.prepareHandover(ctx, fact)
+		if err != nil {
+			return fmt.Errorf("prepare the hand-over of %s: %w", row.Issue, err)
+		}
+		fact = prepared
+	}
+	_, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("handover:%s:%d", row.Issue, row.ID), fact, r.handlers...)
 	return err
 }
 
@@ -3146,7 +3175,8 @@ func carriedStopDeadline(oldRoot *record.Issue, now time.Time, stop time.Duratio
 // would wait forever. The cleanup (store.CleanupReservedTree) waits until every stored claim of the
 // tree has retired, then has the runtime release what it holds for the tree and confirms the
 // reservation. It reports false, acting on nothing, when the tree holds no unconfirmed
-// reservation and this close could not take one; the ordinary fences then decide.
+// reservation and this close could not take one; the ordinary fences then decide. A cleanup that
+// finished ends the pods of the tree's issues (endTreePods).
 func (r *outbox) reservedTreeClose(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) (bool, error) {
 	lifecycle, reserved, err := r.trees.ReserveWorkflowTreeCleanup(ctx, r.project, payload.Tree, payload.Linger)
 	if err != nil {
@@ -3165,7 +3195,45 @@ func (r *outbox) reservedTreeClose(ctx context.Context, row record.OutboxRow, pa
 		}
 	}
 	r.dropReleasedWork(ctx, row.Issue)
-	return true, r.trees.CleanupReservedTree(ctx, r.project, payload.Tree, lifecycle.Epoch, r.supervisor.deps.Runtime)
+	if err := r.trees.CleanupReservedTree(ctx, r.project, payload.Tree, lifecycle.Epoch, r.supervisor.deps.Runtime); err != nil {
+		return true, err
+	}
+	r.endTreePods(ctx, row.Issue, payload.Tree)
+	return true, nil
+}
+
+// endPods runs the end of issues' pods (podEnded), where attach set it.
+func (r *outbox) endPods(ctx context.Context, issues ...string) {
+	if r.podEnded != nil {
+		r.podEnded(ctx, issues)
+	}
+}
+
+// endTreePods runs the end of the pods of tree's issues (podEnded) once the tree's cleanup released
+// what the runtime held for it, which under the Sandbox runtime waits until no Sandbox of the tree
+// is left: each issue the record holds in tree, and issue, the close row's own. A read of the
+// tree's issues that fails is logged and ends the pod of issue alone, since the cleanup is done and
+// a retry of the row would not run it again; the next boot's rename pass writes what this one left.
+func (r *outbox) endTreePods(ctx context.Context, issue, tree string) {
+	if r.podEnded == nil {
+		return
+	}
+	var members []record.Issue
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		members, err = r.records.TreeIssues(ctx, tx, tree)
+		return err
+	}); err != nil {
+		r.log.Warn("outbox: the issues of a cleaned-up tree could not be read for the end of their pods; the row's own issue's pod is ended alone",
+			"tree", tree, "issue", issue, "error", err)
+	}
+	issues := []string{issue}
+	for _, member := range members {
+		if member.Key != issue {
+			issues = append(issues, member.Key)
+		}
+	}
+	r.podEnded(ctx, issues)
 }
 
 // root is issue's tree root as recorded, nil when it is not, read in a transaction of its own
@@ -3248,7 +3316,8 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // production check's look: the runtime suspends the issue's Sandbox under its pod lock once the
 // store authorizes the close (store.IssueSuspension), waits its pod out and deletes it
 // (runtime.IssueSuspender). A pod the runtime deleted, or found gone, once the store authorized
-// it, ends the pause's hold of that pod (podDeleted).
+// it, ends the pause's hold of that pod (podDeleted); a pod whose close the store did not refuse
+// ends (endPods).
 func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value record.IssueSuspend) error {
 	if r.supervisor == nil {
 		return errors.New("issue suspension executor has no claim supervisor")
@@ -3259,15 +3328,30 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 	}
 	closing := store.IssueClose{Issue: row.Issue, Tree: value.Tree, IssueGeneration: value.Generation,
 		TreeGeneration: value.TreeGeneration, Row: row.ID}
-	authorized := false
+	// ended and authorized are the store's answer under the runtime's pod lock, read by two
+	// rules. A close the store refused finishes without acting and may leave the pod standing, so
+	// it turns both false. The pause's hold of the pod is the store's own record, so it ends only
+	// on a close the store authorized: authorized starts false. The end of the pod also follows a
+	// runtime that stops the pod without asking the store, its nil return being the stop: ended
+	// starts true.
+	ended, authorized := true, false
 	if err := suspender.SuspendIssue(ctx, row.Issue, value.Tree, func(ctx context.Context) (bool, error) {
 		act, err := r.trees.IssueSuspension(ctx, r.project, closing, record.OutOfWorkflow)
+		ended = act
 		authorized = act && err == nil
 		return act, err
-	}); err != nil || !authorized {
+	}); err != nil {
 		return err
 	}
-	return r.podDeleted(ctx, row.Issue, "the issue's close, park, linger or production check deleted its pod")
+	if authorized {
+		if err := r.podDeleted(ctx, row.Issue, "the issue's close, park, linger or production check deleted its pod"); err != nil {
+			return err
+		}
+	}
+	if ended {
+		r.endPods(ctx, row.Issue)
+	}
+	return nil
 }
 
 // podDeleted ends the hold a project's pause has on issue's pod once a row has deleted that pod
@@ -3569,6 +3653,9 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	if err := r.podDeleted(ctx, row.Issue, "a release's teardown deleted the pod"); err != nil {
 		return err
 	}
+	// The end of its pod (podEnded) runs here, on the issue's lifecycle lane and before the
+	// release's mark is cleared below, so a start queued behind the release waits for it.
+	r.endPods(ctx, row.Issue)
 	if decision.SuspendsNoRole {
 		r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
 			"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,

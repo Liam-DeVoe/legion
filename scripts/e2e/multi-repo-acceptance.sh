@@ -45,9 +45,8 @@
 # unaffected by it.
 #
 # `negative repo-edit` has a precondition: LEGION_E2E_REPO_X is a repository Legion does not serve
-# for the project, because a GitHub App is not installed on it, whether or not it is mapped to the
-# project in Dispatch. When both Apps are installed on X, the daemon moves the record onto X, mapped
-# or not, and the control fails.
+# for the project, because a GitHub App is not installed on it. When both Apps are installed on X,
+# the daemon moves the record onto X, and the control fails.
 #
 # Required inputs (every one an operator input; the script refuses to start without any of
 # them, naming the first missing one, and never carries a literal of its own):
@@ -565,11 +564,10 @@ as_role_probe() {
 # with (`GET <repo>.git/info/refs?service=git-receive-pack`): 200 and a receive-pack
 # advertisement for O, the issue's own repository, and the same for T, a repository of another
 # owner. What a role reaches is the accounts its App is installed on, whichever owner's
-# repository its issue names, which is the property. The observation reads no repository
-# mapping, so it shows reach across owners and says nothing of whether a mapping names T. O's
-# answer stays the control that the network, the helper and the token are sound, so T's 200 is
-# reach and not a rig that answers anything. The request writes nothing: it is the read a push
-# opens with, where a push would leave
+# repository its issue names, which is the property, so the observation shows reach across
+# owners. O's answer stays the control that the network, the helper and the token are sound, so
+# T's 200 is reach and not a rig that answers anything. The request writes nothing: it is the
+# read a push opens with, where a push would leave
 # a branch on a repository every run shares. The prober runs no git (git reads
 # ~/.netrc, config files and the GIT_* variables, all of which the agent's uid can write) and takes
 # no executable, search path or credential directory from the agent's environment, which its own
@@ -676,7 +674,7 @@ cache_check() {
   state_file=$(state_raw cache)
   repo=$(jq -r --arg k "$key" '.issues[$k].repo // "none"' "$state_file")
   [ "$repo" != "none" ] || ok=0
-  ready=$(jq -r --arg r "$repo" '.repositories.mapped[] | select((.repo|ascii_downcase)==($r|ascii_downcase)) | .cache.ready' "$state_file")
+  ready=$(jq -r --arg r "$repo" '.repositories.live[] | select((.repo|ascii_downcase)==($r|ascii_downcase)) | .cache.ready' "$state_file")
   [ "$ready" = true ] || ok=0
   summary cache "issue: $key
 pod: $pod ($container)
@@ -869,7 +867,7 @@ negative_no_repo() {
   events_file=$(dispatch_events_raw negative-no-repo "$key")
   project=$(issue_project "$key")
   daemon_actor="legion-daemon:$project"
-  local none_note="Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again."
+  local none_note="Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name), or the default repository of project $project, in Dispatch, and move it to todo again."
   local latest_is_none
   latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" '
     [.[] | select(.type=="message.created" and .actor.kind=="session" and .actor.id==$actor
@@ -899,15 +897,14 @@ latest daemon repository note is the none-note: $latest_is_none
 # (noteRepositoryChangeWaits, in internal/workflow/repository.go) appears among its messages,
 # with the daemon's claimed actor id and outbox marker. That message names why X is not served and
 # what a person can do, which differs with the refusal (the App or Apps not installed on X), and
-# ends with when Legion moves the issue itself, which differs with whether a mapping names X. So
-# the check matches, word for word, the opening every variant shares, "Legion did not move this
-# issue off <repo>: ", with the baseline's own repository spelling, and, just before the outbox
-# marker, one of the two closing sentences: "Legion moves the issue itself once it serves the
-# repository that Dispatch resolves the issue to." for an X a mapping names, or "Legion moves the
-# issue at its next event or at Legion's next boot, once both Legion Apps are installed on <X>."
-# for one no mapping names, whose <X> is matched against LEGION_E2E_REPO_X case-insensitively,
-# since the daemon writes Dispatch's spelling of it. A rerun needs no second message: `noteOnce`
-# posts that note once per resolution (noteOnce, in the same file), so check (3) is this
+# ends with when Legion moves the issue itself. So the check matches, word for word, the opening
+# every variant shares, "Legion did not move this issue off <repo>: ", with the baseline's own
+# repository spelling, and, just before the outbox marker, the closing sentence "Legion moves the
+# issue at its next event or at Legion's next boot, once both Legion Apps are installed on <X>.",
+# whose <X> is matched against LEGION_E2E_REPO_X case-insensitively, since the daemon writes
+# Dispatch's spelling of it. Since dispatch://INFRA-4401 (#4493) the daemon reads no repository
+# mapping, so a mapped X is told the same closing as any other. A rerun needs no second message:
+# `noteOnce` posts that note once per resolution (noteOnce, in the same file), so check (3) is this
 # protocol's primary proof and (4) is the format checked, not required fresh.
 negative_repo_edit() {
   local phase=$1
@@ -953,21 +950,19 @@ negative_repo_edit() {
     '[.[] | select(.type=="issue.updated" and .seq > $since and ((.payload.repo // "") | ascii_downcase) == $x)] | length' "$events_file")
   { [ -n "${edit_after:-}" ] && [ "$edit_after" -gt 0 ]; } 2>/dev/null || ok=0
 
-  local project daemon_actor opening closing unmapped_lead has_note
+  local project daemon_actor opening lead has_note
   project=$(issue_project "$child")
   daemon_actor="legion-daemon:$project"
   # The daemon's own words for a change it cannot apply yet (noteRepositoryChangeWaits, in
   # internal/workflow/repository.go): the opening every variant shares, with the baseline's own
-  # spelling of the kept repository, and one of the two closing sentences. What lies between names
-  # the refusal, which depends on why the deployment does not serve X. The closing is `closing`
-  # for an X a mapping names, and `unmapped_lead`, X and a full stop for one no mapping names,
-  # where X is Dispatch's spelling, so only X is compared case-insensitively.
+  # spelling of the kept repository, and the closing sentence. What lies between names the
+  # refusal, which depends on why the deployment does not serve X. The closing is `lead`, X and a
+  # full stop, where X is Dispatch's spelling, so only X is compared case-insensitively.
   opening="Legion did not move this issue off $b_repo: "
-  closing=" Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
-  unmapped_lead=" Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on "
-  has_note=$(jq --arg actor "$daemon_actor" --arg opening "$opening" --arg closing "$closing" \
-    --arg lead "$unmapped_lead" --arg x "$repo_x" '
-    def unmapped_closing:
+  lead=" Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on "
+  has_note=$(jq --arg actor "$daemon_actor" --arg opening "$opening" \
+    --arg lead "$lead" --arg x "$repo_x" '
+    def closing:
       (($lead | length) + ($x | length) + 1) as $n
       | length >= $n
         and (.[-$n:] as $t
@@ -976,7 +971,7 @@ negative_repo_edit() {
     any(.[]; .type=="message.created" and .actor.kind=="session" and .actor.id==$actor
       and (.payload.body | startswith($opening))
       and (.payload.body | contains("\n\n<!-- legion-outbox:"))
-      and (.payload.body | split("\n\n<!-- legion-outbox:")[0] | endswith($closing) or unmapped_closing))
+      and (.payload.body | split("\n\n<!-- legion-outbox:")[0] | closing))
   ' "$events_file")
   [ "$has_note" = "true" ] || ok=0
 

@@ -16,12 +16,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 const (
@@ -259,6 +265,58 @@ func TestRepositoryCorrectionAddsNoReasonWhereNothingDisagrees(t *testing.T) {
 				t.Fatalf("the pod was replaced %d times, want never", len(calls))
 			}
 		})
+	}
+}
+
+// The rename pass and the correction are two writers of a record's repository that cannot undo
+// each other, and neither the pass nor the event after it replaces a pod. The pass writes a
+// configured pair's `to` over the `from` the record held (record.RenameIssueRepository); Dispatch
+// still resolves the issue to the `from` until its own repository moves (dispatch://INFRA-4412),
+// so the issue's next event names the `from`, whose preparation read GitHub for it. The event
+// reads the pair as one repository (the engine's sameRepository) and corrects nothing, and the pod
+// built from the `from` reads as on the record's repository (repositories.left), so no round
+// opens and no pod is replaced.
+func TestTheRenamePassAndTheEventAfterItNamingTheOldNameCorrectNothingAndReplaceNoPod(t *testing.T) {
+	const renamedTo = "zeta/widgets"
+	renames := ghrepo.MustRenames(ghrepo.MustRename(podUpdateRepo, renamedTo))
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.s.plan.repositories = newRepositories("LEGION", renames)
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		_, err := record.RenameIssueRepository(ctx, tx, podUpdateIssue, podUpdateRepo, renamedTo)
+		return err
+	}); err != nil {
+		t.Fatalf("the rename pass's write of %s: %v", podUpdateIssue, err)
+	}
+	rig.podRepository(podUpdateRepo)
+
+	engine := workflow.New(rig.records, workflow.Config{Project: "LEGION", Repositories: testRepositories, RepositoryRenames: renames,
+		Steps: config.DesignGateOff.Steps(), Clock: rig.clock.Now}, quietLogger())
+	stillOld := intake.DispatchIssue{Key: podUpdateIssue, ResolvedRepo: podUpdateRepo,
+		RepositoryRead: &ghbranch.Repository{Name: ghrepo.MustParse(podUpdateRepo), DefaultBranch: "main"}}
+	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
+		stored, err := rig.records.Issue(ctx, tx, podUpdateIssue)
+		if err != nil {
+			return err
+		}
+		return engine.ApplyRepositoryChange(ctx, tx, *stored, stillOld)
+	}); err != nil {
+		t.Fatalf("the event naming %s after the rename pass: %v", podUpdateRepo, err)
+	}
+	got := recordOf(t, rig.pool, rig.records, podUpdateIssue)
+	if got.Repo != renamedTo || got.RepoCorrection != nil || got.RepoChange != nil {
+		t.Fatalf("%s = %+v, want it on %s with no correction and nothing waiting: the pair is one repository", podUpdateIssue, got, renamedTo)
+	}
+
+	rig.tick()
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+		if c := rig.claimOf(role); c.UpdateRound != "" {
+			t.Errorf("the %s is in round %q for reasons %q, want no round: the pod is on the record's repository under its old name",
+				role, c.UpdateRound, c.UpdateReasons)
+		}
+	}
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times, want never", len(calls))
 	}
 }
 

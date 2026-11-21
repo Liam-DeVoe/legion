@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -975,6 +976,54 @@ func TestABundleOfARenamedRepositoryIsSent(t *testing.T) {
 			}
 			if pod, outcome := bundleAttempt(t, s, "INFRA-945"); pod != "pod-replacement" || outcome != "sent" {
 				t.Fatalf("the row records the attempt as %q by %s, want sent to the pod that asked", outcome, pod)
+			}
+		})
+	}
+}
+
+// The one-time rename pass writes a configured pair's `to` over its `from` on the saved bundle as
+// on the record (record.RenameIssueRepository, workspace_bundles.repo among its tables), so a
+// bundle saved under the old name is still the work of the issue's repository once the operator
+// removes the pair from `repository_renames`: the take then compares the names with no pair at all
+// (noRenames), and the bundle is sent. Control: a pass that wrote the record alone and left the
+// bundle on the old name has the same take refuse the work as of a repository the issue left.
+func TestABundleSavedBeforeTheRenamePassIsSentOnceThePairIsRemoved(t *testing.T) {
+	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
+	const to = "acme/gadgets"
+	for _, tc := range []struct {
+		name   string
+		rename func(t *testing.T, s *Store)
+		want   runtime.WorkspaceBundleTake
+	}{
+		{name: "the pass", want: runtime.WorkspaceBundleSend, rename: func(t *testing.T, s *Store) {
+			if err := s.Tx(context.Background(), func(tx pgx.Tx) error {
+				_, err := record.RenameIssueRepository(context.Background(), tx, "INFRA-945", savedRepo, to)
+				return err
+			}); err != nil {
+				t.Fatalf("the rename pass's write of INFRA-945: %v", err)
+			}
+		}},
+		{name: "a pass that left the bundle", want: runtime.WorkspaceBundleRefusedRepository, rename: func(t *testing.T, s *Store) {
+			recordIssueOn(t, s, "INFRA-945", to)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			s := migratedStore(t)
+			saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the released work"),
+				Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
+			if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, savedRepo, saved); err != nil {
+				t.Fatal(err)
+			}
+			recordIssueOn(t, s, "INFRA-945", savedRepo)
+			tc.rename(t, s)
+
+			read, take, err := s.TakeWorkspaceBundleForRestore(ctx, bundleProject, "INFRA-945", "pod-replacement", at.Add(time.Minute), noRenames)
+			if err != nil || take != tc.want {
+				t.Fatalf("the pod after the pair's removal was answered %v (%v), want %v", take, err, tc.want)
+			}
+			if tc.want == runtime.WorkspaceBundleSend && (string(read.Bundle) != string(saved.Bundle) || read.Repo != to) {
+				t.Fatalf("the pod was answered %q of %q, want the saved work of %s under the pair's new name", read.Bundle, read.Repo, savedRepo)
 			}
 		})
 	}

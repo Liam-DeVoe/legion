@@ -1080,13 +1080,11 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		return nil
 	}
 	// The record's repository follows the one Dispatch resolves the issue to, as it does for a
-	// live event (the engine's ApplyRepositoryChange), with the refusal the listing's preparation
-	// read from GitHub for a repository no mapping names where it carries one
-	// (intake.DispatchIssue.RepositoryRefusal). A recorded issue reaches this from the boot
-	// listing alone: the recovery listing takes no recorded issue (the daemon's recoveredOn). A
-	// change that waits on the record, onto a repository Legion did not serve when its event came,
-	// is applied by the pass after the read of the mapping that first serves that repository (the
-	// daemon's followMapping), and here at a boot that pass has not reached.
+	// live event (the engine's ApplyRepositoryChange). A recorded issue reaches this from the boot
+	// listing alone: the recovery listing takes no recorded issue (the daemon's recoveredOn). The
+	// boot listing's preparation reads no GitHub for a change and asks for the daemon's follow
+	// pass instead (followListing), which calls the engine itself once the boot is over, so the
+	// fact here carries no read and corrects nothing (Resolution.Unread).
 	if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, summary); err != nil {
 		return err
 	}
@@ -1236,13 +1234,26 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 	// repository column at all (record.Store.PutIssue), so the correction stands whatever this
 	// copy holds of the repository. applySummary corrects the repository the same way and reads
 	// the record again only after an engine transition, which writes the phase, the hold and the
-	// linger that its own copy would put back. The hand-over is no prepared fact, so it carries no
-	// read of GitHub (intake.DispatchIssue.RepositoryRead, RepositoryRefusal): a change onto a
-	// repository no mapping names corrects nothing here, whatever read the daemon keeps of it, and
-	// a waiting change onto such a repository is applied at the issue's next event or at the next
-	// boot (the served-set follow never fires for such a repository).
-	if fact.ResolvedRepo != "" {
-		if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, intake.DispatchIssue{Key: fact.Issue, ResolvedRepo: fact.ResolvedRepo}); err != nil {
+	// linger that its own copy would put back. The correction is written from what the outbox's
+	// preparation of the fact read of GitHub for the repository it moves onto
+	// (intake.Handover.RepositoryRead, RepositoryRefusal), as an event's is, and a hand-over that
+	// read nothing — the outbox's read of GitHub did not answer — corrects nothing, its change read
+	// again at the issue's next event or at the next boot. Nor does a hand-over whose Dispatch read
+	// is older than the record (intake.Handover.Seq below its LastDispatchSeq): the event the
+	// record took since carried Dispatch's newer resolution, which the engine acted on then, and
+	// the outbox's reads of GitHub between its Dispatch read and this apply leave time for a
+	// person's change of the repository to land first, which the older read would undo. The follow
+	// pass leaves a record a later event carried past its listing the same way (the daemon's
+	// followListing).
+	if fact.ResolvedRepo != "" && (fact.Seq == 0 || fact.Seq >= stored.LastDispatchSeq) {
+		change := intake.DispatchIssue{
+			Key:                   fact.Issue,
+			ResolvedRepo:          fact.ResolvedRepo,
+			RepositoryRead:        fact.RepositoryRead,
+			RepositoryRefusal:     fact.RepositoryRefusal,
+			RepositoryRefusalKind: fact.RepositoryRefusalKind,
+		}
+		if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, change); err != nil {
 			return err
 		}
 	}

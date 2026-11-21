@@ -32,15 +32,16 @@ const (
 // (intake.ObservedIssue) carrying the event that write makes (intake.OwnStatusWrite) as Delivered,
 // which ApplyFact applies in the view's place for an issue the workflow records, through the
 // workflow then admission. The route prepares the fact first (its PrepareRepository), which for a
-// recorded issue moving to a served repository reads that repository's default branch; this
-// rig's repositories already hold it, so there is nothing to prepare.
+// recorded issue moving to another repository reads GitHub for it (prepareRecorded); the rig's
+// reads stand in for that preparation, and ApplyFact carries the view's read onto the event it
+// applies in the view's place (intake's settleObserved).
 func (r *correctionRig) childStatusWrite(seq int64, status, resolved string) {
 	r.t.Helper()
 	parent := correctionKey
 	written := dispatch.Issue{Key: rerunChildKey, Project: correctionProject, Title: rerunChildTitle, Status: status, Parent: &parent,
 		Rank: rerunChildRank, LastSeq: seq, ResolvedRepo: resolved}
 	event := intake.OwnStatusWrite(written)
-	fact := intake.ObservedIssue(written)
+	fact := r.prepared(intake.ObservedIssue(written))
 	fact.Delivered = &event
 	applyFact(r.t, r.pool, "api", fmt.Sprintf("status/own-write-%d", seq), fact, r.engine, r.admission)
 }
@@ -111,7 +112,7 @@ func TestRepositoryCorrectionFollowsRerunChildIntoTheFirstLaunch(t *testing.T) {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	const project = "legion"
-	w := &workflowRuntime{pool: r.pool, records: r.records, log: quietLogger()}
+	w := launchReadRuntime(r.pool, r.records, quietLogger(), "acme/widgets", "acme/tools")
 	launches := specs{
 		stateDir: t.TempDir(), project: project, prompts: composer,
 		repository: w.issueLaunchRepository,

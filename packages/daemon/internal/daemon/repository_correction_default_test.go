@@ -4,12 +4,12 @@ package daemon
 // and has no ancestor that does, resolves to its project's default, so a change of that default
 // in Dispatch moves every recorded issue that inherits it at once.
 //
-// Two passes see such a change for a recorded issue, and both reach the record through the same
-// single-issue correction (workflow.(*Engine).ApplyRepositoryChange): admission's reconcile over a
-// Dispatch listing (admit's applySummary), which the boot runs over the whole project, and the
-// listing the daemon reads once Dispatch's own event for the change, settings.repo_project.updated,
-// has had it read the mapping again (followMapping, whose tests are
-// repository_correction_mapping_event_test.go). These tests read what the reconcile does with
+// Since dispatch://INFRA-4401 the daemon hears no settings.repo_project.updated and reads no
+// repository mapping, and Dispatch sends no event of an issue whose resolution a default change
+// moved, so such an issue's record follows at the issue's own next event or at the next boot,
+// whose listing leaves each recorded issue's change to the follow after it (followListing): one
+// single-issue correction per issue (workflow.(*Engine).ApplyRepositoryChange), from the read its
+// preparation made of GitHub, in one transaction. These tests read what that pass writes for
 // several issues at once: each is corrected on its own, with its own moment, and the pods are
 // replaced by the ordinary per-issue update round rather than by a batch with a path of its own.
 
@@ -21,11 +21,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -48,13 +49,14 @@ var (
 	defaultChangeStep  = time.Minute
 )
 
-// defaultChangeRig is one test's daemon: the records, the repositories it serves and admission's
-// reconcile over them, with a clock that answers a new moment at every read.
+// defaultChangeRig is one test's daemon: the records and the engine whose single-issue
+// correction the follow's pass applies over them, with a clock that answers a new moment at every
+// read.
 type defaultChangeRig struct {
-	t         *testing.T
-	pool      *store.Pool
-	records   record.Store
-	admission *admit.Admission
+	t       *testing.T
+	pool    *store.Pool
+	records record.Store
+	engine  *workflow.Engine
 	// read is every moment the engine's clock has answered, in order, which is what says a
 	// correction's moment is its own read rather than a moment shared by the pass.
 	read []time.Time
@@ -69,13 +71,8 @@ func newDefaultChangeRig(t *testing.T) *defaultChangeRig {
 		r.read = append(r.read, at)
 		return at
 	}
-	repos := correctionRepositories{
-		"acme/widgets": {Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"},
-		"acme/tools":   {Repo: "acme/tools", DefaultBranch: "release/v7.1", GitHubRepo: "acme/tools"},
-	}
-	engine := workflow.New(r.records, workflow.Config{Project: correctionProject, Repositories: repos,
+	r.engine = workflow.New(r.records, workflow.Config{Project: correctionProject, Repositories: testRepositories,
 		Steps: config.DesignGateOff.Steps(), Clock: clock}, quietLogger())
-	r.admission = admit.New(r.records, engine, len(defaultChangeKeys), correctionProject, quietLogger())
 	for index, key := range defaultChangeKeys {
 		r.recordRoot(key, index)
 	}
@@ -103,18 +100,37 @@ func (r *defaultChangeRig) recordRoot(key string, index int) {
 	}
 }
 
-// listing runs admission's boot and recovery pass over a Dispatch listing that shows both issues
-// resolved to resolved, at the sequence their records already hold: nothing of either issue moved
-// in Dispatch but the repository it resolves to, which is what a change of the project's default
+// followed applies what the follow after a boot writes over a Dispatch listing that shows both
+// issues resolved to resolved, at the sequence their records already hold (followListing): each
+// issue's single-issue correction, in one transaction under the fact lock, from the read its
+// preparation made of GitHub, which names resolved at branch. Nothing of either issue moved in
+// Dispatch but the repository it resolves to, which is what a change of the project's default
 // leaves behind.
-func (r *defaultChangeRig) listing(resolved string) {
+func (r *defaultChangeRig) followed(resolved, branch string) {
 	r.t.Helper()
-	summaries := make([]dispatch.IssueSummary, 0, len(defaultChangeKeys))
-	for _, key := range defaultChangeKeys {
-		summaries = append(summaries, dispatch.IssueSummary{Key: key, Title: "a root on the project's default", Status: "in_progress",
-			Rank: "A", HandedOver: true, LastSeq: 1, ResolvedRepo: resolved})
+	read := &ghbranch.Repository{Name: ghrepo.MustParse(resolved), DefaultBranch: branch}
+	scoped, committed := intake.WithCommitHooks(context.Background())
+	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+		if err := intake.SerializeFacts(scoped, tx); err != nil {
+			return err
+		}
+		for _, key := range defaultChangeKeys {
+			stored, err := r.records.Issue(scoped, tx, key)
+			if err != nil {
+				return err
+			}
+			fact := intake.ListedIssue(dispatch.IssueSummary{Key: key, Title: "a root on the project's default", Status: "in_progress",
+				Rank: "A", HandedOver: true, LastSeq: 1, ResolvedRepo: resolved})
+			fact.RepositoryRead = read
+			if err := r.engine.ApplyRepositoryChange(scoped, tx, *stored, fact); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		r.t.Fatalf("the follow onto %s: %v", resolved, err)
 	}
-	reconcileAdmission(r.t, r.pool, r.admission, summaries, 0, intake.DispatchConsumerPosition{Idle: true})
+	committed()
 }
 
 // issue is key's record as it stands.
@@ -145,7 +161,7 @@ func TestRepositoryCorrectionFollowsAChangeOfTheProjectsDefaultRepositoryForEver
 
 	// Dispatch's default for the project is acme/tools now, so every issue that names no
 	// repository of its own resolves to it.
-	r.listing("acme/tools")
+	r.followed("acme/tools", "release/v7.1")
 
 	moments := map[string]time.Time{}
 	for _, key := range defaultChangeKeys {
@@ -178,7 +194,7 @@ func TestRepositoryCorrectionFollowsAChangeOfTheProjectsDefaultRepositoryForEver
 
 	// The pass is idempotent over the same listing: the default is still acme/tools, so the
 	// second reading corrects nothing and leaves each moment where it was.
-	r.listing("acme/tools")
+	r.followed("acme/tools", "release/v7.1")
 	for _, key := range defaultChangeKeys {
 		issue := r.issue(key)
 		if c := issue.RepoCorrection; c == nil || !c.At.Equal(moments[key]) || c.Before != "acme/widgets" {

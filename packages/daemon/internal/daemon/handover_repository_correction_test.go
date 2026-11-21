@@ -10,6 +10,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -86,13 +88,22 @@ func (r *handOverCorrectionRig) seed() {
 }
 
 // complete runs the hand-over's outbox row against a Dispatch that answers the status executor's
-// read with shown, and reports that stand-in so the test can read the writes it took.
+// read with shown, and reports that stand-in so the test can read the writes it took. The fact's
+// preparation (outbox.prepareHandover, the daemon's workflowRuntime.prepareHandover) reads GitHub
+// for a repository the read moves the issue onto; here it answers from
+// handOverCorrectionRepositories, both role Apps installed on each.
 func (r *handOverCorrectionRig) complete(shown dispatch.Issue) *outboxDispatch {
 	r.t.Helper()
 	client := &outboxDispatch{issue: shown}
 	row := mustOutboxRow(r.t, handOverCorrectionChild, record.HandOverStatusWrite("todo", "in_progress", handOverCorrectionRoot, 1),
 		handOverCorrectionMoment)
 	runner := &outbox{pool: r.pool, records: r.records, dispatch: client, handlers: []intake.Handler{r.engine, r.admission}, log: quietLogger()}
+	runner.prepareHandover = func(_ context.Context, handover intake.Handover) (intake.Handover, error) {
+		if branch, ok := handOverCorrectionRepositories[handover.ResolvedRepo]; ok {
+			handover.RepositoryRead = &ghbranch.Repository{Name: ghrepo.MustParse(handover.ResolvedRepo), DefaultBranch: branch}
+		}
+		return handover, nil
+	}
 	if err := runner.execute(context.Background(), row); err != nil {
 		r.t.Fatalf("complete the hand-over: %v", err)
 	}

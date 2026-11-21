@@ -81,7 +81,7 @@ func newLeftPullRequestRig(t *testing.T) *leftPullRequestRig {
 	r := &leftPullRequestRig{t: t, pool: isolatedOutboxPool(t), records: record.NewStore(), token: token}
 	// The launch read is the workflow's own, over this test's database: nothing of it is faked,
 	// so what the task names is what the record holds.
-	w := &workflowRuntime{pool: r.pool, records: r.records, log: quietLogger()}
+	w := launchReadRuntime(r.pool, r.records, quietLogger(), leftRepo, workedRepo)
 	r.specs = specs{
 		stateDir: r.t.TempDir(), project: leftPullRequestProject, prompts: composer,
 		repository: w.issueLaunchRepository,

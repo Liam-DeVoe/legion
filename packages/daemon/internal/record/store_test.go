@@ -116,7 +116,9 @@ func writtenAll(t *testing.T, got []Issue) []Issue {
 // whose GitHub spelling names another repository. A later record of the issue moves none of the
 // three, whatever it carries, because PutIssue names them nowhere in its update: a path that
 // rebuilt the record from an observation prepared before a correction writes the old repository
-// over nothing, and CorrectIssueRepository is the one writer that moves them.
+// over nothing. CorrectIssueRepository is the one writer that moves an issue onto another
+// repository, and the one-time rename pass writes a pair's new name beside it
+// (RenameIssueRepository).
 func TestPutIssueRefusesAMissingRepositoryAndMovesNoRecordedOne(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

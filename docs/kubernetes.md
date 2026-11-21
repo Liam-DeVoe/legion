@@ -116,7 +116,7 @@ It carries:
   Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag, its tag file is refused, or it has a manifest digest other than the one the role is told (`leakguard.Installed`, read by `spawnOnce`, `internal/shim/shim.go`): so a pin moved without the deployment's `manifest_sha256` starts no role.
   Under the digest, the guard of every write holds the check it finds to it as well: a check whose manifest digest is anything else, or that misses a file of it, refuses the call, a `legion gh` read included, with `LEAK CHECK SETUP ERROR: <the write>: the shared public leak check found is not the one the deployment names`, naming the digest told and the digest found (`Guard.sharedCheck`, `internal/leakguard/check.go`).
   Where the environment names no check, the shim names the install for everything it starts.
-  The pod holds no credential for that repository and reads no repository mapping.
+  The pod holds no credential for that repository and reads nothing of Dispatch.
 
 - a deployment that names no check, which runs none:
   the daemon logs once at boot that the deployment leak check is not configured, naming the two variables; it pushes no check to any launcher, whatever pin its hello names; its roles are told neither `PUBLIC_LEAK_CHECK` nor the checker, so each shim reads no install and starts its agent; and a write with no check named anywhere is not refused for the check's absence, the guard's visibility read and this repository's own private-name rules still running over it.
@@ -2986,8 +2986,8 @@ where handed_over_from <> '' and memory_drawn_at is null
 **The issue key in a pane's commits (daemon API contract 52).**
 A release at contract 52 tells a pane the issue key it stamps into its commits, `LEGION_ISSUE_TRAILER`, whenever `projects.<KEY>.commit_issue_trailer_repos` names the repository that pane works:
 the pane's jj then appends a `Dispatch: <KEY>` line to every commit made in the pane's own workspace, after the `Omp-Session:` and `Legion-Role:` lines it appends to every commit, so a squash landing that branch carries the issue key in its message.
-Dispatch's mapping (Settings → Repositories → Projects) names the project's default repository and the repositories the daemon prepares before an issue names one, and this key names repositories of its own:
-a pane stamps the commit when its launch's repository is one of the names, whatever the mapping holds, and boot says once per name that the mapping does not hold it, which catches a typo.
+`legion.yaml` names no other repository of the project, since the daemon takes each issue's repository from Dispatch, and this key names repositories of its own:
+a pane stamps the commit when its launch's repository is one of the names, and the daemon compares the list with nothing at boot, so a misspelled name stamps no commit and no line says so.
 The variable is the runtime's own under both runtimes, so `runtime.kubernetes.pod.env` and `runtime.tmux.pane_env` are refused for setting it, and a pane of a repository the key does not name is told nothing and carries the session and role lines alone.
 
 To roll this release back to contract 51, put `legion.yaml` back without `projects.<KEY>.commit_issue_trailer_repos`, which the earlier release refuses as a key it does not know (`unknown key projects.<KEY>.commit_issue_trailer_repos`), and re-pin it.
@@ -3053,7 +3053,7 @@ The state of such a root carries its two numbers and neither time, since the upg
 Store migration 20261114061900_phase_entry_verbatim adds `phases.entry_verbatim`, the mark that the sweep sends a root architect's entry again as written, which the resume of a root a person answered sets and every other raise of an entry clears;
 every row it finds takes the default, false, which the sweep derives again.
 The same mark keeps a root that the answer's own admission pass promoted past `admitted` in the sweep's reach until its architect's claim is given that entry, so a start of the resume that reaches no claim is written again.
-A release at contract 205 replaces that mark with `phases.entry_awaiting`, the wait the resume answered, from which the sweep renders the entry's task again when it sends it, and drops `phases.entry_verbatim` (store migration 20261118073048_phase_entry_awaiting, under contract 205 below).
+A release at contract 206 replaces that mark with `phases.entry_awaiting`, the wait the resume answered, from which the sweep renders the entry's task again when it sends it, and drops `phases.entry_verbatim` (store migration 20261118073048_phase_entry_awaiting, under contract 206 below).
 
 To roll a release at contract 146 back to contract 87, stop the daemon and run two blocks in this order: the block below, then the phase entry's block after it.
 A rollback below contract 144 also takes the steps of the releases it crosses, which "Each issue's experiment assignments in the state (daemon API contract 141)" below and "Rolling back below the release that guards an issue pod's memory", "Rolling back the release that frees the slot past review", "Rolling back the release whose update round ends at its bound" and "Rolling back the release that tells the merger of a merge-queue removal" above give.
@@ -3182,10 +3182,10 @@ What the block does need is that no migration recorded after this one builds on 
 Such a migration keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever it built on those columns, an index or a constraint on `phases.entry`, say:
 reverse such a migration by its own way back first, and run this block after it.
 The migrations recorded above this one are these.
-20261112012123_issue_repository_correction, of dispatch://INFRA-3136, adds the four `issues` columns of a repository correction and `workspace_bundles.repo`, creates `workspace_bundles_refused` and lets a bundle's restore attempt record `refused_repository`, and touches none of the six, so the block holds over it and leaves the five columns and the table standing, which the earlier release names in no statement, and the wider check, which takes every outcome that release writes; a rollback to a release before it needs no statement for it, as the contract 205 section below says.
+20261112012123_issue_repository_correction, of dispatch://INFRA-3136, adds the four `issues` columns of a repository correction and `workspace_bundles.repo`, creates `workspace_bundles_refused` and lets a bundle's restore attempt record `refused_repository`, and touches none of the six, so the block holds over it and leaves the five columns and the table standing, which the earlier release names in no statement, and the wider check, which takes every outcome that release writes; a rollback to a release before it needs no statement for it, as the contract 206 section below says.
 20261112070503_pull_request_state_read_at, of cybermonklabs/legion#3937, adds `pull_requests.state_read_at` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, the zero time.
 20261112180548_claim_leak_check_cause adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
-20261112215432_delivery_resume, of dispatch://INFRA-3136, adds `pending_task_deliveries.resume`, `parked_decisions.seq` and the two `issues` columns of the version whose changes request answered a root's wait, which it fills from each such answer's detail, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; a rollback to a release before it first runs the four reads of the contract 205 section below until none returns a row, since the earlier release sends a held resume task as the empty text its row keeps and refuses a queued row that carries a key it does not know.
+20261112215432_delivery_resume, of dispatch://INFRA-3136, adds `pending_task_deliveries.resume`, `parked_decisions.seq` and the two `issues` columns of the version whose changes request answered a root's wait, which it fills from each such answer's detail, and touches none of the six, so the block holds over it and leaves the four columns standing, which the earlier release names in no statement; a rollback to a release before it first runs the four reads of the contract 206 section below until none returns a row, since the earlier release sends a held resume task as the empty text its row keeps and refuses a queued row that carries a key it does not know.
 20261113082214_outbox_kinds_with_the_update_ask, of cybermonklabs/legion#3982, touches none of the six either, so the block holds over it too, and a rollback to a release before it reverses it by its own steps.
 20261113082415_claim_ended_work, of cybermonklabs/legion#3983, adds `claims.ended_work` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
 20261113090512_phase_entry_moved_back, of cybermonklabs/legion#3793, adds `phases.entry_moved_back` and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release's inserts fill with its default, false.
@@ -3204,8 +3204,8 @@ The migrations recorded above this one are these.
 20261117064152_step_starts_roll_forward writes `step_starts`, `step_starts_rollback` and the `step_record` rows it adds to `outbox`, reads `phases.entry` through `step_run_witness` and writes none of the six, so the block holds over it, and the steps of its own section, [Rolling back the release that records each step](#rolling-back-the-release-that-records-each-step), re-arm it for the roll forward.
 20261117112334_pull_request_statuses, of cybermonklabs/legion#4299, adds `pull_requests.statuses` at its default, the empty list, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement; the way back in its own header drops the column.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
-20261118073048_phase_entry_awaiting, of dispatch://INFRA-3136, adds `phases.entry_awaiting`, gives the empty wait to each row `phases.entry_verbatim` marked and drops that mark, and touches none of the six, so the block holds over it; a rollback to a release before it runs the contract 205 block below first, which puts the mark back and deletes this migration's row so that the roll-forward runs it again, and a rollback below contract 146 runs the contract 146 block above after that one.
-20261118172458_bundle_size_refusals, of dispatch://INFRA-3136, creates `workspace_bundle_refusals` where it is missing and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it has no down file, and a rollback to a release before it needs no statement for it, as the contract 205 section below says.
+20261118073048_phase_entry_awaiting, of dispatch://INFRA-3136, adds `phases.entry_awaiting`, gives the empty wait to each row `phases.entry_verbatim` marked and drops that mark, and touches none of the six, so the block holds over it; a rollback to a release before it runs the contract 206 block below first, which puts the mark back and deletes this migration's row so that the roll-forward runs it again, and a rollback below contract 146 runs the contract 146 block above after that one.
+20261118172458_bundle_size_refusals, of dispatch://INFRA-3136, creates `workspace_bundle_refusals` where it is missing and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it has no down file, and a rollback to a release before it needs no statement for it, as the contract 206 section below says.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 20261119232419_pod_backstop_armed_at, of dispatch://INFRA-2746, adds `pod_wake_backstops.armed_at`, which it fills with each row's `due_at` and then gives the default `now()`, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement and fills with its default; it has no down file, and a rollback to a release before it needs no statement for it.
 20261120042902_claim_agent_resume_generation, of dispatch://INFRA-4108, adds `claims.agent_resume_generation` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, which deletes the queued `session-forgotten` notices no earlier release decodes, drops the column and deletes its version row.
@@ -3262,8 +3262,8 @@ this release finds no row for that tree, runs it in no arm — so it too changes
 Copy those trees over by hand before reading the exposure again, with the back-fill's own `select` and `on conflict (issue_key, experiment) do nothing`, since the rows copied at the first deploy stand.
 Every answer a project's other experiments drew is in that table alone, so the rolled-back release reads none of them, and a project that still declares `experiments` is refused at load until the key is taken out.
 
-**An issue's repository follows the one Dispatch resolves it to, and the reminder asks the daemon what a claim owes (daemon API contract 205).**
-A release at contract 205 carries three changes to what the daemon and its plugins exchange and store.
+**An issue's repository follows the one Dispatch resolves it to, and the reminder asks the daemon what a claim owes (daemon API contract 206).**
+A release at contract 206 carries three changes to what the daemon and its plugins exchange and store.
 
 The first is on every issue of `GET /legion/v1/state`.
 The release moves a recorded issue's repository onto the one Dispatch resolves the issue to, rather than keeping the repository the record was written with, and says so in four keys.
@@ -3271,7 +3271,7 @@ The release moves a recorded issue's repository onto the one Dispatch resolves t
 `repoChangePending` and `repoChangeReason` are a repository Dispatch has named that the daemon has not applied and why it has not, which is how a record that still names the old repository says why it does.
 Each pair is present or absent together, and an issue no correction has reached and nothing waits on carries none of the four.
 The issue's `pullRequest` is read beside them and takes no new key: a correction moves the issue's record alone, so `pullRequest.repo` is the repository the pull request was opened on, and an issue whose `repo` and `pullRequest.repo` name two repositories has open work on a repository it has left, which the daemon applies no GitHub event of to the issue any more.
-A caller below 205 is served every issue with the four stripped (`withoutRepositoryCorrection`), so a pod of the release before this one reads the state as it always did.
+A caller below 206 is served every issue with the four stripped (`withoutRepositoryCorrection`), so a pod of the release before this one reads the state as it always did.
 The daemon places a plugin that states its contract in the `Legion-Plugin-Contract` header by that contract, as every plugin from contract 193 on does, and one that states none by the claims of its pod.
 
 The second is a claim route, `POST /legion/v1/claims/owed`.
@@ -3287,7 +3287,7 @@ The end-of-turn reminder of both harnesses asks this route at each turn's end an
 It reminds only a claim the answer says owes work, and a read that fails or gets no answer within 3 seconds reminds no one (`UNREAD_CHECK`, `packages/pi-shared/src/phase-reminder.ts`).
 The reminder tells a worker whose `handoff_complete` the daemon refuses `HANDOFF_NOT_CURRENT_PHASE`, `CHECK_NOT_OPEN` or `CHECK_LOOK_NOT_OPEN` to do nothing more for that work, since the daemon sends any next task itself (`owedReminder`, `packages/pi-shared/src/phase-stall.ts`).
 A `HANDOFF_ALREADY_RECORDED` answer while the reminder still comes means the daemon keeps the refusal of an earlier completion under that key and took none, so the reminder tells that worker to read its record with `read_record` and the refusal its first completion got, write a new version of its handoff and complete naming it, or tell its architect if its phase writes no handoff.
-A plugin below 205 calls no such route, and nothing else of the claim wire changes.
+A plugin below 206 calls no such route, and nothing else of the claim wire changes.
 `packages/contracts/src/legion-api.ts` holds the two bodies as `LegionOwedRequest` and `LegionOwedResponse`.
 
 The third is the resume task of a root a person answered, which the daemon now writes at each send rather than when it queues the task, because the design gate can move in between.
@@ -3320,11 +3320,11 @@ A push moves that head, and so does a pull request opened for an issue that had 
 The refusal tells the issue's worker in a `role_message` row, whose payload carries only the `role` and `body` an earlier release's `record.RoleMessage` already names.
 A save that failed for another reason writes no row, and its release is marked again on the next idle tick, as before.
 
-To roll this release back, stop its daemon, run the block below, and then re-pin the earlier image (contract 199 at the base this release was written on).
+To roll this release back, stop its daemon, run the block below, and then re-pin the earlier image (contract 202 at the base this release was written on).
 That image runs the same Oh My Pi, so the session store's leases and the busy code are as they were, and the rollback asks nothing of the pods for them.
-The release at contract 199 keeps the project pause, which contract 178 added, so a rollback to it takes none of the steps of [Rolling back the project pause](#rolling-back-the-project-pause); a rollback below contract 178 takes them after the steps here.
+The release at contract 202 keeps the project pause, which contract 178 added, so a rollback to it takes none of the steps of [Rolling back the project pause](#rolling-back-the-project-pause); a rollback below contract 178 takes them after the steps here.
 There is no `legion.yaml` key to put back.
-Every image at contract 199 comes after cybermonklabs/legion#4550, which added `runtime.kubernetes.sandbox.microvm.keep_volume` and left the contract at 178, so only a rollback further back meets an image without it.
+Every image at contract 202 comes after cybermonklabs/legion#4550, which added `runtime.kubernetes.sandbox.microvm.keep_volume` and left the contract at 178, so only a rollback further back meets an image without it.
 A rollback to an image before cybermonklabs/legion#4550 also takes the steps of the kept volume's **Rolling back** ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)), the first of which takes the key out of `legion.yaml`, since that image refuses it at load.
 The earlier release names every column it reads and writes, so after the block it boots with the nine columns and the two new tables in place, reads none of them and writes none of them.
 Its write of a later answer to a root's wait leaves `awaiting_answered_version` and `awaiting_answered_version_at` as they stood, and when this release is pinned again it reads that answer as one with no version, since the moment beside the version is no longer the answer's: the resume then asks whether the person's approval followed that changes request at the version the gate holds approved, as it asks of a kept decision.
@@ -3575,10 +3575,10 @@ runtime:
       env: { PI_CONFIG_FILES: /etc/legion-operator/overlay.yml }
       volumes: [...]
       volume_mounts: [...]
-    repository_cache:           # optional: each mapped repository's cache (The repository cache, below)
+    repository_cache:           # optional: the cache of each repository a live record names (The repository cache, below)
       volume: 20Gi              # default 20Gi; the cache's own volume, which holds the bare clone
       refresh_minutes: 10       # default 10; how long between the cache's fetches from GitHub
-      retain_hours: 168         # default 168; how long a cache outlives its repository leaving the mapping
+      retain_hours: 168         # default 168; how long a cache outlives the last live record that names its repository
       resources: { cpu: 1, memory: 4Gi, ephemeral_storage: 2Gi, ephemeral_storage_request: 1Gi }   # the defaults
     setup: [/bin/sh, -c, '<command>']   # optional: run in every role's namespace before each start of its Oh My Pi (below)
     test_postgres: true         # optional, default false: every issue pod's roles container serves its own PostgreSQL for tests (A test database in the pod, above)
@@ -4116,7 +4116,7 @@ reconnected`, covers that gap: first after 3 minutes down, then every 3 minutes 
 — usually empty during a plain refused dial, since nats.go clears it on every failed attempt, and naming the failure's own cause while a handshake keeps failing, since nats.go leaves that one in place until the connection succeeds.
 At boot an unreachable NATS or Dispatch delays the boot instead of exiting, retried one second doubling to one minute, forever, logged at warn as `boot probe failed
 transiently; waiting to run it again` with its `probe` (naming which:
-`repository mapping read`, the boot's first Dispatch read, `connect Envoy NATS`, `list Dispatch issues for admission`, or `catch up the roots that run or wait on a person`), `attempt`, `retryIn` and `detail`.
+`connect Envoy NATS`, `list Dispatch issues for admission`, or `catch up the roots that run or wait on a person`), `attempt`, `retryIn` and `detail`.
 A TLS alert from NATS or Dispatch, such as a server that demands a client certificate or speaks no TLS version the daemon does, is an answer and not an outage, so it refuses the boot at once (`tlsalert.In`, `packages/daemon/internal/tlsalert`).
 So does a certificate the daemon cannot verify, from NATS or Dispatch; a NATS URL whose port answers first with a line that is not INFO, such as an SSH server's; and an `https` Dispatch URL on a plain-HTTP port or on a port that answers in neither TLS nor HTTP (`dispatch.TransportRefusal`), at every boot probe of Dispatch, the catch-up of the roots that run or wait on a person included, which stops rather than skip the root.
 The two NATS refusals hold for one `nats_urls` entry: with several, nats.go answers with the last server's error, so a refusal from an earlier server followed by a refused dial on the last one reads as no servers available, and the boot waits (the LEGION-580 limit below).
@@ -4128,12 +4128,14 @@ After the tenth attempt it exits naming the last error, with the host and never 
 Every other error refuses the boot at once, as before: a refused password (28P01), a connection `pg_hba.conf` does not admit (28000), a database that does not exist (3D000), a TLS failure, and a DSN the driver cannot parse.
 A stop during the attempts ends the boot at once.
 
-A GitHub rate limit on the boot's App logins read, its App token mint, or the mint inside its repository reads is waited out too.
+The boot prepares none of the repositories its records name: the refresher prepares them once the API serves, beside the boot, so GitHub's rate limit on a repository never holds the boot there.
+The boot's only reads of a repository are the fill of a record that lacks its repository columns and the one-time rename pass's reads of a configured pair's names, each read bounded at 15 s (both below).
+A GitHub rate limit on the boot's App logins read, or on its proof of each App's key (the App's `GET /app/installations` under its JWT), is waited out.
 The boot waits until the time GitHub names, its `Retry-After`, else the limit's reset, at most one hour each, and one minute where GitHub names no time, doubling for each further such refusal of the same call, and then makes the call again.
-It logs each wait at warn as `boot probe waits out GitHub's rate limit; it runs again at the time GitHub names` with `probe` (the call), `until`, `wait`, `waited` (the time the boot has waited for rate limits so far), `limit` and `detail`, and such a wait counts against no attempt.
-All of one boot's rate-limit waits end 70 minutes after the first of them; then a logins read or a mint that GitHub still refuses ends the boot, naming the call, GitHub's last answer and the time waited.
-The default-branch read keeps its own rule within that end: a repository the daemon holds a default branch for is served on it at once and read again after the limit's reset, and one it holds none for waits once, at most an hour and to that end at the latest, is read once more, and is left out for now and read again later if GitHub still refuses it, so the boot does not stop there.
-The backfill of an issue record that holds no repository details is the one exception: it waits at most an hour each time and keeps waiting until GitHub answers.
+It logs each wait at warn as `boot probe waits out GitHub's rate limit; it runs again at the time GitHub names` with `probe` (the call: `GitHub App logins read` or `GitHub App key proof`), `until`, `wait`, `waited` (the time the boot has waited for rate limits so far), `limit` and `detail`, and such a wait counts against no attempt.
+All of one boot's rate-limit waits end 70 minutes after the first of them; then a logins read or a key proof that GitHub still refuses ends the boot, naming the call, GitHub's last answer and the time waited, and, for the key proof, the App.
+A key proof GitHub refuses for anything but its rate limit or its own trouble, such as a 401 or a 403 that names no rate limit, still stops the boot at once, naming the App.
+The fill of a record that lacks its repository columns does not wait out GitHub's rate limit: a read the limit refuses leaves the record for the refresher, as any failed read does.
 A stop during a wait ends the boot at once.
 
 A malformed seed refuses the boot immediately at startup, before any network connection is attempted.
@@ -4172,7 +4174,14 @@ no servers available for connection" answer, from a different server nats.go tri
 
 While the readiness gate waits, callers outside the daemon see it as still booting, not as down:
 the API port is already bound by this point (the same as during the image probe, both before this gate), so it accepts a connection but serves nothing until the gate passes, and `legion status` reports the daemon's PID alive but not yet answering.
-The repository mapping read waits before the port is bound, so while it waits a connection to the API is refused, as for a daemon that is not running, and only the daemon's log says it waits.
+The key proof under the App's JWT mints no token for an owner;
+every other step of the boot that reads GitHub or writes a cache's credential mints the token that step needs.
+One such step fills a record that lacks its repository columns, one read per such record, each bounded at 15 s, and a read that fails leaves the record for the refresher.
+The one-time rename pass, before the consumers open, reads GitHub for a `repository_renames` pair only while a stored row still names the pair's `from`: then it reads both role Apps' installations on each of the pair's names that the daemon holds no answer for (at boot, both) and, where the daemon holds no spelling of the `to`, GitHub's spelling of it, each read bounded at 15 s;
+once no row names a pair's `from`, the pass reads nothing of GitHub for that pair.
+Under `keep_volume`, an issue whose Sandbox keeps its volume keeps its old name until the end of its last pod, or until a later boot finds no kept volume ([A kept volume on a microVM pod](#a-kept-volume-on-a-microvm-pod)).
+Until then, the pass's `left` count can stay above 0.
+The refresher's reads of each repository's installations, name and default branch run beside the boot, once the API serves, and hold neither the boot nor the port.
 A pane's `legion` tool calls (`read_record` and `handoff_complete`, the latter minting its grant in-process first) and `controller start` all wait on that same API, so none of them succeeds until the daemon actually serves;
 a pane's plain `gh` and `git` do not, since they read the role's credential from its gh files and call the daemon for nothing.
 
@@ -5410,7 +5419,7 @@ The image probe runs as a Sandbox of its own, `legion-probe-<project>-<digest12>
 
 ### The repository cache
 
-Each repository the project serves has a cache of its own:
+Each repository a live record of the project names has a cache of its own, and so does a repository a launch works:
 one Sandbox, `legion-<project>-cache-<owner>-<repo>-<8 hex>` (`CacheSandboxName`, `names.go`;
 the hex is of the repository's name, so two repositories whose names slug alike get two caches), labelled `legion.dev/project` and `legion.dev/cache=true` and annotated `legion.dev/cache-repo: <owner>/<repo>`, which is the one place its repository is read from (`kubectl -n legion get sandbox -l legion.dev/cache`).
 It is no issue's and no claim's: no tree's cleanup lists it, and nothing of it registers on the worker stream (`internal/runtime/sandbox/repocache.go`).
@@ -5504,10 +5513,10 @@ an answer from a pod that took the address once the cache's pod was gone names a
 A NetworkPolicy that isolates the namespace's pods must admit both, or every fresh feed waits on a cache it cannot reach and `legion state` shows the read's failure.
 
 `legion state --json | jq .repositories` shows them:
-each `mapped[]` repository carries `cache` (`repo`, `sandbox`, `state` — `starting`, `cloning`, `ready`, `failing` with the kubelet's `reason`, or `refused` with the Service's
-— `ready`, `address`, the cache's Service, while Ready behind its own Service, and from the last health read of the pod it runs now `head`, `lastFetchAt` and `bytes`, or `healthError`) once the cache exists, and `caches` lists the caches of repositories the mapping no longer names, each with `retainedUntil`.
+each `live[]` repository carries `cache` (`repo`, `sandbox`, `state` — `starting`, `cloning`, `ready`, `failing` with the kubelet's `reason`, or `refused` with the Service's
+— `ready`, `address`, the cache's Service, while Ready behind its own Service, and from the last health read of the pod it runs now `head`, `lastFetchAt` and `bytes`, or `healthError`) once the cache exists, and `caches` lists the caches of repositories no live record names any more, each with `retainedUntil`.
 
-An issue pod's launch makes its repository's cache when there is none yet, and the daemon makes the cache of each repository it serves at boot and on every orphan sweep after it, once a minute:
+An issue pod's launch makes its repository's cache when there is none yet, and the daemon makes the cache of each repository a live record names at boot and on every orphan sweep after it, once a minute:
 a missing cache is created (its Sandbox `Suspended`, then its Secret owned by that Sandbox, then its pod template and `Running`), and a cache whose pod runs another image than the daemon's, runs as a ServiceAccount other than `runtime.kubernetes.pod.service_account`, has ended, or was left `Suspended`, or whose Sandbox's pod template reserves other than `runtime.kubernetes.repository_cache.resources` now says, gets a new pod while its Sandbox and volume stay, so a new release, a new account or a new reservation costs a pod, not a clone.
 The reservation is read from the Sandbox's pod template, never from the pod, since GKE Autopilot rewrites a pod's requirements at admission; the account is read from the pod, where the API server keeps a named account as written and writes `default` for a pod that names none.
 A pod still running is replaced only once it serves no stream:
@@ -5515,8 +5524,13 @@ the daemon asks its `/healthz` first, whose `streams` counts the tars it is send
 stream` and leaves the pod to a later sweep, because the replacement would end every one of those tars, failing each fetch reading one and making its issue pod again.
 A cache of an earlier release answers no `streams`, and one whose `/healthz` cannot be read is replaced at once, as before.
 A launch whose cache cannot be made fails, naming why.
-The cache of a repository that neither the mapping nor a live issue record of the project names any more is annotated `legion.dev/cache-unmapped-at` at the sweep that finds it so, kept for `runtime.kubernetes.repository_cache.retain_hours` (168 by default), and then deleted with its volume and Secret (`Options.Mapped`, `internal/runtime/sandbox/types.go`, which the daemon fills from the mapping and the live records, `refreshCacheRepositories`);
-named again before that, by the mapping or by a record, it loses the annotation and stays.
+The cache of a repository no live record names, and no launch worked since the last read of the live records, is annotated `legion.dev/cache-unused-at` at the sweep that finds it so, kept for `runtime.kubernetes.repository_cache.retain_hours` (168 by default), and then deleted with its volume and Secret;
+named by a live record again before that, it loses the annotation and stays.
+A cache that an earlier release marked under the annotation's old name keeps the time of its first mark, the earlier of its marks that is a time:
+at the first sweep after the upgrade, one whose first mark is less than one retention old has that time written under `legion.dev/cache-unused-at` and the old annotation removed, so it retires one retention after its first mark, and one whose first mark is one retention old or more is deleted at that sweep;
+one none of whose marks is a time is annotated with that sweep's time and loses the old annotation, so it is kept one retention, and the sweep logs a warning naming the cache and each value (`repository cache carries no mark that is a time`).
+A cache that a live record names loses the old annotation at that sweep.
+Each cache that loses the old annotation is logged once, at info, with its repository, the old value and what the sweep did.
 A cache the sweep cannot make or repair — its owner's token cannot be minted, say — is a warning naming it, tried again at the next sweep.
 The boot census refuses a Sandbox labelled `legion.dev/cache` that is not one this runtime builds (no repository annotation, or another container or claim template), by name.
 
@@ -6886,6 +6900,7 @@ These ends of a pod keep the Sandbox, so the issue's next pod mounts the same cl
   After every delete succeeds, the release records on the Sandbox that it deleted the Secrets: the annotation `legion.dev/secrets-released`, whose value is the Sandbox's uid.
   A release that stops before that record writes no record, and the next release deletes the Secrets again and then writes the record.
   The next launch removes the record before it writes the first Secret again.
+  The one-time rename pass of `repository_renames` leaves such an issue on its old name until no kept volume is left, because the next pod finds its workspace on the volume under that name, and the pass at the issue's close or a later boot writes the new name.
 
 - The relabel of the Sandbox for the issue's new tree (`ensureSandbox`).
 
@@ -7805,7 +7820,7 @@ The Go coordinator's pods (`packages/daemon`) keep to that rule with two init co
   --default-branch <name> --root /legion --credential-helper '!legion git-credential' --feed
   /legion/feed`: the clone is a local `git clone --no-checkout` of the feed, its origin set to `https://github.com/<owner>/<repo>`, and its fetch reaches that remote at the feed over git's file transport, bringing the default branch and the issue's branch alone, each by its exact name, then the workspace add, `update-stale`, and the configuration writes, once it has removed the clone's stale git locks ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
   Local clone object entries survive a feed replacement, while the clone's copy of the feed's packs, where the filesystem denies it a hard link, and jj's import of every commit follow the repository's size, so all four steps of that clone — the local `git clone --no-checkout`, `jj git init --colocate`, then the `jj sparse set --clear` and `jj abandon @` that leave it with no working tree — share one bound of their own, `workspace.CloneTimeout` (30 minutes), each given what the ones before it left, rather than `workspace.CommandTimeout`;
-  the issue's own checkout, the one command here that writes a whole working copy, takes `workspace.CheckoutTimeout` (one hour), measured on one write of the largest repository mapped, 282,134 files and 11.56 GiB, which took nine minutes in an issue pod;
+  the issue's own checkout, the one command here that writes a whole working copy, takes `workspace.CheckoutTimeout` (one hour), measured on one write of the largest repository a project then worked in, 282,134 files and 11.56 GiB, which took nine minutes in an issue pod;
   every other command here keeps the 5 minutes.
   It takes no lock and waits on no other pod: the clone is the issue's own, on the issue's own volume, and no other provision shares the repository.
   What an agent of the issue planted can run there, with nothing to take that the agent does not already hold.
@@ -8114,38 +8129,49 @@ Legion holds no model, provider or route.
 Everything a pod's Oh My Pi needs to reach a model is the operator's, and the daemon hands the same pieces to every pod it runs:
 each issue's pod (every role of it alike) and the image probe's.
 
-- **The project's repositories** are Dispatch's mapping (Settings → Repositories → Projects), which names the project's default repository and the repositories the daemon prepares before an issue names one;
+- **The project's repositories** come from Dispatch: each issue's repository is the one Dispatch resolves for it (its own, else its nearest ancestor's, else the project's default repository, which is set in Dispatch);
   `legion.yaml`'s `projects.<KEY>` names none and refuses `repo`.
-  The daemon reads the mapping at boot and on Dispatch's `settings.repo_project.updated` of its project, and checks, per repository, that both GitHub Apps are installed on it (`GET
-  /repos/{owner}/{repo}/installation` under each App's JWT):
-  a repository either App is missing from is left out, not refused, and `legion state --json` names it under `repositories.refused` with the App it lacks;
+  The daemon boots for any project, and at boot fills a record without its repository columns (one read each, bounded at 15 s; a failure leaves the record for the refresher);
+  it proves each role App's key with GitHub's read of its installations, and a refusal of that read stops the boot naming the App, while an App installed on no account boots with one log line.
+  Once the API serves, the daemon prepares each repository its records name, beside the boot, and it prepares a repository again when the first issue on it is admitted and when a launch works a repository the cache set does not hold (no live record names it):
+  it checks that both GitHub Apps are installed on it (`GET /repos/{owner}/{repo}/installation` under each App's JWT), reads its name and default branch, and asks Dispatch about its webhook App;
+  a repository either App is missing from changes no record, `legion state` prints a `repository <owner/name>: <why>` line for it, and `legion state --json` shows it under `repositories.live` with its `apps`;
   a repository whose installation read fails (any failure but GitHub's answer, an installation or a 404, a read longer than 15 s included;
-  each read is bounded on its own, never the check as a whole, so a slow GitHub that answers is served) is left out for now, named under `repositories.refused` with the App, the repository and the failure;
-  an event of an issue on it is applied and acknowledged with nothing said on it and nothing kept, and once GitHub answers, the daemon recovers the repository:
-  one read of Dispatch's project listing, applied as the boot applies it, to the unrecorded issues on it, under a parent on it, or whose event it applied silently for it during the outage (a labelled root admitted, a child of a live tree recorded under it, parents first, a person's issue left as it is), tried again on a failed listing;
-  the mapping is read again, 30 s doubling to 10 min, until GitHub answers, then the repository is served with no restart (a served repository whose read fails stays served on its last answer, with the name and default branch GitHub last gave it and no further read of GitHub, and is read again the same way);
-  a project with no repository mapped does not boot, one whose every repository lacks an App boots serving none, admitting nothing until an App is installed, and one whose every repository's installation read fails boots serving none and logs so at ERROR (the boot's own reads of the Apps, their logins and their tokens, still refuse it when they fail).
+  each read is bounded on its own, never the check as a whole, so a slow GitHub that answers is served) is shown the same way with its `readError`, and a repository GitHub answered for before keeps that answer;
+  each repository whose answer is bad is read again, 30 s doubling to 10 min, until GitHub answers.
+  An event of an unrecorded issue on a repository GitHub did not answer for is applied and acknowledged with nothing said on it and nothing kept, and once GitHub answers, the daemon recovers the repository:
+  one read of Dispatch's project listing, applied as the boot applies it, to the unrecorded issues on it, under a parent on it, or whose event it applied silently for it during the outage (a labelled root admitted, a child of a live tree recorded under it, parents first, a person's issue left as it is), tried again on a failed listing.
   Every role's gh bundle holds one directory for each owner account that role's App is installed on, one for each owner a configured rename moved a repository away from while the project serves the name it moved to, and one for the issue's recorded owner ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
-  **Upgrade order:** Dispatch first (it resolves each issue's repository), then map the project's repositories there with the old `projects.<KEY>.repo` as the project's default, then delete the key and start this daemon;
-  its first boot fills every record written before the record carried its repository from Dispatch's resolution, and refuses to boot, naming each record, while Dispatch resolves none, or resolves one other than the repository of the issue's pull request.
+  A claim on an issue the workflow does not record, such as an operator's tree, works the repository Dispatch resolves for that issue, read at its first launch and kept while the issue holds its workspace;
+  when the issue resolves to none, the launch is refused with `<KEY> names no repository: set the repository of <KEY>, or the default repository of project <PROJECT>, in Dispatch`, and the daemon stays up.
+  **Upgrade order:** Dispatch first (it resolves each issue's repository), then set the old `projects.<KEY>.repo` as the project's default repository in Dispatch, then delete the key and start this daemon;
+  its first boot fills every record written before the record carried its repository from Dispatch's resolution, and leaves, naming it in the log, each record that Dispatch resolves to none, or to another repository than the one of the issue's pull request, whose launches are refused until it is filled.
 
-- **An issue's repository** is the one Dispatch resolves for it, which is any `owner/name` an issue or its parent chain names, whether or not Dispatch maps it to the project, recorded with that repository's default branch as GitHub names it, and the record follows that resolution from then on.
-  A later change of it moves the record onto the new repository, its default branch and GitHub's spelling of it, in the pass that reads the change: a live Dispatch event, the boot and recovery listing, or the one listing the daemon reads after a `settings.repo_project.updated` or a read of the mapping that newly serves a repository (an App installed on it, GitHub answering its installation read again, or the repository newly mapped), which makes the single-issue correction for each recorded issue in it, as a live event of that issue would.
+- **A repository whose default-branch read GitHub refuses for its rate limit** is served on the default branch the daemon holds for it, from its last read or a record of an issue on it, and is read again once the limit resets;
+  the event of an issue on a repository the daemon holds no default branch for is delivered again once GitHub's wait has passed.
+
+- **A project with no live record** boots and serves all the same, and its boot logs one line at info, `workflow: no live record of the project names a repository, so the daemon serves no repository until an issue names one`, with the project.
+
+- **An issue's repository** is the one Dispatch resolves for it, which is any `owner/name` an issue or its parent chain names, recorded with that repository's default branch as GitHub names it, and the record follows that resolution from then on.
+  A later change of it moves the record onto the new repository, its default branch and GitHub's spelling of it, in the pass that reads the change: a live Dispatch event of the issue, the hand-over the outbox completes, or the one pass over Dispatch's listing the daemon makes once its boot is over, which makes the single-issue correction for each recorded issue in it, as a live event of that issue would.
+  Each of those passes reads both role Apps' installations on the repository the change names, GitHub's spelling of it and its default branch at that moment, and writes the correction from that read alone.
   That correction is one statement in the fact's own transaction (`record.(*Postgres).CorrectIssueRepository`), so it parks nothing, reruns nothing and opens no generation, and the record keeps the repository the issue left and the moment of the correction.
   Under this runtime the daemon then replaces the issue's pod, since the pod holds the clone, the gh directories and the token of the repository the issue has left, and the update round carries that replacement as it carries any other: every role is asked to push its work and answer the round, and the pod is replaced once every role has answered or at the round's bound, with no rescue of what a role left unpushed ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
   Under `runtime: tmux` the daemon replaces nothing ([How workspaces are provisioned on the host](deployment.md#how-workspaces-are-provisioned-on-the-host)).
   A workspace bundle a release saved from the repository the issue left is never restored into the new clone; the daemon keeps it in `workspace_bundles_refused` and writes on the issue where the work is ([Idle release](#idle-release)).
   The next task of each worker of the issue names the new repository, the repository the issue left and the moment of the correction, and, where the correction left the issue's pull request open on the repository the issue left, that pull request and that repository, and that the daemon applies no GitHub event of it to the issue from then on.
   The record says the same with no key of its own: the issue's `pullRequest.repo` on `GET /legion/v1/state` is the repository the pull request was opened on, which no correction moves, and `repo` beside it is the repository the issue works now.
-  A claim on an issue the workflow does not record, such as an operator's tree, works the project's default repository as it is at each launch, and its launch is refused while the project serves no default.
+  The only other writer of a recorded issue's repository is this release's one-time rename pass, which writes a configured rename's `to`, as GitHub spells it, over its `from` once GitHub shows the transfer (`record.(*Postgres).RenameIssueRepository`, beside `CorrectIssueRepository`).
+  It is no correction: the pair names one repository, so the record keeps no repository the issue left, and a resolution that still names the `from` after the pass wrote the `to` is no change, corrects nothing and replaces no pod.
 
 - **A repository change the daemon cannot apply yet** waits on the record.
-  A repository no mapping names is served once both role Apps are installed on it, so a change onto it moves the record as a change onto a mapped one does.
-  An admission onto such a repository may take a read kept from an earlier preparation, but a correction never does: it writes a repository Dispatch moved the issue onto, often long after any read kept of it, so a kept read could miss an App uninstalled since or a default branch renamed since.
-  The boot's listing and the outbox hand-over read no GitHub for such a repository and write nothing for it, and the boot asks for the listing pass instead, which reads GitHub once the boot is over.
-  No refusal of those reads is kept, and a change waiting on such a repository is applied at the issue's next event or at the daemon's next boot, as the issue is told (`Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on <X>.`), since the follow a read of the mapping makes when it newly serves a repository never fires for one no mapping names and installing the App starts no pass by itself.
-  A repository Legion does not serve (one a role App is not installed on, mapped or not, or one GitHub does not have) is not written onto the record: the record keeps the repository it has, the daemon says so on the issue once, and the change waits on the record (`repoChangePending` and `repoChangeReason`, on the issue of `GET /legion/v1/state`, `legion state --json` and a worker's `read_record`) until the pass that finds that repository served applies it.
-  A resolution that names no repository at all is said on the issue the same way and leaves no change waiting.
+  A change onto a repository a role App is not installed on, or onto one GitHub does not have, is not written onto the record: the record keeps the repository it has, the daemon says so on the issue once, and the change waits on the record (`repoChangePending` and `repoChangeReason`, on the issue of `GET /legion/v1/state`, `legion state --json` and a worker's `read_record`).
+  A waiting change is read again at the issue's next event or at the daemon's next boot, and applied once both role Apps are installed on the repository, as the issue is told (`Legion moves the issue at its next event or at Legion's next boot, once both Legion Apps are installed on <X>.`): installing the App starts no pass by itself.
+  Before dispatch://INFRA-4401 (#4493) only a change onto a repository no mapping named waited that long, since a read of Dispatch's repository mapping read a mapped repository's installations again and made a pass over every recorded issue once it served the repository; the daemon reads no mapping since #4493, which widened that wait to every repository a role App is not installed on.
+  An admission may take a read kept from an earlier preparation, but a correction never does: it writes a repository Dispatch moved the issue onto, often long after any read kept of it, so a kept read could miss an App uninstalled since or a default branch renamed since.
+  The boot's listing reads no GitHub for a recorded issue's change and writes nothing for it, and the boot asks for the listing pass instead, which reads GitHub once the boot is over.
+  A read GitHub does not answer, its rate limit included, is no refusal: the correction writes nothing and says nothing, and the issue's next event or the next boot reads the repository again.
+  A resolution that names no repository at all is said on the issue as a refused change is, and leaves no change waiting.
 
 - **`runtime.kubernetes.pod`** has four keys.
   `env` is variables set in the agent's container.
@@ -8175,7 +8201,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **A change of `runtime.kubernetes.pod.service_account`** reaches a running pod only by replacing it ([Pinning a release that drops what a running pod still uses](#pinning-a-release-that-drops-what-a-running-pod-still-uses)):
   an update round replaces each issue pod a claim names, the next launch of the controller's role replaces the controller's pod, and a repository cache's pod is replaced at the first boot, sweep or new issue pod of its repository that finds it serving no stream;
-  the sweep does not replace the pod of the cache of a repository that neither the mapping nor a live issue record of the project names any more, and that pod goes when the cache's retention deletes the cache ([The repository cache](#the-repository-cache)).
+  the sweep does not replace the pod of the cache of a repository no live issue record of the project names any more, and that pod goes when the cache's retention deletes the cache ([The repository cache](#the-repository-cache)).
   An issue pod's disk goes with its pod.
   Under the secrets broker the replacement also costs each live role its session name, until `BROKER_SESSION_ACCOUNT_PAIRS` pairs the old account with the new:
   the broker refuses that name to the role's pod on the new account (`403 SESSION_HELD`), so the role's grants, pending requests and withheld secrets stay behind, and the setting has to be live on the broker before the change (the `BROKER_SERVICES` item below, and the item after it).
@@ -9173,8 +9199,8 @@ An issue's Sandbox owns a volume only where a microVM pod keeps its volume ([A k
 It provisions no workspace: no `workspace-fetch`, no provisioning token.
 Its `gh` bundle, projected read-only at `/var/run/legion/gh` by a `gh-controller` volume, acts as the review App, refreshed every minute as every role's is;
 a failed review-App mint fails the launch naming the role, and the keeper relaunches it.
-A project with no GitHub owner to mint for (none of its repositories has an App) starts the controller anyway with `gh` acting as nobody, as `legion
-controller start` does there: its role Secret records an empty `github-default`, its `gh-controller` volume is an empty directory, and it holds owners from its next pod on.
+A project whose review App is installed on no account has no GitHub owner to mint for, and starts the controller anyway with `gh` acting as nobody, as `legion controller start` does there, its addressing telling it so (`Your role's GitHub App is installed on no owner, so you have no GitHub owner and its token reaches no repository.`):
+its role Secret records an empty `github-default`, its `gh-controller` volume is an empty directory, and it holds owners from its next pod on.
 It runs no init container (`controllerPod.initContainers`): nothing on its volume needs preparing before the launcher starts.
 The pod carries `legion.dev/project` and `legion.dev/role=controller` and no tree or issue label, so no tree's cleanup lists it, and the boot census holds it to exactly the one launcher those labels name and to the volume it owns.
 Under `runtime.kubernetes.agent_secrets` it is enrolled with the secrets broker as an issue pod's roles are:
@@ -9182,6 +9208,7 @@ it projects the broker's token, has a key directory of its own, and its shim tak
 It runs as the operator's ServiceAccount (`runtime.kubernetes.pod`), the same account as every issue pod, and it is the `legion-daemon` service's own pod because `BROKER_SERVICES` maps that account to `legion-daemon`.
 A service may name several accounts, so a controller given an account of its own keeps that service's secrets only when `BROKER_SERVICES` also names that account for `legion-daemon`.
 Its `slack_post` replies with `LEGION_SLACK_BOT_TOKEN`, the Slack app's bot token, which the operator stores as a shared agent secret (owner `shared`, tier `agent`), so the broker grants it with no person asked to every session enrolled with it, the controller's and every issue pod's among them, whatever service or person the session belongs to.
+Once that token carries the tag `project-channels=slack`, a session whose credential names a private Dispatch project gets it only behind the broker's airlock, which spends it on `POST /api/chat.postMessage` to a channel that project's owner named and on nothing else, so a private project's controller posts only to its project's channels and cannot read a Slack thread with it.
 Legion sets no affinity on it, so under Karpenter it lands wherever the pool has room for it (on GKE Autopilot it usually gets a node of its own, [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)), and it is annotated `karpenter.sh/do-not-disrupt:
 "true"` and `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`:
 Karpenter never consolidates or replaces for drift the node it runs on, though issue pods can still be scheduled onto that node;
@@ -9329,8 +9356,8 @@ In order, and keeping nothing until the daemon has answered, the command:
    print mode, …; run `legion controller start` at a terminal``), since given step 6's positional word with no terminal Oh My Pi runs headless print mode, which would run the start command only after step 3's mint had revoked the running controller;
    then a `dispatch_url` whose file names neither Dispatch credential, a blank or unreadable Envoy or Dispatch token file, a secrets broker that refuses this machine under `dispatch_token_broker` (which also refuses a machine proving no identity and a deployment naming no broker), a `nats_nkey_seed_file` that is blank, unreadable, readable by its group or others, or holds no nkey user seed, a missing or blank instructions file, and an Oh My Pi invocation that does not resolve;
 
-2. reads the project's repositories from the daemon's unauthenticated `GET /legion/v1/state` (`repositories`), and refuses a daemon that does not answer, a body with no `repositories` object, and a mapped entry that is not `owner/name`;
-   an empty mapping, or one whose every repository the daemon leaves out, launches the controller all the same, its addressing naming the owners the review App is installed on, or saying it is installed on no owner, while `legion state` names each repository left out and why.
+2. reads the `repositories` block of the daemon's unauthenticated `GET /legion/v1/state`, and refuses a daemon that does not answer, a body with no `repositories` object, and a `live` entry that is not `owner/name`;
+   an empty `live` list, or one whose every repository a role App is missing from, launches the controller all the same, its addressing naming the owners the review App is installed on, or saying it is installed on no owner, so the controller has no GitHub owner, while `legion state` names each repository a role App cannot work and why.
    Then it probes that Oh My Pi as the controller will run it, with `omp models`, which starts no session, and refuses a pi-legion it does not load, or one speaking another daemon API contract, loaded without pi-envoy or with a pi-envoy at another plugin interface version, or loaded beside the pre-split package;
 
 3. asks `POST /legion/v1/controller/secret` with the operator token as `Authorization: Bearer` and the contract step 2 held the plugin to (`{"pluginContract": <N>}`).
@@ -9347,8 +9374,8 @@ In order, and keeping nothing until the daemon has answered, the command:
    While Oh My Pi runs, a goroutine re-fetches every minute, asking for the default the first answer named (`"default"` in the request), and rewrites only the owners whose `hosts.yml` changed, logging each change, failure and stop to `<state_dir>/github-credential.log` (never to the terminal, never a token);
    a 403 `INVALID_CONTROLLER_CAPABILITY` (a later start replaced the capability) or 409 `CONTROLLER_LAUNCHED` ends the loop, and the files last until the tokens' expiry
    — the loop's lifetime is Oh My Pi's, not the command's signal context.
-   Against a daemon with no GitHub App or no project owner (500 `GITHUB_TOKEN_SOURCE_UNAVAILABLE` / `GITHUB_OWNER_UNCONFIGURED`), the command empties the 0700 `gh` directory, prints `[legion] the daemon has no GitHub App to act
-   as; the controller's gh acts as nobody`, and runs no loop.
+   Against a daemon with no GitHub App (500 `GITHUB_TOKEN_SOURCE_UNAVAILABLE`) or whose review App is installed on no account (500 `GITHUB_OWNER_UNCONFIGURED`, `the review App is installed on no account, so the controller has no GitHub owner`; the code keeps its name for the clients already deployed), the command empties the 0700 `gh` directory, prints the line of that code, and runs no loop:
+   `[legion] the daemon has no GitHub App to act as; the controller's gh acts as nobody` for the first, and `[legion] the review App is installed on no account, so the controller has no GitHub owner; the controller's gh acts as nobody` for the second, where the App exists.
    Any other failure of this fetch (unreachable, 403, 409, 502) exits 1 naming the route and the daemon's sentence, and Oh My Pi never starts:
    the mint in step 3 has already replaced the incumbent, as every post-mint failure does.
    Before step 3 the command finds the real gh its session's `gh` wrapper runs:
