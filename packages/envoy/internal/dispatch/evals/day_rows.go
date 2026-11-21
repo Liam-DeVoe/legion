@@ -1,9 +1,11 @@
 package evals
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"slices"
 	"strconv"
 	"strings"
@@ -247,15 +249,16 @@ const goneMembersDeleteStatement = `
 		and stored.row_key = gone.row_key and stored.day = $3
 `
 
-// upsertDays writes rows in one statement, in key order, each the computation's (writer
-// `computation`) with built_by builtBy: a new row is inserted, and a stored one rewritten only
-// where a value differs (built_by included, so a new build's rebuild marks every row it rebuilt).
-// updated_at moves only with a value: the trigger of eval_days (migration 20261117100014) logs no
-// change for a rewrite that moves built_by and updated_at alone, and the evals list answers the
-// oldest updated_at of the rows it folds (api/evals.go's freshness), so a rebuild that moved it
-// would leave a live evals view answering the old one while the read answered the new.
+// upsertDays writes rows in key order, in one statement where they fit and otherwise in several
+// (writeDayRows), each the computation's (writer `computation`) with built_by builtBy: a new row
+// is inserted, and a stored one rewritten only where a value differs (built_by included, so a new
+// build's rebuild marks every row it rebuilt). updated_at moves only with a value: the trigger of
+// eval_days (migration 20261117100014) logs no change for a rewrite that moves built_by and
+// updated_at alone, and the evals list answers the oldest updated_at of the rows it folds
+// (api/evals.go's freshness), so a rebuild that moved it would leave a live evals view answering
+// the old one while the read answered the new.
 func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) error {
-	return writeDayRows(ctx, tx, rows, builtBy, `
+	return writeDayRows(ctx, tx, rows, builtBy, true, `
 		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do update
 		set listed = excluded.listed, n = excluded.n, sum = excluded.sum, num = excluded.num, den = excluded.den,
 			max = excluded.max, samples = excluded.samples, last_value = excluded.last_value, last_at = excluded.last_at,
@@ -356,42 +359,33 @@ func zeroStaleUpdate(builtBy string) string {
 }
 
 // insertMissingDays writes each of rows that the table holds no row of the same key for, in one
-// statement, each the computation's, and leaves every stored row as it is: the refresher's zero
-// rows of the days a series had no row on, which never stand in for a row a write built.
+// statement where they fit and otherwise in several (writeDayRows), each the computation's, and
+// leaves every stored row as it is: the refresher's zero rows of the days a series had no row on,
+// which never stand in for a row a write built.
 func insertMissingDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) error {
-	return writeDayRows(ctx, tx, rows, builtBy, `on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing`)
+	return writeDayRows(ctx, tx, rows, builtBy, false, `on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing`)
 }
 
-// writeDayRows inserts rows in one statement, each the computation's (writer `computation`) with
-// built_by builtBy, and meets a row already stored as conflict says. It takes them in the byte
-// order of their keys (project, eval, deploy repository, series, repository, day), named as
-// `collate "C"` as every statement that inserts or locks day rows names it (compareDayKeys),
-// whatever the database's collation.
-func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy, conflict string) error {
-	if len(rows) == 0 {
-		return nil
+// writeDayRows inserts rows, each the computation's (writer `computation`) with built_by builtBy,
+// and meets a row already stored as conflict says. It takes them in the byte order of their keys
+// (project, eval, deploy repository, series, repository, day), named as `collate "C"` as every
+// statement that inserts or locks day rows names it (compareDayKeys), whatever the database's
+// collation: in one statement where their parameters fit in figureStatementBytes, and otherwise in
+// a statement for each run of them in that order that fits (dayRowStatements), all in tx, so the
+// statements together insert and lock the rows in the order one statement does. Every statement
+// of a transaction widens the one eval_days change it logs of an eval (migration
+// 20261117100014), so several statements log what one would. once says that conflict updates the
+// stored row, which one statement refuses to do twice (ON CONFLICT DO UPDATE cannot affect a row
+// a second time): two rows of one key are then refused before any statement is sent, where cut
+// into two statements the second would rewrite the first. A conflict that does nothing keeps the
+// first row of a key and skips the rest, in one statement or in several alike.
+func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string, once bool, conflict string) error {
+	statements, err := dayRowStatements(rows, builtBy, once)
+	if err != nil {
+		return err
 	}
-	count := len(rows)
-	projects, evals, deployRepos, series, repos := make([]string, count), make([]string, count), make([]string, count), make([]string, count), make([]string, count)
-	days, lastAts, lastRecordedAts := make([]time.Time, count), make([]*time.Time, count), make([]*time.Time, count)
-	listed := make([]bool, count)
-	ns, via := make([]int32, count), make([]int32, count)
-	sums, nums, dens, maxes, lastValues := make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count)
-	samples, counts, lastReadings := make([]*string, count), make([]string, count), make([]string, count)
-	for i, row := range rows {
-		projects[i], evals[i], deployRepos[i], series[i], repos[i] = row.ProjectKey, row.EvalID, row.DeployRepo, row.Series, row.Repo
-		days[i], listed[i] = measures.Midnight(row.Day), row.Listed
-		ns[i], via[i] = int32(row.N), int32(row.ViaRepository)
-		sums[i], nums[i], dens[i], maxes[i], lastValues[i], lastAts[i] = row.Sum, row.Num, row.Den, row.Max, row.LastValue, row.LastAt
-		lastRecordedAts[i], lastReadings[i] = row.LastRecordedAt, row.LastReading
-		samples[i] = floatArray(row.Samples)
-		encoded, err := json.Marshal(NonNilCounts(row.Counts))
-		if err != nil {
-			return fmt.Errorf("encode the counts of a day row of %s: %w", row.EvalID, err)
-		}
-		counts[i] = string(encoded)
-	}
-	if _, err := tx.Exec(ctx, `
+	for args := range statements {
+		if _, err := tx.Exec(ctx, `
 		insert into eval_days (project_key, eval_id, writer, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples,
 			last_value, last_at, last_recorded_at, last_reading, counts, via_repository, built_by)
 		select project_key, eval_id, $18, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples::double precision[],
@@ -403,11 +397,95 @@ func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy, confli
 				last_value, last_at, last_recorded_at, last_reading, counts, via_repository)
 		order by given.project_key collate "C", given.eval_id collate "C", given.deploy_repo collate "C", given.series collate "C",
 			given.repo collate "C", given.day
-		`+conflict, projects, evals, series, repos, days, listed, ns, sums, nums, dens, maxes, samples, lastValues, lastAts, counts, via, builtBy,
-		writerComputation, lastRecordedAts, lastReadings, deployRepos); err != nil {
-		return fmt.Errorf("write the day rows of %s: %w", rows[0].ProjectKey, err)
+		`+conflict, args...); err != nil {
+			return fmt.Errorf("write the day rows of %s: %w", rows[0].ProjectKey, err)
+		}
 	}
 	return nil
+}
+
+// dayRowArrays is how many arrays writeDayRows' statement takes, one for each column of a row it
+// is given, beside its two scalars (the build and writerComputation).
+const dayRowArrays = 19
+
+// dayRowStatements is the arguments of each statement writeDayRows sends of rows, recording
+// builtBy: rows in the byte order of their keys (compareDayRows), cut into runs whose parameters
+// take at most figureStatementBytes as figureChunks cuts them, the statement's own parameters
+// estimated by paramBytes and each row's by dayRowBytes, each statement's arrays one run. A row
+// adds at least 157 bytes, so the bound cuts a statement long before figureChunk rows; a row
+// larger than the bound alone is sent whole, in a statement of its own. It encodes and checks
+// every row before it answers, so a row whose counts do not encode as JSON is refused before any
+// statement is sent, and so, where once, are two rows of one key: those of one key on one UTC day
+// are next to each other in that order, since a row between them by instant falls on that day.
+func dayRowStatements(rows []DayRow, builtBy string, once bool) (iter.Seq[[]any], error) {
+	count := len(rows)
+	// Their indexes are sorted rather than the rows, so the caller's rows keep their order.
+	order := make([]int, count)
+	for i := range order {
+		order[i] = i
+	}
+	slices.SortFunc(order, func(a, b int) int { return compareDayRows(&rows[a], &rows[b]) })
+	projects, evals, deployRepos, series, repos := make([]string, count), make([]string, count), make([]string, count), make([]string, count), make([]string, count)
+	days, lastAts, lastRecordedAts := make([]time.Time, count), make([]*time.Time, count), make([]*time.Time, count)
+	listed := make([]bool, count)
+	ns, via := make([]int32, count), make([]int32, count)
+	sums, nums, dens, maxes, lastValues := make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count)
+	samples, counts, lastReadings := make([]*string, count), make([]string, count), make([]string, count)
+	sizes := make([]int, count)
+	for i, index := range order {
+		row := &rows[index]
+		projects[i], evals[i], deployRepos[i], series[i], repos[i] = row.ProjectKey, row.EvalID, row.DeployRepo, row.Series, row.Repo
+		days[i], listed[i] = measures.Midnight(row.Day), row.Listed
+		if once && i > 0 && projects[i] == projects[i-1] && evals[i] == evals[i-1] && deployRepos[i] == deployRepos[i-1] &&
+			series[i] == series[i-1] && repos[i] == repos[i-1] && days[i].Equal(days[i-1]) {
+			return nil, fmt.Errorf("write the day rows of %s: two rows of eval %s, writer %s, deploy repository %q, series %q and repository %q on %s, and an upsert writes a row once",
+				row.ProjectKey, row.EvalID, writerComputation, row.DeployRepo, row.Series, row.Repo, days[i].Format(time.DateOnly))
+		}
+		ns[i], via[i] = int32(row.N), int32(row.ViaRepository)
+		sums[i], nums[i], dens[i], maxes[i], lastValues[i], lastAts[i] = row.Sum, row.Num, row.Den, row.Max, row.LastValue, row.LastAt
+		lastRecordedAts[i], lastReadings[i] = row.LastRecordedAt, row.LastReading
+		samples[i] = floatArray(row.Samples)
+		encoded, err := json.Marshal(NonNilCounts(row.Counts))
+		if err != nil {
+			return nil, fmt.Errorf("encode the counts of a day row of %s: %w", row.EvalID, err)
+		}
+		counts[i] = string(encoded)
+		sizes[i] = dayRowBytes(row, samples[i], counts[i])
+	}
+	return func(yield func([]any) bool) {
+		from := 0
+		for run := range figureChunks(sizes, paramBytes(dayRowArrays, builtBy, writerComputation), func(size *int) int { return *size }) {
+			to := from + len(run)
+			if !yield([]any{projects[from:to], evals[from:to], series[from:to], repos[from:to], days[from:to], listed[from:to], ns[from:to],
+				sums[from:to], nums[from:to], dens[from:to], maxes[from:to], samples[from:to], lastValues[from:to], lastAts[from:to],
+				counts[from:to], via[from:to], builtBy, writerComputation, lastRecordedAts[from:to], lastReadings[from:to], deployRepos[from:to]}) {
+				return
+			}
+			from = to
+		}
+	}, nil
+}
+
+// dayRowBytes is the most bytes row adds to the parameters of writeDayRows' statement, as pgx
+// encodes them in binary, samples and counts being the literal of its samples (floatArray) and its
+// counts' JSON: in each of the statement's arrays 4 bytes of length and the element, each string
+// its bytes, the listing 1, and each of its ten numbers, dates and times at most 8 (a null none).
+func dayRowBytes(row *DayRow, samples *string, counts string) int {
+	bytes := dayRowArrays*4 + len(row.ProjectKey) + len(row.EvalID) + len(row.DeployRepo) + len(row.Series) + len(row.Repo) +
+		len(counts) + len(row.LastReading) + 1 + 10*8
+	if samples != nil {
+		bytes += len(*samples)
+	}
+	return bytes
+}
+
+// compareDayRows orders day rows by the bytes of their keys, as writeDayRows' statement takes
+// them: project, eval and deploy repository, then series, repository and day (compareDayKeys),
+// each day by its instant, since no instant falls on a UTC date (the statement's day) before an
+// earlier instant's.
+func compareDayRows(a, b *DayRow) int {
+	return cmp.Or(strings.Compare(a.ProjectKey, b.ProjectKey), strings.Compare(a.EvalID, b.EvalID), strings.Compare(a.DeployRepo, b.DeployRepo),
+		compareDayKeys(dayKey{series: a.Series, repo: a.Repo, day: a.Day}, dayKey{series: b.Series, repo: b.Repo, day: b.Day}))
 }
 
 // floatArray is values as a Postgres array literal, each the shortest decimal that reads back as

@@ -8,9 +8,10 @@
 -- alone, for milliseconds.
 --
 -- One change row per eval for every transaction that writes its day rows. The refresher writes a
--- series' days with one upsert, `insert ... on conflict ... do update`, and Postgres fires an
--- upsert's statement-level triggers once for its inserted rows and once for its updated rows, each
--- with a transition table of its own half. So two statement-level triggers read the two halves,
+-- series' days in one or more upsert statements (`insert ... on conflict ... do update`) of the
+-- transaction, each widening the same pending row, and Postgres fires an upsert's statement-level
+-- triggers once for its inserted rows and once for its updated rows, each with a transition table
+-- of its own half. So two statement-level triggers read the two halves,
 -- and both hand each eval's span to eval_days_change_log, which records the eval's first change of
 -- the transaction in the change log's outbox through delivery_change_log_pending (20261117100001),
 -- which takes no lock, so no write of the day rows takes the change log's lock (6900, 0100); a

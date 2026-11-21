@@ -233,10 +233,6 @@ const rewriteWorkers = 8
 // day built, which it writes once the last chunk is built.
 const rewriteDays = walkBatch
 
-// rewriteChunk is the most day rows one statement of rewriteSettings' upsert sends: its arrays are
-// its parameters, and the days of a large project hold tens of thousands of rows.
-const rewriteChunk = 20000
-
 // memberKey is a member's identity in eval_day_members, and memberAt where it is counted.
 type memberKey struct {
 	project, family, deployRepo, rowKey string
@@ -310,19 +306,19 @@ func (s *Store) readMembers(ctx context.Context, projects, families, deployRepos
 //     row, the rows of the evals slugs names and the members of families, held until the last
 //     chunk is built; and beside that build, the stored members of families of the repositories
 //     rewritten on those days (readMembers), none where it builds none;
-//   - then, in one transaction: those rows upserted where a value moved (upsertDays, in
-//     statements of rewriteChunk rows); once, over every day written, those evals' stored rows of
-//     the repositories rewritten that the days no longer hold made zero rows (zeroStaleDays'
-//     rule, zeroStaleSettingsDays); the members of families of those repositories whose day,
-//     repository or shipping run moved, or that are new, upserted, and those of the days written
-//     that the days no longer hold deleted, and no other member sent; the stored figures of every
-//     day whose rows moved folded again, over each project's span of the days written
-//     (foldFiguresInTx, whose quantiles read each rank across the days' sorted samples,
-//     measures.SortedSamples); and the settings recorded as the ones the rows stand built under.
-//     Its eval_days changes are one per eval, as every transaction's are (migration
-//     20261117100014), so an evals view hears of the whole change once, and each carries the
-//     rewrite's mark (MarkSettingsRewrite), so the view is recomputed for them at once. With no day
-//     to build it writes the settings alone.
+//   - then, in one transaction: those rows upserted where a value moved (upsertDays, which cuts
+//     them into statements of at most figureStatementBytes of parameters); once, over every day
+//     written, those evals' stored rows of the repositories rewritten that the days no longer hold
+//     made zero rows (zeroStaleDays' rule, zeroStaleSettingsDays); the members of families of
+//     those repositories whose day, repository or shipping run moved, or that are new, upserted,
+//     and those of the days written that the days no longer hold deleted, and no other member
+//     sent; the stored figures of every day whose rows moved folded again, over each project's
+//     span of the days written (foldFiguresInTx, whose quantiles read each rank across the days'
+//     sorted samples, measures.SortedSamples); and the settings recorded as the ones the rows
+//     stand built under. Its eval_days changes are one per eval, as every transaction's are
+//     (migration 20261117100014), so an evals view hears of the whole change once, and each
+//     carries the rewrite's mark (MarkSettingsRewrite), so the view is recomputed for them at
+//     once. With no day to build it writes the settings alone.
 //
 // A day it does not build holds the rows it would build: its inputs, its rows' first days and the
 // settings its rows read are what they were built from. It leaves eval_days_owed as it is: it
@@ -575,10 +571,8 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	if err := MarkSettingsRewrite(ctx, tx); err != nil {
 		return err
 	}
-	for part := range slices.Chunk(rows, rewriteChunk) {
-		if err := upsertDays(ctx, tx, part, r.build); err != nil {
-			return err
-		}
+	if err := upsertDays(ctx, tx, rows, r.build); err != nil {
+		return err
 	}
 	if err := zeroStaleSettingsDays(ctx, tx, pairProjects, pairDays, evalIDs, names, rows, r.build); err != nil {
 		return err

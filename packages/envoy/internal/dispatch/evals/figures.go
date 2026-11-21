@@ -934,17 +934,18 @@ func entriesByID(entries []Entry) map[string]Entry {
 const figureChunk = 5000
 
 // figureStatementBytes is the most bytes of parameters one statement of the stored figures sends,
-// as figureChunks bounds them. On the farm (dispatch://INFRA-2916, Job infra2916-k8hso1), 9 of 24
-// passes over TCP stalled about 200 ms on a statement whose Bind and Execute messages held
-// 0.8-1.0 MB, in the pod's loopback TCP (gVisor), while Postgres sat in ClientRead reading it; none
-// of 24 passes over the unix socket did.
+// and one of the day rows (writeDayRows), as figureChunks bounds them. On the farm
+// (dispatch://INFRA-2916, Job infra2916-k8hso1), 9 of 24 passes over TCP stalled about 200 ms on a
+// statement whose Bind and Execute messages held 0.8-1.0 MB, in the pod's loopback TCP (gVisor),
+// while Postgres sat in ClientRead reading it; none of 24 passes over the unix socket did.
 const figureStatementBytes = 256 << 10
 
 // figureChunks is rows cut into the chunks one statement each sends, in their order: each chunk
 // closed before the row that would make it hold more than figureChunk rows, or parameters of more
 // than figureStatementBytes, base being the most bytes the statement's parameters take with no row
-// (paramBytes) and size the most a row adds (upsertBytes, deleteBytes). A row larger than that
-// alone is a chunk of its own, which its statement sends whole.
+// (paramBytes) and size the most a row adds (upsertBytes, deleteBytes, and dayRowBytes for the
+// day rows' statements, dayRowStatements, whose rows the bound cuts long before figureChunk). A
+// row larger than that alone is a chunk of its own, which its statement sends whole.
 func figureChunks[R any](rows []R, base int, size func(*R) int) iter.Seq[[]R] {
 	return func(yield func([]R) bool) {
 		from, bytes := 0, base
