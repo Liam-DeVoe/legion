@@ -536,6 +536,63 @@ test("an id no priority carries says so and gives the way back", async () => {
   expect(screen.getByRole("link", { name: "‹ Priorities" })).toBeDefined();
 });
 
+/** Keeps in the tab, for a reload to take up, a rename of priority `id` to `text` that Dispatch
+ *  refused, another person having written over `over`, the title the reader's edit started
+ *  from. */
+function keepRefusedTitle(id: string, text: string, over: string) {
+  const key = `refused-rename-${id}`;
+  sessionStorage.setItem(
+    `dispatch.write:${key}`,
+    JSON.stringify({
+      carried: "PATCH",
+      detail: { attribute: "title", expected: over, id, text },
+      key,
+      kind: "priority-text",
+      label: `Rename the priority “${over}” to “${text}”`,
+      login: "alice",
+      presentation: "indicator",
+      pressedAt: Date.now(),
+      request: priorityPatchRequest(id, { expected: { title: over }, title: text }),
+      sent: true,
+      state: {
+        refusal: {
+          code: "PRIORITY_CHANGED",
+          kind: "api",
+          message: PRIORITY_TITLE_CHANGED.message,
+          status: 409,
+        },
+        status: "refused",
+      },
+      target: `priority:${id}`,
+      version: 1,
+    })
+  );
+}
+
+// A page that draws no priority - its read refused, or no priority of its id written - draws no
+// field to offer the reader's text beside, so it claims none of the priority's writes: a rename
+// another person's change refused stays on the shell's line, the reader's text offered to copy
+// there, rather than held for a field nobody sees until the reader leaves the page.
+test.each([
+  ["whose read Dispatch refused", "rocq-lean", "Could not load the priority."],
+  ["of an id no priority carries", "not-written", "No priority of that id is written."],
+] as const)("a priority's page %s leaves a refused title on the shell's line", async (_how, id, says) => {
+  const { priorities, reload } = page(id);
+  await screen.findByRole("link", { name: "‹ Priorities" });
+  const mine = "Their title, mine";
+  keepRefusedTitle(id, mine, "Their title");
+  if (id === "rocq-lean")
+    priorities.mockRejectedValue(new ApiError(500, { error: "Dispatch could not read it" }));
+  const client = reload();
+  expect(await screen.findByText(says)).toBeDefined();
+  expect(writesOf(client).rows()).toMatchObject([
+    { claimed: false, detail: { id, text: mine }, status: "refused" },
+  ]);
+  const line = await screen.findByTestId("pending-writes");
+  expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(mine);
+  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+});
+
 // A write a reload took up is the page's to settle with the reader as much as one pressed on it:
 // refused because another person wrote the description since the reader's edit started, it
 // stands on no line with a Retry that would send it again. The description shows it beside the

@@ -1385,20 +1385,26 @@ test("picker keeps a pick on screen: the assignee in the table of an item of the
   ]);
   const context = await asUser(browser, "alice");
   try {
-    const page = await context.newPage();
     // The table draws the assignee as plain text in its Assignee column. The work table of a
-    // priority's page opens without it, so this reader is one who showed it there before: the
-    // table's stored layout holds it shown, and the column is drawn from the table's first paint.
+    // priority's page opens without it, so this reader is one who showed it there before, from
+    // the column control, in a tab they then closed: the table's stored layout holds it shown, and
+    // the column is drawn from the table's first paint.
+    const before = await context.newPage();
+    await before.goto(`/priorities/${item.id}`);
+    const work = before.getByRole("region", { name: "Work advancing this priority" });
+    await work.getByRole("button", { exact: true, name: "Columns" }).click();
+    await before
+      .getByRole("dialog", { name: "Columns" })
+      .getByRole("checkbox", { name: "Assignee" })
+      .check();
+    await before.keyboard.press("Escape");
+    await expect(work.getByRole("columnheader", { name: /^Assignee/ })).toBeVisible();
+    await before.close();
+    const page = await context.newPage();
     const shownInTable = await watchCell(page, issue.key, "Assignee");
     const held = await holdIssuePatches(page, issue.key);
     const reads = logReads(page, listRead("advances", item.id));
     await page.goto(`/issues/${issue.key}`);
-    await page.evaluate(() =>
-      localStorage.setItem(
-        "dispatch.project-table.priority-page-work",
-        JSON.stringify({ visibility: { assignee: true } })
-      )
-    );
     const picker = pagePicker(page, `Assignee of ${issue.key}`);
     await expect(picker).toHaveValue("bob");
 

@@ -23,7 +23,8 @@ export interface LayoutPins {
   /** In a phone's box: these columns, left to right, within `share` of it and never past the
    *  room inside its borders and beside its scrollbar, so a share of 1 ends them at its inner
    *  edge. Each column of `widths` is drawn at that width whatever the reader dragged, and
-   *  `flexible` takes what the others leave, between `flexibleMin` and its own width. */
+   *  `flexible` takes what the others leave, from `flexibleMin` up to its own width, or the whole
+   *  of it in a table that fills its box (`fills`) but where the reader dragged it. */
   readonly phone: {
     readonly columns: readonly string[];
     readonly share: number;
@@ -71,7 +72,8 @@ export interface LayoutColumns extends StoredColumns {
    *  other shown columns and `trailing` leave inside the box's borders and beside its scrollbar,
    *  never below its minimum, so the lines reach the box's border and nothing scrolls sideways
    *  while the columns fit. A width the reader dragged it to stays theirs, and a phone's box
-   *  keeps the widths the pins give it. A table without it fills nothing. */
+   *  gives the pinned flexible column what the other pinned columns leave of the pins' share
+   *  (`LayoutPins.phone`). A table without it fills nothing. */
   readonly fills?: string;
   /** The width the table draws after its columns - a row's actions - which `fills` leaves. */
   readonly trailing?: number;
@@ -339,10 +341,17 @@ export function useTableLayout(layoutKey: string, columns: LayoutColumns): Table
     if (!desktop) {
       Object.assign(widths, phone.widths);
       const room = Math.min(boxWidth * phone.share, Math.floor(boxWidth - boxEdge));
+      // Where the layout fills the box, the flexible column takes the room the other pinned
+      // columns leave, whatever its own width, so a box of a share of 1 - a phone held
+      // sideways, 500 to 639 px - has its lines reach its right border, as a desktop's box does
+      // (`fill`); elsewhere, and at a width the reader dragged it to, it stops at its width.
+      const spare = room - covered(phone.columns.filter((id) => id !== flexible));
       if (flexibleWidth !== undefined)
         widths[flexible] = Math.max(
           phone.flexibleMin,
-          Math.min(flexibleWidth, room - covered(phone.columns.filter((id) => id !== flexible)))
+          fills === undefined || sizing[flexible] !== undefined
+            ? Math.min(flexibleWidth, spare)
+            : spare
         );
       return { sizing: widths, pinned: [...phone.columns], compact: true };
     }

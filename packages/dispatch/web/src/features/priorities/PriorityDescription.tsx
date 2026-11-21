@@ -241,8 +241,9 @@ export function PriorityDescription({
     stop(current);
   }, [description]);
 
-  // The page going is the editor left, as a blur is: a write pressed now is kept for the reload
-  // to make (`features/writes/write-storage.ts`).
+  // The page going is the editor left, as a blur is: a write made now is let finish as the page
+  // goes (`keepalive`, `api/client.ts`'s `pageGoing`), so a tab that closes writes it, and the tab
+  // keeps it too, for a reload to make (`features/writes/write-storage.ts`).
   useEffect(() => {
     const leave = () => {
       if (held.current !== undefined) save(held.current, latest.current.onSave);

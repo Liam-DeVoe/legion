@@ -24,6 +24,7 @@ import {
   textSecondaryHoverToPrimary,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { inputMethodKey } from "../issue-page/useNodeEditing";
 import { arrival, NOTHING_KEPT } from "./field-arrival";
 
 /** How long the reader may stop typing before what they wrote is saved. Nothing else in
@@ -257,8 +258,9 @@ export function InPlaceField({
   }, [value]);
 
   // Leaving the page, or the field leaving it, leaves the field: what the reader typed is
-  // written now rather than lost with the timer. A write pressed as the page goes is kept for
-  // the reload to make (`features/writes/write-storage.ts`).
+  // written now rather than lost with the timer. A write made as the page goes is let finish as
+  // it goes (`keepalive`, `api/client.ts`'s `pageGoing`), so a tab that closes writes it, and the
+  // tab keeps it too, for a reload to make (`features/writes/write-storage.ts`).
   useEffect(() => {
     const leave = () => saveNow.current();
     window.addEventListener("pagehide", leave);
@@ -326,8 +328,9 @@ export function InPlaceField({
     },
     onKeyDown: (event: KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       // The Enter that ends an input method's composition takes the word composed, and is no
-      // Enter of the reader's: it neither writes nor leaves the field.
-      if (event.key !== "Enter" || event.nativeEvent.isComposing) return;
+      // Enter of the reader's: it neither writes nor leaves the field. Safari sends it after its
+      // compositionend, with `isComposing` false and keyCode 229 (`inputMethodKey`).
+      if (event.key !== "Enter" || inputMethodKey(event.nativeEvent)) return;
       event.preventDefault();
       save();
       event.currentTarget.blur();

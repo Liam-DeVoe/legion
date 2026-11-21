@@ -15,7 +15,7 @@ import { useKeymapScope } from "../shell/keymap";
 import { FIELD_CHIP, HEADING_BOX, InPlaceField } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
 import { PriorityMargin } from "./PriorityMargin";
-import { buildPriorityItems, ownerOf } from "./priorities-model";
+import { buildPriorityItems, ownerOf, type PriorityItem } from "./priorities-model";
 import { PRIORITIES_PATH } from "./priority-routes";
 import { textWriteLabel, usePriorityWrites } from "./priority-writes";
 
@@ -88,18 +88,10 @@ export function PriorityPage(): ReactNode {
   return <PriorityView id={id} key={id} />;
 }
 
-/** The page of the priority `id`. */
+/** The page of the priority `id`: its read, and the priority drawn once the read holds it. */
 function PriorityView({ id }: { id: string }): ReactNode {
   const priorities = useQuery(prioritiesQuery());
   const work = useQuery({ ...advancesIssuesQuery({ advances: id }, true), enabled: id !== "" });
-  const [open, setOpen] = useState(true);
-  // Where the owner's notice of the reader's kept texts is drawn: under the header's row of
-  // chips, not inside it.
-  const [ownerNoticeAt, setOwnerNoticeAt] = useState<HTMLElement | null>(null);
-  // The one priority this page shows, whose conflicts it settles with the reader
-  // (`usePriorityWrites`).
-  const shown = useMemo(() => [id], [id]);
-  const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites(shown);
   // The keys every table is walked with (`j`, `k`, `x`, `o`, Enter), which a table registers
   // in the `project` scope: the work table is the one table this page draws, so they are its.
   useKeymapScope("project");
@@ -144,10 +136,42 @@ function PriorityView({ id }: { id: string }): ReactNode {
         message="No priority of that id is written."
       />
     );
-
-  const { description, owner, title } = item.priority;
-  const keptDescription = kept(id, "description", description);
   const owners = [...new Set(items.map(ownerOf))].sort((a, b) => a.localeCompare(b));
+  return <PriorityShown byProject={byProject} item={item} owners={owners} titles={titles} />;
+}
+
+/**
+ * The priority `item` as the page draws it, once the read holds it: its header, its description
+ * and the work under it, beside its margin. It is the one part of the page that settles the
+ * priority's conflicts with the reader (`usePriorityWrites`), since it draws the fields their
+ * texts are offered beside: a page that draws no priority - its read still out or refused, or
+ * no priority of its id written - claims none of them, and the shell's line keeps each, the
+ * reader's text offered to copy there, rather than a page that offers it nowhere. The read going
+ * from under it takes this part off the page, which hands what it claimed back to the line.
+ */
+function PriorityShown({
+  byProject,
+  item,
+  owners,
+  titles,
+}: {
+  /** The keys of the work advancing the priority, by project. */
+  byProject: ReadonlyMap<string, readonly string[]>;
+  item: PriorityItem;
+  /** Every owner the priorities name, which the owner's field offers. */
+  owners: readonly string[];
+  titles: ReadonlyMap<string, string>;
+}): ReactNode {
+  const { description, id, owner, title } = item.priority;
+  const [open, setOpen] = useState(true);
+  // Where the owner's notice of the reader's kept texts is drawn: under the header's row of
+  // chips, not inside it.
+  const [ownerNoticeAt, setOwnerNoticeAt] = useState<HTMLElement | null>(null);
+  // The one priority this page shows, whose conflicts it settles with the reader
+  // (`usePriorityWrites`).
+  const shown = useMemo(() => [id], [id]);
+  const { canWrite, describe, keep, kept, patch, rename } = usePriorityWrites(shown);
+  const keptDescription = kept(id, "description", description);
 
   return (
     <div className="flex flex-col gap-6 lg:flex-row">

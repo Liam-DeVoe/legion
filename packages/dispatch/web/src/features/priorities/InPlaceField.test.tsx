@@ -3,7 +3,8 @@ import { expect, test } from "bun:test";
 import { act, fireEvent, render, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type ReactNode, useState } from "react";
-import { jump, onFakeClock } from "../../__tests__/fake-clock";
+import { jump, onFakeClock, settle } from "../../__tests__/fake-clock";
+import { createApiClient, priorityPatchRequest } from "../../api/client";
 import { InPlaceField, SAVE_AFTER_MS } from "./InPlaceField";
 
 /**
@@ -211,16 +212,75 @@ test("the page going while the typing waits writes it, once", async () => {
   expect(writes).toEqual(["Old name now"]);
 });
 
+// A write made as the page goes is the tab closing as often as a reload, and no reload follows a
+// closed tab to make it again, so it is let finish as the page goes (`keepalive`), its key and all
+// (R14). A write made while the page stays - the reader leaving the field by Enter - is not: a
+// reload makes it again under its key, as it makes every write (`api/client.ts`'s `send`).
+test("the write the page going makes is let finish as the page goes, and one made while the page stays is not", async () => {
+  const user = userEvent.setup({ delay: null });
+  const sent: RequestInit[] = [];
+  const client = createApiClient(async (_path, init) => {
+    sent.push(init ?? {});
+    return Response.json({});
+  });
+  let pressed = 0;
+  const view = render(
+    <InPlaceField
+      label="Title"
+      onSave={(title) => {
+        pressed += 1;
+        void client.send(priorityPatchRequest("rocq-lean", { title }), { key: `press-${pressed}` });
+      }}
+      value="Old name"
+    />
+  );
+  const field = within(view.container).getByRole("textbox", { name: "Title" });
+  await onFakeClock(async () => {
+    await user.type(field, ", left{Enter}");
+    await user.type(field, ", gone");
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    await settle();
+  });
+  view.unmount();
+  expect(
+    sent.map((init) => ({
+      body: init.body,
+      key: new Headers(init.headers).get("Idempotency-Key"),
+      keepalive: init.keepalive,
+      method: init.method,
+    }))
+  ).toEqual([
+    {
+      body: JSON.stringify({ title: "Old name, left" }),
+      key: "press-1",
+      keepalive: undefined,
+      method: "PATCH",
+    },
+    {
+      body: JSON.stringify({ title: "Old name, left, gone" }),
+      key: "press-2",
+      keepalive: true,
+      method: "PATCH",
+    },
+  ]);
+});
+
 // The Enter that ends an input method's composition - of Japanese, Chinese or Korean - takes the
 // word being composed, and is no Enter of the reader's: it neither writes the text nor leaves the
-// field. A plain Enter does both.
-test("the Enter that ends a composition neither writes nor leaves the field, and a plain one does both", async () => {
+// field. Chromium and Firefox mark it `isComposing`; Safari sends it after the composition's end,
+// unmarked, with keyCode 229 (`inputMethodKey`). A plain Enter does both.
+test.each([
+  ["isComposing", { isComposing: true, key: "Enter" }],
+  ["keyCode 229", { isComposing: false, key: "Enter", keyCode: 229 }],
+] as const)("the Enter that ends a composition, marked by %s, neither writes nor leaves the field, and a plain one does both", async (_mark, composing) => {
   const user = userEvent.setup({ delay: null });
   const { field, view, writes } = heldField();
   await onFakeClock(async () => {
     await user.type(field, ", mine");
     // user-event has no form for this: it cannot mark a key as an IME composition.
-    fireEvent.keyDown(field, { isComposing: true, key: "Enter" });
+    fireEvent.keyDown(field, composing);
     expect(writes).toEqual([]);
     expect(document.activeElement).toBe(field);
     await user.keyboard("{Enter}");

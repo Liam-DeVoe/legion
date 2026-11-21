@@ -44,6 +44,7 @@ import {
   isEpic,
   matchesFilters,
   matchesSearch,
+  narrowsNothing,
   UNCLAIMED_FACET,
 } from "./issues-table-model";
 import { GroupRow, IssueRow } from "./issues-table-rows";
@@ -62,12 +63,18 @@ const SCOPED_LAYOUT_KEY = "priority-work";
 const fuzzy: FilterFn<Item> = (row, _id, query: string) => matchesSearch(row.original, query);
 
 export function IssuesTable({
+  empty,
   label,
   layout: ownLayout,
   listing,
   priorityTitles,
   stateKey,
 }: {
+  /** What the table says when it lists no row and the reader narrowed it by nothing - no filter
+   *  but the statuses it opens with, no search, no issues picked (`narrowsNothing`), and neither
+   *  Needs you nor Unread: that its listing holds no issue, in its caller's words. Unset, or once
+   *  the reader narrowed it, it says no issues match these filters. */
+  empty?: string;
   /** What this list is called, for a reader who cannot see where it sits; by its listing when
    *  unset: a project's issues, or the issues advancing one priority. */
   label?: string;
@@ -441,7 +448,11 @@ export function IssuesTable({
       </div>
 
       <DataTable
-        empty="No issues match these filters."
+        empty={
+          empty !== undefined && narrowsNothing(view) && !flags.needsYou && !flags.unread
+            ? empty
+            : "No issues match these filters."
+        }
         filterCounts={openFacets}
         filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
         label={`${name} table`}

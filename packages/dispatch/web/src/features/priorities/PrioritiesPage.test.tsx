@@ -145,8 +145,8 @@ function answerListing(issues: readonly IssueSummary[]) {
       );
 }
 
-/** The address the page is at, and how it got there: a tab writes with replace, and a row the
- *  keyboard opens pushes. */
+/** The address the page is at, and how it got there: a tab chosen and a row the keyboard opens
+ *  push, and an address naming a tab the page does not have is replaced. */
 function Address() {
   const location = useLocation();
   return (
@@ -217,13 +217,13 @@ function page(
     </QueryClientProvider>
   );
   if (history === "window") window.history.replaceState(null, "", at);
-  const view = render(
+  const routed = () =>
     history === "window" ? (
       <BrowserRouter>{tree}</BrowserRouter>
     ) : (
       <MemoryRouter initialEntries={[at]}>{tree}</MemoryRouter>
-    )
-  );
+    );
+  let view = render(routed());
   restores.push(() => {
     view.unmount();
     client.clear();
@@ -245,7 +245,13 @@ function page(
     priorities.mockResolvedValue(written);
     act(() => client.setQueryData(prioritiesQuery().queryKey, written));
   };
-  return { client, create, editors, listing, patch, priorities, view, writtenElsewhere };
+  /** Takes the page off and draws it again at `at`, with the same client: a table drawn again
+   *  reads its layout from what the browser stored, as it does on a reload. */
+  const redraw = () => {
+    view.unmount();
+    view = render(routed());
+  };
+  return { client, create, editors, listing, patch, priorities, redraw, writtenElsewhere };
 }
 
 const FIFTEEN = body({
@@ -328,7 +334,7 @@ test("the page opens on the priorities, and each fault is a tab of its own the a
   const faults = await screen.findByRole("table", {
     name: "Active under no priority table",
   });
-  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=none");
+  expect(screen.getByTestId("address").textContent).toBe("PUSH /priorities?tab=none");
   expect(screen.queryByRole("table", { name: "Priorities table" })).toBeNull();
   // The tab's panel holds the Issues table alone, under the tab's own name.
   expect(within(screen.getByRole("tabpanel")).getByRole("region")).toHaveAccessibleName(
@@ -342,7 +348,7 @@ test("the page opens on the priorities, and each fault is a tab of its own the a
   const backlog = await screen.findByRole("table", {
     name: "Priority work in backlog or icebox table",
   });
-  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=backlog");
+  expect(screen.getByTestId("address").textContent).toBe("PUSH /priorities?tab=backlog");
   expect(screen.getAllByRole("table")).toEqual([backlog]);
   expect(screen.queryByText(/backlog or the icebox|\d+ issues? ·/)).toBeNull();
   expect(await within(backlog).findByRole("row", { name: "CORE-9 Work CORE-9" })).toBeDefined();
@@ -350,7 +356,7 @@ test("the page opens on the priorities, and each fault is a tab of its own the a
 
   await user.click(screen.getByRole("tab", { name: "Priorities 3" }));
   expect(await screen.findByRole("table", { name: "Priorities table" })).toBeDefined();
-  expect(screen.getByTestId("address").textContent).toBe("REPLACE /priorities?tab=order");
+  expect(screen.getByTestId("address").textContent).toBe("PUSH /priorities?tab=order");
 });
 
 test("an address naming a fault's tab opens on it", async () => {
@@ -375,8 +381,11 @@ const OLD_TAB = ["p", "arked"].join("");
 // An address naming a tab the page does not have opens on the priorities, and the name leaves
 // the address with replace: no entry is added to the history, so Back leads where it did, and
 // the address never names a tab the page does not draw. The priorities table's own view in the
-// same address stays (INFRA-2947, Verification v73).
-test("an address naming a tab the page does not have opens on the priorities, and the name leaves the address", async () => {
+// same address stays (INFRA-2947, Verification v73). A tab the reader then chooses is a place
+// they went, as a tab of the project page or the issue page is: it adds one entry, so Back leads
+// to the tab before rather than off the page.
+test("an address naming a tab the page does not have opens on the priorities, and the name leaves the address, where a tab chosen adds an entry", async () => {
+  const user = userEvent.setup();
   const entries = window.history.length;
   page(FIFTEEN, [], true, { at: `/priorities?tab=${OLD_TAB}&p.q=linkage`, history: "window" });
   expect(await screen.findByRole("table", { name: "Priorities table" })).toBeDefined();
@@ -391,6 +400,13 @@ test("an address naming a tab the page does not have opens on the priorities, an
   // The search kept in the address still narrows the table.
   expect(screen.getByRole("row", { name: "#2 Linkage closure eval" })).toBeDefined();
   expect(screen.queryByRole("row", { name: "#1 Legion works reliably first" })).toBeNull();
+
+  await user.click(screen.getByRole("tab", { name: "Active under no priority 0" }));
+  expect(
+    await screen.findByRole("table", { name: "Active under no priority table" })
+  ).toBeDefined();
+  expect(screen.getByTestId("address").textContent).toBe("PUSH /priorities?p.q=linkage&tab=none");
+  expect(window.history.length).toBe(entries + 1);
 });
 
 test("each fault table asks the issue listing for its statuses, and the backlog-or-icebox one for the move", async () => {
@@ -553,6 +569,65 @@ test("each fault table asks the issue listing for its statuses, and the backlog-
   expect(faultReads.every(([options]) => options?.status !== undefined)).toBe(true);
 });
 
+// A column the reader shows on a fault list is theirs to keep, as on any issues table: each list
+// pins the checkbox, the key and Title alone (`pins`), so the Priority column it opens hidden is
+// no pinned column, whose visibility the stored layout drops (`readLayout`). Shown, it stays
+// shown once the reader leaves the tab and comes back, and once the page is drawn again.
+test("a Priority column shown on a fault list stays shown across a tab switch and the page drawn again", async () => {
+  const user = userEvent.setup();
+  const { redraw } = page(FIFTEEN, [issue("CORE-1")], true, { at: "/priorities?tab=none" });
+  const priorityShown = async () =>
+    within(await screen.findByRole("table", { name: "Active under no priority table" }))
+      .getAllByRole("columnheader")
+      .some((header) => header.textContent?.startsWith("Priority") === true);
+  expect(await priorityShown()).toBe(false);
+  await user.click(
+    within(screen.getByRole("region", { name: "Active under no priority" })).getByRole("button", {
+      name: "Columns",
+    })
+  );
+  await user.click(
+    within(screen.getByRole("dialog", { name: "Columns" })).getByRole("checkbox", {
+      name: "Priority",
+    })
+  );
+  await user.keyboard("{Escape}");
+  expect(await priorityShown()).toBe(true);
+
+  await user.click(screen.getByRole("tab", { name: "Priorities 3" }));
+  expect(await screen.findByRole("table", { name: "Priorities table" })).toBeDefined();
+  await user.click(screen.getByRole("tab", { name: "Active under no priority 0" }));
+  expect(await priorityShown()).toBe(true);
+
+  redraw();
+  expect(await priorityShown()).toBe(true);
+});
+
+// An empty fault list says the state the page wants while the reader narrowed it by nothing: no
+// issue in flight under no priority, no priority work in backlog or icebox. Narrowed by a search
+// or a filter of its own in the address, it says that nothing matches them, as every issues
+// table does.
+test.each([
+  ["none", "", "No issue is in flight under no priority."],
+  ["none", "&n.q=rollout", "No issues match these filters."],
+  ["none", "&n.status=testing", "No issues match these filters."],
+  ["backlog", "", "No priority work is in backlog or icebox."],
+  ["backlog", "&k.q=rollout", "No issues match these filters."],
+  ["backlog", "&k.status=icebox", "No issues match these filters."],
+] as const)("an empty fault list at ?tab=%s%s says: %s", async (tab, narrowed, said) => {
+  page(FIFTEEN, [], true, { at: `/priorities?tab=${tab}${narrowed}` });
+  const list = await screen.findByRole("region", {
+    name: tab === "none" ? "Active under no priority" : "Priority work in backlog or icebox",
+  });
+  expect(await within(list).findByText(said)).toBeDefined();
+  for (const other of [
+    "No issue is in flight under no priority.",
+    "No priority work is in backlog or icebox.",
+    "No issues match these filters.",
+  ].filter((sentence) => sentence !== said))
+    expect(within(list).queryByText(other)).toBeNull();
+});
+
 test("with no priority the page says so, and offers a writer the way to add the first", async () => {
   const user = userEvent.setup();
   const { create } = page(body({ empty: "No priority has been written yet." }));
@@ -697,6 +772,18 @@ test("on a phone the table draws the place and one cell, which names the owner, 
   expect(phoneLine(within(second).getAllByRole("cell")[1])?.textContent).toBe(
     "BET controller · Active 1 · Triage, Todo 0 · Backlog, icebox 3 · Never"
   );
+});
+
+// A phone held sideways gives the table a box of 500 to 639 px, a phone's all the same: the place
+// and the title take the whole of it, so the title's lines reach the box's right border as they
+// do at 390 px (INFRA-2947, R7), rather than stop at the title's own width and leave a gap.
+test("on a phone held sideways the place and the title take the whole box", async () => {
+  page(FIFTEEN, [], true, { box: 560 });
+  await screen.findByRole("row", { name: "#1 Legion works reliably first" });
+  expect(screen.getAllByRole("columnheader").map((header) => header.style.width)).toEqual([
+    "76px",
+    `${560 - 76}px`,
+  ]);
 });
 
 test("the start of a description shows on a closed row, its lines run together in two lines at most, and the whole of it when it opens", async () => {

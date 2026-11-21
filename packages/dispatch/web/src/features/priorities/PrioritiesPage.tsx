@@ -60,6 +60,13 @@ const FAULT_WIDTHS = {
   updated: { fit: true },
 } as const;
 
+/** The columns each fault list pins at the left of a desktop's box (`IssuesTable`'s `pins`), as
+ *  a priority's work table does: the checkbox, the key and Title. The registry's pins name the
+ *  Priority column besides, which these lists open hidden, and a pinned column's visibility is
+ *  not the reader's to keep (`readLayout`), so a Priority column a reader showed on a fault list
+ *  went hidden again once they left the tab or read the page again. */
+const FAULT_PINS = ["select", "key", "title"] as const;
+
 /** Each fault list's own stored layout and the columns it opens with (`IssuesTable`). The list
  *  of work in backlog or icebox names besides the priority each issue stands under, and when
  *  the work was moved there and by whom; it names no reason, since nothing records one until
@@ -90,6 +97,7 @@ const FAULT_WIDTHS = {
 const NO_PRIORITY_LAYOUT = {
   key: "priorities-no-priority",
   opens: FAULT_OPENS,
+  pins: FAULT_PINS,
   // Its statuses are the in-flight ones, the widest of whose pills, "Needs review", needs 150 px
   // with the cell's padding. Title keeps 260 px: Claimed by gives up width for it from its 208
   // px down to its header's need on two lines, and stands at 190 with the review corpus's keys,
@@ -109,6 +117,7 @@ const BACKLOG_LAYOUT = {
   // on the other list, so Updated opens hidden here, one tick away under Columns, and the room
   // it leaves is Title's.
   opens: [...FAULT_OPENS.filter((id) => id !== "updated"), "advances", "moved"],
+  pins: FAULT_PINS,
   // Its statuses are backlog and icebox alone, whose pills need 110 px. A move is a time and a
   // name, which wrap onto two lines, the time over the name: Moved there is no wider than 96 px
   // where its cells wrap, and its header, 102 px, is wider, so it stands at that. The Advances
@@ -218,7 +227,11 @@ export function PrioritiesPage(): ReactNode {
             ariaLabel="Priorities page"
             compact
             idPrefix={TABS_ID}
-            onSelect={(next) => update((changed) => changed.set(TAB_PARAM, next))}
+            // A tab chosen is a place the reader went, as a tab of the project page or of the
+            // issue page is: it adds an entry to the history, so Back leads to the tab before.
+            onSelect={(next) =>
+              update((changed) => changed.set(TAB_PARAM, next), { replace: false })
+            }
             tabs={[
               { id: "order", label: TAB_LABELS.order, count: rows.length },
               { id: "none", label: TAB_LABELS.none, count: body.work_under_no_priority.count },
@@ -249,6 +262,7 @@ export function PrioritiesPage(): ReactNode {
       {panel(
         "none",
         <IssuesTable
+          empty="No issue is in flight under no priority."
           label={TAB_LABELS.none}
           layout={NO_PRIORITY_LAYOUT}
           listing={NO_PRIORITY}
@@ -258,6 +272,7 @@ export function PrioritiesPage(): ReactNode {
       {panel(
         "backlog",
         <IssuesTable
+          empty="No priority work is in backlog or icebox."
           label={TAB_LABELS.backlog}
           layout={BACKLOG_LAYOUT}
           listing={BACKLOG}
