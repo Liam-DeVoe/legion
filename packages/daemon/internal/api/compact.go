@@ -77,9 +77,11 @@ const (
 // instructions (shimwire.Compact), and a worker resumed on images needs a vision model to read
 // its own past, so these instructions are what make the summary text.
 //
-// They keep word for word the reviewer's entry (reviewround.EntryLabel): the reviewer copies its
-// number into the footer of its review, and a summary that dropped it leaves the reviewer no entry
-// to write, so its review moves no commit (workflow's review). Only the last sentence of a task is
+// They keep word for word the reviewer's entry (reviewround.EntryLabel), the number its role
+// prompt calls the entry of its round. The daemon reads that number back from nothing the reviewer
+// writes: it holds the reviewer's completion to the entry its claim serves (handoff.go's entry
+// fence). So a summary that dropped it costs the reviewer only its own record of which round it is
+// in. Only the last sentence of a task is
 // the daemon's (reviewround.Sentences, supervise's Delivery.message): a task's own text can quote
 // `Review entry: 2.` above it, and a task can end with `Review entry: none.`, which does not change
 // the entry of the round. So the instruction first takes the last sentence of each task, and then

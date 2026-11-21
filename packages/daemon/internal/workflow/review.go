@@ -743,8 +743,8 @@ func decisionOf(fact intake.HandoffComplete) *record.ReviewDecision {
 
 // The fact that wrote a review-stuck notice, its summary. The architect prompt
 // (prompts/go/architect-common.md) reads a notice the reviewer's completion wrote after the
-// architect asked as the reviewer answering, and every other as news about the round; byReview's
-// words are the ones that prompt reads, so they stay as they are until the prompt names them anew.
+// architect asked as the reviewer answering, and every other as news about the round; it names
+// each of these words, so a change to one changes that prompt too.
 const (
 	byCompletion = "the reviewer's completion"
 	byReview     = "a review that is not the reviewer's answer"
