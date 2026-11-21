@@ -1234,6 +1234,20 @@ describe("the dispatch CLI", () => {
     }
   });
 
+  // A markdown file sent with --path is stored as a document, so Dispatch refuses one past the
+  // bytes one document holds with the same CAP_EXCEEDED as inline text (verified on a local
+  // stack: the call exits 1 with DOCUMENT_TOO_LARGE). Its dry run refuses it with the call's code
+  // and message, as R3 of INFRA-4224 asks for a text the call refuses for its size, and uploads
+  // nothing. The tester found at c66bcb82 that the dry run printed the arguments and exited 0.
+  test("an upload's dry run refuses a markdown --path file past the document limit with the call's code and message", async () => {
+    writeFileSync(join(stateDir, "big.md"), PAST_DOCUMENT_LIMIT);
+    const argv = ["artifact", "--issue", "DSP-1", "--name", "notes.md", "--path", "big.md"];
+
+    const dry = await run([...argv, "--dry-run"], omp);
+    expect(dry).toEqual({ code: 1, stdout: `${DOCUMENT_TOO_LARGE}\n`, stderr: "" });
+    expect(requests.filter((request) => request.method === "POST")).toEqual([]);
+  });
+
   // The dry run's client stops at the dry run's deadline and takes the same budget as its own
   // deadline, so a credential is given that budget less the request's reserve
   // (`credentialDeadline`): of 600 ms, it waits 300. A broker credential whose renewal the broker
