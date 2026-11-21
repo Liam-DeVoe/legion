@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"strings"
 )
@@ -29,18 +30,20 @@ const AllowRemoteEnvVar = "ENVOY_ALLOW_REMOTE_NATS"
 var ErrRemoteNATS = errors.New("bus: refusing a NATS server that is not this machine's")
 
 // ErrNoNATSServer is a connect's refusal of a server list that names no server, or holds an entry
-// that is blank or names no host (refuseNoServer).
+// that is blank, names no host, or names the unspecified address (refuseNoServer).
 var ErrNoNATSServer = errors.New("bus: refusing a NATS server list that names no server")
 
-// refuseNoServer reports urls naming no server, or an entry that is blank or names no host, read
-// as LocalNATSURL reads it (nats://, nats://:4222). nats.go fills an empty list with its
-// DefaultURL, nats://127.0.0.1:4222, and reads a blank entry or one with no host as port 4222 (or
-// the port the entry names) on this machine, so such a client would reach whatever listens there,
-// presenting its credential: on a shared machine, another process's server, the hazard a test
-// server on a loopback address of its own (testport) closes for the tests. ENVOY_ALLOW_REMOTE_NATS
-// does not admit such an entry: it names no server to allow. Every connect refuses it first,
-// before its environment is read. An entry that does not parse is left to nats.go, which refuses
-// it at its connect rather than dialing a default.
+// refuseNoServer reports urls naming no server, or an entry that is blank, names no host, or names
+// the unspecified address, read as LocalNATSURL reads it (nats://, nats://:4222,
+// nats://0.0.0.0:4222, nats://[::]:4222). nats.go fills an empty list with its DefaultURL,
+// nats://127.0.0.1:4222, and reads a blank entry or one with no host as port 4222 (or the port the
+// entry names) on this machine; a connect to the unspecified address, 0.0.0.0 or ::, reaches this
+// machine too, since the network stack takes it for its own. So such a client would reach
+// whatever listens there, presenting its credential: on a shared machine, another process's
+// server, the hazard a test server on a loopback address of its own (testport) closes for the
+// tests. ENVOY_ALLOW_REMOTE_NATS does not admit such an entry: it names no server to allow. Every
+// connect refuses it first, before its environment is read. An entry that does not parse is left
+// to nats.go, which refuses it at its connect rather than dialing a default.
 func refuseNoServer(urls []string) error {
 	if len(urls) == 0 {
 		return fmt.Errorf("%w: nats.go would dial its default, nats://127.0.0.1:4222, in its place", ErrNoNATSServer)
@@ -49,8 +52,16 @@ func refuseNoServer(urls []string) error {
 		if strings.TrimSpace(raw) == "" {
 			return fmt.Errorf("%w: entry %d of %d is blank, which nats.go reads as port 4222 on this machine", ErrNoNATSServer, i+1, len(urls))
 		}
-		if host, err := natsURLHost(raw); err == nil && host == "" {
+		host, err := natsURLHost(raw)
+		if err != nil {
+			continue
+		}
+		if host == "" {
 			return fmt.Errorf("%w: entry %d of %d, %s, names no host, which nats.go dials on this machine", ErrNoNATSServer, i+1, len(urls), natsURLWithoutUserinfo(raw))
+		}
+		// netip reads an address with a zone (::%lo), which the unspecified address may carry too.
+		if address, err := netip.ParseAddr(host); err == nil && address.WithZone("").Unmap().IsUnspecified() {
+			return fmt.Errorf("%w: entry %d of %d, %s, names the unspecified address, which a connect reaches on this machine", ErrNoNATSServer, i+1, len(urls), natsURLWithoutUserinfo(raw))
 		}
 	}
 	return nil

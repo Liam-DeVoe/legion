@@ -32,18 +32,41 @@ func TestEveryConnectRefusesAListNamingNoServer(t *testing.T) {
 // Control: drop refuseNoServer's host check; with the opt-in, each row builds its client or
 // connection, and fails naming it.
 func TestEveryConnectRefusesAServerNamingNoHost(t *testing.T) {
-	requireEveryConnectRefuses(t, func(name string) (string, bool) {
-		if name == bus.AllowRemoteEnvVar {
-			return "1", true
-		}
-		return "", false
-	}, map[string][]string{
+	requireEveryConnectRefuses(t, allowRemote, map[string][]string{
 		"nats://":                 {"nats://"},
 		"nats://:4222":            {"nats://:4222"},
 		"a user and no host":      {"nats://example-user@:4222"},
 		"a host-less second":      {"nats://127.0.0.1:1", "nats://:4222"},
 		"no scheme, a port alone": {":4222"},
 	})
+}
+
+// Every constructor refuses, before any dial, an entry that names the unspecified address, even
+// with ENVOY_ALLOW_REMOTE_NATS=1: a connect to 0.0.0.0 or :: reaches this machine, since its
+// network stack takes either for its own, so such an entry names no server the opt-in could
+// allow. The first two rows are the tester's probe, which showed a client built for each reaching
+// a server on this machine's loopback.
+//
+// Control: drop refuseNoServer's unspecified-address check; with the opt-in, each row builds its
+// client or connection, which dials this machine, and fails naming it.
+func TestEveryConnectRefusesTheUnspecifiedAddress(t *testing.T) {
+	requireEveryConnectRefuses(t, allowRemote, map[string][]string{
+		"0.0.0.0":                 {"nats://0.0.0.0:4222"},
+		"[::]":                    {"nats://[::]:4222"},
+		"IPv4-mapped 0.0.0.0":     {"nats://[::ffff:0.0.0.0]:4222"},
+		"[::] with a zone":        {"nats://[::%25lo]:4222"},
+		"no scheme, 0.0.0.0":      {"0.0.0.0:4222"},
+		"an unspecified second":   {"nats://127.0.0.1:1", "nats://0.0.0.0:4222"},
+		"a user and 0.0.0.0 only": {"nats://example-user@0.0.0.0"},
+	})
+}
+
+// allowRemote is a connect's environment with ENVOY_ALLOW_REMOTE_NATS=1 and nothing else set.
+func allowRemote(name string) (string, bool) {
+	if name == bus.AllowRemoteEnvVar {
+		return "1", true
+	}
+	return "", false
 }
 
 // requireEveryConnectRefuses connects with Connect, ConnectOwningStream and Dial, each in the
