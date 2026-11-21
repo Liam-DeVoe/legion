@@ -136,6 +136,16 @@ test("a session that never answers ends at the timeout, saying it is not respond
   );
 });
 
+// The timeout names Dispatch's last verdict as it was: a session Dispatch called responding, whose
+// replay never came before the timeout, is not one that did not answer.
+test("a responding session whose replay does not come before the timeout says the session is responding", async () => {
+  const dispatch = dispatchAnswering((socket) => socket.send(responder(true)));
+  const result = await settled(read(dispatch.wsUrl, { timeoutMs: 1_000 }));
+  expect(result.error).toBe(
+    "Dispatch said the session is responding and sent no replay within 1s (responding: true), so the agent view has no replay"
+  );
+});
+
 test("a socket closed before the replay says so", async () => {
   const dispatch = dispatchAnswering((socket) => socket.close(1011, "internal error"));
   const result = await settled(read(dispatch.wsUrl));

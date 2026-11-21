@@ -1,5 +1,13 @@
 import { beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { libRowBoundMs, rowWaits, untilTrue } from "./row-waits";
@@ -101,11 +109,7 @@ function install(fake: Fake = {}) {
   return { run, dest, cache, mints, keyCommand: result.stdout.toString().trim() };
 }
 
-// call runs the key command as Oh My Pi does, in a pane's own working directory, and answers how
-// long the call lived from the start of its process, the moment the key command keeps its own
-// deadline from: the kernel's record of that start (/proc/<pid>/stat field 22, in 1/100 s ticks
-// since boot), not the moment this test asked Bun to spawn it, which a loaded host can put a second
-// or more before the process exists. A start that cannot be read makes ms NaN, which no bound holds.
+// call runs the key command as Oh My Pi does, in a pane's own working directory.
 async function call(keyCommand: string, cwd: string, mints: string, fake: Fake = {}) {
   mkdirSync(cwd, { recursive: true });
   const child = Bun.spawn(["/bin/sh", "-c", `exec ${keyCommand}`], {
@@ -114,18 +118,8 @@ async function call(keyCommand: string, cwd: string, mints: string, fake: Fake =
     stdout: "pipe",
     stderr: "pipe",
   });
-  let startedAt = Number.NaN;
-  try {
-    const ticks = Number(
-      readFileSync(`/proc/${child.pid}/stat`, "utf8")
-        .replace(/^[\s\S]*\) /, "")
-        .split(" ")[19]
-    );
-    const uptimeMs = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]) * 1000;
-    startedAt = performance.now() - (uptimeMs - ticks * 10);
-  } catch {}
   const [code, stdout] = await Promise.all([child.exited, new Response(child.stdout).text()]);
-  return { code, stdout: stdout.trim(), ms: performance.now() - startedAt };
+  return { code, stdout: stdout.trim() };
 }
 
 function unserved(...args: string[]) {
@@ -288,11 +282,14 @@ describe("the model gateway key command", () => {
   test("gives up on a mint that outlasts the caller, and on the wait behind it, before Oh My Pi's ten seconds", async () => {
     const { run, dest, mints, keyCommand } = install();
     const since = now();
-    // Real time throughout: the deadline under test is the key command's own wall clock, in another
-    // process, which no fake timer reaches. The second caller starts once the first's mint has
-    // started, so the first holds the lock: the second waits behind it and takes the lock the first
-    // releases when its mint is stopped, with only a few hundred milliseconds left: too little to
-    // mint.
+    // The deadline under test is the key command's own clock, which starts with its process, so the
+    // row reads each call's end from the key command's own record of it, never from this test's
+    // clock: how late Bun starts a call or sees it exit is a loaded host's. The second call starts
+    // once the first's mint has started, so the first holds the lock when the second asks for it.
+    // What the second then does is its own clock's: it gives up behind the first (it waited past
+    // its deadline, or took the lock with less than a mint needs), or, when it started more than
+    // that much later, takes the lock and mints, and its own mint is stopped at its deadline. Either
+    // way it ends on its own deadline without a key, and the record says which.
     const first = call(keyCommand, join(run, "pane-1"), mints, { sleep: 12 });
     await untilTrue("the first call's mint to start", waits.end(), () =>
       existsSync(mints) && mintCount(mints) >= 1 ? true : "no mint has started"
@@ -302,14 +299,29 @@ describe("the model gateway key command", () => {
       call(keyCommand, join(run, "pane-2"), mints, { sleep: 12 }),
     ]);
 
-    expect(mintCount(mints)).toBe(1);
-    for (const c of calls) {
-      expect([c.code, c.stdout]).toEqual([1, ""]);
-      expect(c.ms).toBeLessThan(10_000);
-    }
+    for (const c of calls) expect([c.code, c.stdout]).toEqual([1, ""]);
+    // The record: one line a call, `at, caller pid, working directory, agent, outcome, detail`.
+    const recorded = readFileSync(join(dest, "hawk-token.calls"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => line.split("\t"));
+    const endOf = (pane: string) =>
+      recorded
+        .filter((fields) => fields[2] === realpathSync(join(run, pane)))
+        .map((fields) => `${fields[4]}: ${fields[5]}`);
+    const ranPast = /^timeout: the mint ran past the call's 9500 ms and was stopped \(exit \d+\)$/;
+    const gaveUpBehind =
+      /^timeout: waited \d+ ms for another call's mint(, past the call's 9500 ms| and took the lock with \d+ ms of the call's 9500 ms left, under the 2000 ms a mint needs)$/;
+    const [firstEnd, ...moreFirst] = endOf("pane-1");
+    const [secondEnd, ...moreSecond] = endOf("pane-2");
+    expect({ moreFirst, moreSecond }).toEqual({ moreFirst: [], moreSecond: [] });
+    expect(firstEnd).toMatch(ranPast);
+    const behind = secondEnd?.includes("for another call's mint") ?? false;
+    expect(secondEnd).toMatch(behind ? gaveUpBehind : ranPast);
+    // One mint a call that minted, never two at once: the lock held the second behind the first.
+    expect(mintCount(mints)).toBe(behind ? 1 : 2);
     const notes = unserved("--notes", dest, since, "outlast").stdout;
     expect(notes).toContain(": timeout: the mint ran past the call's 9500 ms");
-    expect(notes).toContain("for another call's mint");
   });
 
   test("exempts the installer's preflight mint from the deadline, for hawk-token's first-run build", () => {
@@ -317,7 +329,7 @@ describe("the model gateway key command", () => {
     const started = performance.now();
     install({ sleep: 11 });
     expect(performance.now() - started).toBeGreaterThan(11_000);
-  }, 30_000);
+  });
 
   test("keeps the installer's preflight out of the record, and says why it got no key once", () => {
     const run = join(dir, "preflight-refused");

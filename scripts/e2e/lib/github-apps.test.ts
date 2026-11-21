@@ -674,14 +674,14 @@ mint_app_tokens "$TOKEN_DIR" sjawhar`
     copyFileSync(join(store, "IMPLEMENT_APP"), join(refreshStore, "IMPLEMENT_APP"));
     const { code, stdout, stderr } = await githubApps(
       { ...appInputs, TOKEN_DIR: tokenDir, STORE: refreshStore },
-      `require_app_inputs implement review
+      `end=$((SECONDS + ${waits.secondsLeft()}))
+require_app_inputs implement review
 mint_app_tokens "$TOKEN_DIR" sjawhar
 key=$TOKEN_DIR/review/key.pem
 echo "key before $(stat -c '%i %s %Y' -- "$key")"
 app_token_refresh_seconds=1
 start_app_token_refresher "$TOKEN_DIR"
 printf '%s' '${release({ sjawhar: "ghs_rotated" })}' >"$STORE/IMPLEMENT_APP"
-end=$((SECONDS + ${waits.secondsLeft()}))
 until grep -q ghs_rotated "$TOKEN_DIR/implement/sjawhar.read.json"; do
   [ "$SECONDS" -lt "$end" ] || { stop_app_token_refresher; fail "the refresher wrote no rotated release by the end of the row's waits"; }
   sleep 0.1
@@ -1350,42 +1350,46 @@ echo done`
     // each of them held it until the command exited before the lib's two probes released them
     // (github-apps.sh, above app_token_flag_taken, says which stage holds a line and which flag
     // releases it).
-    // So the row reads the run's stderr as it arrives rather than after the exit, and asserts the
-    // gap between the two: the line is due about 100 ms in, and the command exits about 2100 ms
-    // in, so a line that arrives 1.5 s before the exit cannot be a line that arrived with it,
-    // and a host loaded enough to spend a second of that margin on starting bash still passes.
+    // So the command prints its line and then waits for this row to have read it: the row writes
+    // RELEASE when the line reaches the run's stderr, and only then does the command print the key.
+    // A relay that held the line until the command's exit would hold it for good, since the command
+    // does not exit before the row has read it: the command then gives up at the end of the row's
+    // waits, prints no key and exits 1, and the run fails naming the review App's key command. No
+    // clock decides the order.
     const progress = "reading the review App key from the deployment store";
-    const started = performance.now();
+    const release = join(mkdtempSync(join(dir, "first-line.")), "release");
     const { child, work } = spawnGithubApps(
       {
         ...appInputs,
-        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s\\n' '${progress}' >&2; sleep 2; cat -- ${reviewKeyFile}`,
+        LEGION_E2E_REVIEW_APP_KEY_COMMAND: `printf '%s\\n' '${progress}' >&2; end=$(($(date +%s) + ${waits.secondsLeft()})); until [ -e '${release}' ]; do [ "$(date +%s)" -lt "$end" ] || exit 1; sleep 0.05; done; cat -- ${reviewKeyFile}`,
       },
       `require_app_inputs implement review
 write_github_apps --key-dir "$work/app-key" implement review
 echo written`
     );
-    let firstLineAt = 0;
+    let lineRead = false;
     let stderr = "";
     const decoder = new TextDecoder();
     const reading = (async () => {
       for await (const chunk of child.stderr as ReadableStream<Uint8Array>) {
         stderr += decoder.decode(chunk, { stream: true });
-        if (firstLineAt === 0 && stderr.includes("\n")) firstLineAt = performance.now();
+        if (!lineRead && stderr.includes("\n")) {
+          lineRead = true;
+          writeFileSync(release, "");
+        }
       }
     })();
     const stdout = await new Response(child.stdout).text();
     const code = await child.exited;
-    const exitedAt = performance.now();
     await reading;
+    // stderr first: a key command that gave up says so there.
+    expect(stderr.trim()).toBe(progress);
     expect(code).toBe(0);
     expect(stdout).toContain("written");
-    expect(stderr.trim()).toBe(progress);
-    // The line arrived, and it arrived while the command was still in its sleep.
-    expect(firstLineAt).toBeGreaterThan(0);
-    expect(exitedAt - firstLineAt).toBeGreaterThan(1500);
-    expect(firstLineAt - started).toBeLessThan(1000);
-    // And the key the command printed after the sleep still reached its file alone.
+    // The line arrived before the command's exit: the command printed the key only after the row
+    // had read the line.
+    expect(lineRead).toBe(true);
+    // And the key the command printed after the release still reached its file alone.
     expect(readFileSync(join(work, "app-key", "review", "key.pem"), "utf8")).toBe(reviewKey);
     holdsNoKey(stdout + stderr, keyIDs);
   });

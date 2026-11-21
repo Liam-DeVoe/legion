@@ -112,6 +112,11 @@ async function main(): Promise<void> {
   } catch (error) {
     refuse(messageFor(error));
   }
+  // `last`'s budget, read before the connect, which it bounds too: a connect that waited a fixed
+  // 10 s ended a read with a longer budget early.
+  const seconds = command === "last" ? Number(extra ?? "10") : 10;
+  if (!Number.isFinite(seconds) || seconds <= 0)
+    refuse(`seconds must be a positive number, not ${extra}`);
   // A failed connect is named, and nats.js's own error left uncaught would print the URL it was
   // given, a credential in it included (a malformed URL's `input`): the line names the server by
   // its argument and the reason as a log may (natsDialFailure), and the error goes no further.
@@ -119,7 +124,7 @@ async function main(): Promise<void> {
   try {
     nc = await connect({
       servers: url,
-      timeout: 10_000,
+      timeout: Math.max(10_000, Math.ceil(seconds * 1000)),
       name: "legion-e2e-nats-stream",
       ...natsAuthOptions(seed === undefined ? { kind: "none" } : { kind: "seed", seed }),
     });
@@ -131,12 +136,15 @@ async function main(): Promise<void> {
   }
   try {
     if (command === "last") {
-      const seconds = Number(extra ?? "10");
-      if (!Number.isFinite(seconds) || seconds <= 0)
-        refuse(`seconds must be a positive number, not ${extra}`);
       const result = await readLast(nc, stream, argument, seconds);
       if (!result.message) {
-        process.stderr.write(`nats-stream: stream ${stream} holds no message on ${argument}\n`);
+        // A read that ran out of time cannot tell a stream with no such message from a server that
+        // never answered, so it says no more than what it saw.
+        process.stderr.write(
+          result.timedOut
+            ? `nats-stream: no message on ${argument} from stream ${stream} within ${seconds} s\n`
+            : `nats-stream: stream ${stream} holds no message on ${argument}\n`
+        );
         process.exitCode = 1;
         if (result.timedOut) {
           void nc.close();

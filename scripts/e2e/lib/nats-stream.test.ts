@@ -6,7 +6,7 @@ import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { connect, type NatsConnection } from "nats";
 import { readLast } from "./nats-stream";
-import { rowWaits } from "./row-waits";
+import { rowWaitMarginMs, rowWaits } from "./row-waits";
 
 // The NATS server these rows read is a container this file starts, so a host with no docker runs
 // none of them.
@@ -18,7 +18,6 @@ const configDirectory = temporaryDirectory("nats-stream-test");
 const config = join(configDirectory, "envoy.json");
 const subjectCount = 10_000;
 const publishBatchSize = 25;
-const publishTimeoutMilliseconds = 30_000;
 // A read that must find its message gets the end of the row's waits as its budget (lib/row-waits.ts):
 // how soon a loaded host's server answers is not the row's subject, and readLast's own deadline then
 // bounds it. A read whose subject is its deadline gets a short one, under a second.
@@ -68,7 +67,7 @@ async function startNats(): Promise<void> {
 
     nc = await connect({
       servers: serverUrl,
-      timeout: 10_000,
+      timeout: hookLeft(),
       waitOnFirstConnect: true,
       reconnectTimeWait: 50,
       maxReconnectAttempts: -1,
@@ -110,7 +109,11 @@ function runLast(subject: string, seconds: number) {
 }
 
 async function runReadLast(subject: string, seconds: number) {
-  const client = await connect({ servers: serverUrl, timeout: 10_000, maxReconnectAttempts: 0 });
+  const client = await connect({
+    servers: serverUrl,
+    timeout: Math.max(1, Math.ceil(waits.end() - performance.now())),
+    maxReconnectAttempts: 0,
+  });
   const started = performance.now();
   try {
     const result = await readLast(client, stream, subject, seconds);
@@ -122,8 +125,16 @@ async function runReadLast(subject: string, seconds: number) {
 
 // readLast asks the server's fetch to expire no sooner than 1 s, so a read that waited out the fetch
 // rather than its own sub-second deadline ends at that expiry: a read that ends before it ended at
-// its own deadline.
+// its own deadline. This one bound is a clock's, since nothing the client sees tells the two
+// apart: it leaves the read's in-process timer about 900 ms past its 100 ms, and an event loop
+// stalled longer than that fails it.
 const fetchExpiryMilliseconds = 1_000;
+
+// The hook's own end, 20 s before its bound, as a row's (lib/row-waits.ts): each of its waits on
+// the server (the connect, the stream's creation, each publish) gives up there and not at a
+// timeout of its own, nats.js's 5 s for a JetStream API request included.
+let hookEnd = 0;
+const hookLeft = () => Math.max(1, Math.ceil(hookEnd - performance.now()));
 
 async function cleanup(): Promise<void> {
   try {
@@ -137,32 +148,33 @@ async function cleanup(): Promise<void> {
 beforeAll(async () => {
   if (skip) return;
   try {
+    hookEnd = performance.now() + rowBoundMs - rowWaitMarginMs;
     await startNats();
     mkdirSync(configDirectory, { recursive: true });
     writeFileSync(config, JSON.stringify({ envoy: { enabled: true, natsUrls: [serverUrl] } }));
 
     if (!nc) throw new Error("NATS connection was not established");
-    const manager = await nc.jetstreamManager();
+    const manager = await nc.jetstreamManager({ timeout: hookLeft() });
     await manager.streams.add({ name: stream, subjects: ["events.>"] });
-    const js = nc.jetstream();
+    const js = nc.jetstream({ timeout: hookLeft() });
     for (let start = 0; start < subjectCount; start += publishBatchSize) {
       const end = Math.min(start + publishBatchSize, subjectCount);
       await Promise.all(
         Array.from({ length: end - start }, (_, index) =>
           js.publish(`events.subject.${start + index}`, new Uint8Array(), {
-            timeout: publishTimeoutMilliseconds,
+            timeout: hookLeft(),
           })
         )
       );
     }
     expectedSequence = (
-      await js.publish("events.newest", new Uint8Array(), { timeout: publishTimeoutMilliseconds })
+      await js.publish("events.newest", new Uint8Array(), { timeout: hookLeft() })
     ).seq;
   } catch (error) {
     await cleanup();
     throw error;
   }
-}, 120_000);
+}, rowBoundMs);
 
 afterAll(async () => {
   // With no docker nothing was started, and the fixture's own hook removes the scratch directory
@@ -195,14 +207,14 @@ describe.skipIf(skip)("nats-stream last", () => {
   );
 
   test(
-    "reports the existing no-message error for an unmatched filter",
+    "reports an unmatched filter as no message within its budget",
     () => {
       const result = runLast("events.missing.>", subsecondBudgetSeconds);
+      expect(result.stderr).toBe(
+        `nats-stream: no message on events.missing.> from stream ${stream} within ${subsecondBudgetSeconds} s\n`
+      );
       expect(result.exitCode).toBe(1);
       expect(result.stdout).toBe("");
-      expect(result.stderr).toBe(
-        `nats-stream: stream ${stream} holds no message on events.missing.>\n`
-      );
     },
     rowBoundMs
   );
