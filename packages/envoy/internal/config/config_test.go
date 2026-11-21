@@ -26,6 +26,8 @@ func TestLoadReadsTheConsumerNamingMode(t *testing.T) {
 		{value: "fresh", want: consumernames.ModeFresh},
 		{value: "FRESH", refused: true},
 		{value: "auto", refused: true},
+		{value: " fresh", refused: true},
+		{value: "fixed\n", refused: true},
 	} {
 		t.Run("value "+test.value, func(t *testing.T) {
 			t.Setenv("ENVOY_MACHINE_ID", "test-machine")
@@ -61,6 +63,11 @@ func TestLoadReadsTheListenerRole(t *testing.T) {
 		{role: "", names: "fresh", host: false},
 		{role: "Host", refused: []string{"ENVOY_LISTENER_ROLE", `"Host"`}},
 		{role: "hub", refused: []string{"ENVOY_LISTENER_ROLE", `"hub"`}},
+		// The role is read as exactly as the mode: a padded value, or one of spaces alone, is no role
+		// a deployment wrote on purpose.
+		{role: " host", refused: []string{"ENVOY_LISTENER_ROLE", `" host"`}},
+		{role: "host\n", refused: []string{"ENVOY_LISTENER_ROLE", `"host\n"`}},
+		{role: " ", refused: []string{"ENVOY_LISTENER_ROLE", `" "`}},
 		{role: "host", names: "fresh", refused: []string{"ENVOY_LISTENER_ROLE=host", consumernames.ModeEnvVar + "=fresh"}},
 	} {
 		t.Run(fmt.Sprintf("role %q names %q", test.role, test.names), func(t *testing.T) {

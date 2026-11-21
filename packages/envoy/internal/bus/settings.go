@@ -54,10 +54,11 @@ const (
 	ListenerRoleHost   = "host"
 )
 
-// ParseListenerRole reads ListenerRoleEnvVar: unset or blank is no role (false), ListenerRoleHost a
-// host's listener (true), and anything else is refused naming the variable and the value.
-func ParseListenerRole(raw string) (bool, error) {
-	switch value := strings.TrimSpace(raw); value {
+// ParseListenerRole reads ListenerRoleEnvVar exactly, as consumernames.ParseMode reads the naming
+// mode: unset (or empty) is no role (false), ListenerRoleHost a host's listener (true), and anything
+// else, a padded value or one of spaces alone among it, is refused naming the variable and the value.
+func ParseListenerRole(value string) (bool, error) {
+	switch value {
 	case "":
 		return false, nil
 	case ListenerRoleHost:
