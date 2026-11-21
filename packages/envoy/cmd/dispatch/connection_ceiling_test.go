@@ -24,11 +24,12 @@ import (
 // roles with the SUPERUSER attribute` (SQLSTATE 53300) in its own log, and nothing in the failure
 // names the cause.
 //
-// So every start checks two things, against constants rather than numbers written here. It refuses
-// a start that would run more processes at once than testlimits.MaxProcessesAtOnce, which every CI
-// lane's server is sized from. And it refuses a start the server it meets cannot serve. The fix is
-// the server's size, never the pools: pools shrunk for tests would test a shape production does
-// not run.
+// So every start does two things, against constants rather than numbers written here. It takes one
+// of the binary's testlimits.MaxProcessesAtOnce process slots, which every CI lane's server is
+// sized from, waiting while parallel tests hold them all, so the binary never runs more processes
+// at once than that. And it refuses a start the server it meets cannot serve. The fix is the
+// server's size, never the pools: pools shrunk for tests would test a shape production does not
+// run.
 //
 // The check reads max_connections, not the slots in use: a server whose slots other clients hold
 // (this binary's own pools, another test binary, any other program) passes it and refuses the
@@ -43,25 +44,56 @@ import (
 // for one process's worth.
 var dispatchProcessesRunning atomic.Int64
 
-// requireConnectionCeiling counts one more Dispatch process running in this test binary and
-// refuses its start when the count is over testlimits.MaxProcessesAtOnce or the server cannot serve
-// that many. It answers the release that takes the process off the count, which the caller runs
-// once the process has exited; the test's cleanup runs it too, for a start that never ran a
-// process, and only the first call counts.
+// dispatchProcessSlots holds one token for each process running in this test binary, so it has
+// testlimits.MaxProcessesAtOnce slots: a start takes one before it counts and gives it back with
+// its count, once its process has exited. Parallel tests that each start a process, such as
+// TestBootRefusesASignInDomainNoFullMemberRecords's rows, wait here for a slot rather than run
+// one process more than every lane's Postgres is sized for.
+var dispatchProcessSlots = make(chan struct{}, testlimits.MaxProcessesAtOnce)
+
+// processSlotsHeld is how many of the slots each test holds, so that a test that would wait for a
+// slot only it can give back is refused at once, by name, rather than waiting for itself until the
+// binary's -timeout.
+var processSlotsHeld = struct {
+	sync.Mutex
+	by map[*testing.T]int
+}{by: map[*testing.T]int{}}
+
+// requireConnectionCeiling takes one of the binary's process slots for one more Dispatch process,
+// waiting while other tests hold them all, and refuses its start when this test already holds
+// every slot or the server cannot serve the processes running then. It answers the release that
+// gives the slot back and takes the process off the count, which the caller runs once the process
+// has exited; the test's cleanup runs it too, for a start that never ran a process, and only the
+// first call counts.
 func requireConnectionCeiling(t *testing.T, databaseURL string) (release func()) {
 	t.Helper()
+	processSlotsHeld.Lock()
+	held := processSlotsHeld.by[t]
+	if held >= testlimits.MaxProcessesAtOnce {
+		processSlotsHeld.Unlock()
+		t.Fatalf("this start would run %d Dispatch processes at once in this one test, and "+
+			"testlimits.MaxProcessesAtOnce is %d, so it would wait for a process slot only this test can "+
+			"give back. Every CI lane's Postgres is sized from that constant: raise it, so the lanes grow "+
+			"with it, rather than leaving this row to meet a server that cannot serve it.",
+			held+1, testlimits.MaxProcessesAtOnce)
+	}
+	processSlotsHeld.by[t] = held + 1
+	processSlotsHeld.Unlock()
+	dispatchProcessSlots <- struct{}{}
 	processes := int(dispatchProcessesRunning.Add(1))
 	var once sync.Once
-	release = func() { once.Do(func() { dispatchProcessesRunning.Add(-1) }) }
-	t.Cleanup(release)
-
-	if processes > testlimits.MaxProcessesAtOnce {
-		release()
-		t.Fatalf("this start would run %d Dispatch processes at once in this test binary, and "+
-			"testlimits.MaxProcessesAtOnce is %d. Every CI lane's Postgres is sized from that constant: "+
-			"raise it, so the lanes grow with it, rather than leaving this row to meet a server that "+
-			"cannot serve it.", processes, testlimits.MaxProcessesAtOnce)
+	release = func() {
+		once.Do(func() {
+			dispatchProcessesRunning.Add(-1)
+			<-dispatchProcessSlots
+			processSlotsHeld.Lock()
+			if processSlotsHeld.by[t]--; processSlotsHeld.by[t] == 0 {
+				delete(processSlotsHeld.by, t)
+			}
+			processSlotsHeld.Unlock()
+		})
 	}
+	t.Cleanup(release)
 
 	ctx := context.Background()
 	config, err := pgx.ParseConfig(databaseURL)

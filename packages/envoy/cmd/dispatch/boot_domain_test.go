@@ -106,7 +106,9 @@ func requireBootServes(t *testing.T, process *dispatchProcess, why string) {
 // byte for byte, since each confirmation would then hold that member. It starts with an empty
 // database, with the right domain, with full members' rows that record none, and with a restricted
 // member's row alone; and after `envoy-dispatch forget-hosted-domains` it starts under a new
-// domain it refused before. Each row boots on a database of its own, so the seven run in parallel.
+// domain it refused before. Each row boots on a database of its own, so the rows run in parallel,
+// as many at once as the test binary has Dispatch process slots (testlimits.MaxProcessesAtOnce,
+// which requireConnectionCeiling makes each start wait for).
 func TestBootRefusesASignInDomainNoFullMemberRecords(t *testing.T) {
 	issuer := oidctest.New(t)
 	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
