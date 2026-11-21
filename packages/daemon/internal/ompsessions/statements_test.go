@@ -109,11 +109,17 @@ type place struct {
 //     constructor's body;
 //   - a pinned built, by a composite literal or a conversion, outside the helper's body, since
 //     only the transaction the helper pinned may be one, and a Conn built outside the
-//     constructor's body, since only the connection the constructor opened may be one;
-//   - a field of pinned reached outside pinned's methods, and a field of Conn reached outside the
-//     helper's body, the constructor's and Conn's connMethods: how a pinned or a Conn made from
-//     its zero value or by new would be given a transaction or a connection of another's, and how
-//     a raw connection would leave the package's own code;
+//     constructor's body, since only the connection the constructor opened may be one. What is
+//     built is a value of a type whose values are a pinned or a Conn, or point at one (isOf): the
+//     type under any alias of it, a struct type of its shape written out, which is assignable to
+//     it, and a type parameter it satisfies; so an element of a composite literal of pointers,
+//     whose &T the literal elides, a pointer conversion, and a generic literal or conversion each
+//     build one too;
+//   - a field of pinned, or of a type whose values are a pinned, reached outside pinned's methods,
+//     and one of Conn reached outside the helper's body, the constructor's and Conn's
+//     connMethods: how a pinned or a Conn made from its zero value, by new, or as a struct of its
+//     shape would be given a transaction or a connection of another's, and how a raw connection
+//     would leave the package's own code;
 //   - a field of Conn that is exported, or embedded, whose methods Conn promotes even where its
 //     name is unexported: code outside the package reaches the connection through it, where the
 //     rule above cannot see;
@@ -123,9 +129,10 @@ type place struct {
 //
 // So the only raw connections in the package's code are the constructor's and the helper's, and a
 // caller holds a Conn no other package's interface or function takes. Inside is a watched call in
-// the helper's body or a method of pinned. With no helper every place is outside. What the check
-// does not follow is a driver handle a caller hands the package's code as an argument, which is
-// the caller's own, and nothing in the package takes one; nor what the helper's body, pinned's
+// the helper's body or a method of pinned. A method of pinned or of Conn is one whose receiver is
+// of it (isOf), under whatever alias it declares. With no helper every place is outside. What the
+// check does not follow is a driver handle a caller hands the package's code as an argument, which
+// is the caller's own, and nothing in the package takes one; nor what the helper's body, pinned's
 // methods and the constructor do with the handles they hold, which is the code a reader of the
 // package checks by eye: each is a few lines.
 func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info, pkg *types.Package) (outside []string, inside int) {
@@ -138,20 +145,29 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 	constructor, _ := pkg.Scope().Lookup(constructorName).(*types.Func)
 	var helperBody, constructorBody *ast.BlockStmt
 	var bodies, pinnedMethods, connMethodBodies []*ast.BlockStmt
-	// receiverOf is the type name a method declares its receiver as, nil for a function.
-	receiverOf := func(function *ast.FuncDecl) *types.TypeName {
+	// isOf reports whether a value of typ is a value of typeName, or points at one: typ, or the type
+	// it points at, is assignable to typeName's type, as it is under any alias of either and as a
+	// struct type of its shape written out, or is a type parameter typeName's type, or a pointer to
+	// it, satisfies.
+	isOf := func(typ types.Type, typeName *types.TypeName) bool {
+		if typ == nil || typeName == nil {
+			return false
+		}
+		if pointer, ok := typ.Underlying().(*types.Pointer); ok {
+			typ = pointer.Elem()
+		}
+		if parameter, ok := types.Unalias(typ).(*types.TypeParam); ok {
+			constraint, ok := parameter.Constraint().Underlying().(*types.Interface)
+			return ok && (types.Satisfies(typeName.Type(), constraint) || types.Satisfies(types.NewPointer(typeName.Type()), constraint))
+		}
+		return types.AssignableTo(typ, typeName.Type())
+	}
+	// receiverOf is the type a method declares its receiver as, nil for a function.
+	receiverOf := func(function *ast.FuncDecl) types.Type {
 		if function.Recv == nil || len(function.Recv.List) != 1 {
 			return nil
 		}
-		receiver := info.Types[function.Recv.List[0].Type].Type
-		if pointer, ok := receiver.(*types.Pointer); ok {
-			receiver = pointer.Elem()
-		}
-		named, ok := receiver.(*types.Named)
-		if !ok {
-			return nil
-		}
-		return named.Obj()
+		return info.Types[function.Recv.List[0].Type].Type
 	}
 	for _, file := range files {
 		for _, declaration := range file.Decls {
@@ -165,10 +181,10 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 				bodies = append(bodies, function.Body)
 			case receiver == nil && constructor != nil && info.Defs[function.Name] == constructor:
 				constructorBody = function.Body
-			case receiver != nil && receiver == pinnedType:
+			case isOf(receiver, pinnedType):
 				bodies = append(bodies, function.Body)
 				pinnedMethods = append(pinnedMethods, function.Body)
-			case receiver != nil && receiver == connType && slices.Contains(connMethods, function.Name.Name):
+			case isOf(receiver, connType) && slices.Contains(connMethods, function.Name.Name):
 				connMethodBodies = append(connMethodBodies, function.Body)
 			}
 		}
@@ -198,13 +214,31 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 				connName, field.Name(), connName)})
 		}
 	}
+	// holderOf is the type whose own field selection selects: the type of the value it selects
+	// from, or of the embedded field it selects through.
+	holderOf := func(selection *types.Selection) types.Type {
+		holder, path := selection.Recv(), selection.Index()
+		for _, i := range path[:len(path)-1] {
+			if pointer, ok := holder.Underlying().(*types.Pointer); ok {
+				holder = pointer.Elem()
+			}
+			structure, ok := holder.Underlying().(*types.Struct)
+			if !ok {
+				return nil
+			}
+			holder = structure.Field(i).Type()
+		}
+		return holder
+	}
 	for selector, selection := range info.Selections {
 		if field, ok := selection.Obj().(*types.Var); ok {
+			holder := holderOf(selection)
 			switch {
-			case slices.Contains(pinnedFields, field) && !inAny(pinnedMethods, selector.Pos()):
+			case (slices.Contains(pinnedFields, field) || isOf(holder, pinnedType)) && !inAny(pinnedMethods, selector.Pos()):
 				places = append(places, place{selector.Pos(), fmt.Sprintf("%s (the transaction a %s holds, reached outside %s's methods)",
 					types.ExprString(selector), pinnedName, pinnedName)})
-			case slices.Contains(connFields, field) && !within(helperBody, selector.Pos()) && !within(constructorBody, selector.Pos()) &&
+			case (slices.Contains(connFields, field) || isOf(holder, connType)) && !within(helperBody, selector.Pos()) &&
+				!within(constructorBody, selector.Pos()) &&
 				!inAny(connMethodBodies, selector.Pos()):
 				places = append(places, place{selector.Pos(), fmt.Sprintf("%s (the connection a %s holds, reached outside %s, %s and %s's %s)",
 					types.ExprString(selector), connName, helperName, constructorName, connName, strings.Join(connMethods, " and "))})
@@ -239,15 +273,36 @@ func statementsOutside(fset *token.FileSet, files []*ast.File, info *types.Info,
 		}
 		places = append(places, place{ident.Pos(), fmt.Sprintf("%s.%s (a function of %s)", function.Pkg().Name(), function.Name(), function.Pkg().Name())})
 	}
-	// built names a value of pinned or Conn that expression builds outside the one body that may.
+	// qualifier writes a type of pkg by its name alone, and one of another package by its package's
+	// name, as the package's code writes it.
+	qualifier := func(other *types.Package) string {
+		if other == pkg {
+			return ""
+		}
+		return other.Name()
+	}
+	// built names a value of pinned or Conn that expression, a composite literal or a conversion,
+	// builds outside the one body that may.
 	built := func(expression ast.Expr) {
-		named, ok := info.Types[expression].Type.(*types.Named)
+		typ := info.Types[expression].Type
+		written := types.ExprString(expression)
+		if literal, ok := expression.(*ast.CompositeLit); ok && literal.Type == nil {
+			// An element of a composite literal, whose type the literal elides, with a pointer's &:
+			// written whole, as a reader writes it.
+			elements := "{}"
+			if len(literal.Elts) > 0 {
+				elements = "{…}"
+			}
+			written = types.TypeString(typ, qualifier) + elements
+			if pointer, ok := types.Unalias(typ).(*types.Pointer); ok {
+				written = "&" + types.TypeString(pointer.Elem(), qualifier) + elements
+			}
+		}
 		switch {
-		case !ok:
-		case pinnedType != nil && named.Obj() == pinnedType && !within(helperBody, expression.Pos()):
-			places = append(places, place{expression.Pos(), fmt.Sprintf("%s (a %s transaction built outside %s)", types.ExprString(expression), pinnedName, helperName)})
-		case connType != nil && named.Obj() == connType && !within(constructorBody, expression.Pos()):
-			places = append(places, place{expression.Pos(), fmt.Sprintf("%s (a %s built outside %s)", types.ExprString(expression), connName, constructorName)})
+		case isOf(typ, pinnedType) && !within(helperBody, expression.Pos()):
+			places = append(places, place{expression.Pos(), fmt.Sprintf("%s (a %s transaction built outside %s)", written, pinnedName, helperName)})
+		case isOf(typ, connType) && !within(constructorBody, expression.Pos()):
+			places = append(places, place{expression.Pos(), fmt.Sprintf("%s (a %s built outside %s)", written, connName, constructorName)})
 		}
 	}
 	handles := driverTypes(pkg)
@@ -425,9 +480,11 @@ func wanted(fset *token.FileSet, file *ast.File) []string {
 // with a helper and a pinned of its own: a pgx call outside the helper, a database/sql call, a
 // pool's connection acquired and run, the other ways a transaction the helper did not open runs a
 // statement, the Go shapes that carry one into the helper's function or a driver handle past the
-// check, and the ways a Conn's connection reaches other code. The check must name exactly the
-// lines their want comments mark and none of the calls inside their helper, and it must find
-// statements inside the helper in each, or it read nothing.
+// check, the ways a Conn's connection reaches other code, and a pinned or a Conn built, or its
+// methods declared, through an alias of it, with it declared as an alias, or where no composite
+// literal or conversion names its type. The check must name exactly the lines their want comments
+// mark and none of the calls inside their helper, and it must find statements inside the helper
+// in each, or it read nothing.
 func TestNoStatementRunsOutsideTheHelper(t *testing.T) {
 	t.Run("this package", func(t *testing.T) {
 		entries, err := os.ReadDir(".")
