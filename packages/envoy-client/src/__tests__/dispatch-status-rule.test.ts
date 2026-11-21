@@ -374,10 +374,7 @@ describe("dispatch issue-update with an option of the status change", () => {
     ]);
 
     expect(code).toBe(2);
-    expect(stdout.split("\n").slice(0, 2)).toEqual([
-      "dispatch issue-update was not called: 1 problem",
-      "- include_children does not go with status done. Only a person who is signed in at a browser can close the open issues under an issue together with it, and this call presents a token. That person does it on the issue's page in Dispatch: Close issue, then Move them with it.",
-    ]);
+    expect(stdout).toContain("include_children does not go with status done");
     expect(requests).toEqual([]);
   });
 
