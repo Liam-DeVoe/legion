@@ -126,7 +126,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	var asked atomic.Int64
 	consumers, err := intake.OpenConsumers(ctx, js, pool, intake.ConsumerSpec{
 		Project: drainProject, Repositories: []ghrepo.Repository{repository},
-		AckWait: 30 * time.Second, NakDelay: time.Second, Logger: log,
+		AckWait: testwait.Remaining(t), NakDelay: time.Second, Logger: log,
 		ReviewPermission: func(context.Context, intake.PullRequestReview) (bool, error) {
 			asked.Add(1)
 			return true, nil
@@ -192,13 +192,16 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	}
 
 	// Every message was delivered once, so none was nacked or redelivered, and nothing was logged at
-	// warn or above, so none was poison or failed. The 30 second window the ConsumerSpec above takes
-	// is what makes this exact count sound: a handling here is a decode and, for a Legion event, one
-	// transaction against a Postgres drainRoundTrip - 3 ms - away, so the window is a hang guard far
-	// above the work each message does, and a redelivery the count would see needs the whole
-	// 30 seconds to pass before that handling's acknowledgement reaches the server. This consumer
-	// is intake.OpenConsumers' own (the delivery mechanism: ConsumerSpec.HandlerLimit's comment
-	// in consume.go).
+	// warn or above, so none was poison or failed. The window the ConsumerSpec above takes is what
+	// makes this exact count sound: a handling here is a decode, for a review or a checks
+	// settlement the store read of whether its pull request is recorded, and for a Legion event
+	// one transaction against a Postgres drainRoundTrip - 3 ms - away, and a redelivery the count
+	// would see needs the whole window to pass before that handling's acknowledgement reaches the
+	// server. A fixed window let the machine decide that count: a store read of 61 s was cut at
+	// the 30 s this row used to set, and its message naked and delivered again. The window is what
+	// is left of the test binary's deadline less 30 s (testwait.Remaining), so a read however
+	// slow is waited out. This consumer is intake.OpenConsumers' own (the delivery mechanism:
+	// ConsumerSpec.HandlerLimit's comment in consume.go).
 	item, err := stream.Consumer(ctx, "legion-go-"+drainProject+"-github")
 	if err != nil {
 		t.Fatalf("read the GitHub consumer: %v", err)

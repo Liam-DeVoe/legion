@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
@@ -172,16 +171,18 @@ func settlementEnvelope(t *testing.T, id string, payload map[string]any) []byte 
 // transactions, and AckWait bounds the one read a settlement's handling makes before any of them,
 // whether its pull request is recorded (recordedPullRequest, which cuts the read at AckWait). On
 // the unrecorded row's pool, new to the row, that read is the pool's first and opens its first
-// connection, and at consumerSpec's 200 ms a loaded runner's connection outran the window: the
-// read was cut, the delivery naked, and the row's verdict was the machine's. A minute, or what is
-// left of the test binary's deadline less a second when that is sooner (testwait.Bounded), only a
-// hung read reaches, and the nak that brings fails the row by name (deliveredMessage) before the
-// binary's own timeout would. The progress keeper reports nothing here: it ticks at a third of
-// the window (spec.AckWait/3 in consume.go), so at 20 s.
+// connection. Any fixed window loses that race on a machine slow enough: at consumerSpec's 200 ms
+// a loaded runner's connection outran it, and at one minute a connection made in 61 s did, under
+// a -timeout of 4 minutes, so the read was cut, the delivery naked and the row's verdict was the
+// machine's. The window is what is left of the test binary's deadline less 30 s
+// (testwait.Remaining), so a read however slow is waited out, and only one that never answers is
+// cut, failing the row by its nak (deliveredMessage) before the binary's own timeout would. The
+// progress keeper reports nothing: it ticks at a third of the window (spec.AckWait/3 in
+// consume.go), and each handling here ends long before that.
 func dropConsumer(t *testing.T, logs *lockedBuffer) (ConsumerSpec, *issueNames, *droppedSettlements) {
 	t.Helper()
 	spec := consumerSpec(logs)
-	spec.AckWait = testwait.Bounded(t, time.Minute, time.Second)
+	spec.AckWait = testwait.Remaining(t)
 	spec, err := normalizedSpec(spec)
 	if err != nil {
 		t.Fatal(err)

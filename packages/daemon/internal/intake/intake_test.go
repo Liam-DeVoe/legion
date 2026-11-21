@@ -2111,21 +2111,26 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			spec := consumerSpec(&lockedBuffer{})
 			// The permission reads this test counts are the handler's own, so nothing but the
 			// failed read and its retry may read the permission. AckWait bounds each read the
-			// handler makes (resolveReviewPermission), and consumerSpec's 200 ms is the length of
+			// handler makes (recordedPullRequest, resolveReviewPermission), and any fixed window
+			// lets the machine decide whether one is cut: consumerSpec's 200 ms is the length of
 			// this handler's own work on a loaded runner - two pool reads and the fact's
-			// transaction - so this row sets it as a hang guard far above that work, leaving the
-			// failed read and its retry as the only two reads. The margin is what makes the count
-			// of two sound: a third read needs the whole minute to pass before a handling's nak
-			// or acknowledgement reaches the server. The campaign of dispatch://INFRA-1113
-			// measured that trip at 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and
-			// the handler's own work and that trip together, about 717 ms, are a factor of about
-			// 80 below this window. The progress keeper reports nothing here: it ticks
-			// at a third of the window (spec.AckWait/3 in consume.go), so at 20 s, and each
-			// handling of this row ends, in a nak or in an acknowledgement, in about 200 ms, long
-			// before the first tick is due (keepInProgress, ackprogress.go). Where the margin
-			// closes, a third read can be made no earlier than a second delivery of the message
-			// (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go).
-			spec.AckWait = time.Minute
+			// transaction - and a minute cuts a permission read of 61 s, whose nak brings a third
+			// read. So the window, and the row's wait for the review to be applied, are what is left
+			// of the test binary's deadline less 30 s (testwait.Remaining): a read however
+			// slow is waited out, leaving the failed read and its retry as the only two reads, and
+			// only one that never answers fails the row, by name, before the binary's own timeout.
+			// The window is also what makes the count of two sound: a third read needs the whole
+			// window to pass before a handling's nak or acknowledgement reaches the server. The
+			// campaign of dispatch://INFRA-1113 measured that trip at
+			// 516.8 ms at its largest, under 16 busy loops on 2 CPUs, and the handler's own work and
+			// that trip together, about 717 ms, are far below this window. The progress keeper
+			// reports nothing here: it ticks at a third of the window (spec.AckWait/3 in
+			// consume.go), and each handling of this row ends, in a nak or in an acknowledgement, in
+			// about 200 ms, long before the first tick is due (keepInProgress, ackprogress.go).
+			// Where the margin closes, a third read can be made no earlier than a second delivery
+			// of the message (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in
+			// consume.go).
+			spec.AckWait = testwait.Remaining(t)
 			var mu sync.Mutex
 			var asks []time.Time
 			spec.ReviewPermission = func(context.Context, PullRequestReview) (bool, error) {
@@ -2141,7 +2146,9 @@ func TestARateLimitedPermissionReadWaitsTheTimeGitHubNames(t *testing.T) {
 			defer stop()
 
 			publish(t, js, "notifications.github.sjawhar.legion.pr.42.review", capturedGitHubEnvelope(t, "review.json"))
-			testwait.Eventually(t, "the review applied once its read passed", func() bool { return writeCount(t, pool) == 1 })
+			testwait.WithinPolling(t, testwait.Remaining(t), testwait.Poll, "the review applied once its read passed", func() bool {
+				return writeCount(t, pool) == 1
+			})
 			mu.Lock()
 			defer mu.Unlock()
 			if len(asks) != 2 {

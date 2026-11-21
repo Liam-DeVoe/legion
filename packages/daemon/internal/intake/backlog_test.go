@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A consumer working a backlog takes each message's acknowledgement window for that message's own
@@ -31,20 +32,24 @@ func TestABacklogIsDeliveredOnceWhileEachFactTakesItsAcknowledgementWindow(t *te
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})
-	// A hang guard, not the subject: AckWait bounds each read a handling of these events makes
-	// (prepareRepository), and consumerSpec's 200 ms is about the length of such work on a loaded
-	// runner, so a minute is far above it and cuts nothing this row does. The window is the
-	// backstop's delay as well, and that is what keeps the read below inside the hold: the
-	// backstop further down this row releases the hold after spec.AckWait (held.releaseAfter),
-	// which at consumerSpec's 200 ms could free the backlog's first fact before that read is
-	// made. While the hold lasts nothing else reaches this consumer, a reconnect excepted (the
-	// delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go), and the progress
-	// keeper reports nothing: it ticks at a third of the window (spec.AckWait/3 in consume.go),
-	// so at 20 s, far beyond the hold (keepInProgress, ackprogress.go). Nothing after the read
+	// A hang guard, not the subject. The handlings here make no read the window bounds:
+	// consumerSpec sets no PrepareRepository, and a Dispatch issue event names no pull request
+	// (recordedPullRequest). The window is the backstop's delay: the backstop further down this
+	// row releases the hold after spec.AckWait (held.releaseAfter), and the read of what the
+	// consumer owes is this row's read only while the hold lasts. Any fixed window lets the
+	// machine decide that: at consumerSpec's 200 ms the backstop could free the backlog's first
+	// fact before the read is made, and at one minute a read the machine delayed 61 s was made
+	// after the release, once the rest of the backlog had drained, so the row passed whatever the
+	// consumer had fetched. The window is what is left of the test binary's deadline less
+	// 30 s (testwait.Remaining), so the hold lasts until the row's own stop however late the
+	// read comes. While the hold lasts nothing else reaches this consumer, a reconnect excepted
+	// (the delivery mechanism: ConsumerSpec.HandlerLimit's comment in consume.go), and the
+	// progress keeper reports nothing: it ticks at a third of the window (spec.AckWait/3 in
+	// consume.go), far beyond the hold (keepInProgress, ackprogress.go). Nothing after the read
 	// bears on it: the stop deferred further down ends the hold by cancelling the handling, so
-	// the fact's transaction fails on the cancelled context and the handling naks the message
-	// as the consumer stops.
-	spec.AckWait = time.Minute
+	// the fact's transaction fails on the cancelled context and the handling naks the message as
+	// the consumer stops.
+	spec.AckWait = testwait.Remaining(t)
 	consumers, err := OpenConsumers(context.Background(), js, pool, spec)
 	if err != nil {
 		t.Fatalf("OpenConsumers: %v", err)
