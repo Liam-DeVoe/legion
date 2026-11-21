@@ -423,9 +423,9 @@ type relaySocket struct {
 
 	// queueMu guards queue, the frames the socket took from its subscription and has not yet
 	// begun to write, oldest first, and heldMsgs and heldBytes, what it holds for its client: the
-	// queue and the frame the pump is writing. enqueue adds to them, and the pump and end take
-	// from them, each the replica's count (relaySockets.buffered) with them. wake tells the pump
-	// the queue holds a frame.
+	// queue and the frame the pump is writing. enqueue adds to them, and to the replica's count
+	// (relaySockets.buffered), and settle alone takes from all three, for the pump's frame and
+	// for the queue end drops. wake tells the pump the queue holds a frame.
 	queueMu   sync.Mutex
 	queue     []queuedFrame
 	heldMsgs  int
@@ -773,7 +773,8 @@ func (socket *relaySocket) endNATS(step string, err error) {
 }
 
 // end ends the socket once: it forwards nothing more, drops every subscription and the frames it
-// held and had not begun to write (the pump drops the one it is writing once its write returns).
+// held and had not begun to write (drop; the pump settles the one it is writing once its write
+// returns).
 // With code 0 - a read or a write that failed - it drops the connection at once. Otherwise it
 // writes the close frame of code and drops the connection once the client has answered it or
 // relaySocketCloseGrace has passed since end began, so a close and a stop are bounded by the grace
@@ -788,16 +789,7 @@ func (socket *relaySocket) end(code int, reason string) {
 		for _, sub := range subs {
 			_ = sub.Unsubscribe()
 		}
-		socket.queueMu.Lock()
-		dropped := 0
-		for _, frame := range socket.queue {
-			dropped += frame.bytes
-		}
-		socket.heldMsgs -= len(socket.queue)
-		socket.heldBytes -= dropped
-		socket.queue = nil
-		socket.queueMu.Unlock()
-		socket.sockets.buffered.Add(-int64(dropped))
+		socket.drop()
 		close(socket.done)
 		if code == 0 {
 			// Nothing more is written to a connection whose read or write failed.

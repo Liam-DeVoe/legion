@@ -109,7 +109,7 @@ func (socket *relaySocket) pump() {
 				Op: "msg", SID: next.sid, Subject: next.msg.Subject, Reply: next.msg.Reply, Headers: headers,
 				Data: base64.StdEncoding.EncodeToString(next.msg.Data),
 			})
-			socket.settle(next.bytes)
+			socket.settle(1, next.bytes)
 			if err != nil {
 				if !errors.Is(err, errRelaySocketEnded) {
 					socket.sockets.logger.Warn("listener: the relay socket could not write a frame; it is closed",
@@ -122,14 +122,28 @@ func (socket *relaySocket) pump() {
 	}
 }
 
-// settle forgets a frame the pump has written, or tried to: the socket and the replica hold it no
-// longer.
-func (socket *relaySocket) settle(bytes int) {
+// settle gives back frames the socket no longer holds, and their bytes, to the socket's count and
+// the replica's: the frame the pump has written, or tried to, and the frames drop forgot. It is the
+// one place either count goes down, as enqueue, through reserve, is the one place each goes up.
+func (socket *relaySocket) settle(frames, bytes int) {
 	socket.queueMu.Lock()
-	socket.heldMsgs--
+	socket.heldMsgs -= frames
 	socket.heldBytes -= bytes
 	socket.queueMu.Unlock()
 	socket.sockets.buffered.Add(-int64(bytes))
+}
+
+// drop forgets the frames the socket holds and has not begun to write, at its end; the pump settles
+// the one it is writing once its write returns.
+func (socket *relaySocket) drop() {
+	socket.queueMu.Lock()
+	frames, bytes := len(socket.queue), 0
+	for _, frame := range socket.queue {
+		bytes += frame.bytes
+	}
+	socket.queue = nil
+	socket.queueMu.Unlock()
+	socket.settle(frames, bytes)
 }
 
 // held is what the socket holds for its client: frames and bytes.
