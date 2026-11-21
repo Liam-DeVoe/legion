@@ -1,7 +1,7 @@
 {
   "about": "The inventory packages/envoy/scripts/check-redact-remote-text.sh and cmd/redact-gate run: each row a requirement of the redaction of remote text, a test, and for a print-site row its function, the name its test captures the production output under, and its mutation. A Go row's package is relative to packages/envoy; a Bun row's file and every mutation's file are relative to the repository root, and a Bun row's test is its full name in Bun's JUnit report.",
   "gate": {
-    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing.",
+    "about": "cmd/redact-gate's configuration. base is the ref whose merge base with HEAD is the change's base. rule and printers are the Go functions (types.Func.FullName) and ts_rule the TypeScript declarations (file#name) whose every call the change adds a row's mutation must name; exempt_files are the rule's own definition, which the fixture and control (1) hold; exempt are calls that print nothing. The box's and the answer's own printers - (redact.Answer).Words, redact.Header, (cipheraddr.Address).WordsOf and a RemoteText printed - are not in rule: each prints the rule's reading and holds no text a call of it could hand out raw, so no one replacement of such a call leaks, and a mutation row could bind none of them; a site that prints through them is held by its print-site row and by its holder's print row instead.",
     "base": "origin/main",
     "rule": [
       "github.com/sjawhar/envoy/internal/redact.Remote",
@@ -6346,6 +6346,27 @@
       "package": "./internal/dispatch/cireconcile",
       "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/cireconcile.graphQLAnswer",
       "production": "github.com/sjawhar/envoy/internal/dispatch/cireconcile.graphQLAnswer: every printer at every placement"
+    },
+    {
+      "id": "check-prints-probe-markers",
+      "requirement": "r1-fail-closed",
+      "package": "./cmd/redact-gate",
+      "test": "TestAcceptanceTheGatePrintsTheProbeMarkersItTested",
+      "production": "cmd/redact-gate report: the printed bound names the probe markers a mutant's captured output is read for (MARKERS)"
+    },
+    {
+      "id": "check-holds-device-sign-in-rows",
+      "requirement": "r1-fail-closed",
+      "package": "./cmd/redact-gate",
+      "test": "TestAcceptanceTheInventoryHoldsTheDeviceSignInEchoRows",
+      "production": "redact-check.json: the device sign-in's Wait and Refresh echo rows the verification names"
+    },
+    {
+      "id": "check-states-its-bound",
+      "requirement": "r1-fail-closed",
+      "package": "./cmd/redact-gate",
+      "test": "TestAcceptanceTheCheckStatesTheBoundTheVerificationNames",
+      "production": "check-redact-remote-text.sh: the statement of what its results do not establish names go-oidc, a library call made through reflection and both known-residual forms"
     }
   ],
   "bun": [

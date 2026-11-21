@@ -36,17 +36,21 @@
 # (every field the boundary sets is a closed value or the rule's reading), and the answer census
 # (outside internal/redact, every Go client reads an HTTP answer's body only through
 # redact.ReadAnswer or redact.StreamAnswer, whose redact.Answer holds the record of the request
-# it sent, and reads no answer's status line, which it names through redact.StatusLine); (3)
-# each mutation's binding, before any test runs; then the steps above and (4) each row's test
-# unmutated; then
+# it sent, decodes it only through Answer.Decode, and reads no answer's status line, which it
+# names through redact.StatusLine), each Go census reading every build CI makes (each GOOS/GOARCH
+# and tag list), and the plan's BOUNDARY api lines naming each build target; (3) each mutation's
+# binding, before any test runs; then the steps above and (4) each row's test unmutated; then
 # (5) each mutation alone, whose test must fail at its designated assertion with a marker in the
 # output it captured there. `--controls` runs the gate's negative controls instead, each from a
 # passing baseline in its own scratch worktree.
 #
-# A package's own needs stay its own: internal/dispatch/api and internal/cipher/helper read the
-# test databases their suites read (DISPATCH_TEST_DATABASE_URL, LEGION_TEST_PG_DSN) where a test
-# of theirs needs one. No line this script prints is a real credential: the tests' credentials
-# are made up (not-a-secret-...), and a failure line it prints may quote one.
+# A package's own needs stay its own: a row's test that needs a database reads the variable its
+# suite reads - DISPATCH_TEST_DATABASE_URL in the envoy module (internal/dispatch/api among them),
+# BROKER_TEST_DATABASE_URL for the secrets broker's rigs, and LEGION_TEST_PG_DSN in the daemon
+# module, daemon/internal/daemon among them - and a row whose test skips for want of one fails
+# ("test skip"), so set all three, to one database. No line this script prints is a real
+# credential: the tests' credentials are made up (not-a-secret-...), and a failure line it prints
+# may quote one.
 #
 # GO names the go binary every step and the gate run (default: the go on PATH). The script puts
 # its directory first on PATH and sets GOROOT to the root that go names for itself (a GOROOT the
@@ -136,10 +140,29 @@ if [ "$controls" = 1 ]; then
   "$gate" -controls
   exit $?
 fi
-if ! "$gate" -stage plan; then
+"$gate" -stage plan >"$work/plan.txt" 2>&1
+status=$?
+cat "$work/plan.txt"
+if [ "$status" -ne 0 ]; then
   echo "check c-redact-remote-text: failed before any test ran"
   exit 1
 fi
+
+# The printed bound names each build target the boundary census read (cmd/redact-gate's
+# ciTargets) on its BOUNDARY api lines; a plan that printed no such line read nothing, and fails.
+boundary_targets=0
+if grep -q '^BOUNDARY api ' "$work/plan.txt"; then
+  for target in linux/amd64 darwin/arm64 linux/arm64 darwin/amd64; do
+    if ! grep '^BOUNDARY api ' "$work/plan.txt" | grep -qF "$target"; then
+      echo "check: no BOUNDARY api line of the plan names the build target $target"
+      boundary_targets=1
+    fi
+  done
+else
+  echo "check: the plan printed no BOUNDARY api line, so it names no build target"
+  boundary_targets=1
+fi
+step "the boundary census names each build target it read" "$boundary_targets"
 
 # Each package's inventory tests, and no other test of it: a row's test is `Top` or `Top/sub`, and
 # `-run '^(Top|...)$'` runs each Top whole, every subtest with it. Each scoped run's test binary
@@ -332,10 +355,16 @@ fi
 cat <<'EOF'
 What these results do not establish: printers outside the print test's set, payloads other than
 the probe, and holder states the print test did not build; errors of libraries other than
-golang.org/x/oauth2 and openid-client, which reach output only through redact.Error and
-redact.Cause; and that the list of remote fields, which the spec's census and review settle, is
-complete. A bare "label: secret@host", with no scheme and no key before it, prints by design: the
-fixture's known-residual row pins it.
+golang.org/x/oauth2, github.com/coreos/go-oidc and openid-client, which reach output only
+through redact.Error and redact.Cause; a call into one of those libraries made through
+reflection (reflect.Value.MethodByName(...).Call), which no census lists and review sees; the
+ways an answer's words leave it that no census reads from the types alone - the bytes StreamTo
+or StreamAnswer hands out, printed; a test given to Holds that keeps the bytes; a member decoded
+into a plain string, printed; and a response's header, trailer or Location, printed - which
+review sees; and that the list of remote fields, which the spec's census and review settle, is
+complete. The two forms the fixture's known-residual rows pin print by design: a bare
+"label: secret@host", with no scheme and no key before it (split-user-info-bare), and the same
+form as a JSON key's value (split-user-info-json-key).
 EOF
 echo "check c-redact-remote-text: passed ($rows rows, and the gate)"
 exit 0
