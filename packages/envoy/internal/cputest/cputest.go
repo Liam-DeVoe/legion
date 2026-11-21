@@ -3,9 +3,8 @@
 // loaded machine stretches it on either side of a comparison without the call doing more work;
 // CPU time leaves that out. It is not immune to load: a busy machine still slows the process's
 // own CPU time through shared caches and clock frequency, so a comparison still samples each side
-// more than once. The api's save ladders timed calls this way too, and now count work instead
-// (pmdoc.CountWalksForTest). It is an ordinary package rather than a _test.go file because Go
-// cannot share test-only code across packages (see internal/stacktest's identical reasoning).
+// more than once. It is an ordinary package rather than a _test.go file because Go cannot share
+// test-only code across packages (see internal/stacktest's identical reasoning).
 package cputest
 
 import (
