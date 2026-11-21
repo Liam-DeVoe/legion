@@ -1387,8 +1387,10 @@ type editArtifactResponse struct {
 	// LostOps are which operations the live document did not hold once this write reached it: a
 	// concurrent change that landed after the version was rendered and before the publish is
 	// past undoing, so the edit reports it rather than refusing (LEGION-269). null means the
-	// check reached no verdict - the publish failed and the room is reloading, or the room
-	// holds a tree too deep to read - which is not the same statement as the empty list.
+	// check reached no verdict (docs.Ledger.LostOps) - the publish failed and the room is
+	// reloading, the check could not read the document back within its 10 s bound, which counts
+	// its wait for a grant of the pod's load concurrency, or the room holds a tree too deep to
+	// read - which is not the same statement as the empty list.
 	LostOps      []int          `json:"lost_ops"`
 	Token        string         `json:"token"`
 	UnchangedOps []int          `json:"unchanged_ops"`

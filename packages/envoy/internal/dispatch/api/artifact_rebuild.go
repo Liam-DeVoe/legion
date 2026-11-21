@@ -15,10 +15,12 @@ type rebuildArtifactInput struct {
 }
 
 // rebuildArtifact replaces a document history no write can change with one seed update: a history
-// ygo cannot load, from its latest saved markdown or supplied markdown, and a history that loads but
-// stands so near the decode cap or the scan total that every write to it is refused, from its own
-// text or supplied markdown, the rebuild being the recovery from either cap. Such a document's room
-// is closed first if this server holds it, and the browsers connected to it drop their unsent
+// ygo cannot decode, from its latest saved markdown or supplied markdown; a history that decodes
+// but parks more than a room's document may, which no room loads, from its own text or supplied
+// markdown, the seed holding nothing it parked; and a history that loads but stands so near the
+// decode cap or the scan total that every write to it is refused, from its own text or supplied
+// markdown, the rebuild being the recovery from either cap. A document near a cap has its room
+// closed first if this server holds it, and the browsers connected to it drop their unsent
 // edits; any other document is refused unchanged, 409 DOCUMENT_LIVE while this server holds its
 // room and 409 DOCUMENT_LOADS otherwise (docs.Service.RebuildDocument). It needs the person scope
 // (routeScopes) because a rebuild intentionally deletes durable history, so only a credential

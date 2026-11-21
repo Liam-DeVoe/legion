@@ -22,9 +22,10 @@ import (
 // These tests hold the bounds on what a person stores in document_client_ids, on every kind of
 // socket (client_ids.go): a read-only admission and a request that never becomes a socket store
 // nothing; a person's unlanded minted rows in a document stop at maxUnlandedMintsADocument, past
-// which a mint gives back a row no open socket holds; "landed" is an edit integrated under the id,
-// not one that only parked, and a landing the store did not mark leaves the row presented; and
-// every claim is held to the day's bound.
+// which a mint, an admission's or an update's, gives back a row no open socket holds, or is
+// refused busy where every one of them is live; "landed" is an edit integrated under the id, not
+// one that only parked, and a landing the store did not mark leaves the row presented; and every
+// claim is held to the day's bound.
 
 // unlandedMintsOf is how many rows artifactID stores for login of ids an admission gave out that
 // no edit landed under.
@@ -132,6 +133,98 @@ func TestATabWhoseRowIsTheOldestKeepsWritingThroughMintsPastTheCap(t *testing.T)
 	awaitRendering(t, room, "# Title\n\ntAlice's paragraph.\n", "the room after the tab typed")
 	requireConnected(t, tab, "alice's tab after it typed")
 	awaitLanded(t, service, artifactID, tab.Given, "alice's tab")
+}
+
+// An update's mint is held to the cap an admission's is (mintForSender, storeMint). Alice's tab is
+// given id A and closes, and she types offline under A, which the dashboard keeps as a saved row
+// (pending-sync.ts). A's row lapses and a later page load of hers gives it back, so no row names A
+// and the document holds nothing under it: the judgement mints A for her when her next tab replays
+// the saved row. But by then she holds maxUnlandedMintsADocument rows no edit landed under, every
+// one of them live: her two open tabs present theirs, and she left the other pages within the
+// lapse. So the replay is refused for a retry, 4503 DOC_BUSY, as an admission's mint is
+// (errMintsLive): the room holds none of it and no row is stored. Once her other tab types, its
+// row lands, the cap has room, and the same update, sent again from the reconnected tab, lands.
+func TestAnUpdateWhoseMintFindsEveryUnlandedRowLiveIsRefusedBusyAndLandsOnceOneLands(t *testing.T) {
+	presenceIntervalForTest.Store(int64(300 * time.Millisecond))
+	t.Cleanup(func() { presenceIntervalForTest.Store(0) })
+	service, artifactID, serverURL := clientIDRoom(t)
+	room := func() *crdt.Doc { return service.srv.GetDoc(artifactID) }
+	countRows := func() int {
+		t.Helper()
+		var n int
+		if err := service.store.Pool.QueryRow(context.Background(),
+			`select count(*) from document_client_ids where artifact_id = $1`, artifactID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	first := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, first, "alice's first tab")
+	a := first.Given
+	first.Close()
+	saved := typeAt(t, first.Doc, 0, "offline ")
+	time.Sleep(time.Second) // A's row lapses (3 x 300 ms)
+
+	replaying := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, replaying, "alice's next tab")
+	other := openPage(t, serverURL, artifactID, "alice")
+	awaitAnswer(t, other, "alice's other tab")
+	url := socketURL(serverURL, artifactID) + "&" + contracts.DocumentClientIdParameter + "="
+	deadline := time.Now().Add(2 * time.Minute)
+	for storedClientIDs(t, service, artifactID, a) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("alice's page loads never gave back the row of %d", a)
+		}
+		if _, busy := openAndLeave(t, url, "alice"); busy {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	// With the lapse at its own 15 minutes again, every row she holds is live.
+	presenceIntervalForTest.Store(0)
+	if rows := unlandedMintsOf(t, service, artifactID, "alice"); rows != maxUnlandedMintsADocument {
+		t.Fatalf("alice holds %d unlanded rows in the document, want %d", rows, maxUnlandedMintsADocument)
+	}
+	rows := countRows()
+
+	if err := replaying.Write(ygsync.EncodeUpdate(saved)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-replaying.Ended:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("alice's tab replaying her saved row under %d stayed connected while every unlanded row of hers was live: the update's mint passed the cap of %d", a, maxUnlandedMintsADocument)
+	}
+	if closed := replaying.Closed(); closed == nil || closed.Code != contracts.DocumentBusyCloseCode || closed.Text != contracts.DocumentBusyCloseReason {
+		t.Fatalf("the room closed alice's replaying tab with %v, want %d %s", closed, contracts.DocumentBusyCloseCode, contracts.DocumentBusyCloseReason)
+	}
+	live := room()
+	if live == nil {
+		t.Fatal("the room is not loaded while alice's other tab is connected")
+	}
+	if clock := live.StateVector().Clock(a); clock != 0 {
+		t.Fatalf("the room holds id %d to clock %d after refusing the update written under it", a, clock)
+	}
+	if rendering, _ := renderDocument(live); strings.Contains(rendering, "offline ") {
+		t.Fatalf("the room renders the refused update: %q", rendering)
+	}
+	if stored := storedClientIDs(t, service, artifactID, a); stored != 0 {
+		t.Fatalf("the refused update stored %d rows for id %d", stored, a)
+	}
+	if after := countRows(); after != rows {
+		t.Fatalf("the refused update took the document's rows from %d to %d", rows, after)
+	}
+
+	sendTyped(t, other, 0, "t")
+	awaitLanded(t, service, artifactID, other.Given, "alice's other tab")
+	again := reopenPage(t, serverURL, artifactID, "alice", replaying.Doc)
+	awaitAnswer(t, again, "alice's next tab reconnected")
+	if err := again.Write(ygsync.EncodeUpdate(saved)); err != nil {
+		t.Fatal(err)
+	}
+	waitForRoomRendering(t, room, func(rendering string) bool { return strings.Contains(rendering, "offline ") }, "the room holding alice's offline edit")
+	requireConnected(t, again, "alice's next tab")
+	awaitLanded(t, service, artifactID, a, "the id alice's saved row landed under")
 }
 
 // A read-only admission stores no row and claims nothing, and the page it admits keeps its id and
