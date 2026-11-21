@@ -619,29 +619,67 @@ func TestTheHoldJournal(t *testing.T) {
 		}
 	})
 
-	// The first row is Bootstrap's alone: RestoreRow restores a lost row, so a released row with no
-	// hold id is refused before anything is sent, naming Bootstrap. With the row deleted mid-hold,
-	// RestoreRow of the held row with its hold id still follows restore_gen once. Fails if RestoreRow
-	// follows restore_gen for a released row with no hold id: it lands that row at gen 8, mid-hold.
-	t.Run("RestoreRow refuses the first row's shape and still follows restore_gen for a held row", func(t *testing.T) {
+	// A row lost mid-hold, the log's latest entry held: RestoreRow of released, with no hold id or
+	// with one, at the gen the route named, is refused 400 bad_transition and writes nothing, and
+	// RestoreRow of the held row with its hold id still follows restore_gen once. Fails if the route
+	// restores released after a held entry: the row lands released mid-hold.
+	t.Run("RestoreRow of a released row mid-hold is refused, and the held row still follows restore_gen", func(t *testing.T) {
 		r := newRig(t)
 		c := r.client(t)
 		hold(t, c, "h-lost", holdrecord.WorkflowBucketsCreate, nil)
 		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
 			t.Fatal(err)
 		}
-		got, err := c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseReleased, "", "the first row")
-		if err == nil || !strings.Contains(err.Error(), "Bootstrap") {
-			t.Fatalf("RestoreRow of a released row with no hold id, mid-hold, answered %+v, %v; want a refusal naming Bootstrap", got, err)
+		var mismatch *holdrecord.RestoreGenError
+		if err := c.Bootstrap(ctx); !errors.As(err, &mismatch) {
+			t.Fatalf("Bootstrap mid-hold answered %v, want a RestoreGenError", err)
 		}
 		var refusal *holdrecord.RouteError
+		for _, holdID := range []string{"", "h-lost"} {
+			got, err := c.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, holdID, "released mid-hold")
+			if !errors.As(err, &refusal) || refusal.Code != "bad_transition" {
+				t.Fatalf("RestoreRow of released with hold id %q at restore_gen %d, mid-hold, answered %+v, %v; want 400 bad_transition",
+					holdID, mismatch.RestoreGen, got, err)
+			}
+		}
 		if _, err := c.Row(ctx); !errors.As(err, &refusal) || refusal.Code != "no_row" {
-			t.Fatalf("after the refused restore Row answered %v, want no_row", err)
+			t.Fatalf("after the refused restores Row answered %v, want no_row", err)
 		}
 		restored, err := c.RestoreRow(ctx, 1, natsgrant.OperatorPhaseHeld, "h-lost", "restored after a delete")
-		if err != nil || restored.Gen <= 1 || restored.Phase != natsgrant.OperatorPhaseHeld || restored.HoldID != "h-lost" {
-			t.Fatalf("RestoreRow of the held row = %+v, %v; want held h-lost at restore_gen", restored, err)
+		if err != nil || restored.Gen != mismatch.RestoreGen || restored.Phase != natsgrant.OperatorPhaseHeld || restored.HoldID != "h-lost" {
+			t.Fatalf("RestoreRow of the held row = %+v, %v; want held h-lost at restore_gen %d", restored, err, mismatch.RestoreGen)
 		}
+	})
+
+	// A released row lost after a completed hold, the log's latest entry released: Bootstrap
+	// answers a RestoreGenError, and RestoreRow of released with no hold id at its gen writes the
+	// row once, after which the next hold is set. Fails while RestoreRow refuses that shape, which
+	// left the operator to invent a hold id, and while the route refuses released after a released
+	// entry.
+	t.Run("a released row lost after a completed hold is restored released at the gen the route named", func(t *testing.T) {
+		r := newRig(t)
+		c := r.client(t)
+		hold(t, c, "h-done", holdrecord.WorkflowBucketsCreate, nil)
+		run(t, c, "h-done", cmd("buckets create"), nil, nil)
+		release(t, c, "h-done")
+		if _, err := r.Pool.Exec(ctx, `delete from nats_hold`); err != nil {
+			t.Fatal(err)
+		}
+		var mismatch *holdrecord.RestoreGenError
+		err := c.Bootstrap(ctx)
+		if !errors.As(err, &mismatch) {
+			t.Fatalf("Bootstrap after the hold answered %v, want a RestoreGenError", err)
+		}
+		t.Logf("Bootstrap after the hold answers %v", err)
+		restored, err := c.RestoreRow(ctx, mismatch.RestoreGen, natsgrant.OperatorPhaseReleased, "", "restored after a delete")
+		if err != nil || restored.Gen != mismatch.RestoreGen || restored.Phase != natsgrant.OperatorPhaseReleased || restored.HoldID != "" {
+			t.Fatalf("RestoreRow of released at restore_gen %d = %+v, %v; want released, no hold id, at that gen", mismatch.RestoreGen, restored, err)
+		}
+		var refusal *holdrecord.RouteError
+		if _, err := c.RestoreRow(ctx, mismatch.RestoreGen+1, natsgrant.OperatorPhaseReleased, "", "again"); !errors.As(err, &refusal) || refusal.Code != "row_exists" {
+			t.Fatalf("a second RestoreRow answered %v, want 409 row_exists", err)
+		}
+		hold(t, c, "h-next", holdrecord.WorkflowBucketsCreate, nil)
 	})
 
 	// Bootstrap writes the first row, gen 1, released, no hold id, once. With the row there it

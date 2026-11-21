@@ -789,6 +789,14 @@ func TestTheHoldRoutesCarryTheirSignatures(t *testing.T) {
 	if refused.num("restore_gen") != int64(want) {
 		t.Fatalf("the restore's refusal names restore_gen %d (%s), want %d, one above the log's highest", refused.num("restore_gen"), refused.body, want)
 	}
+	// The log's latest entry is held, so a released restore, even signed at restore_gen, would free
+	// every client mid-hold: it is refused and writes nothing.
+	before := rig.holdTables()
+	rig.do(http.MethodPost, "/v1/nats-hold/restore", op, rig.restoreBody(uint64(refused.num("restore_gen")), "released", "")).
+		require(t, "a released restore at restore_gen after a held entry", http.StatusBadRequest, "bad_transition")
+	if after := rig.holdTables(); after != before {
+		t.Fatalf("the refused released restore changed the hold's tables:\n%s\nwant\n%s", after, before)
+	}
 	again := rig.do(http.MethodPost, "/v1/nats-hold/restore", op, rig.restoreBody(uint64(refused.num("restore_gen")), "held", "hold-s")).
 		require(t, "the restore signed afresh at restore_gen", http.StatusOK, "")
 	againAt, err := time.Parse(time.RFC3339Nano, again.str("signed_at"))

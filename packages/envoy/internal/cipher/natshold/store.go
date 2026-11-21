@@ -254,9 +254,11 @@ func (s Store) Move(ctx context.Context, expectedGen uint64, next Row) (Row, err
 // Restore writes the hold row when it is absent, the first row or one a database admin deleted,
 // at next.Gen, which must be one above the highest gen nats_hold_log holds (1 for an empty log),
 // so a restored row's gen exceeds every earlier one; the insert and its log row are one
-// statement. It restores released, or held with a hold id. It refuses with a Conflict:
-// ErrBadTransition for another phase, ErrRowExists while the row is there, and ErrGenMismatch
-// naming the gen to carry (RestoreGen).
+// statement. It restores held with a hold id, and released, with or without one, only when the
+// log is empty or its latest entry is released: a released row restored after a held entry would
+// free every client mid-hold, while a command may run. It refuses with a Conflict:
+// ErrBadTransition for another phase and for released after a held or prepare entry, ErrRowExists
+// while the row is there, and ErrGenMismatch naming the gen to carry (RestoreGen).
 func (s Store) Restore(ctx context.Context, next Row) (Row, error) {
 	switch next.Phase {
 	case string(natsgrant.OperatorPhaseReleased):
@@ -271,10 +273,12 @@ func (s Store) Restore(ctx context.Context, next Row) (Row, error) {
 	err := s.in(ctx, pgx.ReadWrite, func(tx pgx.Tx) error {
 		var err error
 		restored, err = scanRow(tx.QueryRow(ctx, `with next as (
-				select coalesce(max(gen), 0) + 1 as gen from `+s.table("nats_hold_log")+`
+				select coalesce(max(gen), 0) + 1 as gen,
+					coalesce((select phase from `+s.table("nats_hold_log")+` order by gen desc limit 1), 'released') as latest
+				from `+s.table("nats_hold_log")+`
 			), restored as (
 				insert into `+s.table("nats_hold")+` (id, gen, phase, hold_id, reason, updated_at, updated_by, signed_at, sig)
-				select 1, next.gen, $2, $3, $4, now(), $5, $6, $7 from next where next.gen = $1
+				select 1, next.gen, $2, $3, $4, now(), $5, $6, $7 from next where next.gen = $1 and ($2 <> 'released' or next.latest = 'released')
 				on conflict (id) do nothing
 				returning `+rowColumns+`
 			), logged as (
@@ -294,10 +298,16 @@ func (s Store) Restore(ctx context.Context, next Row) (Row, error) {
 			return &Conflict{Err: ErrRowExists, Current: &current}
 		}
 		var want int64
-		if err := tx.QueryRow(ctx, `select coalesce(max(gen), 0) + 1 from `+s.table("nats_hold_log")).Scan(&want); err != nil {
+		var latest string
+		if err := tx.QueryRow(ctx, `select coalesce(max(gen), 0) + 1,
+				coalesce((select phase from `+s.table("nats_hold_log")+` order by gen desc limit 1), 'released')
+			from `+s.table("nats_hold_log")).Scan(&want, &latest); err != nil {
 			return fmt.Errorf("natshold: read the log's highest gen: %w", err)
 		}
-		return &Conflict{Err: ErrGenMismatch, RestoreGen: uint64(want)}
+		if want != int64(next.Gen) {
+			return &Conflict{Err: ErrGenMismatch, RestoreGen: uint64(want)}
+		}
+		return &Conflict{Err: fmt.Errorf("%w: the log's latest entry is %s, and a released row restored after it would free every client mid-hold; restore the row held with its hold id", ErrBadTransition, latest)}
 	})
 	return restored, err
 }

@@ -226,15 +226,13 @@ func (c *Client) MoveRow(ctx context.Context, expectedGen uint64, phase natsgran
 // other gen 409 `gen_mismatch` naming that one in `restore_gen`. For a `held` row with its hold id
 // RestoreRow then signs the row afresh at `restore_gen` and sends it once more, and answers a
 // second refusal, another writer's restore between the two, as it is; for any other row it answers
-// the first as a RestoreGenError. It refuses a `released` row with no hold id, the first row's
-// shape, which Bootstrap alone writes, at gen 1: following `restore_gen` with it would land a
-// released row mid-hold, freeing every client while a command runs.
+// the first as a RestoreGenError. A `released` row, the one a completed hold left or the first
+// row's shape with no hold id, is sent once, at gen alone, the gen a RestoreGenError named: the
+// route stores it only while the log's latest entry is released, and refuses it 400
+// `bad_transition` after a held or prepare entry, so a released row never lands mid-hold.
 func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.OperatorPhase, holdID, reason string) (Row, error) {
 	if err := rowPhase(phase); err != nil {
 		return Row{}, err
-	}
-	if phase == natsgrant.OperatorPhaseReleased && holdID == "" {
-		return Row{}, errors.New("holdrecord: a released row with no hold id is the first row, which Bootstrap writes at gen 1 alone; RestoreRow restores a lost row")
 	}
 	row, err := c.restore(ctx, gen, phase, holdID, reason)
 	var mismatch *RestoreGenError
@@ -246,8 +244,10 @@ func (c *Client) RestoreRow(ctx context.Context, gen uint64, phase natsgrant.Ope
 
 // Bootstrap writes the first row, `released` with no hold id at gen 1, through `POST
 // /v1/nats-hold/restore`, once. It answers any refusal as it is: `row_exists` while a row is
-// there, and a RestoreGenError when the log holds entries, so a row deleted mid-hold is never
-// replaced by a released one; the operator restores that row with RestoreRow.
+// there, and a RestoreGenError when the log holds entries, so a lost row is never replaced by the
+// first row's at a gen it did not name. The operator restores a lost row with RestoreRow: held
+// with its hold id mid-hold, and released, at the RestoreGenError's gen, once the log's latest
+// entry is released.
 func (c *Client) Bootstrap(ctx context.Context) error {
 	_, err := c.restore(ctx, 1, natsgrant.OperatorPhaseReleased, "", "bootstrap: the first row")
 	return err

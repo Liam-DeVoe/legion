@@ -4113,6 +4113,16 @@ operator's signed delete kept beside the records in the same statement
 whichever replica serves it. A cohort gone with no delete that verifies, or with one signed over an
 earlier gen than a replica saw, reads as unknown on each replica that saw it.
 
+**Restoring a lost hold row.** The route stores a restored row only at one above the highest gen
+its log holds, which no command can read: a restore at any other gen is refused naming that gen
+(`restore_gen`), which `Bootstrap` answers as a `RestoreGenError` once the log holds entries. A row
+lost mid-hold is restored `held` with its hold id (`RestoreRow`, which follows `restore_gen` for that
+shape on its own). A row lost after a hold ended, or before the first, is restored `released`:
+take the gen the `RestoreGenError` names and run `RestoreRow` with it, `released` and no hold id
+(or the ended hold's), which sends it once at that gen. The route stores a `released` row only while
+the log's latest entry is `released`, and refuses it `bad_transition` after a `held` or `prepare`
+entry, so no restore frees every client while a command of a hold may run.
+
 **Who can come to hold the operator's token.** `scripts/operator-token-minters.sh` is the
 precondition for the `operator` entry, run again before go-live. It runs with the sign-ins of the
 shell it runs in, requests no credential, and lists each principal that is not a person and can
