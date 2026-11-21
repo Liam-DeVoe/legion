@@ -123,7 +123,8 @@ func TestTheEdgeGrantIsTheGolden(t *testing.T) {
 // notification topic, the finite list of the edge's own subjects - the agent subjects, each
 // project's role subjects, the relay subjects, every edge machine's relay receipts, the resume
 // lane, and the exception lanes of the agent subjects and of each project's role subjects - and no
-// create or update of the stream. In subscribe: its own machine's inbox prefix in place of every
+// create or update of the stream or of any bucket's stream, and no direct get of any bucket. In
+// subscribe: its own machine's inbox prefix in place of every
 // reply inbox, every session's relay subject and its own machine's relay receipts, and neither
 // role-lane queue group. So a change to Listener reaches Edge, and the golden above says that it
 // did.
@@ -135,9 +136,9 @@ func TestTheEdgeGrantIsTheListenersWithTheEdgesChanges(t *testing.T) {
 			listener, edge := natsgrant.Listener(id), edge(t, id, projects...)
 			require.Equal(t, "notifications.>", listener.Publish[0])
 			kept := slices.DeleteFunc(slices.Clone(listener.Publish[1:]), func(entry string) bool {
-				return strings.HasPrefix(entry, "$JS.API.STREAM.CREATE.") || strings.HasPrefix(entry, "$JS.API.STREAM.UPDATE.")
+				return strings.HasPrefix(entry, "$JS.API.STREAM.CREATE.") || strings.HasPrefix(entry, "$JS.API.STREAM.UPDATE.") || strings.HasPrefix(entry, "$JS.API.DIRECT.GET.")
 			})
-			require.Len(t, kept, len(listener.Publish)-1-2*(1+len(bus.ListenerBuckets())), "Listener(%q) holds every notification topic, and the create and update of the stream and of each bucket's stream", id)
+			require.Len(t, kept, len(listener.Publish)-1-2*(1+len(bus.ListenerBuckets()))-len(bus.ListenerBuckets()), "Listener(%q) holds every notification topic, the create and update of the stream and of each bucket's stream, and each bucket's direct get", id)
 			own := []string{"notifications.agent.>"}
 			for _, project := range projects {
 				own = append(own, "notifications.role."+project+".>")
@@ -225,6 +226,8 @@ func TestTheEdgeGrantPublishesNothingOutsideItsLanes(t *testing.T) {
 		"$JS.API.STREAM.CREATE.KV_envoy_interests",
 		"$JS.API.STREAM.UPDATE.KV_envoy_interests",
 		"$JS.API.STREAM.UPDATE.KV_envoy_dpop_proofs",
+		"$JS.API.DIRECT.GET.KV_envoy_interests.$KV.envoy_interests.k",
+		"$JS.API.DIRECT.GET.KV_envoy_dpop_proofs.$KV.envoy_dpop_proofs.k",
 	} {
 		require.False(t, admits(edge.Publish, subject), "Edge publishes %s", subject)
 		require.True(t, admits(listener.Publish, subject), "Listener does not publish %s, so the matcher finds nothing", subject)

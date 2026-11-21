@@ -51,6 +51,7 @@ type connectOpts struct {
 	silentCutDetection          bool
 	immediateReconnect          bool
 	inboxPrefix                 string
+	streamMessageReads          bool
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
@@ -227,6 +228,17 @@ func WithInboxPrefix(prefix string) DialOption {
 	return func(o *connectOpts) { o.inboxPrefix = prefix }
 }
 
+// WithStreamMessageReads has every KV bucket handle opened on the client's connection read a key
+// with a stream message get ($JS.API.STREAM.MSG.GET.KV_<bucket>), which the JetStream API answers,
+// in place of the direct get ($JS.API.DIRECT.GET.KV_<bucket>.>) nats.go sends for every bucket
+// this module creates (streamMessageReads). An edge listener takes it (cmd/listener,
+// natsgrant.Edge), whose grant holds no direct get: the stream itself publishes a direct get's
+// answer, the stored value, on whatever reply subject the request names, and a value aimed at
+// $JS.API. is taken by the JetStream API as a request of the account's.
+func WithStreamMessageReads() DialOption {
+	return func(o *connectOpts) { o.streamMessageReads = true }
+}
+
 type subscriptionTransport uint8
 
 const (
@@ -399,6 +411,9 @@ type Client struct {
 	// slowConsumers counts the slow-consumer errors the client's connections reported
 	// (SlowConsumers).
 	slowConsumers atomic.Uint64
+	// streamMessageReads is WithStreamMessageReads: every KV handle opened on the client's
+	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
+	streamMessageReads bool
 
 	// recovery state
 	recovering int32
@@ -525,6 +540,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		streamMessageReads:          opts.streamMessageReads,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()

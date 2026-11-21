@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -80,9 +81,16 @@ type edgeLiveRig struct {
 // newEdgeLiveRig starts a server whose users are the edge listener's, holding edge (natsgrant.Edge
 // unless a row changes it), Dispatch's, a shared listener's (natsgrant.ListenerHost) and the edge
 // session's observer, which reads the session's relay subject and answers its frames as the
-// relay socket would. Dispatch's user creates the stream, as Dispatch's server does. The broker
-// says the edge session's token is a named token of the edge's project.
+// relay socket would. Dispatch's user creates the stream, as Dispatch's server does, and every
+// listener bucket. The broker says the edge session's token is a named token of the edge's project.
 func newEdgeLiveRig(t *testing.T, edge natsgrant.Permissions) *edgeLiveRig {
+	t.Helper()
+	return newEdgeLiveRigWithBuckets(t, edge, bus.ListenerBuckets())
+}
+
+// newEdgeLiveRigWithBuckets is newEdgeLiveRig with Dispatch's user making buckets alone of the
+// listener buckets, so a row can leave one for a shared listener's start to make.
+func newEdgeLiveRigWithBuckets(t *testing.T, edge natsgrant.Permissions, buckets []string) *edgeLiveRig {
 	t.Helper()
 	rig := &edgeLiveRig{seeds: map[string]string{}, binary: cmdtest.Build(t, "envoy-listener")}
 	users := map[string]natsgrant.Permissions{
@@ -118,7 +126,7 @@ func newEdgeLiveRig(t *testing.T, edge natsgrant.Permissions) *edgeLiveRig {
 	// The edge's grant creates and raises no bucket's stream, so it finds each bucket the shared
 	// listeners made at their start; Dispatch's user, whose grant holds each one's create, makes
 	// them here before any edge starts.
-	for _, bucket := range bus.ListenerBuckets() {
+	for _, bucket := range buckets {
 		if _, err := client.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.FileStorage}); err != nil {
 			t.Fatalf("Dispatch's user makes the %s bucket: %v", bucket, err)
 		}
@@ -389,6 +397,33 @@ func edgeRoleEnvelope(summary string) contracts.Envelope {
 		Payload:        `{"text":"` + summary + `"}`,
 		TraceID:        id.New(),
 	}
+}
+
+// A shared listener that takes no broker tokens makes the spent-proof bucket at its start, so an
+// edge listener, whose grant creates no bucket, starts against it. The rig's Dispatch user makes
+// every listener bucket but that one; the shared listener starts first, with no broker URL, and
+// leaves bus.DPoPProofBucket in place at the configuration a broker-token listener makes
+// (ensureSpentProofBucket): file storage, one copy at this rig's count, one value per key and
+// spentProofRetention as its age. The edge then starts, and registers its session under a broker
+// token, which records the token's proof in that bucket.
+func TestASharedListenerMakesTheSpentProofBucketAnEdgeListenerStartsAgainst(t *testing.T) {
+	buckets := slices.DeleteFunc(bus.ListenerBuckets(), func(bucket string) bool { return bucket == bus.DPoPProofBucket })
+	rig := newEdgeLiveRigWithBuckets(t, edgeLiveGrant(t), buckets)
+	shared := rig.startShared(t)
+	shared.waitHealthy(t)
+	info, err := rig.dispatch.JS().StreamInfo("KV_" + bus.DPoPProofBucket)
+	if err != nil {
+		t.Fatalf("the shared listener's start left no %s bucket: %v\n%s", bus.DPoPProofBucket, err, shared.Output.String())
+	}
+	got := fmt.Sprintf("storage %s, %d copies, %d per key, max age %s", info.Config.Storage, info.Config.Replicas, info.Config.MaxMsgsPerSubject, info.Config.MaxAge)
+	want := fmt.Sprintf("storage %s, 1 copies, 1 per key, max age %s", natsgo.FileStorage, spentProofRetention)
+	if got != want {
+		t.Fatalf("the %s bucket the shared listener made is %s, want %s", bus.DPoPProofBucket, got, want)
+	}
+
+	edge := rig.startEdge(t)
+	edge.waitHealthy(t)
+	rig.register(t, edge)
 }
 
 // An edge session claims a role of its project. A message published on the role's subject while
