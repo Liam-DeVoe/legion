@@ -55,11 +55,13 @@ const eraseOwnerAttempts = 3
 // waits there, holding a pool connection, while another transaction holds it: under the run's
 // locks, the search would hold every comment create, reply, version write and ask transition of
 // the node's issue or document for as long as it scans. The run changes none of the rows the
-// search lists, so listing them needs no lock. What that costs is that a row written between the
-// search and the locks that holds the erased bytes is not listed; the run leaves it as it leaves
-// every row the search lists. Once a try holds its locks, the run holds the writers of those
-// owners for the rest of its work: the read of the rest of the listing under them, the erase and
-// the commit.
+// search lists, so listing them needs no lock. A row written between the search and the locks
+// that holds the erased bytes is therefore not on the listing the digest covers, and the run
+// leaves it as it leaves every row the search lists; once the run has committed it searches again,
+// outside its locks, and its report lists each row that search finds and this one did not
+// (searchLeftAfterCommit). Once a try holds its locks, the run holds the writers of those owners
+// for the rest of its work: the read of the rest of the listing under them, the erase and the
+// commit.
 func lockInStoreOrder(ctx context.Context, conn *pgx.Conn, kind, id string) (pgx.Tx, *Erasure, erasedRead, error) {
 	var untaken []string
 	for range eraseOwnerAttempts {
@@ -107,6 +109,35 @@ func searchLeft(ctx context.Context, conn *pgx.Conn, kind, id string) ([]string,
 		return nil, err
 	}
 	return read.listing.left, nil
+}
+
+// searchLeftAfterCommit is the search for the rows the run leaves made once more, after the commit
+// and so outside the run's locks: readLeft over the read under those locks - its texts, its
+// document, its block, its versions and the events it redacted - with that read's rows left
+// emptied first, in a read-only transaction of its own on the run's connection, as searchLeft
+// runs. Each row it lists that the search before the locks did not (read.listing.left) is one
+// written after that search, which the listing the digest covers does not name; it goes into
+// LeftAfterCommit, which Write prints. A search that fails names no row, and its error says the
+// erase committed.
+func (e *Erasure) searchLeftAfterCommit(ctx context.Context, conn *pgx.Conn, read erasedRead) error {
+	tx, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return fmt.Errorf("the erase committed, and its search after the commit for the rows it leaves could not begin: %w", err)
+	}
+	defer tx.Rollback(context.Background())
+	listed := read.listing.left
+	read.listing.left = nil
+	if err := e.readLeft(ctx, tx, &read); err != nil {
+		return fmt.Errorf("the erase committed, and its search after the commit for the rows it leaves failed: %w", err)
+	}
+	e.LeftAfterCommit = []string{}
+	for _, line := range read.listing.left {
+		if !slices.Contains(listed, line) {
+			e.LeftAfterCommit = append(e.LeftAfterCommit, line)
+		}
+	}
+	e.searchedAfterCommit = true
+	return nil
 }
 
 // lockOwnersThenNode is one try of lockInStoreOrder: it reads which owner rows the erase writes
