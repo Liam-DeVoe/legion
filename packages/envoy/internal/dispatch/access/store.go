@@ -187,7 +187,9 @@ func OwnerAllowed(ctx context.Context, q Querier, owner string) (string, error) 
 // SetOwner gives project key to owner, a full member who has signed in, at any time, whoever owned
 // it before. It appends project.access_changed in tx, whose principal is the person the project was
 // taken from, when that is another: a reader that held the project's rows through its ownership
-// alone learns from it that it no longer reads them (api: eventGapSQL).
+// alone learns from it that it no longer reads them (api: eventGapSQL). Where that person no longer
+// sees the project, every session tied to them keeps it as a project it reached
+// (recordReachedProjects).
 func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	login, err := OwnerAllowed(ctx, tx, owner)
 	if err != nil {
@@ -208,7 +210,16 @@ func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner stri
 	if previous == login {
 		previous = ""
 	}
-	return appendProjectChange(ctx, tx, ev, key, model.AccessOwnerChanged, previous, by)
+	access, event, err := appendProjectChange(ctx, tx, ev, key, model.AccessOwnerChanged, previous, by)
+	if err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	if previous != "" {
+		if err := recordReachedProjects(ctx, tx, []string{key}, []string{previous}); err != nil {
+			return model.ProjectAccess{}, model.Event{}, err
+		}
+	}
+	return access, event, nil
 }
 
 // OwnerNotAllowed is the refusal of login as an owner: one who is no full member who has signed in,
@@ -362,6 +373,16 @@ func SharedSlackChannel(ctx context.Context, q Querier, key string, channels []s
 	return channel, other, nil
 }
 
+// AnyProjectPrivate answers whether any project is private, read live through q: the GitHub
+// client's question before it follows a redirect (githubapp.WithPrivateProjects).
+func AnyProjectPrivate(ctx context.Context, q Querier) (bool, error) {
+	var private bool
+	if err := q.QueryRow(ctx, `select exists (select 1 from projects where visibility = 'private')`).Scan(&private); err != nil {
+		return false, fmt.Errorf("read whether any project is private: %w", err)
+	}
+	return private, nil
+}
+
 // PrivateProjects answers every private project's Slack channels and when they last changed, by
 // key, read live: the list GET /api/v1/access/private-projects answers the secrets broker. It is
 // [] when no project is private, never nil, since a reader takes anything but an array for the
@@ -473,7 +494,10 @@ func AddPrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, 
 }
 
 // RemovePrincipal takes a person or a group off project key's access list; one the list does not
-// name leaves it as it was. It appends project.access_changed in tx.
+// name leaves it as it was. It appends project.access_changed in tx. Each person the list admitted
+// through the principal - the person, or a group's full members (PersonSeesProjectSQL's group
+// arm) - who no longer sees the project leaves it on every session tied to them as a project it
+// reached (recordReachedProjects).
 func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, principal string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	name, err := principalOf(kind, principal)
 	if err != nil {
@@ -483,6 +507,7 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	var project bool
+	var admitted []string
 	if err := tx.QueryRow(ctx, `
 		with target as (
 			select key from projects where key = $1
@@ -491,8 +516,11 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 			where project_key = $1 and principal_kind = $2 and principal = $3 and exists (select 1 from target)
 			returning 1
 		)
-		select exists (select 1 from target)
-	`, key, kind, name).Scan(&project); err != nil {
+		select exists (select 1 from target),
+			case when not exists (select 1 from removed) then '{}'::text[]
+				when $2 = 'person' then array[$3::text]
+				else `+groupFullMembersSQL("$3")+` end
+	`, key, kind, name).Scan(&project, &admitted); err != nil {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("take a %s off project %s: %w", kind, key, err)
 	}
 	if !project {
@@ -502,7 +530,95 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 	if kind == PrincipalGroup {
 		change = model.AccessGroupRemoved
 	}
-	return appendProjectChange(ctx, tx, ev, key, change, name, by)
+	access, event, err := appendProjectChange(ctx, tx, ev, key, change, name, by)
+	if err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	if err := recordReachedProjects(ctx, tx, []string{key}, admitted); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	return access, event, nil
+}
+
+// groupFullMembersSQL is the members of the group nameExpr names that it admits to a project, as
+// a text[]: those whose people row is a full member's (PersonSeesProjectSQL's group arm).
+func groupFullMembersSQL(nameExpr string) string {
+	return `array(select member.person from access_group_members member
+		join people full_member on full_member.email = member.person and full_member.member_kind = 'full'
+		where member.group_name = ` + nameExpr + `)`
+}
+
+// sessionOwnerLock names the advisory lock, one per person by login, that orders a session's tie
+// to that person (TieSession, which takes it shared) with an access change that takes a project
+// from them (recordReachedProjects, which takes it exclusive): a tie committed first is one the
+// change reads, and a tie written after waits for the change to commit, so the request it was
+// written for reads what the person sees after the change.
+const sessionOwnerLock = "dispatch-session-owner"
+
+// recordReachedProjects writes, in tx, a pair (session, project) in session_reached_projects for
+// every session tied to one of people (session_owners) and every project of keys that person does
+// not see as tx left it (PersonSeesProjectSQL; a person no people row holds reads as a full member,
+// as a broker token's person does in VisibleProjectsSQL). Its callers name only people who saw the
+// project before the change: the person taken off the list, a group's full members, the members
+// taken out of a group, the owner the project was taken from. A session's transcript holds what
+// it read while its person saw the project, so the content rule reads each pair as a project the
+// session acted in (SessionContentClause); nothing removes one.
+//
+// It first takes each person's sessionOwnerLock, exclusive, in login order, so two changes that
+// lock the same people never wait on each other in a cycle; it is the last lock its callers take.
+// A pair is written only where no row holds it, as session_projects' are.
+func recordReachedProjects(ctx context.Context, tx pgx.Tx, keys, people []string) error {
+	if len(keys) == 0 || len(people) == 0 {
+		return nil
+	}
+	people = slices.Clone(people)
+	slices.Sort(people)
+	people = slices.Compact(people)
+	if _, err := tx.Exec(ctx, `
+		select count(pg_advisory_xact_lock(hashtext($1), hashtext(person)))
+		from (select person from unnest($2::text[]) with ordinality as locked (person, position) order by position offset 0) as people
+	`, sessionOwnerLock, people); err != nil {
+		return fmt.Errorf("lock the sessions of the people who lost a project: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into session_reached_projects (session_id, project_key)
+		select distinct tied.session_id, lost.key
+		from session_owners tied
+		join projects lost on lost.key = any($1::text[])
+		left join people tied_person on tied_person.email = tied.login
+		where tied.login = any($2::text[])
+			and not coalesce(`+PersonSeesProjectSQL("tied.login", "coalesce(tied_person.member_kind, 'full')", "lost")+`, false)
+			and not exists (
+				select 1 from session_reached_projects recorded
+				where recorded.session_id = tied.session_id and recorded.project_key = lost.key)
+	`, keys, people); err != nil {
+		return fmt.Errorf("record the projects the sessions of the people who lost one reached: %w", err)
+	}
+	return nil
+}
+
+// TieSession records, in a statement of its own, that session acts for the person login, the
+// canonical login (model.CanonicalLogin) of a broker-issued token that proved the session
+// (session_owners): the tie the live agent view reads (SessionContentClause). A pair a row holds
+// already is not written again. It takes login's sessionOwnerLock shared for the statement, so it
+// is ordered with an access change that takes a project from that person (recordReachedProjects).
+func TieSession(ctx context.Context, q Querier, session, login string) error {
+	var written bool
+	if err := q.QueryRow(ctx, `
+		with locked as (
+			select pg_advisory_xact_lock_shared(hashtext($3), hashtext($2::text))
+		), written as (
+			insert into session_owners (session_id, login)
+			select $1, $2 from locked
+			where not exists (
+				select 1 from session_owners recorded where recorded.session_id = $1 and recorded.login = $2)
+			returning 1
+		)
+		select exists (select 1 from written)
+	`, session, login, sessionOwnerLock).Scan(&written); err != nil {
+		return fmt.Errorf("tie a session to its person: %w", err)
+	}
+	return nil
 }
 
 // appendProjectChange appends the event naming change on project key, records beside it what the
@@ -614,7 +730,10 @@ func ListGroups(ctx context.Context, q Querier, after string, limit int) (model.
 // each a person who is not a restricted member. It appends access_group.changed in tx. Who may
 // write the group is the caller's to decide first. A write that makes the group, or gives it to
 // another owner, is refused with ErrGroupsPerOwnerFull when that owner holds
-// model.MaxGroupsPerOwner groups already (roomForAGroup); a write that keeps the owner is not.
+// model.MaxGroupsPerOwner groups already (roomForAGroup); a write that keeps the owner is not. Each
+// full member it takes out of the group who no longer sees a project whose list names the group
+// leaves that project on every session tied to them as a project it reached
+// (recordReachedProjects).
 func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner string, members []string, by model.Actor) (model.AccessGroup, model.Event, error) {
 	if !ValidGroupName(name) {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("%w: %q is no group name", ErrPrincipalInput, name)
@@ -667,14 +786,23 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 	`, name, ownerLogin).Scan(&created); err != nil {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("write group %s: %w", name, err)
 	}
-	if _, err := tx.Exec(ctx, `
+	// The members the write takes out of the group, each a full member it admitted to every
+	// project whose list names it, and those projects, which recordReachedProjects keeps on the
+	// sessions of each such member who no longer sees one.
+	var gone, listing []string
+	if err := tx.QueryRow(ctx, `
 		with gone as (
 			delete from access_group_members where group_name = $1 and person <> all($2)
+			returning person
+		), kept as (
+			insert into access_group_members (group_name, person)
+			select $1, person from unnest($2::text[]) as person
+			on conflict do nothing
 		)
-		insert into access_group_members (group_name, person)
-		select $1, person from unnest($2::text[]) as person
-		on conflict do nothing
-	`, name, people); err != nil {
+		select array(select gone.person from gone
+				join people full_member on full_member.email = gone.person and full_member.member_kind = 'full'),
+			array(select project_key from project_access where principal_kind = 'group' and principal = $1)
+	`, name, people).Scan(&gone, &listing); err != nil {
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("write the members of group %s: %w", name, err)
 	}
 	group, err := ReadGroup(ctx, tx, name)
@@ -690,6 +818,9 @@ func PutGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name, owner str
 		return model.AccessGroup{}, model.Event{}, fmt.Errorf("append access_group.changed: %w", err)
 	}
 	if err := store.AnnounceAccessChange(ctx, tx); err != nil {
+		return model.AccessGroup{}, model.Event{}, err
+	}
+	if err := recordReachedProjects(ctx, tx, listing, gone); err != nil {
 		return model.AccessGroup{}, model.Event{}, err
 	}
 	return group, event, nil
@@ -728,10 +859,17 @@ func groupChangeEvent(name, change string, by model.Actor) model.Event {
 // (store.LockOwners) before it appends there, so the record of each change it writes beside the
 // event (recordProjectChanges: the project's owner and visibility) carries every write the lock
 // ordered first, and appends one project.access_changed for each project, in key order, and then
-// access_group.changed, all in tx. Who may delete the group is the caller's to decide first.
+// access_group.changed, all in tx. Who may delete the group is the caller's to decide first. Each
+// full member the group admitted to those projects who no longer sees one leaves it on every
+// session tied to them as a project it reached (recordReachedProjects); the members are read
+// before the delete, which takes them with the group.
 func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string, by model.Actor) ([]model.Event, error) {
 	if err := LockGroupName(ctx, tx, name); err != nil {
 		return nil, err
+	}
+	var admitted []string
+	if err := tx.QueryRow(ctx, `select `+groupFullMembersSQL("$1"), name).Scan(&admitted); err != nil {
+		return nil, fmt.Errorf("read the members of group %s: %w", name, err)
 	}
 	tag, err := tx.Exec(ctx, `delete from access_groups where name = $1`, name)
 	if err != nil {
@@ -782,6 +920,9 @@ func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string,
 		return nil, err
 	}
 	if err := store.AnnounceAccessChange(ctx, tx); err != nil {
+		return nil, err
+	}
+	if err := recordReachedProjects(ctx, tx, projects, admitted); err != nil {
 		return nil, err
 	}
 	return appended, nil

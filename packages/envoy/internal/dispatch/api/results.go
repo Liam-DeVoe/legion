@@ -9,7 +9,6 @@ import (
 	"math"
 	"net/http"
 	"regexp"
-	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -1179,13 +1178,18 @@ var (
 )
 
 // readLineWords is lineWords for the projects q reads and for this Dispatch's own URL, held to what
-// who sees. A reader that sees every project - the server, every open viewer of a deployment that
-// holds no private project, and any other reader whose viewer sees each project q reads - gets the
-// words of every project, as before projects could be private (R9). Any other reader gets
-// lineWordsForAnyKey: a word dropped because it holds the key of a project the reader cannot see
-// would tell the reader, whose line answers which words it kept, that the project exists; so the
-// line drops every word of a key's shape, whichever projects exist.
+// who sees. A reader that sees every object (seesEveryObject) - the server, and every open viewer
+// of a deployment that holds no private project - gets the words of every project, as before
+// projects could be private (R9). Any other reader gets lineWordsForAnyKey: a word dropped because
+// it holds the key of a project the reader cannot see would tell the reader, whose line answers
+// which words it kept, that the project exists; so the line drops every word of a key's shape,
+// whichever projects exist. The choice reads nothing but the reader: one that turned on whether
+// some project is hidden from the reader would tell an open viewer, by the rule its line keeps,
+// whether a private project it cannot see exists.
 func (s *server) readLineWords(ctx context.Context, q queryer, who model.Actor) (lineWords, error) {
+	if !seesEveryObject(who) {
+		return lineWordsForAnyKey(s.deps.Origins), nil
+	}
 	rows, err := q.Query(ctx, `select key from projects`)
 	if err != nil {
 		return lineWords{}, err
@@ -1193,10 +1197,6 @@ func (s *server) readLineWords(ctx context.Context, q queryer, who model.Actor) 
 	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
 		return lineWords{}, err
-	}
-	if !seesEveryObject(who) && (who.Viewer == nil ||
-		slices.ContainsFunc(keys, func(key string) bool { return !slices.Contains(who.Viewer.Sees, key) })) {
-		return lineWordsForAnyKey(s.deps.Origins), nil
 	}
 	return lineWordsFor(keys, s.deps.Origins), nil
 }
