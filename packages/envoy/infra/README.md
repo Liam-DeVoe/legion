@@ -3875,17 +3875,22 @@ relay frames, and `agentstream.*.frames`, and subscribes to its own relay subjec
 and to nothing else — no other `notifications.` subject,
 so a session can read no topic the listener does not relay to it. While sessions share one user,
 each holds the same set, so the relay subject carries `*` and one session can read another's
-relay frames, until the per-session credentials
-of dispatch://INFRA-840.
+relay frames. A session the NATS auth service admits holds `natsgrant.Session` instead, which
+names its own id alone and publishes its replies under `_INBOX.*.<session id>.>` alone
+(`bus.SessionReplies`).
 It does not
 subscribe to `_INBOX.>`, so a client holding this set alone may answer a request but not make one:
 sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does, would otherwise
 each receive every other session's replies, so request/reply from such a session is refused by
 design.
 The listener's connection probe of a session needs no rule of its own: it is a request on that
-same relay subject, which the session's relay subscription receives and answers on the probe's own
-reply inbox under this set's `_INBOX.>` publish, and the listener's `notifications.>` publish and
-`_INBOX.>` subscribe carry the listener's side.
+same relay subject, which the session's relay subscription receives and answers under this set's
+`_INBOX.>` publish, and the listener's `notifications.>` publish and `_INBOX.>` subscribe carry the
+listener's side. Its reply subject names the session, `<reply inbox>.<session id>.<random token>`
+(`bus.SessionReplySubject`: a new reply inbox of the listener's, the session's id, and 128 random
+bits), as each relay frame's does under the relay's one reply inbox. The probe waits only on the
+subject it made for that session, and the relay moves a frame only on a reply whose subject names
+the session the frame was sent to: a reply naming another session changes nothing.
 
 A hub's own `listener` holds `ListenerPermissions` for the hub's hostname. This repository's
 listener, connected as a user holding `ListenerPermissions` beside a credential-free session user
