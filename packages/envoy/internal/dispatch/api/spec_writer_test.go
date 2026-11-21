@@ -4,7 +4,9 @@
 // DOCUMENT_WRITER_NOT_ARCHITECT on every route that writes one (spec_writer.go). Its rig
 // (specWriterServer, specWriterRig) builds a project of its own for each run, and uses only routes
 // the stack's base serves, so the inventory runs there as the negative control of the checks it
-// holds.
+// holds. The tests of R2 at its end turn a project's proven-sessions setting on, a route the base
+// does not serve: an architect's write and a role-holder publication then pass only on a
+// credential that proves the session (newSpecWriterBrokerServer, provenSender).
 package api
 
 import (
@@ -1988,4 +1990,237 @@ func (rig *specWriterRig) commentState(t *testing.T, id string) (resolved bool, 
 		t.Fatalf("rig: read the comment %s: %v", id, err)
 	}
 	return resolved, accepted
+}
+
+// TestArchitectWriteOnAProvenProjectNeedsAProvenSession: while P's proven-sessions setting is on,
+// an architect's session passes the check only on a credential that proves it. C's architect's
+// edit of C's spec on the shared token is refused with the proof refusal, and so is C's tester's
+// edit of C's Verification document on the shared token naming C's architect's session; on a
+// broker token that proves C's tester, a body naming C's architect is 403 ACTOR_SESSION_MISMATCH.
+// C's architect's edit on a broker token that proves its session is taken, and so is a person's.
+// The close of C by the Legion daemon of P is refused on the shared token and taken on a broker
+// token that proves the daemon's session. Once a person turns the setting off, C's architect's
+// edit and the daemon's close on the shared token are taken.
+func TestArchitectWriteOnAProvenProjectNeedsAProvenSession(t *testing.T) {
+	server, brokered := newSpecWriterBrokerServer(t)
+	rig := server.rig(t, specWriterRigShape{})
+	spec := rig.c.documents["spec.md"].id
+	edits := "/api/v1/artifacts/" + spec + "/edits"
+	daemon := legionDaemonSessionOf(rig.c.key)
+	shared := func(session string) specWriterSender {
+		return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+			return rig.send(t, session, method, path, body)
+		}
+	}
+	closing := func(send specWriterSender) func(t *testing.T) *httptest.ResponseRecorder {
+		return func(t *testing.T) *httptest.ResponseRecorder {
+			return send(t, http.MethodPatch, "/api/v1/issues/"+rig.c.key, map[string]any{"status": "done"})
+		}
+	}
+	requireStatus := func(t *testing.T, what, want string) {
+		t.Helper()
+		if status := rig.issueRow(t, rig.c.key).status; status != want {
+			t.Errorf("%s: %s is %s, want %s", what, rig.c.key, status, want)
+		}
+	}
+	rig.setProvenSessions(t, rig.project, true)
+
+	edit := rig.editAttempt(rig.cArchitect, rig.c, "spec.md")
+	edit.what = "C's architect's edit of " + rig.c.key + "'s spec.md on the shared token"
+	rig.requireUnproven(t, edit)
+	named := rig.editAttempt(rig.cArchitect, rig.c, "verification.md")
+	named.what = "C's tester's edit of " + rig.c.key + "'s verification.md on the shared token, naming C's architect's session"
+	rig.requireUnproven(t, named)
+	tester := rig.provenSender(t, brokered, rig.cTester)
+	rig.requireRefusedWith(t, http.StatusForbidden, "ACTOR_SESSION_MISMATCH", specWriteAttempt{
+		what: "C's tester's edit of " + rig.c.key + "'s spec.md on a broker token that proves its session, naming C's architect",
+		send: func(t *testing.T) *httptest.ResponseRecorder {
+			return tester(t, http.MethodPost, edits, map[string]any{
+				"ops": specWriterAppend, "actor": map[string]any{"kind": "session", "id": rig.cArchitect},
+			})
+		},
+	})
+	architect := rig.provenSender(t, brokered, rig.cArchitect)
+	rig.requireVersionWritten(t, "C's architect's edit of "+rig.c.key+"'s spec.md on a broker token that proves its session",
+		http.StatusOK, spec, true, func(t *testing.T) *httptest.ResponseRecorder {
+			return architect(t, http.MethodPost, edits, map[string]any{"ops": specWriterAppend})
+		})
+	rig.requireEditTaken(t, specWriterPerson, rig.c, "spec.md")
+
+	open := rig.issueRow(t, rig.c.key).status
+	rig.requireUnproven(t, specWriteAttempt{
+		what:    "the close of " + rig.c.key + " by " + daemon + " on the shared token",
+		send:    closing(shared(daemon)),
+		refusal: specWriteRefusal{issues: []string{rig.c.key}, writer: daemon},
+	})
+	requireStatus(t, "after the refused close on the shared token", open)
+	closed := "the close of " + rig.c.key + " by " + daemon + " on a broker token that proves its session"
+	rig.requireVersionWritten(t, closed, http.StatusOK, spec, true, closing(rig.provenSender(t, brokered, daemon)))
+	requireStatus(t, "after "+closed, "done")
+
+	rig.requireTaken(t, "a person's reopen of "+rig.c.key, http.StatusOK, func(t *testing.T) *httptest.ResponseRecorder {
+		return rig.sendAs(t, specWriterPerson, http.MethodPatch, "/api/v1/issues/"+rig.c.key, map[string]any{"status": "in_progress"})
+	})
+	rig.setProvenSessions(t, rig.project, false)
+	rig.requireEditTaken(t, rig.cArchitect, rig.c, "spec.md")
+	closed = "the close of " + rig.c.key + " by " + daemon + " on the shared token, with the setting off"
+	rig.requireVersionWritten(t, closed, http.StatusOK, spec, true, closing(shared(daemon)))
+	requireStatus(t, "after "+closed, "done")
+}
+
+// TestRoleHolderPublicationOnAProvenProjectNeedsTheDaemonsProof: while a project's
+// proven-sessions setting is on, a role-holder publication passes only on a credential that proves
+// the session legion-daemon:<project>. In P, the shared token's publication as the Legion daemon
+// of P is 403 ROLE_HOLDER_NOT_PROVEN naming the project, and C's stored set stays as it was; a
+// broker token that proves the daemon's session publishes; a broker token that proves C's tester
+// and names the daemon in its body is 403 ACTOR_SESSION_MISMATCH. Once a person turns the setting
+// off, the shared token publishes again. In Q, which no publication marked, the setting on, the
+// shared token's refused publication marks nothing, so a worker's edit of W's spec is still taken.
+func TestRoleHolderPublicationOnAProvenProjectNeedsTheDaemonsProof(t *testing.T) {
+	server, brokered := newSpecWriterBrokerServer(t)
+	rig := server.rig(t, specWriterRigShape{unmarked: true})
+	daemon := legionDaemonSessionOf(rig.c.key)
+	path := "/api/v1/issues/" + rig.c.key + "/role-holders"
+	published := []issueRoleHolder{{Role: "architect", Session: rig.cArchitect}, {Role: "tester", Session: rig.cTester}}
+	next := []issueRoleHolder{{Role: "architect", Session: rig.cArchitect}, {Role: "reviewer", Session: "ses-c-reviewer-" + strings.ToLower(rig.project)}}
+	rig.setProvenSessions(t, rig.project, true)
+
+	rig.requireRoleHoldersNotProven(t, rig.c.key, next)
+	rig.requireRoleHolders(t, "after the shared token's refused publication", rig.c.key, published)
+	proven := "the publication on a broker token that proves " + daemon
+	if response := rig.provenSender(t, brokered, daemon)(t, http.MethodPut, path, map[string]any{"holders": next}); response.Code != http.StatusOK {
+		t.Fatalf("%s: status=%d body=%s, want 200", proven, response.Code, clippedBody(response))
+	}
+	rig.requireRoleHolders(t, "after "+proven, rig.c.key, next)
+	mismatch := rig.provenSender(t, brokered, rig.cTester)(t, http.MethodPut, path, map[string]any{
+		"holders": published, "actor": map[string]any{"kind": "session", "id": daemon},
+	})
+	if code, _ := refusalOf(t, mismatch); mismatch.Code != http.StatusForbidden || code != "ACTOR_SESSION_MISMATCH" {
+		t.Errorf("the publication on a broker token that proves C's tester, naming %s: status=%d body=%s, want 403 ACTOR_SESSION_MISMATCH",
+			daemon, mismatch.Code, clippedBody(mismatch))
+	}
+	rig.requireRoleHolders(t, "after the publication on a broker token that proves C's tester", rig.c.key, next)
+
+	rig.setProvenSessions(t, rig.project, false)
+	rig.publish(t, rig.c.key, published)
+	rig.requireRoleHolders(t, "after the shared token's publication with the setting off", rig.c.key, published)
+
+	rig.setProvenSessions(t, rig.q, true)
+	rig.requireRoleHoldersNotProven(t, rig.x.key, []issueRoleHolder{})
+	if rig.marked(t, rig.q) {
+		t.Errorf("the refused publication on %s marked %s, want it unmarked", rig.x.key, rig.q)
+	}
+	rig.requireEditTaken(t, rig.cTester, rig.w, "spec.md")
+}
+
+// specWriterSender sends body on path by method, on one credential.
+type specWriterSender func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder
+
+// provenSender is a sender on a broker token that proves session and is scoped to the rig's
+// project P, the credential a pane of P holds once its daemon writes with proven sessions: the
+// token names the session, so a body need not. brokered is the rig's server's broker
+// (newSpecWriterBrokerServer).
+func (rig *specWriterRig) provenSender(t *testing.T, brokered *brokerTokenRig, session string) specWriterSender {
+	t.Helper()
+	caller := newBrokerCaller(t)
+	token := "a-broker-token-proving-" + strings.ReplaceAll(session, ":", "-")
+	says := liveNamedToken(caller.jkt)
+	says.Session, says.Projects = session, []string{rig.project}
+	brokered.broker.Says(token, says)
+	return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		return brokered.serve(caller.presenting(t, method, path, token, body))
+	}
+}
+
+// setProvenSessions turns project's proven-sessions setting on, on the shared token as the Legion
+// daemon of the project, or off, as a person, the one writer the DELETE takes. It fails t unless
+// the route answers the project with the setting as asked.
+func (rig *specWriterRig) setProvenSessions(t *testing.T, project string, on bool) {
+	t.Helper()
+	path := "/api/v1/projects/" + project + "/proven-sessions"
+	var response *httptest.ResponseRecorder
+	if on {
+		response = rig.send(t, legionDaemonSessionPrefix+project, http.MethodPut, path, nil)
+	} else {
+		response = dispatchRequest(t, rig.handler, http.MethodDelete, path, nil, specWriterPerson)
+	}
+	if response.Code != http.StatusOK || decodeBody[model.Project](t, response).ProvenSessions != on {
+		t.Fatalf("rig: turn %s's proven-sessions setting to %t: status=%d body=%s", project, on, response.Code, clippedBody(response))
+	}
+}
+
+// requireUnproven sends attempt, then fails t unless the check refused it with its proof refusal -
+// 403 DOCUMENT_WRITER_NOT_ARCHITECT naming the issue, the document when the refusal names one, the
+// writer's session and the project, and saying that the request's credential does not prove that
+// session - and the project holds what it held before it.
+func (rig *specWriterRig) requireUnproven(t *testing.T, attempt specWriteAttempt) {
+	t.Helper()
+	var response *httptest.ResponseRecorder
+	send := attempt.send
+	attempt.send = func(t *testing.T) *httptest.ResponseRecorder {
+		response = send(t)
+		return response
+	}
+	rig.requireRefusedWith(t, http.StatusForbidden, specWriterRefusalCode, attempt)
+	if response.Code != http.StatusForbidden {
+		return
+	}
+	message := decodeBody[refusalAnswer](t, response).Error
+	want := attempt.refusal
+	if !slices.ContainsFunc(want.issues, func(key string) bool { return specWriterNames(message, key) }) {
+		t.Errorf("%s: the refusal %q names none of %v, the issue it writes", attempt.what, message, want.issues)
+	}
+	for _, name := range []string{want.document, want.writer, rig.project} {
+		if name != "" && !specWriterNames(message, name) {
+			t.Errorf("%s: the refusal %q does not name %s", attempt.what, message, name)
+		}
+	}
+	if !strings.Contains(message, "records proven sessions") || !strings.Contains(message, "does not prove session "+want.writer) {
+		t.Errorf("%s: the refusal %q does not say that the project records proven sessions and the credential does not prove session %s",
+			attempt.what, message, want.writer)
+	}
+}
+
+// requireRoleHoldersNotProven sends holders on the shared token as the Legion daemon of issue's
+// project, and fails t unless the route answers 403 ROLE_HOLDER_NOT_PROVEN naming the project and
+// the daemon's session.
+func (rig *specWriterRig) requireRoleHoldersNotProven(t *testing.T, issue string, holders []issueRoleHolder) {
+	t.Helper()
+	project, _, _ := strings.Cut(issue, "-")
+	response := putRoleHoldersAs(t, rig.handler, issue, map[string]any{"holders": holders, "actor": daemonSessionOf(project)})
+	code, message := refusalOf(t, response)
+	if response.Code != http.StatusForbidden || code != "ROLE_HOLDER_NOT_PROVEN" {
+		t.Errorf("the shared token's publication on %s: status=%d body=%s, want 403 ROLE_HOLDER_NOT_PROVEN", issue, response.Code, clippedBody(response))
+		return
+	}
+	for _, name := range []string{project, legionDaemonSessionOf(issue)} {
+		if !specWriterNames(message, name) {
+			t.Errorf("the shared token's publication on %s: the refusal %q does not name %s", issue, message, name)
+		}
+	}
+}
+
+// requireRoleHolders fails t unless issue's stored set of role holders is want, in workflow order.
+func (rig *specWriterRig) requireRoleHolders(t *testing.T, what, issue string, want []issueRoleHolder) {
+	t.Helper()
+	stored := readRoleHolders(t, rig.handler, issue).Holders
+	held := make([]issueRoleHolder, len(stored))
+	for index, holder := range stored {
+		held[index] = issueRoleHolder{Role: holder.Role, Session: holder.Session}
+	}
+	if !slices.Equal(held, want) {
+		t.Errorf("%s: %s's role holders are %v, want %v", what, issue, held, want)
+	}
+}
+
+// marked reports whether project_role_holder_marks holds project.
+func (rig *specWriterRig) marked(t *testing.T, project string) bool {
+	t.Helper()
+	var marked bool
+	if err := rig.database.Pool.QueryRow(context.Background(), `select exists (select 1 from project_role_holder_marks where project_key = $1)`, project).
+		Scan(&marked); err != nil {
+		t.Fatalf("rig: read whether %s is marked: %v", project, err)
+	}
+	return marked
 }
