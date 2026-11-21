@@ -766,6 +766,11 @@ func TestAnEdgeRegistryReadNamesNothingOfAGoneOrStoppedSessionOfAnotherProject(t
 		t.Fatalf("open the known-session store: %v", err)
 	}
 	t.Cleanup(known.StopWatch)
+	// The store answers nothing until its watcher's first read of the bucket completes
+	// (session.KnownSessions.Opened), so the row waits for that read, not for a time.
+	if err := known.WaitForCacheReady(t.Context()); err != nil || !known.Opened() {
+		t.Fatalf("UNKNOWN: the known-session store's first read did not complete (WaitForCacheReady %v, Opened %t)", err, known.Opened())
+	}
 	rig.deps.known = known
 
 	rig.placeElsewhere(t, gone, "INFRA")
