@@ -44,8 +44,8 @@ const inboxes = nats.InboxPrefix + ">"
 
 // listenerGrant is the grant every user that runs envoy-listener holds as machine machineID, built
 // from Envoy's own names: Listener adds the session consumers' calls to it (sessionConsumerCalls),
-// ListenerHost those and the subscribe to every notification topic, Dispatch what Dispatch itself
-// needs, and Host the session's entries. Publish, in this order:
+// ListenerHost those and the subscribe to every notification topic, and Dispatch what Dispatch
+// itself needs. Publish, in this order:
 //   - every notification topic (bus.NotificationTopicPrefix): the stream's subjects, the role
 //     lanes, every exception lane, the session relay subjects (bus.DeliverSubjectPrefix), and any
 //     other topic the listener publishes over core NATS, a role lane's forward among them
@@ -79,10 +79,9 @@ func listenerGrant(machineID string) Permissions {
 		jsAck + bus.Stream + "." + durable + ".>",
 		jsAPI + "INFO",
 	}
-	// Each bucket named here is granted to every user built on this grant: the listener's own,
-	// the host user a host's sessions share (Host) and Dispatch's. What that lets a session on a
-	// host write, and where it is narrowed, is the README's to say
-	// (packages/envoy/infra/README.md, "Permission sets").
+	// Each bucket named here is granted to every user built on this grant, the listener's own and
+	// Dispatch's, and no session connects as either: a session's own set names no bucket
+	// (SessionPattern, Session).
 	for _, bucket := range bus.ListenerBuckets() {
 		publish = append(publish, KVWrite(bucket)...)
 	}
@@ -106,10 +105,11 @@ func listenerGrant(machineID string) Permissions {
 // (bus.SessionConsumers.ListSessionConsumers). A NATS wildcard is a whole token, so these reach
 // every consumer of the stream, other listeners' durables and Dispatch's included, and a consumer
 // created through them can deliver the stream's messages to any subject. That reach is the
-// listener user's alone: Dispatch and Host keep their per-durable scope and hold none of these, so
-// the listener those users run refuses every registration that asks for consumer delivery 503
-// no_grant (the consumer call returns bus.ErrConsumerNotGranted), writes nothing of the session it
-// names, and keeps only its own durable.
+// listener user's alone: Dispatch keeps its per-durable scope and holds none of these, so the
+// listener beside envoy-dispatch, which connects as Dispatch's user, refuses every registration
+// that asks for consumer delivery 503 no_grant (the consumer call returns
+// bus.ErrConsumerNotGranted), writes nothing of the session it names, and keeps only its own
+// durable.
 func sessionConsumerCalls() []string {
 	return []string{
 		jsAPI + "CONSUMER.CREATE." + bus.Stream + ".*",
@@ -125,9 +125,9 @@ func sessionConsumerCalls() []string {
 // Listener is the grant envoy-listener needs as machine machineID: the listener grant
 // (listenerGrant), then the session consumers' calls (sessionConsumerCalls), which only this set
 // and ListenerHost hold. A hub that renders this set for its own listener gives that listener
-// consumer delivery; a listener connecting as a host or Dispatch user does not have it, and has no
-// session of its own registered at all: every registration it cannot give a consumer is refused by
-// name and writes nothing.
+// consumer delivery; a listener connecting as Dispatch's user does not have it, and has no session
+// of its own registered at all: every registration it cannot give a consumer is refused by name
+// and writes nothing.
 func Listener(machineID string) Permissions {
 	grant := listenerGrant(machineID)
 	grant.Publish = append(grant.Publish, sessionConsumerCalls()...)
@@ -144,8 +144,7 @@ func Listener(machineID string) Permissions {
 // change to a set rewrites every hub's rendered authorization: it replaces a VM hub's instance and
 // reaches a clustered hub only as a live reload, which is left to later work. The set holds none
 // of the session's publish entries, so a process connecting as this user can neither publish a
-// session's agent stream frames nor subscribe to a session's control subject. Host stays the set
-// of a user a host's sessions share.
+// session's agent stream frames nor subscribe to a session's control subject.
 func ListenerHost(machineID string) Permissions {
 	grant := Listener(machineID)
 	grant.Subscribe = append(grant.Subscribe, bus.NotificationTopicPrefix+">")
@@ -316,38 +315,6 @@ func Daemon() Permissions {
 	}
 }
 
-// Host is the grant of a host's one NATS user, which its listener and every session on the host
-// share: in each direction the listener grant (listenerGrant), then each entry of the session's it
-// lacks, and in the subscribe direction the plain notifications.> entry this set names itself. It
-// holds no session-consumer call (sessionConsumerCalls), so a listener connecting as a host user
-// keeps its own durable alone and can give no session a consumer. A listener whose user no session
-// shares takes ListenerHost instead, which holds those calls beside the same notifications.>
-// subscribe.
-//
-// That subscribe is this set's own, not one it takes from the session's: SessionPattern holds it
-// no longer. It is the reach the sessions sharing a host user already have - one user is one
-// grant, so each of them may subscribe to every notification topic. No Envoy program reads it: the
-// listener holds no core subscription on notifications.> any more, and a start that still sets
-// ENVOY_SUBSCRIBE_ALL_TOPICS is warned about by name and otherwise ignored (cmd/listener/main.go's
-// warnIgnoredEnv). Dropping it would rewrite every deployed host user, and a hub's users are
-// rendered into the VM's cloud-config, which changes only by replacing the VM, so it stays until
-// sessions connect through the auth service and take Session instead.
-func Host(machineID string) Permissions {
-	listener, agent := listenerGrant(machineID), SessionPattern()
-	// notifications.> admits every notification subject the session's set names, its relay subject
-	// among them, so only the session entries outside that family are added: a second entry for
-	// subjects already allowed would re-render every deployed host user, and a hub's users are
-	// rendered into the VM's cloud-config, which changes only by replacing the VM.
-	subscribe := union(listener.Subscribe, []string{bus.NotificationTopicPrefix + ">"})
-	outside := slices.DeleteFunc(agent.Subscribe, func(entry string) bool {
-		return strings.HasPrefix(entry, bus.NotificationTopicPrefix)
-	})
-	return Permissions{
-		Publish:   union(listener.Publish, agent.Publish),
-		Subscribe: union(subscribe, outside),
-	}
-}
-
 // Measure is the grant of Envoy's measurement job, which the deployment repository deploys as a
 // static user of both hubs (envoy-cluster/hub.go, hubMeasurePublish and hubMeasureSubscribe). It
 // reads the account's JetStream state, the listener's lease keys in KV_envoy_listener, and owns one
@@ -421,14 +388,4 @@ func OpenDirection(p Permissions) (string, bool) {
 		return "subscribe", true
 	}
 	return "", false
-}
-
-// union is a followed by each entry of b it does not hold yet.
-func union(a, b []string) []string {
-	for _, entry := range b {
-		if !slices.Contains(a, entry) {
-			a = append(a, entry)
-		}
-	}
-	return a
 }
