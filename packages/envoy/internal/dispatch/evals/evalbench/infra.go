@@ -474,10 +474,12 @@ func (s *eventSource) Values() ([]any, error) {
 // Dispatch's own event of that kind carries and that the keyword fill reads (textversions'
 // versionRules): an issue event's key and the issue's title, the one copyIssues writes, as api's
 // newIssueEventPayload writes them; and a comment's id (legiontest.CommentID) and issue_key. The
-// fill stops at the first event that lacks one of them and tries that event again, at most a
-// minute apart. Load writes the fill's cursor past the loaded log (keywordFillCaughtUpQuery), but
-// a fill that reads the log from its start, as one does after its cursor is reset, would never get
-// past the first event without them.
+// fill stops at the first event that lacks a field it needs, an issue event's title or a comment's
+// id or body, and tries that event again, at most a minute apart. It needs no key nor issue_key:
+// where the payload lacks one, issueKeyOf and postVersion read the event's own (events.issue_key).
+// Load writes the fill's cursor at the loaded log's newest event (keywordFillCaughtUpQuery), but a
+// fill that reads the log from its start, as one does after its cursor is reset, would never get
+// past the first event without the fields it needs.
 func (s *eventSource) payload(event plannedEvent, issue plannedIssue) string {
 	var fields string
 	switch event.kind {

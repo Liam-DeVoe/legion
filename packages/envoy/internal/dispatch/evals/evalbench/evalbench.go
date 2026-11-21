@@ -136,8 +136,9 @@ var countedTables = []string{
 // eval day-row refresher) committed their cursors over the empty store when the server that
 // migrated it booted; Load deletes those rows last, so the next server to boot starts each
 // consumer at the heads of the feeds and reads every project whole, as on a store a seeder wrote
-// before any pass ran, rather than paging through the history as a stream of new changes. Last it
-// writes the keyword fill's cursor as caught up with the loaded log (keywordFillCaughtUpQuery).
+// before any pass ran, rather than paging through the history as a stream of new changes. At this
+// head resetConsumers then writes the keyword fill's cursor as caught up with the loaded log
+// (keywordFillCaughtUpQuery).
 func Load(ctx context.Context, database *store.Store, spec Spec, logf func(format string, args ...any)) (Counts, error) {
 	switch {
 	case spec.Scale <= 0 || spec.Scale > 1:
@@ -265,31 +266,27 @@ func resetConsumers(ctx context.Context, pool *store.Pool, base bool) error {
 	if base {
 		return nil
 	}
-	if _, err := pool.Exec(ctx, keywordFillCaughtUpQuery, keywordFillHolder, textversions.RulesVersion); err != nil {
+	if _, err := pool.Exec(ctx, keywordFillCaughtUpQuery, textversions.RulesVersion); err != nil {
 		return fmt.Errorf("write the keyword fill's cursor as caught up: %w", err)
 	}
 	return nil
 }
 
-// keywordFillHolder is the holder the cursor row keywordFillCaughtUpQuery writes names
-// (search_text_versions_fill.holder), a uuid of the bench's own. No hold names it, so the first
-// batch of a serving fill takes the row over (textversions' holdCheckQuery).
-const keywordFillHolder = "5e2f4c1a-8b3d-4e7f-9a61-2c0d7b8e4f13"
-
 // keywordFillCaughtUpQuery writes the keyword fill's one cursor row as production's stands once
 // its one backfill, at the deploy, is done: at the newest event of the loaded log, with that
 // event's created_at, which the fill checks the log against (events.EventLogWasReset), and no
-// reach, which the fill computes on its next read. The holder is $1 (keywordFillHolder) and the
-// rules version $2 (textversions.RulesVersion), the running build's. It overwrites the row the
-// migrating server's fill wrote at no event, or writes one where it wrote none. The keyword rows
-// themselves are not written, since no read the bench measures reads them. A backfill of the
-// loaded log by the server would take hours at the stated rate, which is neither production's
-// steady state nor a Job's length, so `measure wait` waits only for the fill to follow the events
-// the server writes after the load.
+// reach, which the fill computes on its next read. The row names no holder, as a fill with no hold
+// writes it (textversions' holderArg), so the first batch of a serving fill takes it over
+// (holdCheckQuery); the rules version is $1 (textversions.RulesVersion), the running build's. It
+// overwrites the row the migrating server's fill wrote at no event, or writes one where it wrote
+// none. The keyword rows themselves are not written, since no read the bench measures reads them.
+// A backfill of the loaded log by the server would take hours at the stated rate, which is
+// neither production's steady state nor a Job's length, so `measure wait` waits only for the fill
+// to follow the events the server writes after the load.
 const keywordFillCaughtUpQuery = `
 	with newest as (select id, created_at from events order by id desc limit 1)
 	insert into search_text_versions_fill (id, event_id, event_at, reach, holder, rules)
-	select 1, coalesce((select id from newest), 0), (select created_at from newest), null, $1::uuid, $2::smallint
+	select 1, coalesce((select id from newest), 0), (select created_at from newest), null, null, $1::smallint
 	on conflict (id) do update
 	   set event_id = excluded.event_id, event_at = excluded.event_at, reach = null,
 	       holder = excluded.holder, rules = excluded.rules, updated_at = now()`

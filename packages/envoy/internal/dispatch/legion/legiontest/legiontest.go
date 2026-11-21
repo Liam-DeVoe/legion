@@ -21,7 +21,6 @@ package legiontest
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -568,29 +567,29 @@ func (s *seeding) event(issue, kind, actor, payload string, at time.Time) {
 // versionRules). For an issue event these are the issue's key and the title issue wrote it with,
 // which api's newIssueEventPayload writes too. For a comment they are its id (CommentID), its
 // issue_key and its body. For an ask they are its issue_key and its question. The fill stops at
-// the first event that lacks one of them and tries that event again, at most a minute apart, with
-// an error line each time, so a history without them leaves the keyword table unfilled from that
-// event on. Every other kind keeps fields as they are.
+// the first event that lacks a field it needs, an issue event's title, a comment's id or body, or
+// an ask's id or question, and tries that event again, at most a minute apart, with an error line
+// each time, so a history without them leaves the keyword table unfilled from that event on. It
+// needs no key nor issue_key: where the payload lacks one, issueKeyOf, postVersion and askVersion
+// read the event's own (events.issue_key). Every other kind keeps fields as they are.
 //
 // fields is one of this file's object literals, so the added fields go in after its opening brace.
 func (s *seeding) eventPayload(issue, kind string, seq int32, fields string) string {
-	var carried map[string]string
+	var carried string
 	switch {
 	case strings.HasPrefix(kind, "issue."):
-		carried = map[string]string{"key": issue, "title": s.titles[issue]}
+		carried = fmt.Sprintf(`"key":%q,"title":%q`, issue, s.titles[issue])
 	case strings.HasPrefix(kind, "comment."):
-		carried = map[string]string{"id": CommentID(issue, seq), "issue_key": issue, "body": fmt.Sprintf("Comment %d of this issue", seq)}
+		carried = fmt.Sprintf(`"id":%q,"issue_key":%q,"body":"Comment %d of this issue"`, CommentID(issue, seq), issue, seq)
 	case strings.HasPrefix(kind, "ask."):
-		carried = map[string]string{"issue_key": issue, "question": "Does this issue go ahead?"}
+		carried = fmt.Sprintf(`"issue_key":%q,"question":"Does this issue go ahead?"`, issue)
 	default:
 		return fields
 	}
-	// A map of strings always encodes.
-	object, _ := json.Marshal(carried)
 	if fields == "{}" {
-		return string(object)
+		return "{" + carried + "}"
 	}
-	return string(object[:len(object)-1]) + "," + fields[1:]
+	return "{" + carried + "," + fields[1:]
 }
 
 // CommentID is the id of the comment that the comment event at seq of issue writes. It is a uuid
@@ -763,10 +762,11 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 // The events are dated in the history's past. A keyword fill serving the database, as a kit's
 // server does when evalfixture loads into it, may have stored a reach above those dates, which
 // says that every event up to it has its keyword rows. Its batches would then log each of these
-// events as a breach of that reach. So where the database has the fill's cursor row (this head's
-// schema; the base head's lacks it), the events statement also nulls the stored reach. This is the
-// reset that the cursor row's migration (20261120021308) says nulls it. It is done in the same
-// statement, and so in the same transaction, so no fill batch can store a reach between the two.
+// events as a breach of that reach. So where the database has the fill's cursor table (this
+// head's schema; the base head's lacks it), the events statement also nulls the stored reach. The
+// table's migration (20261120021308) names only a reset of the event log as lowering the reach; a
+// seed of events dated in the past is a second case. The reach is nulled in the same statement as
+// the insert, and so in the same transaction, so no fill batch can store a reach between the two.
 // The fill computes the reach again once the events are committed.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
