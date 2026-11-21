@@ -131,9 +131,6 @@ func (g *gate) copy(r *row) (string, error) {
 	}
 	for _, path := range paths {
 		src, dst := filepath.Join(g.snapshot, path), filepath.Join(copyDir, path)
-		if path == "." {
-			src, dst = g.snapshot, copyDir
-		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return "", err
 		}

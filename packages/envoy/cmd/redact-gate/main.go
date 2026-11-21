@@ -53,8 +53,6 @@ import (
 	"time"
 )
 
-const module = "github.com/sjawhar/envoy"
-
 // markers are the made-up credentials a row's evidence is one of in captured output: the probe's;
 // -RDX-, which each credential the proxy-echo rows choose holds (internal/cipherclient,
 // internal/cipher/ciphertest and loadtest's proxy_echo and answertext tests); and eyJhbGci, the

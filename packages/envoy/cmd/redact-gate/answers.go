@@ -200,8 +200,7 @@ func (a *answerReader) responseField(sel *ast.SelectorExpr, name string) bool {
 			return false
 		}
 		if i == len(index)-1 {
-			n, ok := types.Unalias(t).(*types.Named)
-			return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "net/http" && n.Obj().Name() == "Response"
+			return isResponse(t)
 		}
 		t = st.Field(k).Type()
 	}
