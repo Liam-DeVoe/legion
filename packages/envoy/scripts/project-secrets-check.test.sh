@@ -95,9 +95,11 @@ cat >"$work/fake-secrets.json" <<JSON
 JSON
 trap 'exit 0' TERM INT
 echo "dev-stack: broker http://127.0.0.1:5101" >&2
-# A line of a process's output, ahead of the banner and after it, that looks like an export and runs
-# a command when evaluated: the driver reads the banner's own block alone, so neither runs.
-printf '  export DECOY_AHEAD=$(: >%s)\n' "$(printf %q "$state/an export ahead of the banner ran")"
+# A line of a process's output, ahead of the banner and after it, that looks like an export of a
+# name the driver reads and runs a command when evaluated: a reader that took the first such line of
+# the whole log would evaluate the one ahead. The driver reads the banner's own block alone, so
+# neither runs.
+printf '  export DEV_STACK_DIR=$(: >%s)\n' "$(printf %q "$state/an export ahead of the banner ran")"
 # Each path goes out with printf %q, as the real banner prints it, so a run under a TMPDIR whose
 # name holds a space or a quote holds the driver to reading each line as a shell does. The banner
 # goes out in one write, from "dev-stack: ready." to its last line, as the real one does.
@@ -146,7 +148,7 @@ banner+=$'\n'"$(cat <<BANNER
 BANNER
 )"
 printf '%s\n' "$banner"
-printf '  export DECOY_AFTER=$(: >%s)\n' "$(printf %q "$state/an export after the banner ran")"
+printf '  export AGENT_SECRETS_URL=$(: >%s)\n' "$(printf %q "$state/an export after the banner ran")"
 while :; do
   "$real_sleep" 1 &
   wait "$!" || true
