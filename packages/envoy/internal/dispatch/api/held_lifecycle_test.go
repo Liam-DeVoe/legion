@@ -786,6 +786,49 @@ func TestAHeldCommentsAnswerStatesTheAnchorAndTurnItPosts(t *testing.T) {
 	}
 }
 
+// A held ask's answer states who the ask waits on and the document its anchor quotes, as the
+// write's own answer does (writeAsk: waiting_on_person, anchor_artifact), and a held reply on an
+// ask states whom that ask waits on once the reply posts (ask_waiting_on, as comment_create.go's
+// answer gives it): the dispatch command prints each, so a held write that leaves them out tells
+// its writer less than the same write with the reviewer off.
+func TestAHeldAskAndAHeldReplyAnswerWhomTheirPostLeavesTheAskWaitingOn(t *testing.T) {
+	rig := newReviewRig(t, ReviewerConfig{Asks: ReviewHold, WriterWindow: time.Minute}, nil)
+	response := rig.asWriter(http.MethodPost, "/api/v1/issues/"+rig.issue+"/asks", map[string]any{
+		"question": "Ship the reviewer?\n" + vacuousPhrase,
+		"options":  []map[string]string{{"label": "Ship it", "description": "Release it today."}, {"label": "Do not file", "description": "Wait."}},
+		"anchor":   map[string]any{"artifact": specOf(t, rig.database, rig.issue), "quote": "Seed paragraph"},
+	})
+	id := rig.held(response, "the held ask").ID
+	answer := decodeBody[model.Ask](t, response)
+	rig.postedAsWritten(id)
+	posted := postedItem[model.Ask](t, rig.handler, "/api/v1/asks/"+id, id)
+	if posted.WaitingOnPerson == "" || answer.WaitingOnPerson != posted.WaitingOnPerson {
+		t.Errorf("the held ask states waiting_on_person %q; it posted waiting on %q", answer.WaitingOnPerson, posted.WaitingOnPerson)
+	}
+	if posted.AnchorArtifact == nil || asJSON(t, answer.AnchorArtifact) != asJSON(t, posted.AnchorArtifact) {
+		t.Errorf("the held ask states anchor_artifact %s; it posted %s", asJSON(t, answer.AnchorArtifact), asJSON(t, posted.AnchorArtifact))
+	}
+
+	replies := newReviewRig(t, ReviewerConfig{Comments: ReviewHold, WriterWindow: time.Minute}, nil)
+	asked := replies.asWriter(http.MethodPost, "/api/v1/issues/"+replies.issue+"/asks", map[string]any{"question": "Which port should the node use?"})
+	if asked.Code != http.StatusCreated {
+		t.Fatalf("the writer's ask: %d %s", asked.Code, asked.Body.String())
+	}
+	reply := replies.asWriter(http.MethodPost, "/api/v1/issues/"+replies.issue+"/comments", map[string]any{
+		"body": "Status\nThe node answers on 8080. " + vacuousPhrase, "ask_id": decodeBody[model.Ask](t, asked).ID,
+	})
+	replies.held(reply, "the held reply on the ask")
+	var stated struct {
+		AskWaitingOn string `json:"ask_waiting_on"`
+	}
+	if err := json.Unmarshal(reply.Body.Bytes(), &stated); err != nil {
+		t.Fatal(err)
+	}
+	if stated.AskWaitingOn == "" {
+		t.Errorf("the held reply on an open ask states no ask_waiting_on: %s", reply.Body.String())
+	}
+}
+
 // A held comment that replies inside a thread answers the thread its post writes it in: the post
 // climbs reply_to to the thread's head (threadHeadOf) and keeps the comment the request named as
 // answers. A reply to a reply answers reply_to the thread's root comment, and a reply to a comment
