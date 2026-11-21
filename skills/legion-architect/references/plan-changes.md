@@ -8,9 +8,6 @@ A plan's text, its steps and when to give it first: `skill://legion-architect/re
 
 Your role prompt says what `stop_task` does, what holds a stopped task and what starts it again, and what each refusal of `stop_task` or of a plan's version means.
 
-- A version that changes only the text outside the block is taken, and the task goes on at its step.
-  A block that names no `steps` and a block that writes the default steps out are different blocks, so a version that turns one into the other changes the task.
-
 - After `VERSION_NOT_IN_DISPATCH`, upload that version to Dispatch first.
 
 ## The notices
