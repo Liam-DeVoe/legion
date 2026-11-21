@@ -219,16 +219,6 @@ func Valid(role string) bool {
 	return pattern.MatchString(role)
 }
 
-// ValidClaimKey reports whether key is the key a claim can be keyed by (store.RoleClaimKeyOf):
-// a role token a claim can name (Valid), alone or, for a free-form role under a project, after
-// that project's key and a dot (contracts.RoleClaimKey, read back by contracts.ParseRoleClaimKey).
-// The listener's kept lane asks it of the claim key a give-up path holds, so a role message under
-// a key no claim can carry is kept for none.
-func ValidClaimKey(key string) bool {
-	project, role := contracts.ParseRoleClaimKey(key)
-	return Valid(role) && contracts.RoleClaimKey(project, role) == key
-}
-
 // ForwardFenceAge is how old the resolution that chose a role message's holder may be when the
 // message's forward to that holder starts: a forward from the listener's role lane, its publish
 // route or Dispatch's outbox whose resolution is this old or older resolves the holder again
@@ -245,6 +235,16 @@ const ForwardFenceAge = 55 * time.Minute
 // it, so the fence is one rule.
 func ResolutionTooOld(resolvedAt, now time.Time) bool {
 	return !resolvedAt.IsZero() && now.Sub(resolvedAt) >= ForwardFenceAge
+}
+
+// ValidClaimKey reports whether key is the key a claim can be keyed by (store.RoleClaimKeyOf):
+// a role token a claim can name (Valid), alone or, for a free-form role under a project, after
+// that project's key and a dot (contracts.RoleClaimKey, read back by contracts.ParseRoleClaimKey).
+// The listener's kept lane asks it of the claim key a give-up path holds, so a role message under
+// a key no claim can carry is kept for none.
+func ValidClaimKey(key string) bool {
+	project, role := contracts.ParseRoleClaimKey(key)
+	return Valid(role) && contracts.RoleClaimKey(project, role) == key
 }
 
 // ResolveHolder resolves the holder of role for a message of project within ctx. It reads the

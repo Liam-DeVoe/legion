@@ -16,6 +16,7 @@ import (
 	"github.com/nats-io/nkeys"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/machine"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -107,12 +108,21 @@ func serviceRequest(raw string) Request {
 	return Request{UserNkey: "UUSER", ServerID: "NSERVER", Nonce: "nonce", User: natscred.ServiceUser, Password: raw, Host: "10.0.0.7"}
 }
 
-var exampleServices = []ServiceEntry{
-	{Kind: KindDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
-	{Kind: KindListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
-	{Kind: KindDaemon, Account: daemonAccount, AllProjects: true},
-	{Kind: KindMeasure, Account: measureAccount, Google: true, AllProjects: true},
-	{Kind: KindDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+// The platform accounts this package's tests list in BROKER_NATS_SERVICES.
+const (
+	listenerAccount = "system:serviceaccount:example-ns:example-listener"
+	daemonAccount   = "system:serviceaccount:example-ns:example-daemon"
+	measureAccount  = "envoy-measure@example-project.iam.gserviceaccount.com"
+	edgeAccount     = "system:serviceaccount:example-ns:example-edge-listener"
+)
+
+var exampleServices = []config.NATSService{
+	{Kind: config.NATSDispatch, MachineID: "example-dispatch", Account: "system:serviceaccount:dispatch:dispatch", AllProjects: true},
+	{Kind: config.NATSListener, MachineID: "example-hub", Account: listenerAccount, AllProjects: true},
+	{Kind: config.NATSDaemon, Account: daemonAccount, AllProjects: true},
+	{Kind: config.NATSMeasure, Account: measureAccount, Google: true, AllProjects: true},
+	{Kind: config.NATSDaemon, Account: "system:serviceaccount:example-ns:held-daemon"},
+	{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"PRIV"}},
 }
 
 // A session's live token and a proof over this connection's nonce are answered with a user of
@@ -156,6 +166,54 @@ func TestAServiceTokenGetsItsKindsGrant(t *testing.T) {
 	}
 }
 
+// An edge listener's entry, read as BROKER_NATS_SERVICES writes it, is answered with the edge's
+// grant for its machine id and the projects the entry lists (natsgrant.Edge), named for its
+// machine id and expiring with its token, and that grant passes the guard every answer passes. The
+// grant publishes the role subjects of those projects and no other project's: an entry of two
+// projects publishes both, an entry of one the one. It is not the listener's grant, which
+// publishes every notification topic.
+func TestTheAuthServiceAnswersTheEdgeItsGrant(t *testing.T) {
+	now := time.Now()
+	deps := Deps{ServiceToken: serviceTokens(map[string]platformToken{
+		"edge-token": {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
+	})}
+	for _, test := range []struct {
+		entry    string
+		projects []string
+	}{
+		{entry: "edge-listener/edge-a/PRIV=" + edgeAccount, projects: []string{"PRIV"}},
+		{entry: "edge-listener/edge-a/PRIV,OTHER=" + edgeAccount, projects: []string{"OTHER", "PRIV"}},
+	} {
+		t.Run(test.entry, func(t *testing.T) {
+			services, err := config.ParseNATSServices(test.entry)
+			require.NoError(t, err)
+			decision, err := Decide(t.Context(), deps, services, serviceRequest("edge-token"))
+			require.NoError(t, err)
+			want, err := natsgrant.Edge("edge-a", test.projects)
+			require.NoError(t, err)
+			require.Equal(t, Decision{Name: "edge-listener/edge-a", Grant: want, Expires: now.Add(time.Hour)}, decision)
+			for _, project := range test.projects {
+				require.Contains(t, decision.Grant.Publish, "notifications.role."+project+".>")
+				require.Contains(t, decision.Grant.Publish, "notifications.envoy.exceptions.notifications.role."+project+".>")
+			}
+			require.NotContains(t, decision.Grant.Publish, "notifications.role.INFRA.>")
+			require.NotEqual(t, natsgrant.Listener("edge-a"), decision.Grant)
+			require.Nil(t, guard(decision.Grant))
+		})
+	}
+}
+
+// An edge listener's entry whose projects natsgrant.Edge refuses - one config.ParseNATSServices would not
+// have read, a wildcard among them - is answered with no grant, which the guard refuses as an open
+// direction, and never with a grant built of that list.
+func TestAnEdgeEntryWhoseProjectsEdgeRefusesGetsNoGrant(t *testing.T) {
+	grant := serviceGrant(config.NATSService{Kind: config.NATSEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"*"}})
+	require.Equal(t, natsgrant.Permissions{}, grant)
+	refused := guard(grant)
+	require.NotNil(t, refused)
+	require.Equal(t, labelOpenDirection, refused.Label)
+}
+
 // Every refusal is one line naming why, carries nothing of the credential, and is counted under
 // its own fixed label, the decision counter's reason. A row whose ctx is set decides under that
 // context instead of the test's: a spent one is a decision past its budget.
@@ -185,6 +243,7 @@ func TestRefusals(t *testing.T) {
 		"unlisted-token":  {account: "system:serviceaccount:example-ns:stranger", issued: now, expiry: now.Add(time.Hour)},
 		"two-hours-token": {account: daemonAccount, issued: now, expiry: now.Add(2 * time.Hour)},
 		"held-token":      {account: "system:serviceaccount:example-ns:held-daemon", issued: now, expiry: now.Add(time.Hour)},
+		"edge-token":      {account: edgeAccount, issued: now, expiry: now.Add(time.Hour)},
 	}
 	deps := Deps{Introspect: introspector(a, expired, dotted, foreign, unbounded, readOnly), ServiceToken: serviceTokens(tokens)}
 	unreachable := Deps{Introspect: func(context.Context, string) (oauthwire.Introspection, error) {

@@ -312,9 +312,9 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 			ctx, cancel := legionAgentReadContext(r)
 			defer cancel()
 			agent, err := registry.Get(ctx, sessionID)
-			projects, edge := heldProjects(r)
+			scope := edgeScopeOf(r, nil)
 			var hidden bool
-			if err == nil && !edge {
+			if err == nil && scope == nil {
 				seen, seenErr := d.privacy.decide(ctx, r).legionAgentsSeen([]legionagents.Agent{agent})
 				if seenErr != nil {
 					writePrivacyUnknown(w)
@@ -323,9 +323,9 @@ func legionAgentSessionHandler(d *listenerDeps) http.HandlerFunc {
 				hidden = len(seen) == 0
 			}
 			switch {
-			case errors.Is(err, legionagents.ErrNotFound), err == nil && edge && !legionAgentOfProjects(agent, projects), hidden:
+			case errors.Is(err, legionagents.ErrNotFound), err == nil && !scope.showsAgent(agent), hidden:
 				// At the edge an agent of another project's issue is answered as one the
-				// registry does not hold (legionAgentOfProjects), and so is one of a project the
+				// registry does not hold (edgeScope.showsAgent), and so is one of a project the
 				// caller does not see in the required privacy mode.
 				writeJSONError(w, http.StatusNotFound, "unknown legion agent "+sessionID)
 			case err != nil:
@@ -390,8 +390,8 @@ func legionAgentRoleHandler(d *listenerDeps) http.HandlerFunc {
 			writeLegionAgentError(w, err)
 			return
 		}
-		if projects, edge := heldProjects(r); edge {
-			agents = legionAgentsOfProjects(agents, projects)
+		if scope := edgeScopeOf(r, nil); scope != nil {
+			agents = scope.agents(agents)
 		} else if agents, err = d.privacy.decide(ctx, r).legionAgentsSeen(agents); err != nil {
 			writePrivacyUnknown(w)
 			return
@@ -426,8 +426,8 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 				writeLegionAgentError(w, err)
 				return
 			}
-			if projects, edge := heldProjects(r); edge {
-				agents = legionAgentsOfProjects(agents, projects)
+			if scope := edgeScopeOf(r, nil); scope != nil {
+				agents = scope.agents(agents)
 			} else if agents, err = d.privacy.decide(ctx, r).legionAgentsSeen(agents); err != nil {
 				writePrivacyUnknown(w)
 				return

@@ -22,10 +22,10 @@ import (
 // only the DialOptions among them.
 type ConnectOption interface{ apply(*connectOpts) }
 
-// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection
-// and WithReconnectErrClock. Dial's name and environment are its parameters, so WithName and
-// WithEnvironment are not DialOptions, and neither are the options of a client's JetStream
-// (WithReplicas, WithPublishAcknowledgementClock).
+// DialOption is a ConnectOption Dial honours too: WithConnectInBackground, WithSilentCutDetection,
+// WithImmediateReconnect, WithInboxPrefix and WithReconnectErrClock. Dial's name and environment
+// are its parameters, so WithName and WithEnvironment are not DialOptions, and neither are the
+// options of a client's JetStream (WithReplicas, WithPublishAcknowledgementClock).
 type DialOption func(*connectOpts)
 
 func (o DialOption) apply(opts *connectOpts) { o(opts) }
@@ -50,13 +50,15 @@ type connectOpts struct {
 	background                  bool
 	silentCutDetection          bool
 	immediateReconnect          bool
+	inboxPrefix                 string
+	streamMessageReads          bool
 	privacyRequiredSuffix       string
 }
 
 // connectionSettings is what every connection of a client applies after envoy's own options
 // (connectWithContext): the NATS credential names (credential, nil for none), the pings of
-// WithSilentCutDetection and the retry of WithImmediateReconnect, each when the client asked for
-// it.
+// WithSilentCutDetection, the retry of WithImmediateReconnect and the inbox prefix of
+// WithInboxPrefix, each when the client asked for it.
 func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	settings := []nats.Option{credential}
 	if o.silentCutDetection {
@@ -64,6 +66,9 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 	}
 	if o.immediateReconnect {
 		settings = append(settings, nats.ReconnectWait(0), nats.ReconnectJitter(reconnectJitterImmediate, reconnectJitterImmediate))
+	}
+	if o.inboxPrefix != "" {
+		settings = append(settings, nats.CustomInboxPrefix(o.inboxPrefix))
 	}
 	if len(settings) == 1 {
 		return credential
@@ -227,6 +232,26 @@ func WithSilentCutDetection() DialOption {
 // it returns. The jitter keeps two replicas from dialling in the same instant.
 func WithImmediateReconnect() DialOption {
 	return func(o *connectOpts) { o.immediateReconnect = true }
+}
+
+// WithInboxPrefix has every connection the client makes name its inboxes under prefix in place
+// of nats.go's _INBOX (nats.CustomInboxPrefix): its request replies, and every inbox named by the
+// connection's NewInbox, which is how this module names each one. An edge listener takes it
+// (cmd/listener, natsgrant.EdgeInboxPrefix), so its user may subscribe its own inboxes and no other
+// client's.
+func WithInboxPrefix(prefix string) DialOption {
+	return func(o *connectOpts) { o.inboxPrefix = prefix }
+}
+
+// WithStreamMessageReads has every KV bucket handle opened on the client's connection read a key
+// with a stream message get ($JS.API.STREAM.MSG.GET.KV_<bucket>), which the JetStream API answers,
+// in place of the direct get ($JS.API.DIRECT.GET.KV_<bucket>.>) nats.go sends for every bucket
+// this module creates (streamMessageReads). An edge listener takes it (cmd/listener,
+// natsgrant.Edge), whose grant holds no direct get: the stream itself publishes a direct get's
+// answer, the stored value, on whatever reply subject the request names, and a value aimed at
+// $JS.API. is taken by the JetStream API as a request of the account's.
+func WithStreamMessageReads() DialOption {
+	return func(o *connectOpts) { o.streamMessageReads = true }
 }
 
 type subscriptionTransport uint8
@@ -401,6 +426,9 @@ type Client struct {
 	// slowConsumers counts the slow-consumer errors the client's connections reported
 	// (SlowConsumers).
 	slowConsumers atomic.Uint64
+	// streamMessageReads is WithStreamMessageReads: every KV handle opened on the client's
+	// connection reads with a stream message get rather than a direct get (wrapKeyValue).
+	streamMessageReads bool
 
 	// recovery state
 	recovering int32
@@ -411,6 +439,11 @@ type Client struct {
 	// client that runs none, or none yet: one that connects in the background starts it on its first
 	// reconcile (ensureStreamOnce). It is written and read under mu (startKeeper, awaitKeeper).
 	keeperDone chan struct{}
+	// keepPasses counts the keeper's passes that have ended, a pass that failed included (keep,
+	// keepPass), for a test that must know a pass ran after a change it made: a pass that finds
+	// nothing to restore logs nothing and sends no update, so the count is the one sign it ran. It
+	// says nothing of whether the pass did what it set out to; a failed pass logs that.
+	keepPasses atomic.Uint64
 }
 
 // Dial opens a tuned core NATS connection using envoy's standard options (5s connect timeout,
@@ -522,6 +555,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		reconnectErrClock:           opts.reconnectErrClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
+		streamMessageReads:          opts.streamMessageReads,
 		stopCh:                      make(chan struct{}),
 	}
 	stream := opts.streamConfig()
@@ -2302,7 +2336,7 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	deadline, _ := ctx.Deadline()
 	conn := c.Conn
-	inbox := nats.NewInbox()
+	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
 		return nil, err

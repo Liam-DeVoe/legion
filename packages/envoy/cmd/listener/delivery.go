@@ -50,8 +50,15 @@ type listenerDeliveryHandlerConfig struct {
 	privacy *listenerPrivacy
 	// wakes publishes the wake reports an unplaceable agent delivery raises, off the delivery
 	// path and under the listener's own lifetime (wakeReporter); nil in a test that builds the
-	// handlers without it, which reports no wake.
+	// handlers without it, which reports no wake, and in edge mode.
 	wakes *wakeReporter
+	// edge is the edge listener's own grant (edgeGrant, edge_nats.go), nil on every other
+	// listener. The grant publishes no kept role lane (natsgrant.Edge), so an edge listener keeps
+	// no role message for a role's next holder and hands no kept lane over (keepForNextHolder,
+	// drainKeptRole, startKeptRoleSweep): the shared listeners' sweeps hand every lane over, a
+	// role held at the edge among them. And it publishes a delivery exception only on a lane the
+	// grant holds (edgeGrant.publishesException).
+	edge *edgeGrant
 	// forwardRole publishes a role-lane envelope to the holder's agent subject under msgID, its
 	// Nats-Msg-Id when not empty, and returns the wait for its outcome; main.go wires
 	// startRoleForward(client). The forward counts as delivered once the stream acknowledges
@@ -385,7 +392,9 @@ type deliveryOutcome struct {
 
 	// exceptionReason, when non-empty, publishes a delivery exception via
 	// publishDeliveryException for control topics. fanoutRefusal publishes one for this terminal
-	// fanout outcome on any topic, each on the transport its own lane takes.
+	// fanout outcome on any topic, each on the transport its own lane takes. An edge listener
+	// withholds one whose lane its grant does not publish (edgeGrant.publishesException), and the
+	// outcome is otherwise applied as it would be had the exception gone out.
 	exceptionReason string
 	fanoutRefusal   bool
 	// origin identifies the durable message an exception is about (exceptionOrigin), "" for none.
@@ -425,7 +434,9 @@ func applyDeliveryOutcome(cfg listenerDeliveryHandlerConfig, item contracts.Enve
 		outcome.log(cfg.logger)
 	}
 	if outcome.exceptionReason != "" && !isExceptionsTopic(item.Topic) && (isControlTopic(item.Topic) || outcome.fanoutRefusal) {
-		if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
+		if !cfg.edge.publishesException(item) {
+			cfg.edge.withhold(cfg.logger, item, outcome.exceptionReason)
+		} else if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
 			cfg.logger.Error(exceptionPublishFailedLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
 			if outcome.exceptionFailureClearsAttempt {
 				cfg.attemptCache.Clear(item.DedupeKey, outcome.sessionID)
@@ -690,17 +701,13 @@ func resolveRoleForward(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 
 // roleLaneProjectError is why a role lane named in the form that names a project
 // (notifications.role.<KEY>.<role>) reaches no holder, or nil: a Legion role works for the
-// project its own name gives (contracts.ClaimProject), and its claim is keyed on the bare name, so
+// project its own name gives (contracts.RoleClaimOf), and its claim is keyed on the bare name, so
 // a lane of another project naming it, or of no project, would reach the holder of the role's own
 // project. The role lane drops such a message and the publish route refuses it, as POST
 // /v1/roles/set refuses the claim. A lane in the old form (the role alone) and a free-form role
 // under any project key have none.
 func roleLaneProjectError(lane string) error {
-	project, name, legacy := contracts.CanonicalRole(lane)
-	if legacy {
-		return nil
-	}
-	_, err := contracts.ClaimProject(name, project)
+	_, err := contracts.RoleClaimOf(lane)
 	return err
 }
 
