@@ -11,8 +11,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
@@ -445,10 +448,11 @@ func program(base []string, name string) string {
 //
 // c.stdout reads the pipe exec's StdoutPipe gives, in this goroutine and before Wait, as
 // StdoutPipe requires, so a reader still scanning the end of a diff never loses what it had not
-// read yet. The read is bounded by ctx: once ctx ends, the pipe's read deadline is set to now. A
-// descendant that left the child's process group (setsid) can hold the pipe open after the group
-// is gone, and neither the group's stop nor exec's WaitDelay, which run during Wait, would end a
-// read made before it.
+// read yet. A descendant that left the child's process group (setsid) can hold the pipe open after
+// the child is gone, and neither the group's stop nor exec's WaitDelay, which run during Wait,
+// would end a read made before it, so the read has two ends of its own (pipeReader): ctx's end,
+// and the child's exit and then procgroup.WaitDelay, the wait exec gives the same descendant of a
+// child whose output it copies itself.
 func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	// One read of the base environment for the child, which both the program lookup and the
 	// child's own environment are built from.
@@ -486,8 +490,12 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 	var readErr error
 	if err == nil {
 		if out != nil {
+			reader := &pipeReader{ctx: ctx, file: out}
 			stop := context.AfterFunc(ctx, func() { _ = out.SetReadDeadline(time.Now()) })
-			readErr = c.stdout(out)
+			read := make(chan struct{})
+			go reader.endAfterExit(cmd.Process.Pid, read)
+			readErr = c.stdout(reader)
+			close(read)
 			stop()
 			// A reader that stopped early leaves the child writing into a pipe nobody reads:
 			// closed, its next write fails and it ends, rather than blocking the wait below.
@@ -516,6 +524,84 @@ func (g *Guard) run(ctx context.Context, c child) (int, string, error) {
 		return 0, printed.String(), err
 	}
 	return cmd.ProcessState.ExitCode(), printed.String(), nil
+}
+
+// pipeReader is a child's standard output as run hands it to child.stdout: the pipe, read as it
+// is written, until the pipe's end, ctx's end, or the child's exit and procgroup.WaitDelay after
+// it (endAfterExit), whichever comes first.
+//
+// Once the child has exited and that wait has passed, nothing the child wrote can still be on its
+// way: what it wrote is in the pipe's buffer, and only a descendant that outlived it can write
+// more. So from then on each read takes what the buffer holds without waiting (drain), and an
+// empty buffer is the end of the output. A reader that was still scanning what the child wrote
+// reads all of it; what it does not wait for is a descendant that holds the pipe open, which is
+// what exec's own copy does not wait for either.
+type pipeReader struct {
+	ctx    context.Context
+	file   *os.File
+	exited atomic.Bool
+}
+
+func (r *pipeReader) Read(p []byte) (int, error) {
+	if !r.exited.Load() {
+		n, err := r.file.Read(p)
+		if !errors.Is(err, os.ErrDeadlineExceeded) || r.ctx.Err() != nil || !r.exited.Load() {
+			return n, err
+		}
+	}
+	return r.drain(p)
+}
+
+// drain is one read of what the pipe's buffer holds now, without waiting: io.EOF where it holds
+// nothing, and ctx's error once ctx has ended. The deadline endAfterExit set is cleared first,
+// since a read past its deadline reads nothing at all; one it sets again after the clear is
+// cleared again.
+func (r *pipeReader) drain(p []byte) (int, error) {
+	raw, err := r.file.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	for {
+		if err := r.ctx.Err(); err != nil {
+			return 0, os.ErrDeadlineExceeded
+		}
+		if err := r.file.SetReadDeadline(time.Time{}); err != nil {
+			return 0, err
+		}
+		var n int
+		var readErr error
+		err := raw.Read(func(fd uintptr) bool {
+			n, readErr = syscall.Read(int(fd), p)
+			return true
+		})
+		switch {
+		case errors.Is(err, os.ErrDeadlineExceeded), errors.Is(readErr, syscall.EINTR):
+			continue
+		case err != nil:
+			return 0, err
+		case errors.Is(readErr, syscall.EAGAIN), readErr == nil && n == 0:
+			return 0, io.EOF
+		case readErr != nil:
+			return 0, readErr
+		}
+		return n, nil
+	}
+}
+
+// endAfterExit waits for the child pid to exit, without reaping it (WNOWAIT: Wait reaps it), and
+// procgroup.WaitDelay after that ends the read: it marks the reader as past the child's exit and
+// sets the pipe's read deadline to now, which ends a read waiting on a descendant. It does nothing
+// where read is closed first, the reader having read to the pipe's end on its own.
+func (r *pipeReader) endAfterExit(pid int, read <-chan struct{}) {
+	var info unix.Siginfo
+	for errors.Is(unix.Waitid(unix.P_PID, pid, &info, unix.WEXITED|unix.WNOWAIT, nil), unix.EINTR) {
+	}
+	select {
+	case <-read:
+	case <-time.After(procgroup.WaitDelay):
+		r.exited.Store(true)
+		_ = r.file.SetReadDeadline(time.Now())
+	}
 }
 
 // stoppedError is a child that the end of the caller's context stopped before it exited: its

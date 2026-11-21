@@ -52,6 +52,77 @@ func aPushOf(t *testing.T, files map[string]string) aPush {
 	}}
 }
 
+// gitFirst is a guard whose git, first on its PATH, is script: a stand-in that may run the real
+// git, as fixturegit.CompiledGit names it, by the path script holds.
+func gitFirst(t *testing.T, script string) *Guard {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public,
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// A record is scanned when it arrives, not when the pass ends: once a record that names a host is
+// added, the pass's report holds its line before end is called. A pass that held its records
+// and scanned them at its end would hold the whole push.
+func TestTheRulePassScansARecordAsItArrives(t *testing.T) {
+	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+	pass, err := guard.rulePass(bound(t), "the push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pass.add(Record{Label: "notes.md", Text: "the runner answers at " + theHost}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"notes.md: " + theClass}
+	if !slices.Equal(pass.report.lines, want) {
+		t.Fatalf("after the record was added the report is %q, want %q", pass.report.lines, want)
+	}
+	if err := pass.add(Record{Label: "notes.md", Text: "a line of nothing in particular"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := refusal(t, pass.end("the push")).Lines; !slices.Equal(got, want) {
+		t.Fatalf("the refusal is %q, want %q", got, want)
+	}
+}
+
+// The rule pass reads a push's diff as git writes it and scans each line as it arrives. The
+// stand-in git writes the diff's first added line, which names a host, and then waits for a file
+// that the test makes once the pass's report holds that line; only then does it write the second
+// line and exit. A read that waited for the whole diff, or a pass that scanned at its end, would
+// leave the file unmade, and the stand-in gives up after 10 s and exits 7.
+func TestTheRulePassReadsTheDiffAsGitWritesIt(t *testing.T) {
+	seen := filepath.Join(t.TempDir(), "the first line was scanned")
+	guard := gitFirst(t, "printf 'diff --git a/f.md b/f.md\\n--- /dev/null\\n+++ b/f.md\\n@@ -0,0 +1,2 @@\\n"+
+		"+the runner answers at "+theHost+"\\n'\n"+
+		"i=0\nwhile [ ! -e '"+seen+"' ]; do\n  i=$((i+1))\n  [ \"$i\" -gt 100 ] && exit 7\n  sleep 0.1\ndone\n"+
+		"printf '+a second line of nothing\\n'\n")
+	pass, err := guard.rulePass(bound(t), "the push")
+	if err != nil {
+		t.Fatal(err)
+	}
+	made := false
+	emit := func(record Record) error {
+		if err := pass.add(record); err != nil {
+			return err
+		}
+		if len(pass.report.lines) > 0 && !made {
+			made = true
+			return os.WriteFile(seen, nil, 0o600)
+		}
+		return nil
+	}
+	if err := guard.addedLines(bound(t), t.TempDir(), "HEAD", 1, emit); err != nil {
+		t.Fatalf("the read of the diff: %v", err)
+	}
+	want := []string{"f.md: " + theClass}
+	if got := refusal(t, pass.end("the push")).Lines; !slices.Equal(got, want) {
+		t.Fatalf("the refusal is %q, want %q", got, want)
+	}
+}
+
 // Every added line of a push is read whole as git writes it, a line longer than the reader's
 // buffer included: a match at the end of a line of 192 KiB is reported, and so is each match among
 // many short lines, one line of the report for each, in the order git wrote them.
@@ -73,33 +144,73 @@ func TestEveryAddedLineIsReadWholeAsGitWritesIt(t *testing.T) {
 	}
 }
 
-// A read of a push's diff ends with the push's bound, though a process git started has left git's
-// process group (setsid) and holds git's standard output, the diff's pipe, open far past it: the
-// read is refused as a setup failure naming the bound, within a few seconds of the bound, and does
-// not wait for that process. The stand-in git, first on PATH, starts such a process and then runs
-// the real git. The process holds standard output alone: one that held standard error too would
-// keep exec's copy of it running, and exec closes every pipe it made once WaitDelay passes after
-// the bound, which would end the read without the guard's own deadline.
+// A push with no deadline at all, as git's pre-push hook runs one, is answered once git itself
+// has exited, though a process git started has left git's process group (setsid) and holds git's
+// standard output, the diff's pipe, open for 30 s: each read of git's output ends one
+// procgroup.WaitDelay after git exits, the wait exec gives such a process when it copies a
+// child's output itself. The answer is the one a push with no such process gets.
+func TestAReadEndsAfterGitExitsThoughAnEscapedProcessHoldsThePipe(t *testing.T) {
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skip("no setsid on this machine")
+	}
+	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing\nthe runner answers at " + theHost + "\n"})
+	want := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines
+	guard := gitFirst(t, "setsid sleep 30 2>/dev/null &\nexec '"+fixturegit.CompiledGit(t)+"' \"$@\"\n")
+	started := time.Now()
+	err := guard.Push(context.Background(), push.req)
+	if took := time.Since(started); took > 20*time.Second {
+		t.Errorf("the push was answered after %s, waiting on the escaped process", took.Round(time.Second))
+	}
+	if got := refusal(t, err).Lines; !slices.Equal(got, want) {
+		t.Fatalf("the report is %q, want the one with no escaped process, %q", got, want)
+	}
+}
+
+// A read of a push's diff ends with the push's bound while git's diff has not exited, and a
+// process git started has left git's process group (setsid) and holds the diff's pipe open far
+// past the bound: the read is refused as a setup failure naming the bound, within a few seconds
+// of the bound. The stand-in runs every other git at once and, for the diff, runs the real git
+// and then stays in its foreground until the bound stops it. The escaped process holds standard
+// output alone: one that held standard error too would keep exec's copy of it running.
 func TestADiffReadEndsWithItsBoundThoughAnEscapedProcessHoldsThePipe(t *testing.T) {
 	if _, err := exec.LookPath("setsid"); err != nil {
 		t.Skip("no setsid on this machine")
 	}
 	push := aPushOf(t, map[string]string{"notes.md": "a line of nothing in particular\n"})
-	dir := t.TempDir()
-	script := "#!/bin/sh\nsetsid sleep 15 2>/dev/null &\nexec '" + fixturegit.CompiledGit(t) + "' \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public,
-		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	git := fixturegit.CompiledGit(t)
+	guard := gitFirst(t, "case \" $* \" in\n"+
+		"*\" --unified=0 \"*) setsid sleep 30 2>/dev/null &\n  '"+git+"' \"$@\"\n  sleep 30 ;;\n"+
+		"*) exec '"+git+"' \"$@\" ;;\nesac\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	started := time.Now()
 	err := guard.Push(ctx, push.req)
-	if took := time.Since(started); took > 10*time.Second {
+	if took := time.Since(started); took > 20*time.Second {
 		t.Errorf("the push was answered after %s, past its bound of 4 s and the stop's grace", took.Round(time.Second))
 	}
 	says(t, setupFailure(t, err), "was stopped by its bound")
+}
+
+// A file renamed to a path the rules refuse is read as its new path, which is the path the
+// destination learns, and not as the path it was at. The rename moves the file whole, so the
+// path is the whole of what the commit names.
+func TestARenamedPathIsReadAsItsNewPath(t *testing.T) {
+	push := aPushOf(t, map[string]string{"old.md": "a line of nothing in particular\n"})
+	fixture := fixturegit.Isolated(t, t.TempDir())
+	base := push.req.Updates[0].LocalSHA
+	// Built out of two pieces for the reason theHost is (TestTheReportMasksAPathComponent).
+	path := "packages/" + "agen" + "t-c/notes.md"
+	if err := os.MkdirAll(filepath.Join(push.req.Dir, filepath.Dir(path)), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fixture.Run(push.req.Dir, "git", "mv", "old.md", path)
+	fixture.Run(push.req.Dir, "git", "commit", "--quiet", "-m", "a rename")
+	push.req.Updates = []Update{{LocalRef: "refs/heads/main", LocalSHA: fixture.Run(push.req.Dir, "git", "rev-parse", "HEAD"), RemoteRef: "refs/heads/main", RemoteSHA: base}}
+	const class = "names the private deployment repository or its Dispatch project key"
+	want := []string{"packages/<name>/notes.md: " + class, "packages/<name>/notes.md: " + class + " in its path"}
+	if got := refusal(t, push.through(guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public))).Lines; !slices.Equal(got, want) {
+		t.Fatalf("the report is %q, want %q", got, want)
+	}
 }
 
 // A path that holds a space is reported as itself. git ends the "+++" line that names such a path
@@ -129,6 +240,13 @@ func TestARefusalNamesAtMostItsBoundOfLines(t *testing.T) {
 	}{
 		{name: "fewer lines than the bound", lines: 3, want: func(today []string) []string { return today }},
 		{name: "the bound's own number of lines", lines: refusalLines - 2, want: func(today []string) []string { return today }},
+		{
+			name:  "one line more than the bound",
+			lines: refusalLines - 1,
+			want: func(today []string) []string {
+				return append(today[:refusalLines:refusalLines], fmt.Sprintf("(1 more line left out: this report names the first %d)", refusalLines))
+			},
+		},
 		{
 			name:  "more lines than the bound",
 			lines: refusalLines + 5,

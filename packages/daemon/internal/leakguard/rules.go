@@ -185,7 +185,11 @@ func (r *report) all() []string {
 	if r.leftOut == 0 {
 		return r.lines
 	}
-	return append(r.lines, fmt.Sprintf("(%d more lines left out: this report names the first %d)", r.leftOut, refusalLines))
+	lines := "lines"
+	if r.leftOut == 1 {
+		lines = "line"
+	}
+	return append(r.lines, fmt.Sprintf("(%d more %s left out: this report names the first %d)", r.leftOut, lines, refusalLines))
 }
 
 // mask is label with each slash-separated component the repository or company rules match

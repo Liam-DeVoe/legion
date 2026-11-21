@@ -263,22 +263,17 @@ func (g *Guard) commitRecords(ctx context.Context, dir, commit string, emit func
 		return fmt.Errorf("git show %s answered no identity, parents and message", short(commit))
 	}
 	parents := len(strings.Fields(parts[3]))
-	records := []Record{
+	for _, record := range []Record{
 		{Label: "commit " + short(commit) + " author", Text: parts[1]},
 		{Label: "commit " + short(commit) + " committer", Text: parts[2]},
 		{Label: "commit " + short(commit) + " message", Text: parts[4]},
-	}
-	paths, err := g.addedPaths(ctx, dir, commit, parents)
-	if err != nil {
-		return err
-	}
-	for _, path := range paths {
-		records = append(records, Record{Label: path, Text: path})
-	}
-	for _, record := range records {
+	} {
 		if err := emit(record); err != nil {
 			return err
 		}
+	}
+	if err := g.addedPaths(ctx, dir, commit, parents, emit); err != nil {
+		return err
 	}
 	return g.addedLines(ctx, dir, commit, parents, emit)
 }
@@ -310,44 +305,48 @@ func diffTree(parents int, args ...string) []string {
 	return append(argv, args...)
 }
 
-// addedPaths are the paths one commit adds or renames a file to, which are the paths the
-// destination would hold that it does not hold already.
+// addedPaths hands emit, as a record of each, the paths one commit adds or renames a file to,
+// which are the paths the destination would hold that it does not hold already. They are read as
+// git writes them, one field at a time (eachField).
 //
 // A merge's combined diff writes one status letter per parent and one path, with no path a
 // rename came from, where an ordinary diff writes one letter and, for a rename, the two paths.
 // Both are read here: a status of as many letters as the commit has parents is the combined
 // shape.
-func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int) ([]string, error) {
-	out, err := g.git(ctx, dir, diffTree(parents, "--name-status", "--diff-filter=AR", "-z", commit)...)
-	if err != nil {
-		return nil, err
-	}
+func (g *Guard) addedPaths(ctx context.Context, dir, commit string, parents int, emit func(Record) error) error {
 	combined := parents > 1
-	fields := strings.Split(out, "\x00")
-	var paths []string
-	for i := 0; i < len(fields); i++ {
-		switch status := fields[i]; {
-		case status == "":
-		case !combined && strings.HasPrefix(status, "R"):
-			// A rename is three fields: the status, the path it was at, and the path it is at.
-			// The destination learns the new path alone.
-			if i+2 < len(fields) {
-				paths = append(paths, fields[i+2])
+	// pending is how many paths of the current entry are still to come; the last is the one the
+	// destination learns. Zero is a field that is a status.
+	pending := 0
+	_, err := g.gitWith(ctx, dir, func(out io.Reader) error {
+		return eachField(out, 0, func(field []byte) error {
+			field = bytes.TrimSuffix(field, []byte{0})
+			if pending == 0 {
+				switch status := string(field); {
+				case status == "":
+				case !combined && strings.HasPrefix(status, "R"):
+					// A rename is three fields: the status, the path it was at, and the path it
+					// is at. The destination learns the new path alone.
+					pending = 2
+				default:
+					pending = 1
+				}
+				return nil
 			}
-			i += 2
-		default:
-			if i+1 < len(fields) {
-				paths = append(paths, fields[i+1])
+			pending--
+			if pending > 0 {
+				return nil
 			}
-			i++
-		}
-	}
-	return paths, nil
+			path := string(field)
+			return emit(Record{Label: path, Text: path})
+		})
+	}, diffTree(parents, "--name-status", "--diff-filter=AR", "-z", commit)...)
+	return err
 }
 
 // addedLines hands emit the lines one commit adds, each as a record of the file it is added to.
 // The diff is read with no context lines, so every line of it that a patch marks as added is one,
-// and it is read as git writes it, one line held at a time (eachLine).
+// and it is read as git writes it, one line held at a time (eachField).
 //
 // A merge's combined diff marks each line with one column per parent, so a line added against
 // any of them begins with that many characters, one of which is a "+" ("++text" for a line of
@@ -360,7 +359,7 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 	width := max(parents, 1)
 	path, header := "", false
 	_, err := g.gitWith(ctx, dir, func(out io.Reader) error {
-		return eachLine(out, func(line []byte) error {
+		return eachField(out, '\n', func(line []byte) error {
 			line = bytes.TrimRight(line, "\r\n")
 			switch {
 			case bytes.HasPrefix(line, []byte("diff --")):
@@ -381,29 +380,30 @@ func (g *Guard) addedLines(ctx context.Context, dir, commit string, parents int,
 	return err
 }
 
-// eachLine hands each line of r to fn, its "\n" included where it has one, as a slice fn must
-// copy what it keeps of. It holds one line at a time, however long: a line longer than its
-// buffer is gathered whole before fn sees it. An error of fn stops the read and is the answer.
-func eachLine(r io.Reader, fn func(line []byte) error) error {
+// eachField hands each field of r that ends in delim to fn, delim included where it has one, as
+// a slice fn must copy what it keeps of: a line of a diff for '\n', a field of a -z listing for 0.
+// It holds one field at a time, however long: a field longer than its buffer is gathered whole
+// before fn sees it. An error of fn stops the read and is the answer.
+func eachField(r io.Reader, delim byte, fn func(field []byte) error) error {
 	in := bufio.NewReaderSize(r, 64<<10)
 	var long []byte
 	for {
-		chunk, err := in.ReadSlice('\n')
+		chunk, err := in.ReadSlice(delim)
 		if errors.Is(err, bufio.ErrBufferFull) {
 			long = append(long, chunk...)
 			continue
 		}
-		line := chunk
+		field := chunk
 		if len(long) > 0 {
 			long = append(long, chunk...)
-			line = long
+			field = long
 		}
-		if len(line) > 0 {
-			if err := fn(line); err != nil {
+		if len(field) > 0 {
+			if err := fn(field); err != nil {
 				return err
 			}
 		}
-		// A long line's buffer is let go rather than kept for the rest of the read.
+		// A long field's buffer is let go rather than kept for the rest of the read.
 		long = nil
 		if err == io.EOF {
 			return nil
