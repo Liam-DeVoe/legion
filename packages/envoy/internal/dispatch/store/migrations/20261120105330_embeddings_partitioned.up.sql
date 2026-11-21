@@ -124,12 +124,32 @@ $$;
 -- a project, where ATTACH PARTITION takes SHARE UPDATE EXCLUSIVE, which no read or write of the
 -- table waits on. The table attached is empty, so the attach scans nothing and builds each index
 -- over no row.
+--
+-- The parent is named in its statements, and the swap renames it: a swap that commits after the
+-- parent is read and before those statements run leaves them naming a table that is gone
+-- (SQLSTATE 42P01), which is the first project of a server whose boot swapped an empty table in
+-- as the project was written. So the parent is first locked by the name read, in the mode the
+-- attach takes anyway, which the swap's ACCESS EXCLUSIVE excludes. A name the swap took away is
+-- refused by the lock (42P01) and read again, and once the lock is held the parent cannot be
+-- renamed until this transaction ends.
 create function embeddings_add_project_partition(p_key text) returns void
 language plpgsql as $$
 declare
-  v_parent regclass := embeddings_partitions_parent();
+  v_parent regclass;
   v_partition text := 'embeddings_project_' || lower(p_key);
 begin
+  if to_regclass(v_partition) is not null then
+    return;
+  end if;
+  loop
+    v_parent := embeddings_partitions_parent();
+    begin
+      execute format('lock table %s in share update exclusive mode', v_parent);
+    exception when undefined_table then
+      continue;
+    end;
+    exit when embeddings_partitions_parent() = v_parent;
+  end loop;
   if to_regclass(v_partition) is not null then
     return;
   end if;

@@ -402,6 +402,45 @@ func TestEveryProjectHasItsPartitionAndARowOfNoProjectThatExistsIsRefused(t *tes
 	refused("after the swap")
 }
 
+// A project inserted while the swap holds both tables gets its partition, attached to the table
+// the swap renamed, once the swap commits. Its trigger reads the parent by name and names it in
+// its statements, and a swap that commits between the two leaves them naming a table that is gone
+// (SQLSTATE 42P01): a server whose boot swaps an empty table in as its first project is written
+// answered that POST /api/v1/projects with 500. The insert must wait for the swap, which shows the
+// two met; a run where it did not wait proves nothing and fails.
+func TestAProjectWrittenAsTheSwapCommitsHasItsPartition(t *testing.T) {
+	ctx := context.Background()
+	database, _ := openPartitionTestStore(t, 1)
+	swap, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer swap.Rollback(ctx)
+	if _, err := swap.Exec(ctx, `select embeddings_swap_in_partitioned()`); err != nil {
+		t.Fatalf("swap the partitioned table in: %v", err)
+	}
+	inserted := make(chan error, 1)
+	go func() {
+		_, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('RACE', 'Written as the swap commits', 'alice@d.example')`)
+		inserted <- err
+	}()
+	if !waitForALockWaiter(t, database, 5*time.Second) {
+		t.Fatal("the insert of RACE did not wait for the open swap: the two did not meet, so this row proves nothing")
+	}
+	if err := swap.Commit(ctx); err != nil {
+		t.Fatalf("commit the swap: %v", err)
+	}
+	if err := <-inserted; err != nil {
+		t.Fatalf("insert RACE as the swap commits = %v, want it inserted with its partition", err)
+	}
+	requirePartitioned(t, database, true)
+	var parent *string
+	if err := database.Pool.QueryRow(ctx,
+		`select inhparent::regclass::text from pg_inherits where inhrelid = to_regclass('embeddings_project_race')`).Scan(&parent); err != nil || parent == nil || *parent != "embeddings" {
+		t.Errorf("RACE's partition is attached to %v (%v), want embeddings, the table the swap renamed", parent, err)
+	}
+}
+
 // A project gets its partition however it is written: by a session that writes as a replica,
 // whose writes fire no ordinary trigger, and by a statement that inserts the project and an issue
 // of it at once, whose issue's embeddings row is written before the project's own trigger runs (a
