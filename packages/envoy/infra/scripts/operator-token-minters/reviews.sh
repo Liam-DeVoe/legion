@@ -56,16 +56,65 @@ sa_record() {
 # ServiceAccount (its principal labelled seed:<its name>) allowed a right asked: no finding itself,
 # but who can become it holds what it holds.
 declare -A FOUND_SAS=()
+# The certificate signing chain's parts, by principal, which csr_part gathers from a cluster's
+# reviews, its named rights and a render, and csr_chains judges once they are all read.
+declare -A CSR_CREATE_OF=() CSR_APPROVAL_OF=() CSR_SIGNERS_OF=() CSR_WHY_OF=()
+csr_reset() { CSR_CREATE_OF=() CSR_APPROVAL_OF=() CSR_SIGNERS_OF=() CSR_WHY_OF=(); }
+# csr_part PRINCIPAL LABEL REASON: when LABEL is a part of the chain (CSR_RIGHTS: create, an approval
+# write, a signer's approve, each by name or not), records it for PRINCIPAL and returns 0; else 1.
+csr_part() {
+  local label="$2" names
+  case "$label" in
+    "$CSR_CREATE") CSR_CREATE_OF[$1]=1 ;;
+    *" certificatesigningrequests/approval.certificates.k8s.io "*)
+      names="${label#* certificatesigningrequests/approval.certificates.k8s.io }"
+      if [ "$names" = cluster-wide ]; then names=""; else names=" ${names% cluster-wide}"; fi
+      CSR_APPROVAL_OF[$1]="${CSR_APPROVAL_OF[$1]:+${CSR_APPROVAL_OF[$1]}, }${label%% *} certificatesigningrequests/approval$names"
+      CSR_WHY_OF[$1]="$3"
+      ;;
+    "$CSR_ANY_SIGNER") CSR_SIGNERS_OF[$1]="of any name" ;;
+    "$CSR_SIGNER_PREFIX"*)
+      # A rule naming a signer answers the review of that name and the unnamed right's named read
+      # alike, so each name is kept once.
+      names="${label#"$CSR_SIGNER_PREFIX"}" names="${names% cluster-wide}"
+      case " and ${CSR_SIGNERS_OF[$1]:-} and " in
+        " and of any name and " | *" and $names and "*) ;;
+        *) CSR_SIGNERS_OF[$1]="${CSR_SIGNERS_OF[$1]:+${CSR_SIGNERS_OF[$1]} and }$names" ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+}
+# csr_chains SUFFIX RESOURCE: one finding on RESOURCE, its right followed by SUFFIX, for each
+# principal csr_part saw allowed both an approval write and a signer, naming create too when it may
+# make its own request; a seed's chain only seeds FOUND_SAS. Then forgets the parts.
+csr_chains() {
+  local principal chain who
+  for principal in $(printf '%s\n' ${CSR_APPROVAL_OF[@]+"${!CSR_APPROVAL_OF[@]}"} | sort); do
+    [ -n "${CSR_SIGNERS_OF[$principal]:-}" ] || continue
+    chain="${CSR_CREATE_OF[$principal]:+create certificatesigningrequests, }${CSR_APPROVAL_OF[$principal]} and approve signers ${CSR_SIGNERS_OF[$principal]} cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
+    if [[ "$principal" == seed:* ]]; then
+      who="${principal#seed:system:serviceaccount:}"
+      [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$chain"
+      continue
+    fi
+    finding "$principal" "$chain$1" "$chain" "$2" "$chain" "${CSR_WHY_OF[$principal]:-}"
+    if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
+      FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$chain"
+    fi
+  done
+  csr_reset
+}
 # judge_reviews STEP SUFFIX RESOURCE: each review of $WORK/review.rec. The witness's must all be
 # allowed; every other allowed review is a finding on RESOURCE (the cluster), its right followed by
 # SUFFIX, granted where the API server's reason says, except a seed's, which only seeds FOUND_SAS,
-# and the certificate signing chain's (CSR_RIGHTS), which is one finding for a principal allowed
-# both the approval and a signer, naming create too when it is allowed. Returns 1 when the witness
-# was refused.
+# and the certificate signing chain's parts, which csr_part gathers for csr_chains (the caller runs
+# it after live_named, whose named approvals join the chain). Returns 1 when the witness was
+# refused.
 judge_reviews() {
-  local principal label verdict error reason witness_refused=false who chain
-  local -A csr_create=() csr_approval=() csr_signers=()
+  local principal label verdict error reason witness_refused=false who
   FOUND_SAS=()
+  csr_reset
   while IFS="$US" read -r -u 4 principal label verdict error reason; do
     if [ "$principal" = witness ]; then
       [ "$verdict" = allowed ] || witness_refused=true
@@ -73,15 +122,7 @@ judge_reviews() {
     fi
     case "$verdict" in
       allowed)
-        case "$label" in
-          "$CSR_CREATE") csr_create[$principal]=1; continue ;;
-          "$CSR_APPROVAL") csr_approval[$principal]="$reason"; continue ;;
-          "$CSR_SIGNER_PREFIX"*)
-            label="${label#"$CSR_SIGNER_PREFIX"}"
-            csr_signers[$principal]="${csr_signers[$principal]:+${csr_signers[$principal]} and }${label% cluster-wide}"
-            continue
-            ;;
-        esac
+        ! csr_part "$principal" "$label" "$reason" || continue
         if [[ "$principal" == seed:* ]]; then
           who="${principal#seed:system:serviceaccount:}"
           [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$label"
@@ -95,19 +136,6 @@ judge_reviews() {
       error) unknown "$1" "the review of $principal for $label ended in an evaluation error, so its refusal proves nothing: $error" ;;
     esac
   done 4<"$WORK/review.rec"
-  while IFS= read -r principal; do
-    [ -n "${csr_signers[$principal]:-}" ] || continue
-    chain="${csr_create[$principal]:+create certificatesigningrequests, }update certificatesigningrequests/approval and approve signers ${csr_signers[$principal]} cluster-wide, so it can have a client certificate signed for any user or group but system:masters"
-    if [[ "$principal" == seed:* ]]; then
-      who="${principal#seed:system:serviceaccount:}"
-      [ -n "${FOUND_SAS[$who]:-}" ] || FOUND_SAS[$who]="$chain"
-      continue
-    fi
-    finding "$principal" "$chain$2" "$chain" "$3" "$chain" "${csr_approval[$principal]}"
-    if [[ "$principal" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
-      FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$chain"
-    fi
-  done < <(printf '%s\n' ${csr_approval[@]+"${!csr_approval[@]}"} | sed '/^$/d' | sort)
   if [ "$witness_refused" = true ]; then
     unknown "$1" "the witness review, the cluster-admin binding's group system:masters, was not allowed, so a refusal from this API server proves nothing"
     return 1
@@ -165,6 +193,32 @@ follow_becomes() {
       unknown "$step" "who can become a ServiceAccount with a finding is followed 5 steps; system:serviceaccount:$sa, found in the fifth, is not followed further"
   done
 }
+# remember_cluster KUBECONFIG STEP SUFFIX RESOURCE: keeps what follow_becomes needs of the cluster just
+# read (its principals and its discovery's custom resources), for follow_members, which runs after
+# the IAM steps find the Workload Identity members of an RBAC finding's Google account.
+REMEMBERED=()
+remember_cluster() {
+  local n="${#REMEMBERED[@]}"
+  cp "$WORK/principals.rec" "$WORK/remembered-$n.principals"
+  if [ -e "$WORK/api-resources" ]; then cp "$WORK/api-resources" "$WORK/remembered-$n.api"; else : >"$WORK/remembered-$n.api"; fi
+  REMEMBERED+=("$1$US$2$US$3$US$4")
+}
+# follow_members MEMBERS: on every cluster remember_cluster kept, who can become a ServiceAccount of
+# MEMBERS (a JSON object of namespace:name to the Google account it acts as through Workload
+# Identity) holds what that account holds, so it is followed as follow_becomes follows a found one.
+follow_members() {
+  local n kube step suffix resource member
+  for ((n = 0; n < ${#REMEMBERED[@]}; n++)); do
+    IFS="$US" read -r kube step suffix resource <<<"${REMEMBERED[$n]}"
+    cp "$WORK/remembered-$n.principals" "$WORK/principals.rec"
+    cp "$WORK/remembered-$n.api" "$WORK/api-resources"
+    FOUND_SAS=()
+    while IFS=$'\t' read -r member account; do
+      FOUND_SAS[$member]="acts as $account through Workload Identity"
+    done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$1")
+    follow_becomes "$kube" "$step" "$suffix" "$resource"
+  done
+}
 # custom_rights KUBECONFIG STYLE: sets CUSTOM_RIGHTS, the JSON array, as rights_json writes rights,
 # of create on each custom resource the API server's discovery lists as namespaced and creatable,
 # in each guarded pair's namespace: a custom resource's controller may make a pod from it (an agent
@@ -213,13 +267,12 @@ admission_rights() {
 # (code-rbac.jq, by name alone): each rule whose resourceNames limit a right of RIGHTS (the JSON
 # array the cluster's reviews asked) is a finding for a binding subject k8s_subject does not allow,
 # its right followed by SUFFIX, on RESOURCE; a ServiceAccount so found is followed as judge_reviews'
-# are (FOUND_SAS). An approval of certificate signing requests by name (the requester picks the
-# name) joins the chain: with a signer judge_reviews' reviews allowed the same principal, it is the
-# chain's finding. Runs after judge_reviews, whose $WORK/review.rec it reads; a refused list is
-# UNKNOWN naming the permission.
+# are (FOUND_SAS). A part of the certificate chain so limited (an approval by name, whose name the
+# requester picks) goes to csr_part, so it joins the signers judge_reviews' reviews allowed; the
+# caller runs csr_chains after this. Runs after judge_reviews; a refused list is UNKNOWN naming the
+# permission.
 live_named() {
-  local what id detail kind ns name principal who label verdict names signers create chain
-  local -A approvals=()
+  local what id detail kind ns name
   [ "$BINDINGS_OK" = true ] || return 0
   if ! kubectl --kubeconfig "$1" get roles,clusterroles --all-namespaces -o json >"$WORK/roles.json" 2>"$WORK/roles.err"; then
     unknown "$2" "the API server refused the roles' list (it needs list on roles and clusterroles, container.roles.list and container.clusterRoles.list on GKE), so a right a role limits by name is not read: $(first_line "$WORK/roles.err")"
@@ -234,31 +287,12 @@ live_named() {
     [ "$what" = grant ] || continue
     k8s_subject "$kind" "$ns" "$name"
     [ "$SUBJECT_OK" != true ] || continue
-    case "$detail" in
-      *" certificatesigningrequests/approval.certificates.k8s.io "*)
-        names="${detail#* certificatesigningrequests/approval.certificates.k8s.io }"
-        approvals[$SUBJECT]="${detail%% *} certificatesigningrequests/approval ${names% cluster-wide}"
-        continue
-        ;;
-    esac
+    ! csr_part "$SUBJECT" "$detail" "RBAC: $id limits it by name" || continue
     finding "$SUBJECT" "$detail$3" "$detail" "$4" "$detail" "RBAC: $id limits it by name"
     if [[ "$SUBJECT" =~ ^system:serviceaccount:([^:]+):([^:]+)$ ]] && [ -z "${FOUND_SAS[${BASH_REMATCH[1]}:${BASH_REMATCH[2]}]:-}" ]; then
       FOUND_SAS["${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"]="$detail"
     fi
   done 6<"$WORK/named.rec"
-  for principal in $(printf '%s\n' ${approvals[@]+"${!approvals[@]}"} | sort); do
-    signers="" create=""
-    while IFS="$US" read -r -u 6 who label verdict _; do
-      [ "$who" = "$principal" ] && [ "$verdict" = allowed ] || continue
-      case "$label" in
-        "$CSR_CREATE") create="create certificatesigningrequests, " ;;
-        "$CSR_SIGNER_PREFIX"*) label="${label#"$CSR_SIGNER_PREFIX"}"; signers="${signers:+$signers and }${label% cluster-wide}" ;;
-      esac
-    done 6<"$WORK/review.rec"
-    [ -n "$signers" ] || continue
-    chain="$create${approvals[$principal]} and approve signers $signers cluster-wide, so it can have a client certificate signed for any user or group but system:masters"
-    finding "$principal" "$chain$3" "$chain" "$4" "$chain" "RBAC: a role limits the approval by name"
-  done
 }
 # bound_subjects KUBECONFIG: the cluster's binding subjects (the header's "Binding subjects"), added
 # to $WORK/principals.rec when the file does not hold them already: each User subject k8s_subject

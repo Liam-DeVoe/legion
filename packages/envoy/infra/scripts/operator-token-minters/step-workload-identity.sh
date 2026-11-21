@@ -63,6 +63,9 @@ read_other_cluster() {
   admission_rights "$KUBE" || unknown "$cstep" "$ADMISSION_ERROR"
   named_rights "$iam_project"
   guard_rights="$(with_rights "$(with_rights "$(with_rights "$GUARD_RIGHTS" "$CUSTOM_RIGHTS")" "$ADMISSION_RIGHTS")" "$NAMED_RIGHTS")"
+  # A cluster that is no GKE cluster runs kube-controller-manager's own approver of kubelet client
+  # certificates (NODE_CLIENT_RIGHTS).
+  [ "$groups_mode" != own ] || guard_rights="$(with_rights "$guard_rights" "$NODE_CLIENT_RIGHTS")"
   # Every cluster has default/default, so a list that holds no ServiceAccount outside the system
   # namespaces is not the cluster's whole list; its binding subjects are still reviewed.
   [ "$accounts" -gt 0 ] ||
@@ -73,7 +76,9 @@ read_other_cluster() {
     unknown "$cstep" "$REVIEW_ERROR"
   elif judge_reviews "$cstep" "$where" "$principal"; then
     live_named "$KUBE" "$cstep" "$where" "$principal" "$guard_rights"
+    csr_chains "$where" "$principal"
     follow_becomes "$KUBE" "$cstep" "$where" "$principal"
+    remember_cluster "$KUBE" "$cstep" "$where" "$principal"
     ! unchanged ||
       pass "$cstep" "no guarded namespace ($GUARDED_TEXT), and none of its $accounts ServiceAccounts outside the system namespaces, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects and anyone unauthenticated may make a namespace, a ServiceAccount, a pod or a custom resource in a guarded namespace, write a webhook or admission policy, or hold an escalation right"
   fi

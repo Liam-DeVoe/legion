@@ -258,11 +258,14 @@
 # operator's ServiceAccount token, a node escape no review sees, so Standard is UNKNOWN.
 #
 # In every IAM step a `user:` member is a person and allowed; a group the analysis expands is judged
-# by its members, and one it does not expand is a finding; Google's own service agents
-# (service-<number>@gcp-sa-*.iam.gserviceaccount.com, ...@container-engine-robot and
-# ...@compute-system) are allowed; every other member is a finding. A Policy Analyzer answer that
-# lists no holder, or that was not fully explored, is UNKNOWN: a resource always has holders (its
-# project's owners at least), so an answer listing none saw nothing. The analysis runs over the
+# by its members, and one it does not expand is a finding; the Google service agents the deployment
+# needs are allowed: GKE's (service-<number>@container-engine-robot), GKE Hub's
+# (service-<number>@gcp-sa-gkehub), Compute Engine's (service-<number>@compute-system) and each
+# --service-agent; every other member is a finding, another product's service-<number>@gcp-sa-*
+# agent included, since it acts for whoever uses that product in the project. A Policy Analyzer
+# answer that lists no holder, or that was not fully explored, is UNKNOWN: a resource always has
+# holders (its project's owners at least), so an answer listing none saw nothing. The analysis runs
+# over the
 # project's top ancestor (`gcloud projects get-ancestors`), or --analysis-scope: a scope at the
 # project does not see a grant made on its folder or its organization.
 #
@@ -351,6 +354,9 @@ usage: operator-token-minters.sh [flags]
   --rbac-only-member ID      a member of the pool project's fleet that is no GKE cluster and whose
                              cloud grants nothing beside its RBAC; repeatable (without it, such a
                              member is UNKNOWN)
+  --service-agent EMAIL      a Google service agent the deployment needs beside GKE's, GKE Hub's
+                             and Compute Engine's, allowed in the IAM steps; repeatable (any other
+                             service-<number>@gcp-sa-* account is judged as any account is)
   --namespace NS             the operator's namespace (default envoy-operator)
   --service-account NAME     the operator's Kubernetes ServiceAccount (default envoy-operator)
   --guarded NS/NAME          one more namespace and ServiceAccount the pool's Workload Identity binds
@@ -396,7 +402,7 @@ for ((arg = 1; arg <= $#; arg++)); do
 done
 PROJECT="" CLUSTER="" LOCATION="" POOL_PROJECT="" NAMESPACE=envoy-operator KSA=envoy-operator GSA="" BROKER="" BROKER_WORKLOAD=""
 SQL_INSTANCE="" DB_SECRET="" BROKER_STATE="" SIGNING_SECRET="" SECRET=ENVOY_OPERATOR ANALYSIS_SCOPE="" REPORT="" FLEET=""
-AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=()
+AGENT_NAMESPACES=() RBAC_RENDERS=() IAM_PREVIEWS=() CREDENTIALS_ARGS=() GUARDED_FLAGS=() RBAC_ONLY_MEMBERS=() SERVICE_AGENTS=()
 while [ "$#" -gt 0 ]; do
   flag="$1"
   shift
@@ -407,7 +413,8 @@ while [ "$#" -gt 0 ]; do
   case "$flag" in
     --project | --cluster | --location | --pool-project | --namespace | --service-account | --gsa | --agent-namespace | --broker-account | \
       --broker-workload | --sql-instance | --db-secret | --broker-state | --signing-secret | --secret | \
-      --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded | --fleet | --rbac-only-member)
+      --rbac-render | --iam-preview | --analysis-scope | --credentials-arg | --report | --guarded | --fleet | --rbac-only-member | \
+      --service-agent)
       [ "$#" -gt 0 ] || usage_error "$flag needs a value"
       value="$1"
       shift
@@ -438,6 +445,7 @@ while [ "$#" -gt 0 ]; do
     --guarded) GUARDED_FLAGS+=("$value") ;;
     --fleet) FLEET="$value" ;;
     --rbac-only-member) RBAC_ONLY_MEMBERS+=("$value") ;;
+    --service-agent) SERVICE_AGENTS+=("$value") ;;
   esac
 done
 [ -n "$POOL_PROJECT" ] || POOL_PROJECT="$PROJECT"
@@ -508,6 +516,8 @@ fi
 . "$LIB/principals.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/checks.sh
 . "$LIB/checks.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/reviews.sh
+. "$LIB/reviews.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-permission-names.sh
 . "$LIB/step-permission-names.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-rbac.sh
@@ -516,8 +526,6 @@ fi
 . "$LIB/step-code-iam.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-clusters.sh
 . "$LIB/step-clusters.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/reviews.sh
-. "$LIB/reviews.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/iam-analysis.sh
 . "$LIB/iam-analysis.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-gke-iam.sh

@@ -95,6 +95,13 @@ case "${words[*]}" in
       // error("no such cluster")' "$world/clusters.json" ||
       { echo "ERROR: (gcloud.container.clusters.describe) NOT_FOUND: cluster $cluster in ${flag[location]:-} of project ${flag[project]:-} not found" >&2; exit 1; }
     ;;
+  "container fleet scopes list")
+    # As gcloud answers it: the permitted scopes at locations/global alone, so a scope elsewhere is
+    # not listed. The check lists scopes through the API (fake curl); this case lets a run of an
+    # older script, which asked gcloud, be compared on the same world.
+    [ ! -e "$world/refuse-scopes" ] || refuse container.fleet.scopes.list "Permission 'gkehub.scopes.list' denied on 'projects/${flag[project]:-}/locations/global/scopes'"
+    { if [ -e "$world/scopes.json" ]; then cat "$world/scopes.json"; else echo '[]'; fi; } | jq '[.[] | select(.name | contains("/locations/global/"))]'
+    ;;
   "container fleet memberships get-credentials "*)
     # A member of the fleet that is no GKE cluster, through the Connect gateway.
     id="${words[4]}"
@@ -243,6 +250,13 @@ case "${args[*]}" in
           roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "planted-\($i)"},
           subjects: [$g.subject | if .kind == "ServiceAccount" then . else . + {apiGroup: "rbac.authorization.k8s.io"} end]}])}' \
       "$dir/grants.json"
+    ;;
+  "get secrets -n "*" --field-selector type=kubernetes.io/service-account-token -o json")
+    # A namespace's token Secrets: the world's token-secrets.json entries ({namespace, name}) there.
+    [ ! -e "$dir/refuse-token-secrets" ] || forbidden secrets 'list resource "secrets" in API group ""' container.secrets.list
+    { if [ -e "$dir/token-secrets.json" ]; then cat "$dir/token-secrets.json"; else echo '[]'; fi; } |
+      jq --arg ns "${args[3]}" '{apiVersion: "v1", kind: "List", items: [.[] | select(.namespace == $ns)
+        | {apiVersion: "v1", kind: "Secret", type: "kubernetes.io/service-account-token", metadata: {namespace: .namespace, name: .name}}]}'
     ;;
   "get roles,clusterroles --all-namespaces -o json")
     # The built-in cluster-admin role, and one ClusterRole of each grant (planted-<its index>, as the

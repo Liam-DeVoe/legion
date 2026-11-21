@@ -4159,7 +4159,9 @@ GKE cluster, as an email-shaped User bound there does; a cluster with legacy ABA
 service for GKE on, a fleet scope and an empty fleet read UNKNOWN too. A deployment whose pool
 project has no fleet passes `--fleet none`: an empty membership list then passes, and each
 membership listed is a finding. A fleet member that is no GKE cluster reads UNKNOWN, since its own
-cloud may grant beside its RBAC, unless `--rbac-only-member <membership>` says it does not. It
+cloud may grant beside its RBAC, unless `--rbac-only-member <membership>` says it does not. In the
+IAM steps only GKE's, GKE Hub's and Compute Engine's service agents are allowed by kind; another
+Google service agent the deployment needs is named with `--service-agent <email>`. It
 reads code first (`--rbac-render`, `--iam-preview`), then the live grants, and exits 0 with nothing
 found, 1 naming each principal and right, or 2 naming each step it could not read, a run that
 stopped mid-way included.

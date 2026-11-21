@@ -26,13 +26,25 @@ else
   rights="$(with_rights "$rights" "$CUSTOM_RIGHTS")"
   admission_rights "$KUBE" || unknown "$step" "$ADMISSION_ERROR"
   rights="$(with_rights "$rights" "$ADMISSION_RIGHTS")"
-  # Each token Secret a guarded pair's ServiceAccount lists (its `secrets`), by name: a review that
-  # names no Secret is refused for a get limited to the name, and the Secret holds the pair's token.
-  rights="$(with_rights "$rights" "$(jq -c '[.items[]?
-      | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
-      | .metadata.namespace as $ns | (.secrets // [])[] | .name as $n
-      | {verb: "get", group: "", resource: "secrets", sub: "", ns: $ns, name: $n, label: "get secrets \($n) in \($ns)"}
-      | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]' "$WORK/serviceaccounts.json" --args "${GUARDED[@]}")")"
+  # Each token Secret of a guarded namespace, by name: a review that names no Secret is refused for
+  # a get limited to the name, and a Secret of type kubernetes.io/service-account-token holds its
+  # ServiceAccount's token. Those a guarded pair's ServiceAccount lists (its `secrets`), and every
+  # one the namespace's list of that type holds, whichever ServiceAccount it names; a refused list
+  # is UNKNOWN.
+  : >"$WORK/token-secrets.tsv"
+  jq -r '.items[]? | select(("\(.metadata.namespace)/\(.metadata.name)") as $p | any($ARGS.positional[]; . == $p))
+    | .metadata.namespace as $ns | (.secrets // [])[] | [$ns, .name] | @tsv' "$WORK/serviceaccounts.json" --args "${GUARDED[@]}" >>"$WORK/token-secrets.tsv"
+  for guarded_ns in $(printf '%s\n' "${GUARDED[@]%%/*}" | sort -u); do
+    if ! kubectl --kubeconfig "$KUBE" get secrets -n "$guarded_ns" --field-selector type=kubernetes.io/service-account-token -o json \
+      >"$WORK/token-secrets.json" 2>"$WORK/token-secrets.err"; then
+      unknown "$step" "the API server refused the list of token Secrets in $guarded_ns (it needs list on secrets there, container.secrets.list on GKE), so a token Secret no ServiceAccount lists is not asked by name: $(first_line "$WORK/token-secrets.err")"
+    elif ! jq -r --arg ns "$guarded_ns" '.items[]? | [$ns, .metadata.name] | @tsv' "$WORK/token-secrets.json" >>"$WORK/token-secrets.tsv" 2>"$WORK/token-secrets.err"; then
+      unknown "$step" "the API server's list of token Secrets in $guarded_ns is not JSON: $(first_line "$WORK/token-secrets.err")"
+    fi
+  done
+  rights="$(with_rights "$rights" "$(jq -R -s -c '[split("\n")[] | select(length > 0) | split("\t") | {ns: .[0], n: .[1]}] | unique[]
+      | {verb: "get", group: "", resource: "secrets", sub: "", ns: .ns, name: .n, label: "get secrets \(.n) in \(.ns)"}
+      | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}' "$WORK/token-secrets.tsv" | jq -s -c .)")"
   jq -r "$JQ_REC"'.items[]? | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
@@ -99,7 +111,9 @@ else
   elif judge_reviews "$step" "" "cluster:$CLUSTER"; then
     RBAC_OK=true
     live_named "$KUBE" "$step" "" "cluster:$CLUSTER" "$rights"
+    csr_chains "" "cluster:$CLUSTER"
     follow_becomes "$KUBE" "$step" "" "cluster:$CLUSTER"
+    remember_cluster "$KUBE" "$step" "" "cluster:$CLUSTER"
     if unchanged; then
       pass "$step" "$((accounts + ${#seen_accounts[@]} + GROUPS_ADDED + BOUND + 1)) principals ($accounts ServiceAccounts outside the system namespaces, $agents of them in the agent namespaces, ${#seen_accounts[@]} Google service accounts, $GROUPS_ADDED of Kubernetes' own groups, $BOUND binding subjects, and anyone unauthenticated), $(jq length <<<"$rights") rights each: none allowed"
     fi

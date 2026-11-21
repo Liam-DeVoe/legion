@@ -88,19 +88,31 @@ ADMISSION_CODE_RIGHTS="$(jq -n -c '[("mutatingwebhookconfigurations", "validatin
   | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')"
 # The certificate signing chain, asked cluster-wide on every cluster of the pool: a certificate
 # signed for kubernetes.io/kube-apiserver-client authenticates as any user and groups its request
-# names but system:masters, and GKE cannot turn the certificates API off. Whoever may update a
-# request's approval and approve that signer (by its name, or kubernetes.io/*, the two names the API
-# server asks) can become anyone, so judge_reviews reports that pair as one finding, naming create
-# too when the principal may make its own request; create alone signs nothing.
+# names but system:masters, one for kubernetes.io/kube-apiserver-client-kubelet as a node, whose
+# Node authorizer lets it mint the token of a pod's ServiceAccount on it, the operator's included,
+# and kubernetes.io/legacy-unknown signs what it is asked; GKE cannot turn the certificates API
+# off. Whoever may write a request's approval (update or patch, either one) and approve one of those
+# signers can become anyone, so the approval and the signers are asked by name (and approve unnamed,
+# which a rule with no names allows), and csr_chains reports a principal allowed both as one finding,
+# naming create too when it may make its own request; create alone signs nothing.
 CSR_CREATE="create certificatesigningrequests.certificates.k8s.io cluster-wide"
-CSR_APPROVAL="update certificatesigningrequests/approval.certificates.k8s.io cluster-wide"
 CSR_SIGNER_PREFIX="approve signers.certificates.k8s.io "
-CSR_RIGHTS="$(jq -n -c --arg create "$CSR_CREATE" --arg approval "$CSR_APPROVAL" --arg signer "$CSR_SIGNER_PREFIX" '
+CSR_ANY_SIGNER="${CSR_SIGNER_PREFIX}of any name cluster-wide"
+CSR_RIGHTS="$(jq -n -c --arg create "$CSR_CREATE" --arg signer "$CSR_SIGNER_PREFIX" --arg any "$CSR_ANY_SIGNER" '
   [{verb: "create", group: "certificates.k8s.io", resource: "certificatesigningrequests", sub: "", ns: "", name: "", label: $create},
-   {verb: "update", group: "certificates.k8s.io", resource: "certificatesigningrequests", sub: "approval", ns: "", name: "", label: $approval},
-   ("kubernetes.io/kube-apiserver-client", "kubernetes.io/*"
-    | {verb: "approve", group: "certificates.k8s.io", resource: "signers", sub: "", ns: "", name: ., label: "\($signer)\(.) cluster-wide"})]
+   (("update", "patch") | {verb: ., group: "certificates.k8s.io", resource: "certificatesigningrequests", sub: "approval", ns: "", name: "",
+     label: "\(.) certificatesigningrequests/approval.certificates.k8s.io cluster-wide"}),
+   ("kubernetes.io/kube-apiserver-client", "kubernetes.io/kube-apiserver-client-kubelet", "kubernetes.io/legacy-unknown", "kubernetes.io/*"
+    | {verb: "approve", group: "certificates.k8s.io", resource: "signers", sub: "", ns: "", name: ., label: "\($signer)\(.) cluster-wide"}),
+   {verb: "approve", group: "certificates.k8s.io", resource: "signers", sub: "", ns: "", name: "", label: $any}]
   | map(. + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))})')"
+# NODE_CLIENT_RIGHTS: on a fleet member that is no GKE cluster, whose kube-controller-manager
+# approves by itself a kubelet's client certificate request from a holder of create on
+# certificatesigningrequests/nodeclient or selfnodeclient, each is asked too.
+NODE_CLIENT_RIGHTS="$(jq -n -c '[("nodeclient", "selfnodeclient")
+  | {verb: "create", group: "certificates.k8s.io", resource: "certificatesigningrequests", sub: ., ns: "", name: "",
+     label: "create certificatesigningrequests/\(.).certificates.k8s.io cluster-wide, which kube-controller-manager approves by itself"}
+  | . + {key: ([.verb, .group, .resource, .sub, .ns, .name] | join("|"))}]')"
 # The container.* permission of each right: what GKE's IAM authorizer checks for the same call,
 # with container.namespaces.create and container.serviceAccounts.create for the Workload Identity
 # step's other clusters. watch secrets is container.secrets.list's, as list is, and patch is

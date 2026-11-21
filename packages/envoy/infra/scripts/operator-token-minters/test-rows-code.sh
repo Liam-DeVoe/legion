@@ -17,7 +17,10 @@
 #   (be) a render's rule limited by resourceNames on bind of clusterroles, or on update or patch of
 #        rolebindings, is a finding naming the names, with every live step refused;
 #   (bw) a render's rule limited by resourceNames on update of a mutating webhook configuration, or
-#        on patch of a Deployment in secrets-broker, is a finding naming the names.
+#        on patch of a Deployment in secrets-broker, is a finding naming the names;
+#   (ca) a render's create namespaces, create of a mutating webhook configuration, and the
+#        certificate chain (create, patch of the approval, approve of the client signer by name)
+#        are each a finding, the chain as one, and create of requests alone is none.
 
 # --- (p) The code read. Every live step is refused, so each finding is the code's. ---
 if row p; then
@@ -164,4 +167,32 @@ if row bw; then
   want_line "FINDING system:serviceaccount:legion:worker: patch deployments.apps secrets-broker in secrets-broker, declared by RoleBinding secrets-broker/worker-broker-patcher" \
     "a render's name-limited Deployment patch"
   passed "(bw) a render's rule limited by resourceNames on any asked right, a webhook configuration's update and a Deployment's patch included, is a finding naming the names"
+fi
+
+# --- (ca) The code read of the guard rights, the admission rights and the certificate chain, outright:
+# a render must not read clean where a live cluster would not. ---
+if row ca; then
+  base_world
+  refuse_live
+  edit "$world/render.json" '.items += [
+    {apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRole", metadata: {name: "wide-writer"},
+     rules: [{apiGroups: [""], resources: ["namespaces"], verbs: ["create"]},
+             {apiGroups: ["admissionregistration.k8s.io"], resources: ["mutatingwebhookconfigurations"], verbs: ["create"]},
+             {apiGroups: ["certificates.k8s.io"], resources: ["certificatesigningrequests"], verbs: ["create"]},
+             {apiGroups: ["certificates.k8s.io"], resources: ["certificatesigningrequests/approval"], verbs: ["patch"]},
+             {apiGroups: ["certificates.k8s.io"], resources: ["signers"], verbs: ["approve"], resourceNames: ["kubernetes.io/kube-apiserver-client"]}]},
+    {apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding", metadata: {name: "worker-wide-writer"},
+     roleRef: {apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: "wide-writer"},
+     subjects: [{kind: "ServiceAccount", name: "worker", namespace: "legion"}]}]'
+  run
+  want_status 1 "a render's guard, admission and certificate rights"
+  want_line "FINDING system:serviceaccount:legion:worker: create namespaces cluster-wide, declared by ClusterRoleBinding worker-wide-writer" \
+    "a render's create namespaces"
+  want_line "FINDING system:serviceaccount:legion:worker: create mutatingwebhookconfigurations.admissionregistration.k8s.io cluster-wide, declared by ClusterRoleBinding worker-wide-writer" \
+    "a render's create mutatingwebhookconfigurations"
+  want_line "FINDING system:serviceaccount:legion:worker: create certificatesigningrequests, patch certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names, declared by the renders" \
+    "a render's certificate chain"
+  ! has_prefix "FINDING system:serviceaccount:legion:worker: create certificatesigningrequests.certificates.k8s.io" ||
+    fail "a render's create certificatesigningrequests is reported alone"
+  passed "(ca) a render's guard right, admission right and certificate chain are each a finding, the chain as one"
 fi
