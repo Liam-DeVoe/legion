@@ -333,21 +333,55 @@ evidence says which skills the later copies output lists that the unit did not s
 whose skill none of its units ships at that start, because the later copies output names a unit
 as its manifest names it later (a marketplace or a plugin renamed since: the read's Oh My Pi
 plugin cache directory, `<marketplace>___<plugin>___<version>`, shows the old name), is placed by
-the prefix rows those manifests give at that start, at the unit that installed it then. A
-Legion session's context files are its workspace repository's `AGENTS.md` and its project's
-instructions file. A top-level devbox session's working directory names no repository, so its
-one context file is the user-level one Oh My Pi reads: `CLAUDE.md` in Claude Code's config
-directory, which the dev box's `CLAUDE_CONFIG_DIR` names, the `.claude/` of the repository that
-installs its units. That is the one repository of the profile's units that holds Claude Code's
-settings there (`.claude/settings.json`) at the session's start, and the profile names its
-`.claude/CLAUDE.md` at that commit; with none or several such repositories, or no `CLAUDE.md`
-there, the evidence says it is left out and why. A capture writes that file as `CLAUDE.md` in a
-scratch Claude Code config directory and runs Oh My Pi with `CLAUDE_CONFIG_DIR` there, so Oh My Pi
-reads it as its user-level file; `load` on Claude Code gives it as user memory, `CLAUDE.md` in its
-scratch `CLAUDE_CONFIG_DIR`.
-`--reprofile` builds the profiles of an existing case file again that way, from the cases alone
-(no session read, no reader call), and writes a new file in which only `profile` and the
-profile's part of `evidence` differ. A Legion session's
+the prefix rows those manifests give at that start, at the unit that installed it then. The
+session repository is the repository the session's working directory is a checkout of: for a
+Legion pane, the repository of its workspace `/legion/workspaces/<owner>/<name>/<workspace>/…`
+(the checkout at `<workspace>`); for a dev-box session, the repository of the copies output's list
+named as the last part of its working directory, or of the nearest parent named as any listed
+repository, when one repository alone has that name (otherwise none, and the evidence names the
+repositories that matched); the checkout's root is that directory. The profile lists that
+repository's project skills at its commit, as Oh My Pi lists them: each
+`<level>/.omp/skills/<name>/SKILL.md` (one with a description), then each
+`<level>/.claude/skills/<name>/SKILL.md`, where the levels are the working directory's path in the
+checkout and each of its parents up to the root, the nearest first (a working directory
+`<root>/agents/agentvm` reads `agents/agentvm/`, `agents/` and the root). Where another skill has
+the same name, the profile holds the copy Oh My Pi gives the session (unless the session read the
+other): a project's `.omp/skills` comes before `~/.omp/agent/skills` and extension packages; its
+`.claude/skills` comes after those and after `~/.claude/skills`, and before Claude Code plugins;
+of one kind, the nearer level comes first; a pool an extension's `resources_discover` names comes
+before them all. The case's evidence cites the Oh My Pi source for each. Every top-level session
+in a checkout has its session repository's context files as Oh My Pi reads them: one at each
+level from the working directory up to the checkout's root, the one its ranking keeps in that
+level's slot (`.omp/AGENTS.md` at the nearest level whose `.omp/` holds anything, priority 100;
+the working directory's `.claude/CLAUDE.md`, 80; `.agent/AGENTS.md` and `.agents/AGENTS.md`,
+70; the working directory's `.gemini/GEMINI.md`, 60, and `.github/copilot-instructions.md`, 30;
+then `AGENTS.md` and `CLAUDE.md`, 10, in that order), listed the farthest level first, each at
+its path in the repository, and the profile's `workingDirectory` names the working directory's
+path in the checkout when it is below the root. A Legion session also has its project's
+instructions file. A top-level devbox session also has the user-level context file Oh My Pi
+reads, marked `user: true` in the profile: `CLAUDE.md` in Claude Code's config directory, which
+the dev box's `CLAUDE_CONFIG_DIR` names, the `.claude/` of the repository that installs its
+units. That is the one repository of the profile's units that holds Claude Code's settings there
+(`.claude/settings.json`) at the session's start, and the profile names its `.claude/CLAUDE.md` at
+that commit; with none or several such repositories, or no `CLAUDE.md` there, the evidence says it
+is left out and why. A capture writes the user-level file as `CLAUDE.md` in a scratch Claude Code
+config directory and runs Oh My Pi with `CLAUDE_CONFIG_DIR` there, so Oh My Pi reads it as its
+user-level file; it writes the session repository's context files at their paths in a scratch
+checkout and runs Oh My Pi in the `workingDirectory` inside it, so each is read at the depth the
+session read it, and a file of a parent is shown under the session's checkout (its working
+directory less that path). `load` on Claude Code gives the user-level file as user memory,
+`CLAUDE.md` in its scratch `CLAUDE_CONFIG_DIR`, and the other files in the same checkout. A
+subagent's recorded prompt is sent as recorded.
+`--reprofile` builds the profiles of an existing case file again that way, from the cases and
+their sessions' heads (no transcript pulled, no reader call), and writes a new file in which only
+`profile` and the profile's part of `evidence` differ. A case holds no working directory, so each
+case's is the header's `cwd` in its session's head, read from its store with `session-head.sql`
+(one query per store, through the configuration's `psqlCommand`; each head is kept under
+`<out>.sessions/`). For a case whose session the store no longer holds, the evidence says so
+(`no session head`), and the session repository is the one its old evidence names (`session
+repository <repo>` or `no session repository`); a case built before that evidence was written is
+taken to be in the workspace of the repository whose `AGENTS.md` its old profile holds. A Legion
+session's
 role comes from the daemon's first message to it, its catch-up notice, or the claim it holds
 beside its workspace; a subagent's session (`subagent:<agent>`) keeps the system prompt and tools
 its `session_init` line recorded, and its capture sends that prompt with only the skill's

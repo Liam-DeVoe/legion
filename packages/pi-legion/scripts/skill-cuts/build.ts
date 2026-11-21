@@ -244,23 +244,44 @@
  *   ship then, and each it shipped then that installers.tsv does not list. Plugins: an Oh My Pi
  *   package's directory (the `omp-package` manifest's, at that commit), or a Claude Code plugin's
  *   directory (its skills' parent), named by its last part.
- * - Context files: for a Legion context, the `AGENTS.md` of the repository of the session's
- *   working directory (`/legion/workspaces/<owner>/<name>/…`) when it has one at that commit, and
- *   the project's instructions file named by its project file (a `legion-project` manifest of
- *   manifests.tsv, `instructions:` read at that commit, under `<dir>/instructions/`). A devbox
- *   session's working directory names no repository, so it has none of those; it has the
- *   user-level context file Oh My Pi 18.18.6 reads (discovery/claude.ts): one file at user level,
- *   CLAUDE.md in Claude Code's config directory, which a dev box's CLAUDE_CONFIG_DIR names, the
- *   `.claude/` of the repository that installs its units. That is the one repository of the
- *   profile's units that holds Claude Code's settings there (`.claude/settings.json`, copies.ts's
- *   claude-settings manifest) at the session's start, and its `.claude/CLAUDE.md` at that commit
- *   (context.ts writes it as `CLAUDE.md` in a scratch Claude Code config directory that the
- *   capture names in CLAUDE_CONFIG_DIR, where Oh My Pi reads it as its user-level file; load.ts
- *   gives Claude Code it as user memory). Each one the copies output or the session does not name
- *   is listed as left out: for a devbox, when no repository or more than one of its units holds
- *   those settings, or that one has no CLAUDE.md then. A subagent's case
- *   has none: its recorded prompt holds them. Its units and skills are read as its store's
- *   context's are.
+ * - The session repository, the repository the session's working directory is a checkout of
+ *   (`sessionRepository`), and the working directory's path inside that checkout: for a Legion
+ *   context, the repository of its workspace (`/legion/workspaces/<owner>/<name>/<workspace>/…`);
+ *   for a dev box, the repository of the copies output's list (repositories.tsv) named as the last
+ *   part of its working directory, or of the nearest parent named as any listed repository, when
+ *   one alone has that name (otherwise none, and the evidence names the repositories that
+ *   matched); the checkout's root is that directory. Its project skills, read at its commit with
+ *   the units' repositories: each `<level>/.omp/skills/<name>/SKILL.md` that has a description,
+ *   then each `<level>/.claude/skills/<name>/SKILL.md`, the levels the working directory and each
+ *   parent up to the checkout's root, the nearest first (Oh My Pi 18.18.6's discovery/builtin.ts,
+ *   lines 81-109 and 314-327, and discovery/claude.ts, lines 205-224). A project skill and another
+ *   skill of one name: the one the session read, else the one Oh My Pi admits first
+ *   (PROJECT_PRECEDENCE: the project's `.omp/skills` before `~/.omp/agent/skills` and extension
+ *   packages, its `.claude/skills` after those and after `~/.claude/skills` and before Claude Code
+ *   plugins, the nearer level of one kind first, and a pool an extension's `resources_discover`
+ *   names before them all); the other is listed as left out.
+ * - Context files: the session repository's, one at each level from the working directory up to
+ *   the checkout's root, the one Oh My Pi 18.18.6 keeps in that level's slot (CONTEXT_FILES, in
+ *   its providers' order: `.omp/AGENTS.md` at the nearest level whose `.omp/` holds anything,
+ *   `.claude/CLAUDE.md` at the working directory, `.agent/AGENTS.md`, `.agents/AGENTS.md`,
+ *   `.gemini/GEMINI.md` and `.github/copilot-instructions.md` at the working directory, then
+ *   `AGENTS.md` and `CLAUDE.md`), listed the farthest level first, each at its path in the
+ *   repository; the profile's `workingDirectory` names the working directory's path in the
+ *   checkout (context.ts writes the files in its checkout and runs the capture there). For a
+ *   Legion context, the project's instructions file too, named by its project file (a
+ *   `legion-project` manifest of manifests.tsv, `instructions:` read at that commit, under
+ *   `<dir>/instructions/`). A devbox session has the user-level context file Oh My Pi 18.18.6
+ *   reads (discovery/claude.ts), marked `user: true`: one file at user level, CLAUDE.md in Claude
+ *   Code's config directory, which a dev box's CLAUDE_CONFIG_DIR names, the `.claude/` of the
+ *   repository that installs its units. That is the one repository of the profile's units that
+ *   holds Claude Code's settings there (`.claude/settings.json`, copies.ts's claude-settings
+ *   manifest) at the session's start, and its `.claude/CLAUDE.md` at that commit (context.ts
+ *   writes it as `CLAUDE.md` in a scratch Claude Code config directory that the capture names in
+ *   CLAUDE_CONFIG_DIR, where Oh My Pi reads it as its user-level file; load.ts gives Claude Code
+ *   it as user memory). Each one the copies output or the session does not name is listed as left
+ *   out: for a devbox, when no repository or more than one of its units holds those settings, or
+ *   that one has no CLAUDE.md then. A subagent's case has none: its recorded prompt holds them.
+ *   Its units and skills are read as its store's context's are.
  *
  * Output: the case file `--out` (one JSON line per case, written whole after each case and checked
  * with cases.ts's `loadCases` against `--old` at the end) and `<out>.summary.json`: the seed and
@@ -269,10 +290,15 @@
  * bounds, the pulls, the gateway's spend, and why the build stopped, if it did.
  *
  * **build-cases --reprofile** builds the profile of each case of a case file again, from the
- * case alone: its store, the `[Skill file: …]` lines of its messages, its start, and whether it
- * carries a recorded prompt. It reads no session and calls no reader. The session's working
- * directory is not in a case; it is taken as the workspace of the repository whose `AGENTS.md`
- * the old profile holds, and a case whose old profile holds none keeps its old evidence of why.
+ * case and its session's head: its store, the `[Skill file: …]` lines of its messages, its start,
+ * whether it carries a recorded prompt, and the working directory the header in the session's head
+ * names (capture.ts's `sessionHeads`: session-head.sql through the store command, one query per
+ * store, each head saved under `<out>.sessions/`). It pulls no transcript and calls no reader. For
+ * a case whose session the store no longer holds, the evidence says so (`no session head`), and
+ * the session repository is the one the old case's evidence names (`session repository <repo>`,
+ * or `no session repository`); a case built before that evidence was written is taken to be in
+ * the workspace of the repository whose `AGENTS.md` the old profile holds, and one whose old
+ * profile holds none keeps its old evidence of why.
  * The new file's cases differ from the old ones only in `profile` (its skills, plugins and context
  * files; a recorded prompt and its tools stay) and in the profile's part of `evidence`.
  * `<out>.summary.json` lists, per case, the skills added and removed. A case whose profile cannot
@@ -389,7 +415,7 @@ import {
   type Via,
   vias,
 } from "./attribute";
-import { armPromptBlocks } from "./capture";
+import { armPromptBlocks, type SavedHead, sessionHeads } from "./capture";
 import {
   Case,
   loadCases,
@@ -1697,11 +1723,15 @@ const GitTree = z.looseObject({
 });
 
 /** What a repository holds at a commit, as copies.ts reads one: its skill copies, its manifest
- *  files parsed, and each file of those that could not be read or parsed, with why. */
+ *  files parsed, and each file of those that could not be read or parsed, with why; and, for the
+ *  context files a session in a checkout of it gets (`CONTEXT_FILES`), the size of each file of
+ *  those names, by path, and each directory whose `.omp/` holds anything (`""` the root). */
 interface RepositoryAt {
   readonly copies: readonly SkillCopy[];
   readonly manifests: readonly Manifest[];
   readonly faults: readonly { readonly file: string; readonly why: string }[];
+  readonly contextSizes: ReadonlyMap<string, number>;
+  readonly ompLevels: ReadonlySet<string>;
 }
 
 /** The GitHub reads the profile makes, each made once. Exported for copies.test.ts, which checks
@@ -1928,14 +1958,42 @@ export class GithubReads {
         }
       }
     );
-    return { copies, manifests, faults };
+    const contextSizes = new Map<string, number>();
+    const ompLevels = new Set<string>();
+    for (const entry of entries) {
+      const parts = entry.path.split("/");
+      const omp = parts.indexOf(".omp");
+      if (omp >= 0 && (omp < parts.length - 1 || entry.type === "tree")) {
+        ompLevels.add(parts.slice(0, omp).join("/"));
+      }
+      if (
+        entry.type === "blob" &&
+        CONTEXT_FILES.some(({ file }) => entry.path === file || entry.path.endsWith(`/${file}`))
+      ) {
+        // GitHub gives each blob's size; a blob given none is taken to hold text.
+        contextSizes.set(entry.path, entry.size ?? 1);
+      }
+    }
+    return { copies, manifests, faults, contextSizes, ompLevels };
   }
+}
+
+/** The session repository: the repository the session's working directory is a checkout of
+ *  (`sessionRepository`), or undefined; the working directory's path inside that checkout (`rel`,
+ *  `""` at its root); and the evidence of it. */
+interface Checkout {
+  readonly repo: string | undefined;
+  readonly rel: string;
+  readonly line: Evidence;
 }
 
 /** What the profile of one case is built from: its store, its context (the store's, for a
  *  subagent) and project, each successful read result of its messages whose first line is
- *  `[Skill file: <path>]` (any skill's), the session's start, its working directory, and whether
- *  its session recorded its own system prompt (a subagent's), which holds its context files. */
+ *  `[Skill file: <path>]` (any skill's), the session's start, its working directory, whether
+ *  its session recorded its own system prompt (a subagent's), which holds its context files, and
+ *  the session repository when it is known already (`--reprofile` of a case whose session the
+ *  store no longer holds: the old case's evidence of it), else it is found from the working
+ *  directory. */
 interface ProfileInput {
   readonly store: string;
   readonly context: string;
@@ -1944,7 +2002,207 @@ interface ProfileInput {
   readonly sessionStart: string;
   readonly cwd: string | undefined;
   readonly recordedPrompt: boolean;
+  readonly checkout?: Checkout;
 }
+
+/** The items of the profile's evidence that name the session repository, and that say there is
+ *  none (`sessionRepository`). */
+const SESSION_REPOSITORY = "session repository ";
+const NO_SESSION_REPOSITORY = "no session repository";
+/** How a dev-box session's repository is found from its working directory. */
+const DEVBOX_CHECKOUT_RULE =
+  "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository";
+
+/**
+ * The session repository of a session of the context `context` whose working directory is `cwd`:
+ * for a Legion context, the repository of its workspace (`/legion/workspaces/<owner>/<name>/
+ * <workspace>/…`, the checkout at `<workspace>`); for any other (a dev box), the repository of
+ * `repositories` (the copies output's list) named as the last part of `cwd`, else of its nearest
+ * parent named as any of them, when one alone is named so (the checkout at that directory).
+ * Otherwise none, and the evidence says which repositories matched.
+ */
+function sessionRepository(
+  context: string,
+  cwd: string | undefined,
+  repositories: Iterable<string>
+): Checkout {
+  const none = (source: string): Checkout => ({
+    repo: undefined,
+    rel: "",
+    line: { item: NO_SESSION_REPOSITORY, source },
+  });
+  const inside = (rel: string) =>
+    rel === "" ? "" : `; the working directory is ${rel} in the checkout`;
+  if (context.startsWith("legion:")) {
+    const workspace = LEGION_WORKSPACE.exec(cwd ?? "");
+    if (cwd === undefined || workspace === null) {
+      return none(
+        `the session's working directory ${cwd ?? "(none)"} is no Legion workspace /legion/workspaces/<owner>/<name>/`
+      );
+    }
+    const repo = `${workspace[1]}/${workspace[2]}`;
+    const rel = cwd
+      .slice(workspace[0].length)
+      .split("/")
+      .filter((part) => part !== "")
+      .slice(1)
+      .join("/");
+    return {
+      repo,
+      rel,
+      line: {
+        item: `${SESSION_REPOSITORY}${repo}`,
+        source: `the session's working directory ${cwd} is a Legion workspace of it: /legion/workspaces/<owner>/<name>/${inside(rel)}`,
+      },
+    };
+  }
+  if (cwd === undefined) {
+    return none(`${DEVBOX_CHECKOUT_RULE}. The session names no working directory`);
+  }
+  const listed = [...repositories];
+  for (let dir = cwd; ; ) {
+    const name = path.posix.basename(dir);
+    const named = listed.filter((repo) => repo.split("/")[1] === name).sort();
+    const where = `The working directory ${cwd} is ${dir === cwd ? "" : `under ${dir}, `}named ${name}`;
+    const [repo] = named;
+    if (named.length === 1 && repo !== undefined) {
+      const rel = path.posix.relative(dir, cwd);
+      return {
+        repo,
+        rel,
+        line: {
+          item: `${SESSION_REPOSITORY}${repo}`,
+          source: `${DEVBOX_CHECKOUT_RULE}. ${where}, which ${repo} alone of the list is named${inside(rel)}`,
+        },
+      };
+    }
+    if (named.length > 1) {
+      return none(
+        `${DEVBOX_CHECKOUT_RULE}. ${where}, which ${named.length} repositories of the list are named (${named.join(", ")}), so which one it is a checkout of is not known`
+      );
+    }
+    const parent = path.posix.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return none(
+    `${DEVBOX_CHECKOUT_RULE}. No part of the working directory ${cwd} is named as a repository of the list`
+  );
+}
+
+/** The skill directories of the session repository Oh My Pi 18.18.6 lists for a working directory
+ *  in a checkout of it (its project skills), each under the working directory and under each of
+ *  its parents up to the checkout's root, in the order it admits them, each with its rank among
+ *  the skills of one name (`unitRank`) and where Oh My Pi reads it. */
+const PROJECT_SKILLS = [
+  {
+    dir: ".omp/skills",
+    rank: 1,
+    how: "Oh My Pi lists each <name>/SKILL.md that has a description under .omp/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/builtin.ts, loadSkills, lines 314-327, over getProjectAncestorDirs, lines 81-109)",
+  },
+  {
+    dir: ".claude/skills",
+    rank: 5,
+    how: "Oh My Pi lists each <name>/SKILL.md under .claude/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, loadSkills, lines 205-224)",
+  },
+] as const;
+
+/** Which of a project skill and another skill of its name Oh My Pi 18.18.6 gives a session, and
+ *  where its source says so. */
+const PROJECT_PRECEDENCE =
+  "Oh My Pi 18.18.6 keeps under a name the first skill it admits, in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333; extensibility/skills.ts, resolveCollision, lines 141-223, lists a later one of other text under another name, which a profile does not install): its own provider (100) reads the project's .omp/skills of the working directory and of each parent up to the repository's root, the nearest first, before ~/.omp/agent/skills (discovery/builtin.ts, lines 81-109 and 314-342), extension packages come next (90, discovery/omp-plugins.ts, lines 136-169), then the Claude Code provider (80) reads ~/.claude/skills before the .claude/skills of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, lines 205-249), then Claude Code's plugins (75 and 70, discovery/agent-plugins.ts and discovery/claude-plugins.ts); a skill of an extension's own directory (resources_discover) outranks them all (extensibility/skills.ts, lines 147-151)";
+
+/** Where Oh My Pi 18.18.6 admits the skills of the unit `unit` among the skills of one name,
+ *  earliest first (PROJECT_PRECEDENCE), counted as PROJECT_SKILLS counts a project's: a pool an
+ *  extension's `resources_discover` names 0, ~/.omp/agent/skills 2, an extension package 3,
+ *  ~/.claude/skills 4, a Claude Code plugin 6; undefined for any other unit. */
+function unitRank(unit: string): number | undefined {
+  if (unit.startsWith("pool:")) return 0;
+  if (unit === "user-skills:omp") return 2;
+  if (unit.startsWith("package:")) return 3;
+  if (unit === "user-skills:claude-code") return 4;
+  if (unit.startsWith("plugin:")) return 6;
+  return undefined;
+}
+
+/** The project context files Oh My Pi 18.18.6 reads in a checkout, in its providers' order,
+ *  highest priority first, each with its provider's priority, the levels it is read at (`each`:
+ *  the working directory and each parent up to the checkout's root; `cwd`: the working directory
+ *  alone; `omp`: the nearest level whose `.omp/` holds anything), whether an empty file takes its
+ *  level's slot, and where the source says so. */
+const CONTEXT_FILES: readonly {
+  readonly file: string;
+  readonly priority: number;
+  readonly at: "each" | "cwd" | "omp";
+  readonly empty: boolean;
+  readonly source: string;
+}[] = [
+  {
+    file: ".omp/AGENTS.md",
+    priority: 100,
+    at: "omp",
+    empty: false,
+    source:
+      "discovery/builtin.ts, line 46 and lines 111-123 and 946-978: at the nearest level whose .omp/ holds anything",
+  },
+  {
+    file: ".claude/CLAUDE.md",
+    priority: 80,
+    at: "cwd",
+    empty: true,
+    source:
+      "discovery/claude.ts, line 45 and lines 72-77 and 180-192: at the working directory alone, an empty file too",
+  },
+  {
+    file: ".agent/AGENTS.md",
+    priority: 70,
+    at: "each",
+    empty: false,
+    source: "discovery/agents.ts, line 29 and lines 140-155 and 275-291",
+  },
+  {
+    file: ".agents/AGENTS.md",
+    priority: 70,
+    at: "each",
+    empty: false,
+    source: "discovery/agents.ts, line 29 and lines 140-155 and 275-291, after .agent/",
+  },
+  {
+    file: ".gemini/GEMINI.md",
+    priority: 60,
+    at: "cwd",
+    empty: false,
+    source:
+      "discovery/gemini.ts, line 42 and lines 148-164, over discovery/helpers.ts's getProjectPath (lines 130-135): at the working directory alone",
+  },
+  {
+    file: ".github/copilot-instructions.md",
+    priority: 30,
+    at: "cwd",
+    empty: false,
+    source:
+      "discovery/github.ts, line 42 and lines 48-66, over discovery/helpers.ts's getProjectPath (lines 130-135): at the working directory alone",
+  },
+  {
+    file: "AGENTS.md",
+    priority: 10,
+    at: "each",
+    empty: false,
+    source:
+      "discovery/agents-md.ts, lines 20-30, over discovery/helpers.ts's loadStandaloneContextFiles (lines 844-900)",
+  },
+  {
+    file: "CLAUDE.md",
+    priority: 10,
+    at: "each",
+    empty: false,
+    source:
+      "discovery/claude-md.ts, lines 20-30, over discovery/helpers.ts's loadStandaloneContextFiles (lines 844-900), registered after agents-md.ts (discovery/index.ts, lines 24-25)",
+  },
+];
+/** How Oh My Pi 18.18.6 picks and orders the project context files a session gets. */
+const CONTEXT_SLOT_RULE =
+  "Oh My Pi 18.18.6 keeps one project context file at each level from the working directory up to the checkout's root (capability/context-file.ts, lines 36-46: one for each depth), the first in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333), and joins the files it keeps the farthest level first (system-prompt.ts, lines 392-398)";
 
 /** What every profile of one build reads. */
 type ProfileRun = Pick<CaseRun, "config" | "copies" | "github" | "placer">;
@@ -1974,6 +2232,20 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   const { copies, github } = run;
   const evidence: Evidence[] = [];
   const commits = new Map<string, string>();
+  const checkout =
+    input.checkout ?? sessionRepository(input.context, input.cwd, copies.branches.keys());
+  evidence.push(checkout.line);
+  // The project skill directories Oh My Pi reads, in its order: each kind of PROJECT_SKILLS, under
+  // the working directory and then under each parent up to the checkout's root.
+  const levels = [checkout.rel];
+  for (let level = checkout.rel; level !== ""; ) {
+    const parent = path.posix.dirname(level);
+    level = parent === "." ? "" : parent;
+    levels.push(level);
+  }
+  const projectDirs = PROJECT_SKILLS.flatMap((kind) =>
+    levels.map((level) => ({ ...kind, dir: level === "" ? kind.dir : `${level}/${kind.dir}` }))
+  );
   /** The commit of `repo` at the session's start, and the evidence for it. */
   const readCommit = async (repo: string): Promise<{ sha: string; line: Evidence }> => {
     const { branch, from } = await github.branch(repo);
@@ -2109,10 +2381,15 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
   for (const copy of alone.values()) repositories.add(copy.repo);
   const held = new Map<string, RepositoryAt>();
+  // The session repository is read at its commit too, for its project skills; it joins the
+  // units' resolution only when it is a unit's repository.
+  const toRead = new Set(repositories);
+  if (checkout.repo !== undefined) toRead.add(checkout.repo);
+  let projectTree: RepositoryAt | undefined;
   // The repositories' reads start together; their evidence, and the first failure, follow the
   // sorted order, as reading them one after another gives them.
   const reads = await Promise.allSettled(
-    [...repositories].sort().map(async (repo) => {
+    [...toRead].sort().map(async (repo) => {
       const commit = await readCommit(repo);
       return { repo, commit, at: await github.at(repo, commit.sha, run.config.excludePaths) };
     })
@@ -2122,12 +2399,23 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
     const { repo, commit, at } = settled.value;
     commits.set(repo, commit.sha);
     evidence.push(commit.line);
-    held.set(repo, at);
-    evidence.push({
-      item: `the skills and manifests of ${repo} at ${commit.sha}`,
-      source: `gh api repos/${repo}/git/trees/${commit.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at that commit and resolved by copies.ts's rules (resolveInstallers), give what each unit ships then`,
-    });
+    if (repo === checkout.repo) projectTree = at;
+    const unitRepo = repositories.has(repo);
+    if (unitRepo) held.set(repo, at);
+    evidence.push(
+      unitRepo
+        ? {
+            item: `the skills and manifests of ${repo} at ${commit.sha}`,
+            source: `gh api repos/${repo}/git/trees/${commit.sha}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at that commit and resolved by copies.ts's rules (resolveInstallers), give what each unit ships then`,
+          }
+        : {
+            item: `the skills of ${repo} at ${commit.sha}`,
+            source: `gh api repos/${repo}/git/trees/${commit.sha}?recursive=1: its ${at.copies.length} SKILL.md files, read at that commit, give the session repository's project skills`,
+          }
+    );
     for (const fault of at.faults) {
+      const dir = path.posix.dirname(path.posix.dirname(fault.file));
+      if (!unitRepo && !projectDirs.some((each) => each.dir === dir)) continue;
       evidence.push({
         item: `left out: ${repo} ${fault.file} at ${commit.sha}`,
         source: fault.why,
@@ -2182,9 +2470,15 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
   }
 
   const plugins = new Map<string, { repo: string; path: string; name: string; why: string }>();
-  /** Each copy a unit ships at the session's start, in the order of the units, with how it ships
-   *  and the evidence of it. */
-  const offers: { copy: Omit<ProfileSkill, "commit">; how: string; source: string }[] = [];
+  /** Each copy a unit ships at the session's start, in the order of the units, with how it ships,
+   *  the evidence of it and its rank among the copies of its name (`unitRank`); then each copy
+   *  installed alone, and then the session repository's project skills. */
+  const offers: {
+    copy: Omit<ProfileSkill, "commit">;
+    how: string;
+    source: string;
+    rank: number | undefined;
+  }[] = [];
   for (const [key, { via, why }] of units) {
     const id = via.unit;
     const start = `${via.repository} at ${commits.get(via.repository)}`;
@@ -2207,6 +2501,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         copy,
         how,
         source: `${copy.repo} at ${commits.get(copy.repo)}: ${how}${inR4 ? "" : "; installers.tsv, which the copies output read later, does not list it"}`,
+        rank: unitRank(id),
       });
     }
     for (const row of later) {
@@ -2256,7 +2551,40 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       plugins.set(plugin.name, { ...plugin, why: `the directory of ${id}` });
     }
   }
+  const same = (a: { repo: string; path: string }, b: { repo: string; path: string }) =>
+    a.repo === b.repo && a.path === b.path;
+  // The session repository's project skills, in the order Oh My Pi admits them (projectDirs).
+  const projectOffers: (typeof offers)[number][] = [];
+  if (checkout.repo !== undefined && projectTree !== undefined) {
+    const how = `project skill of ${checkout.repo}`;
+    const start = `${how} at ${commits.get(checkout.repo)}`;
+    for (const { dir, rank, how: listing } of projectDirs) {
+      for (const copy of projectTree.copies) {
+        if (path.posix.dirname(copy.path) !== dir) continue;
+        // A SKILL.md that could not be read is named in the faults' evidence, and is offered.
+        if (
+          dir.endsWith(".omp/skills") &&
+          copy.description === "" &&
+          !copy.fault.startsWith("SKILL.md read failed")
+        ) {
+          evidence.push({
+            item: `left out: skill ${copy.name} from ${checkout.repo} ${copy.path}`,
+            source: `${start}: its SKILL.md has no description, and Oh My Pi lists no skill of .omp/skills/ without one (discovery/builtin.ts, line 324; discovery/helpers.ts, line 543)`,
+          });
+          continue;
+        }
+        projectOffers.push({
+          copy: { repo: checkout.repo, path: copy.path, name: copy.name },
+          how,
+          source: `${start}: ${listing}`,
+          rank,
+        });
+      }
+    }
+  }
   for (const copy of alone.values()) {
+    // A read of a project skill is placed at its copy, which the project skills hold already.
+    if (projectOffers.some((each) => same(each.copy, copy))) continue;
     const start = `${copy.repo} at ${commits.get(copy.repo)}`;
     const found = held.get(copy.repo)?.copies.find((each) => each.path === copy.path);
     if (found === undefined) {
@@ -2271,17 +2599,31 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       copy: { repo: copy.repo, path: copy.path, name: found.name },
       how,
       source: `${start}: ${how}`,
+      rank: undefined,
     });
   }
+  offers.push(...projectOffers);
 
   // Each name's copy: the one the session read, when a unit ships it at the session's start (the
-  // read shows which of the copies of one name the host gave the session), else the first unit's.
-  const same = (a: { repo: string; path: string }, b: { repo: string; path: string }) =>
-    a.repo === b.repo && a.path === b.path;
+  // read shows which of the copies of one name the host gave the session); else a project skill
+  // that Oh My Pi admits before every other copy of its name (PROJECT_PRECEDENCE); else the
+  // first unit's.
   const chosen = new Map<string, (typeof offers)[number]>();
   for (const [name, read] of readCopies) {
     const offer = offers.find((each) => each.copy.name === name && same(each.copy, read));
     if (offer !== undefined) chosen.set(name, offer);
+  }
+  for (const [at, offer] of projectOffers.entries()) {
+    const { name } = offer.copy;
+    // Of two project skills, the one Oh My Pi reads first (projectDirs); of a project skill and a
+    // unit's, the one of the lower rank.
+    const first = offers.every((each) => {
+      if (each.copy.name !== name || same(each.copy, offer.copy)) return true;
+      const other = projectOffers.indexOf(each);
+      if (other >= 0) return other > at;
+      return each.rank !== undefined && offer.rank !== undefined && offer.rank < each.rank;
+    });
+    if (first && !chosen.has(name)) chosen.set(name, offer);
   }
   for (const offer of offers) {
     if (!chosen.has(offer.copy.name)) chosen.set(offer.copy.name, offer);
@@ -2299,19 +2641,25 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         source: `${offer.source}${readAt === undefined ? "" : `; message ${readAt} reads this copy`}`,
       });
     } else if (!same(pick.copy, offer.copy)) {
+      const why =
+        readAt !== undefined
+          ? `the session read the copy of ${pick.copy.repo} ${pick.copy.path} (message ${readAt})`
+          : projectOffers.includes(pick) || projectOffers.includes(offer)
+            ? `Oh My Pi gives the session the copy of ${pick.copy.repo} ${pick.copy.path} under that name (${pick.how}): ${PROJECT_PRECEDENCE}`
+            : `the copy of ${pick.copy.repo} ${pick.copy.path} came first`;
       evidence.push({
         item: `left out: skill ${offer.copy.name} from ${offer.copy.repo} ${offer.copy.path}`,
-        source: `${offer.how} too; ${readAt === undefined ? `the copy of ${pick.copy.repo} ${pick.copy.path} came first` : `the session read the copy of ${pick.copy.repo} ${pick.copy.path} (message ${readAt})`}`,
+        source: `${offer.how} too; ${why}`,
       });
     }
   }
   const shipped = new Set(offers.map((offer) => `${offer.copy.repo}\0${offer.copy.name}`));
 
-  // Context files: the session repository's AGENTS.md and the project's instructions file, which
-  // a recorded prompt already holds as its session had them; for a devbox, whose working directory
-  // names no repository, the user-level context file Oh My Pi reads. `user` says why a file is
-  // that one.
-  const contextFiles: { repo: string; path: string; user?: string }[] = [];
+  // Context files: the session repository's, one at each level from the working directory up to
+  // the checkout's root (`levels:`, CONTEXT_FILES); for a Legion pane, the project's instructions
+  // file too, and for a dev box the user-level context file Oh My Pi reads. A recorded prompt
+  // already holds them as its session had them. `why` says why a user-level file is that one.
+  const contextFiles: { repo: string; path: string; why?: string }[] = [];
   const legion = input.context.startsWith("legion:");
   if (input.recordedPrompt) {
     evidence.push({
@@ -2320,14 +2668,10 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         "the session's recorded system prompt holds the context files it was given, and the capture sends that prompt",
     });
   } else if (legion) {
-    const workspace = LEGION_WORKSPACE.exec(input.cwd ?? "");
-    if (workspace === null) {
-      evidence.push({
-        item: NO_WORKSPACE,
-        source: `the session's working directory ${input.cwd ?? "(none)"} is no Legion workspace /legion/workspaces/<owner>/<name>/`,
-      });
+    if (checkout.repo === undefined) {
+      evidence.push({ item: NO_WORKSPACE, source: checkout.line.source });
     } else {
-      contextFiles.push({ repo: `${workspace[1]}/${workspace[2]}`, path: "AGENTS.md" });
+      contextFiles.push({ repo: checkout.repo, path: "levels:" });
     }
     const project = copies.manifests.find(
       (row) =>
@@ -2343,10 +2687,6 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       contextFiles.push({ repo: project.repository ?? "", path: `project:${project.path ?? ""}` });
     }
   } else {
-    evidence.push({
-      item: "left out: the working directory's context files",
-      source: "a devbox session's working directory names no repository",
-    });
     // Oh My Pi's one user-level context file (discovery/claude.ts at the pinned tag) is CLAUDE.md
     // in Claude Code's config directory, which a dev box's CLAUDE_CONFIG_DIR names: the `.claude/`
     // of the repository that installs its units, which holds Claude Code's settings there.
@@ -2361,7 +2701,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       contextFiles.push({
         repo: home,
         path: USER_CONTEXT_FILE,
-        user: `Oh My Pi's user-level context file is CLAUDE.md in Claude Code's config directory, on a dev box the .claude/ of the repository that installs its units: of the repositories of the profile's units (${unitRepos.join(", ")}), ${home} alone holds Claude Code's settings ${CLAUDE_SETTINGS} at ${commits.get(home)}`,
+        why: `Oh My Pi's user-level context file is CLAUDE.md in Claude Code's config directory, on a dev box the .claude/ of the repository that installs its units: of the repositories of the profile's units (${unitRepos.join(", ")}), ${home} alone holds Claude Code's settings ${CLAUDE_SETTINGS} at ${commits.get(home)}`,
       });
     } else {
       evidence.push({
@@ -2369,6 +2709,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
         source: `${homes.length === 0 ? "no repository" : `${homes.length} repositories (${homes.join(", ")})`} of the profile's units (${unitRepos.join(", ") || "none"}) ${homes.length === 0 ? "holds" : "hold"} Claude Code's settings ${CLAUDE_SETTINGS} at the session's start, so which is the dev box's Claude Code config directory, whose CLAUDE.md Oh My Pi reads at user level, is not known`,
       });
     }
+    if (checkout.repo !== undefined) contextFiles.push({ repo: checkout.repo, path: "levels:" });
   }
 
   const profileSkills: ProfileSkill[] = [];
@@ -2413,27 +2754,68 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
       });
       continue;
     }
+    if (file.path === "levels:") {
+      // The session repository is read at its commit (projectTree), so each level's files are known.
+      const tree = projectTree;
+      if (tree === undefined) continue;
+      const ompLevel = levels.find((level) => tree.ompLevels.has(level));
+      let kept = 0;
+      // The farthest level first, as Oh My Pi joins them.
+      for (const [depth, level] of [...levels.entries()].reverse()) {
+        const at = (spec: (typeof CONTEXT_FILES)[number]) =>
+          level === "" ? spec.file : `${level}/${spec.file}`;
+        const present = CONTEXT_FILES.filter((spec) => {
+          if (spec.at === "cwd" && depth !== 0) return false;
+          if (spec.at === "omp" && level !== ompLevel) return false;
+          const size = tree.contextSizes.get(at(spec));
+          return size !== undefined && (size > 0 || spec.empty);
+        });
+        const [first, ...shadowed] = present;
+        if (first === undefined) continue;
+        kept += 1;
+        const place = `${level === "" ? "the checkout's root" : level}, depth ${depth}`;
+        profileFiles.push({ repo: file.repo, commit, path: at(first) });
+        evidence.push({
+          item: `context file ${file.repo} ${at(first)}`,
+          source: `${CONTEXT_SLOT_RULE}: at ${place}, ${file.repo} (the session repository) has ${present.map(at).join(", ")} at ${commit}, and Oh My Pi keeps ${at(first)}, priority ${first.priority} (${first.source})`,
+        });
+        for (const spec of shadowed) {
+          evidence.push({
+            item: `left out: ${file.repo} ${at(spec)}`,
+            source: `${CONTEXT_SLOT_RULE}: at ${place}, ${at(first)} (priority ${first.priority}) comes before it (priority ${spec.priority}; ${spec.source})`,
+          });
+        }
+      }
+      if (kept === 0) {
+        evidence.push({
+          item: `left out: the context files of ${file.repo}`,
+          source: `${CONTEXT_SLOT_RULE}: no level from the working directory up to the checkout's root holds one at ${commit}`,
+        });
+      }
+      continue;
+    }
+    // The user-level context file: `why` says why it is that one.
     if ((await github.text(file.repo, commit, file.path)) === undefined) {
       evidence.push({
         item: `left out: ${file.repo} ${file.path}`,
-        source:
-          file.user === undefined
-            ? `the repository of the session's working directory ${input.cwd} has no ${file.path} at ${commit}`
-            : `${file.user}, and it has no ${file.path} at ${commit}`,
+        source: `${file.why}, and it has no ${file.path} at ${commit}`,
       });
       continue;
     }
-    profileFiles.push({ repo: file.repo, commit, path: file.path });
+    profileFiles.push({ repo: file.repo, commit, path: file.path, user: true });
     evidence.push({
       item: `context file ${file.repo} ${file.path}`,
-      source:
-        file.user === undefined
-          ? `the session's working directory ${input.cwd} is a workspace of ${file.repo}, which has ${file.path} at ${commit}`
-          : `${file.user}, and it has ${file.path} at ${commit}`,
+      source: `${file.why}, and it has ${file.path} at ${commit}`,
     });
   }
   return {
-    profile: { skills: profileSkills, plugins: profilePlugins, contextFiles: profileFiles },
+    profile: {
+      skills: profileSkills,
+      plugins: profilePlugins,
+      contextFiles: profileFiles,
+      workingDirectory:
+        checkout.repo === undefined || checkout.rel === "" ? undefined : checkout.rel,
+    },
     evidence,
     shipped,
   };
@@ -3266,18 +3648,26 @@ const CONTEXT_EVIDENCE = /^(subagent |role |no role$|the recorded system prompt 
 /** The start of the item of a case's audit evidence, which comes after its profile's. */
 const AUDIT_EVIDENCE = "audit of the real step: ";
 /** The item of the profile's evidence for a Legion session whose working directory is no
- *  workspace, so its repository's AGENTS.md is left out. */
-const NO_WORKSPACE = "left out: the session repository's AGENTS.md";
+ *  workspace, so its repository's context files are left out. */
+const NO_WORKSPACE = "left out: the session repository's context files";
+/** The item of a reprofiled case's evidence when its store holds its session no longer. */
+const NO_SESSION_HEAD = "no session head";
 
 /**
  * `build-cases --reprofile`: the cases of a case file, each with its profile built again from the
- * case itself, with no session read and no reader call. A case holds what the profile is built
- * from but the session's working directory: its store, its messages (their `[Skill file: …]`
- * lines), its start and whether it carries a recorded prompt. The working directory is taken as
- * the workspace of the repository whose AGENTS.md the old profile holds; a case whose old profile
- * holds none keeps the old evidence of why. Only `profile` (its skills, plugins and context files)
- * and the profile's part of `evidence` change. A case whose profile cannot be built, or no longer
- * installs its skill, is left out and named, and the command fails.
+ * case and its session's head, with no transcript pulled and no reader call. A case holds what the
+ * profile is built from but the session's working directory: its store, its messages (their
+ * `[Skill file: …]` lines), its start and whether it carries a recorded prompt. The working
+ * directory is the header's `cwd` in the session's head, read from its store (capture.ts's
+ * `sessionHeads`: session-head.sql through the store command, one query per store, each head saved
+ * under `<out>.sessions/`). For a case whose session the store no longer holds, the evidence says
+ * so (`no session head`), and the session repository is the one the old case's evidence names
+ * (`session repository <repo>`, or `no session repository`), that item kept as it is; a case built
+ * before that item was written is taken to be in the workspace of the repository whose AGENTS.md
+ * the old profile holds, and one whose old profile holds none keeps the old evidence of why. Only
+ * `profile` (its skills, plugins and context files) and the profile's part of `evidence` change.
+ * A case whose profile cannot be built, or no longer installs its skill, is left out and named,
+ * and the command fails; a read of the heads that fails fails it too.
  */
 async function reprofileCases(
   values: Readonly<Record<string, string | undefined>>,
@@ -3303,7 +3693,7 @@ async function reprofileCases(
   ]) {
     if (values[flag] !== undefined) {
       throw new Refused(
-        `--reprofile reads no session and calls no reader, so it takes no --${flag}`
+        `--reprofile pulls no session and calls no reader, so it takes no --${flag}`
       );
     }
   }
@@ -3327,6 +3717,13 @@ async function reprofileCases(
     github: new GithubReads(io.gh, copies.branches),
     placer: placing,
   };
+  // Each case's session head, for its working directory.
+  const heads = new Map<string, Map<string, SavedHead>>();
+  for (const name of new Set(cases.map((c) => c.source.store))) {
+    if (!config.stores.some((each) => each.name === name)) continue;
+    const hashes = cases.filter((c) => c.source.store === name).map((c) => c.source.pathHash);
+    heads.set(name, await sessionHeads(config.psqlCommand, name, hashes, `${given.out}.sessions`));
+  }
   const rebuilt: Case[] = [];
   const records: Record<string, unknown>[] = [];
   const leftOut: { id: string; why: string }[] = [];
@@ -3345,19 +3742,56 @@ async function reprofileCases(
       );
       continue;
     }
-    const agents = c.profile.contextFiles.find((file) => file.path === "AGENTS.md");
+    const head = heads.get(store.name)?.get(c.source.pathHash)?.head;
+    const held = head?.held === true;
+    const old = c.evidence ?? [];
+    const decided = old.find(
+      (each) => each.item === NO_SESSION_REPOSITORY || each.item.startsWith(SESSION_REPOSITORY)
+    );
+    const legion = store.context.startsWith("legion:");
+    const agents = legion
+      ? c.profile.contextFiles.find((file) => file.path === "AGENTS.md")
+      : undefined;
+    // Without the session's head, the old rule: the session repository the old evidence names,
+    // else the workspace of the repository whose AGENTS.md the old profile holds.
+    const headless: Evidence[] = held
+      ? []
+      : [
+          {
+            item: NO_SESSION_HEAD,
+            source: `the store ${store.name} holds no file of the session now (session-head.sql), so its working directory is not known: ${
+              decided !== undefined
+                ? "the session repository is the one the old evidence names"
+                : agents !== undefined
+                  ? `it is taken as the workspace of ${agents.repo}, whose AGENTS.md the old profile holds`
+                  : "the old evidence names no session repository"
+            }`,
+          },
+        ];
     let profiled: ProfileResult;
     try {
       profiled = await caseProfile(run, {
         store: store.name,
         context: store.context,
-        project: store.context.startsWith("legion:")
-          ? store.context.slice("legion:".length)
-          : undefined,
+        project: legion ? store.context.slice("legion:".length) : undefined,
         reads: shownReads(c.messages),
         sessionStart: c.sessionStart,
-        cwd: agents === undefined ? undefined : `/legion/workspaces/${agents.repo}/`,
+        cwd: held
+          ? (head?.cwd ?? undefined)
+          : agents === undefined
+            ? undefined
+            : `/legion/workspaces/${agents.repo}/`,
         recordedPrompt: c.profile.systemPrompt !== undefined,
+        checkout:
+          held || decided === undefined
+            ? undefined
+            : {
+                repo: decided.item.startsWith(SESSION_REPOSITORY)
+                  ? decided.item.slice(SESSION_REPOSITORY.length)
+                  : undefined,
+                rel: "",
+                line: decided,
+              },
       });
     } catch (error) {
       leave(`${DROP_REASONS["profile-failed"]}: ${messageFor(error)}`);
@@ -3367,13 +3801,14 @@ async function reprofileCases(
       leave(notInstalled({ skill: c.skill, cut }));
       continue;
     }
-    const old = c.evidence ?? [];
     const profileStart = old.findIndex((each) => !CONTEXT_EVIDENCE.test(each.item));
-    // Without the old profile's AGENTS.md the working directory is not known, so the old evidence
-    // of why it is left out stands in for the new one's.
-    const why = agents === undefined ? old.filter((each) => /AGENTS\.md$/.test(each.item)) : [];
+    // Without the session's head or the old profile's AGENTS.md the working directory is not
+    // known, so the old evidence of why it is left out stands in for the new one's.
+    const why =
+      !held && agents === undefined ? old.filter((each) => /AGENTS\.md$/.test(each.item)) : [];
     const evidence = [
       ...old.slice(0, profileStart < 0 ? old.length : profileStart),
+      ...headless,
       ...profiled.evidence.flatMap((each) =>
         each.item === NO_WORKSPACE && why.length > 0 ? why : [each]
       ),
@@ -3387,6 +3822,7 @@ async function reprofileCases(
     records.push({
       id: c.id,
       skills: after.length,
+      sessionHead: held ? "read" : "not held",
       added: after.filter((name) => !before.includes(name)),
       removed: before.filter((name) => !after.includes(name)),
       plugins: built.profile.plugins.map((plugin) => plugin.name),

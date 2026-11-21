@@ -41,11 +41,15 @@
  * - Claude Code: for each profile, a scratch `CLAUDE_CONFIG_DIR` and HOME, into which `claude
  *   plugin install` installs a local marketplace that holds the profile's skills and the tested
  *   skill under its name, each in its plugin; then `claude -p --output-format stream-json
- *   --verbose --model <id> -- <task>` in the context's working directory, with
- *   `ANTHROPIC_BASE_URL` at the recorder. A `devbox` profile's context file is the user-level one
- *   its dev box's host read (build.ts), so it goes in as Claude Code's user memory, `CLAUDE.md` in
- *   the scratch `CLAUDE_CONFIG_DIR`, from its repository at its commit, and not into the working
- *   directory; the record names it (`userMemory`). The first request that holds tools and the
+ *   --verbose --model <id> -- <task>` in the context's working directory (context.ts: the
+ *   profile's `workingDirectory` in its checkout of the session repository), with
+ *   `ANTHROPIC_BASE_URL` at the recorder. A profile's user-level context file (`user: true`, the
+ *   one its dev box's host read; build.ts) goes in as Claude Code's user memory, `CLAUDE.md` in
+ *   the scratch `CLAUDE_CONFIG_DIR`, from its repository at its commit, and not into the checkout;
+ *   the record names it (`userMemory`). Its other context files (the session repository's, at
+ *   their paths) go into the checkout, as context.ts writes them, where Claude Code reads a
+ *   project's `CLAUDE.md` of the working directory and its parents. The first request that holds
+ *   tools and the
  *   task's text is kept. Claude Code lists each plugin skill as `<plugin>:<name>` with its
  *   description (`claudeListing`). Thinking `off` sets `CLAUDE_CODE_DISABLE_THINKING`, a level of
  *   `claude --effort` goes as that flag, and `auto` leaves Claude Code's own default.
@@ -114,6 +118,7 @@ import type { Arm } from "./arms";
 import {
   anthropicHeaders,
   type CaptureCase,
+  type CaptureCheckout,
   type CaptureRecord,
   captureBody,
   capturePaths,
@@ -127,6 +132,7 @@ import {
   type SessionFacts,
   type Sourced,
   savedCapture,
+  sessionCheckout,
   sessionFacts,
   sessionHeads,
   userTurnKey,
@@ -664,12 +670,16 @@ function literally(text: string): RegExp {
  * directory's project path (`<config>/projects/<the working directory, its non-alphanumerics as
  * -s>`) names the session's config directory and working directory; its `Today's date is …`
  * line the session's date; its `OS Version:` line CLAUDE_NEUTRAL_OS; and every other mention of
- * the config directory or the working directory the session's.
+ * the config directory or the working directory the session's. When the working directory is
+ * below the root of the context's `checkout` (context.ts), every other mention of that checkout,
+ * a parent's `CLAUDE.md` among them, names the session's checkout (capture.ts's
+ * `sessionCheckout`).
  */
 export function claudeHarnessRules(
   workspace: string,
   configDir: string,
-  facts: SessionFacts
+  facts: SessionFacts,
+  checkout?: CaptureCheckout
 ): HarnessRule[] {
   const config = facts.claudeConfigDir.value;
   const cwd = facts.cwd.value;
@@ -697,6 +707,15 @@ export function claudeHarnessRules(
       ? []
       : [{ what: "the config directory", pattern: literally(configDir), to: () => config }]),
     { what: "the working directory", pattern: literally(workspace), to: () => cwd },
+    ...(checkout === undefined
+      ? []
+      : [
+          {
+            what: "the checkout",
+            pattern: literally(checkout.dir),
+            to: () => sessionCheckout(cwd, checkout.workingDirectory),
+          },
+        ]),
   ];
 }
 
@@ -757,11 +776,13 @@ interface Captured {
 }
 
 /** The scratch Claude Code home of one test: the environment each run gets, the working
- *  directory, the appended system prompt, Claude Code's version, the context's record, the user
- *  memory file written, and the milliseconds its context build took. */
+ *  directory, the checkout it is in when it is below the checkout's root, the appended system
+ *  prompt, Claude Code's version, the context's record, the user memory file written, and the
+ *  milliseconds its context build took. */
 interface ClaudeSetup {
   readonly env: Record<string, string>;
   readonly workspace: string;
+  readonly checkout: CaptureCheckout | undefined;
   readonly prompt: string | undefined;
   readonly version: string;
   readonly context: ContextRecord;
@@ -1072,11 +1093,10 @@ class LoadTest {
 
   /** The scratch Claude Code home of `profile` (ClaudeSetup), made once per profile: its skills
    *  and the tested one laid out by context.ts, and a local marketplace of its layout's plugins
-   *  installed into a scratch CLAUDE_CONFIG_DIR. A devbox profile's context files are the
-   *  user-level file its dev box's host read (build.ts: a devbox session's working directory names
-   *  no repository, so it has no other), which Claude Code reads as user memory, CLAUDE.md in its
+   *  installed into a scratch CLAUDE_CONFIG_DIR. A profile's user-level context file (`user: true`,
+   *  the one its dev box's host read, build.ts) is Claude Code's user memory, CLAUDE.md in its
    *  config directory: it is written there from the profile's repository at its commit, and left
-   *  out of the working directory. */
+   *  out of the checkout, where context.ts writes the profile's other context files. */
   claudeSetup(profile: TaskProfile): Promise<ClaudeSetup> {
     const made = this.claudeSetups.get(profile.digest);
     if (made !== undefined) return made;
@@ -1086,11 +1106,10 @@ class LoadTest {
       const root = path.join(this.root, "claude", "profiles", profile.digest.slice(0, 16));
       rmSync(root, { recursive: true, force: true });
       const { c, arm } = this.caseOf("claude-profile", "", profile.profile);
-      const devbox = c.context === "devbox";
-      const [userMemory, ...more] = devbox ? c.profile.contextFiles : [];
+      const [userMemory, ...more] = c.profile.contextFiles.filter((file) => file.user === true);
       if (more.length > 0) {
         throw new Error(
-          `the devbox profile ${profile.file} holds ${more.length + 1} context files; Claude Code has one user memory file`
+          `the profile ${profile.file} holds ${more.length + 1} user-level context files; Claude Code has one user memory file`
         );
       }
       // Oh My Pi's plugins are no Claude Code plugins: only the skills and context files go in.
@@ -1098,7 +1117,11 @@ class LoadTest {
       const context = await buildContext(
         {
           ...c,
-          profile: { ...c.profile, plugins: [], ...(devbox ? { contextFiles: [] } : {}) },
+          profile: {
+            ...c.profile,
+            plugins: [],
+            contextFiles: c.profile.contextFiles.filter((file) => file !== userMemory),
+          },
         },
         arm,
         { source: this.o.source, cacheDir: this.o.cacheDir, root: path.join(root, "context") }
@@ -1171,6 +1194,10 @@ class LoadTest {
       return {
         env,
         workspace: context.workspace,
+        checkout:
+          c.profile.workingDirectory === undefined
+            ? undefined
+            : { dir: context.checkout, workingDirectory: c.profile.workingDirectory },
         prompt:
           context.appendSystemPrompt === undefined
             ? undefined
@@ -1271,9 +1298,11 @@ class LoadTest {
     if (turn === undefined) throw new Error("Claude Code sent no model request that holds it");
     const raw = JSON.parse(turn.body) as MessagesBody;
     const configDir = setup.env.CLAUDE_CONFIG_DIR ?? "";
-    const rewritten = rewriteBody(raw, claudeHarnessRules(setup.workspace, configDir, facts), [
-      this.root,
-    ]);
+    const rewritten = rewriteBody(
+      raw,
+      claudeHarnessRules(setup.workspace, configDir, facts, setup.checkout),
+      [this.root]
+    );
     if (rewritten.faults.length > 0) {
       throw new Error(
         `its captured body is refused: it still holds the test's scratch after the harness-string rule, at ${rewritten.faults.join("; ")}`

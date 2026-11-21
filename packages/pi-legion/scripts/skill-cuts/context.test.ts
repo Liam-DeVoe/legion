@@ -62,6 +62,13 @@ const BETA = "---\nname: beta\ndescription: Use for the beta greeting.\n---\n\n#
 const AGENTS = "# Project\n\nKeep answers short.\n";
 /** Claude Code's user memory in a made-up repository: a devbox profile's user-level file. */
 const USER_RULES = "# Made-up user rules\n\nAnswer in one line.\n";
+/** A made-up repository's root CLAUDE.md: the project context file of a devbox session whose
+ *  working directory is a checkout of it. */
+const PROJECT_RULES = "# Made-up project rules\n\nName each file you change.\n";
+/** The made-up acme/project's context files of its directory agents/vm. */
+const VM_AGENTS = "# VM\n\nRun the VM steps in order.\n";
+const VM_CLAUDE = "# VM for Claude\n\nKeep the VM notes short.\n";
+const VM_COPILOT = "# VM for Copilot\n\nName the VM in each reply.\n";
 const INSTRUCTIONS = "# Acme instructions\n\nWork the acme way.\n\n\n";
 
 /** The made-up daemon module: its role prompt composer and the parts it embeds. */
@@ -185,7 +192,11 @@ function writeRepositories(root: string): void {
   });
   writeTree(path.join(root, "acme/project", COMMIT), {
     "AGENTS.md": AGENTS,
+    "CLAUDE.md": PROJECT_RULES,
     ".claude/CLAUDE.md": USER_RULES,
+    "agents/vm/AGENTS.md": VM_AGENTS,
+    "agents/vm/.claude/CLAUDE.md": VM_CLAUDE,
+    "agents/vm/.github/copilot-instructions.md": VM_COPILOT,
   });
   writeTree(path.join(root, "acme/infra", COMMIT), {
     "legion/instructions/acme.md": INSTRUCTIONS,
@@ -292,7 +303,7 @@ test("the git blob id, the frontmatter description and the role of a context are
 test("each skill is its repository's directory at its commit, through the cache, and the case's skill is the arm's", async () => {
   const root = path.join(dir, "skills");
   const c = aCase("devbox", {
-    contextFiles: [{ repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md" }],
+    contextFiles: [{ repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md", user: true }],
   });
   const { options, arm } = setUp(root, c);
   const first = await buildContext(c, arm, options);
@@ -331,16 +342,87 @@ test("each skill is its repository's directory at its commit, through the cache,
   expect(again.record.contextFiles.map((file) => file.as)).toEqual(["user level"]);
   expect(again.appendSystemPrompt).toBeUndefined();
   expect(again.record.rolePrompt).toBeNull();
-  // Oh My Pi reads one user-level context file, so a devbox profile of two is refused.
-  const two = aCase("devbox", {
+});
+
+test("a devbox profile's user-level .claude/CLAUDE.md (user: true) goes in the Claude Code config directory, and the root CLAUDE.md or AGENTS.md of its session's repository in the working directory; two user-level files are refused", async () => {
+  const root = path.join(dir, "devbox-files");
+  const c = aCase("devbox", {
     contextFiles: [
-      { repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md" },
-      { repo: "acme/project", commit: COMMIT, path: "AGENTS.md" },
+      { repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md", user: true },
+      { repo: "acme/project", commit: COMMIT, path: "CLAUDE.md" },
     ],
   });
-  expect(await buildContext(two, none, options).catch(String)).toContain(
-    "its devbox profile holds 2 context files, and Oh My Pi reads one at user level"
+  const { options, arm } = setUp(root, c);
+  const built = await buildContext(c, arm, options);
+  expect(built.claudeConfigDir).toBe(path.join(options.root, "claude-config"));
+  expect(readFileSync(path.join(built.claudeConfigDir ?? "", "CLAUDE.md"), "utf8")).toBe(
+    USER_RULES
   );
+  // Oh My Pi reads the repository's own file from the working directory, as for a Legion pane.
+  expect(readFileSync(path.join(built.workspace, "CLAUDE.md"), "utf8")).toBe(PROJECT_RULES);
+  expect(existsSync(path.join(built.workspace, ".claude"))).toBe(false);
+  expect(built.record.contextFiles.map((file) => file.as)).toEqual([
+    "user level",
+    "working directory",
+  ]);
+  expect(built.appendSystemPrompt).toBeUndefined();
+  // A devbox profile with no user-level file has no Claude Code config directory.
+  const projectOnly = aCase("devbox", {
+    contextFiles: [{ repo: "acme/project", commit: COMMIT, path: "AGENTS.md" }],
+  });
+  const alone = await buildContext(projectOnly, arm, options);
+  expect(alone.claudeConfigDir).toBeUndefined();
+  expect(existsSync(path.join(options.root, "claude-config"))).toBe(false);
+  expect(readFileSync(path.join(alone.workspace, "AGENTS.md"), "utf8")).toBe(AGENTS);
+  expect(alone.record.contextFiles.map((file) => file.as)).toEqual(["working directory"]);
+  // Oh My Pi reads one user-level context file, so a profile of two is refused.
+  const two = aCase("devbox", {
+    contextFiles: [
+      { repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md", user: true },
+      { repo: "acme/infra", commit: COMMIT, path: ".claude/CLAUDE.md", user: true },
+    ],
+  });
+  expect(await buildContext(two, arm, options).catch(String)).toContain(
+    "its profile holds 2 user-level context files, and Oh My Pi reads one"
+  );
+});
+
+test("the session repository's context files are written at their paths in its checkout and the working directory is the profile's workingDirectory there, so each is at the depth the session read it; its own .claude/CLAUDE.md is no user-level file", async () => {
+  const root = path.join(dir, "levels");
+  const c = aCase("devbox", {
+    contextFiles: [
+      { repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md", user: true },
+      { repo: "acme/project", commit: COMMIT, path: "CLAUDE.md" },
+      { repo: "acme/project", commit: COMMIT, path: "agents/vm/AGENTS.md" },
+      { repo: "acme/project", commit: COMMIT, path: "agents/vm/.claude/CLAUDE.md" },
+      { repo: "acme/project", commit: COMMIT, path: "agents/vm/.github/copilot-instructions.md" },
+    ],
+    workingDirectory: "agents/vm",
+  });
+  const { options, arm } = setUp(root, c);
+  const built = await buildContext(c, arm, options);
+  const checkout = path.join(options.root, "work");
+  expect(built.checkout).toBe(checkout);
+  expect(built.workspace).toBe(path.join(checkout, "agents", "vm"));
+  expect(readFileSync(path.join(checkout, "CLAUDE.md"), "utf8")).toBe(PROJECT_RULES);
+  expect(readFileSync(path.join(built.workspace, "AGENTS.md"), "utf8")).toBe(VM_AGENTS);
+  expect(readFileSync(path.join(built.workspace, ".claude", "CLAUDE.md"), "utf8")).toBe(VM_CLAUDE);
+  expect(
+    readFileSync(path.join(built.workspace, ".github", "copilot-instructions.md"), "utf8")
+  ).toBe(VM_COPILOT);
+  // Only the file marked user: true is the user-level one.
+  expect(readFileSync(path.join(built.claudeConfigDir ?? "", "CLAUDE.md"), "utf8")).toBe(
+    USER_RULES
+  );
+  expect(existsSync(path.join(checkout, ".claude"))).toBe(false);
+  expect(built.record.contextFiles.map((file) => file.as)).toEqual([
+    "user level",
+    "working directory",
+    "working directory",
+    "working directory",
+    "working directory",
+  ]);
+  expect(built.appendSystemPrompt).toBeUndefined();
 });
 
 describe.skipIf(goMissing && !onActions)("a Legion context", () => {

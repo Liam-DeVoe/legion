@@ -22,15 +22,19 @@
  *   profile's skills already hold. A plugin that cannot be installed (its repository cannot be
  *   read, its manifest cannot be parsed, its build fails, or a plugin of its name is installed
  *   already) is left out, with its reason.
- * - `work/`: the session's working directory. Each context file named `AGENTS.md` or `CLAUDE.md`
- *   (the session repository's, at its default branch's commit at the session's start) is written
- *   there at its path, where Oh My Pi reads context files.
- * - `claude-config/`: for a `devbox` context, whose one context file is the user-level one its
- *   session's host read (build.ts), that file as `CLAUDE.md` in a scratch Claude Code config
- *   directory (`claudeConfigDir`), which the capture names as `CLAUDE_CONFIG_DIR`: Oh My Pi 18.18.6
- *   reads `CLAUDE.md` there as its one user-level context file (discovery/claude.ts), so the
- *   block's path, its rank and its dedupe are Oh My Pi's own, as on the dev box. A devbox profile
- *   of more than one context file is refused.
+ * - `work/`: the checkout of the session repository. Each of its context files (a file named
+ *   `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` or `copilot-instructions.md`, REPOSITORY_CONTEXT_FILES,
+ *   at its default branch's commit at the session's start) is written there at its path in the
+ *   repository, and the session's working directory is `work/<profile.workingDirectory>` (`work/`
+ *   when the profile names none), so Oh My Pi reads each of them from the working directory or
+ *   from the parent it is in, at the depth the session read it.
+ * - `claude-config/`: a dev box's user-level context file, the one its session's host read
+ *   (build.ts: `.claude/CLAUDE.md` of the repository that holds the dev box's Claude Code
+ *   settings, marked `user: true` in the profile), as `CLAUDE.md` in a scratch Claude Code config
+ *   directory (`claudeConfigDir`), which the capture names as `CLAUDE_CONFIG_DIR`: Oh My Pi
+ *   18.18.6 reads `CLAUDE.md` there as its one user-level context file (discovery/claude.ts), so
+ *   the block's path, its rank and its dedupe are Oh My Pi's own, as on the dev box. A profile of
+ *   more than one user-level file is refused.
  * - `system-prompt.md`, the one `--append-system-prompt` file, as the daemon writes it
  *   (packages/daemon/internal/runtime/systemprompt.go, `ComposePrompt`): for a Legion context
  *   (`legion:<project>:<role>`, the role `architect-root` for a tree's root architect), the role
@@ -85,6 +89,14 @@ import {
 
 /** Where the Legion daemon's role prompt composer is, in the repository that holds it. */
 export const PROMPTS_GO = "packages/daemon/internal/prompts/prompts.go";
+/** The names of a repository's context files (build.ts lists the session repository's), which a
+ *  context writes in its checkout: every other context file goes in the appended system prompt. */
+const REPOSITORY_CONTEXT_FILES: Readonly<Record<string, true>> = {
+  "AGENTS.md": true,
+  "CLAUDE.md": true,
+  "GEMINI.md": true,
+  "copilot-instructions.md": true,
+};
 
 /** The repositories a context is read from. */
 export interface RepoSource {
@@ -179,11 +191,15 @@ export interface CaseContext {
   readonly skills: readonly InstalledSkill[];
   /** Each built plugin's directory, as `--extension` takes it. */
   readonly extensions: readonly string[];
+  /** The session's working directory: `checkout`, or the profile's `workingDirectory` in it. */
   readonly workspace: string;
+  /** The session repository's checkout, where its context files are written at their paths. */
+  readonly checkout: string;
   /** The `--append-system-prompt` file, when the context has one. */
   readonly appendSystemPrompt: string | undefined;
-  /** The Claude Code config directory that holds a devbox context's user-level context file
-   *  (`CLAUDE.md`), which the host's run names as `CLAUDE_CONFIG_DIR`; none for other contexts. */
+  /** The Claude Code config directory that holds a profile's user-level context file
+   *  (`CLAUDE.md`), which the host's run names as `CLAUDE_CONFIG_DIR`; none for a profile with no
+   *  such file. */
   readonly claudeConfigDir: string | undefined;
   readonly record: ContextRecord;
 }
@@ -1044,18 +1060,22 @@ export async function buildContext(
   const builds = new Builds(options.cacheDir);
   const skillsDir = path.join(root, "skills");
   const pluginsDir = path.join(root, "plugins");
-  const workspace = path.join(root, "work");
+  const checkoutDir = path.join(root, "work");
+  const workspace =
+    c.profile.workingDirectory === undefined
+      ? checkoutDir
+      : path.join(checkoutDir, c.profile.workingDirectory);
   const promptFile = path.join(root, "system-prompt.md");
   const claudeConfigDir = path.join(root, "claude-config");
-  for (const owned of [skillsDir, pluginsDir, workspace, promptFile, claudeConfigDir]) {
+  for (const owned of [skillsDir, pluginsDir, checkoutDir, promptFile, claudeConfigDir]) {
     rmSync(owned, { recursive: true, force: true });
   }
-  // A devbox profile's context file is the user-level one its session's host read (build.ts: a
-  // devbox session's working directory names no repository, so it has no other).
-  const devbox = c.context === "devbox";
-  if (devbox && c.profile.contextFiles.length > 1) {
+  // A dev box's user-level context file (`user: true`) is the one its session's host read
+  // (build.ts), and Oh My Pi reads one file at user level.
+  const userFiles = c.profile.contextFiles.filter((file) => file.user === true).length;
+  if (userFiles > 1) {
     throw new Error(
-      `case ${c.id}: its devbox profile holds ${c.profile.contextFiles.length} context files, and Oh My Pi reads one at user level`
+      `case ${c.id}: its profile holds ${userFiles} user-level context files, and Oh My Pi reads one`
     );
   }
   mkdirSync(skillsDir, { recursive: true });
@@ -1156,21 +1176,23 @@ export async function buildContext(
   const fileRecords: ContextRecord["contextFiles"][number][] = [];
   for (const file of c.profile.contextFiles) {
     const { text, key } = await fileText(builds, source, file.repo, file.commit, file.path);
-    if (devbox) {
+    const where = { repo: file.repo, commit: file.commit, path: file.path, key };
+    if (file.user === true) {
       // Oh My Pi's user-level context file: CLAUDE.md in Claude Code's config directory, which
       // the run names as CLAUDE_CONFIG_DIR (discovery/claude.ts at the pinned tag).
       mkdirSync(claudeConfigDir, { recursive: true });
       writeFileSync(path.join(claudeConfigDir, "CLAUDE.md"), text);
-      fileRecords.push({ ...file, key, as: "user level" });
-    } else if (["AGENTS.md", "CLAUDE.md"].includes(path.basename(file.path))) {
-      // Oh My Pi reads these context files from the working directory.
-      const dest = path.join(workspace, file.path);
+      fileRecords.push({ ...where, as: "user level" });
+    } else if (Object.hasOwn(REPOSITORY_CONTEXT_FILES, path.basename(file.path))) {
+      // A context file of the session repository, at its path in the checkout, where Oh My Pi
+      // reads it from the working directory or a parent of it.
+      const dest = path.join(checkoutDir, file.path);
       mkdirSync(path.dirname(dest), { recursive: true });
       writeFileSync(dest, text);
-      fileRecords.push({ ...file, key, as: "working directory" });
+      fileRecords.push({ ...where, as: "working directory" });
     } else {
       prompts.push(text.replace(/\n+$/, ""));
-      fileRecords.push({ ...file, key, as: "system prompt" });
+      fileRecords.push({ ...where, as: "system prompt" });
     }
   }
   if (prompts.length > 0) writeFileSync(promptFile, prompts.join("\n\n"));
@@ -1180,8 +1202,9 @@ export async function buildContext(
     skills,
     extensions,
     workspace,
+    checkout: checkoutDir,
     appendSystemPrompt: prompts.length > 0 ? promptFile : undefined,
-    claudeConfigDir: devbox && fileRecords.length > 0 ? claudeConfigDir : undefined,
+    claudeConfigDir: userFiles > 0 ? claudeConfigDir : undefined,
     record: {
       source: source.name,
       skills: skillRecords,

@@ -659,7 +659,16 @@ const GAMMA_PROFILE = {
 /** The user-level context file of a devbox profile (build.ts: Claude Code's user memory of the
  *  repository that installs its dev box's units), in the made-up acme/skills. */
 const USER_RULES = "# Made-up user rules\n\nEnd each answer with the word done.\n";
-const USER_FILE = { repo: "acme/skills", commit: COMMIT, path: ".claude/CLAUDE.md" };
+const USER_FILE = {
+  repo: "acme/skills",
+  commit: COMMIT,
+  path: ".claude/CLAUDE.md",
+  user: true as const,
+};
+/** The root CLAUDE.md of the made-up acme/proj: the project context file of a devbox profile
+ *  whose session's working directory was a checkout of acme/proj (build.ts). */
+const PROJECT_RULES = "# Made-up project rules\n\nStart each answer with the word ready.\n";
+const PROJECT_FILE = { repo: "acme/proj", commit: COMMIT, path: "CLAUDE.md" };
 /** A `models.yml` of the gateway's Messages route, whose provider a capture points at its
  *  recorder. */
 const ANTHROPIC_MODELS =
@@ -1265,6 +1274,62 @@ test("Claude Code's harness rules replace the working directory, the memory path
   );
 });
 
+// Catches: a parent's CLAUDE.md, or another mention of the context's checkout, left naming the
+// test's scratch when the working directory is below the checkout's root.
+test("Claude Code's harness rules name the session's checkout for a mention of the context's checkout when the working directory is below its root", () => {
+  const checkout = "/scratch/load-1/claude/profiles/abc/context/work";
+  const work = `${checkout}/agents/vm`;
+  const facts = sessionFacts(
+    {
+      file: "/made-up/sessions/h.json",
+      head: {
+        store: "store_a",
+        pathHash: pathHash("/sessions/h.jsonl"),
+        held: true,
+        cwd: "/srv/acme/widgets/agents/vm",
+        start: "2026-11-18T08:00:00.000Z",
+        firstUser: null,
+        reminders: [],
+        bytes: 100,
+        badLines: 0,
+        readAt: "2026-11-21T00:00:00.000Z",
+      },
+    },
+    {
+      turn: undefined,
+      date: { value: "2026-11-18", from: "the UTC date of the session's first user turn" },
+      devbox: false,
+      devboxClaudeConfigDir: undefined,
+    }
+  );
+  const body = {
+    model: "claude-sonnet-5-5",
+    system: [
+      {
+        type: "text",
+        text: `Contents of ${checkout}/CLAUDE.md (project instructions, checked into the codebase):\nRoot rules.\nContents of ${work}/CLAUDE.md (project instructions, checked into the codebase):\nVM rules.`,
+      },
+    ],
+    messages: [
+      {
+        role: "user",
+        content: [{ type: "text", text: ` - Primary working directory: ${work}\n` }],
+      },
+    ],
+  };
+  const rewritten = rewriteBody(
+    body,
+    claudeHarnessRules(work, "", facts, { dir: checkout, workingDirectory: "agents/vm" }),
+    ["/scratch/load-1"]
+  );
+  expect(rewritten.faults).toEqual([]);
+  const text = JSON.stringify(rewritten.body);
+  expect(text).toContain("Contents of /srv/acme/widgets/CLAUDE.md (project instructions");
+  expect(text).toContain("Contents of /srv/acme/widgets/agents/vm/CLAUDE.md (project instructions");
+  expect(text).toContain("Primary working directory: /srv/acme/widgets/agents/vm\\n");
+  expect(rewritten.replaced).toContainEqual({ what: "the checkout", count: 1 });
+});
+
 /** Made-up repositories (skills alpha, beta and gamma), the tested skill's `tested` files (alpha's
  *  unless given) and the tasks `lines` (one need task unless given) for a real host's run, under
  *  `dir`, with the stand-in's configuration. */
@@ -1746,6 +1811,74 @@ describe.skipIf(claude === undefined)("skill-cuts load on Claude Code", () => {
           `Claude Code lists ${plugin}:alpha as "${description}" in the context of ${file}`
         );
       }
+    },
+    HOST_ROW_TIMEOUT_MS
+  );
+
+  test(
+    "gives a devbox profile's user-level file as user memory and its repository's root CLAUDE.md as the project's instructions, from the working directory",
+    async () => {
+      const dir = path.join(scratch, "claude-project");
+      const { out, common } = hostInputs(dir);
+      writeTree(path.join(dir, "repos", "acme/proj", COMMIT), { "CLAUDE.md": PROJECT_RULES });
+      const profile = path.join(dir, "profile.json");
+      writeFileSync(
+        profile,
+        JSON.stringify({
+          ...BETA_PROFILE,
+          contextFiles: [USER_FILE, PROJECT_FILE],
+          claude: {
+            marketplace: "acme-market",
+            plugins: [{ name: "acme-tools", skills: ["beta"] }],
+            skillPlugin: "acme-tools",
+          },
+        })
+      );
+      answer = () => [
+        {
+          type: "tool_use",
+          id: "toolu_skill",
+          name: "Skill",
+          input: { skill: "acme-tools:alpha" },
+        },
+      ];
+      const ran = await cli([
+        "load",
+        ...common,
+        "--host",
+        "claude",
+        "--profile",
+        profile,
+        "--thinking",
+        "off",
+        "--claude",
+        String(claude),
+      ]);
+      expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
+      const files = loadCapturePaths(out, "claude", "need-1");
+      const sent = texts(JSON.parse(readFileSync(files.body, "utf8")).messages).join("\n");
+      const user = "End each answer with the word done.";
+      const project = "Start each answer with the word ready.";
+      expect(sent).toContain(user);
+      expect(sent).toContain(project);
+      // Each under its own heading: the user's memory, then the project's instructions.
+      const userHeading = sent.lastIndexOf(
+        "(user's private global instructions for all projects)",
+        sent.indexOf(user)
+      );
+      const projectHeading = sent.lastIndexOf("(project instructions", sent.indexOf(project));
+      expect(userHeading).toBeGreaterThan(-1);
+      expect(projectHeading).toBeGreaterThan(sent.indexOf(user));
+      const record = z
+        .looseObject({
+          userMemory: z.unknown(),
+          context: z.looseObject({ contextFiles: z.array(z.looseObject({ as: z.string() })) }),
+        })
+        .parse(JSON.parse(readFileSync(files.record, "utf8")));
+      expect(record.userMemory).toEqual(USER_FILE);
+      expect(record.context.contextFiles).toMatchObject([
+        { ...PROJECT_FILE, as: "working directory" },
+      ]);
     },
     HOST_ROW_TIMEOUT_MS
   );

@@ -87,11 +87,14 @@
  * the one its journaled reminder names), else NEUTRAL_CWD; the reminder is the one Oh My Pi
  * journaled for the turn the capture's reminder goes on (a `date-cwd-reminder` entry of the
  * session's head), byte for byte, else it is rendered from that working directory and the UTC
- * date of the turn it stands for; a context file's path is under that working directory, and the
+ * date of the turn it stands for; a context file's path is under that working directory (one of
+ * a parent of it, when the profile names a `workingDirectory` below the checkout's root, under the
+ * session's checkout: that directory less the `workingDirectory`, `sessionCheckout`), and the
  * user-level `CLAUDE.md` under the configuration's `devboxClaudeConfigDir`, else under
  * NEUTRAL_CLAUDE_CONFIG_DIR; a built prompt's `- OS:` line shows NEUTRAL_OS, the same for every
  * arm (a recorded prompt is sent as recorded, its workstation lines the session's own). Any other
- * mention of the capture's working directory names the session's. The stand-in daemons answer
+ * mention of the capture's working directory, or of its checkout, names the session's. The
+ * stand-in daemons answer
  * with that working directory and made-up ids. A body that still holds the case's scratch
  * directory or the capture's `scratchDir` after this is refused. The session's head comes from
  * its store (`sessionHeads`, session-head.sql, saved as `<out>/sessions/<pathHash>.json`), and
@@ -951,20 +954,43 @@ function isSystemPart(where: readonly (string | number)[], value: unknown): bool
   return role === "developer" || role === "system";
 }
 
+/** The root of the session repository's checkout that holds the session's working directory
+ *  `cwd`, given `workingDirectory`, the profile's path of that directory inside the checkout:
+ *  `cwd` less that path; or, when `cwd` does not end with it (a neutral working directory), the
+ *  directory as many levels above `cwd` as the path has parts. */
+export function sessionCheckout(cwd: string, workingDirectory: string): string {
+  const dir = cwd.length > 1 ? cwd.replace(/\/+$/, "") : cwd;
+  const tail = `/${workingDirectory}`;
+  if (dir.endsWith(tail)) return dir.slice(0, -tail.length) || "/";
+  return path.posix.resolve(dir, ...workingDirectory.split("/").map(() => ".."));
+}
+
+/** A capture's checkout of the session repository (context.ts) that its working directory is in,
+ *  below its root: the checkout's directory, and the profile's `workingDirectory` in it. */
+export interface CaptureCheckout {
+  readonly dir: string;
+  readonly workingDirectory: string;
+}
+
 /**
  * The harness rules of an Oh My Pi capture that ran in `workspace`, with the scratch Claude Code
  * config directory `claudeConfigDir` (a devbox context's), for the session `facts`: the date and
  * working-directory reminder (any date) becomes the session's; a context file's block path under
  * the working directory, or in the config directory, names the session's; with `builtPrompt`
  * (a prompt Oh My Pi built, not a recorded one), the workstation's `- OS:` line shows NEUTRAL_OS;
- * and every other mention of the working directory names the session's.
+ * and every other mention of the working directory names the session's. When the working
+ * directory is below the root of the capture's `checkout`, a context file's block path in that
+ * checkout, and every other mention of it, names the session's checkout (`sessionCheckout`).
  */
 export function ompHarnessRules(
   workspace: string,
   claudeConfigDir: string | undefined,
   facts: SessionFacts,
-  builtPrompt: boolean
+  builtPrompt: boolean,
+  checkout?: CaptureCheckout
 ): HarnessRule[] {
+  const root =
+    checkout === undefined ? "" : sessionCheckout(facts.cwd.value, checkout.workingDirectory);
   return [
     {
       what: "the date and working-directory reminder",
@@ -979,6 +1005,15 @@ export function ompHarnessRules(
       pattern: new RegExp(`<file path="${literal(workspace)}/`, "g"),
       to: () => `<file path="${facts.cwd.value}/`,
     },
+    ...(checkout === undefined
+      ? []
+      : [
+          {
+            what: "a context file's path in the checkout",
+            pattern: new RegExp(`<file path="${literal(checkout.dir)}/`, "g"),
+            to: () => `<file path="${root}/`,
+          },
+        ]),
     ...(claudeConfigDir === undefined
       ? []
       : [
@@ -1002,6 +1037,15 @@ export function ompHarnessRules(
       pattern: new RegExp(literal(workspace), "g"),
       to: () => facts.cwd.value,
     },
+    ...(checkout === undefined
+      ? []
+      : [
+          {
+            what: "another mention of the checkout",
+            pattern: new RegExp(literal(checkout.dir), "g"),
+            to: () => root,
+          },
+        ]),
   ];
 }
 
@@ -1636,7 +1680,15 @@ export async function captureBody(
     const facts = options.session;
     const rewritten = rewriteBody(
       body,
-      ompHarnessRules(context.workspace, context.claudeConfigDir, facts, recorded === undefined),
+      ompHarnessRules(
+        context.workspace,
+        context.claudeConfigDir,
+        facts,
+        recorded === undefined,
+        c.profile.workingDirectory === undefined
+          ? undefined
+          : { dir: context.checkout, workingDirectory: c.profile.workingDirectory }
+      ),
       [root, options.scratchDir],
       recorded === undefined ? undefined : isSystemPart
     );

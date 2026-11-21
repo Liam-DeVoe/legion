@@ -23,6 +23,7 @@ import {
   type SavedHead,
   type SessionFacts,
   savedCapture,
+  sessionCheckout,
   sessionFacts,
   sessionHeads,
   skillListing,
@@ -143,8 +144,10 @@ function f1Case(id: string): Case {
         { repo: "acme/skills", commit: COMMIT, path: "skills/delta", name: "delta" },
       ],
       plugins: [],
-      // A devbox profile's context file: its dev box's user-level one (build.ts).
-      contextFiles: [{ repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md" }],
+      // A devbox profile's user-level context file: its dev box's user-level one (build.ts).
+      contextFiles: [
+        { repo: "acme/project", commit: COMMIT, path: ".claude/CLAUDE.md", user: true },
+      ],
     },
     messages: messages.slice(0, 7),
     skillReads: [2, 4],
@@ -1306,6 +1309,97 @@ export default function bootProbe(pi) {
     },
     ROW_TIMEOUT_MS
   );
+
+  // Catches: a context file of a parent of the working directory that Oh My Pi never reads (the
+  // capture run at the checkout's root), one shown at the capture's scratch path, or a file of the
+  // working directory not named AGENTS.md or CLAUDE.md sent in the appended system prompt.
+  test(
+    "a case whose working directory is below its checkout's root is captured there: Oh My Pi reads the working directory's context file and its parents', the farther first, each shown at the session's path",
+    async () => {
+      await captures();
+      const rootRules = "# Made-up root rules\n\nRun the tests before each commit.\n";
+      const vmRules = "# Made-up VM rules\n\nName the VM in each reply.\n";
+      writeTree(path.join(dir, "repos", "acme/project", COMMIT), {
+        "AGENTS.md": rootRules,
+        "agents/vm/.github/copilot-instructions.md": vmRules,
+      });
+      const base = f1Case("c-levels");
+      const c: Case = {
+        ...base,
+        profile: {
+          ...base.profile,
+          contextFiles: [
+            ...base.profile.contextFiles,
+            { repo: "acme/project", commit: COMMIT, path: "AGENTS.md" },
+            {
+              repo: "acme/project",
+              commit: COMMIT,
+              path: "agents/vm/.github/copilot-instructions.md",
+            },
+          ],
+          workingDirectory: "agents/vm",
+        },
+      };
+      const cwd = `${SESSION_CWD}/agents/vm`;
+      const made = await captureBody(
+        c,
+        buildArm(
+          c,
+          "old",
+          { old: path.join(dir, "old"), new: path.join(dir, "new") },
+          path.join(dir, "arms-levels")
+        ),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out-levels"),
+          scratchDir: path.join(dir, "scratch"),
+          cacheDir: path.join(dir, "cache"),
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints,
+          session: sessionFacts(
+            { ...SESSION_HEAD, head: { ...SESSION_HEAD.head, cwd, reminders: [] } },
+            {
+              turn: FIRST_TURN,
+              date: { value: "2026-11-20", from: "the UTC date of the case's step in the session" },
+              devbox: true,
+              devboxClaudeConfigDir: DEVBOX_CLAUDE,
+            }
+          ),
+        }
+      );
+      const { record } = made;
+      const checkout = path.join(record.scratch, "work");
+      // Oh My Pi ran in the working directory inside the checkout, and read both files there.
+      const raw = readFileSync(record.harness.rawBody, "utf8");
+      expect(raw).toContain(`current working directory: '${checkout}/agents/vm'`);
+      const rawSystem = systemBlocks(JSON.parse(raw)).join("\n");
+      expect(rawSystem).toContain(`<file path="${checkout}/AGENTS.md">`);
+      expect(rawSystem).toContain(
+        `<file path="${checkout}/agents/vm/.github/copilot-instructions.md">`
+      );
+      // The body the replays send shows each at the session's path, the farther first.
+      const system = systemBlocks(made.body).join("\n");
+      const rootBlock = `<file path="${SESSION_CWD}/AGENTS.md">`;
+      const vmBlock = `<file path="${cwd}/.github/copilot-instructions.md">`;
+      expect(system).toContain(rootBlock);
+      expect(system).toContain("Run the tests before each commit.");
+      expect(system).toContain(vmBlock);
+      expect(system).toContain("Name the VM in each reply.");
+      expect(system.indexOf(rootBlock)).toBeLessThan(system.indexOf(vmBlock));
+      expect(JSON.stringify(made.body)).not.toContain(record.scratch);
+      expect(record.context.contextFiles.map((file) => file.as)).toEqual([
+        "user level",
+        "working directory",
+        "working directory",
+      ]);
+      expect(record.harness.replaced).toContainEqual({
+        what: "a context file's path in the checkout",
+        count: 1,
+      });
+    },
+    ROW_TIMEOUT_MS
+  );
 });
 
 // Oh My Pi 18.18.6's own refusals of a run's --tools (validateToolNames,
@@ -1473,6 +1567,56 @@ test("the harness rules replace the capture's reminder, context-file paths, OS l
   expect(recorded.replaced.map((rule) => rule.what)).not.toContain("the workstation's OS line");
   // The body given is never changed.
   expect(body.messages[0]?.content[0]?.text).toBe(captured);
+});
+
+// Catches: a parent's context file, or another mention of the capture's checkout, left naming the
+// capture's scratch when the working directory is below the checkout's root.
+test("the harness rules of a capture whose working directory is below its checkout's root name the session's checkout for a parent's context file and every other mention of the checkout", () => {
+  const checkout = "/scratch/run-1/legion-retro/captures/abc/work";
+  const work = `${checkout}/agents/vm`;
+  const cwd = `${SESSION_CWD}/agents/vm`;
+  const facts = sessionFacts(
+    { ...SESSION_HEAD, head: { ...SESSION_HEAD.head, cwd, reminders: [] } },
+    { turn: FIRST_TURN, date: STEP_DATE, devbox: false, devboxClaudeConfigDir: undefined }
+  );
+  const body = {
+    model: "claude-sonnet-5-5",
+    system: [
+      {
+        type: "text",
+        text: `<file path="${checkout}/AGENTS.md">\nRoot rules.\n</file>\n<file path="${work}/AGENTS.md">\nVM rules.\n</file>`,
+      },
+    ],
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "text", text: `I read ${checkout}/README.md and ${work}/notes.md.` }],
+      },
+    ],
+  };
+  const built = rewriteBody(
+    body,
+    ompHarnessRules(work, undefined, facts, true, { dir: checkout, workingDirectory: "agents/vm" }),
+    ["/scratch/run-1"]
+  );
+  expect(built.faults).toEqual([]);
+  const system = String(Object(built.body.system as unknown[])[0]?.text);
+  expect(system).toContain(`<file path="${SESSION_CWD}/AGENTS.md">\nRoot rules.`);
+  expect(system).toContain(`<file path="${cwd}/AGENTS.md">\nVM rules.`);
+  expect(JSON.stringify(built.body)).toContain(
+    `I read ${SESSION_CWD}/README.md and ${cwd}/notes.md.`
+  );
+  expect(built.replaced).toContainEqual({
+    what: "a context file's path in the checkout",
+    count: 1,
+  });
+  expect(built.replaced).toContainEqual({ what: "another mention of the checkout", count: 1 });
+  // The session's checkout is its working directory less that path; a neutral working directory,
+  // which does not end with it, has its checkout as many levels above it.
+  expect(sessionCheckout(`${cwd}/`, "agents/vm")).toBe(SESSION_CWD);
+  expect(sessionCheckout(NEUTRAL_CWD, "agents/vm")).toBe(
+    path.posix.resolve(NEUTRAL_CWD, "..", "..")
+  );
 });
 
 // Catches: a head read twice from the store, a hash the store does not hold taken as held, or a

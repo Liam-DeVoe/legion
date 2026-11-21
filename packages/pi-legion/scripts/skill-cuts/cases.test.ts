@@ -154,6 +154,50 @@ test("a subagent's case, with its recorded system prompt and tools, loads; a con
   );
 });
 
+test("a profile names the session's working directory inside its repository's checkout, and marks a dev box's user-level context file; a directory outside the checkout and another marker are refused", () => {
+  const base = alphaDir("base-workdir");
+  const c1 = f1Case("c-workdir");
+  const placed = {
+    ...c1,
+    profile: {
+      ...c1.profile,
+      contextFiles: [
+        {
+          repo: "acme/skills",
+          commit: "0123456789abcdef",
+          path: ".claude/CLAUDE.md",
+          user: true as const,
+        },
+        { repo: "acme/project", commit: "fedcba9876543210", path: "agents/AGENTS.md" },
+      ],
+      workingDirectory: "agents/agentvm",
+    },
+  };
+  expect(loadCases(caseFile("workdir", [placed]), base)).toEqual([placed]);
+  const rows = ["../agents", "/agents", "agents/", "agents/./vm", ""].map((dir, n) => ({
+    ...placed,
+    id: `c-dir-${n}`,
+    profile: { ...placed.profile, workingDirectory: dir },
+  }));
+  const notUser = {
+    ...placed,
+    id: "c-not-user",
+    profile: {
+      ...placed.profile,
+      contextFiles: [{ ...placed.profile.contextFiles[0], user: false }],
+    },
+  };
+  const file = caseFile("workdir-bad", [...rows, notUser]);
+  for (const n of [0, 1, 2, 3, 4]) {
+    expect(() => loadCases(file, base)).toThrow(
+      `case c-dir-${n} (${file}:${n + 1}) is not a case: profile.workingDirectory`
+    );
+  }
+  expect(() => loadCases(file, base)).toThrow(
+    `case c-not-user (${file}:6) is not a case: profile.contextFiles.0.user`
+  );
+});
+
 test("refuses a line that is not a whole line of the base text", () => {
   const base = alphaDir("base-line");
   const part = {

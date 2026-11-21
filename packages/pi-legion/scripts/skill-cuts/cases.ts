@@ -30,10 +30,23 @@ const RepoPath = {
 export const ProfileSkill = z.strictObject({ ...RepoPath, name: z.string().min(1) });
 export type ProfileSkill = z.infer<typeof ProfileSkill>;
 
+/** A directory inside a repository's checkout: relative, `/`-separated, with no empty, `.` or
+ * `..` part. */
+const CheckoutDir = z
+  .string()
+  .min(1)
+  .refine(
+    (dir) => dir.split("/").every((part) => part !== "" && part !== "." && part !== ".."),
+    "is not a directory inside the repository's checkout"
+  );
+
 /** What the capture installs for a case, the same in every arm but the case's skill (context.ts):
  * the installed skills, the plugins the session's context installed at its
- * start, the context files (the repository's `AGENTS.md`, a Legion project's instructions file),
- * and, for a Legion context, the role prompt that goes to `--append-system-prompt`. A subagent's
+ * start, the context files (the session repository's, at their paths in it; a Legion project's
+ * instructions file; and, marked `user: true`, a dev box's user-level file, Claude Code's
+ * `CLAUDE.md` in its config directory), `workingDirectory`, the session's working directory inside
+ * the session repository's checkout (absent: its root), and, for a Legion context, the role prompt
+ * that goes to `--append-system-prompt`. A subagent's
  * session records its own system prompt and tools (its `session_init` line), so its case carries
  * them: `systemPrompt`, the recorded blocks the capture sends in place of a rebuilt prompt, with
  * only the case skill's line of their skill listing changed per arm, and `tools`, the recorded
@@ -41,7 +54,8 @@ export type ProfileSkill = z.infer<typeof ProfileSkill>;
 export const Profile = z.strictObject({
   skills: z.array(ProfileSkill),
   plugins: z.array(z.strictObject({ ...RepoPath, name: z.string().min(1) })),
-  contextFiles: z.array(z.strictObject(RepoPath)),
+  contextFiles: z.array(z.strictObject({ ...RepoPath, user: z.literal(true).optional() })),
+  workingDirectory: CheckoutDir.optional(),
   appendSystemPrompt: z.string().min(1).optional(),
   systemPrompt: z.array(z.string()).min(1).optional(),
   tools: z.array(z.string().min(1)).min(1).optional(),

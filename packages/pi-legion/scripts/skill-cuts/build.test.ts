@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -360,6 +360,29 @@ const SESSIONS: Record<
         );
     },
   },
+  // A Legion pane in a workspace of acme/proj, whose own skills are in its `.claude/skills/` and
+  // `.omp/skills/`; it reads alpha as the legion session does.
+  "proj-legion": {
+    store: "store_b",
+    change: (lines) => {
+      SESSIONS.legion?.change?.(lines);
+      const header = lines.find((line) => line.type === "session");
+      if (header !== undefined) header.cwd = "/legion/workspaces/acme/proj/K-1/";
+    },
+  },
+  // A dev-box session in a checkout of acme/proj, the one repository of the copies output's list
+  // named `proj`.
+  "proj-devbox": { store: "store_a", change: workingDirectory("/home/dev/src/proj") },
+  // A dev-box session under a directory named `skills`, the name of two repositories of the list.
+  "two-repos": { store: "store_a", change: workingDirectory("/home/dev/src/skills/notes") },
+  // A dev-box session in a directory below the root of a checkout of acme/proj.
+  "proj-subdir": {
+    store: "store_a",
+    change: workingDirectory("/home/dev/src/proj/agents/agentvm"),
+  },
+  // A dev-box session in a checkout of acme/dual, whose root holds .claude/CLAUDE.md, AGENTS.md
+  // and CLAUDE.md.
+  "dual-root": { store: "store_a", change: workingDirectory("/home/dev/src/dual") },
   "no-role": { store: "store_b" },
   // A Legion root architect, which the daemon starts with "<KEY> is yours and …".
   "root-architect": {
@@ -446,6 +469,14 @@ const SESSIONS: Record<
     change: (lines) => lines.splice(6, 0, { notJson: true }),
   },
 };
+
+/** A change of F1 that sets the working directory its header names. */
+function workingDirectory(cwd: string) {
+  return (lines: Record<string, unknown>[]) => {
+    const header = lines.find((line) => line.type === "session");
+    if (header !== undefined) header.cwd = cwd;
+  };
+}
 
 /** A compaction entry that keeps the entries from `kept` on. */
 function compaction(kept: unknown): Record<string, unknown> {
@@ -544,7 +575,8 @@ const TASK_ROWS = [
   },
 ];
 
-/** The stand-in store command: it answers pull.sql, sessions.sql and tasks.sql from STORE. */
+/** The stand-in store command: it answers pull.sql, sessions.sql, tasks.sql and session-head.sql
+ *  from STORE. */
 const STANDIN_PSQL = (storeFile: string, logFile: string) => `
 import { appendFileSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -600,11 +632,43 @@ if (query.includes("omp_session_files_parts pt") && place) {
   rows = store.tasks
     .filter((row) => row.dayStart === dayStart && terms.some((t) => row.text.toLowerCase().includes(t.toLowerCase())))
     .map((row) => ({ path: row.path, text: row.text }));
+} else if (query.includes("encode(sha256(convert_to(f.path")) {
+  kind = "heads";
+  // Each file of a path hash the query names: its header's cwd and timestamp and its first user
+  // turn, from its whole text (a made-up file is shorter than the head session-head.sql reads).
+  const hashes = new Set(literals(query.slice(query.indexOf("ANY"))));
+  rows = Object.entries(store.files)
+    .map(([p, text]) => ({ text, hash: createHash("sha256").update(p).digest("hex") }))
+    .filter((file) => hashes.has(file.hash))
+    .sort((a, b) => (a.hash < b.hash ? -1 : 1))
+    .map(({ text, hash }) => {
+      const lines = text.split("\\n").flatMap((line) => {
+        try {
+          return [JSON.parse(line)];
+        } catch {
+          return [];
+        }
+      });
+      const header = lines.find((line) => line.type === "session");
+      const user = lines.find((line) => line.type === "message" && line.message?.role === "user");
+      return {
+        hash,
+        cwd: header?.cwd ?? null,
+        start: header?.timestamp ?? null,
+        first_user: user === undefined ? null : {
+          timestamp: typeof user.message.timestamp === "number" ? user.message.timestamp : null,
+          attribution: typeof user.message.attribution === "string" ? user.message.attribution : null,
+        },
+        reminders: [],
+        bytes: Buffer.byteLength(text, "utf8"),
+        bad_lines: 0,
+      };
+    });
 } else {
   process.stderr.write("psql: error: not a query of the runner\\n");
   process.exit(3);
 }
-appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ db, kind, rows: rows.length, after, first: rows[0] && [rows[0].o, rows[0].k], limit64: !query.includes("omp_session_files_parts pt") || query.includes("LIMIT 64") }) + "\\n");
+appendFileSync(${JSON.stringify(logFile)}, JSON.stringify({ db, kind, rows: rows.length, after, first: rows[0] && [rows[0].o, rows[0].k], limit64: kind !== "pull" || query.includes("LIMIT 64") }) + "\\n");
 process.stdout.write(" value \\n-------\\n" + rows.map((row) => " " + JSON.stringify(row) + "\\n").join("") + "(" + rows.length + (rows.length === 1 ? " row" : " rows") + ")\\n\\n");
 `;
 
@@ -799,11 +863,20 @@ let recorder: Recorder;
 /** A made-up skill's SKILL.md. */
 const skillMd = (name: string) =>
   `---\nname: ${name}\ndescription: Use when a task asks for ${name}.\n---\n\n# ${name}\n`;
+/** A made-up project skill: one of a repository's own `.claude/skills/` or `.omp/skills/`. */
+const projectSkillMd = (name: string) =>
+  `---\nname: ${name}\ndescription: Use when the project asks for ${name}.\n---\n\n# ${name} of the project\n`;
+/** The root CLAUDE.md of acme/proj: the project context file of a dev-box session in it. */
+const PROJECT_RULES = "# Made-up project rules\n\nName each file you change.\n";
 
 /** Claude Code's user memory in acme/skills's `.claude/`: the user-level context file of a devbox
  *  session whose units come from acme/skills. */
 const USER_RULES = "# Made-up user rules\n\nAnswer each question in one line.\n";
 
+/** How Oh My Pi picks and orders a session's project context files, as a profile's evidence says
+ *  it. */
+const SLOT_RULE =
+  "Oh My Pi 18.18.6 keeps one project context file at each level from the working directory up to the checkout's root (capability/context-file.ts, lines 36-46: one for each depth), the first in its providers' order, highest priority first (capability/index.ts, lines 177-184 and 285-333), and joins the files it keeps the farthest level first (system-prompt.ts, lines 392-398)";
 /** The made-up repositories as each was at the commit SHA: every file's path and text. acme/skills
  *  holds `older` and no `newer`; its installer links each skill of skills/ into Oh My Pi's user
  *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme; it holds
@@ -811,7 +884,11 @@ const USER_RULES = "# Made-up user rules\n\nAnswer each question in one line.\n"
  *  acme/other holds its own alpha and delta, which its installer links the same way. acme/market
  *  holds zeta and a marketplace that ships it in its plugin zeta-tools, under the marketplace's
  *  name at SHA (old-market; the copies output, read later, names it new-market), and Claude
- *  Code's settings. */
+ *  Code's settings. acme/widgets holds an AGENTS.md. acme/proj holds its own skills: kappa and
+ *  beta in `.claude/skills/`, lambda and older in `.omp/skills/` (beta and older are names
+ *  acme/skills's installer links too), kappa and mu in `agents/.claude/skills/`, nu in
+ *  `agents/agentvm/.omp/skills/` and xi in `other/.claude/skills/`; a CLAUDE.md, and an AGENTS.md
+ *  in agents/agentvm/. acme/dual holds .claude/CLAUDE.md, AGENTS.md and CLAUDE.md at its root. */
 const INSTALLER = [
   "#!/usr/bin/env bash",
   'for skill in "$REPO"/skills/*/; do',
@@ -864,6 +941,24 @@ const REPOSITORIES: Record<string, Record<string, string>> = {
     }),
     ".claude/settings.json": "{}\n",
   },
+  "acme/widgets": { "AGENTS.md": "# Widgets\n" },
+  "acme/proj": {
+    ".claude/skills/kappa/SKILL.md": projectSkillMd("kappa"),
+    ".claude/skills/beta/SKILL.md": projectSkillMd("beta"),
+    ".omp/skills/lambda/SKILL.md": projectSkillMd("lambda"),
+    ".omp/skills/older/SKILL.md": projectSkillMd("older"),
+    "agents/.claude/skills/kappa/SKILL.md": projectSkillMd("kappa"),
+    "agents/.claude/skills/mu/SKILL.md": projectSkillMd("mu"),
+    "agents/agentvm/.omp/skills/nu/SKILL.md": projectSkillMd("nu"),
+    "other/.claude/skills/xi/SKILL.md": projectSkillMd("xi"),
+    "agents/agentvm/AGENTS.md": "# Made-up VM rules\n\nStart the VM before each test.\n",
+    "CLAUDE.md": PROJECT_RULES,
+  },
+  "acme/dual": {
+    ".claude/CLAUDE.md": "# Made-up rules for Claude\n\nAnswer in one line.\n",
+    "AGENTS.md": "# Made-up agent rules\n\nName each file you read.\n",
+    "CLAUDE.md": "# Made-up project rules\n\nRun the tests first.\n",
+  },
 };
 
 /** The blob id the stand-in gives a file's text. */
@@ -900,7 +995,6 @@ const io = (lines: string[]): BuildIo => ({
     }
     if (/^repos\/[^/]+\/[^/]+$/.test(route)) return ok("main\n");
     if (route.endsWith("/commits")) return ok(`${SHA}\n`);
-    if (route === "repos/acme/widgets/contents/AGENTS.md") return ok("# Widgets\n");
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
       return ok("key: ACME\ninstructions: acme.md\n");
     }
@@ -1182,6 +1276,8 @@ beforeAll(() => {
       ["acme/other", "main", SHA, "no", "no", "", 10, "recursive", 1, ""],
       ["forker/skills", "main", SHA, "yes", "no", "acme/skills", 10, "recursive", 1, ""],
       ["acme/market", "main", SHA, "no", "no", "", 10, "recursive", 1, ""],
+      ["acme/proj", "main", SHA, "no", "no", "", 10, "recursive", 8, ""],
+      ["acme/dual", "main", SHA, "no", "no", "", 10, "recursive", 0, ""],
     ])
   );
   writeFileSync(
@@ -1362,6 +1458,11 @@ describe("build-cases over every made-up session", () => {
         "context",
         "read-wins",
         "renamed-plugin",
+        "proj-legion",
+        "proj-devbox",
+        "two-repos",
+        "proj-subdir",
+        "dual-root",
       ]
         .map((name) => pathHash(sessionPath(name)))
         .sort()
@@ -1511,7 +1612,7 @@ describe("build-cases over every made-up session", () => {
         { repo: "acme/skills", commit: SHA, path: "skills/older", name: "older" },
       ],
       plugins: [],
-      contextFiles: [{ repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md" }],
+      contextFiles: [{ repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true }],
     });
     const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
     expect(evidence["unit user-skills:omp (acme/skills:installers/skills.sh)"]).toContain(
@@ -1593,7 +1694,7 @@ describe("build-cases over every made-up session", () => {
     }
   });
 
-  test("--reprofile builds each profile again from the case alone: the new cases differ from the old ones only in profile and evidence, and no session is read and no reader called", async () => {
+  test("--reprofile builds each profile again from the case and its session's head: the new cases differ from the old ones only in profile and evidence, the store is asked for the session heads alone, one query a store, and no reader is called", async () => {
     // The case file as a builder that took the copies output's list wrote it: each profile holds
     // `newer`, which acme/skills did not hold at the commit, and not `older`.
     const stale = cases.map((c) => ({
@@ -1631,11 +1732,15 @@ describe("build-cases over every made-up session", () => {
     ];
     const lines: string[] = [];
     const requestsBefore = recorder.requests.length;
-    const logBefore = statSync(psqlLog).size;
+    const logBefore = psqlLogLength();
     expect(await main(args(staleFile, fresh), io(lines))).toBe(0);
     expect(lines.join("")).not.toContain("left out");
     expect(recorder.requests.length).toBe(requestsBefore);
-    expect(statSync(psqlLog).size).toBe(logBefore);
+    expect(
+      psqlLines(logBefore)
+        .map((line) => `${line.db} ${line.kind}`)
+        .sort()
+    ).toEqual(["store_a heads", "store_b heads"]);
 
     const rebuilt = loadCases(fresh, old);
     expect(rebuilt.map((c) => c.id)).toEqual(cases.map((c) => c.id));
@@ -1649,15 +1754,12 @@ describe("build-cases over every made-up session", () => {
       expect(c.evidence?.map((each) => each.item)).toEqual(
         built.evidence?.map((each) => each.item)
       );
-      // The working directory is not in a case, so only a workspace's AGENTS.md is said otherwise.
+      // The working directory is not in a case; the session repository is, in the old evidence,
+      // and no other source names the working directory, so every source is the old one.
       const differing = (c.evidence ?? []).filter(
         (each, at) => each.source !== built.evidence?.[at]?.source
       );
-      expect(differing.map((each) => each.item)).toEqual(
-        c.profile.contextFiles.some((file) => file.path === "AGENTS.md")
-          ? ["context file acme/widgets AGENTS.md"]
-          : []
-      );
+      expect(differing.map((each) => each.item)).toEqual([]);
     }
     const summary = JSON.parse(readFileSync(`${fresh}.summary.json`, "utf8")) as {
       casesRead: number;
@@ -1678,6 +1780,81 @@ describe("build-cases over every made-up session", () => {
     expect(lines.join("\n")).toContain("so it takes no --sessions");
     expect(await main(args(staleFile, staleFile), io(lines))).toBe(2);
     expect(lines.join("\n")).toContain("is the file --reprofile reads");
+  }, 60_000);
+
+  test("--reprofile takes each case's working directory from its session's head, so a case built before the session repository was recorded gets its project skills and root context file; a case whose session the store no longer holds keeps the old rule, and its evidence says so", async () => {
+    const devbox = byName("proj-devbox") as Case;
+    const legion = byName("proj-legion") as Case;
+    // Each as a builder wrote it before the session repository: no project skill, no context file
+    // of acme/proj, and no item naming the session repository.
+    const before = (c: Case): Case => ({
+      ...c,
+      profile: {
+        ...c.profile,
+        skills: c.profile.skills.filter((skill) => skill.repo !== "acme/proj"),
+        contextFiles: c.profile.contextFiles.filter((file) => file.repo !== "acme/proj"),
+      },
+      evidence: (c.evidence ?? []).filter((each) => !each.item.startsWith("session repository ")),
+    });
+    // A case whose session the store holds no more, its old evidence naming acme/proj.
+    const gone: Case = {
+      ...legion,
+      id: `${legion.id}-gone`,
+      source: { ...legion.source, pathHash: pathHash("/sessions/gone.jsonl") },
+    };
+    const from = path.join(scratch, "heads", "old.jsonl");
+    mkdirSync(path.dirname(from), { recursive: true });
+    writeFileSync(
+      from,
+      [before(devbox), before(legion), gone].map((c) => `${JSON.stringify(c)}\n`).join("")
+    );
+    const fresh = path.join(scratch, "heads", "reprofiled.jsonl");
+    const logBefore = psqlLogLength();
+    const lines: string[] = [];
+    expect(
+      await main(
+        [
+          "build-cases",
+          "--config",
+          config,
+          "--old",
+          old,
+          "--copies",
+          copiesDir,
+          "--count",
+          countDir,
+          "--reprofile",
+          from,
+          "--out",
+          fresh,
+        ],
+        io(lines)
+      )
+    ).toBe(0);
+    const [d, l, g] = loadCases(fresh, old);
+    // The header's working directory gives each its session repository again.
+    expect(d?.profile).toEqual(devbox.profile);
+    expect(l?.profile).toEqual(legion.profile);
+    for (const c of [d, l]) {
+      expect(c?.evidence?.map((each) => each.item)).toContain("session repository acme/proj");
+      expect(c?.evidence?.map((each) => each.item)).not.toContain("no session head");
+    }
+    // The one the store no longer holds keeps the old rule: the repository its old evidence names.
+    expect(g?.profile).toEqual(legion.profile);
+    expect(g?.evidence?.find((each) => each.item === "no session head")?.source).toBe(
+      "the store store_b holds no file of the session now (session-head.sql), so its working directory is not known: the session repository is the one the old evidence names"
+    );
+    // One query a store, for the heads alone; each head saved beside the new case file.
+    expect(
+      psqlLines(logBefore)
+        .map((line) => `${line.db} ${line.kind}`)
+        .sort()
+    ).toEqual(["store_a heads", "store_b heads"]);
+    expect(existsSync(path.join(`${fresh}.sessions`, `${devbox.source.pathHash}.json`))).toBe(true);
+    const summary = JSON.parse(readFileSync(`${fresh}.summary.json`, "utf8")) as {
+      cases: { sessionHead: string }[];
+    };
+    expect(summary.cases.map((each) => each.sessionHead)).toEqual(["read", "read", "not held"]);
   }, 60_000);
 
   test("a Legion session's role comes from its first user message, and its profile adds the image's plugin and the context files", () => {
@@ -1742,12 +1919,12 @@ describe("build-cases over every made-up session", () => {
     const c = byName("good");
     expect(c?.context).toBe("devbox");
     expect(c?.profile.contextFiles).toEqual([
-      { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md" },
+      { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
     ]);
     const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
-    expect(evidence["left out: the working directory's context files"]).toBe(
-      "a devbox session's working directory names no repository"
-    );
+    // Its working directory is no checkout of a repository of the copies output's list, so it has
+    // no project context file (`no session repository`, below).
+    expect(evidence["no session repository"]).toBeDefined();
     expect(evidence["context file acme/skills .claude/CLAUDE.md"]).toBe(
       `Oh My Pi's user-level context file is CLAUDE.md in Claude Code's config directory, on a dev box the .claude/ of the repository that installs its units: of the repositories of the profile's units (acme/skills), acme/skills alone holds Claude Code's settings .claude/settings.json at ${SHA}, and it has .claude/CLAUDE.md at ${SHA}`
     );
@@ -1776,6 +1953,203 @@ describe("build-cases over every made-up session", () => {
     expect(subagent?.profile.contextFiles).toEqual([]);
     expect(subagent?.evidence?.map((each) => each.item)).not.toContain(
       "context file acme/skills .claude/CLAUDE.md"
+    );
+  });
+
+  test("a Legion pane in a workspace lists the .claude/skills and .omp/skills of the workspace's repository at its commit, each as a project skill", () => {
+    const c = byName("proj-legion");
+    expect(c?.context).toBe("legion:ACME:tester");
+    expect(c?.profile.skills).toEqual([
+      { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
+      { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+      { repo: "acme/proj", commit: SHA, path: ".claude/skills/kappa", name: "kappa" },
+      { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
+      { repo: "acme/proj", commit: SHA, path: ".omp/skills/older", name: "older" },
+    ]);
+    const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    expect(evidence["session repository acme/proj"]).toBe(
+      "the session's working directory /legion/workspaces/acme/proj/K-1/ is a Legion workspace of it: /legion/workspaces/<owner>/<name>/"
+    );
+    expect(evidence["skill kappa (acme/proj .claude/skills/kappa)"]).toBe(
+      `project skill of acme/proj at ${SHA}: Oh My Pi lists each <name>/SKILL.md under .claude/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/claude.ts, loadSkills, lines 205-224)`
+    );
+    expect(evidence["skill lambda (acme/proj .omp/skills/lambda)"]).toBe(
+      `project skill of acme/proj at ${SHA}: Oh My Pi lists each <name>/SKILL.md that has a description under .omp/skills/ of the working directory and of each parent up to the repository's root, the nearest first (discovery/builtin.ts, loadSkills, lines 314-327, over getProjectAncestorDirs, lines 81-109)`
+    );
+    // The working directory is the checkout's root, so no skill below it is listed.
+    expect(c?.profile.skills.some((skill) => skill.path.startsWith("agents/"))).toBe(false);
+    // The repository is read at the session's commit, as the units' repositories are.
+    expect(
+      ghCalls.some((args) => args.includes(`repos/acme/proj/git/trees/${SHA}?recursive=1`))
+    ).toBe(true);
+  });
+
+  test("a dev-box session in a checkout of the one listed repository of its directory's name lists that repository's project skills and gets its root CLAUDE.md beside the user-level file", () => {
+    const c = byName("proj-devbox");
+    expect(c?.context).toBe("devbox");
+    expect(c?.profile.skills).toEqual([
+      { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
+      { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+      { repo: "acme/proj", commit: SHA, path: ".claude/skills/kappa", name: "kappa" },
+      { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
+      { repo: "acme/proj", commit: SHA, path: ".omp/skills/older", name: "older" },
+    ]);
+    expect(c?.profile.contextFiles).toEqual([
+      { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
+      { repo: "acme/proj", commit: SHA, path: "CLAUDE.md" },
+    ]);
+    const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    expect(evidence["session repository acme/proj"]).toBe(
+      "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository. The working directory /home/dev/src/proj is named proj, which acme/proj alone of the list is named"
+    );
+    expect(evidence["context file acme/proj CLAUDE.md"]).toBe(
+      `${SLOT_RULE}: at the checkout's root, depth 0, acme/proj (the session repository) has CLAUDE.md at ${SHA}, and Oh My Pi keeps CLAUDE.md, priority 10 (discovery/claude-md.ts, lines 20-30, over discovery/helpers.ts's loadStandaloneContextFiles (lines 844-900), registered after agents-md.ts (discovery/index.ts, lines 24-25))`
+    );
+    // The tree read at that commit gives it; no file of acme/proj is read alone.
+    expect(
+      ghCalls.some((args) => args.some((arg) => arg.startsWith("repos/acme/proj/contents/")))
+    ).toBe(false);
+  });
+
+  test("a dev-box directory whose name two listed repositories have, or none has, gives no session repository, and the evidence says which matched", () => {
+    for (const name of ["two-repos", "good"]) {
+      const c = byName(name);
+      expect(c?.profile.skills.map((skill) => skill.name)).toEqual(["alpha", "beta", "older"]);
+      expect(c?.profile.skills.every((skill) => skill.repo === "acme/skills")).toBe(true);
+      expect(c?.profile.contextFiles).toEqual([
+        { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
+      ]);
+    }
+    const why = (name: string) =>
+      byName(name)?.evidence?.find((each) => each.item === "no session repository")?.source;
+    const rule =
+      "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository.";
+    expect(why("two-repos")).toBe(
+      `${rule} The working directory /home/dev/src/skills/notes is under /home/dev/src/skills, named skills, which 2 repositories of the list are named (acme/skills, forker/skills), so which one it is a checkout of is not known`
+    );
+    expect(why("good")).toBe(
+      `${rule} No part of the working directory /legion/scratch/tmp/acme-1/t1-runs/f1/work is named as a repository of the list`
+    );
+  });
+
+  test("a project skill and a user or plugin skill of the same name follow Oh My Pi's order: the project's .omp/skills come before ~/.omp/agent/skills, and the project's .claude/skills after those and after extension packages", () => {
+    /** Checks that `source` starts with `start` and then gives Oh My Pi's order with its source. */
+    const decided = (source: string | undefined, start: string) => {
+      expect(source).toStartWith(
+        `${start}: Oh My Pi 18.18.6 keeps under a name the first skill it admits, in its providers' order`
+      );
+      for (const cited of [
+        "capability/index.ts, lines 177-184",
+        "extensibility/skills.ts, resolveCollision, lines 141-223",
+        "discovery/builtin.ts, lines 81-109 and 314-342",
+        "discovery/omp-plugins.ts, lines 136-169",
+        "discovery/claude.ts, lines 205-249",
+      ]) {
+        expect(source).toContain(cited);
+      }
+    };
+    // On the dev box acme/skills's installer links beta and older into ~/.omp/agent/skills: the
+    // user's beta comes before the project's .claude/skills/beta, and the project's
+    // .omp/skills/older before the user's older.
+    const devbox = Object.fromEntries(
+      byName("proj-devbox")?.evidence?.map((each) => [each.item, each.source]) ?? []
+    );
+    decided(
+      devbox["left out: skill beta from acme/proj .claude/skills/beta"],
+      "project skill of acme/proj too; Oh My Pi gives the session the copy of acme/skills skills/beta under that name (user-skills:omp links it (acme/skills:installers/skills.sh))"
+    );
+    expect(devbox["skill older (acme/proj .omp/skills/older)"]).toStartWith(
+      "project skill of acme/proj"
+    );
+    decided(
+      devbox["left out: skill older from acme/skills skills/older"],
+      "user-skills:omp links it (acme/skills:installers/skills.sh) too; Oh My Pi gives the session the copy of acme/proj .omp/skills/older under that name (project skill of acme/proj)"
+    );
+    // In the Legion pane the package @acme/pi-acme, an extension package, ships beta, and it
+    // comes before the project's .claude/skills/beta.
+    const legion = Object.fromEntries(
+      byName("proj-legion")?.evidence?.map((each) => [each.item, each.source]) ?? []
+    );
+    const legionBeta = legion["left out: skill beta from acme/proj .claude/skills/beta"];
+    expect(legionBeta).toStartWith(
+      "project skill of acme/proj too; Oh My Pi gives the session the copy of acme/skills skills/beta under that name (package:@acme/pi-acme "
+    );
+    expect(legionBeta).toContain("extension packages come next (90");
+  });
+
+  test("a dev-box working directory below its checkout's root lists the .omp/skills and .claude/skills of that directory and of each parent up to the root, the nearer first, and of no other directory", () => {
+    const c = byName("proj-subdir");
+    expect(c?.profile.skills).toEqual([
+      { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
+      { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+      { repo: "acme/proj", commit: SHA, path: "agents/.claude/skills/kappa", name: "kappa" },
+      { repo: "acme/proj", commit: SHA, path: ".omp/skills/lambda", name: "lambda" },
+      { repo: "acme/proj", commit: SHA, path: "agents/.claude/skills/mu", name: "mu" },
+      { repo: "acme/proj", commit: SHA, path: "agents/agentvm/.omp/skills/nu", name: "nu" },
+      { repo: "acme/proj", commit: SHA, path: ".omp/skills/older", name: "older" },
+    ]);
+    const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    expect(evidence["session repository acme/proj"]).toBe(
+      "a dev-box session's repository is the one repository of the copies output's list (repositories.tsv) named as the last part of its working directory, or of the nearest of that directory's parents named as any listed repository. The working directory /home/dev/src/proj/agents/agentvm is under /home/dev/src/proj, named proj, which acme/proj alone of the list is named; the working directory is agents/agentvm in the checkout"
+    );
+    // Of two kappa, the one of the nearer level (agents/) comes first.
+    expect(evidence["left out: skill kappa from acme/proj .claude/skills/kappa"]).toStartWith(
+      "project skill of acme/proj too; Oh My Pi gives the session the copy of acme/proj agents/.claude/skills/kappa under that name (project skill of acme/proj): Oh My Pi 18.18.6 keeps under a name the first skill it admits"
+    );
+    // other/ is no level of the working directory.
+    expect(c?.profile.skills.some((skill) => skill.name === "xi")).toBe(false);
+    expect(c?.profile.workingDirectory).toBe("agents/agentvm");
+  });
+
+  test("a working directory below its checkout's root gets the context file of each level up to the root, the farthest first, at its path in the repository", () => {
+    const c = byName("proj-subdir");
+    expect(c?.profile.contextFiles).toEqual([
+      { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
+      { repo: "acme/proj", commit: SHA, path: "CLAUDE.md" },
+      { repo: "acme/proj", commit: SHA, path: "agents/agentvm/AGENTS.md" },
+    ]);
+    const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    expect(evidence["context file acme/proj agents/agentvm/AGENTS.md"]).toBe(
+      `${SLOT_RULE}: at agents/agentvm, depth 0, acme/proj (the session repository) has agents/agentvm/AGENTS.md at ${SHA}, and Oh My Pi keeps agents/agentvm/AGENTS.md, priority 10 (discovery/agents-md.ts, lines 20-30, over discovery/helpers.ts's loadStandaloneContextFiles (lines 844-900))`
+    );
+    expect(evidence["context file acme/proj CLAUDE.md"]).toStartWith(
+      `${SLOT_RULE}: at the checkout's root, depth 2, acme/proj (the session repository) has CLAUDE.md`
+    );
+  });
+
+  test("within one level's slot the context file Oh My Pi's ranking picks is kept: the working directory's .claude/CLAUDE.md (80) before its AGENTS.md and CLAUDE.md (10), and the user-level file stays marked apart", () => {
+    const c = byName("dual-root");
+    expect(c?.profile.contextFiles).toEqual([
+      { repo: "acme/skills", commit: SHA, path: ".claude/CLAUDE.md", user: true },
+      { repo: "acme/dual", commit: SHA, path: ".claude/CLAUDE.md" },
+    ]);
+    const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    expect(evidence["context file acme/dual .claude/CLAUDE.md"]).toBe(
+      `${SLOT_RULE}: at the checkout's root, depth 0, acme/dual (the session repository) has .claude/CLAUDE.md, AGENTS.md, CLAUDE.md at ${SHA}, and Oh My Pi keeps .claude/CLAUDE.md, priority 80 (discovery/claude.ts, line 45 and lines 72-77 and 180-192: at the working directory alone, an empty file too)`
+    );
+    expect(evidence["left out: acme/dual AGENTS.md"]).toBe(
+      `${SLOT_RULE}: at the checkout's root, depth 0, .claude/CLAUDE.md (priority 80) comes before it (priority 10; discovery/agents-md.ts, lines 20-30, over discovery/helpers.ts's loadStandaloneContextFiles (lines 844-900))`
+    );
+    expect(evidence["left out: acme/dual CLAUDE.md"]).toStartWith(
+      `${SLOT_RULE}: at the checkout's root, depth 0, .claude/CLAUDE.md (priority 80) comes before it (priority 10;`
+    );
+  });
+
+  test("a Legion pane's root context file follows Oh My Pi's rule as a dev box's does: the workspace repository's AGENTS.md, else its CLAUDE.md", () => {
+    // acme/proj holds no AGENTS.md, so its CLAUDE.md is the one Oh My Pi reads.
+    expect(byName("proj-legion")?.profile.contextFiles).toEqual([
+      { repo: "acme/proj", commit: SHA, path: "CLAUDE.md" },
+      { repo: "acme/infra", commit: SHA, path: "legion/instructions/acme.md" },
+    ]);
+    const evidence = (name: string) =>
+      Object.fromEntries(byName(name)?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    const rule = `${SLOT_RULE}: at the checkout's root, depth 0, `;
+    expect(evidence("proj-legion")["context file acme/proj CLAUDE.md"]).toStartWith(
+      `${rule}acme/proj (the session repository) has CLAUDE.md at ${SHA}, and Oh My Pi keeps CLAUDE.md, priority 10`
+    );
+    // acme/widgets holds an AGENTS.md, which comes first.
+    expect(evidence("legion")["context file acme/widgets AGENTS.md"]).toStartWith(
+      `${rule}acme/widgets (the session repository) has AGENTS.md at ${SHA}, and Oh My Pi keeps AGENTS.md, priority 10`
     );
   });
 
@@ -2016,7 +2390,7 @@ describe("build-cases over every made-up session", () => {
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
     expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length + 1);
-    expect(summary.casesBuilt).toBe(16);
+    expect(summary.casesBuilt).toBe(21);
     const reasonOf = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
     expect(reasonOf("quoted")).toBe("line-quoted");
@@ -2323,7 +2697,9 @@ const psqlLines = (from: number) =>
     .slice(from)
     .split("\n")
     .filter((line) => line !== "")
-    .map((line) => JSON.parse(line) as { kind: string; rows: number; after?: number[] });
+    .map(
+      (line) => JSON.parse(line) as { db: string; kind: string; rows: number; after?: number[] }
+    );
 
 /** The characters of the stand-in store's log: none before its first call. */
 const psqlLogLength = () => (existsSync(psqlLog) ? readFileSync(psqlLog, "utf8").length : 0);
@@ -3653,14 +4029,21 @@ test("build-tasks with no bound writes byte for byte what it wrote before the bo
     if (profiles.length > 0) digests[`${name} profiles`] = digest(profiles.join(""));
   }
   // The digests of the files and printed lines a run of the code before the bounds gave on the
-  // same input. A change to what build-tasks writes changes them.
+  // same input. A change to what build-tasks writes changes them. The profiles summary's is that
+  // run's with the session repository's evidence added to each profile's evidence (each
+  // `session repository <repo>` or `no session repository` item, the session repository's tree
+  // read, and its AGENTS.md said to be the session repository's by Oh My Pi's context file
+  // ranking): those undone, it is the digest the code before the bounds gave,
+  // fa41da9e62a9f60d1a7f75f4b2f29bf7a79251643e4348ada6e11d2899b0e28e. The profiles' is that run's
+  // with each dev box's user-level context file marked `user: true`: that undone, it is
+  // c749ba1f82683dc6045da91d28a90b0238a5d74211f3ef2244d3df0e2af7fbfd.
   expect(digests).toEqual({
     "model tasks": "ffa3d7637184a555b27e1b14afee9b1dd58e697112f82f98d3819afda80652d9",
     "model summary": "fd2cf470c0eaa72f67f8a326ecfaeafd58a63ed82764f9aae296cfffc84bff8b",
     "model printed": "bf894d108dd96d68557fc836907c898f504618a57f906e073f786c51c1144dc3",
     "profiles tasks": "6978ce55a25eb77c1f126e1b0e35e0f4899d63975797aee26b9e32d53ff3dea0",
-    "profiles summary": "fa41da9e62a9f60d1a7f75f4b2f29bf7a79251643e4348ada6e11d2899b0e28e",
+    "profiles summary": "f1931fe933e679585811234810766cb48799160f457f820a133829a181c75d5f",
     "profiles printed": "6e4a4b3f3da89a2faa7e4e21ab71ad7d844a05da52f0aa836ebc41b6baee1532",
-    "profiles profiles": "c749ba1f82683dc6045da91d28a90b0238a5d74211f3ef2244d3df0e2af7fbfd",
+    "profiles profiles": "040bb4d5142a96ae518e1aabacb19f8557f5647e03d32edc88afbc0757b8b367",
   });
 }, 120_000);
