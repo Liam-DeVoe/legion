@@ -5,6 +5,7 @@ import {
   sessionAnswersChanged,
 } from "@legion/envoy-client/session-answers";
 import {
+  branchPosition,
   isHandoffPrompt,
   isSideTurn,
   leadingText,
@@ -35,116 +36,6 @@ processGlobal[DECIDED_KEY] = decided;
 function endsWithSessionAnswers(messages: readonly unknown[]): boolean {
   const text = leadingText(messages.at(-1), "user");
   return text !== undefined && isSessionAnswersText(text);
-}
-
-/**
- * The context message a branch entry becomes, as far as matching reads it, or undefined for an
- * entry that becomes none. The pinned host (18.12.2) builds a compaction's messages from the
- * branch with `MI`:
- *   if (e.type === "message") return e.message;
- *   if (e.type === "custom_message") return yu(e.customType, e.content, e.display, e.details, e.timestamp, e.attribution);
- *   if (e.type === "branch_summary") return hm(e.summary, e.fromId, e.timestamp);
- * where `yu` returns `{role: "custom", ..., timestamp: new Date(s).getTime()}` and `hm` returns
- * `{role: "branchSummary", ..., timestamp: new Date(o).getTime()}`. A `compaction` entry becomes
- * no message there: the earlier summary heads the conversion, so no cut ends on it.
- */
-function entryMessage(entry: unknown):
-  | {
-      readonly role?: unknown;
-      readonly timestamp?: unknown;
-      readonly stopReason?: unknown;
-      readonly content?: unknown;
-      readonly toolCallId?: unknown;
-    }
-  | undefined {
-  if (typeof entry !== "object" || entry === null || !("type" in entry)) return undefined;
-  if (entry.type === "message") {
-    return "message" in entry && typeof entry.message === "object" && entry.message !== null
-      ? entry.message
-      : undefined;
-  }
-  const role =
-    entry.type === "custom_message"
-      ? "custom"
-      : entry.type === "branch_summary"
-        ? "branchSummary"
-        : undefined;
-  if (role === undefined) return undefined;
-  const timestamp =
-    "timestamp" in entry && typeof entry.timestamp === "string"
-      ? new Date(entry.timestamp).getTime()
-      : undefined;
-  return { role, timestamp };
-}
-
-/** Where a request ends on the session's branch: at a message with a later one after it, at the
- *  branch's last message (`tip`, the id of the branch's last entry that becomes a message), or at
- *  a message the branch does not hold. */
-type BranchPosition =
-  | { readonly at: "before" }
-  | { readonly at: "last"; readonly tip: string }
-  | { readonly at: "absent" };
-
-/** The tool call ids of `message` when it is an assistant reply that failed or was aborted. */
-function failedCalls(message: {
-  readonly role?: unknown;
-  readonly stopReason?: unknown;
-  readonly content?: unknown;
-}): string[] {
-  if (
-    message.role !== "assistant" ||
-    (message.stopReason !== "error" && message.stopReason !== "aborted")
-  ) {
-    return [];
-  }
-  return (Array.isArray(message.content) ? message.content : []).flatMap((block: unknown) =>
-    typeof block === "object" &&
-    block !== null &&
-    "type" in block &&
-    block.type === "toolCall" &&
-    "id" in block
-      ? [String(block.id)]
-      : []
-  );
-}
-
-/**
- * Where the request's last message sits on the session's branch, matched by role and timestamp.
- * Oh My Pi's Anthropic remote compaction (`buildLiveProviderContext`) converts the conversation up
- * to its cut alone, counts the result, and keeps that many messages of the whole conversation's
- * conversion: a list on the first would make it keep one message past the cut. A main-loop request
- * ends at a message not yet written, or at the branch's last. A failed or aborted reply, and the
- * results the host wrote for its tool calls, which a retry drops from the context but not from the
- * branch (`turn-recovery`), do not count as later.
- */
-function branchPosition(messages: readonly unknown[], entries: readonly unknown[]): BranchPosition {
-  const last = messages.at(-1);
-  if (typeof last !== "object" || last === null || !("timestamp" in last) || !("role" in last)) {
-    return { at: "absent" };
-  }
-  const dropped = new Set(
-    entries.flatMap((entry) => {
-      const message = entryMessage(entry);
-      return message === undefined ? [] : failedCalls(message);
-    })
-  );
-  let later = false;
-  let tip: string | undefined;
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    const message = entryMessage(entry);
-    if (message === undefined) continue;
-    tip ??= typeof entry === "object" && entry !== null && "id" in entry ? String(entry.id) : "";
-    if (message.role === last.role && message.timestamp === last.timestamp) {
-      return later ? { at: "before" } : { at: "last", tip };
-    }
-    const failed =
-      (message.role === "assistant" &&
-        (message.stopReason === "error" || message.stopReason === "aborted")) ||
-      (message.role === "toolResult" && dropped.has(String(message.toolCallId)));
-    if (!failed) later = true;
-  }
-  return { at: "absent" };
 }
 
 /** A session's last decided conversion: a remote compaction's cut (`"cut"`), or a request with its

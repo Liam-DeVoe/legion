@@ -266,7 +266,7 @@ test("the release records are read by a POST carrying the claim's token and secr
   await expect(partial.releaseRecords(window)).rejects.toBeInstanceOf(LegionDaemonContractError);
 });
 
-test("the approval is read by a POST carrying the claim, through its caller's signal, and an answer of another shape is refused", async () => {
+test("the approval is read by a POST carrying the claim, through its caller's signal, and an answer with no approval key is refused", async () => {
   // The goldens are what the daemon's route writes (internal/api's TestApprovalRoute…Golden).
   const standing = daemonFixture("claim-approval.json");
   const read = {
@@ -290,14 +290,14 @@ test("the approval is read by a POST carrying the claim, through its caller's si
     fetch: daemon(() => Response.json(daemonFixture("claim-approval-none.json"))).fetch,
   });
   await expect(none.approval(read)).resolves.toEqual({ approval: null });
-  // No plugin code reads the answer yet, so its reader requires none of its fields
-  // (LEGION_ANSWER_READS) and an answer that names no approval is read as it came; one whose
-  // fields hold values of another type is no answer of this contract.
+  // pi-legion reads the approval and all three of its fields (LEGION_ANSWER_READS), so an answer
+  // that names no approval is refused, as is one whose fields hold values of another type: neither
+  // is an answer of this contract.
   const silent = createLegionDaemonClient("http://daemon.test", {
     pluginContract: CONTRACT,
     fetch: daemon(() => Response.json({})).fetch,
   });
-  await expect(silent.approval(read)).resolves.toEqual({});
+  await expect(silent.approval(read)).rejects.toBeInstanceOf(LegionDaemonContractError);
   const malformed = createLegionDaemonClient("http://daemon.test", {
     pluginContract: CONTRACT,
     fetch: daemon(() => Response.json({ approval: { version: 0, message: "" } })).fetch,

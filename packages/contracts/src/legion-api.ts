@@ -1611,18 +1611,18 @@ export type LegionClaimApprovalRequestBody = z.output<typeof LegionClaimApproval
  * the daemon's words (`packages/daemon/internal/prompts/approval.md`), which pi-legion places as
  * it is. A child's architect, a phase worker, and a deployment that gates no spec step read
  * `null`, never a refusal. The daemon writes `approval` on every answer, `null` where none
- * stands, and every field of the approval it names. No plugin code reads the answer yet, so the
- * reader requires none of them (`LEGION_ANSWER_READS`): the reader that places the message names
- * the fields it reads there, and those stay required from then on. */
+ * stands, and every field of the approval it names. pi-legion reads all three
+ * (`packages/pi-legion/src/approval-message.ts`, `LEGION_ANSWER_READS`): it places `message` as it
+ * is, decides a new placement by `version`, and logs `document` with each one, so an answer that
+ * names no approval, or an approval without one of them, is refused. */
 export const LegionClaimApprovalResponse = z.object({
   approval: z
     .object({
-      document: nonEmptyString.optional(),
-      version: z.number().int().positive().optional(),
-      message: nonEmptyString.optional(),
+      document: nonEmptyString,
+      version: z.number().int().positive(),
+      message: nonEmptyString,
     })
-    .nullable()
-    .optional(),
+    .nullable(),
 });
 
 export type LegionClaimApproval = z.output<typeof LegionClaimApprovalResponse>;
@@ -2344,4 +2344,12 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
   // `pi-legion/src/turn-outcome.ts` logs the run of refused turns and whether this report
   // failed the claim on every turn it reports.
   LegionTurnOutcomeResponse: ["refusedRun", "failed"],
+  // `pi-legion/src/approval-message.ts` places the approval's message as it is, compares its
+  // version with the placed copies, and logs its document with each new placement.
+  LegionClaimApprovalResponse: [
+    "approval",
+    "approval.document",
+    "approval.version",
+    "approval.message",
+  ],
 };
