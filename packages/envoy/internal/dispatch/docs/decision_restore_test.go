@@ -957,9 +957,9 @@ func TestAnAskBlockMovedOutOfTheDecisionsDocumentKeepsItsShapedTies(t *testing.T
 		}
 	}
 	spec := issue.refKey(issue.spec)
-	if len(held) != 2 || !held[storeBlockAddress(spec, "r1")] || !held[storeBlockAddress(spec, "q-b")] {
+	if len(held) != 2 || !held[refs.BlockAddress(spec, "r1")] || !held[refs.BlockAddress(spec, "q-b")] {
 		t.Fatalf("after the restore q-a's node holds the shaped ties %+v, want one to %s and one to %s", ties,
-			storeBlockAddress(spec, "r1"), storeBlockAddress(spec, "q-b"))
+			refs.BlockAddress(spec, "r1"), refs.BlockAddress(spec, "q-b"))
 	}
 }
 

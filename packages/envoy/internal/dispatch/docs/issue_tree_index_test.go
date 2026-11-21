@@ -1057,7 +1057,7 @@ func TestTheBackfillMarksEachUnstatedDocumentOnceAndTheCensusReadsZeroAfterIt(t 
 // treeCensus takes the store census over database, on a connection of its own.
 func treeCensus(t *testing.T, database *store.Store) *graphcensus.StoreReport {
 	t.Helper()
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, ReturnDeclined)
 	if err != nil {
 		t.Fatalf("take the store census: %v", err)
 	}

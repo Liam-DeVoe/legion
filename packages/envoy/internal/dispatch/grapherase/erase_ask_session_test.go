@@ -6,6 +6,7 @@ import (
 	"io"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -101,7 +102,7 @@ func TestTheCensusHoldsTheSessionsOfAnErasedAskToTheirNodes(t *testing.T) {
 func requireSessionsCounted(t *testing.T, database *store.Store, when string) {
 	t.Helper()
 	requireCensusZero(t, database, when)
-	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false)
+	report, err := graphcensus.StoreCensus(context.Background(), database.Pool.Config().ConnString(), false, docs.ReturnDeclined)
 	if err != nil {
 		t.Fatalf("the store census %s: %v", when, err)
 	}

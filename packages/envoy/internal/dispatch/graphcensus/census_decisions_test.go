@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -334,12 +335,13 @@ func requireKeyedTupleReads(t *testing.T, keys *explaintest.IndexKeys, what stri
 // the history again: the person side's one read of graph_tuples is the proved owners' alias_of,
 // through graph_tuples_current, and the session side reads it not at all. The store-only kinds
 // and the dangling-citation counter's moved_to sources read their tuples out of the nodes the log
-// holds (currentOutOfNodes) through graph_tuples_current alone, an index of the store's set, in
-// three keyed scans: the walk's first node of each kind, the walk's next node past each one, and
-// the probe of each node's tuples of those kinds. graph_edges' answer of each tie the census holds
-// it to (graphEdgesOut) is read node by node, so the view's tuple arm reads graph_tuples through
-// one scan keyed by the node's kind and its id: a plan that keys the kind alone reads every tuple
-// of that kind, and reads them again for each node.
+// holds (currentOutOfNodes, statedOutOfNodes) through graph_tuples_current alone, an index of the
+// store's set, in three keyed scans: the walk's first node of each kind, the walk's next node past
+// each one, and the probe of each node's tuples of those kinds. graph_edges' answer of each tie the
+// census holds it to (graphEdgesOut) is read node by node, so the view's tuple arm reads
+// graph_tuples through one scan keyed by the node's kind and its id: a plan that keys the kind
+// alone reads every tuple of that kind, and reads them again for each node. The census holds the
+// view's answer of each tie it answers, each by name.
 func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	keys := explaintest.NewIndexKeys(database.Pool)
@@ -365,7 +367,7 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 		arguments []any
 	}{
 		{"the store-only read", storeOnlyRead, nil},
-		{"the dangling-citation counter", danglingRead, []any{[]string{}}},
+		{"the dangling-citation counter", danglingRead, []any{[]string{}, []string{}}},
 	} {
 		if keyed := requireKeyedTupleReads(t, keys, read.name,
 			planWithoutSeqScans(t, database, read.statement, read.arguments...), "graph_tuples_current"); keyed != 3 {
@@ -392,7 +394,132 @@ func TestTheCensusReadsTheStoresLogThroughItsIndexes(t *testing.T) {
 			}
 		}
 	}
-	if len(edges) != 6 {
-		t.Errorf("the census holds graph_edges' answer of %v, want the six ties it answers", edges)
+	for _, tie := range []string{refs.TupleShaped, refs.TupleFromAsk, graphstore.TupleDecidedBy,
+		graphstore.TupleFollowedBy, "ask_parent", "ask_anchor"} {
+		if !slices.Contains(edges, tie+edgeSuffix) {
+			t.Errorf("the census holds graph_edges' answer of %v, and not of %s, a tie graph_edges answers", edges, tie)
+		}
+	}
+}
+
+// typedBlock writes a block node of document at address, of supertag and in state, as the typed
+// node pass writes a decision's or a reading's (refs.PlanDecisionNodes), with the in_document and
+// the part_of to its document a block the document holds directly states, and with nothing else.
+func typedBlock(t *testing.T, database *store.Store, document preStoreDocument, address, supertag, state string) {
+	t.Helper()
+	now := time.Now().UTC()
+	node := graphstore.Node{
+		Kind: refs.BlockNodeKind, ID: address, Supertag: supertag, Visibility: graphstore.VisibilityProject,
+		State: state, Project: "CORE", MadeAt: now, MadeBy: censusWriter, SourceEvent: graphstore.NoEvent,
+	}
+	var tuples []graphstore.Tuple
+	for _, kind := range []string{refs.TupleInDocument, graphstore.TuplePartOf} {
+		tuples = append(tuples, graphstore.Tuple{
+			FromKind: refs.BlockNodeKind, FromID: address, Kind: kind, ToKind: graphstore.KindArtifact, ToID: document.refKey,
+			At: now, Who: censusWriter, SourceEvent: graphstore.NoEvent, Asserted: true,
+		})
+	}
+	writeTestTuples(t, database, []graphstore.Node{node}, tuples)
+}
+
+// Above the deferral bound no block index runs in the write, and the typed-node pass states each
+// decision and reading the version no longer holds gone in that write's own transaction, while the
+// document_blocks rows of their blocks and the block_refs rows they hold stay until the
+// block-index reconciliation deletes them (api's
+// TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns builds that state through the
+// server). Over the agreeing store, whose document owes its block index, a decision and the
+// reading inside it are stated gone with every row of theirs standing - both blocks' rows, the
+// reading's parent, the decision's decided_by and its mention of the issue - and the census reads
+// zero differences: those rows are owed their deletion. Once the document's block index stands at
+// its version, the same rows name gone nodes of a document that owes nothing, and the census
+// refuses, naming each under the gone cause in its kind.
+func TestTheCensusOwesTheRowsOfADecisionADeferredVersionRemoved(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	decision, reading := seeded.document.refKey+"#d1", seeded.document.refKey+"#g1"
+	typedBlock(t, database, seeded.document, decision, refs.DecisionSupertag, graphstore.StateGone)
+	typedBlock(t, database, seeded.document, reading, refs.ReadingSupertag, graphstore.StateGone)
+	dave := model.Actor{Kind: "user", ID: "dave"}
+	writeTestTuples(t, database, []graphstore.Node{graphstore.PersonNode("dave", dave, time.Now().UTC(), graphstore.NoEvent)}, nil)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_blocks (artifact_id, block_id, node_id, node_kind, node_address, type, text_sha256, excerpt,
+		                             changed_version, changed_at, parent_block_id)
+		values ($1::uuid, 'd1', $2, 'block', $2, 'decision', '', 'Keep one.', 1, now(), null),
+		       ($1::uuid, 'g1', $3, 'block', $3, 'reading', '', 'The agent reads it.', 1, now(), 'd1')
+	`, seeded.document.artifactID, decision, reading); err != nil {
+		t.Fatalf("write the rows of the decision and the reading: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version, node_kind, node_address)
+		values ($1::uuid, 'd1', $2, 'person', 'dave', 'decided_by', 1, 'block', $2),
+		       ($1::uuid, 'd1', $2, 'issue', 'CORE-1', 'mentions', 1, 'block', $2)
+	`, seeded.document.artifactID, decision); err != nil {
+		t.Fatalf("write the decision's block_refs rows: %v", err)
+	}
+	requireTheCensusAgrees(t, "the census of a decision and a reading a deferred version removed", storeCensusOf(t, database))
+
+	if _, err := database.Pool.Exec(ctx, `
+		update document_block_versions set version = 1 where artifact_id = $1::uuid
+	`, seeded.document.artifactID); err != nil {
+		t.Fatalf("stand the document's block index at version 1: %v", err)
+	}
+	report := storeCensusOf(t, database)
+	const gone = "the row names a node the store holds gone"
+	for kind, at := range map[string]string{
+		"block":                   "block " + decision,
+		"block_ref":               "block_ref " + decision + " mentions -> issue CORE-1",
+		graphstore.TupleDecidedBy: "block_ref " + decision + " decided_by -> person dave",
+		"reading_parent":          "reading " + reading + " part_of -> block " + decision,
+	} {
+		if !slices.Contains(censusKind(t, report, kind).ReportedRows, Difference{Cause: gone, At: at}) {
+			t.Errorf("once the document owes nothing the census reads kind %s as %+v, want the row %s under %q",
+				kind, censusKind(t, report, kind).ReportedRows, at, gone)
+		}
+	}
+	if !slices.Contains(censusKind(t, report, "block").ReportedRows, Difference{Cause: gone, At: "block " + reading}) || !report.Refused() {
+		t.Fatalf("once the document owes nothing the census reads kind block as %+v and refused=%t, want the reading's row under %q and a refusal",
+			censusKind(t, report, "block").ReportedRows, report.Refused(), gone)
+	}
+}
+
+// A decision's tie whose far end is past the store's bound is no relation of the store: its
+// writer leaves its block_refs row unmarked and states no tuple of it (refs' queueBlockRefs), and
+// graph_edges' block_refs arm answers that row alone. Over the agreeing store and a live decision
+// holding a shaped row to an address past the bound, the census counts that row past the bound
+// in the shaped kind and in graph_edges' shaped, and reads no difference in either: a census that
+// held the view's answer to the tuples would read the edge as a row no tuple states.
+func TestTheCensusCountsATieEdgePastTheBoundApart(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seeded := seedAgreeingStore(t, database)
+	decision := seeded.document.refKey + "#d1"
+	typedBlock(t, database, seeded.document, decision, refs.DecisionSupertag, graphstore.StateLive)
+	far := seeded.document.refKey + "#" + strings.Repeat("x", graphstore.MaxAddressBytes)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into document_blocks (artifact_id, block_id, node_id, node_kind, node_address, type, text_sha256, excerpt,
+		                             changed_version, changed_at)
+		values ($1::uuid, 'd1', $2, 'block', $2, 'decision', '', 'Keep one.', 1, now())
+	`, seeded.document.artifactID, decision); err != nil {
+		t.Fatalf("write the decision's row: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version)
+		values ($1::uuid, 'd1', $2, 'block', $3, 'shaped', 1)
+	`, seeded.document.artifactID, decision, far); err != nil {
+		t.Fatalf("write the decision's shaped row past the bound: %v", err)
+	}
+	var answered int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from graph_edges where from_kind = 'block' and from_id = $1 and kind = 'shaped' and to_id = $2
+	`, decision, far).Scan(&answered); err != nil || answered != 1 {
+		t.Fatalf("graph_edges answers the shaped row past the bound %d time(s) (%v), want once, so this test would hold nothing", answered, err)
+	}
+	report := storeCensusOf(t, database)
+	requireTheCensusAgrees(t, "the census of a shaped row past the bound", report)
+	for _, kind := range []string{refs.TupleShaped, refs.TupleShaped + edgeSuffix} {
+		if held := censusKind(t, report, kind); held.PastBound != 1 {
+			t.Errorf("the census counts %d row(s) of kind %s past the bound, want the shaped row", held.PastBound, kind)
+		}
 	}
 }

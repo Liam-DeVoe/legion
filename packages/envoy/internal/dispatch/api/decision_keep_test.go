@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -246,4 +248,143 @@ func TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects(t *testing.
 	expectRefusal(t, "a Keep of the replaced d2", dispatchRequest(t, handler, http.MethodPost,
 		"/api/v1/artifacts/"+choices.id+"/blocks/d2/keep", map[string]any{"text_sha256": replaced.TextSHA256}, "alice"),
 		http.StatusNotFound, "TARGET_NOT_FOUND")
+}
+
+// holdAgentVersionEvents makes every artifact.version event the agent of sessionActor appends wait
+// on the advisory key 1150019, which the test's own transaction takes: the agent's write of a
+// document of an issue holds the issue's owner lock from before its event to its commit, so it
+// stops there holding that lock.
+const holdAgentVersionEvents = `
+	create function hold_agent_version_event() returns trigger language plpgsql as $$
+	begin
+		perform pg_advisory_xact_lock(tg_argv[0]::bigint);
+		return new;
+	end $$;
+	create trigger hold_agent_version_event before insert on events for each row
+		when (new.type = 'artifact.version' and new.actor->>'id' = '` + decidingSession + `')
+		execute function hold_agent_version_event('1150019');`
+
+// A Keep reads the decision on the pool, holding no lock, compares the posted sum with it, and only
+// then takes the issue's owner lock, which an agent's write of the decision's document takes too.
+// A write that commits while the Keep waits for that lock changes what the Keep would record, so
+// the Keep reads the decision again under it: an edit of its words is 409 DECISION_CHANGED, and a
+// version that marks it replaced is 404 TARGET_NOT_FOUND, each with no kept_by, no kept_text_sum,
+// no decision_keeps row and no decision.kept written.
+//
+// The agent's write stops at its artifact.version, holding the issue's owner lock, behind a
+// transaction of the test's own (holdAgentVersionEvents). The Keep, posted with the sum the
+// decision read before the write, queues behind the write, and the test's transaction then lets
+// the write go on and commit.
+func TestAKeepThatWaitsBehindAWriteOfItsDecisionReadsItAgain(t *testing.T) {
+	handler, database, _, s := newRegisteredTestServer(t, testServerOptions{})
+	ctx := context.Background()
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "A spec.\n")
+	owner := "/api/v1/issues/" + issue.Key + "/artifacts"
+	requireAgentWrite(t, "the agent's decisions", sessionRequest(t, handler, http.MethodPost, owner, map[string]any{
+		"name": "choices.md", "content": keptDocument, "actor": sessionActor(),
+	}), http.StatusCreated)
+	choices := readDecisionDocument(t, database, issue.Key, "choices-md")
+	d1 := choices.address("d1")
+	read := func() model.Decision {
+		t.Helper()
+		document, err := s.loadArtifact(ctx, database.Pool, choices.id)
+		if err != nil {
+			t.Fatalf("load choices.md: %v", err)
+		}
+		decision, found, err := s.readDecisionNode(ctx, database.Pool, model.Actor{Kind: "user", ID: "alice"}, document, "d1")
+		if err != nil || !found {
+			t.Fatalf("read the decision d1: found %t, %v", found, err)
+		}
+		return decision
+	}
+	if _, err := database.Pool.Exec(ctx, holdAgentVersionEvents); err != nil {
+		t.Fatalf("install the trigger that holds the agent's versions: %v", err)
+	}
+
+	// Each write is its route and body, built before the write starts, so the goroutine that sends
+	// it reads nothing of its own.
+	for _, race := range []struct {
+		what    string
+		request func() (string, map[string]any)
+		status  int
+		code    string
+		want    int
+	}{
+		{
+			what: "an edit of its words",
+			request: func() (string, map[string]any) {
+				return "/api/v1/artifacts/" + choices.id + "/edits", map[string]any{
+					"actor": sessionActor(), "ops": []map[string]string{replaceOp(keptWords, "We ship gRPC first.")},
+				}
+			},
+			status: http.StatusConflict, code: "DECISION_CHANGED", want: http.StatusOK,
+		},
+		{
+			what: "a version that marks it replaced",
+			request: func() (string, map[string]any) {
+				return owner, map[string]any{
+					"name": "choices.md", "actor": sessionActor(), "precondition": uploadBaseNamed(t, handler, owner, "choices.md"),
+					"content": "::::decision{#d1 replaced=\"true\"}\nWe ship gRPC first.\n\n:::reading{#g1}\n" + keptReading + "\n:::\n::::\n\n" +
+						":::decision{#d2 replaced=\"true\"}\nWe shipped gRPC first.\n:::\n",
+				}
+			},
+			status: http.StatusNotFound, code: "TARGET_NOT_FOUND", want: http.StatusCreated,
+		},
+	} {
+		before := read()
+		if before.Replaced {
+			t.Fatalf("before %s d1 reads replaced; this case needs a decision a Keep acts on", race.what)
+		}
+		path, body := race.request()
+		holder, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin the transaction that holds %s: %v", race.what, err)
+		}
+		t.Cleanup(func() { _ = holder.Rollback(context.Background()) })
+		if _, err := holder.Exec(ctx, `select pg_advisory_xact_lock(1150019)`); err != nil {
+			t.Fatalf("take the key %s waits on: %v", race.what, err)
+		}
+		written := make(chan *httptest.ResponseRecorder, 1)
+		go func() { written <- sessionRequest(t, handler, http.MethodPost, path, body) }()
+		awaitLockWaiters(t, database, 1)
+		waiting := lockWaiters(t, database)
+		kept := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			kept <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+choices.id+"/blocks/d1/keep",
+				map[string]any{"text_sha256": before.TextSHA256}, "alice")
+		}()
+		awaitLockWaiters(t, database, waiting+1)
+		if err := holder.Commit(ctx); err != nil {
+			t.Fatalf("let %s go on: %v", race.what, err)
+		}
+		var write, keep *httptest.ResponseRecorder
+		select {
+		case write = <-written:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("%s answered nothing 30s after it was let go", race.what)
+		}
+		requireAgentWrite(t, race.what, write, race.want)
+		select {
+		case keep = <-kept:
+		case <-time.After(30 * time.Second):
+			t.Fatalf("the Keep that waited behind %s answered nothing 30s after the write committed", race.what)
+		}
+		if keep.Code != race.status || !strings.Contains(keep.Body.String(), race.code) {
+			t.Fatalf("the Keep that waited behind %s answers status=%d body=%s, want %d %s", race.what, keep.Code, keep.Body.String(), race.status, race.code)
+		}
+		for _, kind := range []string{refs.TupleKeptBy, refs.ValueKeptTextSum} {
+			if held, err := graphstore.History(ctx, database.Pool, refs.BlockNodeKind, d1, kind); err != nil || len(held) != 0 {
+				t.Fatalf("after the Keep that waited behind %s d1 holds the %s tuples %+v (%v), want none", race.what, kind, held, err)
+			}
+		}
+		var rows, events int
+		if err := database.Pool.QueryRow(ctx, `
+			select (select count(*) from decision_keeps where artifact_id = $1::text::uuid),
+			       (select count(*) from events where type = 'decision.kept' and payload->>'artifact_id' = $1::text)
+		`, choices.id).Scan(&rows, &events); err != nil || rows != 0 || events != 0 {
+			t.Fatalf("after the Keep that waited behind %s choices.md holds %d decision_keeps rows and %d decision.kept events (%v), want none",
+				race.what, rows, events, err)
+		}
+	}
 }

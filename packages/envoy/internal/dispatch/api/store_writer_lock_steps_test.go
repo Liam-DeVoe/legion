@@ -699,7 +699,7 @@ func (r *storeWriterRig) issuePatchForRun() storeWriter {
 // issuePatchRelations is an issue's PATCH that states a relation of the issue (patchIssue,
 // R10 of this branch's spec), through its route: a PATCH of the issue's needs. It takes the issue's
 // owner lock (lockPatchOwners), updates the issue's row, writes the issue_links rows the new set
-// projects (writeIssueNeeds), writes the issue's node (graphstore.WriteUncaused), so that
+// projects (writeIssueNeeds), writes the issue's node (graphstore.QueueNodes), so that
 // graph_edges answers the relation out of a node the store holds, appends issue.updated, and then,
 // in the same write phase, appends what that event causes: the facts of the issue's node
 // (graphstore.QueueCaused, the store's tuple append), then the needs in one statement of the
@@ -767,7 +767,7 @@ func (r *storeWriterRig) issuePatchRelations() storeWriter {
 // the comment's node as the backfill of the comments states it (stateFiledFromNode): the node rows,
 // the comment's and its author's, in one node write, the facts they hold at the sentinel, which no
 // event causes, and then the comments row naming the comment's node; then it writes the issue's
-// node (graphstore.WriteUncaused), appends issue.updated, and claims the filed_from that event
+// node (graphstore.QueueNodes), appends issue.updated, and claims the filed_from that event
 // causes (stateIssueRelations). The comment is a row no run has seen, so its node is new, and the
 // first node write, the first tuple append and the comments row are held as their tables. The
 // issue's node exists from its create, and the node write locks it, so it is held as its row. The
