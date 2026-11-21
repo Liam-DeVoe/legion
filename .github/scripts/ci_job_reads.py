@@ -3652,6 +3652,10 @@ GATES = [
                                          "start_server holds each Dispatch server's port through"),
         (TEST_FIXTURES_SRC, "packages/dispatch/e2e/__tests__/restricted-sweep.test.ts and restricted-sweep-fake.ts import "
                             "@legion/test-fixtures, and the sweep's step runs restricted-sweep.test.ts"),
+        ("scripts/e2e/lib/process-tree.sh", "scripts/e2e/lib/rig.sh sources it (its `. \"$root/scripts/e2e/lib/process-tree.sh\"` "
+                                            "line, the last): start_process records each service's start through its "
+                                            "record_start, and packages/dispatch/e2e/acceptance/access-lib.sh's stop_all stops "
+                                            "them through its signalable and rig.sh's stop_pid"),
     ) + ceiling_reads(PROJECT_ACCESS) + setup_go(PROJECT_ACCESS, f"{ENVOY}/go.mod")
       + bun_job(PROJECT_ACCESS) + CI_SELF),
 
